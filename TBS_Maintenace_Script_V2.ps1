@@ -4096,7 +4096,7 @@ function CloseOpenTransactions
 			($currentTime - $_.LastWriteTime).TotalDays -le 30
 		}
 		
-		if ($files.Count -eq 0)
+		if ($files -eq $null -or $files.Count -eq 0)
 		{
 			Write-Log -Message "No files were found to close automatically. Prompting for lane number." "yellow"
 			
