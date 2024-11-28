@@ -4,9 +4,10 @@
 # Description:
 #   Defines the script parameters, allowing users to run the script in silent mode.
 # ===================================================================================================
-param (
-	[bool]$Silent = $false
-)
+[Net.ServicePointManager]::SecurityProtocol = `
+    [Net.SecurityProtocolType]::Tls12 -bor `
+    [Net.SecurityProtocolType]::Tls11 -bor `
+    [Net.SecurityProtocolType]::Tls
 
 # Set the PowerShell version variable
 $psVersion = $PSVersionTable.PSVersion.Major
