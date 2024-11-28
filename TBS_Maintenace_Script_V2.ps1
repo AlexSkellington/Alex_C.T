@@ -6187,7 +6187,7 @@ if (-not $SilentMode)
 	# ===================================================================================================
 	
 	# Call the function to ensure admin privileges
-	# Ensure-Administrator
+	Ensure-Administrator
 	
 	# Initialize variables
 	# $Memory25PercentMB = Get-MemoryInfo
