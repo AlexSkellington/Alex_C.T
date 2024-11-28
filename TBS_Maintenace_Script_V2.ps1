@@ -69,7 +69,7 @@ $LanesqlFilePath = "$env:TEMP\Lane_Database_Maintenance.sqi"
 $StoresqlFilePath = "$env:TEMP\Server_Database_Maintenance.sqi"
 
 # Script Name
-$scriptName = Split-Path -Leaf $PSCommandPath
+# $scriptName = Split-Path -Leaf $PSCommandPath
 
 # ===================================================================================================
 #                              FUNCTION: Ensure Administrator Privileges
