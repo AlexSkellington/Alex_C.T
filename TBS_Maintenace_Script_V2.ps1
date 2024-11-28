@@ -3438,7 +3438,7 @@ function Pump-AllItems
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n=== Starting Pump-AllItems Function ===`r`n" "blue"
+	Write-Log "`r`n==================== Starting Pump-AllItems Function ====================`r`n" "blue"
 	
 	if (-not (Test-Path $XFBasePath))
 	{
@@ -3835,7 +3835,7 @@ DROP TABLE $viewName;`r`n`r`n"
 	if ($ProcessedLanes.Count -gt 0)
 	{
 		Write-Log "Processed Lanes: $($ProcessedLanes -join ', ')" "green"
-		Write-Log "`r`n=== Pump-AllItems Function Completed ===" "blue"
+		Write-Log "`r`n==================== Pump-AllItems Function Completed ====================" "blue"
 	}
 }
 
