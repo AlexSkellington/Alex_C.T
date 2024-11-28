@@ -12,10 +12,10 @@ param (
 $psVersion = $PSVersionTable.PSVersion.Major
 
 # Set Execution Policy to Bypass for the current process
-Set-ExecutionPolicy Bypass -Scope Process -Force
+# Set-ExecutionPolicy Bypass -Scope Process -Force
 
 # Set Silent Mode based on the -Silent parameter
-$SilentMode = [bool]$Silent
+# $SilentMode = [bool]$Silent
 
 # ===================================================================================================
 #                                SECTION: Import Necessary Assemblies
