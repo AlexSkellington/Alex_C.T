@@ -81,7 +81,7 @@ $form.Controls.Add($createdByLabel)
 # ===================================================================================================
 
 # Ensure script is running as administrator
-Ensure-Administrator
+# Ensure-Administrator
 
 # Initialize script-scoped variables for new store number and new machine name
 $script:newStoreNumber = $null
