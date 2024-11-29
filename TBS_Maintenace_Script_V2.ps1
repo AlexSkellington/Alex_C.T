@@ -139,9 +139,9 @@ function Download-AndRelaunchSelf {
             Write-Host "Script downloaded successfully to $DestinationPath"
             # Optionally, read the first few lines to confirm the presence of the Param block
               $firstLines = Get-Content -Path $DestinationPath -TotalCount 5
-        #if ($firstLines -notmatch 'Param') {
-        #        Write-Warning "Downloaded script does not contain the Param block. Please update the script at the source."
-        #    }
+        if ($firstLines -notmatch 'Param') {
+                Write-Warning "Downloaded script does not contain the Param block. Please update the script at the source."
+            }
         }
         else {
             Write-Error "Script was not downloaded successfully."
