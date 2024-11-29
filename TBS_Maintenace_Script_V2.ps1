@@ -165,6 +165,8 @@ function Download-AndRelaunchSelf {
             "-File"
             "`"$DestinationPath`""
             "-IsRelaunched"
+	    "-WindowStyle" 
+            "Hidden"
         )
 
         Write-Host "Starting new process with arguments: $arguments"
