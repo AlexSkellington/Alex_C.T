@@ -1,13 +1,15 @@
+Param (
+    [switch]$IsRelaunched
+)
+
+Write-Host "Script started. IsRelaunched: $IsRelaunched"
+
 # ===================================================================================================
 #                                       SECTION: Parameters
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Defines the script parameters, allowing users to run the script in silent mode.
 # ===================================================================================================
-
-Param (
-    [switch]$IsRelaunched
-)    
 
 # Set the PowerShell version variable
 $psVersion = $PSVersionTable.PSVersion.Major
@@ -87,24 +89,23 @@ $StoresqlFilePath = "$env:TEMP\Server_Database_Maintenance.sqi"
 function Download-AndRelaunchSelf {
     [CmdletBinding()]
     param (
-        # The direct URL to your PowerShell script on GitHub (raw content)
         [Parameter(Mandatory = $true)]
         [string]$ScriptUrl,
 
-        # The directory where the script will be downloaded (default is %TEMP%)
         [Parameter(Mandatory = $false)]
         [string]$DestinationDirectory = "$env:TEMP",
 
-        # The name to save the downloaded script as
         [Parameter(Mandatory = $false)]
         [string]$ScriptName = "DownloadedScript.ps1",
 
-        # Internal parameter to indicate if the script has been relaunched
         [switch]$IsRelaunched
     )
 
+    Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
+
     # If the script has already been relaunched, do not proceed
     if ($IsRelaunched) {
+        Write-Host "Script has already been relaunched. Exiting function."
         return
     }
 
@@ -118,17 +119,34 @@ function Download-AndRelaunchSelf {
             $targetPath = (Resolve-Path $DestinationPath).Path
             if ($currentPath -eq $targetPath) {
                 # Script is already running from the destination path; do not proceed
+                Write-Host "Script is already running from $DestinationPath. Exiting function."
                 return
             }
         }
         catch {
             # If Resolve-Path fails, proceed to download
+            Write-Warning "Resolve-Path failed. Proceeding to download."
         }
     }
 
     try {
+        Write-Host "Attempting to download the script from $ScriptUrl to $DestinationPath"
         # Attempt to download the script
         Invoke-RestMethod -Uri $ScriptUrl -OutFile $DestinationPath -UseBasicParsing
+
+        # Verify that the script was downloaded and contains the updated content
+        if (Test-Path $DestinationPath) {
+            Write-Host "Script downloaded successfully to $DestinationPath"
+            # Optionally, read the first few lines to confirm the presence of the Param block
+            $firstLines = Get-Content -Path $DestinationPath -TotalCount 5
+            if ($firstLines -notmatch 'Param') {
+                Write-Warning "Downloaded script does not contain the Param block. Please update the script at the source."
+            }
+        }
+        else {
+            Write-Error "Script was not downloaded successfully."
+            return
+        }
     }
     catch {
         # Log the error and exit the function without performing further actions
@@ -140,17 +158,21 @@ function Download-AndRelaunchSelf {
         # Relaunch the downloaded script as Administrator in a hidden window
 
         # Prepare the arguments for the new PowerShell process, including the relaunch indicator
-        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$DestinationPath`" -IsRelaunched"
+        $arguments = @(
+            "-NoProfile"
+            "-ExecutionPolicy"
+            "Bypass"
+            "-File"
+            "`"$DestinationPath`""
+            "-IsRelaunched"
+        )
 
-        # Create a ProcessStartInfo object to configure the new process
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = "powershell.exe"
-        $psi.Arguments = $arguments
-        # $psi.Verb = "RunAs"  # Specifies to run the process with elevated (admin) privileges
-        # $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden  # Hidden window
+        Write-Host "Starting new process with arguments: $arguments"
 
-        # Start the new process
-        [System.Diagnostics.Process]::Start($psi) | Out-Null
+        # Start the new process with elevated privileges
+        Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden
+
+        Write-Host "Process started successfully. Exiting current script."
 
         # Exit the current script to prevent multiple instances
         exit
@@ -161,11 +183,17 @@ function Download-AndRelaunchSelf {
     }
 }
 
-# Example Usage:
-# Download-AndRelaunchSelf -ScriptUrl "https://raw.githubusercontent.com/YourUsername/YourRepository/main/YourScript.ps1"
+# Only call the function if the script has not been relaunched
+if (-not $IsRelaunched) {
+    Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
+    Download-AndRelaunchSelf -ScriptUrl "https://raw.githubusercontent.com/YourUsername/YourRepository/main/YourScript.ps1"
+}
+else {
+    Write-Host "Script has been relaunched. Continuing execution."
+}
 
-# To execute the function immediately upon running the script, uncomment the line below and provide the necessary parameters.
-# Download-AndRelaunchSelf -ScriptUrl "https://raw.githubusercontent.com/YourUsername/YourRepository/main/YourScript.ps1"
+# Rest of your script continues here
+Write-Host "Script is running with elevated privileges from $($MyInvocation.MyCommand.Path)"
 
 # ===================================================================================================
 #                              FUNCTION: Ensure Administrator Privileges
