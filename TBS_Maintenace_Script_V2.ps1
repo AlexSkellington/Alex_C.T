@@ -6627,7 +6627,7 @@ if (-not $SilentMode)
 	$ClearXEJob = Clear-XEFolder
 	
 	# Clear %Temp% foder on start
-	$FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi" -AsJob
+	$FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
 	
 	# ===================================================================================================
 	#                                       SECTION: Show the GUI
