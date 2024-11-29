@@ -6252,7 +6252,7 @@ if (-not $SilentMode)
 	{
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T"
+		$form.Text = "TBS_Maintenance Script/Created by Alex_C.T"
 		$form.Size = New-Object System.Drawing.Size(1010, 690)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
