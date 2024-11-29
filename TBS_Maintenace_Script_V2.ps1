@@ -79,9 +79,9 @@ $StoresqlFilePath = "$env:TEMP\Server_Database_Maintenance.sqi"
 #   This function downloads a specified PowerShell script from a given URL, saves it to a designated
 #   directory (defaulting to the system's temporary folder), and relaunches the downloaded script
 #   with elevated (Administrator) privileges in a hidden window. It includes error handling to log
-#   any issues encountered during the download or relaunch processes. If the download fails, the
-#   function logs the error and allows the main script to continue executing without performing
-#   further actions within the function.
+#   any issues encountered during the download or relaunch processes. To prevent infinite loops,
+#   an explicit relaunch indicator is used. If the download fails, the function logs the error and
+#   allows the main script to continue executing without performing further actions within the function.
 # ===================================================================================================
 
 function Download-AndRelaunchSelf {
@@ -97,8 +97,16 @@ function Download-AndRelaunchSelf {
 
         # The name to save the downloaded script as
         [Parameter(Mandatory = $false)]
-        [string]$ScriptName = "DownloadedScript.ps1"
+        [string]$ScriptName = "DownloadedScript.ps1",
+
+        # Internal parameter to indicate if the script has been relaunched
+        [switch]$IsRelaunched
     )
+
+    # If the script has already been relaunched, do not proceed
+    if ($IsRelaunched) {
+        return
+    }
 
     # Construct the full path to save the script
     $DestinationPath = Join-Path -Path $DestinationDirectory -ChildPath $ScriptName
@@ -131,8 +139,8 @@ function Download-AndRelaunchSelf {
     try {
         # Relaunch the downloaded script as Administrator in a hidden window
 
-        # Prepare the arguments for the new PowerShell process
-        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$DestinationPath`""
+        # Prepare the arguments for the new PowerShell process, including the relaunch indicator
+        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$DestinationPath`" -IsRelaunched"
 
         # Create a ProcessStartInfo object to configure the new process
         $psi = New-Object System.Diagnostics.ProcessStartInfo
