@@ -1148,16 +1148,18 @@ function Count-ItemsGUI
 	$script:FunctionResults['LaneMachines'] = $LaneMachines
 	$script:FunctionResults['Counts'] = $Counts
 	
-	# Update the GUI countsLabel with the new counts
-	if (-not $SilentMode -and $countsLabel -ne $null)
+		# Update the GUI countsLabel1 and countsLabel2 with the new counts
+	if (-not $SilentMode -and $countsLabel1 -ne $null -and $countsLabel2 -ne $null)
 	{
 		if ($Mode -eq "Host")
 		{
-			$countsLabel.Text = "Number of Hosts: $NumberOfHosts`r`n`r`nNumber of Stores: $NumberOfStores"
+			$countsLabel1.Text = "Number of Hosts: $NumberOfHosts"
+			$countsLabel2.Text = "Number of Stores: $NumberOfStores"
 		}
 		else
 		{
-			$countsLabel.Text = "Number of Servers: $NumberOfServers`r`n`r`nNumber of Lanes: $NumberOfLanes"
+			$countsLabel1.Text = "Number of Servers: $NumberOfServers"
+			$countsLabel2.Text = "Number of Lanes: $NumberOfLanes"
 		}
 		# Refresh the form to display updates
 		$form.Refresh()
