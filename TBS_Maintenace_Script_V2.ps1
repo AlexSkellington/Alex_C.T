@@ -6579,10 +6579,11 @@ if (-not $SilentMode)
 	
 	# Call the function to ensure admin privileges
 	# Ensure-Administrator
-        # Only call the function if the script has not been relaunched
-        if (-not $IsRelaunched) {
-            Download-AndRelaunchSelf -ScriptUrl "https://raw.githubusercontent.com/YourUsername/YourRepository/main/YourScript.ps1"
-        }
+        
+	# Only call the function if the script has not been relaunched
+        #if (-not $IsRelaunched) {
+        #    Download-AndRelaunchSelf -ScriptUrl "https://raw.githubusercontent.com/YourUsername/YourRepository/main/YourScript.ps1"
+        #}
 
 	# Initialize variables
 	# $Memory25PercentMB = Get-MemoryInfo
