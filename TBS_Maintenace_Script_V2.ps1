@@ -97,7 +97,7 @@ function Download-AndRelaunchSelf {
         [string]$DestinationDirectory = "$env:TEMP",
 
         [Parameter(Mandatory = $false)]
-        [string]$ScriptName = "DownloadedScript.ps1",
+        [string]$ScriptName = "TBS_Maintenance_Script.ps1",
 
         [switch]$IsRelaunched
     )
