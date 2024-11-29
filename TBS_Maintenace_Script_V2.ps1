@@ -180,6 +180,11 @@ function Download-AndRelaunchSelf {
     catch {
         # Log any errors that occur during the relaunch process
         Write-Error "Failed to relaunch the script as Administrator. Error: $_"
+      }
+    finally {
+        # Exit the current script regardless of success or failure
+        Write-Host "Exiting the original script."
+        exit
     }
 }
 
