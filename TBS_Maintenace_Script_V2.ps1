@@ -6250,9 +6250,18 @@ if (-not $SilentMode)
 	{
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Host/Server/Lane SQL Execution Tool"
-		$form.Size = New-Object System.Drawing.Size(1000, 780)
+		$form.Text = "Created by Alex_C.T"
+		$form.Size = New-Object System.Drawing.Size(1010, 690)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+		
+		# Handle form closing event (X button)
+		$form.add_FormClosing({
+				# Perform action when the X button is clicked
+				Write-Log "Form is closing. Performing cleanup." "green"
+				# Clean Temp Folder
+				Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi"
+			})
+		
 		
 		# Create a timer to refresh the GUI every second
 		$refreshTimer = New-Object System.Windows.Forms.Timer
@@ -6266,58 +6275,18 @@ if (-not $SilentMode)
 		# Create a Clear Log button
 		$clearLogButton = New-Object System.Windows.Forms.Button
 		$clearLogButton.Text = "Clear Log"
-		$clearLogButton.Location = New-Object System.Drawing.Point(850, 215)
+		$clearLogButton.Location = New-Object System.Drawing.Point(850, 75)
 		$clearLogButton.Size = New-Object System.Drawing.Size(100, 30)
 		$clearLogButton.add_Click({
 				$logBox.Clear()
 				Write-Log "Log Cleared"
 			})
 		$form.Controls.Add($clearLogButton)
-		
-		# Ping lanes button
-		$PingLanesButton = New-Object System.Windows.Forms.Button
-		$PingLanesButton.Text = "Ping Lanes"
-		$PingLanesButton.Location = New-Object System.Drawing.Point(745, 215)
-		$PingLanesButton.Size = New-Object System.Drawing.Size(100, 30)
-		$PingLanesButton.add_Click({
-				PingAllLanes -Mode "Store" -StoreNumber "$StoreNumber"
-			})
-		$form.Controls.Add($PingLanesButton)
-		
-		# Delete DBS button
-		$DeleteDBSButton = New-Object System.Windows.Forms.Button
-		$DeleteDBSButton.Text = "Delete DBS"
-		$DeleteDBSButton.Location = New-Object System.Drawing.Point(640, 215)
-		$DeleteDBSButton.Size = New-Object System.Drawing.Size(100, 30)
-		$DeleteDBSButton.add_Click({
-				Delete-DBS -Mode "Store" -StoreNumber "$StoreNumber"
-			})
-		$form.Controls.Add($DeleteDBSButton)
-		
-		# Configure SystemSettings button
-		$ConfigureSystemSettingsButton = New-Object System.Windows.Forms.Button
-		$ConfigureSystemSettingsButton.Text = "Configure SystemSettings"
-		$ConfigureSystemSettingsButton.Location = New-Object System.Drawing.Point(485, 215)
-		$ConfigureSystemSettingsButton.Size = New-Object System.Drawing.Size(150, 30)
-		$ConfigureSystemSettingsButton.add_Click({
-				Configure-SystemSettings
-			})
-		$form.Controls.Add($ConfigureSystemSettingsButton)
-		
-		# Refresh PIN Pad Files
-		$RefreshFilesButton = New-Object System.Windows.Forms.Button
-		$RefreshFilesButton.Text = "Refresh PIN Pad Files"
-		$RefreshFilesButton.Location = New-Object System.Drawing.Point(330, 215)
-		$RefreshFilesButton.Size = New-Object System.Drawing.Size(150, 30)
-		$RefreshFilesButton.add_Click({
-				Refresh-Files -Mode $Mode -StoreNumber -$StoreNumber
-			})
-		$form.Controls.Add($RefreshFilesButton)
-		
+				
 		# Install into SMS
 		$InstallIntoSMSButton = New-Object System.Windows.Forms.Button
 		$InstallIntoSMSButton.Text = "Install Function in SMS"
-		$InstallIntoSMSButton.Location = New-Object System.Drawing.Point(330, 180)
+		$InstallIntoSMSButton.Location = New-Object System.Drawing.Point(690, 75)
 		$InstallIntoSMSButton.Size = New-Object System.Drawing.Size(150, 30)
 		$InstallIntoSMSButton.add_Click({
 				InstallIntoSMS
@@ -6327,7 +6296,7 @@ if (-not $SilentMode)
 		# Ativate Windows button
 		$ActivateWindowsButton = New-Object System.Windows.Forms.Button
 		$ActivateWindowsButton.Text = "Activate Windows"
-		$ActivateWindowsButton.Location = New-Object System.Drawing.Point(845, 25)
+		$ActivateWindowsButton.Location = New-Object System.Drawing.Point(850, 10)
 		$ActivateWindowsButton.Size = New-Object System.Drawing.Size(100, 40)
 		$ActivateWindowsButton.add_Click({
 				Invoke-SecureScript
@@ -6343,27 +6312,11 @@ if (-not $SilentMode)
 		#				CloseOpenTransactions -StoreNumber $StoreNumber
 		#			})
 		#		$form.Controls.Add($COTButton)
-		
-		# Create a header label
-		$header = New-Object System.Windows.Forms.Label
-		$header.Text = "Host/Server/Lane SQL Execution Script"
-		$header.Font = New-Object System.Drawing.Font("Arial", 16, [System.Drawing.FontStyle]::Bold)
-		$header.AutoSize = $true
-		$header.Location = New-Object System.Drawing.Point(300, 20)
-		$form.Controls.Add($header)
-		
-		# Create a label for the creator's name
-		$creatorLabel = New-Object System.Windows.Forms.Label
-		$creatorLabel.Text = "Created by: Alex_C.T"
-		$creatorLabel.Font = New-Object System.Drawing.Font("Arial", 12, [System.Drawing.FontStyle]::Regular)
-		$creatorLabel.AutoSize = $true
-		$creatorLabel.Location = New-Object System.Drawing.Point(420, 50)
-		$form.Controls.Add($creatorLabel)
-		
+				
 		# Create labels for Mode, Store Name, Store Number, and Counts
 		$script:modeLabel = New-Object System.Windows.Forms.Label
 		$modeLabel.Text = "Processing Mode: N/A"
-		$modeLabel.Location = New-Object System.Drawing.Point(50, 90)
+		$modeLabel.Location = New-Object System.Drawing.Point(50, 10)
 		$modeLabel.Size = New-Object System.Drawing.Size(900, 20)
 		$modeLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$form.Controls.Add($modeLabel)
@@ -6371,7 +6324,7 @@ if (-not $SilentMode)
 		# Store Name Label
 		$script:storeNameLabel = New-Object System.Windows.Forms.Label
 		$storeNameLabel.Text = "Store Name: N/A"
-		$storeNameLabel.Location = New-Object System.Drawing.Point(50, 120)
+		$storeNameLabel.Location = New-Object System.Drawing.Point(50, 30)
 		$storeNameLabel.Size = New-Object System.Drawing.Size(900, 20)
 		$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$form.Controls.Add($storeNameLabel)
@@ -6379,31 +6332,50 @@ if (-not $SilentMode)
 		# Store Number Label
 		$script:storeNumberLabel = New-Object System.Windows.Forms.Label
 		$storeNumberLabel.Text = "Store Number: N/A"
-		$storeNumberLabel.Location = New-Object System.Drawing.Point(50, 150)
+		$storeNumberLabel.Location = New-Object System.Drawing.Point(50, 50)
 		$storeNumberLabel.Size = New-Object System.Drawing.Size(900, 20)
 		$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$form.Controls.Add($storeNumberLabel)
 		
-		# Counts Label
-		$script:countsLabel = New-Object System.Windows.Forms.Label
-		$countsLabel.Location = New-Object System.Drawing.Point(50, 180)
-		$countsLabel.Size = New-Object System.Drawing.Size(900, 50)
-		$countsLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$form.Controls.Add($countsLabel)
+		# Counts Labels
+		# Counts Label Line 1
+		$script:countsLabel1 = New-Object System.Windows.Forms.Label
+		$countsLabel1.Text = "Number of Servers: $($Counts.NumberOfServers)"
+		$countsLabel1.Location = New-Object System.Drawing.Point(50, 70)
+		$countsLabel1.Size = New-Object System.Drawing.Size(900, 20) # Reduced height
+		$countsLabel1.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$countsLabel1.AutoSize = $false
+		$form.Controls.Add($countsLabel1)
 		
+		# Counts Label Line 2
+		$script:countsLabel2 = New-Object System.Windows.Forms.Label
+		$countsLabel2.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
+		$countsLabel2.Location = New-Object System.Drawing.Point(50, 90) # Adjusted Y-position
+		$countsLabel2.Size = New-Object System.Drawing.Size(900, 20) # Reduced height
+		$countsLabel2.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$countsLabel2.AutoSize = $false
+		$form.Controls.Add($countsLabel2)
+		
+		# Alternatively, Adjust the Y-position to reduce spacing
+		# Example: Move countsLabel2 closer to countsLabel1
+		# $countsLabel2.Location = New-Object System.Drawing.Point(50, 85) # Reduced from 90 to 85
+		
+		# Update Counts Labels Based on Mode
 		if ($Mode -eq "Host")
 		{
-			$countsLabel.Text = "Number of Hosts: $($Counts.NumberOfHosts)`r`n`r`nNumber of Stores: $($Counts.NumberOfStores)"
+			$countsLabel1.Text = "Number of Hosts: $($Counts.NumberOfHosts)"
+			$countsLabel2.Text = "Number of Stores: $($Counts.NumberOfStores)"
 		}
 		else
 		{
-			$countsLabel.Text = "Number of Servers: $($Counts.NumberOfServers)`r`n`r`nNumber of Lanes: $($Counts.NumberOfLanes)"
+			$countsLabel1.Text = "Number of Servers: $($Counts.NumberOfServers)"
+			$countsLabel2.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
 		}
 		
 		# Create a RichTextBox for log output
 		$logBox = New-Object System.Windows.Forms.RichTextBox
-		$logBox.Location = New-Object System.Drawing.Point(50, 245)
-		$logBox.Size = New-Object System.Drawing.Size(900, 350)
+		$logBox.Location = New-Object System.Drawing.Point(50, 110)
+		$logBox.Size = New-Object System.Drawing.Size(900, 400)
 		$logBox.ReadOnly = $true
 		$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
 		$form.Controls.Add($logBox)
@@ -6420,7 +6392,7 @@ if (-not $SilentMode)
 		{
 			$hostButton1 = New-Object System.Windows.Forms.Button
 			$hostButton1.Text = "Host DB Repair"
-			$hostButton1.Location = New-Object System.Drawing.Point(50, 615)
+			$hostButton1.Location = New-Object System.Drawing.Point(50, 515)
 			$hostButton1.Size = New-Object System.Drawing.Size(200, 40)
 			$hostButton1.Add_Click({
 					Process-HostGUI -StoresqlFilePath $StoresqlFilePath
@@ -6429,7 +6401,7 @@ if (-not $SilentMode)
 			
 			$hostButton2 = New-Object System.Windows.Forms.Button
 			$hostButton2.Text = "Store DB Repair"
-			$hostButton2.Location = New-Object System.Drawing.Point(260, 615)
+			$hostButton2.Location = New-Object System.Drawing.Point(284, 515)
 			$hostButton2.Size = New-Object System.Drawing.Size(200, 40)
 			$hostButton2.Add_Click({
 					Process-StoresGUI -StoresqlFilePath $StoresqlFilePath
@@ -6438,7 +6410,7 @@ if (-not $SilentMode)
 			
 			$hostButton3 = New-Object System.Windows.Forms.Button
 			$hostButton3.Text = "Repair DB of Stores and Host"
-			$hostButton3.Location = New-Object System.Drawing.Point(470, 615)
+			$hostButton3.Location = New-Object System.Drawing.Point(517, 515)
 			$hostButton3.Size = New-Object System.Drawing.Size(200, 40)
 			$hostButton3.Add_Click({
 					Process-AllStoresAndHostGUI -StoresqlFilePath $StoresqlFilePath
@@ -6447,7 +6419,7 @@ if (-not $SilentMode)
 			
 			$hostButton4 = New-Object System.Windows.Forms.Button
 			$hostButton4.Text = "Repair Windows"
-			$hostButton4.Location = New-Object System.Drawing.Point(680, 615)
+			$hostButton4.Location = New-Object System.Drawing.Point(750, 515)
 			$hostButton4.Size = New-Object System.Drawing.Size(200, 40)
 			$hostButton4.Add_Click({
 					Repair-Windows
@@ -6456,7 +6428,7 @@ if (-not $SilentMode)
 			
 			$hostButton5 = New-Object System.Windows.Forms.Button
 			$hostButton5.Text = "Create a scheduled task"
-			$hostButton5.Location = New-Object System.Drawing.Point(50, 665)
+			$hostButton5.Location = New-Object System.Drawing.Point(50, 560)
 			$hostButton5.Size = New-Object System.Drawing.Size(200, 40)
 			$hostButton5.Add_Click({
 					Create-ScheduledTaskGUI -ScriptPath $scriptPath
@@ -6468,7 +6440,7 @@ if (-not $SilentMode)
 			# Create Store Specific Buttons
 			$storeButton1 = New-Object System.Windows.Forms.Button
 			$storeButton1.Text = "Server DB Repair"
-			$storeButton1.Location = New-Object System.Drawing.Point(50, 600)
+			$storeButton1.Location = New-Object System.Drawing.Point(50, 515)
 			$storeButton1.Size = New-Object System.Drawing.Size(200, 40)
 			$storeButton1.Add_Click({
 					Process-ServerGUI -StoresqlFilePath $StoresqlFilePath
@@ -6477,7 +6449,7 @@ if (-not $SilentMode)
 			
 			$storeButton2 = New-Object System.Windows.Forms.Button
 			$storeButton2.Text = "Lane DB Repair"
-			$storeButton2.Location = New-Object System.Drawing.Point(284, 600)
+			$storeButton2.Location = New-Object System.Drawing.Point(284, 515)
 			$storeButton2.Size = New-Object System.Drawing.Size(200, 40)
 			$storeButton2.Add_Click({
 					Process-LanesGUI -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
@@ -6486,7 +6458,7 @@ if (-not $SilentMode)
 			
 			$storeButton3 = New-Object System.Windows.Forms.Button
 			$storeButton3.Text = "Repair DB of Lanes and Server"
-			$storeButton3.Location = New-Object System.Drawing.Point(517, 600)
+			$storeButton3.Location = New-Object System.Drawing.Point(517, 515)
 			$storeButton3.Size = New-Object System.Drawing.Size(200, 40)
 			$storeButton3.Add_Click({
 					Process-LanesAndServerGUI -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath -StoreNumber $StoreNumber
@@ -6495,7 +6467,7 @@ if (-not $SilentMode)
 			
 			$storeButton4 = New-Object System.Windows.Forms.Button
 			$storeButton4.Text = "Repair Windows"
-			$storeButton4.Location = New-Object System.Drawing.Point(750, 600)
+			$storeButton4.Location = New-Object System.Drawing.Point(750, 515)
 			$storeButton4.Size = New-Object System.Drawing.Size(200, 40)
 			$storeButton4.Add_Click({
 					Repair-Windows
@@ -6504,7 +6476,7 @@ if (-not $SilentMode)
 			
 			$storeButton5 = New-Object System.Windows.Forms.Button
 			$storeButton5.Text = "Pump All Items"
-			$storeButton5.Location = New-Object System.Drawing.Point(50, 645)
+			$storeButton5.Location = New-Object System.Drawing.Point(50, 560)
 			$storeButton5.Size = New-Object System.Drawing.Size(200, 40)
 			$storeButton5.Add_Click({
 					Pump-AllItems -StoreNumber $StoreNumber
@@ -6513,7 +6485,7 @@ if (-not $SilentMode)
 			
 			$storeButton6 = New-Object System.Windows.Forms.Button
 			$storeButton6.Text = "Update Lane Configuration"
-			$storeButton6.Location = New-Object System.Drawing.Point(284, 645)
+			$storeButton6.Location = New-Object System.Drawing.Point(284, 560)
 			$storeButton6.Size = New-Object System.Drawing.Size(200, 40)
 			$storeButton6.Add_Click({
 					Update-LaneFiles -StoreNumber $StoreNumber
@@ -6523,7 +6495,7 @@ if (-not $SilentMode)
 			# Close Open Transactions button
 			$COTButton = New-Object System.Windows.Forms.Button
 			$COTButton.Text = "Close Open Transactions"
-			$COTButton.Location = New-Object System.Drawing.Point(517, 645)
+			$COTButton.Location = New-Object System.Drawing.Point(517, 560)
 			$COTButton.Size = New-Object System.Drawing.Size(200, 40)
 			$COTButton.add_Click({
 					CloseOpenTransactions -StoreNumber $StoreNumber
@@ -6538,34 +6510,58 @@ if (-not $SilentMode)
 			#					Create-ScheduledTaskGUI -ScriptPath $scriptPath
 			#				})
 			#			$form.Controls.Add($storeButton7)
+						
+			# Ping lanes button
+			$PingLanesButton = New-Object System.Windows.Forms.Button
+			$PingLanesButton.Text = "Ping Lanes"
+			$PingLanesButton.Location = New-Object System.Drawing.Point(750, 560)
+			$PingLanesButton.Size = New-Object System.Drawing.Size(200, 40)
+			$PingLanesButton.add_Click({
+					PingAllLanes -Mode "Store" -StoreNumber "$StoreNumber"
+				})
+			$form.Controls.Add($PingLanesButton)
 			
+			# Delete DBS button
+			$DeleteDBSButton = New-Object System.Windows.Forms.Button
+			$DeleteDBSButton.Text = "Delete DBS"
+			$DeleteDBSButton.Location = New-Object System.Drawing.Point(50, 605)
+			$DeleteDBSButton.Size = New-Object System.Drawing.Size(200, 40)
+			$DeleteDBSButton.add_Click({
+					Delete-DBS -Mode "Store" -StoreNumber "$StoreNumber"
+				})
+			$form.Controls.Add($DeleteDBSButton)
+			
+			# Configure SystemSettings button
+			$ConfigureSystemSettingsButton = New-Object System.Windows.Forms.Button
+			$ConfigureSystemSettingsButton.Text = "Configure SystemSettings"
+			$ConfigureSystemSettingsButton.Location = New-Object System.Drawing.Point(284, 605)
+			$ConfigureSystemSettingsButton.Size = New-Object System.Drawing.Size(200, 40)
+			$ConfigureSystemSettingsButton.add_Click({
+					Configure-SystemSettings
+				})
+			$form.Controls.Add($ConfigureSystemSettingsButton)
+			
+			# Refresh PIN Pad Files
+			$RefreshFilesButton = New-Object System.Windows.Forms.Button
+			$RefreshFilesButton.Text = "Refresh PIN Pad Files"
+			$RefreshFilesButton.Location = New-Object System.Drawing.Point(517, 605)
+			$RefreshFilesButton.Size = New-Object System.Drawing.Size(200, 40)
+			$RefreshFilesButton.add_Click({
+					Refresh-Files -Mode $Mode -StoreNumber -$StoreNumber
+				})
+			$form.Controls.Add($RefreshFilesButton)
+			
+			# Reboot lanes
 			$storeButton8 = New-Object System.Windows.Forms.Button
 			$storeButton8.Text = "Reboot Lane"
-			$storeButton8.Location = New-Object System.Drawing.Point(750, 645)
+			$storeButton8.Location = New-Object System.Drawing.Point(750, 605)
 			$storeButton8.Size = New-Object System.Drawing.Size(200, 40)
 			$storeButton8.Add_Click({
 					Reboot-Lanes -StoreNumber $StoreNumber
 				})
 			$form.Controls.Add($storeButton8)
+			
 		}
-		
-		# Create Exit Button
-		$exitButton = New-Object System.Windows.Forms.Button
-		$exitButton.Text = "Exit"
-		$exitButton.Location = New-Object System.Drawing.Point(50, 690)
-		$exitButton.Size = New-Object System.Drawing.Size(900, 40)
-		$exitButton.Add_Click({
-				# Clean Temp Folder
-				Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "DownloadedScript.ps1"
-				
-				
-				# Final Report
-				#	Final-ReportGUI -Mode $Mode -FilesAndDirsDeleted $FilesAndDirsDeletedfromTEMP
-				
-				# Close the form
-				$form.Close()
-			})
-		$form.Controls.Add($exitButton)
 	}
 	
 	# ===================================================================================================
