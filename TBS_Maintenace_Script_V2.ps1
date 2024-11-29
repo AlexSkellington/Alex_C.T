@@ -186,7 +186,7 @@ function Download-AndRelaunchSelf {
 # Only call the function if the script has not been relaunched
 if (-not $IsRelaunched) {
     Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
-    Download-AndRelaunchSelf -ScriptUrl "https://raw.githubusercontent.com/YourUsername/YourRepository/main/YourScript.ps1"
+    Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
 }
 else {
     Write-Host "Script has been relaunched. Continuing execution."
@@ -6582,7 +6582,7 @@ if (-not $SilentMode)
         
 	# Only call the function if the script has not been relaunched
         #if (-not $IsRelaunched) {
-        #    Download-AndRelaunchSelf -ScriptUrl "https://raw.githubusercontent.com/YourUsername/YourRepository/main/YourScript.ps1"
+        #    Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
         #}
 
 	# Initialize variables
