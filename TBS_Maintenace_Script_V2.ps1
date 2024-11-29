@@ -150,8 +150,8 @@ function Download-AndRelaunchSelf {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = "powershell.exe"
         $psi.Arguments = $arguments
-        $psi.Verb = "RunAs"  # Specifies to run the process with elevated (admin) privileges
-        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden  # Hidden window
+        # $psi.Verb = "RunAs"  # Specifies to run the process with elevated (admin) privileges
+        # $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden  # Hidden window
 
         # Start the new process
         [System.Diagnostics.Process]::Start($psi) | Out-Null
