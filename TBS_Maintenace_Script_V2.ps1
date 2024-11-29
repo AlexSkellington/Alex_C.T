@@ -6535,7 +6535,7 @@ if (-not $SilentMode)
 			
 			# Configure SystemSettings button
 			$ConfigureSystemSettingsButton = New-Object System.Windows.Forms.Button
-			$ConfigureSystemSettingsButton.Text = "Configure SystemSettings"
+			$ConfigureSystemSettingsButton.Text = "Configure System Settings"
 			$ConfigureSystemSettingsButton.Location = New-Object System.Drawing.Point(284, 605)
 			$ConfigureSystemSettingsButton.Size = New-Object System.Drawing.Size(200, 40)
 			$ConfigureSystemSettingsButton.add_Click({
