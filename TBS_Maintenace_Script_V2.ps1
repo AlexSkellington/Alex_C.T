@@ -73,6 +73,93 @@ $StoresqlFilePath = "$env:TEMP\Server_Database_Maintenance.sqi"
 # $scriptName = Split-Path -Leaf $PSCommandPath
 
 # ===================================================================================================
+#                                   FUNCTION: Download-AndRelaunchSelf
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   This function downloads a specified PowerShell script from a given URL, saves it to a designated
+#   directory (defaulting to the system's temporary folder), and relaunches the downloaded script
+#   with elevated (Administrator) privileges in a hidden window. It includes error handling to log
+#   any issues encountered during the download or relaunch processes. If the download fails, the
+#   function logs the error and allows the main script to continue executing without performing
+#   further actions within the function.
+# ===================================================================================================
+
+function Download-AndRelaunchSelf {
+    [CmdletBinding()]
+    param (
+        # The direct URL to your PowerShell script on GitHub (raw content)
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptUrl,
+
+        # The directory where the script will be downloaded (default is %TEMP%)
+        [Parameter(Mandatory = $false)]
+        [string]$DestinationDirectory = "$env:TEMP",
+
+        # The name to save the downloaded script as
+        [Parameter(Mandatory = $false)]
+        [string]$ScriptName = "DownloadedScript.ps1"
+    )
+
+    # Construct the full path to save the script
+    $DestinationPath = Join-Path -Path $DestinationDirectory -ChildPath $ScriptName
+
+    # Prevent infinite loop by checking if the script is already running from the destination path
+    if ($MyInvocation.MyCommand.Path -ne $null) {
+        try {
+            $currentPath = (Resolve-Path $MyInvocation.MyCommand.Path).Path
+            $targetPath = (Resolve-Path $DestinationPath).Path
+            if ($currentPath -eq $targetPath) {
+                # Script is already running from the destination path; do not proceed
+                return
+            }
+        }
+        catch {
+            # If Resolve-Path fails, proceed to download
+        }
+    }
+
+    try {
+        # Attempt to download the script
+        Invoke-RestMethod -Uri $ScriptUrl -OutFile $DestinationPath -UseBasicParsing
+    }
+    catch {
+        # Log the error and exit the function without performing further actions
+        Write-Error "Failed to download the script from $ScriptUrl. Error: $_"
+        return
+    }
+
+    try {
+        # Relaunch the downloaded script as Administrator in a hidden window
+
+        # Prepare the arguments for the new PowerShell process
+        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$DestinationPath`""
+
+        # Create a ProcessStartInfo object to configure the new process
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "powershell.exe"
+        $psi.Arguments = $arguments
+        $psi.Verb = "RunAs"  # Specifies to run the process with elevated (admin) privileges
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden  # Hidden window
+
+        # Start the new process
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+
+        # Exit the current script to prevent multiple instances
+        exit
+    }
+    catch {
+        # Log any errors that occur during the relaunch process
+        Write-Error "Failed to relaunch the script as Administrator. Error: $_"
+    }
+}
+
+# Example Usage:
+# Download-AndRelaunchSelf -ScriptUrl "https://raw.githubusercontent.com/YourUsername/YourRepository/main/YourScript.ps1"
+
+# To execute the function immediately upon running the script, uncomment the line below and provide the necessary parameters.
+# Download-AndRelaunchSelf -ScriptUrl "https://raw.githubusercontent.com/YourUsername/YourRepository/main/YourScript.ps1"
+
+# ===================================================================================================
 #                              FUNCTION: Ensure Administrator Privileges
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -6456,6 +6543,7 @@ if (-not $SilentMode)
 	
 	# Call the function to ensure admin privileges
 	# Ensure-Administrator
+        Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
 	
 	# Initialize variables
 	# $Memory25PercentMB = Get-MemoryInfo
