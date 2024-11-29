@@ -4,10 +4,6 @@
 # Description:
 #   Defines the script parameters, allowing users to run the script in silent mode.
 # ===================================================================================================
-[Net.ServicePointManager]::SecurityProtocol = `
-    [Net.SecurityProtocolType]::Tls12 -bor `
-    [Net.SecurityProtocolType]::Tls11 -bor `
-    [Net.SecurityProtocolType]::Tls
 
 Param (
     [switch]$IsRelaunched
