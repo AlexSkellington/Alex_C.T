@@ -9,6 +9,10 @@
     [Net.SecurityProtocolType]::Tls11 -bor `
     [Net.SecurityProtocolType]::Tls
 
+Param (
+    [switch]$IsRelaunched
+)    
+
 # Set the PowerShell version variable
 $psVersion = $PSVersionTable.PSVersion.Major
 
@@ -6551,8 +6555,11 @@ if (-not $SilentMode)
 	
 	# Call the function to ensure admin privileges
 	# Ensure-Administrator
-        Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
-	
+        # Only call the function if the script has not been relaunched
+        if (-not $IsRelaunched) {
+            Download-AndRelaunchSelf -ScriptUrl "https://raw.githubusercontent.com/YourUsername/YourRepository/main/YourScript.ps1"
+        }
+
 	# Initialize variables
 	# $Memory25PercentMB = Get-MemoryInfo
 	
