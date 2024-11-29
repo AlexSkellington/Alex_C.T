@@ -79,11 +79,12 @@ $StoresqlFilePath = "$env:TEMP\Server_Database_Maintenance.sqi"
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   This function downloads a specified PowerShell script from a given URL, saves it to a designated
-#   directory (defaulting to the system's temporary folder), and relaunches the downloaded script
-#   with elevated (Administrator) privileges in a hidden window. It includes error handling to log
-#   any issues encountered during the download or relaunch processes. To prevent infinite loops,
-#   an explicit relaunch indicator is used. If the download fails, the function logs the error and
-#   allows the main script to continue executing without performing further actions within the function.
+#   directory (defaulting to the system's temporary folder) with ANSI encoding, and relaunches the
+#   downloaded script with elevated (Administrator) privileges in a hidden window. It includes
+#   error handling to log any issues encountered during the download or relaunch processes. To
+#   prevent infinite loops, an explicit relaunch indicator is used. If the download fails, the
+#   function logs the error and allows the main script to continue executing without performing
+#   further actions within the function.
 # ===================================================================================================
 
 function Download-AndRelaunchSelf {
@@ -100,18 +101,18 @@ function Download-AndRelaunchSelf {
 
         [switch]$IsRelaunched
     )
-
+    
     Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
-
+    
     # If the script has already been relaunched, do not proceed
     if ($IsRelaunched) {
         Write-Host "Script has already been relaunched. Exiting function."
         return
     }
-
+    
     # Construct the full path to save the script
     $DestinationPath = Join-Path -Path $DestinationDirectory -ChildPath $ScriptName
-
+    
     # Prevent infinite loop by checking if the script is already running from the destination path
     if ($MyInvocation.MyCommand.Path -ne $null) {
         try {
@@ -128,20 +129,19 @@ function Download-AndRelaunchSelf {
             Write-Warning "Resolve-Path failed. Proceeding to download."
         }
     }
-
+    
     try {
-        Write-Host "Attempting to download the script from $ScriptUrl to $DestinationPath"
-        # Attempt to download the script
-        Invoke-RestMethod -Uri $ScriptUrl -OutFile $DestinationPath -UseBasicParsing
-
-        # Verify that the script was downloaded and contains the updated content
+        Write-Host "Attempting to download the script from $ScriptUrl"
+        
+        # Attempt to download the script content as a string
+        $scriptContent = Invoke-RestMethod -Uri $ScriptUrl -UseBasicParsing
+        
+        # Save the script content with ANSI encoding
+        Set-Content -Path $DestinationPath -Value $scriptContent -Encoding Default
+        
+        # Verify that the script was downloaded and saved successfully
         if (Test-Path $DestinationPath) {
-            Write-Host "Script downloaded successfully to $DestinationPath"
-            # Optionally, read the first few lines to confirm the presence of the Param block
-            #  $firstLines = Get-Content -Path $DestinationPath -TotalCount 5
-        #if ($firstLines -notmatch 'Param') {
-        #        Write-Warning "Downloaded script does not contain the Param block. Please update the script at the source."
-        #    }
+            Write-Host "Script downloaded successfully to $DestinationPath with ANSI encoding."
         }
         else {
             Write-Error "Script was not downloaded successfully."
@@ -153,10 +153,10 @@ function Download-AndRelaunchSelf {
         Write-Error "Failed to download the script from $ScriptUrl. Error: $_"
         return
     }
-
+    
     try {
         # Relaunch the downloaded script as Administrator in a hidden window
-
+        
         # Prepare the arguments for the new PowerShell process, including the relaunch indicator
         $arguments = @(
             "-NoProfile"
@@ -165,24 +165,24 @@ function Download-AndRelaunchSelf {
             "-File"
             "`"$DestinationPath`""
             "-IsRelaunched"
-	    "-WindowStyle" 
+            "-WindowStyle"
             "Hidden"
         )
-
+        
         Write-Host "Starting new process with arguments: $arguments"
-
+        
         # Start the new process with elevated privileges
         Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
-
+        
         Write-Host "Process started successfully. Exiting current script."
-
+        
         # Exit the current script to prevent multiple instances
         exit
     }
     catch {
         # Log any errors that occur during the relaunch process
         Write-Error "Failed to relaunch the script as Administrator. Error: $_"
-      }
+    }
     finally {
         # Exit the current script regardless of success or failure
         Write-Host "Exiting the original script."
