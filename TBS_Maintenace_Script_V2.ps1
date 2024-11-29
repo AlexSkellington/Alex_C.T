@@ -6549,7 +6549,7 @@ if (-not $SilentMode)
 		$exitButton.Size = New-Object System.Drawing.Size(900, 40)
 		$exitButton.Add_Click({
 				# Clean Temp Folder
-				Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi"
+				Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "DownloadedScript.ps1"
 				
 				
 				# Final Report
