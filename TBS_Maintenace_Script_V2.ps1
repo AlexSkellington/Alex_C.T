@@ -183,15 +183,6 @@ function Download-AndRelaunchSelf {
     }
 }
 
-# Only call the function if the script has not been relaunched
-if (-not $IsRelaunched) {
-    Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
-    Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
-}
-else {
-    Write-Host "Script has been relaunched. Continuing execution."
-}
-
 # Rest of your script continues here
 Write-Host "Script is running with elevated privileges from $($MyInvocation.MyCommand.Path)"
 
@@ -6581,9 +6572,13 @@ if (-not $SilentMode)
 	# Ensure-Administrator
         
 	# Only call the function if the script has not been relaunched
-        #if (-not $IsRelaunched) {
-        #    Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
-        #}
+        if (-not $IsRelaunched) {
+            Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
+            Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
+        }
+        else {
+            Write-Host "Script has been relaunched. Continuing execution."
+        }
 
 	# Initialize variables
 	# $Memory25PercentMB = Get-MemoryInfo
