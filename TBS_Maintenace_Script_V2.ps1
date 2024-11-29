@@ -6271,7 +6271,7 @@ if (-not $SilentMode)
 				# Perform action when the X button is clicked
 				Write-Log "Form is closing. Performing cleanup." "green"
 				# Clean Temp Folder
-				Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi"
+				Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
 			})
 		
 		
