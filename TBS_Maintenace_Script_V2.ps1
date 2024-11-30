@@ -6567,7 +6567,7 @@ if (-not $SilentMode)
 			$DeleteJob = Delete-Files -Path $tempPath -AsJob
 			
 			# Log that the deletion job has been started
-			Write-Log "Started deletion job for machine '$machine' at path '$tempPath'." "green"
+			Write-Log "Started deletion job for %temp% folder in '$machine' at path '$tempPath'." "green"
 		}
 		catch
 		{
