@@ -6567,12 +6567,12 @@ if (-not $SilentMode)
 			Delete-Files -Path $tempPath -AsJob
 			
 			# Log that the deletion job has been started
-			Write-Log "Started deletion job for machine '$machine' at path '$tempPath'."
+			Write-Log "Started deletion job for machine '$machine' at path '$tempPath'." "green"
 		}
 		catch
 		{
 			# Log any errors that occur while starting the deletion job
-			Write-Log "An error occurred while starting the deletion job for machine '$machine'. Error: $_"
+			Write-Log "An error occurred while starting the deletion job for machine '$machine'. Error: $_" "red"
 		}
 	}
 	
