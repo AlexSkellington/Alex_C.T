@@ -1,9 +1,9 @@
 Param (
-    [switch]$IsRelaunched
+	[switch]$IsRelaunched
 )
 
 Write-Host "Script started. IsRelaunched: $IsRelaunched"
- 
+
 # ===================================================================================================
 #                                       SECTION: Parameters
 # ---------------------------------------------------------------------------------------------------
@@ -87,107 +87,117 @@ $StoresqlFilePath = "$env:TEMP\Server_Database_Maintenance.sqi"
 #   further actions within the function.
 # ===================================================================================================
 
-function Download-AndRelaunchSelf {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$ScriptUrl,
-
-        [Parameter(Mandatory = $false)]
-        [string]$DestinationDirectory = "$env:TEMP",
-
-        [Parameter(Mandatory = $false)]
-        [string]$ScriptName = "TBS_Maintenance_Script.ps1",
-
-        [switch]$IsRelaunched
-    )
-    
-    Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
-    
-    # If the script has already been relaunched, do not proceed
-    if ($IsRelaunched) {
-        Write-Host "Script has already been relaunched. Exiting function."
-        return
-    }
-    
-    # Construct the full path to save the script
-    $DestinationPath = Join-Path -Path $DestinationDirectory -ChildPath $ScriptName
-    
-    # Prevent infinite loop by checking if the script is already running from the destination path
-    if ($MyInvocation.MyCommand.Path -ne $null) {
-        try {
-            $currentPath = (Resolve-Path $MyInvocation.MyCommand.Path).Path
-            $targetPath = (Resolve-Path $DestinationPath).Path
-            if ($currentPath -eq $targetPath) {
-                # Script is already running from the destination path; do not proceed
-                Write-Host "Script is already running from $DestinationPath. Exiting function."
-                return
-            }
-        }
-        catch {
-            # If Resolve-Path fails, proceed to download
-            Write-Warning "Resolve-Path failed. Proceeding to download."
-        }
-    }
-    
-    try {
-        Write-Host "Attempting to download the script from $ScriptUrl"
-        
-        # Attempt to download the script content as a string
-        $scriptContent = Invoke-RestMethod -Uri $ScriptUrl -UseBasicParsing
-        
-        # Save the script content with ANSI encoding
-        Set-Content -Path $DestinationPath -Value $scriptContent -Encoding Default
-        
-        # Verify that the script was downloaded and saved successfully
-        if (Test-Path $DestinationPath) {
-            Write-Host "Script downloaded successfully to $DestinationPath with ANSI encoding."
-        }
-        else {
-            Write-Error "Script was not downloaded successfully."
-            return
-        }
-    }
-    catch {
-        # Log the error and exit the function without performing further actions
-        Write-Error "Failed to download the script from $ScriptUrl. Error: $_"
-        return
-    }
-    
-    try {
-        # Relaunch the downloaded script as Administrator in a hidden window
-        
-        # Prepare the arguments for the new PowerShell process, including the relaunch indicator
-        $arguments = @(
-            "-NoProfile"
-            "-ExecutionPolicy"
-            "Bypass"
-            "-File"
-            "`"$DestinationPath`""
-            "-IsRelaunched"
-            "-WindowStyle"
-            "Hidden"
-        )
-        
-        Write-Host "Starting new process with arguments: $arguments"
-        
-        # Start the new process with elevated privileges
-        Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
-        
-        Write-Host "Process started successfully. Exiting current script."
-        
-        # Exit the current script to prevent multiple instances
-        exit
-    }
-    catch {
-        # Log any errors that occur during the relaunch process
-        Write-Error "Failed to relaunch the script as Administrator. Error: $_"
-    }
-    finally {
-        # Exit the current script regardless of success or failure
-        Write-Host "Exiting the original script."
-        exit
-    }
+function Download-AndRelaunchSelf
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$ScriptUrl,
+		[Parameter(Mandatory = $false)]
+		[string]$DestinationDirectory = "$env:TEMP",
+		[Parameter(Mandatory = $false)]
+		[string]$ScriptName = "TBS_Maintenance_Script.ps1",
+		[switch]$IsRelaunched
+	)
+	
+	Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
+	
+	# If the script has already been relaunched, do not proceed
+	if ($IsRelaunched)
+	{
+		Write-Host "Script has already been relaunched. Exiting function."
+		return
+	}
+	
+	# Construct the full path to save the script
+	$DestinationPath = Join-Path -Path $DestinationDirectory -ChildPath $ScriptName
+	
+	# Prevent infinite loop by checking if the script is already running from the destination path
+	if ($MyInvocation.MyCommand.Path -ne $null)
+	{
+		try
+		{
+			$currentPath = (Resolve-Path $MyInvocation.MyCommand.Path).Path
+			$targetPath = (Resolve-Path $DestinationPath).Path
+			if ($currentPath -eq $targetPath)
+			{
+				# Script is already running from the destination path; do not proceed
+				Write-Host "Script is already running from $DestinationPath. Exiting function."
+				return
+			}
+		}
+		catch
+		{
+			# If Resolve-Path fails, proceed to download
+			Write-Warning "Resolve-Path failed. Proceeding to download."
+		}
+	}
+	
+	try
+	{
+		Write-Host "Attempting to download the script from $ScriptUrl"
+		
+		# Attempt to download the script content as a string
+		$scriptContent = Invoke-RestMethod -Uri $ScriptUrl -UseBasicParsing
+		
+		# Save the script content with ANSI encoding
+		Set-Content -Path $DestinationPath -Value $scriptContent -Encoding Default
+		
+		# Verify that the script was downloaded and saved successfully
+		if (Test-Path $DestinationPath)
+		{
+			Write-Host "Script downloaded successfully to $DestinationPath with ANSI encoding."
+		}
+		else
+		{
+			Write-Error "Script was not downloaded successfully."
+			return
+		}
+	}
+	catch
+	{
+		# Log the error and exit the function without performing further actions
+		Write-Error "Failed to download the script from $ScriptUrl. Error: $_"
+		return
+	}
+	
+	try
+	{
+		# Relaunch the downloaded script as Administrator in a hidden window
+		
+		# Prepare the arguments for the new PowerShell process, including the relaunch indicator
+		$arguments = @(
+			"-NoProfile"
+			"-ExecutionPolicy"
+			"Bypass"
+			"-File"
+			"`"$DestinationPath`""
+			"-IsRelaunched"
+			"-WindowStyle"
+			"Hidden"
+		)
+		
+		Write-Host "Starting new process with arguments: $arguments"
+		
+		# Start the new process with elevated privileges
+		Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
+		
+		Write-Host "Process started successfully. Exiting current script."
+		
+		# Exit the current script to prevent multiple instances
+		exit
+	}
+	catch
+	{
+		# Log any errors that occur during the relaunch process
+		Write-Error "Failed to relaunch the script as Administrator. Error: $_"
+	}
+	finally
+	{
+		# Exit the current script regardless of success or failure
+		Write-Host "Exiting the original script."
+		exit
+	}
 }
 
 # Rest of your script continues here
@@ -1148,7 +1158,7 @@ function Count-ItemsGUI
 	$script:FunctionResults['LaneMachines'] = $LaneMachines
 	$script:FunctionResults['Counts'] = $Counts
 	
-		# Update the GUI countsLabel1 and countsLabel2 with the new counts
+	# Update the GUI countsLabel1 and countsLabel2 with the new counts
 	if (-not $SilentMode -and $countsLabel1 -ne $null -and $countsLabel2 -ne $null)
 	{
 		if ($Mode -eq "Host")
@@ -2312,7 +2322,7 @@ function Delete-Files
 			$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
 			if (-not $resolvedPath)
 			{
-			#	Write-Log "The specified path '$Path' does not exist." "Red"
+				#	Write-Log "The specified path '$Path' does not exist." "Red"
 				return
 			}
 			$targetPath = $resolvedPath.ProviderPath
@@ -2341,7 +2351,7 @@ function Delete-Files
 										if ($matchedFile.Name -like $exclusionPattern)
 										{
 											$exclude = $true
-										#	Write-Log "Excluded: $($matchedFile.FullName)" "Yellow"
+											#	Write-Log "Excluded: $($matchedFile.FullName)" "Yellow"
 											break
 										}
 									}
@@ -2353,18 +2363,18 @@ function Delete-Files
 									{
 										Remove-Item -Path $matchedFile.FullName -Force -ErrorAction Stop
 										$deletedCount++
-									#	Write-Log "Deleted: $($matchedFile.FullName)" "Green"
+										#	Write-Log "Deleted: $($matchedFile.FullName)" "Green"
 									}
 									catch
 									{
-									#	Write-Log "Failed to delete $($matchedFile.FullName). Error: $_" "Red"
+										#	Write-Log "Failed to delete $($matchedFile.FullName). Error: $_" "Red"
 									}
 								}
 							}
 						}
 						else
 						{
-						#	Write-Log "No files matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
+							#	Write-Log "No files matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
 						}
 					}
 				}
@@ -2385,7 +2395,7 @@ function Delete-Files
 								if ($file.Name -like $exclusionPattern)
 								{
 									$exclude = $true
-								#	Write-Log "Excluded: $($file.FullName)" "Yellow"
+									#	Write-Log "Excluded: $($file.FullName)" "Yellow"
 									break
 								}
 							}
@@ -2397,22 +2407,22 @@ function Delete-Files
 							{
 								Remove-Item -Path $file.FullName -Force -ErrorAction Stop
 								$deletedCount++
-							#	Write-Log "Deleted: $($file.FullName)" "Green"
+								#	Write-Log "Deleted: $($file.FullName)" "Green"
 							}
 							catch
 							{
-							#	Write-Log "Failed to delete $($file.FullName). Error: $_" "Red"
+								#	Write-Log "Failed to delete $($file.FullName). Error: $_" "Red"
 							}
 						}
 					}
 				}
 				
-			#	Write-Log "Total files deleted: $deletedCount" "Blue"
+				#	Write-Log "Total files deleted: $deletedCount" "Blue"
 				return $deletedCount
 			}
 			catch
 			{
-			#	Write-Log "An error occurred during the deletion process. Error: $_" "Red"
+				#	Write-Log "An error occurred during the deletion process. Error: $_" "Red"
 				return $deletedCount
 			}
 		}
@@ -4740,7 +4750,7 @@ function PingAllLanes
 		return
 	}
 	
-#	Write-Log "Starting to ping machines for Store Number: $StoreNumber." "Green"
+	#	Write-Log "Starting to ping machines for Store Number: $StoreNumber." "Green"
 	
 	# Initialize counters
 	$successCount = 0
@@ -5126,7 +5136,7 @@ function Invoke-SecureScript
 	}
 	
 	# Log the start of the function
-	Write-Log "`r`n=== Starting Invoke-SecureScript Function ===`r`n" "Blue"
+	Write-Log "`r`n==================== Starting Invoke-SecureScript Function ====================`r`n" "Blue"
 	
 	# Prompt user for password
 	$password = Get-PasswordFromUser
@@ -5170,7 +5180,7 @@ function Invoke-SecureScript
 	}
 	
 	# Log the completion of the function
-	Write-Log "`r`n=== Invoke-SecureScript Function Completed ===" "Blue"
+	Write-Log "`r`n==================== Invoke-SecureScript Function Completed ====================" "Blue"
 }
 
 # ===================================================================================================
@@ -5859,8 +5869,8 @@ VALUES (@WIZGET(F1063),'@WIZGET(F1000)',@WIZGET(F1042),@WIZGET(F1043),@WIZGET(F1
 	
 	Cleanup-TempFiles -FilesToDelete @($addMenuFilePath, $deployOneFctFilePath)
 	
-#	Write-Log "`r`nDEPLOY_ONE_FCT.sqm copied to $deployOneFctDestination." "green"
-#	Write-Log "DEPLOY_SYS.sql copied to $addMenuDestination." "green"
+	#	Write-Log "`r`nDEPLOY_ONE_FCT.sqm copied to $deployOneFctDestination." "green"
+	#	Write-Log "DEPLOY_SYS.sql copied to $addMenuDestination." "green"
 	Write-Log "`r`n==================== Function execution completed ====================" "blue"
 }
 
@@ -6294,7 +6304,7 @@ if (-not $SilentMode)
 				Write-Log "Log Cleared"
 			})
 		$form.Controls.Add($clearLogButton)
-				
+		
 		# Install into SMS
 		$InstallIntoSMSButton = New-Object System.Windows.Forms.Button
 		$InstallIntoSMSButton.Text = "Install Function in SMS"
@@ -6324,7 +6334,7 @@ if (-not $SilentMode)
 		#				CloseOpenTransactions -StoreNumber $StoreNumber
 		#			})
 		#		$form.Controls.Add($COTButton)
-				
+		
 		# Create labels for Mode, Store Name, Store Number, and Counts
 		$script:modeLabel = New-Object System.Windows.Forms.Label
 		$modeLabel.Text = "Processing Mode: N/A"
@@ -6522,7 +6532,7 @@ if (-not $SilentMode)
 			#					Create-ScheduledTaskGUI -ScriptPath $scriptPath
 			#				})
 			#			$form.Controls.Add($storeButton7)
-						
+			
 			# Ping lanes button
 			$PingLanesButton = New-Object System.Windows.Forms.Button
 			$PingLanesButton.Text = "Ping Lanes"
@@ -6585,16 +6595,18 @@ if (-not $SilentMode)
 	
 	# Call the function to ensure admin privileges
 	# Ensure-Administrator
-        
+	
 	# Only call the function if the script has not been relaunched
-        if (-not $IsRelaunched) {
-            Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
-            Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
-        }
-        else {
-            Write-Host "Script has been relaunched. Continuing execution."
-        }
-
+	if (-not $IsRelaunched)
+	{
+		Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
+		Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
+	}
+	else
+	{
+		Write-Host "Script has been relaunched. Continuing execution."
+	}
+	
 	# Initialize variables
 	# $Memory25PercentMB = Get-MemoryInfo
 	
@@ -6660,5 +6672,3 @@ else
 	# Exit script
 	exit
 }
-
-
