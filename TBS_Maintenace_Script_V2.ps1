@@ -2312,7 +2312,7 @@ function Delete-Files
 			$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
 			if (-not $resolvedPath)
 			{
-				Write-Log "The specified path '$Path' does not exist." "Red"
+			#	Write-Log "The specified path '$Path' does not exist." "Red"
 				return
 			}
 			$targetPath = $resolvedPath.ProviderPath
@@ -2341,7 +2341,7 @@ function Delete-Files
 										if ($matchedFile.Name -like $exclusionPattern)
 										{
 											$exclude = $true
-											Write-Log "Excluded: $($matchedFile.FullName)" "Yellow"
+										#	Write-Log "Excluded: $($matchedFile.FullName)" "Yellow"
 											break
 										}
 									}
@@ -2353,18 +2353,18 @@ function Delete-Files
 									{
 										Remove-Item -Path $matchedFile.FullName -Force -ErrorAction Stop
 										$deletedCount++
-										Write-Log "Deleted: $($matchedFile.FullName)" "Green"
+									#	Write-Log "Deleted: $($matchedFile.FullName)" "Green"
 									}
 									catch
 									{
-										Write-Log "Failed to delete $($matchedFile.FullName). Error: $_" "Red"
+									#	Write-Log "Failed to delete $($matchedFile.FullName). Error: $_" "Red"
 									}
 								}
 							}
 						}
 						else
 						{
-							Write-Log "No files matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
+						#	Write-Log "No files matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
 						}
 					}
 				}
@@ -2385,7 +2385,7 @@ function Delete-Files
 								if ($file.Name -like $exclusionPattern)
 								{
 									$exclude = $true
-									Write-Log "Excluded: $($file.FullName)" "Yellow"
+								#	Write-Log "Excluded: $($file.FullName)" "Yellow"
 									break
 								}
 							}
@@ -2397,22 +2397,22 @@ function Delete-Files
 							{
 								Remove-Item -Path $file.FullName -Force -ErrorAction Stop
 								$deletedCount++
-								Write-Log "Deleted: $($file.FullName)" "Green"
+							#	Write-Log "Deleted: $($file.FullName)" "Green"
 							}
 							catch
 							{
-								Write-Log "Failed to delete $($file.FullName). Error: $_" "Red"
+							#	Write-Log "Failed to delete $($file.FullName). Error: $_" "Red"
 							}
 						}
 					}
 				}
 				
-				Write-Log "Total files deleted: $deletedCount" "Blue"
+			#	Write-Log "Total files deleted: $deletedCount" "Blue"
 				return $deletedCount
 			}
 			catch
 			{
-				Write-Log "An error occurred during the deletion process. Error: $_" "Red"
+			#	Write-Log "An error occurred during the deletion process. Error: $_" "Red"
 				return $deletedCount
 			}
 		}
