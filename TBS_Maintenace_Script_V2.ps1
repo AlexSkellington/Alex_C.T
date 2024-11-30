@@ -6552,6 +6552,30 @@ if (-not $SilentMode)
 	# Clear %Temp% foder on start
 	$FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
 	
+	# Retrieve the list of machine names from the FunctionResults dictionary
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	
+	# Iterate over each machine and invoke Delete-Files as a background job
+	foreach ($machine in $LaneMachines)
+	{
+		# Construct the full UNC path to the Temp directory on the remote machine
+		$tempPath = "\\$machine\C$\Users\Administrator\AppData\Local\Temp\"
+		
+		try
+		{
+			# Invoke the Delete-Files function with the -AsJob parameter
+			Delete-Files -Path $tempPath -AsJob
+			
+			# Log that the deletion job has been started
+			Write-Log "Started deletion job for machine '$machine' at path '$tempPath'."
+		}
+		catch
+		{
+			# Log any errors that occur while starting the deletion job
+			Write-Log "An error occurred while starting the deletion job for machine '$machine'. Error: $_"
+		}
+	}
+	
 	# ===================================================================================================
 	#                                       SECTION: Show the GUI
 	# ---------------------------------------------------------------------------------------------------
