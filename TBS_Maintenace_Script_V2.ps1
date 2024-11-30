@@ -2963,18 +2963,28 @@ function Process-AllLanes
 # Description:
 #   Performs various system maintenance tasks to repair Windows.
 #   Updates Windows Defender signatures, runs a full scan, executes DISM commands,
-#   runs System File Checker, performs disk cleanup, and schedules a disk check.
+#   runs System File Checker, performs disk cleanup, optimizes all fixed drives by trimming SSDs or defragmenting HDDs,
+#   and schedules a disk check.
 #   Uses Write-Log to provide updates after each command execution.
+#   Allows specifying specific operations via parameter switches.
 # ===================================================================================================
 
 function Repair-Windows
 {
 	[CmdletBinding(SupportsShouldProcess = $true)]
-	param ()
+	param (
+		[switch]$Defender,
+		[switch]$DISM,
+		[switch]$SFC,
+		[switch]$DiskCleanup,
+		[switch]$OptimizeDrives,
+		[switch]$CheckDisk
+	)
 	
 	Write-Log "`r`n==================== Starting Repair-Windows Function ====================`r`n" "blue"
 	
 	# Create a confirmation dialog
+	Add-Type -AssemblyName System.Windows.Forms
 	$confirmationResult = [System.Windows.Forms.MessageBox]::Show(
 		"The Windows repair process will take a long time and will make significant changes to your system. Do you want to proceed?",
 		"Confirmation Required",
@@ -2989,75 +2999,154 @@ function Repair-Windows
 		return
 	}
 	
-	Write-Log "`Starting Windows repair process. This might take a while please wait..." "blue"
+	Write-Log "Starting Windows repair process. This might take a while, please wait..." "blue"
+	
+	# Check if any operation is specified
+	$OperationSpecified = $Defender -or $DISM -or $SFC -or $DiskCleanup -or $OptimizeDrives -or $CheckDisk
+	
+	if (-not $OperationSpecified)
+	{
+		$RunAll = $true
+	}
+	else
+	{
+		$RunAll = $false
+	}
 	
 	# Update Windows Defender Signatures and run a full scan
-	try
+	if ($RunAll -or $Defender)
 	{
-		Write-Log "Updating Windows Defender signatures..." "blue"
-		& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -SignatureUpdate -ErrorAction Stop
-		Write-Log "Windows Defender signatures updated successfully." "green"
-		
-		Write-Log "Running Windows Defender full scan..." "blue"
-		& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Scan -ScanType 2 -ErrorAction Stop
-		Write-Log "Windows Defender full scan completed." "green"
+		try
+		{
+			Write-Log "Updating Windows Defender signatures..." "blue"
+			& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -SignatureUpdate -ErrorAction Stop
+			Write-Log "Windows Defender signatures updated successfully." "green"
+			
+			Write-Log "Running Windows Defender full scan..." "blue"
+			& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Scan -ScanType 2 -ErrorAction Stop
+			Write-Log "Windows Defender full scan completed." "green"
+		}
+		catch
+		{
+			Write-Log "An error occurred while updating or scanning with Windows Defender: $_" "red"
+		}
 	}
-	catch
+	else
 	{
-		Write-Log "An error occurred while updating or scanning with Windows Defender: $_" "red"
+		Write-Log "Skipping Windows Defender update and scan as per user request." "yellow"
 	}
 	
 	# Run DISM commands
-	try
+	if ($RunAll -or $DISM)
 	{
-		Write-Log "Running DISM StartComponentCleanup..." "blue"
-		DISM /Online /Cleanup-Image /StartComponentCleanup /NoRestart
-		Write-Log "DISM StartComponentCleanup completed." "green"
-		
-		Write-Log "Running DISM RestoreHealth..." "blue"
-		DISM /Online /Cleanup-Image /RestoreHealth /NoRestart
-		Write-Log "DISM RestoreHealth completed." "green"
+		try
+		{
+			Write-Log "Running DISM StartComponentCleanup..." "blue"
+			DISM /Online /Cleanup-Image /StartComponentCleanup /NoRestart
+			Write-Log "DISM StartComponentCleanup completed." "green"
+			
+			Write-Log "Running DISM RestoreHealth..." "blue"
+			DISM /Online /Cleanup-Image /RestoreHealth /NoRestart
+			Write-Log "DISM RestoreHealth completed." "green"
+		}
+		catch
+		{
+			Write-Log "An error occurred while running DISM commands: $_" "red"
+		}
 	}
-	catch
+	else
 	{
-		Write-Log "An error occurred while running DISM commands: $_" "red"
+		Write-Log "Skipping DISM operations as per user request." "yellow"
 	}
 	
 	# Run System File Checker
-	try
+	if ($RunAll -or $SFC)
 	{
-		Write-Log "Running System File Checker (SFC)..." "blue"
-		SFC /scannow
-		Write-Log "System File Checker completed." "green"
+		try
+		{
+			Write-Log "Running System File Checker (SFC)..." "blue"
+			SFC /scannow
+			Write-Log "System File Checker completed." "green"
+		}
+		catch
+		{
+			Write-Log "An error occurred while running System File Checker: $_" "red"
+		}
 	}
-	catch
+	else
 	{
-		Write-Log "An error occurred while running System File Checker: $_" "red"
+		Write-Log "Skipping System File Checker as per user request." "yellow"
 	}
 	
 	# Cleanup disk space
-	try
+	if ($RunAll -or $DiskCleanup)
 	{
-		Write-Log "Running Disk Cleanup..." "blue"
-		Start-Process "cleanmgr.exe" -ArgumentList "/sagerun:1" -Wait -ErrorAction Stop
-		Write-Log "Disk Cleanup completed." "green"
+		try
+		{
+			Write-Log "Running Disk Cleanup..." "blue"
+			# Ensure that a cleanup profile is set. You may need to configure /sageset:1 beforehand.
+			Start-Process "cleanmgr.exe" -ArgumentList "/sagerun:1" -Wait -ErrorAction Stop
+			Write-Log "Disk Cleanup completed." "green"
+		}
+		catch
+		{
+			Write-Log "An error occurred while running Disk Cleanup: $_" "red"
+		}
 	}
-	catch
+	else
 	{
-		Write-Log "An error occurred while running Disk Cleanup: $_" "red"
+		Write-Log "Skipping Disk Cleanup as per user request." "yellow"
+	}
+	
+	# Optimize All Fixed Drives
+	if ($RunAll -or $OptimizeDrives)
+	{
+		try
+		{
+			Write-Log "Starting disk optimization for all fixed drives..." "blue"
+			
+			Get-Volume | ForEach-Object {
+				if ($_.DriveType -eq 'Fixed')
+				{
+					Write-Log "Optimizing drive: $($_.DriveLetter)" "blue"
+					Optimize-Volume -DriveLetter $_.DriveLetter -Verbose
+				}
+				else
+				{
+					Write-Log "Skipping drive: $($_.DriveLetter) ($($_.DriveType))" "yellow"
+				}
+			}
+			
+			Write-Log "Disk optimization for all fixed drives completed." "green"
+		}
+		catch
+		{
+			Write-Log "An error occurred while optimizing drives: $_" "red"
+		}
+	}
+	else
+	{
+		Write-Log "Skipping disk optimization as per user request." "yellow"
 	}
 	
 	# Schedule Check Disk
-	try
+	if ($RunAll -or $CheckDisk)
 	{
-		Write-Log "Scheduling Check Disk on C: drive..." "blue"
-		# Automatically confirm the disk check and handle the need for a reboot
-		Start-Process "cmd.exe" -ArgumentList "/c echo Y|chkdsk C: /f /r" -Verb RunAs -Wait -ErrorAction Stop
-		Write-Log "Check Disk scheduled. A restart may be required to complete the process." "green"
+		try
+		{
+			Write-Log "Scheduling Check Disk on C: drive..." "blue"
+			# Automatically confirm the disk check and handle the need for a reboot
+			Start-Process "cmd.exe" -ArgumentList "/c echo Y|chkdsk C: /f /r" -Verb RunAs -Wait -ErrorAction Stop
+			Write-Log "Check Disk scheduled. A restart may be required to complete the process." "green"
+		}
+		catch
+		{
+			Write-Log "An error occurred while scheduling Check Disk: $_" "red"
+		}
 	}
-	catch
+	else
 	{
-		Write-Log "An error occurred while scheduling Check Disk: $_" "red"
+		Write-Log "Skipping Check Disk scheduling as per user request." "yellow"
 	}
 	
 	Write-Log "Windows repair process completed.`r`n" "blue"
@@ -6145,7 +6234,7 @@ if (-not $SilentMode)
 	{
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.0"
+		$form.Text = "Created by Alex_C.T - Version 1.1"
 		$form.Size = New-Object System.Drawing.Size(1010, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
@@ -6386,12 +6475,111 @@ if (-not $SilentMode)
 				})
 			$form.Controls.Add($storeButton3)
 			
+			# Repair Windows button
 			$storeButton4 = New-Object System.Windows.Forms.Button
 			$storeButton4.Text = "Repair Windows"
 			$storeButton4.Location = New-Object System.Drawing.Point(750, 535)
 			$storeButton4.Size = New-Object System.Drawing.Size(200, 40)
 			$storeButton4.Add_Click({
-					Repair-Windows
+					# Create a new form for selecting operations
+					$repairForm = New-Object System.Windows.Forms.Form
+					$repairForm.Text = "Select Repair Operations"
+					$repairForm.Size = New-Object System.Drawing.Size(400, 400)
+					$repairForm.StartPosition = "CenterScreen"
+					
+					# Create checkboxes for each operation
+					$checkboxDefender = New-Object System.Windows.Forms.CheckBox
+					$checkboxDefender.Text = "Windows Defender Update and Scan"
+					$checkboxDefender.Location = New-Object System.Drawing.Point(20, 20)
+					$checkboxDefender.Size = New-Object System.Drawing.Size(350, 25)
+					$repairForm.Controls.Add($checkboxDefender)
+					
+					$checkboxDISM = New-Object System.Windows.Forms.CheckBox
+					$checkboxDISM.Text = "Run DISM Commands"
+					$checkboxDISM.Location = New-Object System.Drawing.Point(20, 60)
+					$checkboxDISM.Size = New-Object System.Drawing.Size(350, 25)
+					$repairForm.Controls.Add($checkboxDISM)
+					
+					$checkboxSFC = New-Object System.Windows.Forms.CheckBox
+					$checkboxSFC.Text = "Run System File Checker (SFC)"
+					$checkboxSFC.Location = New-Object System.Drawing.Point(20, 100)
+					$checkboxSFC.Size = New-Object System.Drawing.Size(350, 25)
+					$repairForm.Controls.Add($checkboxSFC)
+					
+					$checkboxDiskCleanup = New-Object System.Windows.Forms.CheckBox
+					$checkboxDiskCleanup.Text = "Disk Cleanup"
+					$checkboxDiskCleanup.Location = New-Object System.Drawing.Point(20, 140)
+					$checkboxDiskCleanup.Size = New-Object System.Drawing.Size(350, 25)
+					$repairForm.Controls.Add($checkboxDiskCleanup)
+					
+					$checkboxOptimizeDrives = New-Object System.Windows.Forms.CheckBox
+					$checkboxOptimizeDrives.Text = "Optimize Drives"
+					$checkboxOptimizeDrives.Location = New-Object System.Drawing.Point(20, 180)
+					$checkboxOptimizeDrives.Size = New-Object System.Drawing.Size(350, 25)
+					$repairForm.Controls.Add($checkboxOptimizeDrives)
+					
+					$checkboxCheckDisk = New-Object System.Windows.Forms.CheckBox
+					$checkboxCheckDisk.Text = "Schedule Check Disk"
+					$checkboxCheckDisk.Location = New-Object System.Drawing.Point(20, 220)
+					$checkboxCheckDisk.Size = New-Object System.Drawing.Size(350, 25)
+					$repairForm.Controls.Add($checkboxCheckDisk)
+					
+					# Create a checkbox to select all operations
+					$checkboxSelectAll = New-Object System.Windows.Forms.CheckBox
+					$checkboxSelectAll.Text = "Select All"
+					$checkboxSelectAll.Location = New-Object System.Drawing.Point(20, 260)
+					$checkboxSelectAll.Size = New-Object System.Drawing.Size(350, 25)
+					$repairForm.Controls.Add($checkboxSelectAll)
+					
+					# Add event handler for Select All checkbox
+					$checkboxSelectAll.Add_CheckedChanged({
+							$checked = $checkboxSelectAll.Checked
+							$checkboxDefender.Checked = $checked
+							$checkboxDISM.Checked = $checked
+							$checkboxSFC.Checked = $checked
+							$checkboxDiskCleanup.Checked = $checked
+							$checkboxOptimizeDrives.Checked = $checked
+							$checkboxCheckDisk.Checked = $checked
+						})
+					
+					# Create the Run button
+					$runButton = New-Object System.Windows.Forms.Button
+					$runButton.Text = "Run"
+					$runButton.Location = New-Object System.Drawing.Point(150, 310)
+					$runButton.Size = New-Object System.Drawing.Size(100, 30)
+					$repairForm.Controls.Add($runButton)
+					
+					# Add click event handler for the Run button
+					$runButton.Add_Click({
+							# Close the repairForm
+							$repairForm.Close()
+							
+							# Build parameters for Repair-Windows function
+							$params = @{ }
+							
+							# If no checkboxes are checked, run all operations
+							if (-not ($checkboxDefender.Checked -or $checkboxDISM.Checked -or $checkboxSFC.Checked -or $checkboxDiskCleanup.Checked -or $checkboxOptimizeDrives.Checked -or $checkboxCheckDisk.Checked))
+							{
+								# No parameters needed, Repair-Windows will run all operations by default
+								Repair-Windows
+							}
+							else
+							{
+								# Add parameters based on selections
+								if ($checkboxDefender.Checked) { $params.Add("Defender", $true) }
+								if ($checkboxDISM.Checked) { $params.Add("DISM", $true) }
+								if ($checkboxSFC.Checked) { $params.Add("SFC", $true) }
+								if ($checkboxDiskCleanup.Checked) { $params.Add("DiskCleanup", $true) }
+								if ($checkboxOptimizeDrives.Checked) { $params.Add("OptimizeDrives", $true) }
+								if ($checkboxCheckDisk.Checked) { $params.Add("CheckDisk", $true) }
+								
+								# Call the Repair-Windows function with selected parameters
+								Repair-Windows @params
+							}
+						})
+					
+					# Show the repair options form
+					$repairForm.ShowDialog()
 				})
 			$form.Controls.Add($storeButton4)
 			
@@ -6572,7 +6760,7 @@ if (-not $SilentMode)
 		catch
 		{
 			# Log any errors that occur while starting the deletion job
-			Write-Log "An error occurred while starting the deletion job for machine '$machine'. Error: $_" "red"
+			Write-Log "An error occurred while starting the deletion job for '$machine'. Error: $_" "red"
 		}
 	}
 	
