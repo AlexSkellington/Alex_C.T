@@ -6475,11 +6475,13 @@ if (-not $SilentMode)
 				})
 			$form.Controls.Add($storeButton3)
 			
-			# Repair Windows button
+			# Add the Repair Windows button
 			$storeButton4 = New-Object System.Windows.Forms.Button
 			$storeButton4.Text = "Repair Windows"
 			$storeButton4.Location = New-Object System.Drawing.Point(750, 535)
 			$storeButton4.Size = New-Object System.Drawing.Size(200, 40)
+			
+			# Define the click event for the Repair Windows button
 			$storeButton4.Add_Click({
 					# Create a new form for selecting operations
 					$repairForm = New-Object System.Windows.Forms.Form
@@ -6542,138 +6544,69 @@ if (-not $SilentMode)
 							$checkboxCheckDisk.Checked = $checked
 						})
 					
-					# Add the Run button
-					$storeButton4 = New-Object System.Windows.Forms.Button
-					$storeButton4.Text = "Repair Windows"
-					$storeButton4.Location = New-Object System.Drawing.Point(750, 535)
-					$storeButton4.Size = New-Object System.Drawing.Size(200, 40)
+					# Create the Run button
+					$runButton = New-Object System.Windows.Forms.Button
+					$runButton.Text = "Run"
+					$runButton.Location = New-Object System.Drawing.Point(150, 310)
+					$runButton.Size = New-Object System.Drawing.Size(100, 30)
+					$repairForm.Controls.Add($runButton)
 					
-					# Define the click event for the Repair Windows button
-					$storeButton4.Add_Click({
-							# Create a new form for selecting operations
-							$repairForm = New-Object System.Windows.Forms.Form
-							$repairForm.Text = "Select Repair Operations"
-							$repairForm.Size = New-Object System.Drawing.Size(400, 400)
-							$repairForm.StartPosition = "CenterScreen"
+					# Define the click event for the Run button
+					$runButton.Add_Click({
+							# Disable the Run button to prevent multiple clicks
+							$runButton.Enabled = $false
 							
-							# Create checkboxes for each operation
-							$checkboxDefender = New-Object System.Windows.Forms.CheckBox
-							$checkboxDefender.Text = "Windows Defender Update and Scan"
-							$checkboxDefender.Location = New-Object System.Drawing.Point(20, 20)
-							$checkboxDefender.Size = New-Object System.Drawing.Size(350, 25)
-							$repairForm.Controls.Add($checkboxDefender)
+							# Build parameters for Repair-Windows function
+							$params = @{ }
 							
-							$checkboxDISM = New-Object System.Windows.Forms.CheckBox
-							$checkboxDISM.Text = "Run DISM Commands"
-							$checkboxDISM.Location = New-Object System.Drawing.Point(20, 60)
-							$checkboxDISM.Size = New-Object System.Drawing.Size(350, 25)
-							$repairForm.Controls.Add($checkboxDISM)
+							# Add parameters based on selections
+							if ($checkboxDefender.Checked) { $params["Defender"] = $true }
+							if ($checkboxDISM.Checked) { $params["DISM"] = $true }
+							if ($checkboxSFC.Checked) { $params["SFC"] = $true }
+							if ($checkboxDiskCleanup.Checked) { $params["DiskCleanup"] = $true }
+							if ($checkboxOptimizeDrives.Checked) { $params["OptimizeDrives"] = $true }
+							if ($checkboxCheckDisk.Checked) { $params["CheckDisk"] = $true }
 							
-							$checkboxSFC = New-Object System.Windows.Forms.CheckBox
-							$checkboxSFC.Text = "Run System File Checker (SFC)"
-							$checkboxSFC.Location = New-Object System.Drawing.Point(20, 100)
-							$checkboxSFC.Size = New-Object System.Drawing.Size(350, 25)
-							$repairForm.Controls.Add($checkboxSFC)
+							# If no checkboxes are checked, run all operations
+							if ($params.Count -eq 0)
+							{
+								# No parameters needed, Repair-Windows will run all operations by default
+							}
 							
-							$checkboxDiskCleanup = New-Object System.Windows.Forms.CheckBox
-							$checkboxDiskCleanup.Text = "Disk Cleanup"
-							$checkboxDiskCleanup.Location = New-Object System.Drawing.Point(20, 140)
-							$checkboxDiskCleanup.Size = New-Object System.Drawing.Size(350, 25)
-							$repairForm.Controls.Add($checkboxDiskCleanup)
+							# Close the repairForm
+							$repairForm.Close()
 							
-							$checkboxOptimizeDrives = New-Object System.Windows.Forms.CheckBox
-							$checkboxOptimizeDrives.Text = "Optimize Drives"
-							$checkboxOptimizeDrives.Location = New-Object System.Drawing.Point(20, 180)
-							$checkboxOptimizeDrives.Size = New-Object System.Drawing.Size(350, 25)
-							$repairForm.Controls.Add($checkboxOptimizeDrives)
+							# Create a BackgroundWorker to run the Repair-Windows function asynchronously
+							$bgWorker = New-Object System.ComponentModel.BackgroundWorker
+							$bgWorker.WorkerReportsProgress = $false
+							$bgWorker.WorkerSupportsCancellation = $false
 							
-							$checkboxCheckDisk = New-Object System.Windows.Forms.CheckBox
-							$checkboxCheckDisk.Text = "Schedule Check Disk"
-							$checkboxCheckDisk.Location = New-Object System.Drawing.Point(20, 220)
-							$checkboxCheckDisk.Size = New-Object System.Drawing.Size(350, 25)
-							$repairForm.Controls.Add($checkboxCheckDisk)
-							
-							# Create a checkbox to select all operations
-							$checkboxSelectAll = New-Object System.Windows.Forms.CheckBox
-							$checkboxSelectAll.Text = "Select All"
-							$checkboxSelectAll.Location = New-Object System.Drawing.Point(20, 260)
-							$checkboxSelectAll.Size = New-Object System.Drawing.Size(350, 25)
-							$repairForm.Controls.Add($checkboxSelectAll)
-							
-							# Add event handler for Select All checkbox
-							$checkboxSelectAll.Add_CheckedChanged({
-									$checked = $checkboxSelectAll.Checked
-									$checkboxDefender.Checked = $checked
-									$checkboxDISM.Checked = $checked
-									$checkboxSFC.Checked = $checked
-									$checkboxDiskCleanup.Checked = $checked
-									$checkboxOptimizeDrives.Checked = $checked
-									$checkboxCheckDisk.Checked = $checked
+							# Attach the DoWork event handler
+							$bgWorker.Add_DoWork({
+									param ($sender,
+										$e)
+									# Run the Repair-Windows function with the selected parameters
+									Repair-Windows @params
 								})
 							
-							# Create the Run button
-							$runButton = New-Object System.Windows.Forms.Button
-							$runButton.Text = "Run"
-							$runButton.Location = New-Object System.Drawing.Point(150, 310)
-							$runButton.Size = New-Object System.Drawing.Size(100, 30)
-							$repairForm.Controls.Add($runButton)
-							
-							# Define the click event for the Run button
-							$runButton.Add_Click({
-									# Disable the Run button to prevent multiple clicks
-									$runButton.Enabled = $false
-									
-									# Build parameters for Repair-Windows function
-									$params = @{ }
-									
-									# Add parameters based on selections
-									if ($checkboxDefender.Checked) { $params.Add("Defender", $true) }
-									if ($checkboxDISM.Checked) { $params.Add("DISM", $true) }
-									if ($checkboxSFC.Checked) { $params.Add("SFC", $true) }
-									if ($checkboxDiskCleanup.Checked) { $params.Add("DiskCleanup", $true) }
-									if ($checkboxOptimizeDrives.Checked) { $params.Add("OptimizeDrives", $true) }
-									if ($checkboxCheckDisk.Checked) { $params.Add("CheckDisk", $true) }
-									
-									# If no checkboxes are checked, run all operations
-									if ($params.Count -eq 0)
-									{
-										# No parameters needed, Repair-Windows will run all operations by default
-									}
-									
-									# Close the repairForm
-									$repairForm.Close()
-									
-									# Create a BackgroundWorker to run the Repair-Windows function asynchronously
-									$bgWorker = New-Object System.ComponentModel.BackgroundWorker
-									$bgWorker.WorkerReportsProgress = $false
-									$bgWorker.WorkerSupportsCancellation = $false
-									
-									# Attach the DoWork event handler using the Add_DoWork method
-									$bgWorker.Add_DoWork({
-											param ($sender,
-												$e)
-											# Run the Repair-Windows function with the selected parameters
-											Repair-Windows @params
-										})
-									
-									# Attach the RunWorkerCompleted event handler using the Add_RunWorkerCompleted method
-									$bgWorker.Add_RunWorkerCompleted({
-											param ($sender,
-												$e)
-											# Notify the user when the repair process is completed
-											[System.Windows.Forms.MessageBox]::Show("Windows repair process completed.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-										})
-									
-									# Start the BackgroundWorker
-									$bgWorker.RunWorkerAsync()
+							# Attach the RunWorkerCompleted event handler
+							$bgWorker.Add_RunWorkerCompleted({
+									param ($sender,
+										$e)
+									# Notify the user when the repair process is completed
+									[System.Windows.Forms.MessageBox]::Show("Windows repair process completed.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 								})
 							
-							# Show the repair options form as a modal dialog
-							$repairForm.ShowDialog()
+							# Start the BackgroundWorker
+							$bgWorker.RunWorkerAsync()
 						})
 					
+					# Show the repair options form as a modal dialog
+					$repairForm.ShowDialog()
+				})
+			
 			$form.Controls.Add($storeButton4)
-					
+				
 			$storeButton5 = New-Object System.Windows.Forms.Button
 			$storeButton5.Text = "Pump All Items"
 			$storeButton5.Location = New-Object System.Drawing.Point(50, 580)
