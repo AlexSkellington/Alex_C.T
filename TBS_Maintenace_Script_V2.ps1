@@ -6475,13 +6475,11 @@ if (-not $SilentMode)
 				})
 			$form.Controls.Add($storeButton3)
 			
-			# Add the Repair Windows button
+			# Repair Windows button
 			$storeButton4 = New-Object System.Windows.Forms.Button
 			$storeButton4.Text = "Repair Windows"
 			$storeButton4.Location = New-Object System.Drawing.Point(750, 535)
 			$storeButton4.Size = New-Object System.Drawing.Size(200, 40)
-			
-			# Define the click event for the Repair Windows button
 			$storeButton4.Add_Click({
 					# Create a new form for selecting operations
 					$repairForm = New-Object System.Windows.Forms.Form
@@ -6551,62 +6549,40 @@ if (-not $SilentMode)
 					$runButton.Size = New-Object System.Drawing.Size(100, 30)
 					$repairForm.Controls.Add($runButton)
 					
-					# Define the click event for the Run button
+					# Add click event handler for the Run button
 					$runButton.Add_Click({
-							# Disable the Run button to prevent multiple clicks
-							$runButton.Enabled = $false
+							# Close the repairForm
+							$repairForm.Close()
 							
 							# Build parameters for Repair-Windows function
 							$params = @{ }
 							
-							# Add parameters based on selections
-							if ($checkboxDefender.Checked) { $params["Defender"] = $true }
-							if ($checkboxDISM.Checked) { $params["DISM"] = $true }
-							if ($checkboxSFC.Checked) { $params["SFC"] = $true }
-							if ($checkboxDiskCleanup.Checked) { $params["DiskCleanup"] = $true }
-							if ($checkboxOptimizeDrives.Checked) { $params["OptimizeDrives"] = $true }
-							if ($checkboxCheckDisk.Checked) { $params["CheckDisk"] = $true }
-							
 							# If no checkboxes are checked, run all operations
-							if ($params.Count -eq 0)
+							if (-not ($checkboxDefender.Checked -or $checkboxDISM.Checked -or $checkboxSFC.Checked -or $checkboxDiskCleanup.Checked -or $checkboxOptimizeDrives.Checked -or $checkboxCheckDisk.Checked))
 							{
 								# No parameters needed, Repair-Windows will run all operations by default
+								Repair-Windows
 							}
-							
-							# Close the repairForm
-							$repairForm.Close()
-							
-							# Create a BackgroundWorker to run the Repair-Windows function asynchronously
-							$bgWorker = New-Object System.ComponentModel.BackgroundWorker
-							$bgWorker.WorkerReportsProgress = $false
-							$bgWorker.WorkerSupportsCancellation = $false
-							
-							# Attach the DoWork event handler
-							$bgWorker.Add_DoWork({
-									param ($sender,
-										$e)
-									# Run the Repair-Windows function with the selected parameters
-									Repair-Windows @params
-								})
-							
-							# Attach the RunWorkerCompleted event handler
-							$bgWorker.Add_RunWorkerCompleted({
-									param ($sender,
-										$e)
-									# Notify the user when the repair process is completed
-									[System.Windows.Forms.MessageBox]::Show("Windows repair process completed.", "Information", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-								})
-							
-							# Start the BackgroundWorker
-							$bgWorker.RunWorkerAsync()
+							else
+							{
+								# Add parameters based on selections
+								if ($checkboxDefender.Checked) { $params.Add("Defender", $true) }
+								if ($checkboxDISM.Checked) { $params.Add("DISM", $true) }
+								if ($checkboxSFC.Checked) { $params.Add("SFC", $true) }
+								if ($checkboxDiskCleanup.Checked) { $params.Add("DiskCleanup", $true) }
+								if ($checkboxOptimizeDrives.Checked) { $params.Add("OptimizeDrives", $true) }
+								if ($checkboxCheckDisk.Checked) { $params.Add("CheckDisk", $true) }
+								
+								# Call the Repair-Windows function with selected parameters
+								Repair-Windows @params
+							}
 						})
 					
-					# Show the repair options form as a modal dialog
+					# Show the repair options form
 					$repairForm.ShowDialog()
 				})
-			
 			$form.Controls.Add($storeButton4)
-				
+			
 			$storeButton5 = New-Object System.Windows.Forms.Button
 			$storeButton5.Text = "Pump All Items"
 			$storeButton5.Location = New-Object System.Drawing.Point(50, 580)
