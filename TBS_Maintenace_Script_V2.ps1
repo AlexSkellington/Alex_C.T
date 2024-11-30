@@ -2151,157 +2151,16 @@ function Execute-SQLLocallyGUI
 #     - AsJob: (Optional) Runs the deletion process as a background job.
 # ===================================================================================================
 
-function Delete-Filess
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $true, Position = 0, HelpMessage = "The directory path where files will be deleted.")]
-		[ValidateNotNullOrEmpty()]
-		[string]$Path,
-		[Parameter(Mandatory = $false, HelpMessage = "Specific file patterns to delete within the specified directory. Wildcards supported.")]
-		[string[]]$SpecifiedFiles,
-		[Parameter(Mandatory = $false, HelpMessage = "File patterns to exclude from deletion. Wildcards supported.")]
-		[string[]]$Exclusions,
-		[Parameter(Mandatory = $false, HelpMessage = "Run the deletion as a background job.")]
-		[switch]$AsJob
-	)
-	
-	# Define the script block for deletion logic
-	$scriptBlock = {
-		param ($Path,
-			$SpecifiedFiles,
-			$Exclusions)
-		
-		# Initialize counter for deleted files
-		$deletedCount = 0
-		
-		# Resolve the full path
-		$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
-		if (-not $resolvedPath)
-		{
-			Write-Log "The specified path '$Path' does not exist." "Red"
-			return 0
-		}
-		$targetPath = $resolvedPath.ProviderPath
-		
-		try
-		{
-			# Collect all matching files
-			$allMatchedFiles = New-Object System.Collections.Generic.List[string]
-			
-			if ($SpecifiedFiles)
-			{
-				foreach ($filePattern in $SpecifiedFiles)
-				{
-					# Use .NET method to retrieve matching files
-					$matchedFiles = [System.IO.Directory]::EnumerateFiles($targetPath, $filePattern, [System.IO.SearchOption]::AllDirectories)
-					if ($matchedFiles)
-					{
-						$allMatchedFiles.AddRange($matchedFiles)
-					}
-				}
-			}
-			else
-			{
-				# Retrieve all files
-				$allMatchedFiles = [System.IO.Directory]::EnumerateFiles($targetPath, "*", [System.IO.SearchOption]::AllDirectories)
-			}
-			
-			if (-not $allMatchedFiles -or $allMatchedFiles.Count -eq 0)
-			{
-				Write-Log "No files matched the specified patterns in '$targetPath'." "Yellow"
-				return 0
-			}
-			
-			# Remove duplicates
-			$allMatchedFiles = $allMatchedFiles | Select-Object -Unique
-			
-			# Filter out excluded files
-			if ($Exclusions)
-			{
-				$exclusionPatterns = $Exclusions | ForEach-Object { [WildcardPattern]::new($_, 'IgnoreCase') }
-				$allMatchedFiles = $allMatchedFiles | Where-Object {
-					$fileName = [System.IO.Path]::GetFileName($_)
-					$include = $true
-					foreach ($pattern in $exclusionPatterns)
-					{
-						if ($pattern.IsMatch($fileName))
-						{
-							$include = $false
-							break
-						}
-					}
-					$include
-				}
-			}
-			
-			if (-not $allMatchedFiles -or $allMatchedFiles.Count -eq 0)
-			{
-				Write-Log "No files left to delete after applying exclusions in '$targetPath'." "Yellow"
-				return 0
-			}
-			
-			# Batch delete files using .NET methods
-			foreach ($file in $allMatchedFiles)
-			{
-				try
-				{
-					# Ensure the file is not read-only
-					[System.IO.File]::SetAttributes($file, [System.IO.FileAttributes]::Normal)
-					[System.IO.File]::Delete($file)
-					$deletedCount++
-				}
-				catch
-				{
-					# Handle exceptions if necessary
-				}
-			}
-			
-			Write-Log "Deleted $deletedCount file(s) from '$targetPath'." "Green"
-			return $deletedCount
-		}
-		catch
-		{
-			Write-Log "An error occurred during the deletion process. Error: $_" "Red"
-			return $deletedCount
-		}
-	}
-	
-	if ($AsJob)
-	{
-		# Start the background job
-		Start-Job -ScriptBlock $scriptBlock -ArgumentList $Path, $SpecifiedFiles, $Exclusions
-	}
-	else
-	{
-		# Synchronous execution
-		& $scriptBlock $Path $SpecifiedFiles $Exclusions
-	}
-}
-
-# ===================================================================================================
-#                              FUNCTION: Delete-Files
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Deletes specified files within a directory, supporting wildcards and exclusions.
-#   Can be executed synchronously or as a background job to prevent interruption of the main script.
-#   Parameters:
-#     - Path: The directory path where files will be deleted.
-#     - SpecifiedFiles: Specific file names or patterns to delete. Wildcards are supported.
-#     - Exclusions: File names or patterns to exclude from deletion. Wildcards are supported.
-#     - AsJob: (Optional) Runs the deletion process as a background job.
-# ===================================================================================================
-
 function Delete-Files
 {
 	[CmdletBinding()]
 	param (
-		[Parameter(Mandatory = $true, Position = 0, HelpMessage = "The directory path where files will be deleted.")]
+		[Parameter(Mandatory = $true, Position = 0, HelpMessage = "The directory path where files and folders will be deleted.")]
 		[ValidateNotNullOrEmpty()]
 		[string]$Path,
-		[Parameter(Mandatory = $false, HelpMessage = "Specific file patterns to delete within the specified directory. Wildcards supported.")]
+		[Parameter(Mandatory = $false, HelpMessage = "Specific file or folder patterns to delete within the specified directory. Wildcards supported.")]
 		[string[]]$SpecifiedFiles,
-		[Parameter(Mandatory = $false, HelpMessage = "File patterns to exclude from deletion. Wildcards supported.")]
+		[Parameter(Mandatory = $false, HelpMessage = "File or folder patterns to exclude from deletion. Wildcards supported.")]
 		[string[]]$Exclusions,
 		[Parameter(Mandatory = $false, HelpMessage = "Run the deletion as a background job.")]
 		[switch]$AsJob
@@ -2315,14 +2174,14 @@ function Delete-Files
 				$SpecifiedFiles,
 				$Exclusions)
 			
-			# Initialize counter for deleted files
+			# Initialize counter for deleted items
 			$deletedCount = 0
 			
 			# Resolve the full path
 			$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
 			if (-not $resolvedPath)
 			{
-				#	Write-Log "The specified path '$Path' does not exist." "Red"
+				# Write-Log "The specified path '$Path' does not exist." "Red"
 				return
 			}
 			$targetPath = $resolvedPath.ProviderPath
@@ -2331,16 +2190,15 @@ function Delete-Files
 			{
 				if ($SpecifiedFiles)
 				{
-					# Delete only specified files
+					# Delete only specified files and folders
 					foreach ($filePattern in $SpecifiedFiles)
 					{
-						# Retrieve matching files using wildcards
-						$matchedFiles = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue |
-						Where-Object { -not $_.PSIsContainer }
+						# Retrieve matching items using wildcards
+						$matchedItems = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue
 						
-						if ($matchedFiles)
+						if ($matchedItems)
 						{
-							foreach ($matchedFile in $matchedFiles)
+							foreach ($matchedItem in $matchedItems)
 							{
 								# Check against exclusions
 								$exclude = $false
@@ -2348,10 +2206,10 @@ function Delete-Files
 								{
 									foreach ($exclusionPattern in $Exclusions)
 									{
-										if ($matchedFile.Name -like $exclusionPattern)
+										if ($matchedItem.Name -like $exclusionPattern)
 										{
 											$exclude = $true
-											#	Write-Log "Excluded: $($matchedFile.FullName)" "Yellow"
+											# Write-Log "Excluded: $($matchedItem.FullName)" "Yellow"
 											break
 										}
 									}
@@ -2361,30 +2219,36 @@ function Delete-Files
 								{
 									try
 									{
-										Remove-Item -Path $matchedFile.FullName -Force -ErrorAction Stop
+										if ($matchedItem.PSIsContainer)
+										{
+											Remove-Item -Path $matchedItem.FullName -Recurse -Force -ErrorAction Stop
+										}
+										else
+										{
+											Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
+										}
 										$deletedCount++
-										#	Write-Log "Deleted: $($matchedFile.FullName)" "Green"
+										# Write-Log "Deleted: $($matchedItem.FullName)" "Green"
 									}
 									catch
 									{
-										#	Write-Log "Failed to delete $($matchedFile.FullName). Error: $_" "Red"
+										# Write-Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
 									}
 								}
 							}
 						}
 						else
 						{
-							#	Write-Log "No files matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
+							# Write-Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
 						}
 					}
 				}
 				else
 				{
-					# Delete all files in the path
-					$allFiles = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue |
-					Where-Object { -not $_.PSIsContainer }
+					# Delete all files and folders in the path
+					$allItems = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue
 					
-					foreach ($file in $allFiles)
+					foreach ($item in $allItems)
 					{
 						# Check against exclusions
 						$exclude = $false
@@ -2392,10 +2256,10 @@ function Delete-Files
 						{
 							foreach ($exclusionPattern in $Exclusions)
 							{
-								if ($file.Name -like $exclusionPattern)
+								if ($item.Name -like $exclusionPattern)
 								{
 									$exclude = $true
-									#	Write-Log "Excluded: $($file.FullName)" "Yellow"
+									# Write-Log "Excluded: $($item.FullName)" "Yellow"
 									break
 								}
 							}
@@ -2405,24 +2269,31 @@ function Delete-Files
 						{
 							try
 							{
-								Remove-Item -Path $file.FullName -Force -ErrorAction Stop
+								if ($item.PSIsContainer)
+								{
+									Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
+								}
+								else
+								{
+									Remove-Item -Path $item.FullName -Force -ErrorAction Stop
+								}
 								$deletedCount++
-								#	Write-Log "Deleted: $($file.FullName)" "Green"
+								# Write-Log "Deleted: $($item.FullName)" "Green"
 							}
 							catch
 							{
-								#	Write-Log "Failed to delete $($file.FullName). Error: $_" "Red"
+								# Write-Log "Failed to delete $($item.FullName). Error: $_" "Red"
 							}
 						}
 					}
 				}
 				
-				#	Write-Log "Total files deleted: $deletedCount" "Blue"
+				# Write-Log "Total items deleted: $deletedCount" "Blue"
 				return $deletedCount
 			}
 			catch
 			{
-				#	Write-Log "An error occurred during the deletion process. Error: $_" "Red"
+				# Write-Log "An error occurred during the deletion process. Error: $_" "Red"
 				return $deletedCount
 			}
 		}
@@ -2433,7 +2304,7 @@ function Delete-Files
 	else
 	{
 		# Synchronous execution
-		# Initialize counter for deleted files
+		# Initialize counter for deleted items
 		$deletedCount = 0
 		
 		# Resolve the full path
@@ -2449,16 +2320,15 @@ function Delete-Files
 		{
 			if ($SpecifiedFiles)
 			{
-				# Delete only specified files
+				# Delete only specified files and folders
 				foreach ($filePattern in $SpecifiedFiles)
 				{
-					# Retrieve matching files using wildcards
-					$matchedFiles = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue |
-					Where-Object { -not $_.PSIsContainer }
+					# Retrieve matching items using wildcards
+					$matchedItems = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue
 					
-					if ($matchedFiles)
+					if ($matchedItems)
 					{
-						foreach ($matchedFile in $matchedFiles)
+						foreach ($matchedItem in $matchedItems)
 						{
 							# Check against exclusions
 							$exclude = $false
@@ -2466,10 +2336,10 @@ function Delete-Files
 							{
 								foreach ($exclusionPattern in $Exclusions)
 								{
-									if ($matchedFile.Name -like $exclusionPattern)
+									if ($matchedItem.Name -like $exclusionPattern)
 									{
 										$exclude = $true
-										Write-Log "Excluded: $($matchedFile.FullName)" "Yellow"
+										Write-Log "Excluded: $($matchedItem.FullName)" "Yellow"
 										break
 									}
 								}
@@ -2479,30 +2349,36 @@ function Delete-Files
 							{
 								try
 								{
-									Remove-Item -Path $matchedFile.FullName -Force -ErrorAction Stop
+									if ($matchedItem.PSIsContainer)
+									{
+										Remove-Item -Path $matchedItem.FullName -Recurse -Force -ErrorAction Stop
+									}
+									else
+									{
+										Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
+									}
 									$deletedCount++
-									Write-Log "Deleted: $($matchedFile.FullName)" "Green"
+									Write-Log "Deleted: $($matchedItem.FullName)" "Green"
 								}
 								catch
 								{
-									Write-Log "Failed to delete $($matchedFile.FullName). Error: $_" "Red"
+									Write-Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
 								}
 							}
 						}
 					}
 					else
 					{
-						Write-Log "No files matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
+						Write-Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
 					}
 				}
 			}
 			else
 			{
-				# Delete all files in the path
-				$allFiles = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue |
-				Where-Object { -not $_.PSIsContainer }
+				# Delete all files and folders in the path
+				$allItems = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue
 				
-				foreach ($file in $allFiles)
+				foreach ($item in $allItems)
 				{
 					# Check against exclusions
 					$exclude = $false
@@ -2510,10 +2386,10 @@ function Delete-Files
 					{
 						foreach ($exclusionPattern in $Exclusions)
 						{
-							if ($file.Name -like $exclusionPattern)
+							if ($item.Name -like $exclusionPattern)
 							{
 								$exclude = $true
-								Write-Log "Excluded: $($file.FullName)" "Yellow"
+								Write-Log "Excluded: $($item.FullName)" "Yellow"
 								break
 							}
 						}
@@ -2523,19 +2399,26 @@ function Delete-Files
 					{
 						try
 						{
-							Remove-Item -Path $file.FullName -Force -ErrorAction Stop
+							if ($item.PSIsContainer)
+							{
+								Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
+							}
+							else
+							{
+								Remove-Item -Path $item.FullName -Force -ErrorAction Stop
+							}
 							$deletedCount++
-							Write-Log "Deleted: $($file.FullName)" "Green"
+							Write-Log "Deleted: $($item.FullName)" "Green"
 						}
 						catch
 						{
-							Write-Log "Failed to delete $($file.FullName). Error: $_" "Red"
+							Write-Log "Failed to delete $($item.FullName). Error: $_" "Red"
 						}
 					}
 				}
 			}
 			
-			Write-Log "Total files deleted: $deletedCount" "Blue"
+			Write-Log "Total items deleted: $deletedCount" "Blue"
 			return $deletedCount
 		}
 		catch
