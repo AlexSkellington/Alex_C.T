@@ -6556,7 +6556,7 @@ if (-not $SilentMode)
 	$LaneMachines = $script:FunctionResults['LaneMachines']
 	
 	# Iterate over each machine and invoke Delete-Files as a background job
-	foreach ($machine in $LaneMachines)
+	foreach ($machine in $LaneMachines.Values)
 	{
 		# Construct the full UNC path to the Temp directory on the remote machine
 		$tempPath = "\\$machine\C$\Users\Administrator\AppData\Local\Temp\"
