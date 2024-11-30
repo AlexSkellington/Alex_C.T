@@ -3890,7 +3890,7 @@ function Reboot-Lanes
 	
 	if ($selection -eq $null)
 	{
-		Write-Log "Lane reboot canceled by user." "yellow"
+		Write-Log "`r`nLane reboot canceled by user." "yellow"
 		return
 	}
 	
@@ -6567,7 +6567,7 @@ if (-not $SilentMode)
 			$DeleteJob = Delete-Files -Path $tempPath -AsJob
 			
 			# Log that the deletion job has been started
-			Write-Log "Started deletion job for '$machine' at path '$tempPath'." "green"
+			Write-Log "Started deletion job for machine '$machine' at path '$tempPath'." "green"
 		}
 		catch
 		{
