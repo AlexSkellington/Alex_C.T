@@ -6278,12 +6278,28 @@ if (-not $SilentMode)
 		
 		# Handle form closing event (X button)
 		$form.add_FormClosing({
-				# Perform action when the X button is clicked
-				Write-Log "Form is closing. Performing cleanup." "green"
-				# Clean Temp Folder
-				Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
+				# Confirmation message box to confirm exit
+				$confirmResult = [System.Windows.Forms.MessageBox]::Show(
+					"Are you sure you want to exit?",
+					"Confirm Exit",
+					[System.Windows.Forms.MessageBoxButtons]::YesNo,
+					[System.Windows.Forms.MessageBoxIcon]::Question
+				)
+				
+				# If the user clicks No, cancel the form close action
+				if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes)
+				{
+					$_.Cancel = $true
+				}
+				else
+				{
+					# Proceed with form closing and perform actions
+					Write-Log "Form is closing. Performing cleanup." "green"
+					
+					# Clean Temp Folder
+					Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
+				}
 			})
-		
 		
 		# Create a timer to refresh the GUI every second
 		$refreshTimer = New-Object System.Windows.Forms.Timer
@@ -6559,7 +6575,19 @@ if (-not $SilentMode)
 			$ConfigureSystemSettingsButton.Location = New-Object System.Drawing.Point(284, 625)
 			$ConfigureSystemSettingsButton.Size = New-Object System.Drawing.Size(200, 40)
 			$ConfigureSystemSettingsButton.add_Click({
-					Configure-SystemSettings
+					# Warning message box to confirm major changes
+					$confirmResult = [System.Windows.Forms.MessageBox]::Show(
+						"Warning: Configuring system settings will make major changes. Do you want to continue?",
+						"Confirm Changes",
+						[System.Windows.Forms.MessageBoxButtons]::YesNo,
+						[System.Windows.Forms.MessageBoxIcon]::Warning
+					)
+					
+					# If the user clicks Yes, proceed with the configuration
+					if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes)
+					{
+						Configure-SystemSettings
+					}
 				})
 			$form.Controls.Add($ConfigureSystemSettingsButton)
 			
