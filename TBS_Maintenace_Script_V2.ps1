@@ -5152,7 +5152,7 @@ function Invoke-SecureScript
 	if (-not (Verify-Password -InputPassword $password))
 	{
 		Write-Log "Authentication failed. Incorrect password." "Red"
-		Write-Log "`r`n=== Invoke-SecureScript Function Completed ===" "Blue"
+		Write-Log "`r`n==================== Invoke-SecureScript Function Completed ====================" "Blue"
 		return
 	}
 	
