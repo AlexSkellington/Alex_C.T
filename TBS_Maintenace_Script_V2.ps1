@@ -6564,10 +6564,10 @@ if (-not $SilentMode)
 		try
 		{
 			# Invoke the Delete-Files function with the -AsJob parameter
-			Delete-Files -Path $tempPath -AsJob
+			$DeleteJob = Delete-Files -Path $tempPath -AsJob
 			
 			# Log that the deletion job has been started
-			Write-Log "Started deletion job for machine '$machine' at path '$tempPath'." "green"
+			Write-Log "Started deletion job for '$machine' at path '$tempPath'." "green"
 		}
 		catch
 		{
