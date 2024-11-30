@@ -5144,7 +5144,7 @@ function Invoke-SecureScript
 	if (-not $password)
 	{
 		Write-Log "User canceled the authentication prompt." "Yellow"
-		Write-Log "`r`n=== Invoke-SecureScript Function Completed ===" "Blue"
+		Write-Log "`r`n==================== Invoke-SecureScript Function Completed ====================" "Blue"
 		return
 	}
 	
