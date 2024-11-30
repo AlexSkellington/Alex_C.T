@@ -584,7 +584,7 @@ function Get-DatabaseConnectionString
 	# Store the connection string in the FunctionResults hashtable
 	$script:FunctionResults['ConnectionString'] = $connectionString
 	
-	Write-Log "Variables ($connectionString) stored in $script:FunctionResults." "green"
+	Write-Log "Variables ($connectionString) stored." "green"
 }
 
 # ===================================================================================================
