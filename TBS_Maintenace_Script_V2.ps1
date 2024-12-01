@@ -3220,16 +3220,9 @@ function Repair-Windows
 		{
 			Write-Log "Starting disk optimization for all fixed drives..." "blue"
 			
-			Get-Volume | ForEach-Object {
-				if ($_.DriveType -eq 'Fixed')
-				{
-					Write-Log "Optimizing drive: $($_.DriveLetter)" "blue"
-					Optimize-Volume -DriveLetter $_.DriveLetter -Verbose
-				}
-				else
-				{
-					Write-Log "Skipping drive: $($_.DriveLetter) ($($_.DriveType))" "yellow"
-				}
+			Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter } | ForEach-Object {
+				Write-Log "Optimizing drive: $($_.DriveLetter)" "blue"
+				Optimize-Volume -DriveLetter $_.DriveLetter -Verbose
 			}
 			
 			Write-Log "Disk optimization for all fixed drives completed." "green"
