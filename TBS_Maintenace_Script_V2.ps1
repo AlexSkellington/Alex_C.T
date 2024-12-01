@@ -6761,36 +6761,41 @@ if (-not $SilentMode)
 	# Define the list of user profiles to process
 	$userProfiles = @('Administrator', 'Operator')
 	
-	# Iterate over each machine and each user profile, then invoke Delete-Files as a background job
-	foreach ($machine in $LaneMachines.Values)
+	$EnableDeletionJobs = $false # Accpets $true to enable the deletion jobs or $false to disable them
+	
+	if ($EnableDeletionJobs)
 	{
-		foreach ($user in $userProfiles)
+		# Iterate over each machine and each user profile, then invoke Delete-Files as a background job
+		foreach ($machine in $LaneMachines.Values)
 		{
-			# Construct the full UNC path to the Temp directory on the remote machine
-			$tempPath = "\\$machine\C$\Users\$user\AppData\Local\Temp\"
-			
-			try
+			foreach ($user in $userProfiles)
 			{
-				# Invoke the Delete-Files function with the -AsJob parameter
-				$DeleteJob = Delete-Files -Path $tempPath -AsJob
+				# Construct the full UNC path to the Temp directory on the remote machine
+				$tempPath = "\\$machine\C$\Users\$user\AppData\Local\Temp\"
 				
-				# Increment the job counter
-				$jobCount++
-				
-				# Log that the deletion job has been started
-				#	Write-Log "Started deletion job for %temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
-			}
-			catch
-			{
-				# Log any errors that occur while starting the deletion job
-				Write-Log "An error occurred while starting the deletion job for user '$user' on machine '$machine'. Error: $_" "red"
+				try
+				{
+					# Invoke the Delete-Files function with the -AsJob parameter
+					$DeleteJob = Delete-Files -Path $tempPath -AsJob
+					
+					# Increment the job counter
+					$jobCount++
+					
+					# Log that the deletion job has been started
+					# Write-Log "Started deletion job for %temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
+				}
+				catch
+				{
+					# Log any errors that occur while starting the deletion job
+					Write-Log "An error occurred while starting the deletion job for user '$user' on machine '$machine'. Error: $_" "red"
+				}
 			}
 		}
+		
+		# Log the summary of jobs started
+		# Write-Log "Total deletion jobs started: $jobCount" "blue"
+		# Write-Log "All deletion jobs started" "blue"
 	}
-	
-	# Log the summary of jobs started
-	#	Write-Log "Total deletion jobs started: $jobCount" "blue"
-	Write-Log "All deletion jobs started" "blue"
 	
 	# ===================================================================================================
 	#                                       SECTION: Show the GUI
