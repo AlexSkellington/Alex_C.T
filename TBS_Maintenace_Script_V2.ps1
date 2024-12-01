@@ -2728,7 +2728,7 @@ function Process-ServerGUI
 		[string]$StoresqlFilePath
 	)
 	
-	Write-Log "`r`n=== Starting Server Database Repair ===`r`n" "blue"
+	Write-Log "`r`n==================== Starting Server Database Repair ====================`r`n" "blue"
 	
 	# Execute the SQL script
 	Execute-SQLLocallyGUI -SqlFilePath $StoresqlFilePath
@@ -2739,7 +2739,7 @@ function Process-ServerGUI
 		$script:ProcessedServers += "localhost"
 	}
 	
-	Write-Log "`r`n=== Completed Server Database Repair ===" "blue"
+	Write-Log "`r`n==================== Completed Server Database Repair ====================" "blue"
 }
 
 # ===================================================================================================
@@ -2760,7 +2760,7 @@ function Process-LanesGUI
 		[switch]$ProcessAllLanes
 	)
 	
-	Write-Log "`r`n=== Starting Process-LanesGUI Function ===`r`n" "blue"
+	Write-Log "`r`n==================== Starting Process-LanesGUI Function ====================`r`n" "blue"
 	
 	if (-not (Test-Path $XFBasePath))
 	{
@@ -2860,7 +2860,7 @@ function Process-LanesGUI
 		Write-Log "Processed Lanes: $($script:ProcessedLanes -join ', ')" "green"
 	}
 	
-	Write-Log "`r`n=== Process-LanesGUI Function Completed ===" "blue"
+	Write-Log "`r`n==================== Process-LanesGUI Function Completed ====================" "blue"
 }
 
 # Helper function to process a single lane
@@ -2966,25 +2966,20 @@ function Process-AllLanes
 #   runs System File Checker, performs disk cleanup, optimizes all fixed drives by trimming SSDs or defragmenting HDDs,
 #   and schedules a disk check.
 #   Uses Write-Log to provide updates after each command execution.
-#   Allows specifying specific operations via parameter switches.
 # ===================================================================================================
 
 function Repair-Windows
 {
-	[CmdletBinding(SupportsShouldProcess = $true)]
-	param (
-		[switch]$Defender,
-		[switch]$DISM,
-		[switch]$SFC,
-		[switch]$DiskCleanup,
-		[switch]$OptimizeDrives,
-		[switch]$CheckDisk
-	)
+	[CmdletBinding()]
+	param ()
 	
 	Write-Log "`r`n==================== Starting Repair-Windows Function ====================`r`n" "blue"
 	
-	# Create a confirmation dialog
+	# Import necessary assemblies
 	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	# Create a confirmation dialog
 	$confirmationResult = [System.Windows.Forms.MessageBox]::Show(
 		"The Windows repair process will take a long time and will make significant changes to your system. Do you want to proceed?",
 		"Confirmation Required",
@@ -3001,20 +2996,140 @@ function Repair-Windows
 	
 	Write-Log "Starting Windows repair process. This might take a while, please wait..." "blue"
 	
-	# Check if any operation is specified
-	$OperationSpecified = $Defender -or $DISM -or $SFC -or $DiskCleanup -or $OptimizeDrives -or $CheckDisk
+	# Create a form for selecting operations
+	$repairForm = New-Object System.Windows.Forms.Form
+	$repairForm.Text = "Select Repair Operations"
+	$repairForm.Size = New-Object System.Drawing.Size(400, 400)
+	$repairForm.StartPosition = "CenterScreen"
+	$repairForm.FormBorderStyle = 'FixedDialog'
+	$repairForm.MaximizeBox = $false
+	$repairForm.MinimizeBox = $false
+	$repairForm.ShowInTaskbar = $false
 	
-	if (-not $OperationSpecified)
+	# Initialize an array to hold all operation checkboxes
+	$operationCheckboxes = @()
+	
+	# Function to update the Run button's enabled state
+	function Update-RunButtonState
 	{
-		$RunAll = $true
+		$anyChecked = $operationCheckboxes | Where-Object { $_.Checked } | Measure-Object | Select-Object -ExpandProperty Count
+		$runButton.Enabled = $anyChecked -gt 0
 	}
-	else
+	
+	# Create and configure checkboxes for each operation
+	$checkboxDefender = New-Object System.Windows.Forms.CheckBox
+	$checkboxDefender.Text = "Windows Defender Update and Scan"
+	$checkboxDefender.Location = New-Object System.Drawing.Point(20, 20)
+	$checkboxDefender.Size = New-Object System.Drawing.Size(350, 25)
+	$repairForm.Controls.Add($checkboxDefender)
+	$operationCheckboxes += $checkboxDefender
+	
+	$checkboxDISM = New-Object System.Windows.Forms.CheckBox
+	$checkboxDISM.Text = "Run DISM Commands"
+	$checkboxDISM.Location = New-Object System.Drawing.Point(20, 60)
+	$checkboxDISM.Size = New-Object System.Drawing.Size(350, 25)
+	$repairForm.Controls.Add($checkboxDISM)
+	$operationCheckboxes += $checkboxDISM
+	
+	$checkboxSFC = New-Object System.Windows.Forms.CheckBox
+	$checkboxSFC.Text = "Run System File Checker (SFC)"
+	$checkboxSFC.Location = New-Object System.Drawing.Point(20, 100)
+	$checkboxSFC.Size = New-Object System.Drawing.Size(350, 25)
+	$repairForm.Controls.Add($checkboxSFC)
+	$operationCheckboxes += $checkboxSFC
+	
+	$checkboxDiskCleanup = New-Object System.Windows.Forms.CheckBox
+	$checkboxDiskCleanup.Text = "Disk Cleanup"
+	$checkboxDiskCleanup.Location = New-Object System.Drawing.Point(20, 140)
+	$checkboxDiskCleanup.Size = New-Object System.Drawing.Size(350, 25)
+	$repairForm.Controls.Add($checkboxDiskCleanup)
+	$operationCheckboxes += $checkboxDiskCleanup
+	
+	$checkboxOptimizeDrives = New-Object System.Windows.Forms.CheckBox
+	$checkboxOptimizeDrives.Text = "Optimize Drives"
+	$checkboxOptimizeDrives.Location = New-Object System.Drawing.Point(20, 180)
+	$checkboxOptimizeDrives.Size = New-Object System.Drawing.Size(350, 25)
+	$repairForm.Controls.Add($checkboxOptimizeDrives)
+	$operationCheckboxes += $checkboxOptimizeDrives
+	
+	$checkboxCheckDisk = New-Object System.Windows.Forms.CheckBox
+	$checkboxCheckDisk.Text = "Schedule Check Disk"
+	$checkboxCheckDisk.Location = New-Object System.Drawing.Point(20, 220)
+	$checkboxCheckDisk.Size = New-Object System.Drawing.Size(350, 25)
+	$repairForm.Controls.Add($checkboxCheckDisk)
+	$operationCheckboxes += $checkboxCheckDisk
+	
+	# Create a checkbox to select all operations
+	$checkboxSelectAll = New-Object System.Windows.Forms.CheckBox
+	$checkboxSelectAll.Text = "Select All"
+	$checkboxSelectAll.Location = New-Object System.Drawing.Point(20, 260)
+	$checkboxSelectAll.Size = New-Object System.Drawing.Size(350, 25)
+	$repairForm.Controls.Add($checkboxSelectAll)
+	
+	# Add event handler for Select All checkbox
+	$checkboxSelectAll.Add_CheckedChanged({
+			$checked = $checkboxSelectAll.Checked
+			foreach ($cb in $operationCheckboxes)
+			{
+				$cb.Checked = $checked
+			}
+		})
+	
+	# Create the Run button
+	$runButton = New-Object System.Windows.Forms.Button
+	$runButton.Text = "Run"
+	$runButton.Location = New-Object System.Drawing.Point(150, 310)
+	$runButton.Size = New-Object System.Drawing.Size(100, 30)
+	$runButton.Enabled = $false # Initially disabled
+	$repairForm.Controls.Add($runButton)
+	
+	# Add event handlers for each operation checkbox to update Run button state
+	foreach ($cb in $operationCheckboxes)
 	{
-		$RunAll = $false
+		$cb.Add_CheckedChanged({ Update-RunButtonState })
 	}
+	
+	# Add event handler for the Run button
+	$runButton.Add_Click({
+			# Determine which operations are selected
+			$selectedParams = @{
+				Defender	   = $checkboxDefender.Checked
+				DISM		   = $checkboxDISM.Checked
+				SFC		       = $checkboxSFC.Checked
+				DiskCleanup    = $checkboxDiskCleanup.Checked
+				OptimizeDrives = $checkboxOptimizeDrives.Checked
+				CheckDisk	   = $checkboxCheckDisk.Checked
+			}
+			
+			# Set DialogResult to OK and close the form
+			$repairForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+			$repairForm.Close()
+		})
+	
+	# Show the repair options form as a modal dialog
+	$dialogResult = $repairForm.ShowDialog()
+	
+	# If the user closed the form without clicking Run, cancel the function
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write-Log "Windows repair process cancelled by the user." "yellow"
+		return
+	}
+	
+	# Retrieve selected parameters after the form is closed
+	$selectedParams = @{
+		Defender	   = $checkboxDefender.Checked
+		DISM		   = $checkboxDISM.Checked
+		SFC		       = $checkboxSFC.Checked
+		DiskCleanup    = $checkboxDiskCleanup.Checked
+		OptimizeDrives = $checkboxOptimizeDrives.Checked
+		CheckDisk	   = $checkboxCheckDisk.Checked
+	}
+	
+	Write-Log "Selected operations will be executed." "blue"
 	
 	# Update Windows Defender Signatures and run a full scan
-	if ($RunAll -or $Defender)
+	if ($selectedParams.Defender)
 	{
 		try
 		{
@@ -3037,7 +3152,7 @@ function Repair-Windows
 	}
 	
 	# Run DISM commands
-	if ($RunAll -or $DISM)
+	if ($selectedParams.DISM)
 	{
 		try
 		{
@@ -3060,7 +3175,7 @@ function Repair-Windows
 	}
 	
 	# Run System File Checker
-	if ($RunAll -or $SFC)
+	if ($selectedParams.SFC)
 	{
 		try
 		{
@@ -3079,7 +3194,7 @@ function Repair-Windows
 	}
 	
 	# Cleanup disk space
-	if ($RunAll -or $DiskCleanup)
+	if ($selectedParams.DiskCleanup)
 	{
 		try
 		{
@@ -3099,7 +3214,7 @@ function Repair-Windows
 	}
 	
 	# Optimize All Fixed Drives
-	if ($RunAll -or $OptimizeDrives)
+	if ($selectedParams.OptimizeDrives)
 	{
 		try
 		{
@@ -3130,7 +3245,7 @@ function Repair-Windows
 	}
 	
 	# Schedule Check Disk
-	if ($RunAll -or $CheckDisk)
+	if ($selectedParams.CheckDisk)
 	{
 		try
 		{
@@ -3148,9 +3263,7 @@ function Repair-Windows
 	{
 		Write-Log "Skipping Check Disk scheduling as per user request." "yellow"
 	}
-	
-	Write-Log "Windows repair process completed.`r`n" "blue"
-	Write-Log "`r`n==================== Repair-Windows Function ====================`r`n" "blue"
+	Write-Log "`r`n==================== Repair-Windows Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -6234,7 +6347,7 @@ if (-not $SilentMode)
 	{
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.1"
+		$form.Text = "Created by Alex_C.T - Version 1.2"
 		$form.Size = New-Object System.Drawing.Size(1010, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
@@ -6476,112 +6589,14 @@ if (-not $SilentMode)
 			$form.Controls.Add($storeButton3)
 			
 			# Repair Windows button
-			$storeButton4 = New-Object System.Windows.Forms.Button
-			$storeButton4.Text = "Repair Windows"
-			$storeButton4.Location = New-Object System.Drawing.Point(750, 535)
-			$storeButton4.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton4.Add_Click({
-					# Create a new form for selecting operations
-					$repairForm = New-Object System.Windows.Forms.Form
-					$repairForm.Text = "Select Repair Operations"
-					$repairForm.Size = New-Object System.Drawing.Size(400, 400)
-					$repairForm.StartPosition = "CenterScreen"
-					
-					# Create checkboxes for each operation
-					$checkboxDefender = New-Object System.Windows.Forms.CheckBox
-					$checkboxDefender.Text = "Windows Defender Update and Scan"
-					$checkboxDefender.Location = New-Object System.Drawing.Point(20, 20)
-					$checkboxDefender.Size = New-Object System.Drawing.Size(350, 25)
-					$repairForm.Controls.Add($checkboxDefender)
-					
-					$checkboxDISM = New-Object System.Windows.Forms.CheckBox
-					$checkboxDISM.Text = "Run DISM Commands"
-					$checkboxDISM.Location = New-Object System.Drawing.Point(20, 60)
-					$checkboxDISM.Size = New-Object System.Drawing.Size(350, 25)
-					$repairForm.Controls.Add($checkboxDISM)
-					
-					$checkboxSFC = New-Object System.Windows.Forms.CheckBox
-					$checkboxSFC.Text = "Run System File Checker (SFC)"
-					$checkboxSFC.Location = New-Object System.Drawing.Point(20, 100)
-					$checkboxSFC.Size = New-Object System.Drawing.Size(350, 25)
-					$repairForm.Controls.Add($checkboxSFC)
-					
-					$checkboxDiskCleanup = New-Object System.Windows.Forms.CheckBox
-					$checkboxDiskCleanup.Text = "Disk Cleanup"
-					$checkboxDiskCleanup.Location = New-Object System.Drawing.Point(20, 140)
-					$checkboxDiskCleanup.Size = New-Object System.Drawing.Size(350, 25)
-					$repairForm.Controls.Add($checkboxDiskCleanup)
-					
-					$checkboxOptimizeDrives = New-Object System.Windows.Forms.CheckBox
-					$checkboxOptimizeDrives.Text = "Optimize Drives"
-					$checkboxOptimizeDrives.Location = New-Object System.Drawing.Point(20, 180)
-					$checkboxOptimizeDrives.Size = New-Object System.Drawing.Size(350, 25)
-					$repairForm.Controls.Add($checkboxOptimizeDrives)
-					
-					$checkboxCheckDisk = New-Object System.Windows.Forms.CheckBox
-					$checkboxCheckDisk.Text = "Schedule Check Disk"
-					$checkboxCheckDisk.Location = New-Object System.Drawing.Point(20, 220)
-					$checkboxCheckDisk.Size = New-Object System.Drawing.Size(350, 25)
-					$repairForm.Controls.Add($checkboxCheckDisk)
-					
-					# Create a checkbox to select all operations
-					$checkboxSelectAll = New-Object System.Windows.Forms.CheckBox
-					$checkboxSelectAll.Text = "Select All"
-					$checkboxSelectAll.Location = New-Object System.Drawing.Point(20, 260)
-					$checkboxSelectAll.Size = New-Object System.Drawing.Size(350, 25)
-					$repairForm.Controls.Add($checkboxSelectAll)
-					
-					# Add event handler for Select All checkbox
-					$checkboxSelectAll.Add_CheckedChanged({
-							$checked = $checkboxSelectAll.Checked
-							$checkboxDefender.Checked = $checked
-							$checkboxDISM.Checked = $checked
-							$checkboxSFC.Checked = $checked
-							$checkboxDiskCleanup.Checked = $checked
-							$checkboxOptimizeDrives.Checked = $checked
-							$checkboxCheckDisk.Checked = $checked
-						})
-					
-					# Create the Run button
-					$runButton = New-Object System.Windows.Forms.Button
-					$runButton.Text = "Run"
-					$runButton.Location = New-Object System.Drawing.Point(150, 310)
-					$runButton.Size = New-Object System.Drawing.Size(100, 30)
-					$repairForm.Controls.Add($runButton)
-					
-					# Add click event handler for the Run button
-					$runButton.Add_Click({
-							# Close the repairForm
-							$repairForm.Close()
-							
-							# Build parameters for Repair-Windows function
-							$params = @{ }
-							
-							# If no checkboxes are checked, run all operations
-							if (-not ($checkboxDefender.Checked -or $checkboxDISM.Checked -or $checkboxSFC.Checked -or $checkboxDiskCleanup.Checked -or $checkboxOptimizeDrives.Checked -or $checkboxCheckDisk.Checked))
-							{
-								# No parameters needed, Repair-Windows will run all operations by default
-								Repair-Windows
-							}
-							else
-							{
-								# Add parameters based on selections
-								if ($checkboxDefender.Checked) { $params.Add("Defender", $true) }
-								if ($checkboxDISM.Checked) { $params.Add("DISM", $true) }
-								if ($checkboxSFC.Checked) { $params.Add("SFC", $true) }
-								if ($checkboxDiskCleanup.Checked) { $params.Add("DiskCleanup", $true) }
-								if ($checkboxOptimizeDrives.Checked) { $params.Add("OptimizeDrives", $true) }
-								if ($checkboxCheckDisk.Checked) { $params.Add("CheckDisk", $true) }
-								
-								# Call the Repair-Windows function with selected parameters
-								Repair-Windows @params
-							}
-						})
-					
-					# Show the repair options form
-					$repairForm.ShowDialog()
+			$repairButton = New-Object System.Windows.Forms.Button
+			$repairButton.Text = "Repair Windows"
+			$repairButton.Location = New-Object System.Drawing.Point(750, 535)
+			$repairButton.Size = New-Object System.Drawing.Size(200, 40)
+			$repairButton.Add_Click({
+					Repair-Windows
 				})
-			$form.Controls.Add($storeButton4)
+			$form.Controls.Add($repairButton)
 			
 			$storeButton5 = New-Object System.Windows.Forms.Button
 			$storeButton5.Text = "Pump All Items"
