@@ -2218,7 +2218,7 @@ $changeMachineNameButton.Add_Click({
                 $operationStatus["MachineNameChange"].Details = "Machine name changed to '$script:newMachineName'."
 
                 # Call Remove-OldXFolders (ensure this function and variables are defined)
-                Remove-OldXFolders -oldMachineName $oldMachineName -oldStoreNumber $currentStoreNumber
+				Remove-OldXFolders -MachineName $newMachineNameInput -StoreNumber $currentStoreNumber
 
                 # Update startup.ini file after changing machine name
                 $startupIniPath = "\\localhost\storeman\startup.ini"
