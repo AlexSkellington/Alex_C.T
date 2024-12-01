@@ -6762,7 +6762,7 @@ if (-not $SilentMode)
 	$userProfiles = @('Administrator', 'Operator')
 	
 	# Iterate over each machine and each user profile, then invoke Delete-Files as a background job if the path exists
-	foreach ($machine in $LaneMachines.Values)
+	$DeleteJob = foreach ($machine in $LaneMachines.Values)
 	{
 		foreach ($user in $userProfiles)
 		{
