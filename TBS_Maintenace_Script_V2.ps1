@@ -6340,7 +6340,7 @@ if (-not $SilentMode)
 	{
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.2"
+		$form.Text = "Created by Alex_C.T - Version 1.3"
 		$form.Size = New-Object System.Drawing.Size(1010, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
@@ -6553,13 +6553,31 @@ if (-not $SilentMode)
 		}
 		else
 		{
-			# Create Store Specific Buttons
+						# Create Store Specific Button with Confirmation
 			$storeButton1 = New-Object System.Windows.Forms.Button
 			$storeButton1.Text = "Server DB Repair"
 			$storeButton1.Location = New-Object System.Drawing.Point(50, 535)
 			$storeButton1.Size = New-Object System.Drawing.Size(200, 40)
 			$storeButton1.Add_Click({
-					Process-ServerGUI -StoresqlFilePath $StoresqlFilePath
+					$confirmation = [System.Windows.Forms.MessageBox]::Show(
+						"Do you want to proceed with the server database repair?",
+						"Confirmation",
+						[System.Windows.Forms.MessageBoxButtons]::YesNo,
+						[System.Windows.Forms.MessageBoxIcon]::Question
+					)
+					if ($confirmation -eq [System.Windows.Forms.DialogResult]::Yes)
+					{
+						Process-ServerGUI -StoresqlFilePath $StoresqlFilePath
+					}
+					else
+					{
+						[System.Windows.Forms.MessageBox]::Show(
+							"Operation canceled.",
+							"Canceled",
+							[System.Windows.Forms.MessageBoxButtons]::OK,
+							[System.Windows.Forms.MessageBoxIcon]::Information
+						)
+					}
 				})
 			$form.Controls.Add($storeButton1)
 			
