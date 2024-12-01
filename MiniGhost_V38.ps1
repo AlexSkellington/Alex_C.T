@@ -1940,13 +1940,13 @@ function Delete-Files
 
 # Only call the function if the script has not been relaunched
 if (-not $IsRelaunched)
-{
-	Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
-	Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/MiniGhost"
-}
-else
-{
-	Write-Host "Script has been relaunched. Continuing execution."
+	{
+		Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
+		Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/MiniGhost"
+	}
+	else
+	{
+		Write-Host "Script has been relaunched. Continuing execution."
 }
 
 # Get the memory info
@@ -1980,7 +1980,7 @@ $FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "MiniGhost.ps1"
 
 # Create the main form
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Created by Alex_C.T - Version 1.0"
+$form.Text = "Created by Alex_C.T - Version 1.1"
 $form.Size = New-Object System.Drawing.Size(505, 320)
 $form.StartPosition = "CenterScreen"
 
@@ -2866,7 +2866,9 @@ SET F1056 = '$storeNumber';
 $rebootButton.Add_Click({
     $rebootResult = [System.Windows.Forms.MessageBox]::Show("Do you want to reboot now?", "Reboot", [System.Windows.Forms.MessageBoxButtons]::YesNo)
     if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes) {
-        Restart-Computer -Force
+		Restart-Computer -Force
+		# Clean Temp Folder
+		Delete-Files -Path "$TempDir" -SpecifiedFiles "MiniGhost.ps1"
     }
 })
 
