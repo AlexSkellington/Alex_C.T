@@ -6340,7 +6340,7 @@ if (-not $SilentMode)
 	{
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.2"
+		$form.Text = "Created by Alex_C.T - Version 1.3"
 		$form.Size = New-Object System.Drawing.Size(1010, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
@@ -6761,7 +6761,7 @@ if (-not $SilentMode)
 	# Define the list of user profiles to process
 	$userProfiles = @('Administrator', 'Operator')
 	
-	# Iterate over each machine and each user profile, then invoke Delete-Files as a background job
+	# Iterate over each machine and each user profile, then invoke Delete-Files as a background job if the path exists
 	foreach ($machine in $LaneMachines.Values)
 	{
 		foreach ($user in $userProfiles)
@@ -6771,19 +6771,28 @@ if (-not $SilentMode)
 			
 			try
 			{
-				# Invoke the Delete-Files function with the -AsJob parameter
-				$DeleteJob = Delete-Files -Path $tempPath -AsJob
-				
-				# Increment the job counter
-				$jobCount++
-				
-				# Log that the deletion job has been started
-			#	Write-Log "Started deletion job for %temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
+				# Check if the Temp path exists on the remote machine
+				if (Test-Path -Path $tempPath)
+				{
+					# Invoke the Delete-Files function with the -AsJob parameter
+					$DeleteJob = Delete-Files -Path $tempPath -AsJob
+					
+					# Increment the job counter
+					$jobCount++
+					
+					# Log that the deletion job has been started
+				#	Write-Log "Started deletion job for %temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
+				}
+				else
+				{
+					# Log that the Temp path does not exist
+				#	Write-Log "Temp path does not exist for user '$user' on machine '$machine' at path '$tempPath'." "yellow"
+				}
 			}
 			catch
 			{
-				# Log any errors that occur while starting the deletion job
-				Write-Log "An error occurred while starting the deletion job for user '$user' on machine '$machine'. Error: $_" "red"
+				# Log any errors that occur while attempting to start the deletion job
+				Write-Log "An error occurred while processing user '$user' on machine '$machine'. Error: $_" "red"
 			}
 		}
 	}
