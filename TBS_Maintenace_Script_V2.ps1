@@ -6411,7 +6411,7 @@ if (-not $SilentMode)
 		
 		# Ativate Windows button
 		$ActivateWindowsButton = New-Object System.Windows.Forms.Button
-		$ActivateWindowsButton.Text = "Activate Windows"
+		$ActivateWindowsButton.Text = "Alex_C.T"
 		$ActivateWindowsButton.Location = New-Object System.Drawing.Point(850, 30)
 		$ActivateWindowsButton.Size = New-Object System.Drawing.Size(100, 40)
 		$ActivateWindowsButton.add_Click({
@@ -6714,6 +6714,9 @@ if (-not $SilentMode)
 		Write-Host "Script has been relaunched. Continuing execution."
 	}
 	
+	# Initialize a counter for the number of jobs started
+	$jobCount = 0
+	
 	# Initialize variables
 	# $Memory25PercentMB = Get-MemoryInfo
 	
@@ -6744,33 +6747,49 @@ if (-not $SilentMode)
 	
 	# Clearing XE (Urgent Messages) folder.
 	$ClearXEJob = Clear-XEFolder
+	# Increment the job counter
+	$jobCount++
 	
 	# Clear %Temp% foder on start
 	$FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
+	# Increment the job counter
+	$jobCount++
 	
 	# Retrieve the list of machine names from the FunctionResults dictionary
 	$LaneMachines = $script:FunctionResults['LaneMachines']
 	
-	# Iterate over each machine and invoke Delete-Files as a background job
+	# Define the list of user profiles to process
+	$userProfiles = @('Administrator', 'Operator')
+	
+	# Iterate over each machine and each user profile, then invoke Delete-Files as a background job
 	foreach ($machine in $LaneMachines.Values)
 	{
-		# Construct the full UNC path to the Temp directory on the remote machine
-		$tempPath = "\\$machine\C$\Users\Administrator\AppData\Local\Temp\"
-		
-		try
+		foreach ($user in $userProfiles)
 		{
-			# Invoke the Delete-Files function with the -AsJob parameter
-			$DeleteJob = Delete-Files -Path $tempPath -AsJob
+			# Construct the full UNC path to the Temp directory on the remote machine
+			$tempPath = "\\$machine\C$\Users\$user\AppData\Local\Temp\"
 			
-			# Log that the deletion job has been started
-			Write-Log "Started deletion job for %temp% folder in '$machine' at path '$tempPath'." "green"
-		}
-		catch
-		{
-			# Log any errors that occur while starting the deletion job
-			Write-Log "An error occurred while starting the deletion job for '$machine'. Error: $_" "red"
+			try
+			{
+				# Invoke the Delete-Files function with the -AsJob parameter
+				$DeleteJob = Delete-Files -Path $tempPath -AsJob
+				
+				# Increment the job counter
+				$jobCount++
+				
+				# Log that the deletion job has been started
+			#	Write-Log "Started deletion job for %temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
+			}
+			catch
+			{
+				# Log any errors that occur while starting the deletion job
+				Write-Log "An error occurred while starting the deletion job for user '$user' on machine '$machine'. Error: $_" "red"
+			}
 		}
 	}
+	
+	# Log the summary of jobs started
+	Write-Log "Total deletion jobs started: $jobCount" "blue"
 	
 	# ===================================================================================================
 	#                                       SECTION: Show the GUI
