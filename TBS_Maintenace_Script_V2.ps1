@@ -6685,6 +6685,15 @@ if (-not $SilentMode)
 					{
 						Configure-SystemSettings
 					}
+					else
+					{
+						[System.Windows.Forms.MessageBox]::Show(
+							"Operation canceled.",
+							"Canceled",
+							[System.Windows.Forms.MessageBoxButtons]::OK,
+							[System.Windows.Forms.MessageBoxIcon]::Information
+						)
+					}
 				})
 			$form.Controls.Add($ConfigureSystemSettingsButton)
 			
