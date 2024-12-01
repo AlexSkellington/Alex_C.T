@@ -6553,7 +6553,7 @@ if (-not $SilentMode)
 		}
 		else
 		{
-						# Create Store Specific Button with Confirmation
+			# Create Store Specific Button with Confirmation
 			$storeButton1 = New-Object System.Windows.Forms.Button
 			$storeButton1.Text = "Server DB Repair"
 			$storeButton1.Location = New-Object System.Drawing.Point(50, 535)
