@@ -1,3 +1,9 @@
+Param (
+	[switch]$IsRelaunched
+)
+
+Write-Host "Script started. IsRelaunched: $IsRelaunched"
+
 # ===================================================================================================
 #                                       SECTION: Import Modules
 # ---------------------------------------------------------------------------------------------------
@@ -7,27 +13,6 @@
 
 # Import necessary modules
 Import-Module -Name Microsoft.PowerShell.Utility
-
-# ===================================================================================================
-#                                       SECTION: Ensure Administrator Privileges
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Ensures that the script is running with administrative privileges. If not, it attempts to restart the script with elevated rights.
-# ===================================================================================================
-
-function Ensure-Administrator {
-    if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-        try {
-            # Reconstruct the original arguments without adding -Silent
-            $originalArgs = $MyInvocation.UnboundArguments -join ' '
-            Start-Process -FilePath "PowerShell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" $originalArgs" -Verb RunAs
-            exit
-        } catch {
-            Write-Error "Failed to elevate to administrator."
-            exit 1
-        }
-    }
-}
 
 # ===================================================================================================
 #                                       SECTION: Import Necessary Assemblies
@@ -41,166 +26,421 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # ===================================================================================================
-#                                       SECTION: Initialize GUI Components
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Creates and initializes the main graphical user interface (GUI) form and its components.
-# ===================================================================================================
-
-# Create the main form
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "Mini Ghost PowerShell Script"
-$form.Size = New-Object System.Drawing.Size(505, 370)
-$form.StartPosition = "CenterScreen"
-
-# Banner Label
-$bannerLabel = New-Object System.Windows.Forms.Label
-$bannerLabel.Text = "PowerShell Script - Mini Ghost"
-$bannerLabel.Font = New-Object System.Drawing.Font("Arial", 16, [System.Drawing.FontStyle]::Bold)
-$bannerLabel.Size = New-Object System.Drawing.Size(500, 40)
-$bannerLabel.TextAlign = 'MiddleCenter'
-$bannerLabel.Dock = 'Top'
-
-$form.Controls.Add($bannerLabel)
-
-# Created by Label
-$createdByLabel = New-Object System.Windows.Forms.Label
-$createdByLabel.Text = "Created by Alex_C.T"
-$createdByLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-$createdByLabel.Size = New-Object System.Drawing.Size(500, 25)
-$createdByLabel.TextAlign = 'MiddleCenter'
-$createdByLabel.Dock = 'Top'
-
-$form.Controls.Add($createdByLabel)
-
-# ===================================================================================================
 #                                       SECTION: Script Variables
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Initializes all necessary variables required for the script's operation.
 # ===================================================================================================
 
-# Ensure script is running as administrator
-# Ensure-Administrator
+# Declare the script hash table to store results from functions
+$script:FunctionResults = @{ }
+
+# Get the current machine name
+$currentMachineName = $env:COMPUTERNAME
 
 # Initialize script-scoped variables for new store number and new machine name
 $script:newStoreNumber = $null
 $script:newMachineName = $null
 
-# Get the current machine name
-$currentMachineName = $env:COMPUTERNAME
-
 # Define paths
 $startupIniPath = "\\localhost\storeman\startup.ini"
-$baseDirectory = "\\localhost\storeman\office"  # Set the base directory for folder retrieval
+$baseDirectory = "\\localhost\storeman\office" # Set the base directory for folder retrieval
 
-# ===================================================================================================
-#                                       FUNCTION: Get-StoreNameFromINI
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Retrieves the store name from the system INI file. Returns "N/A" if not found.
-# ===================================================================================================
+# Temp Directory
+$TempDir = [System.IO.Path]::GetTempPath()
 
-function Get-StoreNameFromINI {
-    param (
-        [string]$iniPath = '\\localhost\storeman\office\system.ini'
-    )
-
-    $storeName = 'N/A'
-
-    if (Test-Path $iniPath) {
-        $iniContent = Get-Content $iniPath
-        foreach ($line in $iniContent) {
-            if ($line -match '^NAME=(.*)') {
-                $storeName = $matches[1].Trim()
-                break
-            }
-        }
-    } else {
-        $storeName = "INI file not found at $iniPath"
-    }
-
-    return $storeName
+# Initialize a hashtable to track the status of each operation
+$operationStatus = @{
+	"StoreNumberChange" = @{ Status = "Pending"; Message = ""; Details = "" }
+	"MachineNameChange" = @{ Status = "Pending"; Message = ""; Details = "" }
+	"OldXFoldersDeletion" = @{ Status = "Pending"; Message = ""; Details = "" }
+	"StartupIniUpdate"  = @{ Status = "Pending"; Message = ""; Details = "" }
+	"IPConfiguration"   = @{ Status = "Pending"; Message = ""; Details = "" }
+	"TableTruncation"   = @{ Status = "Pending"; Message = ""; Details = "" }
+	"DatabaseRepair"    = @{ Status = "Pending"; Message = ""; Details = "" }
+	"RegistryCleanup"   = @{ Status = "Pending"; Message = ""; Details = "" }
+	"SQLDatabaseUpdate" = @{ Status = "Pending"; Message = ""; Details = "" }
+	"ConfigurePowerSettings" = @{ Status = "Pending"; Message = ""; Details = "" }
+	"ConfigureServices" = @{ Status = "Pending"; Message = ""; Details = "" }
+	"ConfigureAdvancedSettings" = @{ Status = "Pending"; Message = ""; Details = "" }
 }
 
-$storeName = Get-StoreNameFromINI
-
 # ===================================================================================================
-#                                       FUNCTION: Get-CurrentStoreNumber
+#                              FUNCTION: Ensure Administrator Privileges
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Retrieves the current store number from the startup.ini file or XF directories without prompting the user.
+#   Ensures that the script is running with administrative privileges. If not, it attempts to restart the script with elevated rights.
 # ===================================================================================================
 
-function Get-CurrentStoreNumber {
-    param (
-        [string]$startupIniPath,
-        [string]$baseDirectory
-    )
-    
-    # Define helper functions
-    function Format-StoreNumber {
-        param (
-            [string]$storeNumber
-        )
-        return $storeNumber.PadLeft(3, '0')
-    }
-    
-    function Get-StoreNumberFromINI {   
-        if (Test-Path $startupIniPath) {
-            $iniContent = Get-Content $startupIniPath
-            foreach ($line in $iniContent) {
-                if ($line -match "^STORE=(\d{3})") {
-                    return $matches[1]  # Return store number found in the .ini file
-                }
-            }
-        }
-        return $null
-    }
-    
-    $storeNumber = Get-StoreNumberFromINI
-
-    if ($storeNumber -eq $null) {
-        # If store number not found in startup.ini, check the base directory for XF folders    
-        if (-Not (Test-Path $baseDirectory)) {
-            $storeNumber = "Unknown"
-        } else {
-            # Retrieve the folders starting with "XF" to extract the store number
-            $folders = Get-ChildItem -Path $baseDirectory -Directory | Where-Object { $_.Name -match "^XF\d{6}" }
-
-            # Initialize an array to store unique store numbers
-            $storeNumbers = @()
-
-            # Extract the store numbers from folder names
-            foreach ($folder in $folders) {
-                $folderName = $folder.Name
-                $folderStoreNumber = $folderName.Substring(2, 3)  # Extract characters 2-4 as the store number
-
-                # Add store number to the list if it's not already included
-                if (-not $storeNumbers.Contains($folderStoreNumber)) {
-                    $storeNumbers += $folderStoreNumber
-                }
-            }
-
-            # Determine store number based on retrieval results
-            if ($storeNumbers.Count -eq 1) {
-                # Only one store number found
-                $storeNumber = Format-StoreNumber $storeNumbers[0]  # Ensure it's 3 digits
-            } elseif ($storeNumbers.Count -gt 1) {
-                # Multiple store numbers found
-                $storeNumber = "Multiple store numbers found: $($storeNumbers -join ', ')"
-            } else {
-                # No store numbers found
-                $storeNumber = "Unknown"
-            }
-        }
-    }
-
-    return $storeNumber
+function Ensure-Administrator
+{
+	# Retrieve the current Windows identity
+	$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+	# Create a WindowsPrincipal object with the current identity
+	$principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
+	
+	# Check if the user is not in the Administrator role
+	if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+	{
+		try
+		{
+			# Build the argument list
+			$arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`""
+			if ($Silent)
+			{
+				$arguments += " -Silent"
+			}
+			
+			# Create a ProcessStartInfo object
+			$psi = New-Object System.Diagnostics.ProcessStartInfo
+			$psi.FileName = (Get-Process -Id $PID).Path # Use the same PowerShell executable
+			$psi.Arguments = $arguments
+			$psi.Verb = 'runas' # Run as administrator
+			$psi.UseShellExecute = $true
+			$psi.WindowStyle = 'Normal' # Allow the console window to show (temporarily)
+			
+			# Start the new elevated process
+			$process = [System.Diagnostics.Process]::Start($psi)
+			exit # Exit the current process after starting the elevated one
+		}
+		catch
+		{
+			[System.Windows.Forms.MessageBox]::Show("Failed to elevate to administrator.`r`nError: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			exit 1
+		}
+	}
+	else
+	{
+		# Elevated, continue execution
+		# Optional: Display a message box if needed
+		# [System.Windows.Forms.MessageBox]::Show("Running as Administrator.", "Info")
+	}
 }
 
-# Get the current store number without prompting
-$currentStoreNumber = Get-CurrentStoreNumber -startupIniPath $startupIniPath -baseDirectory $baseDirectory
+# ===================================================================================================
+#                                   FUNCTION: Download-AndRelaunchSelf
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   This function downloads a specified PowerShell script from a given URL, saves it to a designated
+#   directory (defaulting to the system's temporary folder) with ANSI encoding, and relaunches the
+#   downloaded script with elevated (Administrator) privileges in a hidden window. It includes
+#   error handling to log any issues encountered during the download or relaunch processes. To
+#   prevent infinite loops, an explicit relaunch indicator is used. If the download fails, the
+#   function logs the error and allows the main script to continue executing without performing
+#   further actions within the function.
+# ===================================================================================================
+
+function Download-AndRelaunchSelf
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$ScriptUrl,
+		[Parameter(Mandatory = $false)]
+		[string]$DestinationDirectory = "$env:TEMP",
+		[Parameter(Mandatory = $false)]
+		[string]$ScriptName = "MiniGhost.ps1",
+		[switch]$IsRelaunched
+	)
+	
+	Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
+	
+	# If the script has already been relaunched, do not proceed
+	if ($IsRelaunched)
+	{
+		Write-Host "Script has already been relaunched. Exiting function."
+		return
+	}
+	
+	# Construct the full path to save the script
+	$DestinationPath = Join-Path -Path $DestinationDirectory -ChildPath $ScriptName
+	
+	# Prevent infinite loop by checking if the script is already running from the destination path
+	if ($MyInvocation.MyCommand.Path -ne $null)
+	{
+		try
+		{
+			$currentPath = (Resolve-Path $MyInvocation.MyCommand.Path).Path
+			$targetPath = (Resolve-Path $DestinationPath).Path
+			if ($currentPath -eq $targetPath)
+			{
+				# Script is already running from the destination path; do not proceed
+				Write-Host "Script is already running from $DestinationPath. Exiting function."
+				return
+			}
+		}
+		catch
+		{
+			# If Resolve-Path fails, proceed to download
+			Write-Warning "Resolve-Path failed. Proceeding to download."
+		}
+	}
+	
+	try
+	{
+		Write-Host "Attempting to download the script from $ScriptUrl"
+		
+		# Attempt to download the script content as a string
+		$scriptContent = Invoke-RestMethod -Uri $ScriptUrl -UseBasicParsing
+		
+		# Save the script content with ANSI encoding
+		Set-Content -Path $DestinationPath -Value $scriptContent -Encoding Default
+		
+		# Verify that the script was downloaded and saved successfully
+		if (Test-Path $DestinationPath)
+		{
+			Write-Host "Script downloaded successfully to $DestinationPath with ANSI encoding."
+		}
+		else
+		{
+			Write-Error "Script was not downloaded successfully."
+			return
+		}
+	}
+	catch
+	{
+		# Log the error and exit the function without performing further actions
+		Write-Error "Failed to download the script from $ScriptUrl. Error: $_"
+		return
+	}
+	
+	try
+	{
+		# Relaunch the downloaded script as Administrator in a hidden window
+		
+		# Prepare the arguments for the new PowerShell process, including the relaunch indicator
+		$arguments = @(
+			"-NoProfile"
+			"-ExecutionPolicy"
+			"Bypass"
+			"-File"
+			"`"$DestinationPath`""
+			"-IsRelaunched"
+			"-WindowStyle"
+			"Hidden"
+		)
+		
+		Write-Host "Starting new process with arguments: $arguments"
+		
+		# Start the new process with elevated privileges
+		Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
+		
+		Write-Host "Process started successfully. Exiting current script."
+		
+		# Exit the current script to prevent multiple instances
+		exit
+	}
+	catch
+	{
+		# Log any errors that occur during the relaunch process
+		Write-Error "Failed to relaunch the script as Administrator. Error: $_"
+	}
+	finally
+	{
+		# Exit the current script regardless of success or failure
+		Write-Host "Exiting the original script."
+		exit
+	}
+}
+
+# Rest of your script continues here
+Write-Host "Script is running with elevated privileges from $($MyInvocation.MyCommand.Path)"
+
+# ===================================================================================================
+#                                        FUNCTION: Get-StoreNameGUI
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Retrieves the store name from the system.ini file.
+#   Stores the result in $script:FunctionResults['StoreName'].
+# ===================================================================================================
+
+function Get-StoreNameGUI
+{
+	param (
+		[string]$INIPath = "\\localhost\storeman\office\system.ini"
+	)
+	
+	# Initialize StoreName
+	$script:FunctionResults['StoreName'] = "N/A"
+	
+	if (Test-Path $INIPath)
+	{
+		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | ForEach-Object {
+			$_.Line.Split('=')[1].Trim()
+		}
+		if ($storeName)
+		{
+			$script:FunctionResults['StoreName'] = $storeName
+			# Write-Log "Store name found in system.ini: $storeName" "green"
+		}
+		else
+		{
+			# Write-Log "Store name not found in system.ini." "yellow"
+		}
+	}
+	else
+	{
+		# Write-Log "INI file not found: $INIPath" "yellow"
+	}
+	
+	# Update the storeNameLabel in the GUI
+	if (-not $SilentMode -and $storeNameLabel -ne $null)
+	{
+		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
+		$form.Refresh()
+		[System.Windows.Forms.Application]::DoEvents()
+	}
+}
+
+# ===================================================================================================
+#                                      FUNCTION: Get-StoreNumberGUI
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Retrieves the store number via GUI prompts or configuration files.
+#   Stores the result in $script:FunctionResults['StoreNumber'].
+# ===================================================================================================
+
+function Get-StoreNumberGUI
+{
+	param (
+		[string]$IniFilePath = "\\localhost\Storeman\startup.ini",
+		[string]$BasePath = "\\localhost\Storeman\Office\"
+	)
+	
+	# Initialize StoreNumber
+	$script:FunctionResults['StoreNumber'] = ""
+	
+	# Try to retrieve StoreNumber from the startup.ini file
+	if (Test-Path $IniFilePath)
+	{
+		$storeNumber = Select-String -Path $IniFilePath -Pattern "^STORE=" | ForEach-Object {
+			$_.Line.Split('=')[1].Trim()
+		}
+		if ($storeNumber)
+		{
+			$script:FunctionResults['StoreNumber'] = $storeNumber
+			# Write-Log "Store number found in startup.ini: $storeNumber" "green"
+		}
+		else
+		{
+			# Write-Log "Store number not found in startup.ini." "yellow"
+		}
+	}
+	else
+	{
+		# Write-Log "INI file not found: $IniFilePath" "yellow"
+	}
+	
+	# If not found, check XF directories
+	if (Test-Path $BasePath)
+	{
+		$XFDirs = Get-ChildItem -Path $BasePath -Directory -Filter "XF*"
+		foreach ($dir in $XFDirs)
+		{
+			if ($dir.Name -match "^XF(\d{3})")
+			{
+				$storeNumber = $Matches[1]
+				if ($storeNumber -ne "999")
+				{
+					$script:FunctionResults['StoreNumber'] = $storeNumber
+					# Write-Log "Store number found from XF directory: $storeNumber" "green"
+					break # Exit loop after finding the store number
+				}
+			}
+		}
+		if (-not $script:FunctionResults['StoreNumber'])
+		{
+			# Write-Log "No valid XF directories found in $BasePath" "yellow"
+		}
+	}
+	else
+	{
+		# Write-Log "Base path not found: $BasePath" "yellow"
+	}
+	
+	# Update the storeNumberLabel in the GUI if store number was found without manual input
+	if ($script:FunctionResults['StoreNumber'] -ne "")
+	{
+		if (-not $SilentMode -and $storeNumberLabel -ne $null)
+		{
+			$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
+			$form.Refresh()
+			[System.Windows.Forms.Application]::DoEvents()
+		}
+		return # Exit function after successful retrieval and GUI update
+	}
+	
+	# Prompt for manual input via GUI
+	while (-not $script:FunctionResults['StoreNumber'])
+	{
+		$inputBox = New-Object System.Windows.Forms.Form
+		$inputBox.Text = "Enter Store Number"
+		$inputBox.Size = New-Object System.Drawing.Size(300, 150)
+		$inputBox.StartPosition = "CenterParent"
+		$inputBox.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+		$inputBox.MaximizeBox = $false
+		$inputBox.MinimizeBox = $false
+		$inputBox.TopMost = $true
+		
+		$label = New-Object System.Windows.Forms.Label
+		$label.Text = "Please enter the store number (e.g., 1, 12, 123):"
+		$label.AutoSize = $true
+		$label.Location = New-Object System.Drawing.Point(10, 20)
+		$inputBox.Controls.Add($label)
+		
+		$textBox = New-Object System.Windows.Forms.TextBox
+		$textBox.Location = New-Object System.Drawing.Point(10, 50)
+		$textBox.Width = 260
+		$inputBox.Controls.Add($textBox)
+		
+		$okButton = New-Object System.Windows.Forms.Button
+		$okButton.Text = "OK"
+		$okButton.Location = New-Object System.Drawing.Point(100, 80)
+		$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+		$inputBox.AcceptButton = $okButton
+		$inputBox.Controls.Add($okButton)
+		
+		$cancelButton = New-Object System.Windows.Forms.Button
+		$cancelButton.Text = "Cancel"
+		$cancelButton.Location = New-Object System.Drawing.Point(180, 80)
+		$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+		$inputBox.CancelButton = $cancelButton
+		$inputBox.Controls.Add($cancelButton)
+		
+		$result = $inputBox.ShowDialog()
+		
+		if ($result -eq [System.Windows.Forms.DialogResult]::OK)
+		{
+			$input = $textBox.Text.Trim()
+			if ($input -match "^\d{1,3}$" -and $input -ne "000")
+			{
+				# Pad the input with leading zeros to ensure it is 3 digits
+				$paddedInput = $input.PadLeft(3, '0')
+				$script:FunctionResults['StoreNumber'] = $paddedInput
+				# Write-Log "Store number entered by user: $paddedInput" "green"
+				
+				# Update the storeNumberLabel in the GUI
+				if (-not $SilentMode -and $storeNumberLabel -ne $null)
+				{
+					$storeNumberLabel.Text = "Store Number: $input"
+					$form.Refresh()
+					[System.Windows.Forms.Application]::DoEvents()
+				}
+				
+				break
+			}
+			else
+			{
+				[System.Windows.Forms.MessageBox]::Show("Store number must be 1 to 3 digits, numeric, and not '000'.", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			}
+		}
+		else
+		{
+			# Write-Log "Store number input canceled by user." "red"
+			exit 1
+		}
+	}
+}
 
 # ===================================================================================================
 #                                       FUNCTION: Get-ActiveIPConfig
@@ -222,76 +462,6 @@ function Get-ActiveIPConfig {
     }
 }
 
-# Get current IP configuration
-$currentConfigs = Get-ActiveIPConfig
-
-# ===================================================================================================
-#                                       SECTION: Display Labels
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Creates and displays labels on the GUI form to show current machine information.
-# ===================================================================================================
-
-# Display current machine name and store number in labels
-$machineNameLabel = New-Object System.Windows.Forms.Label
-$machineNameLabel.Text = "Current Machine Name: $env:COMPUTERNAME"
-$machineNameLabel.Location = New-Object System.Drawing.Point(10, 70)
-$machineNameLabel.Size = New-Object System.Drawing.Size(480, 20)
-
-$storeNameLabel = New-Object System.Windows.Forms.Label
-$storeNameLabel.Text = "Store Name: $storeName"
-$storeNameLabel.Location = New-Object System.Drawing.Point(10, 95)
-$storeNameLabel.Size = New-Object System.Drawing.Size(480, 20)
-
-$storeNumberLabel = New-Object System.Windows.Forms.Label
-$storeNumberLabel.Text = "Store Number: $currentStoreNumber"
-$storeNumberLabel.Location = New-Object System.Drawing.Point(10, 120)
-$storeNumberLabel.Size = New-Object System.Drawing.Size(480, 20)
-
-# Display current IP address in a label
-$currentIP = if ($currentConfigs -and $currentConfigs.Count -gt 0) {
-    $currentConfigs[0].IPv4Address.IPAddress
-} else {
-    "IP Not Found"
-}
-
-$ipAddressLabel = New-Object System.Windows.Forms.Label
-$ipAddressLabel.Text = "Current IP Address: $currentIP"
-$ipAddressLabel.Location = New-Object System.Drawing.Point(10, 145)
-$ipAddressLabel.Size = New-Object System.Drawing.Size(480, 20)
-
-$form.Controls.AddRange(@($machineNameLabel, $storeNameLabel, $storeNumberLabel, $ipAddressLabel))
-
-# ===================================================================================================
-#                                       SECTION: Operation Tracking
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Initializes a hashtable to track the status of each operation performed by the script.
-# ===================================================================================================
-
-# Initialize a hashtable to track the status of each operation
-$operationStatus = @{
-    "StoreNumberChange"        = @{ Status = "Pending"; Message = ""; Details = "" }
-    "MachineNameChange"        = @{ Status = "Pending"; Message = ""; Details = "" }
-    "OldXFoldersDeletion"      = @{ Status = "Pending"; Message = ""; Details = "" }
-    "StartupIniUpdate"         = @{ Status = "Pending"; Message = ""; Details = "" }
-    "IPConfiguration"          = @{ Status = "Pending"; Message = ""; Details = "" }
-    "TableTruncation"          = @{ Status = "Pending"; Message = ""; Details = "" }
-    "DatabaseRepair"           = @{ Status = "Pending"; Message = ""; Details = "" }
-    "RegistryCleanup"          = @{ Status = "Pending"; Message = ""; Details = "" }
-    "SQLDatabaseUpdate"        = @{ Status = "Pending"; Message = ""; Details = "" }
-    "ConfigurePowerSettings"   = @{ Status = "Pending"; Message = ""; Details = "" } 
-    "ConfigureServices"        = @{ Status = "Pending"; Message = ""; Details = "" } 
-    "ConfigureAdvancedSettings"= @{ Status = "Pending"; Message = ""; Details = "" }
-}
-
-# ===================================================================================================
-#                                       SECTION: Function Definitions
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Defines all the functions used within the script to perform various operations.
-# ===================================================================================================
-
 # ===================================================================================================
 #                                       FUNCTION: Get-MemoryInfo
 # ---------------------------------------------------------------------------------------------------
@@ -300,12 +470,12 @@ $operationStatus = @{
 #   This information can be used for memory-related configurations and optimizations.
 # ===================================================================================================
 
-# function Get-MemoryInfo {
-#     $TotalMemoryKB = (Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize
-#     $TotalMemoryMB = [math]::Floor($TotalMemoryKB / 1024)
-#     $Memory25PercentMB = [math]::Floor($TotalMemoryMB * 0.25)
-#     return $Memory25PercentMB
-# }
+function Get-MemoryInfo {
+    $TotalMemoryKB = (Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize
+    $TotalMemoryMB = [math]::Floor($TotalMemoryKB / 1024)
+    $Memory25PercentMB = [math]::Floor($TotalMemoryMB * 0.25)
+    return $Memory25PercentMB
+}
 
 # ===================================================================================================
 #                                       FUNCTION: Configure-PowerSettings
@@ -487,102 +657,150 @@ function Configure-AdvancedSettings {
 #                                       FUNCTION: Remove-OldXFolders
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Removes old XF and XW folders based on the provided machine name and store number.
+#   Removes old XF and XW folders based on the provided store number and machine name.
+#   The machine number is extracted from the last three characters of the machine name.
 # ===================================================================================================
 
-function Remove-OldXFolders {
-    param (
-        [string]$oldMachineName,
-        [string]$oldStoreNumber
-    )
-
-    # Define folder types to process
-    $folderTypes = @("XF", "XW")
-
-    # Initialize results
-    $deletedFolders = @()
-    # $keptFolders = @()  # Removed to prevent displaying kept folders
-    $failedToDeleteFolders = @()
-
-    # Extract new machine number from new machine name
-    if (-not [string]::IsNullOrEmpty($script:newMachineName) -and $script:newMachineName.Length -ge 6) {
-        $newMachineNumber = $script:newMachineName.Substring(3,3)
-    } else {
-        $newMachineNumber = ""
-    }
-
-    # Iterate through each folder type
-    foreach ($folderType in $folderTypes) {
-        # Define the path to the folder type directory
-        $folderTypePath = "\\$oldMachineName\storeman\office"
-
-        # Check if the folder type path exists
-        if (-not (Test-Path $folderTypePath)) {
-            $operationStatus["OldXFoldersDeletion"].Status = "Failed"
-            $operationStatus["OldXFoldersDeletion"].Message = "Folder path '$folderTypePath' does not exist."
-            $operationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
-            return
-        }
-
-        # Get all folders starting with the folder type
-        $folders = Get-ChildItem -Path $folderTypePath -Directory | Where-Object { $_.Name -like "$folderType*" }
-
-        foreach ($folder in $folders) {
-            $folderName = $folder.Name
-
-            # Extract StoreNumber and MachineNumber
-            if ($folderName.Length -ge 6) {
-                $storeNumber = $folderName.Substring(2,3)
-                $machineNumber = $folderName.Substring(5,3)
-            } else {
-                # Invalid folder name format, skip
-                continue
-            }
-
-            # Determine if the folder should be kept
-            if (($machineNumber -eq "901") -or ($machineNumber -eq $newMachineNumber)) {
-                # Keep the folder
-                # $keptFolders += $folderName  # Removed to prevent displaying kept folders
-            } else {
-                # Delete the folder
-                try {
-                    Remove-Item -Path $folder.FullName -Recurse -Force -ErrorAction Stop
-                    $deletedFolders += $folderName
-                } catch {
-                    $failedToDeleteFolders += $folderName
-                }
-            }
-        }
-    }
-
-    # Build the deletion result
-    $resultMessage = ""
-    if ($deletedFolders.Count -gt 0) {
-        $resultMessage += "Deleted folders:`n$($deletedFolders -join "`n")`n"
-    }
-    # if ($keptFolders.Count -gt 0) {
-    #     $resultMessage += "Kept folders:`n$($keptFolders -join "`n")`n"
-    # }
-    if ($failedToDeleteFolders.Count -gt 0) {
-        $resultMessage += "Failed to delete folders:`n$($failedToDeleteFolders -join "`n")`n"
-    }
-
-    # Update operationStatus
-    if ($failedToDeleteFolders.Count -eq 0) {
-        $operationStatus["OldXFoldersDeletion"].Status = "Successful"
-        $operationStatus["OldXFoldersDeletion"].Message = "Old XF and XW folders deleted successfully."
-        $operationStatus["OldXFoldersDeletion"].Details = $resultMessage
-    } elseif ($deletedFolders.Count -gt 0) {
-        $operationStatus["OldXFoldersDeletion"].Status = "Partial Failure"
-        $operationStatus["OldXFoldersDeletion"].Message = "Some old XF and XW folders could not be deleted."
-        $operationStatus["OldXFoldersDeletion"].Details = $resultMessage
-    } else {
-        $operationStatus["OldXFoldersDeletion"].Status = "Failed"
-        $operationStatus["OldXFoldersDeletion"].Message = "Failed to delete any old XF and XW folders."
-        $operationStatus["OldXFoldersDeletion"].Details = $resultMessage
-    }
-
-    return
+function Remove-OldXFolders
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[Parameter(Mandatory = $true)]
+		[string]$MachineName
+	)
+	
+	# Define folder types to process
+	$folderTypes = @("XF", "XW")
+	
+	# Initialize results
+	$deletedFolders = @()
+	# $keptFolders = @()  # Removed to prevent displaying kept folders
+	$failedToDeleteFolders = @()
+	
+	# Define possible base paths in order of priority
+	$possibleBasePaths = "\\localhost\storeman\office", "C:\storeman\office", "D:\storeman\office"
+	
+	# Find the first existing base path
+	$basePath = $possibleBasePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+	
+	if (-not $basePath)
+	{
+		$operationStatus["OldXFoldersDeletion"].Status = "Failed"
+		$operationStatus["OldXFoldersDeletion"].Message = "None of the base paths exist: $($possibleBasePaths -join ', ')"
+		$operationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+		return
+	}
+	
+	# Extract machine number from the last three characters of MachineName
+	if ($MachineName.Length -ge 3)
+	{
+		$machineNumber = $MachineName.Substring($MachineName.Length - 3, 3)
+	}
+	else
+	{
+		$operationStatus["OldXFoldersDeletion"].Status = "Failed"
+		$operationStatus["OldXFoldersDeletion"].Message = "MachineName '$MachineName' is too short to extract machine number."
+		$operationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+		return
+	}
+	
+	# Validate that machineNumber consists of digits
+	if ($machineNumber -notmatch '^\d{3}$')
+	{
+		$operationStatus["OldXFoldersDeletion"].Status = "Failed"
+		$operationStatus["OldXFoldersDeletion"].Message = "Extracted machine number '$machineNumber' is not valid. It should be exactly 3 digits."
+		$operationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+		return
+	}
+	
+	# Iterate through each folder type
+	foreach ($folderType in $folderTypes)
+	{
+		# Define the path to the folder type directory
+		$folderTypePath = Join-Path -Path $basePath -ChildPath $folderType
+		
+		# Check if the folder type path exists
+		if (-not (Test-Path $folderTypePath))
+		{
+			$operationStatus["OldXFoldersDeletion"].Status = "Failed"
+			$operationStatus["OldXFoldersDeletion"].Message = "Folder path '$folderTypePath' does not exist."
+			$operationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+			return
+		}
+		
+		# Get all folders starting with the folder type
+		$folders = Get-ChildItem -Path $folderTypePath -Directory | Where-Object { $_.Name -like "$folderType*" }
+		
+		foreach ($folder in $folders)
+		{
+			$folderName = $folder.Name
+			
+			# Extract StoreNumber and FolderMachineNumber
+			if ($folderName.Length -ge 6)
+			{
+				$folderStoreNumber = $folderName.Substring(2, 3)
+				$folderMachineNumber = $folderName.Substring(5, 3)
+			}
+			else
+			{
+				# Invalid folder name format, skip
+				continue
+			}
+			
+			# Determine if the folder should be deleted
+			if ($folderStoreNumber -eq $StoreNumber -and `
+				($folderMachineNumber -ne "901") -and ($folderMachineNumber -ne $machineNumber))
+			{
+				# Delete the folder
+				try
+				{
+					Remove-Item -Path $folder.FullName -Recurse -Force -ErrorAction Stop
+					$deletedFolders += $folderName
+				}
+				catch
+				{
+					$failedToDeleteFolders += $folderName
+				}
+			}
+		}
+	}
+	
+	# Build the deletion result
+	$resultMessage = ""
+	if ($deletedFolders.Count -gt 0)
+	{
+		$resultMessage += "Deleted folders:`n$($deletedFolders -join "`n")`n"
+	}
+	# if ($keptFolders.Count -gt 0) {
+	#     $resultMessage += "Kept folders:`n$($keptFolders -join "`n")`n"
+	# }
+	if ($failedToDeleteFolders.Count -gt 0)
+	{
+		$resultMessage += "Failed to delete folders:`n$($failedToDeleteFolders -join "`n")`n"
+	}
+	
+	# Update operationStatus
+	if ($failedToDeleteFolders.Count -eq 0 -and $deletedFolders.Count -gt 0)
+	{
+		$operationStatus["OldXFoldersDeletion"].Status = "Successful"
+		$operationStatus["OldXFoldersDeletion"].Message = "Old XF and XW folders deleted successfully."
+		$operationStatus["OldXFoldersDeletion"].Details = $resultMessage
+	}
+	elseif ($deletedFolders.Count -gt 0)
+	{
+		$operationStatus["OldXFoldersDeletion"].Status = "Partial Failure"
+		$operationStatus["OldXFoldersDeletion"].Message = "Some old XF and XW folders could not be deleted."
+		$operationStatus["OldXFoldersDeletion"].Details = $resultMessage
+	}
+	else
+	{
+		$operationStatus["OldXFoldersDeletion"].Status = "Failed"
+		$operationStatus["OldXFoldersDeletion"].Message = "Failed to delete any old XF and XW folders."
+		$operationStatus["OldXFoldersDeletion"].Details = $resultMessage
+	}
+	
+	return
 }
 
 # ===================================================================================================
@@ -614,34 +832,94 @@ function Execute-SqlCommand {
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Get-SQLInstanceName
+#                               FUNCTION: Get-DatabaseConnectionString
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Determines whether a named SQL Server instance exists and returns the appropriate server name.
+#   Searches for the Startup.ini file in specified locations, extracts the DBNAME value,
+#   constructs the connection string, and stores it in a script-level hashtable.
 # ===================================================================================================
 
-function Get-SQLInstanceName {
-    $computerName = $env:COMPUTERNAME  # Get machine name
-    $namedInstance = "$computerName\SQLEXPRESS"  # Named instance
-    $defaultInstance = $computerName  # Default instance (localhost)
-
-    # Check if we can connect to the named instance
-    $namedInstanceConnectionString = "Server=$namedInstance;Database=master;Integrated Security=True;"
-    $defaultInstanceConnectionString = "Server=$defaultInstance;Database=master;Integrated Security=True;"
-    
-    $sqlConnection = New-Object System.Data.SqlClient.SqlConnection
-
-    # Try to connect to named instance
-    $sqlConnection.ConnectionString = $namedInstanceConnectionString
-    try {
-        $sqlConnection.Open()
-        $sqlConnection.Close()
-        return $namedInstance  # Named instance is available
-    } catch {
-        # If named instance fails, return default instance
-    }
-
-    return $defaultInstance
+function Get-DatabaseConnectionString
+{
+	# Ensure that the FunctionResults hashtable exists at the script level
+	if (-not $script:FunctionResults)
+	{
+		$script:FunctionResults = @{ }
+	}
+	
+	# Possible paths to Startup.ini
+	$possiblePaths = @(
+		'\\localhost\storeman\Startup.ini',
+		'C:\storeman\Startup.ini',
+		'D:\storeman\Startup.ini'
+	)
+	
+	$startupIniPath = $null
+	foreach ($path in $possiblePaths)
+	{
+		if (Test-Path -Path $path)
+		{
+			$startupIniPath = $path
+			break
+		}
+	}
+	
+	if (-not $startupIniPath)
+	{
+		return
+	}
+	
+	# Read the Startup.ini file
+	try
+	{
+		$content = Get-Content -Path $startupIniPath -ErrorAction Stop
+		
+		# Extract DBSERVER
+		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
+		if ($dbServerLine)
+		{
+			$dbServer = $dbServerLine -replace '^DBSERVER=', ''
+			$dbServer = $dbServer.Trim()
+			if (-not $dbServer)
+			{
+				$dbServer = "localhost"
+			}
+		}
+		else
+		{
+			$dbServer = "localhost"
+		}
+		
+		# Extract DBNAME
+		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
+		if ($dbNameLine)
+		{
+			$dbName = $dbNameLine -replace '^DBNAME=', ''
+			$dbName = $dbName.Trim()
+			if (-not $dbName)
+			{
+				return
+			}
+		}
+		else
+		{
+			return
+		}
+	}
+	catch
+	{
+		return
+	}
+	
+	# Store DBSERVER and DBNAME in the FunctionResults hashtable
+	$script:FunctionResults['DBSERVER'] = $dbServer
+	$script:FunctionResults['DBNAME'] = $dbName
+	
+	# Build the connection string
+	$connectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
+	
+	# Store the connection string in the FunctionResults hashtable
+	$script:FunctionResults['ConnectionString'] = $connectionString
 }
 
 # ===================================================================================================
@@ -1360,16 +1638,402 @@ function Remove-GTRegistryValues {
 }
 
 # ===================================================================================================
-#                                       SECTION: SQL Variables
+#                              FUNCTION: Delete-Files
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Sets up variables related to SQL Server connections and database configurations.
+#   Deletes specified files within a directory, supporting wildcards and exclusions.
+#   Can be executed synchronously or as a background job to prevent interruption of the main script.
+#   Parameters:
+#     - Path: The directory path where files will be deleted.
+#     - SpecifiedFiles: Specific file names or patterns to delete. Wildcards are supported.
+#     - Exclusions: File names or patterns to exclude from deletion. Wildcards are supported.
+#     - AsJob: (Optional) Runs the deletion process as a background job.
 # ===================================================================================================
 
-$serverName = Get-SQLInstanceName # Get SQL Server name automatically
-$databaseName = "lanesql"  # You can also prompt for this if needed
-$connectionString = "Server=$serverName;Database=$databaseName;Integrated Security=True;"
+function Delete-Files
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true, Position = 0, HelpMessage = "The directory path where files and folders will be deleted.")]
+		[ValidateNotNullOrEmpty()]
+		[string]$Path,
+		[Parameter(Mandatory = $false, HelpMessage = "Specific file or folder patterns to delete within the specified directory. Wildcards supported.")]
+		[string[]]$SpecifiedFiles,
+		[Parameter(Mandatory = $false, HelpMessage = "File or folder patterns to exclude from deletion. Wildcards supported.")]
+		[string[]]$Exclusions,
+		[Parameter(Mandatory = $false, HelpMessage = "Run the deletion as a background job.")]
+		[switch]$AsJob
+	)
+	
+	if ($AsJob)
+	{
+		# Define the script block that performs the deletion
+		$scriptBlock = {
+			param ($Path,
+				$SpecifiedFiles,
+				$Exclusions)
+			
+			# Initialize counter for deleted items
+			$deletedCount = 0
+			
+			# Resolve the full path
+			$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
+			if (-not $resolvedPath)
+			{
+				# Write-Log "The specified path '$Path' does not exist." "Red"
+				return
+			}
+			$targetPath = $resolvedPath.ProviderPath
+			
+			try
+			{
+				if ($SpecifiedFiles)
+				{
+					# Delete only specified files and folders
+					foreach ($filePattern in $SpecifiedFiles)
+					{
+						# Retrieve matching items using wildcards
+						$matchedItems = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue
+						
+						if ($matchedItems)
+						{
+							foreach ($matchedItem in $matchedItems)
+							{
+								# Check against exclusions
+								$exclude = $false
+								if ($Exclusions)
+								{
+									foreach ($exclusionPattern in $Exclusions)
+									{
+										if ($matchedItem.Name -like $exclusionPattern)
+										{
+											$exclude = $true
+											# Write-Log "Excluded: $($matchedItem.FullName)" "Yellow"
+											break
+										}
+									}
+								}
+								
+								if (-not $exclude)
+								{
+									try
+									{
+										if ($matchedItem.PSIsContainer)
+										{
+											Remove-Item -Path $matchedItem.FullName -Recurse -Force -ErrorAction Stop
+										}
+										else
+										{
+											Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
+										}
+										$deletedCount++
+										# Write-Log "Deleted: $($matchedItem.FullName)" "Green"
+									}
+									catch
+									{
+										# Write-Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
+									}
+								}
+							}
+						}
+						else
+						{
+							# Write-Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
+						}
+					}
+				}
+				else
+				{
+					# Delete all files and folders in the path
+					$allItems = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue
+					
+					foreach ($item in $allItems)
+					{
+						# Check against exclusions
+						$exclude = $false
+						if ($Exclusions)
+						{
+							foreach ($exclusionPattern in $Exclusions)
+							{
+								if ($item.Name -like $exclusionPattern)
+								{
+									$exclude = $true
+									# Write-Log "Excluded: $($item.FullName)" "Yellow"
+									break
+								}
+							}
+						}
+						
+						if (-not $exclude)
+						{
+							try
+							{
+								if ($item.PSIsContainer)
+								{
+									Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
+								}
+								else
+								{
+									Remove-Item -Path $item.FullName -Force -ErrorAction Stop
+								}
+								$deletedCount++
+								# Write-Log "Deleted: $($item.FullName)" "Green"
+							}
+							catch
+							{
+								# Write-Log "Failed to delete $($item.FullName). Error: $_" "Red"
+							}
+						}
+					}
+				}
+				
+				# Write-Log "Total items deleted: $deletedCount" "Blue"
+				return $deletedCount
+			}
+			catch
+			{
+				# Write-Log "An error occurred during the deletion process. Error: $_" "Red"
+				return $deletedCount
+			}
+		}
+		
+		# Start the background job
+		Start-Job -ScriptBlock $scriptBlock -ArgumentList $Path, $SpecifiedFiles, $Exclusions
+	}
+	else
+	{
+		# Synchronous execution
+		# Initialize counter for deleted items
+		$deletedCount = 0
+		
+		# Resolve the full path
+		$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
+		if (-not $resolvedPath)
+		{
+		#	Write-Log "The specified path '$Path' does not exist." "Red"
+			return
+		}
+		$targetPath = $resolvedPath.ProviderPath
+		
+		try
+		{
+			if ($SpecifiedFiles)
+			{
+				# Delete only specified files and folders
+				foreach ($filePattern in $SpecifiedFiles)
+				{
+					# Retrieve matching items using wildcards
+					$matchedItems = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue
+					
+					if ($matchedItems)
+					{
+						foreach ($matchedItem in $matchedItems)
+						{
+							# Check against exclusions
+							$exclude = $false
+							if ($Exclusions)
+							{
+								foreach ($exclusionPattern in $Exclusions)
+								{
+									if ($matchedItem.Name -like $exclusionPattern)
+									{
+										$exclude = $true
+									#	Write-Log "Excluded: $($matchedItem.FullName)" "Yellow"
+										break
+									}
+								}
+							}
+							
+							if (-not $exclude)
+							{
+								try
+								{
+									if ($matchedItem.PSIsContainer)
+									{
+										Remove-Item -Path $matchedItem.FullName -Recurse -Force -ErrorAction Stop
+									}
+									else
+									{
+										Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
+									}
+									$deletedCount++
+								#	Write-Log "Deleted: $($matchedItem.FullName)" "Green"
+								}
+								catch
+								{
+								#	Write-Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
+								}
+							}
+						}
+					}
+					else
+					{
+					#	Write-Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
+					}
+				}
+			}
+			else
+			{
+				# Delete all files and folders in the path
+				$allItems = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue
+				
+				foreach ($item in $allItems)
+				{
+					# Check against exclusions
+					$exclude = $false
+					if ($Exclusions)
+					{
+						foreach ($exclusionPattern in $Exclusions)
+						{
+							if ($item.Name -like $exclusionPattern)
+							{
+								$exclude = $true
+							#	Write-Log "Excluded: $($item.FullName)" "Yellow"
+								break
+							}
+						}
+					}
+					
+					if (-not $exclude)
+					{
+						try
+						{
+							if ($item.PSIsContainer)
+							{
+								Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
+							}
+							else
+							{
+								Remove-Item -Path $item.FullName -Force -ErrorAction Stop
+							}
+							$deletedCount++
+						#	Write-Log "Deleted: $($item.FullName)" "Green"
+						}
+						catch
+						{
+						#	Write-Log "Failed to delete $($item.FullName). Error: $_" "Red"
+						}
+					}
+				}
+			}
+			
+		#	Write-Log "Total items deleted: $deletedCount" "Blue"
+			return $deletedCount
+		}
+		catch
+		{
+		#	Write-Log "An error occurred during the deletion process. Error: $_" "Red"
+			return $deletedCount
+		}
+	}
+}
+
+# ===================================================================================================
+#                                       SECTION: Main Script Execution
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Orchestrates the execution flow of the script, initializing variables, processing items, and handling user interactions.
+# ===================================================================================================
+
+# Ensure script is running as administrator
+# Ensure-Administrator
+
+# Only call the function if the script has not been relaunched
+if (-not $IsRelaunched)
+{
+	Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
+	Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/MiniGhost"
+}
+else
+{
+	Write-Host "Script has been relaunched. Continuing execution."
+}
+
+# Get the memory info
+# $Memory25Percent = Get-MemoryInfo
+
+# Get the store name
+Get-StoreNameGUI
+$storeName = $script:FunctionResults['StoreName']
+
+# Get the Store Number
+Get-StoreNumberGUI
+$currentStoreNumber = $script:FunctionResults['StoreNumber']
+
+# Get current IP configuration
+$currentConfigs = Get-ActiveIPConfig
+
+# Get the database connection string
+Get-DatabaseConnectionString
+$connectionString = $script:FunctionResults['ConnectionString']
 $oldMachineName = $currentMachineName # Set the old machine name variable
+
+# Clear %Temp% foder on start
+$FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "MiniGhost.ps1" -AsJob
+
+# ===================================================================================================
+#                                       SECTION: Initialize GUI Components
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Creates and initializes the main graphical user interface (GUI) form and its components.
+# ===================================================================================================
+
+# Create the main form
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Created by Alex_C.T - Version 1.0"
+$form.Size = New-Object System.Drawing.Size(505, 320)
+$form.StartPosition = "CenterScreen"
+
+# Banner Label
+$bannerLabel = New-Object System.Windows.Forms.Label
+$bannerLabel.Text = "PowerShell Script - Mini Ghost"
+$bannerLabel.Font = New-Object System.Drawing.Font("Arial", 16, [System.Drawing.FontStyle]::Bold)
+$bannerLabel.Size = New-Object System.Drawing.Size(500, 30)
+$bannerLabel.TextAlign = 'MiddleCenter'
+$bannerLabel.Dock = 'Top'
+
+$form.Controls.Add($bannerLabel)
+
+# ===================================================================================================
+#                                       SECTION: Display Labels
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Creates and displays labels on the GUI form to show current machine information.
+# ===================================================================================================
+
+# Display current machine name and store number in labels
+$machineNameLabel = New-Object System.Windows.Forms.Label
+$machineNameLabel.Text = "Current Machine Name: $currentMachineName"
+$machineNameLabel.Location = New-Object System.Drawing.Point(10, 30)
+$machineNameLabel.Size = New-Object System.Drawing.Size(480, 20)
+
+$storeNameLabel = New-Object System.Windows.Forms.Label
+$storeNameLabel.Text = "Store Name: $storeName"
+$storeNameLabel.Location = New-Object System.Drawing.Point(10, 50)
+$storeNameLabel.Size = New-Object System.Drawing.Size(480, 20)
+
+$storeNumberLabel = New-Object System.Windows.Forms.Label
+$storeNumberLabel.Text = "Store Number: $currentStoreNumber"
+$storeNumberLabel.Location = New-Object System.Drawing.Point(10, 70)
+$storeNumberLabel.Size = New-Object System.Drawing.Size(480, 20)
+
+# Display current IP address in a label
+$currentIP = if ($currentConfigs -and $currentConfigs.Count -gt 0)
+{
+	$currentConfigs[0].IPv4Address.IPAddress
+}
+else
+{
+	"IP Not Found"
+}
+
+$ipAddressLabel = New-Object System.Windows.Forms.Label
+$ipAddressLabel.Text = "Current IP Address: $currentIP"
+$ipAddressLabel.Location = New-Object System.Drawing.Point(10, 90)
+$ipAddressLabel.Size = New-Object System.Drawing.Size(480, 20)
+
+$form.Controls.AddRange(@($machineNameLabel, $storeNameLabel, $storeNumberLabel, $ipAddressLabel))
+
 
 # ===================================================================================================
 #                                       SECTION: GUI Buttons
@@ -1381,62 +2045,62 @@ $oldMachineName = $currentMachineName # Set the old machine name variable
 # Buttons for various operations
 $updateStoreNumberButton = New-Object System.Windows.Forms.Button
 $updateStoreNumberButton.Text = "Update Store Number"
-$updateStoreNumberButton.Location = New-Object System.Drawing.Point(10, 170)
+$updateStoreNumberButton.Location = New-Object System.Drawing.Point(10, 120)
 $updateStoreNumberButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $changeMachineNameButton = New-Object System.Windows.Forms.Button
 $changeMachineNameButton.Text = "Change Machine Name"
-$changeMachineNameButton.Location = New-Object System.Drawing.Point(170, 170)
+$changeMachineNameButton.Location = New-Object System.Drawing.Point(170, 120)
 $changeMachineNameButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $configureNetworkButton = New-Object System.Windows.Forms.Button
 $configureNetworkButton.Text = "Configure Network"
-$configureNetworkButton.Location = New-Object System.Drawing.Point(330, 170)
+$configureNetworkButton.Location = New-Object System.Drawing.Point(330, 120)
 $configureNetworkButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $truncateTablesButton = New-Object System.Windows.Forms.Button
 $truncateTablesButton.Text = "Truncate Tables"
-$truncateTablesButton.Location = New-Object System.Drawing.Point(10, 210)
+$truncateTablesButton.Location = New-Object System.Drawing.Point(10, 160)
 $truncateTablesButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $repairDatabaseButton = New-Object System.Windows.Forms.Button
 $repairDatabaseButton.Text = "Repair Database"
-$repairDatabaseButton.Location = New-Object System.Drawing.Point(170, 210)
+$repairDatabaseButton.Location = New-Object System.Drawing.Point(170, 160)
 $repairDatabaseButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $registryCleanupButton = New-Object System.Windows.Forms.Button
 $registryCleanupButton.Text = "Registry Cleanup"
-$registryCleanupButton.Location = New-Object System.Drawing.Point(330, 210)
+$registryCleanupButton.Location = New-Object System.Drawing.Point(330, 160)
 $registryCleanupButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $configurePowerButton = New-Object System.Windows.Forms.Button
 $configurePowerButton.Text = "Configure Power Settings"
-$configurePowerButton.Location = New-Object System.Drawing.Point(10, 250)
+$configurePowerButton.Location = New-Object System.Drawing.Point(10, 200)
 $configurePowerButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $configureServicesButton = New-Object System.Windows.Forms.Button
 $configureServicesButton.Text = "Configure Services"
-$configureServicesButton.Location = New-Object System.Drawing.Point(170, 250)
+$configureServicesButton.Location = New-Object System.Drawing.Point(170, 200)
 $configureServicesButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $configureAdvancedButton = New-Object System.Windows.Forms.Button
 $configureAdvancedButton.Text = "Configure Advanced Settings"
-$configureAdvancedButton.Location = New-Object System.Drawing.Point(330, 250)
+$configureAdvancedButton.Location = New-Object System.Drawing.Point(330, 200)
 $configureAdvancedButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $updateSQLDatabaseButton = New-Object System.Windows.Forms.Button
 $updateSQLDatabaseButton.Text = "Update SQL Database"
-$updateSQLDatabaseButton.Location = New-Object System.Drawing.Point(10, 290)
+$updateSQLDatabaseButton.Location = New-Object System.Drawing.Point(10, 240)
 $updateSQLDatabaseButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $summaryButton = New-Object System.Windows.Forms.Button
 $summaryButton.Text = "Show Summary"
-$summaryButton.Location = New-Object System.Drawing.Point(170, 290)
+$summaryButton.Location = New-Object System.Drawing.Point(170, 240)
 $summaryButton.Size = New-Object System.Drawing.Size(150, 35)
 
 $rebootButton = New-Object System.Windows.Forms.Button
 $rebootButton.Text = "Reboot System"
-$rebootButton.Location = New-Object System.Drawing.Point(330, 290)
+$rebootButton.Location = New-Object System.Drawing.Point(330, 240)
 $rebootButton.Size = New-Object System.Drawing.Size(150, 35)
 
 # Add all buttons to the form
@@ -2161,8 +2825,8 @@ SET F1056 = '$storeNumber';
     }
 })
 
-# Event Handler for Show Summary Button
-$summaryButton.Add_Click({
+    # Event Handler for Show Summary Button
+    $summaryButton.Add_Click({
     # Display the summary in a new form
     $summaryForm = New-Object System.Windows.Forms.Form
     $summaryForm.Text = "Operation Summary"
@@ -2206,19 +2870,29 @@ $rebootButton.Add_Click({
     }
 })
 
-# Add a handler for when the user clicks the 'X' to close the form
+# Handle form closing event (X button)
 $form.add_FormClosing({
-    param($sender, $e)
-    $result = [System.Windows.Forms.MessageBox]::Show(
-        "Are you sure you want to exit?", 
-        "Confirm Exit", 
-        [System.Windows.Forms.MessageBoxButtons]::YesNo, 
-        [System.Windows.Forms.MessageBoxIcon]::Question
-    )
-    if ($result -ne [System.Windows.Forms.DialogResult]::Yes) {
-        $e.Cancel = $true  # Cancel the closing event
-    }
-    # Else, allow the form to close naturally
+		# Confirmation message box to confirm exit
+		$confirmResult = [System.Windows.Forms.MessageBox]::Show(
+			"Are you sure you want to exit?",
+			"Confirm Exit",
+			[System.Windows.Forms.MessageBoxButtons]::YesNo,
+			[System.Windows.Forms.MessageBoxIcon]::Question
+		)
+		
+		# If the user clicks No, cancel the form close action
+		if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes)
+		{
+			$_.Cancel = $true
+		}
+		else
+		{
+			# Proceed with form closing and perform actions
+			# Write-Log "Form is closing. Performing cleanup." "green"
+			
+			# Clean Temp Folder
+			Delete-Files -Path "$TempDir" -SpecifiedFiles "MiniGhost.ps1"
+	}
 })
 
 # ===================================================================================================
