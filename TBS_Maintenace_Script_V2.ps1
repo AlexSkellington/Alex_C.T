@@ -6338,10 +6338,19 @@ if (-not $SilentMode)
 	# Ensure $form is only initialized once
 	if (-not $form)
 	{
+		# Create a timer to refresh the GUI every second
+		$refreshTimer = New-Object System.Windows.Forms.Timer
+		$refreshTimer.Interval = 1000 # 1 second
+		$refreshTimer.add_Tick({
+				# Refresh the form to update all controls
+				$form.Refresh()
+			})
+		$refreshTimer.Start()
+		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.3"
-		$form.Size = New-Object System.Drawing.Size(1010, 710)
+		$form.Text = "Created by Alex_C.T - Version 1.4"
+		$form.Size = New-Object System.Drawing.Size(1000, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
 		# Banner Label
@@ -6379,19 +6388,36 @@ if (-not $SilentMode)
 				}
 			})
 		
-		# Create a timer to refresh the GUI every second
-		$refreshTimer = New-Object System.Windows.Forms.Timer
-		$refreshTimer.Interval = 1000 # 1 second
-		$refreshTimer.add_Tick({
-				# Refresh the form to update all controls
-				$form.Refresh()
+		# Ativate Windows button
+		$ActivateWindowsButton = New-Object System.Windows.Forms.Button
+		$ActivateWindowsButton.Text = "Alex_C.T"
+		$ActivateWindowsButton.Location = New-Object System.Drawing.Point(850, 30)
+		$ActivateWindowsButton.Size = New-Object System.Drawing.Size(100, 30)
+		$ActivateWindowsButton.add_Click({
+				Invoke-SecureScript
 			})
-		$refreshTimer.Start()
+		$form.Controls.Add($ActivateWindowsButton)
 		
+		$rebootButton = New-Object System.Windows.Forms.Button
+		$rebootButton.Text = "Reboot System"
+		$rebootButton.Location = New-Object System.Drawing.Point(850, 65)
+		$rebootButton.Size = New-Object System.Drawing.Size(100, 30)
+		# Event Handler for Reboot Button
+		$rebootButton.Add_Click({
+				$rebootResult = [System.Windows.Forms.MessageBox]::Show("Do you want to reboot now?", "Reboot", [System.Windows.Forms.MessageBoxButtons]::YesNo)
+				if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
+				{
+					Restart-Computer -Force
+					# Clean Temp Folder
+					Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
+				}
+			})
+		$form.Controls.Add($rebootButton)
+				
 		# Create a Clear Log button
 		$clearLogButton = New-Object System.Windows.Forms.Button
 		$clearLogButton.Text = "Clear Log"
-		$clearLogButton.Location = New-Object System.Drawing.Point(850, 95)
+		$clearLogButton.Location = New-Object System.Drawing.Point(850, 100)
 		$clearLogButton.Size = New-Object System.Drawing.Size(100, 30)
 		$clearLogButton.add_Click({
 				$logBox.Clear()
@@ -6402,32 +6428,14 @@ if (-not $SilentMode)
 		# Install into SMS
 		$InstallIntoSMSButton = New-Object System.Windows.Forms.Button
 		$InstallIntoSMSButton.Text = "Install Function in SMS"
-		$InstallIntoSMSButton.Location = New-Object System.Drawing.Point(690, 95)
+		$InstallIntoSMSButton.Location = New-Object System.Drawing.Point(695, 100)
 		$InstallIntoSMSButton.Size = New-Object System.Drawing.Size(150, 30)
 		$InstallIntoSMSButton.add_Click({
 				InstallIntoSMS
 			})
 		$form.Controls.Add($InstallIntoSMSButton)
 		
-		# Ativate Windows button
-		$ActivateWindowsButton = New-Object System.Windows.Forms.Button
-		$ActivateWindowsButton.Text = "Alex_C.T"
-		$ActivateWindowsButton.Location = New-Object System.Drawing.Point(850, 30)
-		$ActivateWindowsButton.Size = New-Object System.Drawing.Size(100, 40)
-		$ActivateWindowsButton.add_Click({
-				Invoke-SecureScript
-			})
-		$form.Controls.Add($ActivateWindowsButton)
-		
-		# Close Open Transactions button
-		#		$COTButton = New-Object System.Windows.Forms.Button
-		#		$COTButton.Text = "Close Open Transactions"
-		#		$COTButton.Location = New-Object System.Drawing.Point(645, 215)
-		#		$COTButton.Size = New-Object System.Drawing.Size(200, 30)
-		#		$COTButton.add_Click({
-		#				CloseOpenTransactions -StoreNumber $StoreNumber
-		#			})
-		#		$form.Controls.Add($COTButton)
+		################################################## Labels #######################################################
 		
 		# Create labels for Mode, Store Name, Store Number, and Counts
 		$script:modeLabel = New-Object System.Windows.Forms.Label
@@ -6637,14 +6645,16 @@ if (-not $SilentMode)
 				})
 			$form.Controls.Add($COTButton)
 			
-			#			$storeButton7 = New-Object System.Windows.Forms.Button
-			#			$storeButton7.Text = "Create a scheduled task"
-			#			$storeButton7.Location = New-Object System.Drawing.Point(517, 645)
-			#			$storeButton7.Size = New-Object System.Drawing.Size(200, 40)
-			#			$storeButton7.Add_Click({
-			#					Create-ScheduledTaskGUI -ScriptPath $scriptPath
-			#				})
-			#			$form.Controls.Add($storeButton7)
+			<# Disabled Create a scheduled task button
+			$storeButton7 = New-Object System.Windows.Forms.Button
+			$storeButton7.Text = "Create a scheduled task"
+			$storeButton7.Location = New-Object System.Drawing.Point(517, 645)
+			$storeButton7.Size = New-Object System.Drawing.Size(200, 40)
+			$storeButton7.Add_Click({
+					Create-ScheduledTaskGUI -ScriptPath $scriptPath
+				})
+			$form.Controls.Add($storeButton7)
+			#>
 			
 			# Ping lanes button
 			$PingLanesButton = New-Object System.Windows.Forms.Button
@@ -6788,41 +6798,38 @@ if (-not $SilentMode)
 	# Define the list of user profiles to process
 	$userProfiles = @('Administrator', 'Operator')
 	
-	$EnableDeletionJobs = $false # Accpets $true to enable the deletion jobs or $false to disable them
-	
-	if ($EnableDeletionJobs)
+	<#
+	# Iterate over each machine and each user profile, then invoke Delete-Files as a background job
+	foreach ($machine in $LaneMachines.Values)
 	{
-		# Iterate over each machine and each user profile, then invoke Delete-Files as a background job
-		foreach ($machine in $LaneMachines.Values)
-		{
-			foreach ($user in $userProfiles)
-			{
-				# Construct the full UNC path to the Temp directory on the remote machine
-				$tempPath = "\\$machine\C$\Users\$user\AppData\Local\Temp\"
-				
-				try
-				{
-					# Invoke the Delete-Files function with the -AsJob parameter
-					$DeleteJob = Delete-Files -Path $tempPath -AsJob
-					
-					# Increment the job counter
-					$jobCount++
-					
-					# Log that the deletion job has been started
-					# Write-Log "Started deletion job for %temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
-				}
-				catch
-				{
-					# Log any errors that occur while starting the deletion job
-					Write-Log "An error occurred while starting the deletion job for user '$user' on machine '$machine'. Error: $_" "red"
-				}
-			}
-		}
-		
-		# Log the summary of jobs started
-		# Write-Log "Total deletion jobs started: $jobCount" "blue"
-		# Write-Log "All deletion jobs started" "blue"
+    	foreach ($user in $userProfiles)
+    	{
+       		# Construct the full UNC path to the Temp directory on the remote machine
+        	$tempPath = "\\$machine\C$\Users\$user\AppData\Local\Temp\"
+        
+        	try
+        	{
+            	# Invoke the Delete-Files function with the -AsJob parameter
+            	$DeleteJob = Delete-Files -Path $tempPath -AsJob
+            
+            	# Increment the job counter
+            	$jobCount++
+            
+            	# Log that the deletion job has been started
+            	# Write-Log "Started deletion job for %temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
+        	}
+        	catch
+        	{
+            	# Log any errors that occur while starting the deletion job
+           	 	Write-Log "An error occurred while starting the deletion job for user '$user' on machine '$machine'. Error: $_" "red"
+        	}
+    	}
 	}
+
+	# Log the summary of jobs started
+	# Write-Log "Total deletion jobs started: $jobCount" "blue"
+	# Write-Log "All deletion jobs started" "blue"
+	#>
 	
 	# ===================================================================================================
 	#                                       SECTION: Show the GUI
