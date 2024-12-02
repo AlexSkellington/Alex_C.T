@@ -178,7 +178,7 @@ function Download-AndRelaunchSelf
 		Write-Host "Starting new process with arguments: $arguments"
 		
 		# Start the new process with elevated privileges
-		Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden
+		Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
 		
 		Write-Host "Process started successfully. Exiting current script."
 		
