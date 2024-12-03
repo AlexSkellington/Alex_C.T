@@ -2771,7 +2771,7 @@ function Process-LanesGUI
 	
 	if ($selection -eq $null)
 	{
-		Write-Log "`r`nLane processing canceled by user." "yellow"
+		Write-Log "Lane processing canceled by user." "yellow"
 		return
 	}
 	
