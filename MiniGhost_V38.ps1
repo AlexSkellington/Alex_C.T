@@ -2062,7 +2062,7 @@ $FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "MiniGhost.ps1"
 
 # Create the main form
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Created by Alex_C.T - Version 1.1"
+$form.Text = "Created by Alex_C.T - Version 1.2"
 $form.Size = New-Object System.Drawing.Size(505, 320)
 $form.StartPosition = "CenterScreen"
 
@@ -2295,10 +2295,7 @@ $changeMachineNameButton.Add_Click({
 		
 		# Get the new machine name from the user
 		$newMachineNameInput = Get-ValidMachineName
-		
-		# Get the current store number from the .ini
-		$currentStoreNumber = Get-StoreNumberFromINI
-		
+				
 		if ($newMachineNameInput -ne $null)
 		{
 			# Confirm the change
@@ -2322,13 +2319,16 @@ $changeMachineNameButton.Add_Click({
 					$operationStatus["MachineNameChange"].Message = "Machine name changed successfully."
 					$operationStatus["MachineNameChange"].Details = "Machine name changed to '$script:newMachineName'."
 					
+					# Get the current store number from the .ini
+					$currentStoreNumber = Get-StoreNumberFromINI
+					
 					# Call Remove-OldXFolders (ensure this function and variables are defined)
-					Remove-OldXFolders -MachineName $newMachineNameInput -StoreNumber $currentStoreNumber
+					Remove-OldXFolders -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
 					
 					# Update startup.ini file after changing machine name
 					$startupIniPath = "\\localhost\storeman\startup.ini"
 					$newDbServerName = $script:newMachineName
-     					$serverName = $script:FunctionResults['DBSERVER']
+					$serverName = $script:FunctionResults['DBSERVER']
 					
 					$terValue = "TER=$($newDbServerName.Substring(3))"
 					$dbServerValue = "DBSERVER=$($newDbServerName)\$($serverName.Split('\')[1])" # Ensure $serverName is defined
