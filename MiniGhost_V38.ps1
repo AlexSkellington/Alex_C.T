@@ -709,6 +709,10 @@ function Remove-OldXFolders
 		$operationStatus["OldXFoldersDeletion"].Status = "Failed"
 		$operationStatus["OldXFoldersDeletion"].Message = "None of the base paths exist: $($possibleBasePaths -join ', ')"
 		$operationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+		
+		# Write-Host for failure
+		Write-Host "Failed: None of the base paths exist: $($possibleBasePaths -join ', ')" -ForegroundColor Red
+		
 		return
 	}
 	
@@ -722,6 +726,10 @@ function Remove-OldXFolders
 		$operationStatus["OldXFoldersDeletion"].Status = "Failed"
 		$operationStatus["OldXFoldersDeletion"].Message = "MachineName '$MachineName' is too short to extract machine number."
 		$operationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+		
+		# Write-Host for failure
+		Write-Host "Failed: MachineName '$MachineName' is too short to extract machine number." -ForegroundColor Red
+		
 		return
 	}
 	
@@ -731,6 +739,10 @@ function Remove-OldXFolders
 		$operationStatus["OldXFoldersDeletion"].Status = "Failed"
 		$operationStatus["OldXFoldersDeletion"].Message = "Extracted machine number '$machineNumber' is not valid. It should be exactly 3 digits."
 		$operationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+		
+		# Write-Host for failure
+		Write-Host "Failed: Extracted machine number '$machineNumber' is not valid. It should be exactly 3 digits." -ForegroundColor Red
+		
 		return
 	}
 	
@@ -746,6 +758,10 @@ function Remove-OldXFolders
 			$operationStatus["OldXFoldersDeletion"].Status = "Failed"
 			$operationStatus["OldXFoldersDeletion"].Message = "Folder path '$folderTypePath' does not exist."
 			$operationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+			
+			# Write-Host for failure
+			Write-Host "Failed: Folder path '$folderTypePath' does not exist." -ForegroundColor Red
+			
 			return
 		}
 		
@@ -800,24 +816,44 @@ function Remove-OldXFolders
 		$resultMessage += "Failed to delete folders:`n$($failedToDeleteFolders -join "`n")`n"
 	}
 	
-	# Update operationStatus
+	# Update operationStatus and Write-Host based on the results
 	if ($failedToDeleteFolders.Count -eq 0 -and $deletedFolders.Count -gt 0)
 	{
 		$operationStatus["OldXFoldersDeletion"].Status = "Successful"
 		$operationStatus["OldXFoldersDeletion"].Message = "Old XF and XW folders deleted successfully."
 		$operationStatus["OldXFoldersDeletion"].Details = $resultMessage
+		
+		# Write-Host for success
+		Write-Host "Success: Old XF and XW folders deleted successfully." -ForegroundColor Green
 	}
 	elseif ($deletedFolders.Count -gt 0)
 	{
 		$operationStatus["OldXFoldersDeletion"].Status = "Partial Failure"
 		$operationStatus["OldXFoldersDeletion"].Message = "Some old XF and XW folders could not be deleted."
 		$operationStatus["OldXFoldersDeletion"].Details = $resultMessage
+		
+		# Write-Host for partial failure
+		Write-Host "Warning: Some old XF and XW folders could not be deleted." -ForegroundColor Yellow
+		Write-Host $resultMessage -ForegroundColor Yellow
 	}
 	else
 	{
 		$operationStatus["OldXFoldersDeletion"].Status = "Failed"
 		$operationStatus["OldXFoldersDeletion"].Message = "Failed to delete any old XF and XW folders."
 		$operationStatus["OldXFoldersDeletion"].Details = $resultMessage
+		
+		# Check if no folders were found to delete
+		if ($deletedFolders.Count -eq 0 -and $failedToDeleteFolders.Count -eq 0)
+		{
+			# Write-Host for no folders found
+			Write-Host "Info: No old XF and XW folders found to delete." -ForegroundColor Cyan
+		}
+		else
+		{
+			# Write-Host for complete failure
+			Write-Host "Error: Failed to delete any old XF and XW folders." -ForegroundColor Red
+			Write-Host $resultMessage -ForegroundColor Red
+		}
 	}
 	
 	return
