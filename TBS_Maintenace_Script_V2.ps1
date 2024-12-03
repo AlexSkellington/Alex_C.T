@@ -4531,7 +4531,6 @@ function DeployCloseTransaction
 	if ($form.Tag -eq "Cancelled" -or $form.DialogResult -eq [System.Windows.Forms.DialogResult]::Cancel)
 	{
 		Write-Log -Message "User cancelled the operation." "yellow"
-		Write-Log "`r`n==================== CloseOpenTransactions Function Completed ====================" "blue"
 		return
 	}
 	
