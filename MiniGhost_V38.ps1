@@ -2328,6 +2328,7 @@ $changeMachineNameButton.Add_Click({
 					# Update startup.ini file after changing machine name
 					$startupIniPath = "\\localhost\storeman\startup.ini"
 					$newDbServerName = $script:newMachineName
+     					$serverName = $script:FunctionResults['DBSERVER']
 					
 					$terValue = "TER=$($newDbServerName.Substring(3))"
 					$dbServerValue = "DBSERVER=$($newDbServerName)\$($serverName.Split('\')[1])" # Ensure $serverName is defined
