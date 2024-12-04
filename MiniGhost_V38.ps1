@@ -681,6 +681,15 @@ function Configure-AdvancedSettings
 #   The machine number is extracted from the last three characters of the machine name.
 # ===================================================================================================
 
+# ===================================================================================================
+#                                       FUNCTION: Remove-OldXFolders
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Removes old XF and XW folders based on the provided store number and machine name.
+#   The machine number is extracted from the last three characters of the machine name.
+#   Provides color-coded console output to indicate success, failure, or absence of folders.
+# ===================================================================================================
+
 function Remove-OldXFolders
 {
 	param (
@@ -690,12 +699,11 @@ function Remove-OldXFolders
 		[string]$MachineName
 	)
 	
-	# Define folder types to process
-	$folderTypes = @("XF", "XW")
+	# Define prefixes to process
+	$folderPrefixes = @("XF", "XW")
 	
 	# Initialize results
 	$deletedFolders = @()
-	# $keptFolders = @()  # Removed to prevent displaying kept folders
 	$failedToDeleteFolders = @()
 	
 	# Define possible base paths in order of priority
@@ -733,7 +741,7 @@ function Remove-OldXFolders
 		return
 	}
 	
-	# Validate that machineNumber consists of digits
+	# Validate that machineNumber consists of exactly three digits
 	if ($machineNumber -notmatch '^\d{3}$')
 	{
 		$operationStatus["OldXFoldersDeletion"].Status = "Failed"
@@ -746,87 +754,98 @@ function Remove-OldXFolders
 		return
 	}
 	
-	# Iterate through each folder type
-	foreach ($folderType in $folderTypes)
+	# Initialize a flag to check if any folders were found to delete
+	$foldersFound = $false
+	
+	# Iterate through each folder prefix
+	foreach ($prefix in $folderPrefixes)
 	{
-		# Define the path to the folder type directory
-		$folderTypePath = Join-Path -Path $basePath -ChildPath $folderType
+		# Retrieve folders that start with the current prefix
+		$folders = Get-ChildItem -Path $basePath -Directory -Filter "$prefix*" -ErrorAction SilentlyContinue
 		
-		# Check if the folder type path exists
-		if (-not (Test-Path $folderTypePath))
+		if ($folders)
 		{
-			$operationStatus["OldXFoldersDeletion"].Status = "Failed"
-			$operationStatus["OldXFoldersDeletion"].Message = "Folder path '$folderTypePath' does not exist."
-			$operationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+			$foldersFound = $true
 			
-			# Write-Host for failure
-			Write-Host "Failed: Folder path '$folderTypePath' does not exist." -ForegroundColor Red
-			
-			return
-		}
-		
-		# Get all folders starting with the folder type
-		$folders = Get-ChildItem -Path $folderTypePath -Directory | Where-Object { $_.Name -like "$folderType*" }
-		
-		foreach ($folder in $folders)
-		{
-			$folderName = $folder.Name
-			
-			# Extract StoreNumber and FolderMachineNumber
-			if ($folderName.Length -ge 6)
+			foreach ($folder in $folders)
 			{
+				$folderName = $folder.Name
+				
+				# Define regex pattern for folder names like XF123456 or XW123456
+				$folderNamePattern = "^(XF|XW)\d{6}$"
+				
+				# Validate folder name against the pattern
+				if ($folderName -notmatch $folderNamePattern)
+				{
+					Write-Host "Skipped: Folder '$folderName' does not match the expected pattern." -ForegroundColor Yellow
+					# Optionally, log this skipped folder
+					# Write-Log -Message "Skipped: Folder '$folderName' does not match the expected pattern." -Level "WARN"
+					continue
+				}
+				
+				# Extract StoreNumber and FolderMachineNumber
 				$folderStoreNumber = $folderName.Substring(2, 3)
 				$folderMachineNumber = $folderName.Substring(5, 3)
-			}
-			else
-			{
-				# Invalid folder name format, skip
-				continue
-			}
-			
-			# Determine if the folder should be deleted
-			if ($folderStoreNumber -eq $StoreNumber -and `
-				($folderMachineNumber -ne "901") -and ($folderMachineNumber -ne $machineNumber))
-			{
-				# Delete the folder
-				try
+				
+				# Determine if the folder should be deleted
+				if ($folderStoreNumber -eq $StoreNumber -and `
+					($folderMachineNumber -ne "901") -and ($folderMachineNumber -ne $machineNumber))
 				{
-					Remove-Item -Path $folder.FullName -Recurse -Force -ErrorAction Stop
-					$deletedFolders += $folderName
-				}
-				catch
-				{
-					$failedToDeleteFolders += $folderName
+					# Attempt to delete the folder with retries
+					$maxRetries = 3
+					$retryCount = 0
+					$success = $false
+					
+					while ($retryCount -lt $maxRetries -and -not $success)
+					{
+						try
+						{
+							Remove-Item -Path $folder.FullName -Recurse -Force -ErrorAction Stop
+							$deletedFolders += $folderName
+							$success = $true
+						}
+						catch
+						{
+							$retryCount++
+							Start-Sleep -Seconds 2 # Wait before retrying
+							
+							if ($retryCount -eq $maxRetries)
+							{
+								$failedToDeleteFolders += $folderName
+								Write-Host "Failed to delete folder: $folderName. Error: $_" -ForegroundColor Red
+								# Optionally, log this failure
+								# Write-Log -Message "Failed to delete folder: $folderName. Error: $_" -Level "ERROR"
+							}
+						}
+					}
 				}
 			}
 		}
 	}
 	
-	# Build the deletion result
+	# Build the deletion result message
 	$resultMessage = ""
 	if ($deletedFolders.Count -gt 0)
 	{
 		$resultMessage += "Deleted folders:`n$($deletedFolders -join "`n")`n"
 	}
-	# if ($keptFolders.Count -gt 0) {
-	#     $resultMessage += "Kept folders:`n$($keptFolders -join "`n")`n"
-	# }
 	if ($failedToDeleteFolders.Count -gt 0)
 	{
 		$resultMessage += "Failed to delete folders:`n$($failedToDeleteFolders -join "`n")`n"
 	}
 	
-	# Update operationStatus and Write-Host based on the results
-	if ($failedToDeleteFolders.Count -eq 0 -and $deletedFolders.Count -gt 0)
+	# Update operationStatus and provide color-coded feedback
+	if ($deletedFolders.Count -gt 0 -and $failedToDeleteFolders.Count -eq 0)
 	{
 		$operationStatus["OldXFoldersDeletion"].Status = "Successful"
 		$operationStatus["OldXFoldersDeletion"].Message = "Old XF and XW folders deleted successfully."
 		$operationStatus["OldXFoldersDeletion"].Details = $resultMessage
 		
-		# Write-Host for success
+		# Write-Host for success including the list of deleted folders
 		Write-Host "Success: Old XF and XW folders deleted successfully." -ForegroundColor Green
+		Write-Host $resultMessage -ForegroundColor Green
 	}
-	elseif ($deletedFolders.Count -gt 0)
+	elseif ($deletedFolders.Count -gt 0 -and $failedToDeleteFolders.Count -gt 0)
 	{
 		$operationStatus["OldXFoldersDeletion"].Status = "Partial Failure"
 		$operationStatus["OldXFoldersDeletion"].Message = "Some old XF and XW folders could not be deleted."
@@ -836,24 +855,24 @@ function Remove-OldXFolders
 		Write-Host "Warning: Some old XF and XW folders could not be deleted." -ForegroundColor Yellow
 		Write-Host $resultMessage -ForegroundColor Yellow
 	}
+	elseif ($foldersFound -eq $false)
+	{
+		$operationStatus["OldXFoldersDeletion"].Status = "No Folders Found"
+		$operationStatus["OldXFoldersDeletion"].Message = "No old XF and XW folders found to delete."
+		$operationStatus["OldXFoldersDeletion"].Details = "No matching folders were identified."
+		
+		# Write-Host for no folders found
+		Write-Host "Info: No old XF and XW folders found to delete." -ForegroundColor Cyan
+	}
 	else
 	{
 		$operationStatus["OldXFoldersDeletion"].Status = "Failed"
 		$operationStatus["OldXFoldersDeletion"].Message = "Failed to delete any old XF and XW folders."
 		$operationStatus["OldXFoldersDeletion"].Details = $resultMessage
 		
-		# Check if no folders were found to delete
-		if ($deletedFolders.Count -eq 0 -and $failedToDeleteFolders.Count -eq 0)
-		{
-			# Write-Host for no folders found
-			Write-Host "Info: No old XF and XW folders found to delete." -ForegroundColor Cyan
-		}
-		else
-		{
-			# Write-Host for complete failure
-			Write-Host "Error: Failed to delete any old XF and XW folders." -ForegroundColor Red
-			Write-Host $resultMessage -ForegroundColor Red
-		}
+		# Write-Host for complete failure
+		Write-Host "Error: Failed to delete any old XF and XW folders." -ForegroundColor Red
+		Write-Host $resultMessage -ForegroundColor Red
 	}
 	
 	return
