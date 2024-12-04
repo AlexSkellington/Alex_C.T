@@ -5743,13 +5743,20 @@ function InstallIntoSMS
 	$tempDirectory = $env:TEMP
 	
 	# Define file paths within the %TEMP% directory
-	$addMenuFilePath = Join-Path -Path $tempDirectory -ChildPath "DEPLOY_SYS.sql"
-	$deployOneFctFilePath = Join-Path -Path $tempDirectory -ChildPath "DEPLOY_ONE_FCT.sqm"
+	$PumpallitemstablesFilePath = Join-Path -Path $tempDirectory -ChildPath "Pump_all_items_tables.sql"
+	$DeploySysFilePath = Join-Path -Path $tempDirectory -ChildPath "DEPLOY_SYS.sql"
+	$DeployOneFctFilePath = Join-Path -Path $tempDirectory -ChildPath "DEPLOY_ONE_FCT.sqm"
 	
 	Write-Log "`r`n==================== Installing new buttons into SMS ====================`r`n" "blue"
 	
+	# Define the content for Pump_all_items_tables.sql
+	$PumpallitemstablesContent = @"
+INSERT INTO FCT_TAB (F1063,F1000,F1047,F1050,F1051,F1052,F1053,F1064,F1081) 
+VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','SQM=DEPLOY_LOAD');
+"@
+	
 	# Define the content for DEPLOY_SYS.sql
-	$addMenuContent = @"
+	$DeploySysContent = @"
 @FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,®WIZRPL(UD_RUN=0));
 @FMT(CMP,@WIZGET(UD_RUN)=,'®EXEC(SQL=UD_DEPLOY_SYS)®FMT(CHR,27)');
 
@@ -5813,7 +5820,7 @@ ORDER BY STO.F1000"));
 "@
 	
 	# Define the content for DEPLOY_ONE_FCT.sqm
-	$deployOneFctContent = @"
+	$DeployOneFctContent = @"
 INSERT INTO HEADER_DCT VALUES
 ('HC','00000001','001901','001001',,,1997001,0000,1997001,0001,,'LOAD','CREATE DCT',,,,,,'1/1.0','V1.0',,);
 
@@ -5873,8 +5880,9 @@ ORDER BY F1000,F1063;
 "@
 	
 	# Ensure content strings have Windows-style line endings
-	$addMenuContent = $addMenuContent -replace "`n", "`r`n"
-	$deployOneFctContent = $deployOneFctContent -replace "`n", "`r`n"
+	$PumpallitemstablesContent = $PumpallitemstablesContent -replace "`n", "`r`n"
+	$DeploySysContent = $DeploySysContent -replace "`n", "`r`n"
+	$DeployOneFctContent = $DeployOneFctContent -replace "`n", "`r`n"
 	
 	# Define encoding as ANSI (Windows-1252)
 	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
@@ -5899,18 +5907,23 @@ ORDER BY F1000,F1063;
 	}
 	
 	# Write DEPLOY_SYS.sql
-	Write-File -Path $addMenuFilePath -Content $addMenuContent -Encoding $ansiEncoding
+	Write-File -Path $PumpallitemstablesFilePath -Content $PumpallitemstablesContent -Encoding $ansiEncoding
+	
+	# Write DEPLOY_SYS.sql
+	Write-File -Path $DeploySysFilePath -Content $DeploySysContent -Encoding $ansiEncoding
 	
 	# Write DEPLOY_ONE_FCT.sqm
-	Write-File -Path $deployOneFctFilePath -Content $deployOneFctContent -Encoding $ansiEncoding
+	Write-File -Path $DeployOneFctFilePath -Content $DeployOneFctContent -Encoding $ansiEncoding
 	
 	# Define destination paths
-	$addMenuDestination = "\\localhost\Storeman\Office\DEPLOY_SYS.sql"
-	$deployOneFctDestination = "\\localhost\Storeman\Office\DEPLOY_ONE_FCT.sqm"
+	$PumpallitemstablesDestination = "\\localhost\Storeman\Office\XF${StoreNumber}901"
+	$DeploySysDestination = "\\localhost\Storeman\Office\DEPLOY_SYS.sql"
+	$DeployOneFctDestination = "\\localhost\Storeman\Office\DEPLOY_ONE_FCT.sqm"
 	
 	# Additional Variables
-	$File1 = "DEPLOY_SYS.sql"
-	$File2 = "DEPLOY_ONE_FCT.sqm"
+	$File1 = "Pump_all_items_tables.sql"
+	$File2 = "DEPLOY_SYS.sql"
+	$File3 = "DEPLOY_ONE_FCT.sqm"
 	
 	# Function to copy file with error handling
 	function Copy-File
@@ -5941,11 +5954,41 @@ ORDER BY F1000,F1063;
 		}
 	}
 	
-	# Copy DEPLOY_ONE_FCT.sqm to \\localhost\Storeman\Office, replacing if it exists
-	Copy-File -FileType $File2 -SourcePath $deployOneFctFilePath -DestinationPath $deployOneFctDestination
+	# Copy Pump_all_items_tables.sql to \\localhost\Storeman\Office\XF${StoreNumber}901
+	Copy-File -FileType $File1 -SourcePath $PumpallitemstablesFilePath -DestinationPath $PumpallitemstablesDestination
+	
+	# **Remove the Archive Bit from Pump_all_items_tables.sql at the destination**
+	try
+	{
+		$destinationFile1 = Join-Path -Path $PumpallitemstablesDestination -ChildPath $File1
+		if (Test-Path $destinationFile1)
+		{
+			$file = Get-Item $destinationFile1
+			if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
+			{
+				$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
+				Write-Log "Removed the archive bit from '$destinationFile1'." "green"
+			}
+			else
+			{
+				Write-Log "Archive bit was not set for '$destinationFile1'." "yellow"
+			}
+		}
+		else
+		{
+			Write-Log "Destination file '$destinationFile1' does not exist. Cannot remove archive bit." "red"
+		}
+	}
+	catch
+	{
+		Write-Log "Failed to remove the archive bit from '$destinationFile1'. Error: $_" "red"
+	}
 	
 	# Copy DEPLOY_SYS.sql to \\localhost\Storeman\Office
-	Copy-File -FileType $File1 -SourcePath $addMenuFilePath -DestinationPath $addMenuDestination
+	Copy-File -FileType $File2 -SourcePath $DeploySysFilePath -DestinationPath $DeploySysDestination
+	
+	# Copy DEPLOY_ONE_FCT.sqm to \\localhost\Storeman\Office, replacing if it exists
+	Copy-File -FileType $File3 -SourcePath $DeployOneFctFilePath -DestinationPath $DeployOneFctDestination
 	
 	# Cleanup: Delete the generated files from the temp directory
 	function Cleanup-TempFiles
@@ -5975,7 +6018,7 @@ ORDER BY F1000,F1063;
 		}
 	}
 	
-	Cleanup-TempFiles -FilesToDelete @($addMenuFilePath, $deployOneFctFilePath)
+	Cleanup-TempFiles -FilesToDelete @($PumpallitemstablesFilePath, $DeploySysFilePath, $DeployOneFctFilePath)
 	
 	#	Write-Log "`r`nDEPLOY_ONE_FCT.sqm copied to $deployOneFctDestination." "green"
 	#	Write-Log "DEPLOY_SYS.sql copied to $addMenuDestination." "green"
@@ -6379,7 +6422,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.4"
+		$form.Text = "Created by Alex_C.T - Version 1.5"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
