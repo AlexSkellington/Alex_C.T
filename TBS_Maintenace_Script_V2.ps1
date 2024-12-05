@@ -5751,7 +5751,6 @@ function InstallIntoSMS
 	
 	# Define the content for Pump_all_items_tables.sql
 	$PumpallitemstablesContent = @"
-@CREATE(FCT_TAB,FCT);
 CREATE VIEW Fct_Load AS SELECT F1063, F1000, F1047, F1050, F1051, F1052, F1053, F1064, F1081 FROM FCT_TAB;
 
 INSERT INTO Fct_Load VALUES
