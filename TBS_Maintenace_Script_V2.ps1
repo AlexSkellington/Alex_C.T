@@ -5757,6 +5757,9 @@ DELETE FROM FCT_TAB WHERE F1063 = 11899 AND F1000 = 'PAL';
 /* Insert the new function */
 INSERT INTO FCT_TAB (F1063,F1000,F1047,F1050,F1051,F1052,F1053,F1064,F1081) 
 VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPLOY_LOAD');
+
+/* Activate the new function right away */
+@EXEC(SQL=ACTIVATE_ACCEPT_SYS);
 "@
 	
 	# Define the content for DEPLOY_SYS.sql
@@ -6490,7 +6493,7 @@ if (-not $SilentMode)
 				}
 			})
 		$form.Controls.Add($rebootButton)
-				
+		
 		# Create a Clear Log button
 		$clearLogButton = New-Object System.Windows.Forms.Button
 		$clearLogButton.Text = "Clear Log"
