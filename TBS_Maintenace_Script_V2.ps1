@@ -5751,9 +5751,12 @@ function InstallIntoSMS
 	
 	# Define the content for Pump_all_items_tables.sql
 	$PumpallitemstablesContent = @"
-INSERT INTO FCT_TAB (F1063, F1000, F1047, F1050, F1051, F1052, F1053, F1064, F1081) 
-VALUES (11899, 'PAL', 9, '', 'SKU', 'Preference', '1', 'Pump all item tables', 'sql=DEPLOY_LOAD')
-ON DUPLICATE KEY UPDATE F1000 = VALUES(F1000), F1047 = VALUES(F1047), F1050 = VALUES(F1050), F1051 = VALUES(F1051), F1052 = VALUES(F1052), F1053 = VALUES(F1053), F1064 = VALUES(F1064), F1081 = VALUES(F1081);
+/* First delete the record if it exist */
+DELETE FROM FCT_TAB WHERE F1063 = 11899 AND F1000 = 'PAL';
+
+/* Insert the new function */
+INSERT INTO FCT_TAB (F1063,F1000,F1047,F1050,F1051,F1052,F1053,F1064,F1081) 
+VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPLOY_LOAD');
 "@
 	
 	# Define the content for DEPLOY_SYS.sql
