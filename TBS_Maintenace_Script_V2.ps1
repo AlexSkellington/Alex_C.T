@@ -1322,6 +1322,9 @@ function Generate-SQLScriptsGUI
 	
 	# Generate Lanesql script
 	$LaneSQLScript = @"
+/* Set a long timeout so the entire script runs */
+@WIZRPL(DBASE_TIMEOUT=E);
+
 /* Set memory configuration */
 EXEC sp_configure 'show advanced options', 1;
 RECONFIGURE;
@@ -1409,9 +1412,12 @@ IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 
 ALTER DATABASE LANESQL SET RECOVERY SIMPLE
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD'
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN'
-DBCC SHRINKFILE (LANESQL)
-DBCC SHRINKFILE (LANESQL_Log)
+DBCC SHRINKFILE ($laneDbName)
+DBCC SHRINKFILE (${laneDbName}_Log)
 ALTER DATABASE LANESQL SET RECOVERY FULL
+
+/* Clear the long database timeout */
+@WIZCLR(DBASE_TIMEOUT);
 "@
 	
 	# Store the LaneSQLScript in the script scope
@@ -6429,7 +6435,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.5"
+		$form.Text = "Created by Alex_C.T - Version 1.6"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
