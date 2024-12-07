@@ -3465,50 +3465,59 @@ DROP TABLE Ter_Load;
 			$MachineName = "POS${laneNumber}"
 		}
 		
-		<# Process each load SQL file (currently commented out; uncomment if needed)
-		foreach ($file in $loadFiles) {
-		 Write-Log "Processing file '$($file.Name)' for Lane #$laneNumber..." "blue"
-		
-		# Read the original file content
-		try {
+		<# 
+		# Process each load SQL file (currently commented out; uncomment if needed)
+		foreach ($file in $loadFiles) 
+		{
+		    Write-Log "Processing file '$($file.Name)' for Lane #$laneNumber..." "blue"
+		    
+		    # Read the original file content
+		    try 
+		    {
 		        $originalContent = Get-Content -Path $file.FullName -ErrorAction Stop
-		 Write-Log "Successfully read '$($file.Name)'." "green"
+		        Write-Log "Successfully read '$($file.Name)'." "green"
 		    }
-		    catch {
-		 Write-Log "Failed to read '$($file.Name)'. Error: $_" "red"
+		    catch 
+		    {
+		        Write-Log "Failed to read '$($file.Name)'. Error: $_" "red"
 		        $actionSummaries += "Failed to read $($file.Name)"
 		        continue
 		    }
-		
-		# Filter content to include only records matching the current StoreNumber and LaneNumber
+		    
+		    # Filter content to include only records matching the current StoreNumber and LaneNumber
 		    $filteredContent = $originalContent | Where-Object { 
-		        $_ -match "^\s*\(\s*'[^']+'\s*,\s*'${StoreNumber}'\s*,\s*'${laneNumber}'\s*\)\s*[;,]?$"
+		        $_ -match "^\s*\(\s*'[^']+'\s*,\s*'$StoreNumber'\s*,\s*'$laneNumber'\s*\)\s*[;,]?$"
 		    }
-		
-		    if ($filteredContent) {
-		# Construct the destination path with .sql extension
+		    
+		    if ($filteredContent) 
+		    {
+		        # Construct the destination path with .sql extension
 		        $destinationPath = Join-Path -Path $laneFolder.FullName -ChildPath ($file.BaseName + ".sql")
-		
-		        try {
-		 Write the filtered content to the lane-specific .sql file using UTF8 without BOM
+		    
+		        try 
+		        {
+		            # Write the filtered content to the lane-specific .sql file using UTF8 without BOM
 		            [System.IO.File]::WriteAllText($destinationPath, ($filteredContent -join "`r`n"), $utf8NoBOM)
-		
-		 Set the archive bit on the copied file
+		    
+		            # Set the archive bit on the copied file
 		            $fileItem = Get-Item -Path $destinationPath
 		            $fileItem.Attributes = $fileItem.Attributes -bor [System.IO.FileAttributes]::Archive
-		
+		    
 		            Write-Log "Successfully copied to '$destinationPath'." "green"
 		            $actionSummaries += "Copied $($file.Name)"
 		        }
-		        catch {
+		        catch 
+		        {
 		            Write-Log "Failed to copy '$($file.Name)' to '$destinationPath'. Error: $_" "red"
 		            $actionSummaries += "Failed to copy $($file.Name)"
 		        }
 		    }
-		   else {
-		 Write-Log "No matching records found in '$($file.Name)' for Lane #$laneNumber." "yellow"
+		    else 
+		    {
+		        Write-Log "No matching records found in '$($file.Name)' for Lane #$laneNumber." "yellow"
 		    }
 		}
+		#>		
 		
 		# Handle the run_load script
 		try
@@ -3528,7 +3537,6 @@ DROP TABLE Ter_Load;
 		{
 			$actionSummaries += "Failed to copy run_load.sql"
 		}
-		#>
 		
 		# Handle the lnk_load script
 		try
