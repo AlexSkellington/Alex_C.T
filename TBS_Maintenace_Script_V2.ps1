@@ -49,8 +49,8 @@ $shares = Get-SmbShare | Where-Object { $_.Name -like 'storeman*' }
 foreach ($share in $shares)
 {
 	# Base paths
-	$script:LoadBasePath = "\\$ComputerName\$($share.Name)\office\Load"
-	$script:OfficeBasePath = "\\$ComputerName\$($share.Name)\office"
+	$script:LoadBasePath = "\\$ComputerName\$($share.Name)\Office\Load"
+	$script:OfficeBasePath = "\\$ComputerName\$($share.Name)\Office"
 	$script:Alex_CTFolderPath = "\\$ComputerName\$($share.Name)\Scripts_by_Alex_C.T"
 	$script:StartupINIPath = "\\$ComputerName\$($share.Name)\Startup.ini"
 	
@@ -498,10 +498,8 @@ function Get-DatabaseConnectionString
 	
 	# Possible paths to Startup.ini
 	$possiblePaths = @(
-		'$script:StartupINIPath',
-		'\\localhost\storeman\Startup.ini',
-		'C:\storeman\Startup.ini',
-		'D:\storeman\Startup.ini'
+		'$script:StartupINIPath'
+		
 	)
 	
 	$startupIniPath = $null
@@ -1001,7 +999,7 @@ function Count-ItemsGUI
 		[string]$StoreNumber
 	)
 	
-	$HostPath = "${script:OfficeBasePath}"
+	$HostPath = "$script:OfficeBasePath"
 	$NumberOfLanes = 0
 	$NumberOfStores = 0
 	$NumberOfHosts = 0
