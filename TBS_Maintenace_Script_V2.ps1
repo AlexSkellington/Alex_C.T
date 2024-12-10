@@ -498,7 +498,7 @@ function Get-DatabaseConnectionString
 	
 	# Possible paths to Startup.ini
 	$possiblePaths = @(
-		'${script:OfficeBasePath}\Startup.ini',
+		'$script:StartupINIPath',
 		'\\localhost\storeman\Startup.ini',
 		'C:\storeman\Startup.ini',
 		'D:\storeman\Startup.ini'
