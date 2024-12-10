@@ -52,7 +52,7 @@ foreach ($share in $shares)
 	$script:LoadBasePath = "\\$ComputerName\$($share.Name)\office\Load"
 	$script:OfficeBasePath = "\\$ComputerName\$($share.Name)\office"
 	$script:Alex_CTFolderPath = "\\$ComputerName\$($share.Name)\Scripts_by_Alex_C.T"
-	$script:StartupINIPath = "\\$ComputerName\$($share.Name)\startup.ini"
+	$script:StartupINIPath = "\\$ComputerName\$($share.Name)\Startup.ini"
 	
 }
 
