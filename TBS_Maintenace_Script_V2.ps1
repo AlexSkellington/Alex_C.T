@@ -51,8 +51,8 @@ foreach ($share in $shares)
 	# Base paths
 	$script:LoadBasePath = "\\$ComputerName\$($share.Name)\Office\Load"
 	$script:OfficeBasePath = "\\$ComputerName\$($share.Name)\Office"
-	$script:Alex_CTFolderPath = "\\$ComputerName\$($share.Name)\Scripts_by_Alex_C.T"
-	$script:StartupINIPath = "\\$ComputerName\$($share.Name)\Startup.ini"
+	$script:Alex_CTFolderPath = "\\$ComputerName\$($share.Name)\Scripts_by_Alex_C.T\"
+	$script:StartupINIPath = "\\$ComputerName\$($share.Name)\Startup.ini\"
 	
 }
 
@@ -496,13 +496,19 @@ function Get-DatabaseConnectionString
 		Write-Log "Initialized script:FunctionResults hashtable." "green"
 	}
 	
+	<#
 	# Possible paths to Startup.ini
 	$possiblePaths = @(
 		'$script:StartupINIPath'
 		
 	)
+	#>
 	
-	$startupIniPath = $null
+	
+	# $startupIniPath = $null
+	$startupIniPath = $script:StartupINIPath
+	
+	<#
 	foreach ($path in $possiblePaths)
 	{
 		if (Test-Path -Path $path)
@@ -518,6 +524,7 @@ function Get-DatabaseConnectionString
 		Write-Log "Startup.ini file not found in any of the expected locations." "red"
 		return
 	}
+	#>
 	
 	Write-Log "Generating connection string..." "blue"
 	
