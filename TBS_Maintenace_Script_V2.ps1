@@ -619,6 +619,12 @@ function Get-StoreNumberGUI
 	# Initialize StoreNumber
 	$script:FunctionResults['StoreNumber'] = ""
 	
+	if ([string]::IsNullOrEmpty($IniFilePath))
+	{
+		Write-Host "INI file path is not specified. Skipping Test-Path."
+	}
+	else
+	{
 	# Try to retrieve StoreNumber from the startup.ini file
 	if (Test-Path $IniFilePath)
 	{
@@ -639,7 +645,13 @@ function Get-StoreNumberGUI
 	{
 		Write-Log "INI file not found: $IniFilePath" "yellow"
 	}
-	
+		
+		if ([string]::IsNullOrEmpty($BasePath))
+	{
+		Write-Host "INI file path is not specified. Skipping Test-Path."
+	}
+	else
+	{	
 	# If not found, check XF directories
 	if (Test-Path $BasePath)
 	{
@@ -767,36 +779,43 @@ function Get-StoreNameGUI
 	
 	# Initialize StoreName
 	$script:FunctionResults['StoreName'] = "N/A"
-	
-	if (Test-Path $INIPath)
-	{
-		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | ForEach-Object {
-			$_.Line.Split('=')[1].Trim()
+			
+			if ([string]::IsNullOrEmpty($BasePath))
+			{
+				Write-Host "INI file path is not specified. Skipping Test-Path."
+			}
+			else
+			{
+				if (Test-Path $INIPath)
+				{
+					$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | ForEach-Object {
+						$_.Line.Split('=')[1].Trim()
+					}
+					if ($storeName)
+					{
+						$script:FunctionResults['StoreName'] = $storeName
+						# Write-Log "Store name found in system.ini: $storeName" "green"
+					}
+					else
+					{
+						Write-Log "Store name not found in system.ini." "yellow"
+					}
+				}
+				else
+				{
+					Write-Log "INI file not found: $INIPath" "yellow"
+				}
+				
+				# Update the storeNameLabel in the GUI
+				if (-not $SilentMode -and $storeNameLabel -ne $null)
+				{
+					$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
+					$form.Refresh()
+					[System.Windows.Forms.Application]::DoEvents()
 		}
-		if ($storeName)
-		{
-			$script:FunctionResults['StoreName'] = $storeName
-			# Write-Log "Store name found in system.ini: $storeName" "green"
-		}
-		else
-		{
-			Write-Log "Store name not found in system.ini." "yellow"
-		}
-	}
-	else
-	{
-		Write-Log "INI file not found: $INIPath" "yellow"
-	}
-	
-	# Update the storeNameLabel in the GUI
-	if (-not $SilentMode -and $storeNameLabel -ne $null)
-	{
-		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
-		$form.Refresh()
-		[System.Windows.Forms.Application]::DoEvents()
 	}
 }
-
+		
 # ===================================================================================================
 #                                       SECTION: Mode Determination
 # ---------------------------------------------------------------------------------------------------
