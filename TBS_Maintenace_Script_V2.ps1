@@ -52,6 +52,8 @@ foreach ($share in $shares)
 	$script:LoadBasePath = "\\$ComputerName\$($share.Name)\office\Load"
 	$script:OfficeBasePath = "\\$ComputerName\$($share.Name)\office"
 	$script:Alex_CTFolderPath = "\\$ComputerName\$($share.Name)\Scripts_by_Alex_C.T"
+	$script:StartupINIPath = "\\$ComputerName\$($share.Name)\startup.ini"
+	
 }
 
 # Declare the script hash table to store results from functions
@@ -605,8 +607,8 @@ function Get-DatabaseConnectionString
 function Get-StoreNumberGUI
 {
 	param (
-		[string]$IniFilePath = "\\localhost\Storeman\startup.ini",
-		[string]$BasePath = "\\localhost\Storeman\Office\"
+		[string]$IniFilePath = "$script:StartupINIPath",
+		[string]$BasePath = "$script:OfficeBasePath"
 	)
 	
 	# Initialize StoreNumber
@@ -755,7 +757,7 @@ function Get-StoreNumberGUI
 function Get-StoreNameGUI
 {
 	param (
-		[string]$INIPath = "\\localhost\storeman\office\system.ini"
+		[string]$INIPath = "$script:OfficeBasePath\system.ini"
 	)
 	
 	# Initialize StoreName
