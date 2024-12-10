@@ -49,10 +49,10 @@ $shares = Get-SmbShare | Where-Object { $_.Name -like 'storeman*' }
 foreach ($share in $shares)
 {
 	# Base paths
-	$script:LoadBasePath = "\\$ComputerName\$($share.Name)\Office\Load"
-	$script:OfficeBasePath = "\\$ComputerName\$($share.Name)\Office"
+	$script:LoadBasePath = "\\$ComputerName\$($share.Name)\Office\Load\"
+	$script:OfficeBasePath = "\\$ComputerName\$($share.Name)\Office\"
 	$script:Alex_CTFolderPath = "\\$ComputerName\$($share.Name)\Scripts_by_Alex_C.T\"
-	$script:StartupINIPath = "\\$ComputerName\$($share.Name)\Startup.ini\"
+	$script:StartupINIPath = "\\$ComputerName\$($share.Name)\Startup.ini"
 	
 }
 
