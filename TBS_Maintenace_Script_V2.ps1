@@ -496,19 +496,15 @@ function Get-DatabaseConnectionString
 		Write-Log "Initialized script:FunctionResults hashtable." "green"
 	}
 	
-	<#
-	# Possible paths to Startup.ini
 	$possiblePaths = @(
+		'\\localhost\storeman\Startup.ini',
+		'C:\storeman\Startup.ini',
+		'D:\storeman\Startup.ini',
 		'$script:StartupINIPath'
 		
 	)
-	#>
 	
-	
-	# $startupIniPath = $null
-	$startupIniPath = $script:StartupINIPath
-	
-	<#
+	$startupIniPath = $null	
 	foreach ($path in $possiblePaths)
 	{
 		if (Test-Path -Path $path)
@@ -524,7 +520,6 @@ function Get-DatabaseConnectionString
 		Write-Log "Startup.ini file not found in any of the expected locations." "red"
 		return
 	}
-	#>
 	
 	Write-Log "Generating connection string..." "blue"
 	
