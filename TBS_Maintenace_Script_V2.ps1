@@ -1027,23 +1027,37 @@ function Count-ItemsGUI
 	{
 		try
 		{
-			# Attempt to read counts from TER_TAB
 			if ($Mode -eq "Host")
 			{
 				# Get NumberOfStores (excluding StoreNumber = '999')
 				$queryStores = "SELECT COUNT(DISTINCT F1056) AS StoreCount FROM TER_TAB WHERE F1056 <> '999'"
-				$storeResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryStores -ErrorAction Stop
+				try
+				{
+					$storeResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryStores -ErrorAction Stop
+				}
+				catch [System.Management.Automation.ParameterBindingException] {
+					$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					$storeResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryStores -ErrorAction Stop
+				}
 				
 				$NumberOfStores = $storeResult.StoreCount
 				
 				# Check if host exists
 				$queryHost = "SELECT COUNT(*) AS HostCount FROM TER_TAB WHERE F1056 = '999' AND F1057 = '901'"
-				$hostResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryHost -ErrorAction Stop
+				try
+				{
+					$hostResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryHost -ErrorAction Stop
+				}
+				catch [System.Management.Automation.ParameterBindingException] {
+					$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					$hostResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryHost -ErrorAction Stop
+				}
 				
 				$NumberOfHosts = if ($hostResult.HostCount -gt 0) { 1 }
 				else { 0 }
 				
-				# Write-Log "`r`nCounts retrieved from database." "green"
 			}
 			elseif ($Mode -eq "Store")
 			{
@@ -1055,13 +1069,17 @@ function Count-ItemsGUI
 				
 				# Retrieve lane contents
 				$queryLaneContents = "SELECT F1057, F1125 FROM TER_TAB WHERE F1056 = '$StoreNumber' AND F1057 LIKE '0%' AND F1057 NOT LIKE '8%' AND F1057 NOT LIKE '9%'"
+				try
+				{
+					$laneContentsResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryLaneContents -ErrorAction Stop
+				}
+				catch [System.Management.Automation.ParameterBindingException] {
+					$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					$laneContentsResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryLaneContents -ErrorAction Stop
+				}
 				
-				$laneContentsResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryLaneContents -ErrorAction Stop
-				
-				# Extract lane identifiers into an array
 				$LaneContents = $laneContentsResult | Select-Object -ExpandProperty F1057
-				
-				# Set NumberOfLanes based on the count of laneContentsResult
 				$NumberOfLanes = $LaneContents.Count
 				
 				# Extract machine names and store in hashtable
@@ -1070,8 +1088,6 @@ function Count-ItemsGUI
 					$laneNumber = $row.F1057
 					$machinePath = $row.F1125
 					
-					# Extract the machine name from the machine path
-					# Assuming the path is in the format '\\MachineName\...'
 					if ($machinePath -match '\\\\([^\\]+)\\')
 					{
 						$machineName = $matches[1]
@@ -1085,12 +1101,18 @@ function Count-ItemsGUI
 				
 				# Check if server exists for the store
 				$queryServer = "SELECT COUNT(*) AS ServerCount FROM TER_TAB WHERE F1056 = '$StoreNumber' AND F1057 = '901'"
-				$serverResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryServer -ErrorAction Stop
+				try
+				{
+					$serverResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryServer -ErrorAction Stop
+				}
+				catch [System.Management.Automation.ParameterBindingException] {
+					$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					$serverResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryServer -ErrorAction Stop
+				}
 				
 				$NumberOfServers = if ($serverResult.ServerCount -gt 0) { 1 }
 				else { 0 }
-				
-				# Write-Log "`r`nCounts retrieved from database." "green"
 			}
 		}
 		catch
@@ -1126,7 +1148,6 @@ function Count-ItemsGUI
 			# Count lanes directly under the office directory matching the pattern
 			if (Test-Path $HostPath)
 			{
-				# Retrieve lane directories matching the pattern 'XF$StoreNumber0??'
 				$LaneFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}0??"
 				$NumberOfLanes = $LaneFolders.Count
 			}
