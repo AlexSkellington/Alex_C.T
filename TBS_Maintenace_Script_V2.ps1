@@ -4393,7 +4393,7 @@ function CloseOpenTransactions
 	$CloseTransactionContent = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE')"
 	
 	# Path to the log file
-	$LogFolderPath = "$BaseUNCPath\Scripts_by_Alex_C.T"
+	$LogFolderPath = "$BasePath\Scripts_by_Alex_C.T"
 	$LogFilePath = Join-Path -Path $LogFolderPath -ChildPath "Closed_Transactions_LOG.txt"
 	
 	# Ensure the log directory exists
