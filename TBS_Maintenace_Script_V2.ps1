@@ -535,7 +535,6 @@ function Get-DatabaseConnectionString
 	if ($StartupIniPath -ne $null)
 	{
 		Write-Log "Found Startup.ini at: $startupIniPath" "green"
-		break
 	}
 	
 	if (-not $StartupIniPath)
