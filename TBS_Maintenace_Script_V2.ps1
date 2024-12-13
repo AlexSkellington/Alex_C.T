@@ -531,10 +531,10 @@ function Get-DatabaseConnectionString
 		$script:FunctionResults = @{ }
 		Write-Log "Initialized script:FunctionResults hashtable." "green"
 	}
-		
-	$startupIniPath = "$StartupIniPath"
 	
-	if (-not $startupIniPath)
+	Write-Log "Found Startup.ini at: $StartupIniPath" "green"
+	
+	if (-not $StartupIniPath)
 	{
 		Write-Log "Startup.ini file not found in any of the expected locations." "red"
 		return
@@ -545,7 +545,7 @@ function Get-DatabaseConnectionString
 	# Read the Startup.ini file
 	try
 	{
-		$content = Get-Content -Path $startupIniPath -ErrorAction Stop
+		$content = Get-Content -Path $StartupIniPath -ErrorAction Stop
 		
 		# Extract DBSERVER
 		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
@@ -6514,7 +6514,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 2.3"
+		$form.Text = "Created by Alex_C.T - Version 2.4"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
