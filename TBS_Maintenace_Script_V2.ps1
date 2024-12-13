@@ -1600,26 +1600,25 @@ function Get-TableAliases
 	# Try using -File parameter; if it fails, fallback to older approach
 	try
 	{
-		# Attempt using -File parameter
+		# Primary attempt with -File parameter
 		$allLoadSqlFiles = Get-ChildItem -Path $TargetDirectory -Recurse -File -Filter '*_Load.sql' -ErrorAction Stop
 	}
-	catch [System.Management.Automation.ParameterBindingException] {
-		# Now attempt fallback without stopping the script if this fails
+	catch
+	{
+		# If primary fails, try fallback with -ErrorAction Stop so it can be caught
 		try
 		{
-			$allLoadSqlFiles = Get-ChildItem -Path "c:\storeman\office\load" -Recurse -Filter '*_Load.sql' | Where-Object { -not $_.PsIsContainer }
+			$allLoadSqlFiles = Get-ChildItem -Path "C:\storeman\office\load" -Recurse -Filter '*_Load.sql' -ErrorAction Stop |
+			Where-Object { -not $_.PsIsContainer }
 		}
 		catch
 		{
-			# If fallback also fails, just log a warning and continue
-			Write-Warning "Fallback attempt to get files also failed: $($_.Exception.Message)"
-			# $allLoadSqlFiles could be set to an empty array or handle accordingly
-			$allLoadSqlFiles = @()
+			# If fallback also fails, handle it without showing a big red error
+			Write-Log "Could not find load files in either of the specified paths." "red"
+			$allLoadSqlFiles = @() # Provide an empty array so the script continues gracefully
 		}
 	}
-	
-	# The script continues execution here regardless of success or failure
-	
+		
 	foreach ($file in $allLoadSqlFiles)
 	{
 		# Check if the file name starts with any of the base table names
@@ -6866,7 +6865,6 @@ if (-not $SilentMode)
 	# Call the function to ensure admin privileges
 	# Ensure-Administrator
 	
-	<#
 	# Only call the function if the script has not been relaunched
 	if (-not $IsRelaunched)
 	{
@@ -6877,7 +6875,6 @@ if (-not $SilentMode)
 	{
 		Write-Host "Script has been relaunched. Continuing execution."
 	}
-	#>
 	
 	# Initialize a counter for the number of jobs started
 	$jobCount = 0
