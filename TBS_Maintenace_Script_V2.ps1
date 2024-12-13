@@ -59,7 +59,7 @@ $NumberOfHosts = 0
 $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 
 # First, try to find a directory containing 'storeman' in its name on \\localhost
-$storemanDirs = Get-ChildItem -Path "\\localhost\*storeman*" -Directory -ErrorAction SilentlyContinue
+$storemanDirs = Get-ChildItem -Path "\\localhost\storeman" -Directory -ErrorAction SilentlyContinue
 
 if ($storemanDirs)
 {
@@ -69,7 +69,7 @@ if ($storemanDirs)
 else
 {
 	# If none found on \\localhost, try \\$env:COMPUTERNAME
-	$storemanDirs = Get-ChildItem -Path ("\\" + $env:COMPUTERNAME + "\*storeman*") -Directory -ErrorAction SilentlyContinue
+	$storemanDirs = Get-ChildItem -Path ("\\" + $env:COMPUTERNAME + "\storeman") -Directory -ErrorAction SilentlyContinue
 	if ($storemanDirs)
 	{
 		$BasePath = $storemanDirs[0].FullName
@@ -6525,7 +6525,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 2.0"
+		$form.Text = "Created by Alex_C.T - Version 2.1"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
