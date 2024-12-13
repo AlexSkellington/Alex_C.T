@@ -1572,7 +1572,6 @@ ALTER DATABASE STORESQL SET RECOVERY FULL;
 
 function Get-TableAliases
 {
-	
 	# Define the target directory for SQL files
 	$targetDirectory = "\\localhost\storeman\office\load"
 	
@@ -1584,11 +1583,6 @@ function Get-TableAliases
 		'RES', 'ROUTE', 'VENDOR', 'DELV', 'CLT', 'CLG', 'CLF', 'CLR',
 		'CLL', 'CLT_ITM', 'CLF_SDP', 'STD', 'CFG', 'MOD'
 	)
-	
-	# Validate TargetDirectory exists
-	# if (-not (Test-Path -Path $TargetDirectory -PathType Container)) {
-	#     Throw "Target directory '$TargetDirectory' does not exist."
-	# }
 	
 	# Escape special regex characters in table names and sort by length (longest first)
 	$escapedTables = $baseTables | Sort-Object Length -Descending | ForEach-Object { [regex]::Escape($_) }
@@ -1603,8 +1597,16 @@ function Get-TableAliases
 	# Initialize a collection to store matched files using ArrayList for better performance
 	$sqlFiles = New-Object System.Collections.ArrayList
 	
-	# Collect all *_Load.sql files in the directory recursively
-	$allLoadSqlFiles = Get-ChildItem -Path $TargetDirectory -Recurse -File -Filter '*_Load.sql' -ErrorAction SilentlyContinue
+	# Try using -File parameter; if it fails, fallback to older approach
+	try
+	{
+		# Attempt using -File parameter
+		$allLoadSqlFiles = Get-ChildItem -Path $TargetDirectory -Recurse -File -Filter '*_Load.sql' -ErrorAction Stop
+	}
+	catch [System.Management.Automation.ParameterBindingException] {
+		# Fallback to older approach if -File is not supported
+		$allLoadSqlFiles = Get-ChildItem -Path $TargetDirectory -Recurse -Filter '*_Load.sql' | Where-Object { -not $_.PsIsContainer }
+	}
 	
 	foreach ($file in $allLoadSqlFiles)
 	{
@@ -1712,6 +1714,7 @@ function Get-TableAliases
 		Write-Verbose "`nNo @CREATE table-alias pairs found in the specified files."
 		$sortedResults = @()
 	}
+	
 	# Store results in script-scoped hash table
 	$script:FunctionResults['Get-TableAliases'] = @{
 		Aliases   = $sortedResults
@@ -6460,7 +6463,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.8"
+		$form.Text = "Created by Alex_C.T - Version 1.6"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
