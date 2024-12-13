@@ -58,12 +58,6 @@ $NumberOfHosts = 0
 # Create a UTF8 encoding instance without BOM
 $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 
-# Base paths
-$XFBasePath = "\\localhost\storeman\office"
-$LaneBasePath = "\\localhost\storeman\office"
-$LoadBasePath = "\\localhost\storeman\office\Load"
-$LaneBasePath = "\\localhost\storeman\office"
-
 # Base UNC paths
 $BaseUNCPath = "\\localhost\storeman"
 $OfficePath = Join-Path $BaseUNCPath "office"
