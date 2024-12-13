@@ -1573,7 +1573,7 @@ ALTER DATABASE STORESQL SET RECOVERY FULL;
 function Get-TableAliases
 {
 	# Define the target directory for SQL files
-	$targetDirectory = "\\$env:COMPUTERNAME\storeman\office\load"
+	$targetDirectory = "\\localhost\storeman\office\load"
 	
 	# Define the list of base table names internally (without _TAB)
 	$baseTables = @(
@@ -1605,7 +1605,7 @@ function Get-TableAliases
 	}
 	catch [System.Management.Automation.ParameterBindingException] {
 		# Fallback to older approach if -File is not supported
-		$allLoadSqlFiles = Get-ChildItem -Path $TargetDirectory -Recurse -Filter '*_Load.sql' | Where-Object { -not $_.PsIsContainer }
+		$allLoadSqlFiles = Get-ChildItem -Path "c:\storeman\office\load" -Recurse -Filter '*_Load.sql' | Where-Object { -not $_.PsIsContainer }
 	}
 	
 	foreach ($file in $allLoadSqlFiles)
