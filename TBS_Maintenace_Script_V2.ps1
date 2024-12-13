@@ -64,7 +64,7 @@ $storemanDirs = Get-ChildItem -Path "\\localhost\*storeman*" -Directory -ErrorAc
 if ($storemanDirs)
 {
 	# If multiple directories match, use the first match; adjust logic if needed
-	$BaseUNCPath = $storemanDirs[0].FullName
+	$BasePath = $storemanDirs[0].FullName
 }
 else
 {
@@ -72,7 +72,7 @@ else
 	$storemanDirs = Get-ChildItem -Path ("\\" + $env:COMPUTERNAME + "\*storeman*") -Directory -ErrorAction SilentlyContinue
 	if ($storemanDirs)
 	{
-		$BaseUNCPath = $storemanDirs[0].FullName
+		$BasePath = $storemanDirs[0].FullName
 	}
 	else
 	{
@@ -80,14 +80,14 @@ else
 		$storemanDirs = Get-ChildItem -Path "C:\*storeman*" -Directory -ErrorAction SilentlyContinue
 		if ($storemanDirs)
 		{
-			$BaseUNCPath = $storemanDirs[0].FullName
+			$BasePath = $storemanDirs[0].FullName
 		}
 		else
 		{
 			$storemanDirs = Get-ChildItem -Path "D:\*storeman*" -Directory -ErrorAction SilentlyContinue
 			if ($storemanDirs)
 			{
-				$BaseUNCPath = $storemanDirs[0].FullName
+				$BasePath = $storemanDirs[0].FullName
 			}
 			else
 			{
@@ -100,10 +100,10 @@ else
 # Write-Log "Base Path found: $BaseUNCPath"
 
 # Now that we have a valid $BaseUNCPath, define the rest of the paths
-$OfficePath = Join-Path $BaseUNCPath "office"
-$LoadPath = Join-Path $OfficeUNCPath "Load"
-$StartupIniPath = Join-Path $BaseUNCPath "Startup.ini"
-$SystemIniPath = Join-Path $OfficeUNCPath "system.ini"
+$OfficePath = Join-Path $BasePath "office"
+$LoadPath = Join-Path $OfficePath "Load"
+$StartupIniPath = Join-Path $BasePath "Startup.ini"
+$SystemIniPath = Join-Path $OfficePath "system.ini"
 
 # Temp Directory
 $TempDir = [System.IO.Path]::GetTempPath()
