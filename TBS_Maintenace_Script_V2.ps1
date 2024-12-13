@@ -40,22 +40,6 @@ if (-not $SilentMode)
 #   Initializes all necessary variables required for the script's operation.
 # ===================================================================================================
 
-# Retrieve the local computer name
-$ComputerName = $env:COMPUTERNAME
-
-# Get all SMB shares on the local computer that start with 'storeman'
-$shares = Get-SmbShare | Where-Object { $_.Name -like 'storeman*' }
-
-foreach ($share in $shares)
-{
-	# Base paths
-	$script:LoadBasePath = "\\$ComputerName\$($share.Name)\Office\Load\"
-	$script:OfficeBasePath = "\\$ComputerName\$($share.Name)\Office\"
-	$script:Alex_CTFolderPath = "\\$ComputerName\$($share.Name)\Scripts_by_Alex_C.T\"
-	$script:StartupINIPath = "\\$ComputerName\$($share.Name)\Startup.ini"
-	
-}
-
 # Declare the script hash table to store results from functions
 $script:FunctionResults = @{ }
 
@@ -73,6 +57,12 @@ $NumberOfHosts = 0
 
 # Create a UTF8 encoding instance without BOM
 $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
+
+# Base paths
+$XFBasePath = "\\localhost\storeman\office"
+$LaneBasePath = "\\localhost\storeman\office"
+$LoadBasePath = "\\localhost\storeman\office\Load"
+$LaneBasePath = "\\localhost\storeman\office"
 
 # Temp Directory
 $TempDir = [System.IO.Path]::GetTempPath()
@@ -496,14 +486,14 @@ function Get-DatabaseConnectionString
 		Write-Log "Initialized script:FunctionResults hashtable." "green"
 	}
 	
+	# Possible paths to Startup.ini
 	$possiblePaths = @(
-		'$script:StartupINIPath',
 		'\\localhost\storeman\Startup.ini',
 		'C:\storeman\Startup.ini',
-		'D:\storeman\Startup.ini'		
+		'D:\storeman\Startup.ini'
 	)
 	
-	$startupIniPath = $null	
+	$startupIniPath = $null
 	foreach ($path in $possiblePaths)
 	{
 		if (Test-Path -Path $path)
@@ -606,8 +596,8 @@ function Get-DatabaseConnectionString
 function Get-StoreNumberGUI
 {
 	param (
-		[string]$IniFilePath = "$script:StartupINIPath",
-		[string]$BasePath = "$script:OfficeBasePath"
+		[string]$IniFilePath = "\\localhost\Storeman\startup.ini",
+		[string]$BasePath = "\\localhost\Storeman\Office\"
 	)
 	
 	# Initialize StoreNumber
@@ -756,7 +746,7 @@ function Get-StoreNumberGUI
 function Get-StoreNameGUI
 {
 	param (
-		[string]$INIPath = "$script:OfficeBasePath\system.ini"
+		[string]$INIPath = "\\localhost\storeman\office\system.ini"
 	)
 	
 	# Initialize StoreName
@@ -1000,7 +990,7 @@ function Count-ItemsGUI
 		[string]$StoreNumber
 	)
 	
-	$HostPath = "$script:OfficeBasePath"
+	$HostPath = "\\localhost\storeman\office\"
 	$NumberOfLanes = 0
 	$NumberOfStores = 0
 	$NumberOfHosts = 0
@@ -1201,7 +1191,7 @@ function Clear-XEFolder
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $false)]
-		[string]$folderPath = "${script:OfficeBasePath}\XE${StoreNumber}901",
+		[string]$folderPath = "\\localhost\storeman\Office\XE${StoreNumber}901",
 		[Parameter(Mandatory = $false)]
 		[int]$checkIntervalSeconds = 2,
 		# Default to 2 seconds; adjust as needed
@@ -1563,7 +1553,7 @@ function Get-TableAliases
 {
 	
 	# Define the target directory for SQL files
-	$targetDirectory = "$script:LoadBasePath"
+	$targetDirectory = "\\localhost\storeman\office\load"
 	
 	# Define the list of base table names internally (without _TAB)
 	$baseTables = @(
@@ -1994,7 +1984,7 @@ function Execute-SQLLocallyGUI
 	# Configuration for retry mechanism
 	$MaxRetries = 2
 	$RetryDelaySeconds = 5
-	$FailedCommandsPath = "${script:OfficeBasePath}\XF${StoreNumber}901\Failed_ServerSQLScript_Sections.sql"
+	$FailedCommandsPath = "\\localhost\Storeman\Office\XF${StoreNumber}901\Failed_ServerSQLScript_Sections.sql"
 	
 	# Attempt to retrieve the SQL script from the script-scoped variable
 	$sqlScript = $script:ServerSQLScript
@@ -2579,7 +2569,7 @@ function Process-StoresGUI
 	)
 	
 	# Initialize the base path
-	$HostPath = "$script:OfficeBasePath"
+	$HostPath = "\\localhost\storeman\office"
 	
 	if (-not (Test-Path $HostPath))
 	{
@@ -2646,7 +2636,7 @@ function Process-Store
 		[string]$StoresqlFilePath
 	)
 	
-	$StorePath = "$script:OfficeBasePath\XF${StoreNumber}901"
+	$StorePath = "\\localhost\storeman\office\XF${StoreNumber}901"
 	
 	if (Test-Path $StorePath)
 	{
@@ -2707,7 +2697,7 @@ function Process-AllStores
 	Write-Log "`r`n=== Starting Process-AllStoresAndHostGUI function ===" "blue"
 	
 	# Initialize the base path
-	$HostPath = "$script:OfficeBasePath"
+	$HostPath = "\\localhost\storeman\office"
 	
 	if (-not (Test-Path $HostPath))
 	{
@@ -2776,9 +2766,9 @@ function Process-LanesGUI
 	
 	Write-Log "`r`n==================== Starting Process-LanesGUI Function ====================`r`n" "blue"
 	
-	if (-not (Test-Path $script:OfficeBasePath))
+	if (-not (Test-Path $XFBasePath))
 	{
-		Write-Log "XF Base Path not found: $script:OfficeBasePath" "yellow"
+		Write-Log "XF Base Path not found: $XFBasePath" "yellow"
 		return
 	}
 	
@@ -2886,7 +2876,7 @@ function Process-Lane
 		[string]$StoreNumber
 	)
 	
-	$LaneLocalPath = "$script:OfficeBasePath\XF${StoreNumber}${LaneNumber}"
+	$LaneLocalPath = "\\localhost\storeman\office\XF${StoreNumber}${LaneNumber}"
 	
 	if (Test-Path $LaneLocalPath)
 	{
@@ -2949,14 +2939,14 @@ function Process-AllLanes
 	
 	Write-Log "`r`n=== Starting Process-LanesAndServerGUI Function ===" "blue"
 	
-	if (-not (Test-Path $script:OfficeBasePath))
+	if (-not (Test-Path $XFBasePath))
 	{
-		Write-Log "XF Base Path not found: $script:OfficeBasePath" "yellow"
+		Write-Log "XF Base Path not found: $XFBasePath" "yellow"
 		return
 	}
 	
 	# Get all available lane numbers
-	$laneFolders = Get-ChildItem -Path $script:OfficeBasePath -Directory -Filter "XF${StoreNumber}0*"
+	$laneFolders = Get-ChildItem -Path $XFBasePath -Directory -Filter "XF${StoreNumber}0*"
 	$allLanes = $laneFolders | ForEach-Object {
 		$_.Name.Substring($_.Name.Length - 3, 3)
 	}
@@ -3297,9 +3287,9 @@ function Update-LaneFiles
 	
 	Write-Log "`r`n==================== Starting Update-LaneFiles Function ====================" "blue"
 	
-	if (-not (Test-Path $script:LoadBasePath))
+	if (-not (Test-Path $LoadBasePath))
 	{
-		Write-Log "`r`nLoad Base Path not found: $script:LoadBasePath" "yellow"
+		Write-Log "`r`nLoad Base Path not found: $LoadBasePath" "yellow"
 		return
 	}
 	
@@ -3430,13 +3420,13 @@ DROP TABLE Ter_Load;
 	
 	# Get all Load SQL files in the Load directory excluding specific scripts
 	# $excludedFiles = @("run_load.sql", "lnk_load.sql", "sto_load.sql", "ter_load.sql")
-	# $loadFiles = Get-ChildItem -Path $script:LoadBasePath -File -Filter "*.sql" | Where-Object { $_.Name -notin $excludedFiles }
+	# $loadFiles = Get-ChildItem -Path $LoadBasePath -File -Filter "*.sql" | Where-Object { $_.Name -notin $excludedFiles }
 	
 	foreach ($laneNumber in $Lanes)
 	{
 		# Construct the lane folder name
 		$laneFolderName = "XF${StoreNumber}${laneNumber}"
-		$laneFolderPath = Join-Path -Path $script:OfficeBasePath -ChildPath $laneFolderName
+		$laneFolderPath = Join-Path -Path $LaneBasePath -ChildPath $laneFolderName
 		
 		if (-not (Test-Path $laneFolderPath))
 		{
@@ -3671,9 +3661,9 @@ function Pump-AllItems
 	
 	Write-Log "`r`n==================== Starting Pump-AllItems Function ====================`r`n" "blue"
 	
-	if (-not (Test-Path $script:OfficeBasePath))
+	if (-not (Test-Path $XFBasePath))
 	{
-		Write-Log "XF Base Path not found: $script:OfficeBasePath" "yellow"
+		Write-Log "XF Base Path not found: $XFBasePath" "yellow"
 		return
 	}
 	
@@ -4033,7 +4023,7 @@ DROP TABLE $viewName;`r`n`r`n"
 	$ProcessedLanes = @()
 	foreach ($lane in $Lanes)
 	{
-		$LaneLocalPath = Join-Path -Path $script:OfficeBasePath -ChildPath "XF${StoreNumber}${lane}"
+		$LaneLocalPath = Join-Path -Path $XFBasePath -ChildPath "XF${StoreNumber}${lane}"
 		
 		if (Test-Path $LaneLocalPath)
 		{
@@ -4092,9 +4082,9 @@ function Reboot-Lanes
 	
 	Write-Log "`r`n==================== Starting Reboot-Lanes Function ====================" "blue"
 	
-	if (-not (Test-Path $script:OfficeBasePath))
+	if (-not (Test-Path $XFBasePath))
 	{
-		Write-Log "`r`nXF Base Path not found: $script:OfficeBasePath" "yellow"
+		Write-Log "`r`nXF Base Path not found: $XFBasePath" "yellow"
 		return
 	}
 	
@@ -4285,7 +4275,7 @@ function CloseOpenTransactions
 	Write-Log "`r`n==================== Starting CloseOpenTransactions ====================`r`n" "blue"
 	
 	# Define the path to monitor
-	$XEFolderPath = "${script:OfficeBasePath}\XE${StoreNumber}901"
+	$XEFolderPath = "\\localhost\Storeman\Office\XE${StoreNumber}901"
 	
 	# Ensure the XE folder exists
 	if (-not (Test-Path $XEFolderPath))
@@ -4298,7 +4288,7 @@ function CloseOpenTransactions
 	$CloseTransactionContent = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE')"
 	
 	# Path to the log file
-	$LogFolderPath = "$script:Alex_CTFolderPath"
+	$LogFolderPath = "\\localhost\Storeman\Scripts_by_Alex_C.T"
 	$LogFilePath = Join-Path -Path $LogFolderPath -ChildPath "Closed_Transactions_LOG.txt"
 	
 	# Ensure the log directory exists
@@ -4392,7 +4382,7 @@ function CloseOpenTransactions
 													$transactionNumber = $Matches[1]
 													
 													# Define the path to the lane directory
-													$LaneDirectory = "${script:OfficeBasePath}\XF${StoreNumber}${LaneNumber}"
+													$LaneDirectory = "\\localhost\storeman\office\XF${StoreNumber}${LaneNumber}"
 													
 													if (Test-Path $LaneDirectory)
 													{
@@ -4563,7 +4553,7 @@ function DeployCloseTransaction
 	}
 	
 	# Define the path to the lane directory
-	$LaneDirectory = "${script:OfficeBasePath}\XF${StoreNumber}${LaneNumber}"
+	$LaneDirectory = "\\localhost\storeman\office\XF${StoreNumber}${LaneNumber}"
 	
 	if (Test-Path $LaneDirectory)
 	{
@@ -5586,10 +5576,10 @@ function Refresh-Files
 	
 	Write-Log "`r`n==================== Starting Refresh-Files Function ====================`r`n" "blue"
 	
-	# Validate the target path (e.g., $script:OfficeBasePath)
-	if (-not (Test-Path $script:OfficeBasePath))
+	# Validate the target path (e.g., $XFBasePath)
+	if (-not (Test-Path $XFBasePath))
 	{
-		Write-Log "XF Base Path not found: $script:OfficeBasePath" "yellow"
+		Write-Log "XF Base Path not found: $XFBasePath" "yellow"
 		return
 	}
 	
@@ -5943,9 +5933,9 @@ ORDER BY F1000,F1063;
 	Write-File -Path $DeployOneFctFilePath -Content $DeployOneFctContent -Encoding $ansiEncoding
 	
 	# Define destination paths
-	$PumpallitemstablesDestination = "${script:OfficeBasePath}\XF${StoreNumber}901"
-	$DeploySysDestination = "${script:OfficeBasePath}\DEPLOY_SYS.sql"
-	$DeployOneFctDestination = "${script:OfficeBasePath}\DEPLOY_ONE_FCT.sqm"
+	$PumpallitemstablesDestination = "\\localhost\Storeman\Office\XF${StoreNumber}901"
+	$DeploySysDestination = "\\localhost\Storeman\Office\DEPLOY_SYS.sql"
+	$DeployOneFctDestination = "\\localhost\Storeman\Office\DEPLOY_ONE_FCT.sqm"
 	
 	# Additional Variables
 	$File1 = "Pump_all_items_tables.sql"
@@ -6396,12 +6386,12 @@ function Show-SelectionDialog
 			else
 			{
 				# Fallback to current mechanism
-				if (-not (Test-Path -Path $script:OfficeBasePath))
+				if (-not (Test-Path -Path $XFBasePath))
 				{
-					[System.Windows.Forms.MessageBox]::Show("The path '$script:OfficeBasePath' does not exist.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+					[System.Windows.Forms.MessageBox]::Show("The path '$XFBasePath' does not exist.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 					return $null
 				}
-				$laneFolders = Get-ChildItem -Path $script:OfficeBasePath -Directory -Filter "XF${StoreNumber}0*"
+				$laneFolders = Get-ChildItem -Path $XFBasePath -Directory -Filter "XF${StoreNumber}0*"
 				if (-not $laneFolders)
 				{
 					return @{
@@ -6449,7 +6439,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.7"
+		$form.Text = "Created by Alex_C.T - Version 1.6"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
