@@ -58,13 +58,16 @@ $NumberOfHosts = 0
 # Create a UTF8 encoding instance without BOM
 $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 
+# Initialize BasePath variable
+$BasePath = $null
+
 # First, try to find a directory containing 'storeman' in its name on \\localhost
 $storemanDirs = Get-ChildItem -Path "\\localhost\storeman" -Directory -ErrorAction SilentlyContinue
 
 if ($storemanDirs)
 {
 	# If multiple directories match, use the first match; adjust logic if needed
-	$BasePath = $storemanDirs[0].FullName
+	$BasePath = "\\localhost\storeman"
 }
 else
 {
@@ -72,7 +75,7 @@ else
 	$storemanDirs = Get-ChildItem -Path ("\\" + $env:COMPUTERNAME + "\storeman") -Directory -ErrorAction SilentlyContinue
 	if ($storemanDirs)
 	{
-		$BasePath = $storemanDirs[0].FullName
+		$BasePath = "\\$env:COMPUTERNAME\storeman"
 	}
 	else
 	{
