@@ -1605,7 +1605,7 @@ function Get-TableAliases
 	}
 	catch [System.Management.Automation.ParameterBindingException] {
 		# Fallback to older approach if -File is not supported
-		$allLoadSqlFiles = Get-ChildItem -Path "\\localhost\storeman\office\load" -Recurse -Filter '*_Load.sql' | Where-Object { -not $_.PsIsContainer }
+		$allLoadSqlFiles = Get-ChildItem -Path "c:\storeman\office\load" -Recurse -Filter '*_Load.sql' | Where-Object { -not $_.PsIsContainer }
 	}
 	
 	foreach ($file in $allLoadSqlFiles)
