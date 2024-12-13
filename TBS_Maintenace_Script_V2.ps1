@@ -6941,6 +6941,8 @@ if (-not $SilentMode)
 	# Show the running version of PowerShell
 	Write-Log "Powershell version installed: $PowerShellVersion" "blue"
 	
+	$PSVersionTable.PSVersion
+	
 	# Get SQL Connection String
 	Get-DatabaseConnectionString
 	
