@@ -1573,7 +1573,7 @@ ALTER DATABASE STORESQL SET RECOVERY FULL;
 function Get-TableAliases
 {
 	# Define the target directory for SQL files
-	$targetDirectory = "\\localhost\storeman\office\load"
+	$targetDirectory = "\\$env:COMPUTERNAME\storeman\office\load"
 	
 	# Define the list of base table names internally (without _TAB)
 	$baseTables = @(
