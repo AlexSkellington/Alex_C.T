@@ -61,46 +61,47 @@ $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 # Initialize BasePath variable
 $BasePath = $null
 
-# First, try to find a directory containing 'storeman' in its name on \\localhost
-$storemanDirs = Get-ChildItem -Path "\\localhost\storeman" -Directory -ErrorAction SilentlyContinue
+# Define the UNC paths to check in order of priority
+$uncPaths = @(
+	"\\localhost\storeman",
+	"\\$env:COMPUTERNAME\storeman"
+)
 
-if ($storemanDirs)
+# Check each UNC path for existence
+foreach ($path in $uncPaths)
 {
-	# If multiple directories match, use the first match; adjust logic if needed
-	$BasePath = "\\localhost\storeman"
-}
-else
-{
-	# If none found on \\localhost, try \\$env:COMPUTERNAME
-	$storemanDirs = Get-ChildItem -Path ("\\" + $env:COMPUTERNAME + "\storeman") -Directory -ErrorAction SilentlyContinue
-	if ($storemanDirs)
+	if (Test-Path -Path $path -PathType Container)
 	{
-		$BasePath = "\\$env:COMPUTERNAME\storeman"
+		$BasePath = $path
+		break
 	}
-	else
+}
+
+# If no UNC path is found, proceed to check local drives
+if (-not $BasePath)
+{
+	# Define local drives to search
+	$localDrives = @("C:\", "D:\")
+	
+	foreach ($drive in $localDrives)
 	{
-		# If none found on UNC paths, try local drives C: and D:
-		$storemanDirs = Get-ChildItem -Path "C:\*storeman*" -Directory -ErrorAction SilentlyContinue
+		# Retrieve directories matching '*storeman*' in the root of the drive
+		$storemanDirs = Get-ChildItem -Path $drive -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue
+		
 		if ($storemanDirs)
 		{
+			# Select the first matching directory
 			$BasePath = $storemanDirs[0].FullName
-		}
-		else
-		{
-			$storemanDirs = Get-ChildItem -Path "D:\*storeman*" -Directory -ErrorAction SilentlyContinue
-			if ($storemanDirs)
-			{
-				$BasePath = $storemanDirs[0].FullName
-			}
-			else
-			{
-				throw "No directories containing 'storeman' were found in any of the specified locations."
-			}
+			break
 		}
 	}
 }
 
-# Write-Log "Base Path found: $BaseUNCPath"
+# Final check to ensure BasePath was set
+if (-not $BasePath)
+{
+	throw "No directories containing 'storeman' were found in any of the specified locations."
+}
 
 # Now that we have a valid $BaseUNCPath, define the rest of the paths
 $OfficePath = Join-Path $BasePath "office"
