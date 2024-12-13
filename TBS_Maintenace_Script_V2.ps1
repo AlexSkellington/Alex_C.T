@@ -11,6 +11,9 @@ Write-Host "Script started. IsRelaunched: $IsRelaunched"
 #   Defines the script parameters, allowing users to run the script in silent mode.
 # ===================================================================================================
 
+# Set the PowerShell version variable
+$psVersion = $PSVersionTable.PSVersion
+
 # Set Execution Policy to Bypass for the current process
 # Set-ExecutionPolicy Bypass -Scope Process -Force
 
@@ -6930,7 +6933,7 @@ if (-not $SilentMode)
 	$StoreName = $script:FunctionResults['StoreName']
 	
 	# Show the running version of PowerShell
-	Write-Log "Powershell version installed: $PSVersionTable.PSVersion" "blue"
+	Write-Log "Powershell version installed: $psVersion" "blue"
 	
 	# Get SQL Connection String
 	Get-DatabaseConnectionString
