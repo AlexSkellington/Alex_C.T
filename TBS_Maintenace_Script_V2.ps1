@@ -532,7 +532,11 @@ function Get-DatabaseConnectionString
 		Write-Log "Initialized script:FunctionResults hashtable." "green"
 	}
 	
-	Write-Log "Found Startup.ini at: $StartupIniPath" "green"
+	if ($StartupIniPath -ne $null)
+	{
+		Write-Log "Found Startup.ini at: $startupIniPath" "green"
+		break
+	}
 	
 	if (-not $StartupIniPath)
 	{
