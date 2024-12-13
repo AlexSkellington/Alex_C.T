@@ -1605,7 +1605,7 @@ function Get-TableAliases
 	}
 	catch [System.Management.Automation.ParameterBindingException] {
 		# Fallback to older approach if -File is not supported
-		$allLoadSqlFiles = Get-ChildItem -Path "c:\storeman\office\load" -Recurse -Filter '*_Load.sql' | Where-Object { -not $_.PsIsContainer }
+		$allLoadSqlFiles = Get-ChildItem -Path "\\localhost\office\load" -Recurse -Filter '*_Load.sql' | Where-Object { -not $_.PsIsContainer }
 	}
 	
 	foreach ($file in $allLoadSqlFiles)
@@ -6463,7 +6463,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.6"
+		$form.Text = "Created by Alex_C.T - Version 1.8"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
