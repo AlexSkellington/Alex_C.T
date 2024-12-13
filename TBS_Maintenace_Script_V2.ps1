@@ -1220,6 +1220,34 @@ function Clear-XEFolder
 		[string[]]$exclusions = @('FATAL*', 'S*') # Adjust patterns if needed
 	)
 	
+	# If the UNC path doesn't work, attempt local paths (C: or D:)
+	if (-not (Test-Path -Path $folderPath))
+	{
+		# Attempt to translate UNC path to local paths
+		$localPaths = @(
+			"C:\storeman\office\XE${StoreNumber}901",
+			"D:\storeman\office\XE${StoreNumber}901"
+		)
+		
+		$foundPath = $false
+		foreach ($localPath in $localPaths)
+		{
+			if (Test-Path $localPath)
+			{
+				$folderPath = $localPath
+				$foundPath = $true
+				Write-Log "UNC path not accessible. Using local path: $localPath" "yellow"
+				break
+			}
+		}
+		
+		if (-not $foundPath)
+		{
+			Write-Log "Folder 'XE${StoreNumber}901' was not found on UNC or local paths." "red"
+			return
+		}
+	}
+	
 	# === Initial Cleaning Step ===
 	if (Test-Path -Path $folderPath)
 	{
@@ -1238,6 +1266,7 @@ function Clear-XEFolder
 	else
 	{
 		Write-Log "Folder 'XE${StoreNumber}901' (Urgent Messages) does not exist." "red"
+		return
 	}
 	
 	# === Start Background Job for Continuous Monitoring ===
