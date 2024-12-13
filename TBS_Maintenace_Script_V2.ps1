@@ -77,7 +77,7 @@ foreach ($path in $uncPaths)
 	}
 }
 
-# If no UNC path is found, proceed to check local drives
+<# If no UNC path is found, proceed to check local drives
 if (-not $BasePath)
 {
 	# Define local drives to search
@@ -102,6 +102,7 @@ if (-not $BasePath)
 {
 	throw "No directories containing 'storeman' were found in any of the specified locations."
 }
+#>
 
 # Now that we have a valid $BaseUNCPath, define the rest of the paths
 $OfficePath = Join-Path $BasePath "office"
@@ -3626,7 +3627,7 @@ DROP TABLE Ter_Load;
 		        Write-Log "No matching records found in '$($file.Name)' for Lane #$laneNumber." "yellow"
 		    }
 		}
-		#>		
+		#>
 		
 		# Handle the run_load script
 		try
