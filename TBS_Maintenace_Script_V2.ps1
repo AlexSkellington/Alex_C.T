@@ -575,14 +575,14 @@ function Get-DatabaseConnectionString
 	# Write-Log "Stored DBNAME in FunctionResults: $dbName" "green"
 	
 	# Build the connection string
-	$connectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
+	$ConnectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
 	# Optionally, log the constructed connection string (be cautious with sensitive information)
-	# Write-Log "Constructed connection string: $connectionString" "green"
+	# Write-Log "Constructed connection string: $ConnectionString" "green"
 	
 	# Store the connection string in the FunctionResults hashtable
-	$script:FunctionResults['ConnectionString'] = $connectionString
+	$script:FunctionResults['ConnectionString'] = $ConnectionString
 	
-	Write-Log "Variables ($connectionString) stored." "green"
+	Write-Log "Variables ($ConnectionString) stored." "green"
 }
 
 # ===================================================================================================
@@ -837,15 +837,15 @@ function Get-LaneDatabaseInfo
 	$script:FunctionResults['LaneDatabaseInfo'] = @{ }
 	
 	# Retrieve the connection string from FunctionResults
-	$connectionString = $script:FunctionResults['ConnectionString']
+	$ConnectionString = $script:FunctionResults['ConnectionString']
 	
 	# If connection string is not available, attempt to get it
-	if (-not $connectionString)
+	if (-not $ConnectionString)
 	{
 		Write-Log "Connection string not found. Attempting to generate it..." "yellow"
 		Get-DatabaseConnectionString
-		$connectionString = $script:FunctionResults['ConnectionString']
-		if (-not $connectionString)
+		$ConnectionString = $script:FunctionResults['ConnectionString']
+		if (-not $ConnectionString)
 		{
 			Write-Log "Unable to generate connection string. Cannot query TER_TAB." "red"
 			return
@@ -872,7 +872,7 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 		}
 		
 		# Execute the SQL query using Invoke-Sqlcmd
-		$queryResult = Invoke-Sqlcmd -ConnectionString $connectionString -Query $query -ErrorAction Stop
+		$queryResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query -ErrorAction Stop
 		
 		if ($queryResult -ne $null -and $queryResult.Count -gt 0)
 		{
@@ -999,15 +999,15 @@ function Count-ItemsGUI
 	$LaneMachines = @{ }
 	
 	# Retrieve the connection string from script variables
-	$connectionString = $script:FunctionResults['ConnectionString']
+	$ConnectionString = $script:FunctionResults['ConnectionString']
 	
 	# If connection string is not available, attempt to get it
-	if (-not $connectionString)
+	if (-not $ConnectionString)
 	{
 		Write-Log "Connection string not found. Attempting to generate it..." "yellow"
 		Get-DatabaseConnectionString
-		$connectionString = $script:FunctionResults['ConnectionString']
-		if (-not $connectionString)
+		$ConnectionString = $script:FunctionResults['ConnectionString']
+		if (-not $ConnectionString)
 		{
 			Write-Log "Unable to generate connection string. Proceeding with fallback mechanism." "red"
 			$CountsFromDatabase = $false
@@ -1032,13 +1032,13 @@ function Count-ItemsGUI
 			{
 				# Get NumberOfStores (excluding StoreNumber = '999')
 				$queryStores = "SELECT COUNT(DISTINCT F1056) AS StoreCount FROM TER_TAB WHERE F1056 <> '999'"
-				$storeResult = Invoke-Sqlcmd -ConnectionString $connectionString -Query $queryStores -ErrorAction Stop
+				$storeResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryStores -ErrorAction Stop
 				
 				$NumberOfStores = $storeResult.StoreCount
 				
 				# Check if host exists
 				$queryHost = "SELECT COUNT(*) AS HostCount FROM TER_TAB WHERE F1056 = '999' AND F1057 = '901'"
-				$hostResult = Invoke-Sqlcmd -ConnectionString $connectionString -Query $queryHost -ErrorAction Stop
+				$hostResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryHost -ErrorAction Stop
 				
 				$NumberOfHosts = if ($hostResult.HostCount -gt 0) { 1 }
 				else { 0 }
@@ -1056,7 +1056,7 @@ function Count-ItemsGUI
 				# Retrieve lane contents
 				$queryLaneContents = "SELECT F1057, F1125 FROM TER_TAB WHERE F1056 = '$StoreNumber' AND F1057 LIKE '0%' AND F1057 NOT LIKE '8%' AND F1057 NOT LIKE '9%'"
 				
-				$laneContentsResult = Invoke-Sqlcmd -ConnectionString $connectionString -Query $queryLaneContents -ErrorAction Stop
+				$laneContentsResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryLaneContents -ErrorAction Stop
 				
 				# Extract lane identifiers into an array
 				$LaneContents = $laneContentsResult | Select-Object -ExpandProperty F1057
@@ -1085,7 +1085,7 @@ function Count-ItemsGUI
 				
 				# Check if server exists for the store
 				$queryServer = "SELECT COUNT(*) AS ServerCount FROM TER_TAB WHERE F1056 = '$StoreNumber' AND F1057 = '901'"
-				$serverResult = Invoke-Sqlcmd -ConnectionString $connectionString -Query $queryServer -ErrorAction Stop
+				$serverResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryServer -ErrorAction Stop
 				
 				$NumberOfServers = if ($serverResult.ServerCount -gt 0) { 1 }
 				else { 0 }
@@ -1293,7 +1293,7 @@ function Generate-SQLScriptsGUI
 		return
 	}
 	
-	$connectionString = $script:FunctionResults['ConnectionString']
+	$ConnectionString = $script:FunctionResults['ConnectionString']
 	
 	# Initialize default database names
 	# $defaultStoreDbName = "STORESQL"
@@ -2037,14 +2037,14 @@ function Execute-SQLLocallyGUI
 	{
 		$script:FunctionResults = @{ }
 	}
-	$connectionString = $script:FunctionResults['ConnectionString']
+	$ConnectionString = $script:FunctionResults['ConnectionString']
 	
 	# If connection string is not available, attempt to get it
-	if (-not $connectionString)
+	if (-not $ConnectionString)
 	{
 		Write-Log "Connection string not found. Attempting to generate it..." "yellow"
-		$connectionString = Get-DatabaseConnectionString
-		if (-not $connectionString)
+		$ConnectionString = Get-DatabaseConnectionString
+		if (-not $ConnectionString)
 		{
 			Write-Log "Unable to generate connection string. Cannot execute SQL script." "red"
 			return
@@ -2087,7 +2087,7 @@ function Execute-SQLLocallyGUI
 				# Execute the SQL commands for the current section
 				try
 				{
-					Invoke-Sqlcmd -ConnectionString $connectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+					Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
 					Write-Log "Section '$sectionName' executed successfully." "green"
 				}
 				catch
@@ -3733,11 +3733,11 @@ function Pump-AllItems
 		Write-Log "Connection string not found in script variables. Cannot proceed with Pump-AllItems." "red"
 		return
 	}
-	$connectionString = $script:FunctionResults['ConnectionString']
+	$ConnectionString = $script:FunctionResults['ConnectionString']
 	
 	# Open SQL connection
 	$sqlConnection = New-Object System.Data.SqlClient.SqlConnection
-	$sqlConnection.ConnectionString = $connectionString
+	$sqlConnection.ConnectionString = $ConnectionString
 	$sqlConnection.Open()
 	
 	# Process each alias entry sequentially
