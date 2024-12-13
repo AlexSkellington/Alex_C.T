@@ -100,10 +100,10 @@ else
 # Write-Log "Base Path found: $BaseUNCPath"
 
 # Now that we have a valid $BaseUNCPath, define the rest of the paths
-$OfficeUNCPath = Join-Path $BaseUNCPath "office"
-$LoadUNCPath = Join-Path $OfficeUNCPath "Load"
-$StartupIniUNCPath = Join-Path $BaseUNCPath "Startup.ini"
-$SystemIniUNCPath = Join-Path $OfficeUNCPath "system.ini"
+$OfficePath = Join-Path $BaseUNCPath "office"
+$LoadPath = Join-Path $OfficeUNCPath "Load"
+$StartupIniPath = Join-Path $BaseUNCPath "Startup.ini"
+$SystemIniPath = Join-Path $OfficeUNCPath "system.ini"
 
 # Temp Directory
 $TempDir = [System.IO.Path]::GetTempPath()
