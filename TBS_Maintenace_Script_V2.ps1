@@ -6460,7 +6460,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.6"
+		$form.Text = "Created by Alex_C.T - Version 1.8"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
