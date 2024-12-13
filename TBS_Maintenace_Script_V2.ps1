@@ -6932,6 +6932,9 @@ if (-not $SilentMode)
 	Get-StoreNameGUI
 	$StoreName = $script:FunctionResults['StoreName']
 	
+	# Show the running version of PowerShell
+	Write-Log "Powershell version installed: $psVersion" "blue"
+	
 	# Get SQL Connection String
 	Get-DatabaseConnectionString
 	
