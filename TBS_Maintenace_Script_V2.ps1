@@ -64,6 +64,13 @@ $LaneBasePath = "\\localhost\storeman\office"
 $LoadBasePath = "\\localhost\storeman\office\Load"
 $LaneBasePath = "\\localhost\storeman\office"
 
+# Base UNC paths
+$BaseUNCPath = "\\localhost\storeman"
+$OfficePath = Join-Path $BaseUNCPath "office"
+$LoadPath = Join-Path $OfficePath "Load"
+$StartupIniPath = Join-Path $BaseUNCPath "Startup.ini"
+$SystemIniPath = Join-Path $OfficePath "system.ini"
+
 # Temp Directory
 $TempDir = [System.IO.Path]::GetTempPath()
 
@@ -488,7 +495,7 @@ function Get-DatabaseConnectionString
 	
 	# Possible paths to Startup.ini
 	$possiblePaths = @(
-		'\\localhost\storeman\Startup.ini',
+		'$StartupIniPath',
 		'C:\storeman\Startup.ini',
 		'D:\storeman\Startup.ini'
 	)
@@ -596,8 +603,8 @@ function Get-DatabaseConnectionString
 function Get-StoreNumberGUI
 {
 	param (
-		[string]$IniFilePath = "\\localhost\Storeman\startup.ini",
-		[string]$BasePath = "\\localhost\Storeman\Office\"
+		[string]$IniFilePath = "$StartupIniPath",
+		[string]$BasePath = "$OfficePath"
 	)
 	
 	# Initialize StoreNumber
@@ -746,7 +753,7 @@ function Get-StoreNumberGUI
 function Get-StoreNameGUI
 {
 	param (
-		[string]$INIPath = "\\localhost\storeman\office\system.ini"
+		[string]$INIPath = "$SystemIniPath"
 	)
 	
 	# Initialize StoreName
@@ -990,7 +997,7 @@ function Count-ItemsGUI
 		[string]$StoreNumber
 	)
 	
-	$HostPath = "\\localhost\storeman\office\"
+	$HostPath = "$OfficePath"
 	$NumberOfLanes = 0
 	$NumberOfStores = 0
 	$NumberOfHosts = 0
@@ -1212,7 +1219,7 @@ function Clear-XEFolder
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $false)]
-		[string]$folderPath = "\\localhost\storeman\office\XE${StoreNumber}901",
+		[string]$folderPath = "$OfficePath\XE${StoreNumber}901",
 		[Parameter(Mandatory = $false)]
 		[int]$checkIntervalSeconds = 2,
 		# Default to 2 seconds; adjust as needed
@@ -1602,7 +1609,7 @@ ALTER DATABASE STORESQL SET RECOVERY FULL;
 function Get-TableAliases
 {
 	# Define the target directory for SQL files
-	$targetDirectory = "\\localhost\storeman\office\load"
+	$targetDirectory = "$LoadPath"
 	
 	# Define the list of base table names internally (without _TAB)
 	$baseTables = @(
@@ -1798,7 +1805,7 @@ function Create-ScheduledTaskGUI
 	
 	# Define the list of possible destination paths in order of preference
 	$possiblePaths = @(
-		"\\localhost\storeman\Scripts_by_Alex_C.T",
+		"$BaseUNCPath\Scripts_by_Alex_C.T",
 		"C:\Storeman\Scripts_by_Alex_C.T",
 		"D:\Storeman\Scripts_by_Alex_C.T"
 	)
@@ -2048,7 +2055,7 @@ function Execute-SQLLocallyGUI
 	# Configuration for retry mechanism
 	$MaxRetries = 2
 	$RetryDelaySeconds = 5
-	$FailedCommandsPath = "\\localhost\Storeman\Office\XF${StoreNumber}901\Failed_ServerSQLScript_Sections.sql"
+	$FailedCommandsPath = "$OfficePath\XF${StoreNumber}901\Failed_ServerSQLScript_Sections.sql"
 	
 	# Attempt to retrieve the SQL script from the script-scoped variable
 	$sqlScript = $script:ServerSQLScript
@@ -2633,7 +2640,7 @@ function Process-StoresGUI
 	)
 	
 	# Initialize the base path
-	$HostPath = "\\localhost\storeman\office"
+	$HostPath = "$OfficePath"
 	
 	if (-not (Test-Path $HostPath))
 	{
@@ -2700,7 +2707,7 @@ function Process-Store
 		[string]$StoresqlFilePath
 	)
 	
-	$StorePath = "\\localhost\storeman\office\XF${StoreNumber}901"
+	$StorePath = "$OfficePath\XF${StoreNumber}901"
 	
 	if (Test-Path $StorePath)
 	{
@@ -2761,7 +2768,7 @@ function Process-AllStores
 	Write-Log "`r`n=== Starting Process-AllStoresAndHostGUI function ===" "blue"
 	
 	# Initialize the base path
-	$HostPath = "\\localhost\storeman\office"
+	$HostPath = "$OfficePath"
 	
 	if (-not (Test-Path $HostPath))
 	{
@@ -2940,7 +2947,7 @@ function Process-Lane
 		[string]$StoreNumber
 	)
 	
-	$LaneLocalPath = "\\localhost\storeman\office\XF${StoreNumber}${LaneNumber}"
+	$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 	
 	if (Test-Path $LaneLocalPath)
 	{
@@ -4339,7 +4346,7 @@ function CloseOpenTransactions
 	Write-Log "`r`n==================== Starting CloseOpenTransactions ====================`r`n" "blue"
 	
 	# Define the path to monitor
-	$XEFolderPath = "\\localhost\Storeman\Office\XE${StoreNumber}901"
+	$XEFolderPath = "$OfficePath\XE${StoreNumber}901"
 	
 	# Ensure the XE folder exists
 	if (-not (Test-Path $XEFolderPath))
@@ -4352,7 +4359,7 @@ function CloseOpenTransactions
 	$CloseTransactionContent = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE')"
 	
 	# Path to the log file
-	$LogFolderPath = "\\localhost\Storeman\Scripts_by_Alex_C.T"
+	$LogFolderPath = "$BaseUNCPath\Scripts_by_Alex_C.T"
 	$LogFilePath = Join-Path -Path $LogFolderPath -ChildPath "Closed_Transactions_LOG.txt"
 	
 	# Ensure the log directory exists
@@ -4446,7 +4453,7 @@ function CloseOpenTransactions
 													$transactionNumber = $Matches[1]
 													
 													# Define the path to the lane directory
-													$LaneDirectory = "\\localhost\storeman\office\XF${StoreNumber}${LaneNumber}"
+													$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 													
 													if (Test-Path $LaneDirectory)
 													{
@@ -4617,7 +4624,7 @@ function DeployCloseTransaction
 	}
 	
 	# Define the path to the lane directory
-	$LaneDirectory = "\\localhost\storeman\office\XF${StoreNumber}${LaneNumber}"
+	$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 	
 	if (Test-Path $LaneDirectory)
 	{
@@ -5997,9 +6004,9 @@ ORDER BY F1000,F1063;
 	Write-File -Path $DeployOneFctFilePath -Content $DeployOneFctContent -Encoding $ansiEncoding
 	
 	# Define destination paths
-	$PumpallitemstablesDestination = "\\localhost\Storeman\Office\XF${StoreNumber}901"
-	$DeploySysDestination = "\\localhost\Storeman\Office\DEPLOY_SYS.sql"
-	$DeployOneFctDestination = "\\localhost\Storeman\Office\DEPLOY_ONE_FCT.sqm"
+	$PumpallitemstablesDestination = "$OfficePath\XF${StoreNumber}901"
+	$DeploySysDestination = "$OfficePath\DEPLOY_SYS.sql"
+	$DeployOneFctDestination = "$OfficePath\DEPLOY_ONE_FCT.sqm"
 	
 	# Additional Variables
 	$File1 = "Pump_all_items_tables.sql"
@@ -6503,7 +6510,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 1.9"
+		$form.Text = "Created by Alex_C.T - Version 2.0"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
