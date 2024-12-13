@@ -4411,9 +4411,6 @@ function CloseOpenTransactions
 		}
 	}
 	
-	# Initialize counter for matched files
-	$matchedFilesCount = 0
-	
 	try
 	{
 		# Get the current time
@@ -4427,7 +4424,107 @@ function CloseOpenTransactions
 		if ($files -eq $null -or $files.Count -eq 0)
 		{
 			Write-Log -Message "No files were found to close automatically. Prompting for lane number." "yellow"
-			DeployCloseTransaction
+			
+			# Auto search failed to find any files, show Windows form to ask for lane number
+			Add-Type -AssemblyName System.Windows.Forms
+			Add-Type -AssemblyName System.Drawing
+			
+			# Initialize the form
+			$form = New-Object System.Windows.Forms.Form
+			$form.Text = "Lane Deployment"
+			$form.Size = New-Object System.Drawing.Size(400, 150)
+			$form.StartPosition = "CenterScreen"
+			
+			# Label
+			$label = New-Object System.Windows.Forms.Label
+			$label.Text = "Enter Lane Number to deploy the file to:"
+			$label.AutoSize = $true
+			$label.Location = New-Object System.Drawing.Point(10, 20)
+			$form.Controls.Add($label)
+			
+			# TextBox
+			$textBox = New-Object System.Windows.Forms.TextBox
+			$textBox.Location = New-Object System.Drawing.Point(10, 50)
+			$textBox.Width = 360
+			$form.Controls.Add($textBox)
+			
+			# OK Button
+			$okButton = New-Object System.Windows.Forms.Button
+			$okButton.Text = "OK"
+			$okButton.Location = New-Object System.Drawing.Point(150, 80)
+			$okButton.Add_Click({
+					# Validate that the input is numeric and pad it
+					if ($textBox.Text -match '^\d+$')
+					{
+						$form.Tag = $textBox.Text.PadLeft(3, '0')
+						$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+						$form.Close()
+					}
+					else
+					{
+						[System.Windows.Forms.MessageBox]::Show("Please enter a numeric lane number.", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+					}
+				})
+			$form.Controls.Add($okButton)
+			
+			# Cancel Button
+			$cancelButton = New-Object System.Windows.Forms.Button
+			$cancelButton.Text = "Cancel"
+			$cancelButton.Location = New-Object System.Drawing.Point(230, 80)
+			$cancelButton.Add_Click({
+					$form.Tag = "Cancelled"
+					$form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+					$form.Close()
+				})
+			$form.Controls.Add($cancelButton)
+			
+			# Set Accept and Cancel buttons
+			$form.AcceptButton = $okButton
+			$form.CancelButton = $cancelButton
+			
+			$result = $form.ShowDialog()
+			
+			if ($form.Tag -eq "Cancelled" -or $result -eq [System.Windows.Forms.DialogResult]::Cancel)
+			{
+				Write-Log -Message "User cancelled the operation." "yellow"
+				Write-Log "`r`n==================== CloseOpenTransactions Function Completed ====================" "blue"
+				return
+			}
+			
+			$LaneNumber = $form.Tag
+			
+			if (-not $LaneNumber)
+			{
+				Write-Log -Message "No lane number provided by the user." "red"
+				return
+			}
+			
+			# Define the path to the lane directory
+			$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
+			
+			if (Test-Path $LaneDirectory)
+			{
+				# Define the path to the Close_Transaction.sqi file in the lane directory
+				$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
+				
+				# Write the content to the file
+				Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionContent -Encoding ASCII
+				
+				# Remove the Archive attribute from the file
+				Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+				
+				# Log the event
+				$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - User deployed Close_Transaction.sqi to lane $LaneNumber"
+				Add-Content -Path $LogFilePath -Value $logMessage
+				
+				Write-Log -Message "Deployed Close_Transaction.sqi to lane $LaneNumber" "green"
+			}
+			else
+			{
+				Write-Log -Message "Lane directory $LaneDirectory not found" "yellow"
+			}
+			
+			Write-Log "No files were found and deployment via user input completed." "yellow"
 		}
 		else
 		{
@@ -4442,8 +4539,8 @@ function CloseOpenTransactions
 					}
 					else
 					{
-						# Filename does not match expected pattern; skip to the next file
-						continue
+						# Write-Log -Message "Filename does not match expected pattern for lane extraction: $($file.Name)" -Level Warning
+						continue # Skip to the next file
 					}
 					
 					# Read the content of the file
@@ -4508,9 +4605,6 @@ function CloseOpenTransactions
 														Remove-Item -Path $file.FullName -Force
 														
 														Write-Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
-														
-														# Increment the matched files counter
-														$matchedFilesCount++
 													}
 													else
 													{
@@ -4524,22 +4618,22 @@ function CloseOpenTransactions
 											}
 											else
 											{
-												# Message does not match; skip to next file
+												# Write-Log -Message "Message does not match in file $($file.Name): $message" -Level Warning
 											}
 										}
 										else
 										{
-											# MSG line not found; skip to next file
+											# Write-Log -Message "MSG line not found in file $($file.Name)" -Level Warning
 										}
 									}
 									else
 									{
-										# Subject is not 'Health'; skip to next file
+										# Write-Log -Message "Subject is not 'Health' in file $($file.Name): $subject" -Level Warning
 									}
 								}
 								else
 								{
-									# Subject line not found; skip to next file
+									# Write-Log -Message "Subject line not found in file $($file.Name)" -Level Warning
 								}
 							}
 							else
@@ -4554,7 +4648,7 @@ function CloseOpenTransactions
 					}
 					else
 					{
-						# From line does not match expected format; skip to next file
+						# Write-Log -Message "From line does not match expected format in file $($file.Name)" -Level Warning
 					}
 				}
 				catch
@@ -4562,127 +4656,14 @@ function CloseOpenTransactions
 					Write-Log -Message "Error processing file $($file.Name): $_" "red"
 				}
 			}
-			
-			# After processing all files, check if any matches were found
-			if ($matchedFilesCount -eq 0)
-			{
-				Write-Log -Message "No matching files were found within the existing files. Prompting for lane number." "yellow"
-				DeployCloseTransaction
-			}
 		}
 	}
 	catch
 	{
 		Write-Log -Message "An error occurred during monitoring: $_" "red"
 	}
-	
 	Write-Log "No further matching files were found after processing." "yellow"
 	Write-Log "`r`n==================== CloseOpenTransactions Function Completed ====================" "blue"
-}
-
-# Helper Function to Deploy Close_Transaction.sqi via User Input
-function DeployCloseTransaction
-{
-	# Add necessary assemblies for Windows Forms
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
-	
-	# Create the form
-	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Lane Deployment"
-	$form.Size = New-Object System.Drawing.Size(400, 150)
-	$form.StartPosition = "CenterScreen"
-	
-	# Add a label
-	$label = New-Object System.Windows.Forms.Label
-	$label.Text = "Enter Lane Number to deploy the file to:"
-	$label.AutoSize = $true
-	$label.Location = New-Object System.Drawing.Point(10, 20)
-	$form.Controls.Add($label)
-	
-	# Add a textbox
-	$textBox = New-Object System.Windows.Forms.TextBox
-	$textBox.Location = New-Object System.Drawing.Point(10, 50)
-	$textBox.Width = 360
-	$form.Controls.Add($textBox)
-	
-	# Add OK button
-	$okButton = New-Object System.Windows.Forms.Button
-	$okButton.Text = "OK"
-	$okButton.Location = New-Object System.Drawing.Point(150, 80)
-	$okButton.Add_Click({
-			# Validate that the input is numeric and pad it
-			if ($textBox.Text -match '^\d+$')
-			{
-				$form.Tag = $textBox.Text.PadLeft(3, '0')
-				$form.Close()
-			}
-			else
-			{
-				[System.Windows.Forms.MessageBox]::Show("Please enter a numeric lane number.", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-			}
-		})
-	$form.Controls.Add($okButton)
-	
-	# Add Cancel button
-	$cancelButton = New-Object System.Windows.Forms.Button
-	$cancelButton.Text = "Cancel"
-	$cancelButton.Location = New-Object System.Drawing.Point(230, 80)
-	$cancelButton.Add_Click({
-			$form.Tag = "Cancelled"
-			$form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-			$form.Close()
-		})
-	$form.Controls.Add($cancelButton)
-	
-	# Set Accept and Cancel buttons
-	$form.AcceptButton = $okButton
-	$form.CancelButton = $cancelButton
-	
-	# Show the form
-	$form.ShowDialog() | Out-Null
-	
-	# Handle user input
-	if ($form.Tag -eq "Cancelled" -or $form.DialogResult -eq [System.Windows.Forms.DialogResult]::Cancel)
-	{
-		Write-Log -Message "User cancelled the operation." "yellow"
-		return
-	}
-	
-	$LaneNumber = $form.Tag
-	
-	if (-not $LaneNumber)
-	{
-		Write-Log -Message "No lane number provided by the user." "red"
-		return
-	}
-	
-	# Define the path to the lane directory
-	$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
-	
-	if (Test-Path $LaneDirectory)
-	{
-		# Define the path to the Close_Transaction.sqi file in the lane directory
-		$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
-		
-		# Write the content to the file
-		Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionContent -Encoding ASCII
-		
-		# Remove the Archive attribute from the file
-		Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		
-		# Log the event
-		$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - User deployed Close_Transaction.sqi to lane $LaneNumber"
-		Add-Content -Path $LogFilePath -Value $logMessage
-		
-		Write-Log -Message "Deployed Close_Transaction.sqi to lane $LaneNumber" "green"
-	}
-	else
-	{
-		Write-Log -Message "Lane directory $LaneDirectory not found" "yellow"
-	}
-	
-	Write-Log "Deployment via user input completed." "yellow"
 }
 
 # ===================================================================================================
