@@ -58,12 +58,52 @@ $NumberOfHosts = 0
 # Create a UTF8 encoding instance without BOM
 $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 
-# Base UNC paths
-$BaseUNCPath = "\\localhost\storeman"
-$OfficePath = Join-Path $BaseUNCPath "office"
-$LoadPath = Join-Path $OfficePath "Load"
-$StartupIniPath = Join-Path $BaseUNCPath "Startup.ini"
-$SystemIniPath = Join-Path $OfficePath "system.ini"
+# First, try to find a directory containing 'storeman' in its name on \\localhost
+$storemanDirs = Get-ChildItem -Path "\\localhost\*storeman*" -Directory -ErrorAction SilentlyContinue
+
+if ($storemanDirs)
+{
+	# If multiple directories match, use the first match; adjust logic if needed
+	$BaseUNCPath = $storemanDirs[0].FullName
+}
+else
+{
+	# If none found on \\localhost, try \\$env:COMPUTERNAME
+	$storemanDirs = Get-ChildItem -Path ("\\" + $env:COMPUTERNAME + "\*storeman*") -Directory -ErrorAction SilentlyContinue
+	if ($storemanDirs)
+	{
+		$BaseUNCPath = $storemanDirs[0].FullName
+	}
+	else
+	{
+		# If none found on UNC paths, try local drives C: and D:
+		$storemanDirs = Get-ChildItem -Path "C:\*storeman*" -Directory -ErrorAction SilentlyContinue
+		if ($storemanDirs)
+		{
+			$BaseUNCPath = $storemanDirs[0].FullName
+		}
+		else
+		{
+			$storemanDirs = Get-ChildItem -Path "D:\*storeman*" -Directory -ErrorAction SilentlyContinue
+			if ($storemanDirs)
+			{
+				$BaseUNCPath = $storemanDirs[0].FullName
+			}
+			else
+			{
+				throw "No directories containing 'storeman' were found in any of the specified locations."
+			}
+		}
+	}
+}
+
+# Write-Log "Base Path found: $BaseUNCPath"
+
+# Now that we have a valid $BaseUNCPath, define the rest of the paths
+$OfficeUNCPath = Join-Path $BaseUNCPath "office"
+$LoadUNCPath = Join-Path $OfficeUNCPath "Load"
+$StartupIniUNCPath = Join-Path $BaseUNCPath "Startup.ini"
+$SystemIniUNCPath = Join-Path $OfficeUNCPath "system.ini"
 
 # Temp Directory
 $TempDir = [System.IO.Path]::GetTempPath()
