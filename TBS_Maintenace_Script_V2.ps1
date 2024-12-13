@@ -531,24 +531,8 @@ function Get-DatabaseConnectionString
 		$script:FunctionResults = @{ }
 		Write-Log "Initialized script:FunctionResults hashtable." "green"
 	}
-	
-	# Possible paths to Startup.ini
-	$possiblePaths = @(
-		'$StartupIniPath',
-		'C:\storeman\Startup.ini',
-		'D:\storeman\Startup.ini'
-	)
-	
-	$startupIniPath = $null
-	foreach ($path in $possiblePaths)
-	{
-		if (Test-Path -Path $path)
-		{
-			$startupIniPath = $path
-			Write-Log "Found Startup.ini at: $startupIniPath" "green"
-			break
-		}
-	}
+		
+	$startupIniPath = "$StartupIniPath"
 	
 	if (-not $startupIniPath)
 	{
@@ -6530,7 +6514,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 2.2"
+		$form.Text = "Created by Alex_C.T - Version 2.1"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
