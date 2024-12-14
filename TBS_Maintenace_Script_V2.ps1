@@ -7115,7 +7115,7 @@ if (-not $SilentMode)
 	$jobCount++
 	
 	# Clears the recycle bin on startup
-	Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+	$ClearRecycleBin = Clear-RecycleBin -Force -ErrorAction SilentlyContinue
 	
 	<#
 	# Retrieve the list of machine names from the FunctionResults dictionary
