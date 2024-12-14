@@ -2877,9 +2877,9 @@ function Process-LanesGUI
 	
 	Write-Log "`r`n==================== Starting Process-LanesGUI Function ====================`r`n" "blue"
 	
-	if (-not (Test-Path $XFBasePath))
+	if (-not (Test-Path $OfficePath))
 	{
-		Write-Log "XF Base Path not found: $XFBasePath" "yellow"
+		Write-Log "XF Base Path not found: $OfficePath" "yellow"
 		return
 	}
 	
@@ -3050,14 +3050,14 @@ function Process-AllLanes
 	
 	Write-Log "`r`n=== Starting Process-LanesAndServerGUI Function ===" "blue"
 	
-	if (-not (Test-Path $XFBasePath))
+	if (-not (Test-Path $OfficePath))
 	{
-		Write-Log "XF Base Path not found: $XFBasePath" "yellow"
+		Write-Log "XF Base Path not found: $OfficePath" "yellow"
 		return
 	}
 	
 	# Get all available lane numbers
-	$laneFolders = Get-ChildItem -Path $XFBasePath -Directory -Filter "XF${StoreNumber}0*"
+	$laneFolders = Get-ChildItem -Path $OfficePath -Directory -Filter "XF${StoreNumber}0*"
 	$allLanes = $laneFolders | ForEach-Object {
 		$_.Name.Substring($_.Name.Length - 3, 3)
 	}
@@ -3772,9 +3772,9 @@ function Pump-AllItems
 	
 	Write-Log "`r`n==================== Starting Pump-AllItems Function ====================`r`n" "blue"
 	
-	if (-not (Test-Path $XFBasePath))
+	if (-not (Test-Path $OfficePath))
 	{
-		Write-Log "XF Base Path not found: $XFBasePath" "yellow"
+		Write-Log "XF Base Path not found: $OfficePath" "yellow"
 		return
 	}
 	
@@ -4134,7 +4134,7 @@ DROP TABLE $viewName;`r`n`r`n"
 	$ProcessedLanes = @()
 	foreach ($lane in $Lanes)
 	{
-		$LaneLocalPath = Join-Path -Path $XFBasePath -ChildPath "XF${StoreNumber}${lane}"
+		$LaneLocalPath = Join-Path -Path $OfficePath -ChildPath "XF${StoreNumber}${lane}"
 		
 		if (Test-Path $LaneLocalPath)
 		{
@@ -4193,9 +4193,9 @@ function Reboot-Lanes
 	
 	Write-Log "`r`n==================== Starting Reboot-Lanes Function ====================" "blue"
 	
-	if (-not (Test-Path $XFBasePath))
+	if (-not (Test-Path $OfficePath))
 	{
-		Write-Log "`r`nXF Base Path not found: $XFBasePath" "yellow"
+		Write-Log "`r`nXF Base Path not found: $OfficePath" "yellow"
 		return
 	}
 	
@@ -5668,10 +5668,10 @@ function Refresh-Files
 	
 	Write-Log "`r`n==================== Starting Refresh-Files Function ====================`r`n" "blue"
 	
-	# Validate the target path (e.g., $XFBasePath)
-	if (-not (Test-Path $XFBasePath))
+	# Validate the target path (e.g., $OfficePath)
+	if (-not (Test-Path $OfficePath))
 	{
-		Write-Log "XF Base Path not found: $XFBasePath" "yellow"
+		Write-Log "XF Base Path not found: $OfficePath" "yellow"
 		return
 	}
 	
@@ -6478,12 +6478,12 @@ function Show-SelectionDialog
 			else
 			{
 				# Fallback to current mechanism
-				if (-not (Test-Path -Path $XFBasePath))
+				if (-not (Test-Path -Path $OfficePath))
 				{
-					[System.Windows.Forms.MessageBox]::Show("The path '$XFBasePath' does not exist.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+					[System.Windows.Forms.MessageBox]::Show("The path '$OfficePath' does not exist.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 					return $null
 				}
-				$laneFolders = Get-ChildItem -Path $XFBasePath -Directory -Filter "XF${StoreNumber}0*"
+				$laneFolders = Get-ChildItem -Path $OfficePath -Directory -Filter "XF${StoreNumber}0*"
 				if (-not $laneFolders)
 				{
 					return @{
