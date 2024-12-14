@@ -2897,7 +2897,7 @@ function Process-LanesGUI
 		}
 		catch
 		{
-			Write-Log "Failed to retrieve LaneContents: $_. Using predefined NumberOfLanes: $NumberOfLanes." "yellow"
+			Write-Log "Failed to retrieve LaneContents: $_. Using NumberOfLanes: $NumberOfLanes." "yellow"
 			# Use the predefined NumberOfLanes to generate lane numbers
 			if ($NumberOfLanes -gt 0)
 			{
@@ -5706,13 +5706,13 @@ function Refresh-Files
 		}
 		catch
 		{
-			Write-Log "Failed to retrieve LaneContents: $_. Using predefined NumberOfLanes: $NumberOfLanes." "yellow"
+			Write-Log "Failed to retrieve LaneContents: $_. Using NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "yellow"
 			# Use the predefined NumberOfLanes to generate lane numbers
-			if ($NumberOfLanes -gt 0)
+			if ($script:FunctionResults['NumberOfLanes'] -gt 0)
 			{
-				Write-Log "Determined NumberOfLanes: $NumberOfLanes." "green"
+				Write-Log "Determined NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "green"
 				# Generate an array of lane numbers as zero-padded strings (e.g., '001', '002', ...)
-				$Lanes = 1 .. $NumberOfLanes | ForEach-Object { $_.ToString("D3") }
+				$Lanes = 1 .. $script:FunctionResults['NumberOfLanes'] | ForEach-Object { $_.ToString("D3") }
 			}
 			else
 			{
