@@ -1397,11 +1397,10 @@ function Generate-SQLScriptsGUI
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	
 	# Initialize default database names
-	# $defaultStoreDbName = "STORESQL"
+	$defaultStoreDbName = "STORESQL"
 	$defaultLaneDbName = "LANESQL"
 	
 	# Retrive the DB name
-	# Retrieve the DB name
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
 		$dbName = $script:FunctionResults['DBNAME']
