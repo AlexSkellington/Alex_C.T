@@ -6657,6 +6657,17 @@ if (-not $SilentMode)
 		$logBox.Size = New-Object System.Drawing.Size(900, 400)
 		$logBox.ReadOnly = $true
 		$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
+		
+		# Set background color to black
+		$logBox.BackColor = [System.Drawing.Color]::Black
+		
+		# Set text color to white for better readability
+		$logBox.ForeColor = [System.Drawing.Color]::White
+		
+		# Optionally, you can remove the border for a cleaner look
+		# $logBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+		
+		# Add the RichTextBox to the form
 		$form.Controls.Add($logBox)
 		
 		# ===================================================================================================
