@@ -1403,7 +1403,7 @@ function Clear-XEFolder
 				}
 			}
 			
-			Write-Log "Folder 'XE${StoreNumber}901' cleaned, keeping only fatal files and valid S files for transaction closing." "green"
+			Write-Log "Folder 'XE${StoreNumber}901' cleaned, keeping only (FATAL*) files and valid (S*) files for transaction closing." "green"
 		}
 		catch
 		{
