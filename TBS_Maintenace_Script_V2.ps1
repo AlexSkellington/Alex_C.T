@@ -2,7 +2,8 @@ Param (
 	[switch]$IsRelaunched
 )
 
-Write-Host "Script started. IsRelaunched: $IsRelaunched"
+# Write-Host "Script started. IsRelaunched: $IsRelaunched"
+Write-Host "Script starting, pls wait..."
 
 # ===================================================================================================
 #                                       SECTION: Parameters
@@ -3409,7 +3410,7 @@ function Update-LaneFiles
 	
 	if ($selection -eq $null)
 	{
-		Write-Log "Lane processing canceled by user." "yellow"
+		Write-Log "`r`nLane processing canceled by user." "yellow"
 		return
 	}
 	
@@ -6922,6 +6923,7 @@ if (-not $SilentMode)
 	# Call the function to ensure admin privileges
 	# Ensure-Administrator
 	
+	<#
 	# Only call the function if the script has not been relaunched
 	if (-not $IsRelaunched)
 	{
@@ -6932,6 +6934,7 @@ if (-not $SilentMode)
 	{
 		Write-Host "Script has been relaunched. Continuing execution."
 	}
+	#>
 	
 	# Initialize a counter for the number of jobs started
 	$jobCount = 0
