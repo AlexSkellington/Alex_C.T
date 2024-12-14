@@ -13,7 +13,7 @@ Write-Host "Script starting, pls wait..."
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.8"
+$VersionNumber = "2.8.1"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
