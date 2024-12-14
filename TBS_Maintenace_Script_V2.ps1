@@ -13,7 +13,7 @@ Write-Host "Script starting, pls wait..."
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.7.6"
+$VersionNumber = "1.7.7"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -7113,6 +7113,9 @@ if (-not $SilentMode)
 	$FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
 	# Increment the job counter
 	$jobCount++
+	
+	# Clears the recycle bin on startup
+	Clear-RecycleBin
 	
 	# Retrieve the list of machine names from the FunctionResults dictionary
 	$LaneMachines = $script:FunctionResults['LaneMachines']
