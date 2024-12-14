@@ -6921,11 +6921,17 @@ if (-not $SilentMode)
 	}
 	#>
 	
+	# Show the running version of PowerShell
+	Write-Log "Powershell version installed: $major.$minor | Build-$build | Revision-$revision" "blue"
+	
 	# Initialize a counter for the number of jobs started
 	$jobCount = 0
 	
 	# Initialize variables
 	# $Memory25PercentMB = Get-MemoryInfo
+	
+	# Get SQL Connection String
+	Get-DatabaseConnectionString
 	
 	# Get the Store Number
 	Get-StoreNumberGUI
@@ -6934,13 +6940,7 @@ if (-not $SilentMode)
 	# Get the Store Name
 	Get-StoreNameGUI
 	$StoreName = $script:FunctionResults['StoreName']
-	
-	# Show the running version of PowerShell
-	Write-Log "Powershell version installed: $major.$minor | Build-$build | Revision-$revision" "blue"
-	
-	# Get SQL Connection String
-	Get-DatabaseConnectionString
-	
+		
 	# Determine the Mode
 	$Mode = Determine-ModeGUI -StoreNumber $StoreNumber
 	$Mode = $script:FunctionResults['Mode']
