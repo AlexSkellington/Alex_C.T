@@ -13,7 +13,7 @@ Write-Host "Script starting, pls wait..."
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.7.5"
+$VersionNumber = "1.7.6"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1268,16 +1268,12 @@ function Clear-XEFolder
 		[Parameter(Mandatory = $false)]
 		[string]$folderPath = "$OfficePath\XE${StoreNumber}901",
 		[Parameter(Mandatory = $false)]
-		[int]$checkIntervalSeconds = 2,
-		# Default to 2 seconds; adjust as needed
-		[Parameter(Mandatory = $false)]
-		[string[]]$exclusions = @('FATAL*', 'S*') # Adjust patterns if needed
+		[int]$checkIntervalSeconds = 2
 	)
 	
-	# If the UNC path doesn't work, attempt local paths (C: or D:)
+	# Attempt to find a valid folder path if the UNC path doesn't work
 	if (-not (Test-Path -Path $folderPath))
 	{
-		# Attempt to translate UNC path to local paths
 		$localPaths = @(
 			"C:\storeman\office\XE${StoreNumber}901",
 			"D:\storeman\office\XE${StoreNumber}901"
@@ -1302,19 +1298,116 @@ function Clear-XEFolder
 		}
 	}
 	
-	# === Initial Cleaning Step ===
+	# Function to determine if a file should be kept
+	function ShouldKeepFile($file)
+	{
+		# Keep all FATAL* files
+		if ($file.Name -like 'FATAL*')
+		{
+			return $true
+		}
+		
+		# Check if it's an S*.??? file
+		if ($file.Name -match '^S.*\.\w{3}$')
+		{
+			# Check file age (not older than 30 days)
+			$currentTime = Get-Date
+			if (($currentTime - $file.LastWriteTime).TotalDays -gt 30)
+			{
+				return $false
+			}
+			
+			# Read file contents
+			try
+			{
+				$content = Get-Content -Path $file.FullName -ErrorAction Stop
+			}
+			catch
+			{
+				# If we can't read the file for some reason, discard it
+				return $false
+			}
+			
+			$fromLine = $content | Where-Object { $_ -like 'From:*' }
+			$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
+			$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
+			$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
+			
+			# Check prerequisites:
+			# From line: Extract store/lane
+			if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
+			{
+				$fileStoreNumber = $Matches[1]
+				$fileLaneNumber = $Matches[2]
+			}
+			else
+			{
+				return $false
+			}
+			
+			if ($fileStoreNumber -ne $StoreNumber)
+			{
+				return $false
+			}
+			
+			# From the original logic, $LaneNumber is derived from the filename. Let's extract it:
+			if ($file.Name -match '^S.*\.(\d{3})$')
+			{
+				$LaneNumber = $Matches[1]
+				# Confirm lane number matches that from the 'From' line
+				if ($fileLaneNumber -ne $LaneNumber)
+				{
+					return $false
+				}
+			}
+			else
+			{
+				return $false
+			}
+			
+			# Subject must be Health
+			if (-not ($subjectLine -match 'Subject:\s*(Health)'))
+			{
+				return $false
+			}
+			
+			# MSG must be "This application is not running."
+			if (-not ($msgLine -match 'MSG:\s*This application is not running\.'))
+			{
+				return $false
+			}
+			
+			# Last recorded status must contain TRANS,<number>
+			if (-not ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)'))
+			{
+				return $false
+			}
+			
+			# If we reach this point, all conditions are met
+			return $true
+		}
+		
+		# If it doesn't match either FATAL* or a qualifying S file, we remove it
+		return $false
+	}
+	
+	# Initial clearing
 	if (Test-Path -Path $folderPath)
 	{
 		try
 		{
-			# Remove all items within the folder, excluding those starting with 'S'
-			Get-ChildItem -Path $folderPath -Recurse -Force |
-			Where-Object { $_.Name -notlike 'S*' } | Remove-Item -Force -Recurse
-			Write-Log "Folder 'XE${StoreNumber}901' (Urgent Messages) cleared successfully, excluding 'S*' files." "green"
+			Get-ChildItem -Path $folderPath -Recurse -Force | ForEach-Object {
+				if (-not (ShouldKeepFile $_))
+				{
+					Remove-Item -Path $_.FullName -Force -Recurse
+				}
+			}
+			
+			Write-Log "Folder 'XE${StoreNumber}901' cleaned, keeping only fatal files and valid S files for transaction closing." "green"
 		}
 		catch
 		{
-			Write-Log "An error occurred during initial clearing of 'XE${StoreNumber}901': $_" "red"
+			Write-Log "An error occurred during initial cleaning of 'XE${StoreNumber}901': $_" "red"
 		}
 	}
 	else
@@ -1323,13 +1416,93 @@ function Clear-XEFolder
 		return
 	}
 	
-	# === Start Background Job for Continuous Monitoring ===
+	# Continuous monitoring in a background job
 	try
 	{
 		$job = Start-Job -Name "ClearXEFolderJob" -ScriptBlock {
 			param ($folderPath,
 				$checkIntervalSeconds,
-				$exclusions)
+				$StoreNumber,
+				$OfficePath)
+			
+			function ShouldKeepFile($file)
+			{
+				if ($file.Name -like 'FATAL*')
+				{
+					return $true
+				}
+				
+				if ($file.Name -match '^S.*\.\w{3}$')
+				{
+					$currentTime = Get-Date
+					if (($currentTime - $file.LastWriteTime).TotalDays -gt 30)
+					{
+						return $false
+					}
+					
+					try
+					{
+						$content = Get-Content -Path $file.FullName -ErrorAction Stop
+					}
+					catch
+					{
+						return $false
+					}
+					
+					$fromLine = $content | Where-Object { $_ -like 'From:*' }
+					$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
+					$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
+					$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
+					
+					if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
+					{
+						$fileStoreNumber = $Matches[1]
+						$fileLaneNumber = $Matches[2]
+					}
+					else
+					{
+						return $false
+					}
+					
+					# Extract lane from filename
+					if ($file.Name -match '^S.*\.(\d{3})$')
+					{
+						$LaneNumber = $Matches[1]
+						if ($fileLaneNumber -ne $LaneNumber)
+						{
+							return $false
+						}
+					}
+					else
+					{
+						return $false
+					}
+					
+					if ($fileStoreNumber -ne $StoreNumber)
+					{
+						return $false
+					}
+					
+					if (-not ($subjectLine -match 'Subject:\s*(Health)'))
+					{
+						return $false
+					}
+					
+					if (-not ($msgLine -match 'MSG:\s*This application is not running\.'))
+					{
+						return $false
+					}
+					
+					if (-not ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)'))
+					{
+						return $false
+					}
+					
+					return $true
+				}
+				
+				return $false
+			}
 			
 			while ($true)
 			{
@@ -1337,32 +1510,24 @@ function Clear-XEFolder
 				{
 					if (Test-Path -Path $folderPath)
 					{
-						# Get all items except those matching exclusions
-						Get-ChildItem -Path $folderPath -Recurse -Force |
-						Where-Object {
-							$exclusionMatched = $false
-							foreach ($exclusion in $exclusions)
+						Get-ChildItem -Path $folderPath -Recurse -Force | ForEach-Object {
+							if (-not (ShouldKeepFile $_))
 							{
-								if ($_.Name -like $exclusion)
-								{
-									$exclusionMatched = $true
-									break
-								}
+								Remove-Item -Path $_.FullName -Force -Recurse
 							}
-							-not $exclusionMatched
-						} | Remove-Item -Force -Recurse
+						}
 					}
 				}
 				catch
 				{
-					# Suppress errors to avoid cluttering logs; can be enhanced if needed
+					# Suppress any errors
 				}
 				
 				Start-Sleep -Seconds $checkIntervalSeconds
 			}
-		} -ArgumentList $folderPath, $checkIntervalSeconds, $exclusions
+		} -ArgumentList $folderPath, $checkIntervalSeconds, $StoreNumber, $OfficePath
 		
-		# Write-Log "Background job 'ClearXEFolderJob' started to monitor and clear 'XE${StoreNumber}901' every $checkIntervalSeconds seconds, excluding items starting with specified patterns." "green"
+		#Write-Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder." "green"
 	}
 	catch
 	{
@@ -4610,6 +4775,9 @@ function CloseOpenTransactions
 				Add-Content -Path $LogFilePath -Value $logMessage
 				
 				Write-Log -Message "Deployed Close_Transaction.sqi to lane $LaneNumber" "green"
+				
+				# After user deploys the file, clear the folder except for files with "FATAL" in the name
+				Get-ChildItem -Path $XEFolderPath -File | Where-Object { $_.Name -notlike "*FATAL*" } | Remove-Item -Force
 			}
 			else
 			{
