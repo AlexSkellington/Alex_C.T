@@ -6658,8 +6658,8 @@ if (-not $SilentMode)
 		$logBox.ReadOnly = $true
 		$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
 		
-		# Set background color to black
-		$logBox.BackColor = [System.Drawing.Color]::Black
+		# Set background color
+		$logBox.BackColor = [System.Drawing.Color]::White
 		
 		# Set text color to white for better readability
 		$logBox.ForeColor = [System.Drawing.Color]::White
