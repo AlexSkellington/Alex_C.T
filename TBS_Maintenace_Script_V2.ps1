@@ -13,7 +13,7 @@ Write-Host "Script starting, pls wait..."
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.7"
+$VersionNumber = "2.8"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -6659,10 +6659,10 @@ if (-not $SilentMode)
 		$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
 		
 		# Set background color
-		$logBox.BackColor = [System.Drawing.Color]::LightGray
+		# $logBox.BackColor = [System.Drawing.Color]::LightGray
 		
 		# Set text color to white for better readability
-		$logBox.ForeColor = [System.Drawing.Color]::White
+		# $logBox.ForeColor = [System.Drawing.Color]::White
 		
 		# Optionally, you can remove the border for a cleaner look
 		# $logBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
