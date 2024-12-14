@@ -13,7 +13,7 @@ Write-Host "Script starting, pls wait..."
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.6"
+$VersionNumber = "2.7"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1446,34 +1446,18 @@ IF OBJECT_ID('SAL_TTL_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_TTL_SAV'
 IF OBJECT_ID('SAL_DET_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_DET_SAV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE SAL_DET_SAV;
 IF OBJECT_ID('dbo.TBS_ITM_SMAppUPDATED', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('dbo.TBS_ITM_SMAppUPDATED', 'OBJECT', 'DELETE') = 1 DELETE FROM dbo.TBS_ITM_SMAppUPDATED;
 
-/* Drop temporary tables */
-DECLARE @cmd1 varchar(4000) 
-DECLARE cmds CURSOR FOR 
-SELECT 'drop table [' + Table_Name + ']' 
-FROM INFORMATION_SCHEMA.TABLES 
-WHERE Table_Name LIKE 'TMP_%' 
-OPEN cmds 
-WHILE 1 = 1 
-BEGIN 
-FETCH cmds INTO @cmd1 
-IF @@fetch_status != 0 BREAK 
-EXEC(@cmd1) 
-END 
-CLOSE cmds; 
-DEALLOCATE cmds;
-
 /* Drop specific tables older than 30 days */
-DECLARE @cmd2 varchar(4000) 
+DECLARE @cmd varchar(4000) 
 DECLARE cmds CURSOR FOR 
 SELECT 'drop table [' + name + ']' 
 FROM sys.tables 
-WHERE (name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') AND DATEDIFF(DAY, create_date, GETDATE()) > 30 
+WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') AND DATEDIFF(DAY, create_date, GETDATE()) > 30 
 OPEN cmds 
 WHILE 1 = 1 
 BEGIN 
-FETCH cmds INTO @cmd2 
+FETCH cmds INTO @cmd 
 IF @@fetch_status != 0 BREAK 
-EXEC(@cmd2) 
+EXEC(@cmd) 
 END 
 CLOSE cmds; 
 DEALLOCATE cmds;
@@ -1556,33 +1540,17 @@ IF OBJECT_ID('SAL_TTL_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_TTL_SAV'
 IF OBJECT_ID('SAL_DET_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_DET_SAV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE SAL_DET_SAV;
 IF OBJECT_ID('dbo.TBS_ITM_SMAppUPDATED', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('dbo.TBS_ITM_SMAppUPDATED', 'OBJECT', 'DELETE') = 1 DELETE FROM dbo.TBS_ITM_SMAppUPDATED;
 
-/* Drop tables TEMP%, MSVHOST%, MMPHOST%, M$StoreNumber%, R$StoreNumber% older than 30 days */
-DECLARE @cmd1 varchar(4000);
-DECLARE cmds CURSOR FOR
-SELECT 'drop table [' + Table_Name + ']'
-FROM INFORMATION_SCHEMA.TABLES
-WHERE Table_Name LIKE 'TMP_%';
-OPEN cmds;
-WHILE 1 = 1
-BEGIN
-    FETCH cmds INTO @cmd1;
-    IF @@fetch_status != 0 BREAK;
-    EXEC(@cmd1);
-END;
-CLOSE cmds;
-DEALLOCATE cmds;
-
-DECLARE @cmd2 varchar(4000);
+DECLARE @cmd varchar(4000);
 DECLARE cmds CURSOR FOR
 SELECT 'drop table [' + name + ']'
 FROM sys.tables
-WHERE (name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') AND DATEDIFF(DAY, create_date, GETDATE()) > 30;
+WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') AND DATEDIFF(DAY, create_date, GETDATE()) > 30;
 OPEN cmds;
 WHILE 1 = 1
 BEGIN
-    FETCH cmds INTO @cmd2;
+    FETCH cmds INTO @cmd;
     IF @@fetch_status != 0 BREAK;
-    EXEC(@cmd2);
+    EXEC(@cmd);
 END;
 CLOSE cmds;
 DEALLOCATE cmds;
@@ -1698,7 +1666,7 @@ function Get-TableAliases
 			$allLoadSqlFiles = @() # Provide an empty array so the script continues gracefully
 		}
 	}
-		
+	
 	foreach ($file in $allLoadSqlFiles)
 	{
 		# Check if the file name starts with any of the base table names
@@ -3452,7 +3420,7 @@ function Update-LaneFiles
 			# Optionally, you can retain $Lanes as is or set to an empty array
 		}
 	}
-		
+	
 	# Define the run_load script content as a here-string (exactly as provided)
 	$runLoadScript = @"
 @CREATE(RUN_TAB,RUN);
@@ -6955,7 +6923,7 @@ if (-not $SilentMode)
 	
 	# Show the running version of PowerShell
 	Write-Log "Powershell version installed: $major.$minor | Build-$build | Revision-$revision" "blue"
-		
+	
 	# Get SQL Connection String
 	Get-DatabaseConnectionString
 	
