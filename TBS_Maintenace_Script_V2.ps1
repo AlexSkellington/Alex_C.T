@@ -663,7 +663,7 @@ function Get-StoreNumberGUI
 		if ($storeNumber)
 		{
 			$script:FunctionResults['StoreNumber'] = $storeNumber
-			# Write-Log "Store number found in startup.ini: $storeNumber" "green"
+			Write-Log "Store number found in startup.ini: $storeNumber" "green"
 		}
 		else
 		{
@@ -675,31 +675,34 @@ function Get-StoreNumberGUI
 		Write-Log "INI file not found: $IniFilePath" "yellow"
 	}
 	
-	# If not found, check XF directories
-	if (Test-Path $BasePath)
+	# **Only proceed to check XF directories if StoreNumber was not found in INI**
+	if ($script:FunctionResults['StoreNumber'] -eq "N/A")
 	{
-		$XFDirs = Get-ChildItem -Path $BasePath -Directory -Filter "XF*"
-		foreach ($dir in $XFDirs)
+		if (Test-Path $BasePath)
 		{
-			if ($dir.Name -match "^XF(\d{3})")
+			$XFDirs = Get-ChildItem -Path $BasePath -Directory -Filter "XF*"
+			foreach ($dir in $XFDirs)
 			{
-				$storeNumber = $Matches[1]
-				if ($storeNumber -ne "999")
+				if ($dir.Name -match "^XF(\d{3})")
 				{
-					$script:FunctionResults['StoreNumber'] = $storeNumber
-					# Write-Log "Store number found from XF directory: $storeNumber" "green"
-					break # Exit loop after finding the store number
+					$storeNumber = $Matches[1]
+					if ($storeNumber -ne "999")
+					{
+						$script:FunctionResults['StoreNumber'] = $storeNumber
+						Write-Log "Store number found from XF directory: $storeNumber" "green"
+						break # Exit loop after finding the store number
+					}
 				}
 			}
+			if ($script:FunctionResults['StoreNumber'] -eq "N/A")
+			{
+				Write-Log "No valid XF directories found in $BasePath" "yellow"
+			}
 		}
-		if (-not $script:FunctionResults['StoreNumber'])
+		else
 		{
-			Write-Log "No valid XF directories found in $BasePath" "yellow"
+			Write-Log "Base path not found: $BasePath" "yellow"
 		}
-	}
-	else
-	{
-		Write-Log "Base path not found: $BasePath" "yellow"
 	}
 	
 	# Update the storeNumberLabel in the GUI if store number was found without manual input
