@@ -12,6 +12,9 @@ Write-Host "Script starting, pls wait..."
 #   Defines the script parameters, allowing users to run the script in silent mode.
 # ===================================================================================================
 
+# Script build version (cunsult with Alex_C.T before changing this)
+$VersionNumber = "2.5"
+
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
 $minor = $PSVersionTable.PSVersion.Minor
@@ -23,7 +26,7 @@ $PowerShellVersion = "$major.$minor.$build.$revision"
 
 # Determine if build version is considered too old
 # Adjust the threshold as needed
-$BuildThreshold = 21000
+$BuildThreshold = 15000
 $IsOldBuild = $build -lt $BuildThreshold
 
 # Set Execution Policy to Bypass for the current process
@@ -649,7 +652,7 @@ function Get-StoreNumberGUI
 	)
 	
 	# Initialize StoreNumber
-	$script:FunctionResults['StoreNumber'] = ""
+	$script:FunctionResults['StoreNumber'] = "N/A"
 	
 	# Try to retrieve StoreNumber from the startup.ini file
 	if (Test-Path $IniFilePath)
@@ -6532,7 +6535,7 @@ if (-not $SilentMode)
 		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Created by Alex_C.T - Version 2.4"
+		$form.Text = "Created by Alex_C.T - Version $VersionNumber"
 		$form.Size = New-Object System.Drawing.Size(1005, 710)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
