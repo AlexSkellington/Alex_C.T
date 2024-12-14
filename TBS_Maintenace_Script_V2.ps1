@@ -3398,9 +3398,9 @@ function Update-LaneFiles
 	
 	Write-Log "`r`n==================== Starting Update-LaneFiles Function ====================" "blue"
 	
-	if (-not (Test-Path $LoadBasePath))
+	if (-not (Test-Path $LoadPath))
 	{
-		Write-Log "`r`nLoad Base Path not found: $LoadBasePath" "yellow"
+		Write-Log "`r`nLoad Base Path not found: $LoadPath" "yellow"
 		return
 	}
 	
@@ -3531,7 +3531,7 @@ DROP TABLE Ter_Load;
 	
 	# Get all Load SQL files in the Load directory excluding specific scripts
 	# $excludedFiles = @("run_load.sql", "lnk_load.sql", "sto_load.sql", "ter_load.sql")
-	# $loadFiles = Get-ChildItem -Path $LoadBasePath -File -Filter "*.sql" | Where-Object { $_.Name -notin $excludedFiles }
+	# $loadFiles = Get-ChildItem -Path $LoadPath -File -Filter "*.sql" | Where-Object { $_.Name -notin $excludedFiles }
 	
 	foreach ($laneNumber in $Lanes)
 	{
