@@ -13,7 +13,7 @@ Write-Host "Script starting, pls wait..."
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.8.1"
+$VersionNumber = "1.7.5"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -4392,6 +4392,8 @@ function CloseOpenTransactions
 		}
 	}
 	
+	$MatchedTransactions = $false
+	
 	try
 	{
 		# Get the current time
@@ -4402,11 +4404,120 @@ function CloseOpenTransactions
 			($currentTime - $_.LastWriteTime).TotalDays -le 30
 		}
 		
-		if ($files -eq $null -or $files.Count -eq 0)
+		if ($files -and $files.Count -gt 0)
 		{
-			Write-Log -Message "No files were found to close automatically. Prompting for lane number." "yellow"
+			# We have files, attempt to process them
+			foreach ($file in $files)
+			{
+				try
+				{
+					# Extract lane number from filename based on the pattern S*."???"
+					if ($file.Name -match '^S.*\.(\d{3})$')
+					{
+						$LaneNumber = $Matches[1]
+					}
+					else
+					{
+						continue # Skip to the next file if pattern doesn't match
+					}
+					
+					# Read the content of the file
+					$content = Get-Content -Path $file.FullName
+					
+					# Parse the content
+					$fromLine = $content | Where-Object { $_ -like 'From:*' }
+					$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
+					$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
+					$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
+					
+					# Extract store number and lane number from the From line
+					if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
+					{
+						$fileStoreNumber = $Matches[1]
+						$fileLaneNumber = $Matches[2]
+						
+						# Check if the store number matches
+						if ($fileStoreNumber -eq $StoreNumber -and $fileLaneNumber -eq $LaneNumber)
+						{
+							# Check the Subject line
+							if ($subjectLine -match 'Subject:\s*(.*)')
+							{
+								$subject = $Matches[1].Trim()
+								if ($subject -eq 'Health')
+								{
+									# Check the MSG line
+									if ($msgLine -match 'MSG:\s*(.*)')
+									{
+										$message = $Matches[1].Trim()
+										if ($message -eq 'This application is not running.')
+										{
+											# Extract the transaction number from the Last recorded status line
+											if ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
+											{
+												$transactionNumber = $Matches[1]
+												
+												# Define the path to the lane directory
+												$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
+												
+												if (Test-Path $LaneDirectory)
+												{
+													# Define the path to the Close_Transaction.sqi file in the lane directory
+													$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
+													
+													# Write the content to the file
+													Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionContent -Encoding ASCII
+													
+													# Remove the Archive attribute from the file
+													Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+													
+													# Log the event
+													$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Closed transaction $transactionNumber on lane $LaneNumber"
+													Add-Content -Path $LogFilePath -Value $logMessage
+													
+													# Delete the error file from the XE folder
+													Remove-Item -Path $file.FullName -Force
+													
+													Write-Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
+													$MatchedTransactions = $true
+												}
+												else
+												{
+													Write-Log -Message "Lane directory $LaneDirectory not found" "yellow"
+												}
+											}
+											else
+											{
+												Write-Log -Message "Could not extract transaction number from Last recorded status line in file $($file.Name)" "red"
+											}
+										}
+										# else MSG did not match the condition - no action needed
+									}
+									# else no MSG line found - no action needed
+								}
+								# else subject not health - no action needed
+							}
+							# else no Subject line found - no action needed
+						}
+						else
+						{
+							Write-Log -Message "Store or Lane number mismatch in file $($file.Name). File Store/Lane: $fileStoreNumber/$fileLaneNumber vs Expected Store/Lane: $StoreNumber/$LaneNumber" "yellow"
+						}
+					}
+					# else From line not matched - no action needed
+				}
+				catch
+				{
+					Write-Log -Message "Error processing file $($file.Name): $_" "red"
+				}
+			}
+		}
+		
+		# After processing all files, if no matched transactions were found, prompt once for lane number
+		if (-not $MatchedTransactions)
+		{
+			Write-Log -Message "No files or no matching transactions found. Prompting for lane number." "yellow"
 			
-			# Auto search failed to find any files, show Windows form to ask for lane number
+			# Show Windows form to ask for lane number
 			Add-Type -AssemblyName System.Windows.Forms
 			Add-Type -AssemblyName System.Drawing
 			
@@ -4505,144 +4616,14 @@ function CloseOpenTransactions
 				Write-Log -Message "Lane directory $LaneDirectory not found" "yellow"
 			}
 			
-			Write-Log "No files were found and deployment via user input completed." "yellow"
-		}
-		else
-		{
-			foreach ($file in $files)
-			{
-				try
-				{
-					# Extract lane number from filename based on the pattern S*."???"
-					if ($file.Name -match '^S.*\.(\d{3})$')
-					{
-						$LaneNumber = $Matches[1]
-					}
-					else
-					{
-						# Write-Log -Message "Filename does not match expected pattern for lane extraction: $($file.Name)" -Level Warning
-						continue # Skip to the next file
-					}
-					
-					# Read the content of the file
-					$content = Get-Content -Path $file.FullName
-					
-					# Parse the content
-					$fromLine = $content | Where-Object { $_ -like 'From:*' }
-					$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
-					$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
-					$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
-					
-					# Extract store number and lane number from the From line
-					if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
-					{
-						$fileStoreNumber = $Matches[1]
-						$fileLaneNumber = $Matches[2]
-						
-						# Check if the store number matches
-						if ($fileStoreNumber -eq $StoreNumber)
-						{
-							# Check if the lane number matches the one from the filename
-							if ($fileLaneNumber -eq $LaneNumber)
-							{
-								# Check the Subject line
-								if ($subjectLine -match 'Subject:\s*(.*)')
-								{
-									$subject = $Matches[1].Trim()
-									
-									if ($subject -eq 'Health')
-									{
-										# Check the MSG line
-										if ($msgLine -match 'MSG:\s*(.*)')
-										{
-											$message = $Matches[1].Trim()
-											
-											if ($message -eq 'This application is not running.')
-											{
-												# Extract the transaction number from the Last recorded status line
-												if ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
-												{
-													$transactionNumber = $Matches[1]
-													
-													# Define the path to the lane directory
-													$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
-													
-													if (Test-Path $LaneDirectory)
-													{
-														# Define the path to the Close_Transaction.sqi file in the lane directory
-														$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
-														
-														# Write the content to the file
-														Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionContent -Encoding ASCII
-														
-														# Remove the Archive attribute from the file
-														Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-														
-														# Log the event
-														$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Closed transaction $transactionNumber on lane $LaneNumber"
-														Add-Content -Path $LogFilePath -Value $logMessage
-														
-														# Delete the error file from the XE folder
-														Remove-Item -Path $file.FullName -Force
-														
-														Write-Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
-													}
-													else
-													{
-														Write-Log -Message "Lane directory $LaneDirectory not found" "yellow"
-													}
-												}
-												else
-												{
-													Write-Log -Message "Could not extract transaction number from Last recorded status line in file $($file.Name)" "red"
-												}
-											}
-											else
-											{
-												# Write-Log -Message "Message does not match in file $($file.Name): $message" -Level Warning
-											}
-										}
-										else
-										{
-											# Write-Log -Message "MSG line not found in file $($file.Name)" -Level Warning
-										}
-									}
-									else
-									{
-										# Write-Log -Message "Subject is not 'Health' in file $($file.Name): $subject" -Level Warning
-									}
-								}
-								else
-								{
-									# Write-Log -Message "Subject line not found in file $($file.Name)" -Level Warning
-								}
-							}
-							else
-							{
-								Write-Log -Message "Lane number does not match the file lane number in file $($file.Name): $fileLaneNumber vs $LaneNumber" "yellow"
-							}
-						}
-						else
-						{
-							Write-Log -Message "Store number does not match the file store number $($file.Name): $fileStoreNumber vs $StoreNumber" "yellow"
-						}
-					}
-					else
-					{
-						# Write-Log -Message "From line does not match expected format in file $($file.Name)" -Level Warning
-					}
-				}
-				catch
-				{
-					Write-Log -Message "Error processing file $($file.Name): $_" "red"
-				}
-			}
+			Write-Log "Prompt deployment process completed." "yellow"
 		}
 	}
 	catch
 	{
 		Write-Log -Message "An error occurred during monitoring: $_" "red"
 	}
+	
 	Write-Log "No further matching files were found after processing." "yellow"
 	Write-Log "`r`n==================== CloseOpenTransactions Function Completed ====================" "blue"
 }
