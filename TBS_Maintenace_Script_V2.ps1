@@ -260,7 +260,7 @@ function Download-AndRelaunchSelf
 }
 
 # Rest of your script continues here
-Write-Host "Script is running with elevated privileges from $($MyInvocation.MyCommand.Path)"
+# Write-Host "Script is running with elevated privileges from $($MyInvocation.MyCommand.Path)"
 
 # ===================================================================================================
 #                              FUNCTION: Ensure Administrator Privileges
