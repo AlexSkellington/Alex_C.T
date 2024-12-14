@@ -20,6 +20,11 @@ $revision = $PSVersionTable.PSVersion.Revision
 # Combine them into a single version string
 $PowerShellVersion = "$major.$minor.$build.$revision"
 
+# Determine if build version is considered too old
+# Adjust the threshold as needed
+$BuildThreshold = 15000
+$IsOldBuild = $build -lt $BuildThreshold
+
 # Set Execution Policy to Bypass for the current process
 # Set-ExecutionPolicy Bypass -Scope Process -Force
 
@@ -67,23 +72,27 @@ $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 # Initialize BasePath variable
 $BasePath = $null
 
-# Define the UNC paths to check in order of priority
-$uncPaths = @(
-	"\\localhost\storeman",
-	"\\$env:COMPUTERNAME\storeman"
-)
-
-# Check each UNC path for existence
-foreach ($path in $uncPaths)
+# If the build version is too old, skip UNC paths and go directly to local drives.
+if (-not $IsOldBuild)
 {
-	if (Test-Path -Path $path -PathType Container)
+	# Define the UNC paths to check in order of priority
+	$uncPaths = @(
+		"\\localhost\storeman",
+		"\\$env:COMPUTERNAME\storeman"
+	)
+	
+	# Check each UNC path for existence
+	foreach ($path in $uncPaths)
 	{
-		$BasePath = $path
-		break
+		if (Test-Path -Path $path -PathType Container)
+		{
+			$BasePath = $path
+			break
+		}
 	}
 }
 
-# If no UNC path is found, proceed to check local drives
+# If no UNC path is found or build is old, proceed to check local drives
 if (-not $BasePath)
 {
 	# Define local drives to search
