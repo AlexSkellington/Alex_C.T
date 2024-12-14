@@ -3537,7 +3537,7 @@ DROP TABLE Ter_Load;
 	{
 		# Construct the lane folder name
 		$laneFolderName = "XF${StoreNumber}${laneNumber}"
-		$laneFolderPath = Join-Path -Path $LaneBasePath -ChildPath $laneFolderName
+		$laneFolderPath = Join-Path -Path $OfficePath -ChildPath $laneFolderName
 		
 		if (-not (Test-Path $laneFolderPath))
 		{
