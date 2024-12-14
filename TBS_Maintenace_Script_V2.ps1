@@ -3,7 +3,7 @@ Param (
 )
 
 # Write-Host "Script started. IsRelaunched: $IsRelaunched"
-Write-Host "Script starting, pls wait..."
+Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # ===================================================================================================
 #                                       SECTION: Parameters
@@ -13,7 +13,7 @@ Write-Host "Script starting, pls wait..."
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.7.7"
+$VersionNumber = "1.7.8"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -7117,13 +7117,13 @@ if (-not $SilentMode)
 	# Clears the recycle bin on startup
 	Clear-RecycleBin -Force -ErrorAction SilentlyContinue
 	
+	<#
 	# Retrieve the list of machine names from the FunctionResults dictionary
 	$LaneMachines = $script:FunctionResults['LaneMachines']
 	
 	# Define the list of user profiles to process
 	$userProfiles = @('Administrator', 'Operator')
 	
-	<#
 	# Iterate over each machine and each user profile, then invoke Delete-Files as a background job
 	foreach ($machine in $LaneMachines.Values)
 	{
@@ -7155,6 +7155,9 @@ if (-not $SilentMode)
 	# Write-Log "Total deletion jobs started: $jobCount" "blue"
 	# Write-Log "All deletion jobs started" "blue"
 	#>
+	
+	# Indicate the script has started
+	Write-Host "Script started" -ForegroundColor Green
 	
 	# ===================================================================================================
 	#                                       SECTION: Show the GUI
