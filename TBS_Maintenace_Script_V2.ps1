@@ -26,7 +26,7 @@ $PowerShellVersion = "$major.$minor.$build.$revision"
 
 # Determine if build version is considered too old
 # Adjust the threshold as needed
-$BuildThreshold = 21000
+$BuildThreshold = 15000
 $IsOldBuild = $build -lt $BuildThreshold
 
 # Set Execution Policy to Bypass for the current process
