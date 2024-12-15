@@ -1,3 +1,4 @@
+
 Param (
 	[switch]$IsRelaunched
 )
@@ -13,7 +14,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.7.8"
+$VersionNumber = "1.7.9"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -116,11 +117,14 @@ if (-not $BasePath)
 	}
 }
 
+
+<#
 # Final check to ensure BasePath was set
 if (-not $BasePath)
 {
 	throw "No directories containing 'storeman' were found in any of the specified locations."
 }
+#>
 
 # Now that we have a valid $BaseUNCPath, define the rest of the paths
 $OfficePath = Join-Path $BasePath "office"
@@ -7089,7 +7093,7 @@ if (-not $SilentMode)
 	# Get the Store Name
 	Get-StoreNameGUI
 	$StoreName = $script:FunctionResults['StoreName']
-		
+	
 	# Determine the Mode
 	$Mode = Determine-ModeGUI -StoreNumber $StoreNumber
 	$Mode = $script:FunctionResults['Mode']
