@@ -148,12 +148,12 @@ function Download-AndRelaunchSelf
 		[switch]$IsRelaunched
 	)
 	
-#	Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
+	Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
 	
 	# If the script has already been relaunched, do not proceed
 	if ($IsRelaunched)
 	{
-	#	Write-Host "Script has already been relaunched. Exiting function."
+		Write-Host "Script has already been relaunched. Exiting function."
 		return
 	}
 	
@@ -170,20 +170,20 @@ function Download-AndRelaunchSelf
 			if ($currentPath -eq $targetPath)
 			{
 				# Script is already running from the destination path; do not proceed
-			#	Write-Host "Script is already running from $DestinationPath. Exiting function."
+				Write-Host "Script is already running from $DestinationPath. Exiting function."
 				return
 			}
 		}
 		catch
 		{
 			# If Resolve-Path fails, proceed to download
-		#	Write-Warning "Resolve-Path failed. Proceeding to download."
+			Write-Warning "Resolve-Path failed. Proceeding to download."
 		}
 	}
 	
 	try
 	{
-	#	Write-Host "Attempting to download the script from $ScriptUrl"
+		Write-Host "Attempting to download the script from $ScriptUrl"
 		
 		# Attempt to download the script content as a string
 		$scriptContent = Invoke-RestMethod -Uri $ScriptUrl -UseBasicParsing
@@ -194,18 +194,18 @@ function Download-AndRelaunchSelf
 		# Verify that the script was downloaded and saved successfully
 		if (Test-Path $DestinationPath)
 		{
-		#	Write-Host "Script downloaded successfully to $DestinationPath with ANSI encoding."
+			Write-Host "Script downloaded successfully to $DestinationPath with ANSI encoding."
 		}
 		else
 		{
-		#	Write-Error "Script was not downloaded successfully."
+			Write-Error "Script was not downloaded successfully."
 			return
 		}
 	}
 	catch
 	{
 		# Log the error and exit the function without performing further actions
-	#	Write-Error "Failed to download the script from $ScriptUrl. Error: $_"
+		Write-Error "Failed to download the script from $ScriptUrl. Error: $_"
 		return
 	}
 	
@@ -225,12 +225,12 @@ function Download-AndRelaunchSelf
 			"Hidden"
 		)
 		
-	#	Write-Host "Starting new process with arguments: $arguments"
+		Write-Host "Starting new process with arguments: $arguments"
 		
 		# Start the new process with elevated privileges
 		Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
 		
-	#	Write-Host "Process started successfully. Exiting current script."
+		Write-Host "Process started successfully. Exiting current script."
 		
 		# Exit the current script to prevent multiple instances
 		exit
@@ -238,12 +238,12 @@ function Download-AndRelaunchSelf
 	catch
 	{
 		# Log any errors that occur during the relaunch process
-	#	Write-Error "Failed to relaunch the script as Administrator. Error: $_"
+		Write-Error "Failed to relaunch the script as Administrator. Error: $_"
 	}
 	finally
 	{
 		# Exit the current script regardless of success or failure
-	#	Write-Host "Exiting the original script."
+		Write-Host "Exiting the original script."
 		exit
 	}
 }
@@ -2080,6 +2080,7 @@ function Delete-Files
 # Ensure script is running as administrator
 # Ensure-Administrator
 
+<#
 # Only call the function if the script has not been relaunched
 if (-not $IsRelaunched)
 {
@@ -2090,6 +2091,7 @@ else
 {
 	Write-Host "Script has been relaunched. Continuing execution."
 }
+#>
 
 # Get the memory info
 # $Memory25Percent = Get-MemoryInfo
