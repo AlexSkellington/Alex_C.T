@@ -7194,3 +7194,6 @@ else
 	# Exit script
 	exit
 }
+
+# Close the console to aviod duplicate logging to the richbox
+exit
