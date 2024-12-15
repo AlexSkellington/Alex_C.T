@@ -3169,3 +3169,6 @@ $form.add_FormClosing({
 # ===================================================================================================
 
 [void]$form.ShowDialog()
+
+# Close the console to aviod duplicate logging to the richbox
+exit
