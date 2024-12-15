@@ -3168,7 +3168,4 @@ $form.add_FormClosing({
 #   Displays the main GUI form to the user.
 # ===================================================================================================
 
-$form.ShowDialog()
-
-# Explicitly exit the script after the form is closed
-exit
+[void]$form.ShowDialog()
