@@ -117,14 +117,11 @@ if (-not $BasePath)
 	}
 }
 
-
-<#
 # Final check to ensure BasePath was set
 if (-not $BasePath)
 {
-	throw "No directories containing 'storeman' were found in any of the specified locations."
+	$BasePath = "C:\storeman"
 }
-#>
 
 # Now that we have a valid $BaseUNCPath, define the rest of the paths
 $OfficePath = Join-Path $BasePath "office"
