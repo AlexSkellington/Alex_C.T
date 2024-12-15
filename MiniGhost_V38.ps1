@@ -34,7 +34,7 @@ Add-Type -AssemblyName System.Drawing
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.2.2"
+$VersionNumber = "1.2.3"
 
 # Declare the script hash table to store results from functions
 $script:FunctionResults = @{ }
@@ -307,8 +307,8 @@ function Get-StoreNameGUI
 function Get-StoreNumberGUI
 {
 	param (
-		[string]$IniFilePath = "$StartupIniPath",
-		[string]$BasePath = "$OfficePath"
+		[string]$IniFilePath = "\\localhost\Storeman\startup.ini",
+		[string]$BasePath = "\\localhost\Storeman\Office\"
 	)
 	
 	# Initialize StoreNumber
@@ -323,16 +323,16 @@ function Get-StoreNumberGUI
 		if ($storeNumber)
 		{
 			$script:FunctionResults['StoreNumber'] = $storeNumber
-			Write-Log "Store number found in startup.ini: $storeNumber" "green"
+		#	Write-Log "Store number found in startup.ini: $storeNumber" "green"
 		}
 		else
 		{
-			Write-Log "Store number not found in startup.ini." "yellow"
+		#	Write-Log "Store number not found in startup.ini." "yellow"
 		}
 	}
 	else
 	{
-		Write-Log "INI file not found: $IniFilePath" "yellow"
+	#	Write-Log "INI file not found: $IniFilePath" "yellow"
 	}
 	
 	# **Only proceed to check XF directories if StoreNumber was not found in INI**
@@ -349,19 +349,19 @@ function Get-StoreNumberGUI
 					if ($storeNumber -ne "999")
 					{
 						$script:FunctionResults['StoreNumber'] = $storeNumber
-						Write-Log "Store number found from XF directory: $storeNumber" "green"
+					#	Write-Log "Store number found from XF directory: $storeNumber" "green"
 						break # Exit loop after finding the store number
 					}
 				}
 			}
 			if ($script:FunctionResults['StoreNumber'] -eq "N/A")
 			{
-				Write-Log "No valid XF directories found in $BasePath" "yellow"
+			#	Write-Log "No valid XF directories found in $BasePath" "yellow"
 			}
 		}
 		else
 		{
-			Write-Log "Base path not found: $BasePath" "yellow"
+		#	Write-Log "Base path not found: $BasePath" "yellow"
 		}
 	}
 	
@@ -443,11 +443,13 @@ function Get-StoreNumberGUI
 		}
 		else
 		{
-			Write-Log "Store number input canceled by user." "red"
+		#	Write-Log "Store number input canceled by user." "red"
 			exit 1
 		}
 	}
 }
+
+
 
 # ===================================================================================================
 #                                       FUNCTION: Get-ActiveIPConfig
