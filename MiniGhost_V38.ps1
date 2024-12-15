@@ -2,7 +2,9 @@ Param (
 	[switch]$IsRelaunched
 )
 
-Write-Host "Script started. IsRelaunched: $IsRelaunched"
+# Write-Host "Script started. IsRelaunched: $IsRelaunched"
+Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
+$IsRelaunched
 
 # ===================================================================================================
 #                                       SECTION: Import Modules
@@ -31,6 +33,9 @@ Add-Type -AssemblyName System.Drawing
 # Description:
 #   Initializes all necessary variables required for the script's operation.
 # ===================================================================================================
+
+# Script build version (cunsult with Alex_C.T before changing this)
+$VersionNumber = "1.2.1"
 
 # Declare the script hash table to store results from functions
 $script:FunctionResults = @{ }
@@ -143,12 +148,12 @@ function Download-AndRelaunchSelf
 		[switch]$IsRelaunched
 	)
 	
-	Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
+#	Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
 	
 	# If the script has already been relaunched, do not proceed
 	if ($IsRelaunched)
 	{
-		Write-Host "Script has already been relaunched. Exiting function."
+	#	Write-Host "Script has already been relaunched. Exiting function."
 		return
 	}
 	
@@ -178,7 +183,7 @@ function Download-AndRelaunchSelf
 	
 	try
 	{
-		Write-Host "Attempting to download the script from $ScriptUrl"
+	#	Write-Host "Attempting to download the script from $ScriptUrl"
 		
 		# Attempt to download the script content as a string
 		$scriptContent = Invoke-RestMethod -Uri $ScriptUrl -UseBasicParsing
@@ -189,18 +194,18 @@ function Download-AndRelaunchSelf
 		# Verify that the script was downloaded and saved successfully
 		if (Test-Path $DestinationPath)
 		{
-			Write-Host "Script downloaded successfully to $DestinationPath with ANSI encoding."
+		#	Write-Host "Script downloaded successfully to $DestinationPath with ANSI encoding."
 		}
 		else
 		{
-			Write-Error "Script was not downloaded successfully."
+		#	Write-Error "Script was not downloaded successfully."
 			return
 		}
 	}
 	catch
 	{
 		# Log the error and exit the function without performing further actions
-		Write-Error "Failed to download the script from $ScriptUrl. Error: $_"
+	#	Write-Error "Failed to download the script from $ScriptUrl. Error: $_"
 		return
 	}
 	
@@ -220,12 +225,12 @@ function Download-AndRelaunchSelf
 			"Hidden"
 		)
 		
-		Write-Host "Starting new process with arguments: $arguments"
+	#	Write-Host "Starting new process with arguments: $arguments"
 		
 		# Start the new process with elevated privileges
 		Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
 		
-		Write-Host "Process started successfully. Exiting current script."
+	#	Write-Host "Process started successfully. Exiting current script."
 		
 		# Exit the current script to prevent multiple instances
 		exit
@@ -233,18 +238,18 @@ function Download-AndRelaunchSelf
 	catch
 	{
 		# Log any errors that occur during the relaunch process
-		Write-Error "Failed to relaunch the script as Administrator. Error: $_"
+	#	Write-Error "Failed to relaunch the script as Administrator. Error: $_"
 	}
 	finally
 	{
 		# Exit the current script regardless of success or failure
-		Write-Host "Exiting the original script."
+	#	Write-Host "Exiting the original script."
 		exit
 	}
 }
 
 # Rest of your script continues here
-Write-Host "Script is running with elevated privileges from $($MyInvocation.MyCommand.Path)"
+# Write-Host "Script is running with elevated privileges from $($MyInvocation.MyCommand.Path)"
 
 # ===================================================================================================
 #                                        FUNCTION: Get-StoreNameGUI
@@ -2108,6 +2113,9 @@ $oldMachineName = $currentMachineName # Set the old machine name variable
 # Clear %Temp% foder on start
 $FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "MiniGhost.ps1" -AsJob
 
+# Indicate the script has started
+Write-Host "Script started" -ForegroundColor Green
+
 # ===================================================================================================
 #                                       SECTION: Initialize GUI Components
 # ---------------------------------------------------------------------------------------------------
@@ -2117,7 +2125,7 @@ $FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "MiniGhost.ps1"
 
 # Create the main form
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Created by Alex_C.T - Version 1.2"
+$form.Text = "Created by Alex_C.T - Version $VersionNumber"
 $form.Size = New-Object System.Drawing.Size(505, 320)
 $form.StartPosition = "CenterScreen"
 
@@ -2350,7 +2358,7 @@ $changeMachineNameButton.Add_Click({
 		
 		# Get the new machine name from the user
 		$newMachineNameInput = Get-ValidMachineName
-				
+		
 		if ($newMachineNameInput -ne $null)
 		{
 			# Confirm the change
