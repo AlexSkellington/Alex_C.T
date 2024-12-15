@@ -4,7 +4,6 @@ Param (
 
 # Write-Host "Script started. IsRelaunched: $IsRelaunched"
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
-$IsRelaunched
 
 # ===================================================================================================
 #                                       SECTION: Import Modules
@@ -35,7 +34,7 @@ Add-Type -AssemblyName System.Drawing
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.2.1"
+$VersionNumber = "1.2.2"
 
 # Declare the script hash table to store results from functions
 $script:FunctionResults = @{ }
@@ -308,12 +307,12 @@ function Get-StoreNameGUI
 function Get-StoreNumberGUI
 {
 	param (
-		[string]$IniFilePath = "\\localhost\Storeman\startup.ini",
-		[string]$BasePath = "\\localhost\Storeman\Office\"
+		[string]$IniFilePath = "$StartupIniPath",
+		[string]$BasePath = "$OfficePath"
 	)
 	
 	# Initialize StoreNumber
-	$script:FunctionResults['StoreNumber'] = ""
+	$script:FunctionResults['StoreNumber'] = "N/A"
 	
 	# Try to retrieve StoreNumber from the startup.ini file
 	if (Test-Path $IniFilePath)
@@ -324,43 +323,46 @@ function Get-StoreNumberGUI
 		if ($storeNumber)
 		{
 			$script:FunctionResults['StoreNumber'] = $storeNumber
-			# Write-Log "Store number found in startup.ini: $storeNumber" "green"
+			Write-Log "Store number found in startup.ini: $storeNumber" "green"
 		}
 		else
 		{
-			# Write-Log "Store number not found in startup.ini." "yellow"
+			Write-Log "Store number not found in startup.ini." "yellow"
 		}
 	}
 	else
 	{
-		# Write-Log "INI file not found: $IniFilePath" "yellow"
+		Write-Log "INI file not found: $IniFilePath" "yellow"
 	}
 	
-	# If not found, check XF directories
-	if (Test-Path $BasePath)
+	# **Only proceed to check XF directories if StoreNumber was not found in INI**
+	if ($script:FunctionResults['StoreNumber'] -eq "N/A")
 	{
-		$XFDirs = Get-ChildItem -Path $BasePath -Directory -Filter "XF*"
-		foreach ($dir in $XFDirs)
+		if (Test-Path $BasePath)
 		{
-			if ($dir.Name -match "^XF(\d{3})")
+			$XFDirs = Get-ChildItem -Path $BasePath -Directory -Filter "XF*"
+			foreach ($dir in $XFDirs)
 			{
-				$storeNumber = $Matches[1]
-				if ($storeNumber -ne "999")
+				if ($dir.Name -match "^XF(\d{3})")
 				{
-					$script:FunctionResults['StoreNumber'] = $storeNumber
-					# Write-Log "Store number found from XF directory: $storeNumber" "green"
-					break # Exit loop after finding the store number
+					$storeNumber = $Matches[1]
+					if ($storeNumber -ne "999")
+					{
+						$script:FunctionResults['StoreNumber'] = $storeNumber
+						Write-Log "Store number found from XF directory: $storeNumber" "green"
+						break # Exit loop after finding the store number
+					}
 				}
 			}
+			if ($script:FunctionResults['StoreNumber'] -eq "N/A")
+			{
+				Write-Log "No valid XF directories found in $BasePath" "yellow"
+			}
 		}
-		if (-not $script:FunctionResults['StoreNumber'])
+		else
 		{
-			# Write-Log "No valid XF directories found in $BasePath" "yellow"
+			Write-Log "Base path not found: $BasePath" "yellow"
 		}
-	}
-	else
-	{
-		# Write-Log "Base path not found: $BasePath" "yellow"
 	}
 	
 	# Update the storeNumberLabel in the GUI if store number was found without manual input
@@ -422,7 +424,7 @@ function Get-StoreNumberGUI
 				# Pad the input with leading zeros to ensure it is 3 digits
 				$paddedInput = $input.PadLeft(3, '0')
 				$script:FunctionResults['StoreNumber'] = $paddedInput
-				# Write-Log "Store number entered by user: $paddedInput" "green"
+				Write-Log "Store number entered by user: $paddedInput" "green"
 				
 				# Update the storeNumberLabel in the GUI
 				if (-not $SilentMode -and $storeNumberLabel -ne $null)
@@ -441,7 +443,7 @@ function Get-StoreNumberGUI
 		}
 		else
 		{
-			# Write-Log "Store number input canceled by user." "red"
+			Write-Log "Store number input canceled by user." "red"
 			exit 1
 		}
 	}
