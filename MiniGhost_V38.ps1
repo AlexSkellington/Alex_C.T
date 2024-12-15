@@ -170,14 +170,14 @@ function Download-AndRelaunchSelf
 			if ($currentPath -eq $targetPath)
 			{
 				# Script is already running from the destination path; do not proceed
-				Write-Host "Script is already running from $DestinationPath. Exiting function."
+			#	Write-Host "Script is already running from $DestinationPath. Exiting function."
 				return
 			}
 		}
 		catch
 		{
 			# If Resolve-Path fails, proceed to download
-			Write-Warning "Resolve-Path failed. Proceeding to download."
+		#	Write-Warning "Resolve-Path failed. Proceeding to download."
 		}
 	}
 	
