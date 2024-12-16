@@ -6437,9 +6437,9 @@ ORDER BY
 	}
 	
 	# Display the organized data
-	Write-Log -Message "Displaying organized data:" -Color "Cyan"
+	Write-Log -Message "Displaying organized data:" -Color "Yellow"
 	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log -Message $_ -Color "Blue" }
-	Write-Log "==================== Organize-TBS_SCL_ver520 Function Completed ====================" "blue"
+	Write-Log "`r`n==================== Organize-TBS_SCL_ver520 Function Completed ====================" "Blue"
 	
 }
 
