@@ -6400,6 +6400,21 @@ ORDER BY
 		Write-Log -Message "An error occurred while executing update queries: $_" -Color "Red"
 		return
 	}
+			
+	# Export the data if an output path is provided
+	if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
+	{
+		Write-Log -Message "Exporting organized data to '$OutputCsvPath'..." -Color "Blue"
+		try
+		{
+			$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation
+			Write-Log -Message "Data exported successfully to '$OutputCsvPath'." -Color "Green"
+		}
+		catch
+		{
+			Write-Log -Message "Failed to export data to CSV: $_" -Color "Red"
+		}
+	}
 	
 	# Execute the select query to retrieve organized data
 	Write-Log -Message "Retrieving organized data..." -Color "Blue"
@@ -6424,22 +6439,8 @@ ORDER BY
 	# Display the organized data
 	Write-Log -Message "Displaying organized data:" -Color "Cyan"
 	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log -Message $_ -Color "Blue" }
-	
-	# Export the data if an output path is provided
-	if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
-	{
-		Write-Log -Message "Exporting organized data to '$OutputCsvPath'..." -Color "Blue"
-		try
-		{
-			$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation
-			Write-Log -Message "Data exported successfully to '$OutputCsvPath'." -Color "Green"
-		}
-		catch
-		{
-			Write-Log -Message "Failed to export data to CSV: $_" -Color "Red"
-		}
-	}
 	Write-Log "`r`n==================== Organize-TBS_SCL_ver520 Function Completed ====================" "blue"
+	
 }
 
 # ===================================================================================================
