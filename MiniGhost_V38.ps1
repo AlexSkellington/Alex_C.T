@@ -2102,6 +2102,9 @@ else
 # Get the memory info
 # $Memory25Percent = Get-MemoryInfo
 
+# Get current IP configuration
+$currentConfigs = Get-ActiveIPConfig
+
 # Get the store name
 Get-StoreNameGUI
 $storeName = $script:FunctionResults['StoreName']
@@ -2109,9 +2112,6 @@ $storeName = $script:FunctionResults['StoreName']
 # Get the Store Number
 Get-StoreNumberGUI
 $currentStoreNumber = $script:FunctionResults['StoreNumber']
-
-# Get current IP configuration
-$currentConfigs = Get-ActiveIPConfig
 
 # Get the database connection string
 Get-DatabaseConnectionString
@@ -3171,6 +3171,9 @@ $form.add_FormClosing({
 # ===================================================================================================
 
 [void]$form.ShowDialog()
+
+# Indicate the script is closing
+Write-Host "Script closing..." -ForegroundColor Yellow
 
 # Close the console to aviod duplicate logging to the richbox
 exit
