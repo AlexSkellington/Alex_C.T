@@ -1,7 +1,8 @@
-
+<#
 Param (
 	[switch]$IsRelaunched
 )
+#>
 
 # Write-Host "Script started. IsRelaunched: $IsRelaunched"
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
@@ -7191,6 +7192,9 @@ else
 	# Exit script
 	exit
 }
+
+# Indicate the script is closing
+Write-Host "Script closing..." -ForegroundColor Yellow
 
 # Close the console to aviod duplicate logging to the richbox
 exit
