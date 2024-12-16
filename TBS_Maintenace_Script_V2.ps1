@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.7.9"
+$VersionNumber = "1.8.1"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -6261,6 +6261,185 @@ ORDER BY F1000,F1063;
 }
 
 # ===================================================================================================
+#                                 FUNCTION: Organize-TBS_SCL_ver520_SQL
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Organizes the [TBS_SCL_ver520] table by updating ScaleName, BufferTime, and ScaleCode for
+#   BIZERBA and ISHIDA records. Specifically:
+#     - Sets BufferTime to 1 for the first BIZERBA record and to 5 for all other BIZERBA records.
+#     - Updates ScaleName for BIZERBA records to include the IPDevice.
+#     - Reassigns ScaleCode to ensure BIZERBA records are first, followed by ISHIDA records.
+#     - Updates ScaleName and BufferTime for ISHIDA WMAI records.
+#   Optionally exports the organized data to a CSV file.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - OutputCsvPath (Optional): Path to export the organized CSV file. If not provided, the data
+#     is only displayed in the console.
+# ===================================================================================================
+
+function Organize-TBS_SCL_ver520_SQL
+{
+	[CmdletBinding()]
+	param (
+		# (Optional) Path to export the organized CSV
+		[Parameter(Mandatory = $false)]
+		[string]$OutputCsvPath
+	)
+	
+	# Access the connection string from the script-scoped variable
+	$connectionString = $script:FunctionResults['ConnectionString']
+	
+	if (-not $connectionString)
+	{
+		Write-Log -Message "Connection string not found in `$script:FunctionResults['ConnectionString']`." -Color "Red"
+		return
+	}
+	
+	# Define the SQL commands:
+	# 1. Update ScaleName and BufferTime for ISHIDA WMAI records.
+	# 2. Update ScaleName for BIZERBA records.
+	# 3. Update ScaleCode for BIZERBA records.
+	# 4. Update ScaleCode for ISHIDA records after BIZERBA.
+	# 5. Set BufferTime for BIZERBA records: first one = 1, others = 5.
+	
+	$updateQueries = @"
+-- Update ScaleName and BufferTime for ISHIDA WMAI records
+UPDATE [TBS_SCL_ver520]
+SET 
+    ScaleName = 'Ishida Wrapper',
+    BufferTime = '1'
+WHERE 
+    ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
+
+-- Update ScaleName for BIZERBA records
+UPDATE [TBS_SCL_ver520]
+SET 
+    ScaleName = CONCAT('Scale ', IPDevice)
+WHERE 
+    ScaleBrand = 'BIZERBA';
+
+-- Update ScaleCode for BIZERBA records to start at 10, ordered by IPDevice ascending
+WITH BIZERBA_CTE AS (
+    SELECT 
+        ScaleCode,
+        IPDevice,
+        ROW_NUMBER() OVER (ORDER BY CAST(IPDevice AS INT) ASC) AS rn
+    FROM 
+        [TBS_SCL_ver520]
+    WHERE 
+        ScaleBrand = 'BIZERBA'
+)
+UPDATE BIZERBA_CTE
+SET ScaleCode = 10 + rn - 1;
+
+-- Update ScaleCode for ISHIDA records to start after the maximum ScaleCode of BIZERBA
+;WITH MaxBizerba AS (
+    SELECT MAX(ScaleCode) AS MaxCode
+    FROM [TBS_SCL_ver520]
+    WHERE ScaleBrand = 'BIZERBA'
+),
+ISHIDA_CTE AS (
+    SELECT 
+        ScaleCode,
+        IPDevice,
+        ROW_NUMBER() OVER (ORDER BY CAST(IPDevice AS INT) ASC) AS rn
+    FROM 
+        [TBS_SCL_ver520]
+    WHERE 
+        ScaleBrand = 'ISHIDA'
+)
+UPDATE ISHIDA_CTE
+SET ScaleCode = (SELECT MaxCode FROM MaxBizerba) + 10 + rn - 1;
+
+-- Now set BufferTime for BIZERBA records:
+-- The first BIZERBA record (lowest ScaleCode) gets BufferTime = 1, all others = 5.
+WITH BIZ_ORDER AS (
+    SELECT 
+        ScaleCode,
+        ROW_NUMBER() OVER (ORDER BY ScaleCode ASC) AS RN
+    FROM [TBS_SCL_ver520]
+    WHERE ScaleBrand = 'BIZERBA'
+)
+UPDATE T
+SET T.BufferTime = CASE WHEN B.RN = 1 THEN '1' ELSE '5' END
+FROM [TBS_SCL_ver520] T
+INNER JOIN BIZ_ORDER B ON T.ScaleCode = B.ScaleCode;
+"@
+	
+	$selectQuery = @"
+SELECT 
+    ScaleCode,
+    ScaleName,
+    ScaleLocation,
+    IPNetwork,
+    IPDevice,
+    Active,
+    SystemLocalTime,
+    AutoStart,
+    AutoTransmit,
+    BufferTime,
+    ScaleBrand,
+    ScaleModel
+FROM 
+    [TBS_SCL_ver520]
+ORDER BY 
+    ScaleCode ASC; -- Sort by ScaleCode ascending to have BIZERBA first, then ISHIDA
+"@
+	
+	# Execute the update queries
+	Write-Log -Message "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." -Color "Blue"
+	try
+	{
+		Invoke-Sqlcmd -ConnectionString $connectionString -Query $updateQueries
+		Write-Log -Message "Update queries executed successfully." -Color "Green"
+	}
+	catch
+	{
+		Write-Log -Message "An error occurred while executing update queries: $_" -Color "Red"
+		return
+	}
+	
+	# Execute the select query to retrieve organized data
+	Write-Log -Message "Retrieving organized data..." -Color "Blue"
+	try
+	{
+		$data = Invoke-Sqlcmd -ConnectionString $connectionString -Query $selectQuery
+		Write-Log -Message "Data retrieval successful." -Color "Green"
+	}
+	catch
+	{
+		Write-Log -Message "An error occurred while retrieving data: $_" -Color "Red"
+		return
+	}
+	
+	# Check if data was retrieved
+	if (-not $data)
+	{
+		Write-Log -Message "No data retrieved from the table 'TBS_SCL_ver520'." -Color "Red"
+		Throw "No data retrieved from the table 'TBS_SCL_ver520'."
+	}
+	
+	# Display the organized data
+	Write-Log -Message "Displaying organized data:" -Color "Cyan"
+	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log -Message $_ -Color "White" }
+	
+	# Export the data if an output path is provided
+	if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
+	{
+		Write-Log -Message "Exporting organized data to '$OutputCsvPath'..." -Color "Blue"
+		try
+		{
+			$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation
+			Write-Log -Message "Data exported successfully to '$OutputCsvPath'." -Color "Green"
+		}
+		catch
+		{
+			Write-Log -Message "Failed to export data to CSV: $_" -Color "Red"
+		}
+	}
+}
+
+# ===================================================================================================
 #                                       FUNCTION: Show-SelectionDialog
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -6917,6 +7096,7 @@ if (-not $SilentMode)
 				})
 			$form.Controls.Add($storeButton2)
 			
+			<#
 			$storeButton3 = New-Object System.Windows.Forms.Button
 			$storeButton3.Text = "Repair DB of Lanes and Server"
 			$storeButton3.Location = New-Object System.Drawing.Point(517, 535)
@@ -6925,6 +7105,16 @@ if (-not $SilentMode)
 					Process-LanesAndServerGUI -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath -StoreNumber $StoreNumber
 				})
 			$form.Controls.Add($storeButton3)
+			#>
+			
+			$OrganizeScaleTableButton = New-Object System.Windows.Forms.Button
+			$OrganizeScaleTableButton.Text = "Organize-TBS_SCL_ver520"
+			$OrganizeScaleTableButton.Location = New-Object System.Drawing.Point(517, 535)
+			$OrganizeScaleTableButton.Size = New-Object System.Drawing.Size(200, 40)
+			$OrganizeScaleTableButton.Add_Click({
+					Organize-TBS_SCL_ver520_SQL
+				})
+			$form.Controls.Add($OrganizeScaleTableButton)
 			
 			# Repair Windows button
 			$repairButton = New-Object System.Windows.Forms.Button
