@@ -6437,9 +6437,9 @@ ORDER BY
 		catch
 		{
 			Write-Log -Message "Failed to export data to CSV: $_" -Color "Red"
-			Write-Log "`r`n==================== Organize-TBS_SCL_ver520 Function Completed ====================" "blue"
 		}
 	}
+	Write-Log "`r`n==================== Organize-TBS_SCL_ver520 Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
