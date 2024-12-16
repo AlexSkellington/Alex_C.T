@@ -1,6 +1,8 @@
+<#
 Param (
 	[switch]$IsRelaunched
 )
+#>
 
 # Write-Host "Script started. IsRelaunched: $IsRelaunched"
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
