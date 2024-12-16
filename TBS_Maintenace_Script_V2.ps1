@@ -6261,7 +6261,7 @@ ORDER BY F1000,F1063;
 }
 
 # ===================================================================================================
-#                                 FUNCTION: Organize-TBS_SCL_ver520_SQL
+#                                 FUNCTION: Organize-TBS_SCL_ver520
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Organizes the [TBS_SCL_ver520] table by updating ScaleName, BufferTime, and ScaleCode for
@@ -6277,7 +6277,7 @@ ORDER BY F1000,F1063;
 #     is only displayed in the console.
 # ===================================================================================================
 
-function Organize-TBS_SCL_ver520_SQL
+function Organize-TBS_SCL_ver520
 {
 	[CmdletBinding()]
 	param (
@@ -6285,6 +6285,8 @@ function Organize-TBS_SCL_ver520_SQL
 		[Parameter(Mandatory = $false)]
 		[string]$OutputCsvPath
 	)
+	
+	Write-Log "`r`n==================== Starting Organize-TBS_SCL_ver520 Function ====================`r`n" "blue"
 	
 	# Access the connection string from the script-scoped variable
 	$connectionString = $script:FunctionResults['ConnectionString']
@@ -6421,7 +6423,7 @@ ORDER BY
 	
 	# Display the organized data
 	Write-Log -Message "Displaying organized data:" -Color "Cyan"
-	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log -Message $_ -Color "White" }
+	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log -Message $_ -Color "Blue" }
 	
 	# Export the data if an output path is provided
 	if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
@@ -6435,6 +6437,7 @@ ORDER BY
 		catch
 		{
 			Write-Log -Message "Failed to export data to CSV: $_" -Color "Red"
+			Write-Log "`r`n==================== Organize-TBS_SCL_ver520 Function Completed ====================" "blue"
 		}
 	}
 }
@@ -7112,7 +7115,7 @@ if (-not $SilentMode)
 			$OrganizeScaleTableButton.Location = New-Object System.Drawing.Point(517, 535)
 			$OrganizeScaleTableButton.Size = New-Object System.Drawing.Size(200, 40)
 			$OrganizeScaleTableButton.Add_Click({
-					Organize-TBS_SCL_ver520_SQL
+					Organize-TBS_SCL_ver520
 				})
 			$form.Controls.Add($OrganizeScaleTableButton)
 			
