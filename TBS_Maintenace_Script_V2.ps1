@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.8.3"
+$VersionNumber = "1.8.4"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -6271,7 +6271,6 @@ ORDER BY F1000,F1063;
 #     - Reassigns ScaleCode to ensure BIZERBA records are first, followed by ISHIDA records.
 #     - Updates ScaleName and BufferTime for ISHIDA WMAI records.
 #   Optionally exports the organized data to a CSV file.
-#   Optionally manages the "BMS" service by stopping, deleting, registering, and restarting it based on user input.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   - OutputCsvPath (Optional): Path to export the organized CSV file. If not provided, the data
@@ -6287,54 +6286,33 @@ function Organize-TBS_SCL_ver520
 		[string]$OutputCsvPath
 	)
 	
-	# Function to display a Windows Form prompt
-	function Show-BMSPrompt
+	# Function to display log messages
+	function Write-Log
 	{
-		Add-Type -AssemblyName System.Windows.Forms
-		Add-Type -AssemblyName System.Drawing
+		param (
+			[string]$Message,
+			[string]$Color = "White"
+		)
 		
-		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "BMS Service Management"
-		$form.Size = New-Object System.Drawing.Size(400, 150)
-		$form.StartPosition = "CenterScreen"
-		$form.FormBorderStyle = "FixedDialog"
-		$form.MaximizeBox = $false
-		$form.MinimizeBox = $false
-		
-		$label = New-Object System.Windows.Forms.Label
-		$label.Text = "Do you want to execute the BMS service management steps?"
-		$label.AutoSize = $true
-		$label.Location = New-Object System.Drawing.Point(20, 20)
-		$form.Controls.Add($label)
-		
-		$yesButton = New-Object System.Windows.Forms.Button
-		$yesButton.Text = "Yes"
-		$yesButton.DialogResult = [System.Windows.Forms.DialogResult]::Yes
-		$yesButton.Location = New-Object System.Drawing.Point(80, 60)
-		$form.Controls.Add($yesButton)
-		
-		$noButton = New-Object System.Windows.Forms.Button
-		$noButton.Text = "No"
-		$noButton.DialogResult = [System.Windows.Forms.DialogResult]::No
-		$noButton.Location = New-Object System.Drawing.Point(200, 60)
-		$form.Controls.Add($noButton)
-		
-		$form.AcceptButton = $yesButton
-		$form.CancelButton = $noButton
-		
-		$dialogResult = $form.ShowDialog()
-		
-		return $dialogResult -eq [System.Windows.Forms.DialogResult]::Yes
+		switch ($Color.ToLower())
+		{
+			"green" { Write-Host $Message -ForegroundColor Green }
+			"red" { Write-Host $Message -ForegroundColor Red }
+			"blue" { Write-Host $Message -ForegroundColor Cyan }
+			"yellow" { Write-Host $Message -ForegroundColor Yellow }
+			default { Write-Host $Message -ForegroundColor White }
+		}
 	}
 	
-	Write-Log "`r`n==================== Starting Organize-TBS_SCL_ver520 Function ====================`r`n" "Blue"
+	Write-Log "`r`n==================== Starting Organize-TBS_SCL_ver520 Function ====================`r`n" "blue"
 	
 	# Access the connection string from the script-scoped variable
+	# Ensure that you have set $script:FunctionResults['ConnectionString'] before calling this function
 	$connectionString = $script:FunctionResults['ConnectionString']
 	
 	if (-not $connectionString)
 	{
-		Write-Log "Connection string not found in `$script:FunctionResults['ConnectionString']`." "Red"
+		Write-Log "Connection string not found in `$script:FunctionResults['ConnectionString']`." "red"
 		return
 	}
 	
@@ -6430,167 +6408,216 @@ ORDER BY
 "@
 	
 	# Execute the update queries
-	Write-Log "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." "Blue"
+	Write-Log "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." "blue"
 	try
 	{
 		Invoke-Sqlcmd -ConnectionString $connectionString -Query $updateQueries
-		Write-Log "Update queries executed successfully." "Green"
+		Write-Log "Update queries executed successfully." "green"
 	}
 	catch
 	{
-		Write-Log "An error occurred while executing update queries: $_" "Red"
+		Write-Log "An error occurred while executing update queries: $_" "red"
 		return
 	}
 	
 	# Execute the select query to retrieve organized data
-	Write-Log "Retrieving organized data..." "Blue"
+	Write-Log "Retrieving organized data..." "blue"
 	try
 	{
 		$data = Invoke-Sqlcmd -ConnectionString $connectionString -Query $selectQuery
-		Write-Log "Data retrieval successful." "Green"
+		Write-Log "Data retrieval successful." "green"
 	}
 	catch
 	{
-		Write-Log "An error occurred while retrieving data: $_" "Red"
+		Write-Log "An error occurred while retrieving data: $_" "red"
 		return
 	}
 	
 	# Check if data was retrieved
 	if (-not $data)
 	{
-		Write-Log "No data retrieved from the table 'TBS_SCL_ver520'." "Red"
+		Write-Log "No data retrieved from the table 'TBS_SCL_ver520'." "red"
 		Throw "No data retrieved from the table 'TBS_SCL_ver520'."
 	}
 	
 	# Export the data if an output path is provided
 	if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
 	{
-		Write-Log "Exporting organized data to '$OutputCsvPath'..." "Blue"
+		Write-Log "Exporting organized data to '$OutputCsvPath'..." "blue"
 		try
 		{
 			$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation
-			Write-Log "Data exported successfully to '$OutputCsvPath'." "Green"
+			Write-Log "Data exported successfully to '$OutputCsvPath'." "green"
 		}
 		catch
 		{
-			Write-Log "Failed to export data to CSV: $_" "Red"
+			Write-Log "Failed to export data to CSV: $_" "red"
 		}
 	}
 	
 	# Display the organized data
-	Write-Log "Displaying organized data:" "Yellow"
+	Write-Log "Displaying organized data:" "yellow"
 	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log $_ "Blue" }
-	Write-Log "==================== Organize-TBS_SCL_ver520 Function Completed ====================" "Blue"
+	Write-Log "`r`n==================== Organize-TBS_SCL_ver520 Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                                 FUNCTION: Manage-BMS
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Manages the "BMS" service by performing the following steps:
+#     1. Stops the "BMS" service if it's running.
+#     2. Deletes the "BMS" service.
+#     3. Registers BMSSrv.exe to recreate the "BMS" service.
+#     4. Starts the newly registered "BMS" service.
+#   Ensures that the script waits appropriately between deleting and registering to prevent errors.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - BMSSrvPath (Optional): Full path to BMSSrv.exe. Defaults to "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe".
+# ===================================================================================================
+
+function Repair-BMS
+{
+	[CmdletBinding()]
+	param (
+		# (Optional) Full path to BMSSrv.exe
+		[Parameter(Mandatory = $false)]
+		[string]$BMSSrvPath = "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe"
+	)
 	
-	# ===================================================================================================
-	#                                 SERVICE: BMS Management (Optional)
-	# ---------------------------------------------------------------------------------------------------
-	# Description:
-	#   Optionally stops and deletes the "BMS" service, re-registers BMSSrv.exe, and restarts the service
-	#   based on user input via a Windows Form prompt.
-	# ===================================================================================================
-	
-	# Prompt the user whether to execute BMS service management
-	$executeBMS = Show-BMSPrompt
-	
-	if ($executeBMS)
+	# Function to display log messages
+	function Write-Log
 	{
-		Write-Log "`r`n==================== Starting BMS Service Management ====================`r`n" "Blue"
+		param (
+			[string]$Message,
+			[string]$Color = "White"
+		)
 		
-		# Ensure the script is running as Administrator
-		if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+		switch ($Color.ToLower())
 		{
-			Write-Log "Insufficient permissions. BMS service management requires administrative privileges." "Red"
-			return
+			"green" { Write-Host $Message -ForegroundColor Green }
+			"red" { Write-Host $Message -ForegroundColor Red }
+			"blue" { Write-Host $Message -ForegroundColor Cyan }
+			"yellow" { Write-Host $Message -ForegroundColor Yellow }
+			default { Write-Host $Message -ForegroundColor White }
 		}
-		
-		# Stop the BMS service
-		Write-Log "Stopping the 'BMS' service..." "Blue"
+	}
+	
+	Write-Log "`r`n==================== Starting Repair-BMS Function ====================`r`n" "blue"
+	
+	# Ensure the script is running as Administrator
+	$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+	if (-not $isAdmin)
+	{
+		Write-Log "Insufficient permissions. Please run this script as an Administrator." "red"
+		return
+	}
+	
+	# Check if BMSSrv.exe exists
+	if (-not (Test-Path $BMSSrvPath))
+	{
+		Write-Log "BMSSrv.exe not found at path: $BMSSrvPath" "red"
+		return
+	}
+	
+	# Function to check if service exists
+	function Test-ServiceExists
+	{
+		param (
+			[string]$ServiceName
+		)
 		try
 		{
-			sc.exe stop "BMS" | Out-Null
-			Write-Log "'BMS' service stopped successfully." "Green"
+			Get-Service -Name $ServiceName -ErrorAction Stop | Out-Null
+			return $true
 		}
 		catch
 		{
-			Write-Log "Failed to stop 'BMS' service: $_" "Red"
-			return
+			return $false
 		}
-		
-		# Delete the BMS service
-		Write-Log "Deleting the 'BMS' service..." "Blue"
+	}
+	
+	# Stop the BMS service if it exists and is running
+	$serviceName = "BMS"
+	if (Test-ServiceExists -ServiceName $serviceName)
+	{
+		Write-Log "Attempting to stop the '$serviceName' service..." "blue"
 		try
 		{
-			sc.exe delete "BMS" | Out-Null
-			Write-Log "'BMS' service deleted successfully." "Green"
+			Stop-Service -Name $serviceName -Force -ErrorAction Stop
+			Write-Log "'$serviceName' service stopped successfully." "green"
 		}
 		catch
 		{
-			Write-Log "Failed to delete 'BMS' service: $_" "Red"
+			Write-Log "Failed to stop '$serviceName' service: $_" "red"
 			return
 		}
-		
-		# Change directory to the BMS installation path
-		Write-Log "Changing directory to 'C:\Bizerba\RetailConnect\BMS'..." "Blue"
-		try
-		{
-			Set-Location -Path "C:\Bizerba\RetailConnect\BMS" -ErrorAction Stop
-			Write-Log "Directory changed to 'C:\Bizerba\RetailConnect\BMS' successfully." "Green"
-		}
-		catch
-		{
-			Write-Log "Failed to change directory to 'C:\Bizerba\RetailConnect\BMS': $_" "Red"
-			return
-		}
-		
-		# Register BMSSrv.exe
-		Write-Log "Registering 'BMSSrv.exe'..." "Blue"
-		try
-		{
-			$bmssrvPath = "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe"
-			if (-not (Test-Path $bmssrvPath))
-			{
-				Throw "BMSSrv.exe not found at path $bmssrvPath."
-			}
-			
-			# Execute BMSSrv.exe with -reg parameter and capture the process
-			$process = Start-Process -FilePath $bmssrvPath -ArgumentList "-reg" -NoNewWindow -Wait -PassThru
-			
-			if ($process.ExitCode -eq 0)
-			{
-				Write-Log "'BMSSrv.exe' registered successfully." "Green"
-			}
-			else
-			{
-				Write-Log "'BMSSrv.exe' registration failed with exit code $($process.ExitCode)." "Red"
-				Throw "'BMSSrv.exe' registration failed."
-			}
-		}
-		catch
-		{
-			Write-Log "Failed to register 'BMSSrv.exe': $_" "Red"
-			return
-		}
-		
-		# Start the BMS service
-		Write-Log "Starting the 'BMS' service..." "Blue"
-		try
-		{
-			sc.exe start "BMS" | Out-Null
-			Write-Log "'BMS' service started successfully." "Green"
-		}
-		catch
-		{
-			Write-Log "Failed to start 'BMS' service: $_" "Red"
-			return
-		}
-		
-		Write-Log "`r`n==================== BMS Service Management Completed ====================" "Blue"
 	}
 	else
 	{
-		Write-Log "`r`n==================== BMS Service Management Skipped ====================" "Yellow"
+		Write-Log "'$serviceName' service does not exist or is already stopped." "yellow"
 	}
+	
+	# Delete the BMS service if it exists
+	if (Test-ServiceExists -ServiceName $serviceName)
+	{
+		Write-Log "Attempting to delete the '$serviceName' service..." "blue"
+		try
+		{
+			sc.exe delete $serviceName | Out-Null
+			Write-Log "'$serviceName' service deleted successfully." "green"
+		}
+		catch
+		{
+			Write-Log "Failed to delete '$serviceName' service: $_" "red"
+			return
+		}
+		
+		# Wait for a few seconds to ensure the service is fully deleted
+		Start-Sleep -Seconds 5
+	}
+	else
+	{
+		Write-Log "'$serviceName' service does not exist. Skipping deletion." "yellow"
+	}
+	
+	# Register BMSSrv.exe to recreate the BMS service
+	Write-Log "Registering BMSSrv.exe to recreate the '$serviceName' service..." "blue"
+	try
+	{
+		# Execute BMSSrv.exe with -reg parameter
+		$process = Start-Process -FilePath $BMSSrvPath -ArgumentList "-reg" -NoNewWindow -Wait -PassThru
+		
+		if ($process.ExitCode -eq 0)
+		{
+			Write-Log "BMSSrv.exe registered successfully." "green"
+		}
+		else
+		{
+			Write-Log "BMSSrv.exe registration failed with exit code $($process.ExitCode)." "red"
+			return
+		}
+	}
+	catch
+	{
+		Write-Log "An error occurred while registering BMSSrv.exe: $_" "red"
+		return
+	}
+	
+	# Start the BMS service
+	Write-Log "Attempting to start the '$serviceName' service..." "blue"
+	try
+	{
+		Start-Service -Name $serviceName -ErrorAction Stop
+		Write-Log "'$serviceName' service started successfully." "green"
+	}
+	catch
+	{
+		Write-Log "Failed to start '$serviceName' service: $_" "red"
+		return
+	}
+	
+	Write-Log "`r`n==================== Repair-BMS Function Completed ====================`r`n" "blue"
 }
 
 # ===================================================================================================
@@ -7075,6 +7102,16 @@ if (-not $SilentMode)
 				InstallIntoSMS
 			})
 		$form.Controls.Add($InstallIntoSMSButton)
+		
+		# Repair BMS Service
+		$RepairBMSButton = New-Object System.Windows.Forms.Button
+		$RepairBMSButton.Text = "Repair BMS Service"
+		$RepairBMSButton.Location = New-Object System.Drawing.Point(695, 65)
+		$RepairBMSButton.Size = New-Object System.Drawing.Size(150, 30)
+		$RepairBMSButton.add_Click({
+				Repair-BMS
+			})
+		$form.Controls.Add($RepairBMSButton)
 		
 		################################################## Labels #######################################################
 		
