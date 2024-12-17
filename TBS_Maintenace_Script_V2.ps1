@@ -6493,7 +6493,7 @@ ORDER BY
 	Write-Log "Registering 'BMSSrv.exe'..." "Blue"
 	try
 	{
-		& "BMSSrv.exe" -reg
+		"BMSSrv.exe" -reg
 		Write-Log "'BMSSrv.exe' registered successfully." "Green"
 	}
 	catch
