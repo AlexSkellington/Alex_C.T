@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.8.1"
+$VersionNumber = "1.8.2"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -6271,6 +6271,7 @@ ORDER BY F1000,F1063;
 #     - Reassigns ScaleCode to ensure BIZERBA records are first, followed by ISHIDA records.
 #     - Updates ScaleName and BufferTime for ISHIDA WMAI records.
 #   Optionally exports the organized data to a CSV file.
+#   After processing, stops and deletes the "BMS" service, re-registers BMSSrv.exe, and restarts the service.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   - OutputCsvPath (Optional): Path to export the organized CSV file. If not provided, the data
@@ -6286,14 +6287,14 @@ function Organize-TBS_SCL_ver520
 		[string]$OutputCsvPath
 	)
 	
-	Write-Log "`r`n==================== Starting Organize-TBS_SCL_ver520 Function ====================`r`n" "blue"
+	Write-Log "`r`n==================== Starting Organize-TBS_SCL_ver520 Function ====================`r`n" "Blue"
 	
 	# Access the connection string from the script-scoped variable
 	$connectionString = $script:FunctionResults['ConnectionString']
 	
 	if (-not $connectionString)
 	{
-		Write-Log -Message "Connection string not found in `$script:FunctionResults['ConnectionString']`." -Color "Red"
+		Write-Log "Connection string not found in `$script:FunctionResults['ConnectionString']`." "Red"
 		return
 	}
 	
@@ -6389,58 +6390,132 @@ ORDER BY
 "@
 	
 	# Execute the update queries
-	Write-Log -Message "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." -Color "Blue"
+	Write-Log "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." "Blue"
 	try
 	{
 		Invoke-Sqlcmd -ConnectionString $connectionString -Query $updateQueries
-		Write-Log -Message "Update queries executed successfully." -Color "Green"
+		Write-Log "Update queries executed successfully." "Green"
 	}
 	catch
 	{
-		Write-Log -Message "An error occurred while executing update queries: $_" -Color "Red"
+		Write-Log "An error occurred while executing update queries: $_" "Red"
 		return
-	}
-			
-	# Export the data if an output path is provided
-	if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
-	{
-		Write-Log -Message "Exporting organized data to '$OutputCsvPath'..." -Color "Blue"
-		try
-		{
-			$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation
-			Write-Log -Message "Data exported successfully to '$OutputCsvPath'." -Color "Green"
-		}
-		catch
-		{
-			Write-Log -Message "Failed to export data to CSV: $_" -Color "Red"
-		}
 	}
 	
 	# Execute the select query to retrieve organized data
-	Write-Log -Message "Retrieving organized data..." -Color "Blue"
+	Write-Log "Retrieving organized data..." "Blue"
 	try
 	{
 		$data = Invoke-Sqlcmd -ConnectionString $connectionString -Query $selectQuery
-		Write-Log -Message "Data retrieval successful." -Color "Green"
+		Write-Log "Data retrieval successful." "Green"
 	}
 	catch
 	{
-		Write-Log -Message "An error occurred while retrieving data: $_" -Color "Red"
+		Write-Log "An error occurred while retrieving data: $_" "Red"
 		return
 	}
 	
 	# Check if data was retrieved
 	if (-not $data)
 	{
-		Write-Log -Message "No data retrieved from the table 'TBS_SCL_ver520'." -Color "Red"
+		Write-Log "No data retrieved from the table 'TBS_SCL_ver520'." "Red"
 		Throw "No data retrieved from the table 'TBS_SCL_ver520'."
 	}
 	
+	# Export the data if an output path is provided
+	if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
+	{
+		Write-Log "Exporting organized data to '$OutputCsvPath'..." "Blue"
+		try
+		{
+			$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation
+			Write-Log "Data exported successfully to '$OutputCsvPath'." "Green"
+		}
+		catch
+		{
+			Write-Log "Failed to export data to CSV: $_" "Red"
+		}
+	}
+	
 	# Display the organized data
-	Write-Log -Message "Displaying organized data:" -Color "Yellow"
-	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log -Message $_ -Color "Blue" }
+	Write-Log "Displaying organized data:" "Yellow"
+	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log $_ "White" }
+	
 	Write-Log "`r`n==================== Organize-TBS_SCL_ver520 Function Completed ====================" "Blue"
 	
+	# ===================================================================================================
+	#                                 SERVICE: BMS Management
+	# ---------------------------------------------------------------------------------------------------
+	# Description:
+	#   Stops and deletes the "BMS" service, re-registers BMSSrv.exe, and restarts the "BMS" service.
+	# ===================================================================================================
+	
+	# Stop the BMS service
+	Write-Log "Stopping the 'BMS' service..." "Blue"
+	try
+	{
+		sc.exe stop "BMS"
+		Write-Log "'BMS' service stopped successfully." "Green"
+	}
+	catch
+	{
+		Write-Log "Failed to stop 'BMS' service: $_" "Red"
+		return
+	}
+	
+	# Delete the BMS service
+	Write-Log "Deleting the 'BMS' service..." "Blue"
+	try
+	{
+		sc.exe delete "BMS"
+		Write-Log "'BMS' service deleted successfully." "Green"
+	}
+	catch
+	{
+		Write-Log "Failed to delete 'BMS' service: $_" "Red"
+		return
+	}
+	
+	# Change directory to the BMS installation path
+	Write-Log "Changing directory to 'C:\Bizerba\RetailConnect\BMS'..." "Blue"
+	try
+	{
+		Set-Location -Path "C:\Bizerba\RetailConnect\BMS" -ErrorAction Stop
+		Write-Log "Directory changed to 'C:\Bizerba\RetailConnect\BMS' successfully." "Green"
+	}
+	catch
+	{
+		Write-Log "Failed to change directory to 'C:\Bizerba\RetailConnect\BMS': $_" "Red"
+		return
+	}
+	
+	# Register BMSSrv.exe
+	Write-Log "Registering 'BMSSrv.exe'..." "Blue"
+	try
+	{
+		& "BMSSrv.exe" -reg
+		Write-Log "'BMSSrv.exe' registered successfully." "Green"
+	}
+	catch
+	{
+		Write-Log "Failed to register 'BMSSrv.exe': $_" "Red"
+		return
+	}
+	
+	# Start the BMS service
+	Write-Log "Starting the 'BMS' service..." "Blue"
+	try
+	{
+		sc.exe start "BMS"
+		Write-Log "'BMS' service started successfully." "Green"
+	}
+	catch
+	{
+		Write-Log "Failed to start 'BMS' service: $_" "Red"
+		return
+	}
+	
+	Write-Log "`r`n==================== BMS Service Management Completed ====================" "Blue"
 }
 
 # ===================================================================================================
