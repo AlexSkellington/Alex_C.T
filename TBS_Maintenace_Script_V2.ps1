@@ -6441,7 +6441,8 @@ ORDER BY
 	Write-Log "Displaying organized data:" "Yellow"
 	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log $_ "Blue" }
 	
-	Write-Log "`r`n==================== Organize-TBS_SCL_ver520 Function Completed ====================" "Blue"
+	Write-Log "Stopping the 'BMS' service..." "Blue"
+	Write-Log "`r`n==================== Organize-TBS_SCL_ver520 Function Completed ====================`r`n" "Blue"
 	
 	# ===================================================================================================
 	#                                 SERVICE: BMS Management
@@ -6493,8 +6494,24 @@ ORDER BY
 	Write-Log "Registering 'BMSSrv.exe'..." "Blue"
 	try
 	{
-		"BMSSrv.exe" -reg
-		Write-Log "'BMSSrv.exe' registered successfully." "Green"
+		$bmssrvPath = "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe"
+		if (-not (Test-Path $bmssrvPath))
+		{
+			Throw "BMSSrv.exe not found at path $bmssrvPath."
+		}
+		
+		# Execute BMSSrv.exe with -reg parameter
+		$process = Start-Process -FilePath $bmssrvPath -ArgumentList "-reg" -NoNewWindow -Wait -PassThru
+		
+		if ($process.ExitCode -eq 0)
+		{
+			Write-Log "'BMSSrv.exe' registered successfully." "Green"
+		}
+		else
+		{
+			Write-Log "'BMSSrv.exe' registration failed with exit code $($process.ExitCode)." "Red"
+			Throw "'BMSSrv.exe' registration failed."
+		}
 	}
 	catch
 	{
