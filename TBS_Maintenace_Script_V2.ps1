@@ -6442,7 +6442,7 @@ ORDER BY
 	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log $_ "Blue" }
 	Write-Log "==================== Organize-TBS_SCL_ver520 Function Completed ====================`r`n" "Blue"
 	
-<#
+	<#
 	# ===================================================================================================
 	#                                 SERVICE: BMS Management
 	# ---------------------------------------------------------------------------------------------------
@@ -6530,10 +6530,9 @@ ORDER BY
 		Write-Log "Failed to start 'BMS' service: $_" "Red"
 		return
 	}
-	
 	Write-Log "`r`n==================== BMS Service Management Completed ====================" "Blue"
+	#>
 }
-#>
 	
 # ===================================================================================================
 #                                       FUNCTION: Show-SelectionDialog
