@@ -6285,25 +6285,7 @@ function Organize-TBS_SCL_ver520
 		[Parameter(Mandatory = $false)]
 		[string]$OutputCsvPath
 	)
-	
-	# Function to display log messages
-	function Write-Log
-	{
-		param (
-			[string]$Message,
-			[string]$Color = "White"
-		)
 		
-		switch ($Color.ToLower())
-		{
-			"green" { Write-Host $Message -ForegroundColor Green }
-			"red" { Write-Host $Message -ForegroundColor Red }
-			"blue" { Write-Host $Message -ForegroundColor Cyan }
-			"yellow" { Write-Host $Message -ForegroundColor Yellow }
-			default { Write-Host $Message -ForegroundColor White }
-		}
-	}
-	
 	Write-Log "`r`n==================== Starting Organize-TBS_SCL_ver520 Function ====================`r`n" "blue"
 	
 	# Access the connection string from the script-scoped variable
@@ -6484,25 +6466,7 @@ function Repair-BMS
 		[Parameter(Mandatory = $false)]
 		[string]$BMSSrvPath = "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe"
 	)
-	
-	# Function to display log messages
-	function Write-Log
-	{
-		param (
-			[string]$Message,
-			[string]$Color = "White"
-		)
 		
-		switch ($Color.ToLower())
-		{
-			"green" { Write-Host $Message -ForegroundColor Green }
-			"red" { Write-Host $Message -ForegroundColor Red }
-			"blue" { Write-Host $Message -ForegroundColor Cyan }
-			"yellow" { Write-Host $Message -ForegroundColor Yellow }
-			default { Write-Host $Message -ForegroundColor White }
-		}
-	}
-	
 	Write-Log "`r`n==================== Starting Repair-BMS Function ====================`r`n" "blue"
 	
 	# Ensure the script is running as Administrator
