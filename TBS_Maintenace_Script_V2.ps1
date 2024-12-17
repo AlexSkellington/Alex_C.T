@@ -6440,9 +6440,7 @@ ORDER BY
 	# Display the organized data
 	Write-Log "Displaying organized data:" "Yellow"
 	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log $_ "Blue" }
-	
-	Write-Log "Stopping the 'BMS' service..." "Blue"
-	Write-Log "`r`n==================== Organize-TBS_SCL_ver520 Function Completed ====================`r`n" "Blue"
+	Write-Log "==================== Organize-TBS_SCL_ver520 Function Completed ====================`r`n" "Blue"
 	
 	# ===================================================================================================
 	#                                 SERVICE: BMS Management
