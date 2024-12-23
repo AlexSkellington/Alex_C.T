@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.8.5"
+$VersionNumber = "1.8.6"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -2319,6 +2319,7 @@ function Create-ScheduledTaskGUI
 #   Executes SQL scripts either from a script content variable or from a SQL file.
 #   If the script content variable is present and not empty, it takes precedence.
 #   Otherwise, it executes the SQL script from the specified file path.
+#   Incorporates enhanced exception handling for ParameterBindingException.
 # ===================================================================================================
 
 function Execute-SQLLocallyGUI
@@ -2398,6 +2399,19 @@ function Execute-SQLLocallyGUI
 		}
 	}
 	
+	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
+	$supportsConnectionString = $false
+	try
+	{
+		$cmd = Get-Command Invoke-Sqlcmd -ErrorAction Stop
+		$supportsConnectionString = $cmd.Parameters.Keys -contains 'ConnectionString'
+	}
+	catch
+	{
+		Write-Log "Invoke-Sqlcmd cmdlet not found: $_" "red"
+		$supportsConnectionString = $false
+	}
+	
 	# Initialize variables to track execution
 	$retryCount = 0
 	$success = $false
@@ -2434,8 +2448,42 @@ function Execute-SQLLocallyGUI
 				# Execute the SQL commands for the current section
 				try
 				{
-					Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+					if ($supportsConnectionString)
+					{
+						Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+					}
+					else
+					{
+						# Parse ServerInstance and Database from ConnectionString
+						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+						Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+					}
 					Write-Log "Section '$sectionName' executed successfully." "green"
+				}
+				catch [System.Management.Automation.ParameterBindingException]
+				{
+					Write-Log "ParameterBindingException encountered while executing section '$sectionName'. Attempting fallback." "yellow"
+					
+					# If using ConnectionString caused a ParameterBindingException, try using ServerInstance and Database
+					try
+					{
+						# Parse ServerInstance and Database from ConnectionString
+						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+						Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+						Write-Log "Section '$sectionName' executed successfully using fallback parameters." "green"
+					}
+					catch
+					{
+						Write-Log "Error executing section '$sectionName' with fallback parameters: $_" "red"
+						$failedSections += $match
+						# Only add failed commands to $failedCommands on the last retry
+						if ($retryCount -eq $MaxRetries - 1)
+						{
+							$failedCommands += "/* $sectionName */`r`n$sqlCommands`r`n"
+						}
+					}
 				}
 				catch
 				{
@@ -2478,10 +2526,17 @@ function Execute-SQLLocallyGUI
 		# Create a string from the failed commands array
 		$failedCommandsText = $failedCommands -join "`r`n"
 		# Write the failed commands to a file
-		[System.IO.File]::WriteAllText($FailedCommandsPath, $failedCommandsText, $utf8NoBOM)
-		Write-Log "`r`nFailed SQL sections written to: $FailedCommandsPath" "yellow"
-		# Remove the archived attribute to ensure it can be processed
-		Set-ItemProperty -Path $FailedCommandsPath -Name Attributes -Value ((Get-Item $FailedCommandsPath).Attributes -band (-bnot [System.IO.FileAttributes]::Archive))
+		try
+		{
+			[System.IO.File]::WriteAllText($FailedCommandsPath, $failedCommandsText, [System.Text.Encoding]::UTF8)
+			Write-Log "`r`nFailed SQL sections written to: $FailedCommandsPath" "yellow"
+			# Remove the archived attribute to ensure it can be processed
+			Set-ItemProperty -Path $FailedCommandsPath -Name Attributes -Value ((Get-Item $FailedCommandsPath).Attributes -band (-bnot [System.IO.FileAttributes]::Archive))
+		}
+		catch
+		{
+			Write-Log "Failed to write failed commands to file: $_" "red"
+		}
 	}
 	else
 	{
@@ -6379,7 +6434,7 @@ function Organize-TBS_SCL_ver520
 		[Parameter(Mandatory = $false)]
 		[string]$OutputCsvPath
 	)
-		
+	
 	Write-Log "`r`n==================== Starting Organize-TBS_SCL_ver520 Function ====================`r`n" "blue"
 	
 	# Access the connection string from the script-scoped variable
@@ -6390,6 +6445,19 @@ function Organize-TBS_SCL_ver520
 	{
 		Write-Log "Connection string not found in `$script:FunctionResults['ConnectionString']`." "red"
 		return
+	}
+	
+	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
+	$supportsConnectionString = $false
+	try
+	{
+		$cmd = Get-Command Invoke-Sqlcmd -ErrorAction Stop
+		$supportsConnectionString = $cmd.Parameters.Keys -contains 'ConnectionString'
+	}
+	catch
+	{
+		Write-Log "Invoke-Sqlcmd cmdlet not found: $_" "red"
+		$supportsConnectionString = $false
 	}
 	
 	# Define the SQL commands:
@@ -6483,58 +6551,187 @@ ORDER BY
     ScaleCode ASC; -- Sort by ScaleCode ascending to have BIZERBA first, then ISHIDA
 "@
 	
-	# Execute the update queries
-	Write-Log "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." "blue"
-	try
-	{
-		Invoke-Sqlcmd -ConnectionString $connectionString -Query $updateQueries
-		Write-Log "Update queries executed successfully." "green"
-	}
-	catch
-	{
-		Write-Log "An error occurred while executing update queries: $_" "red"
-		return
-	}
+	# Initialize variables to track execution
+	$retryCount = 0
+	$MaxRetries = 2
+	$RetryDelaySeconds = 5
+	$success = $false
+	$failedSections = @()
+	$failedCommands = @()
 	
-	# Execute the select query to retrieve organized data
-	Write-Log "Retrieving organized data..." "blue"
-	try
+	while (-not $success -and $retryCount -lt $MaxRetries)
 	{
-		$data = Invoke-Sqlcmd -ConnectionString $connectionString -Query $selectQuery
-		Write-Log "Data retrieval successful." "green"
-	}
-	catch
-	{
-		Write-Log "An error occurred while retrieving data: $_" "red"
-		return
-	}
-	
-	# Check if data was retrieved
-	if (-not $data)
-	{
-		Write-Log "No data retrieved from the table 'TBS_SCL_ver520'." "red"
-		Throw "No data retrieved from the table 'TBS_SCL_ver520'."
-	}
-	
-	# Export the data if an output path is provided
-	if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
-	{
-		Write-Log "Exporting organized data to '$OutputCsvPath'..." "blue"
 		try
 		{
-			$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation
-			Write-Log "Data exported successfully to '$OutputCsvPath'." "green"
+			Write-Log "Starting execution of Organize-TBS_SCL_ver520. Attempt $($retryCount + 1) of $MaxRetries." "blue"
+			
+			# Execute the update queries
+			Write-Log "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." "blue"
+			try
+			{
+				if ($supportsConnectionString)
+				{
+					Invoke-Sqlcmd -ConnectionString $connectionString -Query $updateQueries -ErrorAction Stop
+				}
+				else
+				{
+					# Parse ServerInstance and Database from ConnectionString
+					$server = ($connectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($connectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					
+					if (-not $server -or -not $database)
+					{
+						Write-Log "Invalid ConnectionString. Missing Server or Database information." "red"
+						throw "Invalid ConnectionString. Cannot parse Server or Database."
+					}
+					
+					Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $updateQueries -ErrorAction Stop
+				}
+				Write-Log "Update queries executed successfully." "green"
+			}
+			catch [System.Management.Automation.ParameterBindingException]
+			{
+				Write-Log "ParameterBindingException encountered while executing update queries. Attempting fallback." "yellow"
+				
+				# Attempt to execute using ServerInstance and Database
+				try
+				{
+					# Parse ServerInstance and Database from ConnectionString
+					$server = ($connectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($connectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					
+					if (-not $server -or -not $database)
+					{
+						Write-Log "Invalid ConnectionString for fallback. Missing Server or Database information." "red"
+						throw "Invalid ConnectionString. Cannot parse Server or Database."
+					}
+					
+					Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $updateQueries -ErrorAction Stop
+					Write-Log "Update queries executed successfully using fallback parameters." "green"
+				}
+				catch
+				{
+					Write-Log "Error executing update queries with fallback parameters: $_" "red"
+					throw $_
+				}
+			}
+			catch
+			{
+				Write-Log "An error occurred while executing update queries: $_" "red"
+				throw $_
+			}
+			
+			# Execute the select query to retrieve organized data
+			Write-Log "Retrieving organized data..." "blue"
+			try
+			{
+				if ($supportsConnectionString)
+				{
+					$data = Invoke-Sqlcmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
+				}
+				else
+				{
+					# Parse ServerInstance and Database from ConnectionString
+					$server = ($connectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($connectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					
+					if (-not $server -or -not $database)
+					{
+						Write-Log "Invalid ConnectionString. Missing Server or Database information." "red"
+						throw "Invalid ConnectionString. Cannot parse Server or Database."
+					}
+					
+					$data = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
+				}
+				Write-Log "Data retrieval successful." "green"
+			}
+			catch [System.Management.Automation.ParameterBindingException]
+			{
+				Write-Log "ParameterBindingException encountered while retrieving data. Attempting fallback." "yellow"
+				
+				# Attempt to execute using ServerInstance and Database
+				try
+				{
+					# Parse ServerInstance and Database from ConnectionString
+					$server = ($connectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($connectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					
+					if (-not $server -or -not $database)
+					{
+						Write-Log "Invalid ConnectionString for fallback. Missing Server or Database information." "red"
+						throw "Invalid ConnectionString. Cannot parse Server or Database."
+					}
+					
+					$data = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
+					Write-Log "Data retrieval successful using fallback parameters." "green"
+				}
+				catch
+				{
+					Write-Log "Error retrieving data with fallback parameters: $_" "red"
+					throw $_
+				}
+			}
+			catch
+			{
+				Write-Log "An error occurred while retrieving data: $_" "red"
+				throw $_
+			}
+			
+			# Check if data was retrieved
+			if (-not $data)
+			{
+				Write-Log "No data retrieved from the table 'TBS_SCL_ver520'." "red"
+				throw "No data retrieved from the table 'TBS_SCL_ver520'."
+			}
+			
+			# Export the data if an output path is provided
+			if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
+			{
+				Write-Log "Exporting organized data to '$OutputCsvPath'..." "blue"
+				try
+				{
+					$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation -Encoding UTF8
+					Write-Log "Data exported successfully to '$OutputCsvPath'." "green"
+				}
+				catch
+				{
+					Write-Log "Failed to export data to CSV: $_" "red"
+				}
+			}
+			
+			# Display the organized data
+			Write-Log "Displaying organized data:" "yellow"
+			try
+			{
+				$formattedData = $data | Format-Table -AutoSize | Out-String
+				Write-Log $formattedData "Blue"
+			}
+			catch
+			{
+				Write-Log "Failed to format and display data: $_" "red"
+			}
+			
+			Write-Log "==================== Organize-TBS_SCL_ver520 Function Completed ====================" "blue"
+			$success = $true
 		}
 		catch
 		{
-			Write-Log "Failed to export data to CSV: $_" "red"
+			$retryCount++
+			Write-Log "Error during Organize-TBS_SCL_ver520 execution: $_" "red"
+			
+			if ($retryCount -lt $MaxRetries)
+			{
+				Write-Log "Retrying execution in $RetryDelaySeconds seconds..." "yellow"
+				Start-Sleep -Seconds $RetryDelaySeconds
+			}
 		}
 	}
 	
-	# Display the organized data
-	Write-Log "Displaying organized data:" "yellow"
-	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log $_ "Blue" }
-	Write-Log "==================== Organize-TBS_SCL_ver520 Function Completed ====================" "blue"
+	if (-not $success)
+	{
+		Write-Log "Maximum retry attempts reached. Organize-TBS_SCL_ver520 function failed." "red"
+		# Optionally, you can handle further actions like sending notifications or logging to a file
+	}
 }
 
 # ===================================================================================================
