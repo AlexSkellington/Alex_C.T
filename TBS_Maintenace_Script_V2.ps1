@@ -6983,9 +6983,9 @@ function Write-SQLScriptsToDesktop
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $true, HelpMessage = "Content of the LaneSQL script without @dbEXEC commands and timeout settings.")]
-		[string]$LaneSQL,
+		[string]$script:LaneSQLFiltered,
 		[Parameter(Mandatory = $true, HelpMessage = "Content of the ServerSQL script.")]
-		[string]$ServerSQL,
+		[string]$script:ServerSQLScript,
 		[Parameter(Mandatory = $false, HelpMessage = "Filename for the LaneSQL script.")]
 		[string]$LaneFilename = "Lane_Database_Maintenance.sqi",
 		[Parameter(Mandatory = $false, HelpMessage = "Filename for the ServerSQL script.")]
@@ -7002,7 +7002,7 @@ function Write-SQLScriptsToDesktop
 		$serverFilePath = Join-Path -Path $desktopPath -ChildPath $ServerFilename
 		
 		# Write the LaneSQL script to the Desktop
-		[System.IO.File]::WriteAllText($laneFilePath, $LaneSQL, [System.Text.Encoding]::UTF8)
+		[System.IO.File]::WriteAllText($laneFilePath, $script:LaneSQLFiltered, [System.Text.Encoding]::UTF8)
 		Write-Log "Lane SQL script successfully written to:`n$laneFilePath" -ForegroundColor Green
 	}
 	catch
@@ -7013,7 +7013,7 @@ function Write-SQLScriptsToDesktop
 	try
 	{
 		# Write the ServerSQL script to the Desktop
-		[System.IO.File]::WriteAllText($serverFilePath, $ServerSQL, [System.Text.Encoding]::UTF8)
+		[System.IO.File]::WriteAllText($serverFilePath, $script:ServerSQLScript, [System.Text.Encoding]::UTF8)
 		Write-Log "Server SQL script successfully written to:`n$serverFilePath" -ForegroundColor Green
 	}
 	catch
