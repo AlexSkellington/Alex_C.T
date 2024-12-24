@@ -4056,7 +4056,7 @@ function Pump-AllItems
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
-	
+		
 	Write-Log "`r`n==================== Starting Pump-AllItems Function ====================`r`n" "blue"
 	
 	if (-not (Test-Path $OfficePath))
@@ -4106,7 +4106,7 @@ function Pump-AllItems
 		}
 	}
 	
-	# Access the table and alias information from the script-scoped hash table
+	# Access alias data (tables/aliases) from the script-scoped hashtable
 	if ($script:FunctionResults.ContainsKey('Get-TableAliases'))
 	{
 		$aliasData = $script:FunctionResults['Get-TableAliases']
@@ -4125,7 +4125,7 @@ function Pump-AllItems
 		return
 	}
 	
-	# Use the locally stored connection string
+	# Retrieve the connection string
 	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
 	{
 		Write-Log "Connection string not found in script variables. Cannot proceed with Pump-AllItems." "red"
@@ -4138,24 +4138,25 @@ function Pump-AllItems
 	$sqlConnection.ConnectionString = $ConnectionString
 	$sqlConnection.Open()
 	
-	# Process each alias entry sequentially
-	$generatedFiles = @() # List to keep track of all generated files
-	$copiedTables = @() # List to keep track of processed tables
-	$skippedTables = @() # List to keep track of skipped tables
+	$generatedFiles = @() # All generated .sql files
+	$copiedTables = @() # Tables actually processed
+	$skippedTables = @() # Tables skipped (no data)
 	
+	# --------------------------------------------------------------------------------------------
+	# Loop through each table alias entry
+	# --------------------------------------------------------------------------------------------
 	foreach ($aliasEntry in $aliasResults)
 	{
-		$table = $aliasEntry.Table # Full table name with _TAB
-		$tableAlias = $aliasEntry.Alias
+		$table = $aliasEntry.Table # e.g. "ABC_TAB"
+		$tableAlias = $aliasEntry.Alias # e.g. "ABC"
 		
-		# Proceed only if both table and alias are present
 		if (-not $table -or -not $tableAlias)
 		{
 			Write-Log "Invalid table or alias for entry: $($aliasEntry | ConvertTo-Json)" "yellow"
 			continue
 		}
 		
-		# Check if the table has any rows
+		# Check if this table has any rows
 		$dataCheckQuery = "SELECT COUNT(*) FROM [$table]"
 		$cmdCheck = $sqlConnection.CreateCommand()
 		$cmdCheck.CommandText = $dataCheckQuery
@@ -4172,22 +4173,21 @@ function Pump-AllItems
 		
 		if ($rowCount -eq 0)
 		{
-			# Add to skipped tables
+			# No data => skip
 			$skippedTables += $table
 			continue
 		}
 		
-		# === Added Write-Log for Processing Table ===
 		Write-Log "Processing table '$table'..." "blue"
 		
-		# Remove the _TAB suffix from the table name for view name construction
+		# Remove "_TAB" from table name to form a base name
 		$baseTable = $table -replace '_TAB$', ''
 		
-		# Define file name for individual table
+		# Local file name for the table
 		$sqlFileName = "${baseTable}_Load.sql"
 		$localTempPath = Join-Path -Path $env:TEMP -ChildPath $sqlFileName
 		
-		# Check if the SQL file already exists and is recent (within an hour)
+		# Check if an existing file is fresh (within the last hour)
 		$useExistingFile = $false
 		if (Test-Path $localTempPath)
 		{
@@ -4196,24 +4196,25 @@ function Pump-AllItems
 			if ($fileAge.TotalHours -le 1)
 			{
 				$useExistingFile = $true
-				Write-Log "Existing SQL file found for table '$table' in %TEMP% and is within an hour. Reusing the file." "green"
+				Write-Log "Existing SQL file found for table '$table' in %TEMP% and is within an hour. Reusing it." "green"
 			}
 			else
 			{
-				Write-Log "Existing SQL file for table '$table' in %TEMP% is older than an hour. Regenerating the file." "yellow"
+				Write-Log "Existing SQL file for table '$table' is older than an hour. Will regenerate it." "yellow"
 			}
 		}
 		
 		if (-not $useExistingFile)
 		{
-			# Write-Log "Generating _Load.sql batch files in %TEMP%, this might take a while, please wait..." "blue"
 			try
 			{
-				# Initialize StreamWriter with UTF8 encoding without BOM and set NewLine to CRLF
-				$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $utf8NoBOM)
-				$streamWriter.NewLine = "`r`n" # Ensure CRLF line endings
+				# ----------------------------------------------------------------------------------------
+				# Create a StreamWriter in ANSI (Windows-1252), set line endings to CRLF
+				# ----------------------------------------------------------------------------------------
+				$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $ansiPcEncoding)
+				$streamWriter.NewLine = "`r`n" # Force CRLF line endings
 				
-				# Retrieve column data types using an ordered hashtable
+				# Retrieve column data types
 				$columnDataTypesQuery = @"
 SELECT COLUMN_NAME, DATA_TYPE
 FROM INFORMATION_SCHEMA.COLUMNS
@@ -4223,6 +4224,7 @@ ORDER BY ORDINAL_POSITION
 				$cmdColumnTypes = $sqlConnection.CreateCommand()
 				$cmdColumnTypes.CommandText = $columnDataTypesQuery
 				$readerColumnTypes = $cmdColumnTypes.ExecuteReader()
+				
 				$columnDataTypes = [ordered]@{ }
 				while ($readerColumnTypes.Read())
 				{
@@ -4254,11 +4256,12 @@ ORDER BY c.ORDINAL_POSITION
 				
 				if ($pkColumns.Count -eq 0)
 				{
-					# If no primary key found, default to first column
+					# If no PK, default to first column
 					$primaryKeyColumns = @()
 					$cmdFirstColumn = $sqlConnection.CreateCommand()
 					$cmdFirstColumn.CommandText = "SELECT TOP 1 * FROM [$table]"
 					$readerFirstColumn = $cmdFirstColumn.ExecuteReader()
+					
 					if ($readerFirstColumn.Read())
 					{
 						$primaryKeyColumns = @($readerFirstColumn.GetName(0))
@@ -4270,22 +4273,21 @@ ORDER BY c.ORDINAL_POSITION
 					$primaryKeyColumns = $pkColumns
 				}
 				
-				# Build the key string for @UPDATE_BATCH using 'AND'
+				# Build the key string for @UPDATE_BATCH
 				$keyString = ($primaryKeyColumns | ForEach-Object { "$_=:$_" }) -join ' AND '
 				
-				# Generate the header for the SQL batch file
+				# View name and column list
 				$viewName = $baseTable.Substring(0, 1).ToUpper() + $baseTable.Substring(1).ToLower() + '_Load'
 				$columnList = ($columnDataTypes.Keys) -join ','
 				
+				# Write header
 				$header = "@CREATE($table,$tableAlias);
 CREATE VIEW $viewName AS SELECT $columnList FROM $table;
 
-INSERT INTO $viewName VALUES`r`n"
+INSERT INTO $viewName VALUES"
+				$streamWriter.WriteLine($header)
 				
-				# Write header to the file
-				$streamWriter.Write($header)
-				
-				# Initialize SqlCommand and SqlDataReader for data retrieval
+				# Retrieve the data
 				$dataQuery = "SELECT * FROM [$table]"
 				$cmdData = $sqlConnection.CreateCommand()
 				$cmdData.CommandText = $dataQuery
@@ -4300,11 +4302,11 @@ INSERT INTO $viewName VALUES`r`n"
 					}
 					else
 					{
-						# Prepend a comma and CRLF for subsequent rows
-						$streamWriter.Write(",`r`n")
+						# For subsequent rows, write comma + newline
+						$streamWriter.WriteLine(",")
 					}
 					
-					# Prepare values for SQL INSERT
+					# Gather values
 					$values = @()
 					foreach ($column in $columnDataTypes.Keys)
 					{
@@ -4313,81 +4315,77 @@ INSERT INTO $viewName VALUES`r`n"
 						
 						if ($value -eq $null -or $value -is [System.DBNull])
 						{
-							$values += "" # Use empty for database nulls as per your example
+							$values += ""
 						}
 						elseif ($dataType -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext'))
 						{
-							# String data types, enclose in single quotes and escape single quotes
+							# String => single quote + escape internal quotes
 							$escapedValue = $value.ToString().Replace("'", "''")
 							$values += "'$escapedValue'"
 						}
 						elseif ($dataType -in @('datetime', 'smalldatetime', 'date', 'datetime2'))
 						{
-							# Date/time data types with original calculation
-							$dayOfYear = $value.DayOfYear.ToString("D3") # Day of year with leading zeros
+							# Date => "YEAR + day-of-year + HH:mm:ss"
+							$dayOfYear = $value.DayOfYear.ToString("D3")
 							$formattedDate = "'{0}{1} {2}'" -f $value.Year, $dayOfYear, $value.ToString("HH:mm:ss")
 							$values += $formattedDate
 						}
-						elseif ($dataType -in @('bit'))
+						elseif ($dataType -eq 'bit')
 						{
-							# Boolean data types
+							# Boolean => 0 or 1
 							$bitValue = if ($value) { "1" }
 							else { "0" }
 							$values += $bitValue
 						}
 						elseif ($dataType -in @('decimal', 'numeric', 'float', 'real', 'money', 'smallmoney'))
 						{
-							# Numeric data types with potential decimals
+							# Numeric => 0 or 0.00
 							if ([math]::Floor($value) -eq $value)
 							{
-								# Integer, output as is
 								$values += $value.ToString()
 							}
 							else
 							{
-								# Decimal, format to two decimal places
 								$values += $value.ToString("0.00")
 							}
 						}
 						elseif ($dataType -in @('tinyint', 'smallint', 'int', 'bigint'))
 						{
-							# Integer data types
+							# Integer
 							$values += $value.ToString()
 						}
 						else
 						{
-							# Default to treating as string
+							# Default => treat as string
 							$escapedValue = $value.ToString().Replace("'", "''")
 							$values += "'$escapedValue'"
 						}
 					}
 					
-					# Combine values into an INSERT statement
+					# Write row as (value,value,...)
 					$insertStatement = "(" + ($values -join ',') + ")"
 					$streamWriter.Write($insertStatement)
 				}
 				
-				# Close the data reader
 				$readerData.Close()
 				
-				# Finish the INSERT statement with a semicolon
-				$streamWriter.Write(";`r`n`r`n")
+				# End the INSERT block
+				$streamWriter.WriteLine(";")
+				$streamWriter.WriteLine()
 				
-				# Generate the footer for the SQL batch file
+				# Footer
 				$footer = "@UPDATE_BATCH(JOB=ADD,TAR=$table,
 KEY=$keyString,
 SRC=SELECT * FROM $viewName);
 
-DROP TABLE $viewName;`r`n`r`n"
+DROP TABLE $viewName;"
+				$streamWriter.WriteLine($footer)
+				$streamWriter.WriteLine()
 				
-				# Write footer to the file
-				$streamWriter.Write($footer)
-				
-				# Close the StreamWriter
+				# Close StreamWriter
 				$streamWriter.Close()
 				$streamWriter.Dispose()
 				
-				# Write-Log "Successfully generated SQL file: $sqlFileName" "green"
 				$generatedFiles += $localTempPath
 				$copiedTables += $table
 			}
@@ -4399,14 +4397,16 @@ DROP TABLE $viewName;`r`n`r`n"
 		}
 		else
 		{
+			# File re-used from %TEMP%
 			$generatedFiles += $localTempPath
 			$copiedTables += $table
 		}
 	}
 	
-	# Close the SQL connection
+	# Close SQL connection
 	$sqlConnection.Close()
 	
+	# Summaries
 	if ($copiedTables.Count -gt 0)
 	{
 		Write-Log "Successfully generated _Load.sql files with tables: $($copiedTables -join ', ')" "green"
@@ -4416,7 +4416,7 @@ DROP TABLE $viewName;`r`n`r`n"
 		Write-Log "The following tables were skipped since they had no data: $($skippedTables -join ', ')" "yellow"
 	}
 	
-	# Now copy all generated files to each selected lane
+	# Copy generated .sql files to selected lanes
 	Write-Log "`r`nDetermining selected lanes...`r`n" "magenta"
 	$ProcessedLanes = @()
 	foreach ($lane in $Lanes)
@@ -4428,7 +4428,6 @@ DROP TABLE $viewName;`r`n`r`n"
 			Write-Log "Copying _Load.sql files to Lane #$lane..." "blue"
 			try
 			{
-				# Copy all generated SQL files to the destination lane
 				foreach ($filePath in $generatedFiles)
 				{
 					$fileName = [System.IO.Path]::GetFileName($filePath)
