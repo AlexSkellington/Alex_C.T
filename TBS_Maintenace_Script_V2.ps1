@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.8.8"
+$VersionNumber = "1.8.9"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1773,6 +1773,41 @@ ALTER DATABASE LANESQL SET RECOVERY FULL
 	
 	# Store the LaneSQLScript in the script scope
 	$script:LaneSQLScript = $LaneSQLScript
+	
+	# -------------------------------
+	# Create a filtered version of LaneSQL by skipping sections using regex
+	# -------------------------------
+	
+	# Define the regex pattern to match sections
+	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
+	
+	# Define the names of the sections to skip
+	$sectionsToSkip = @(
+		'Set a long timeout so the entire script runs',
+		'Delete bad SMS items',
+		'Clear the long database timeout'
+	)
+	
+	# Initialize the filtered script
+	$LaneSQLFiltered = ""
+	
+	# Use regex to parse the script into sections
+	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
+	
+	foreach ($match in $matches)
+	{
+		$sectionName = $match.Groups['SectionName'].Value.Trim()
+		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
+		
+		if (-not ($sectionsToSkip -contains $sectionName))
+		{
+			# Append the section to the filtered script
+			$LaneSQLFiltered += "/* $sectionName */`n$sqlCommands`n`n"
+		}
+	}
+	
+	# Store the filtered LaneSQL script in the script scope for later use
+	$script:LaneSQLFiltered = $LaneSQLFiltered
 	
 	# Optionally write to file as fallback
 	if ($LanesqlFilePath)
@@ -6915,6 +6950,79 @@ function Repair-BMS
 }
 
 # ===================================================================================================
+#                                         FUNCTION: Write-SQLScriptsToDesktop
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Writes the provided LaneSQL and ServerSQL scripts to the user's Desktop with specified filenames.
+#   This function ensures that the scripts are saved with UTF-8 encoding and includes error handling
+#   to manage any issues that may arise during the file writing process.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   -LaneSQL (Mandatory)
+#       The content of the LaneSQL script without @dbEXEC commands and timeout settings.
+#
+#   -ServerSQL (Mandatory)
+#       The content of the ServerSQL script.
+#
+#   -LaneFilename (Optional)
+#       The filename for the LaneSQL script. Defaults to "Lane_Database_Maintenance.sqi".
+#
+#   -ServerFilename (Optional)
+#       The filename for the ServerSQL script. Defaults to "Server_Database_Maintenance.sqi".
+# ---------------------------------------------------------------------------------------------------
+# Usage Example:
+#   Write-SQLScriptsToDesktop -LaneSQL $LaneSQLNoDbExecAndTimeout -ServerSQL $script:ServerSQLScript
+#
+# Prerequisites:
+#   - Ensure that the SQL script contents are correctly generated and stored in the provided variables.
+#   - Verify that the user has write permissions to the Desktop directory.
+# ===================================================================================================
+
+function Write-SQLScriptsToDesktop
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true, HelpMessage = "Content of the LaneSQL script without @dbEXEC commands and timeout settings.")]
+		[string]$LaneSQL,
+		[Parameter(Mandatory = $true, HelpMessage = "Content of the ServerSQL script.")]
+		[string]$ServerSQL,
+		[Parameter(Mandatory = $false, HelpMessage = "Filename for the LaneSQL script.")]
+		[string]$LaneFilename = "Lane_Database_Maintenance.sqi",
+		[Parameter(Mandatory = $false, HelpMessage = "Filename for the ServerSQL script.")]
+		[string]$ServerFilename = "Server_Database_Maintenance.sqi"
+	)
+	
+	try
+	{
+		# Get the path to the user's Desktop
+		$desktopPath = [Environment]::GetFolderPath("Desktop")
+		
+		# Define full file paths
+		$laneFilePath = Join-Path -Path $desktopPath -ChildPath $LaneFilename
+		$serverFilePath = Join-Path -Path $desktopPath -ChildPath $ServerFilename
+		
+		# Write the LaneSQL script to the Desktop
+		[System.IO.File]::WriteAllText($laneFilePath, $LaneSQL, [System.Text.Encoding]::UTF8)
+		Write-Log "Lane SQL script successfully written to:`n$laneFilePath" -ForegroundColor Green
+	}
+	catch
+	{
+		Write-Log "Error writing Lane SQL script to Desktop:`n$_" -ForegroundColor Red
+	}
+	
+	try
+	{
+		# Write the ServerSQL script to the Desktop
+		[System.IO.File]::WriteAllText($serverFilePath, $ServerSQL, [System.Text.Encoding]::UTF8)
+		Write-Log "Server SQL script successfully written to:`n$serverFilePath" -ForegroundColor Green
+	}
+	catch
+	{
+		Write-Log "Error writing Server SQL script to Desktop:`n$_" -ForegroundColor Red
+	}
+}
+
+# ===================================================================================================
 #                                       FUNCTION: Show-SelectionDialog
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -7406,6 +7514,16 @@ if (-not $SilentMode)
 				Repair-BMS
 			})
 		$form.Controls.Add($RepairBMSButton)
+		
+		# Repair BMS Service
+		$ManualRepairButton = New-Object System.Windows.Forms.Button
+		$ManualRepairButton.Text = "Manual Repair"
+		$ManualRepairButton.Location = New-Object System.Drawing.Point(695, 30)
+		$ManualRepairButton.Size = New-Object System.Drawing.Size(150, 30)
+		$ManualRepairButton.add_Click({
+				Write-SQLScriptsToDesktop
+			})
+		$form.Controls.Add($ManualRepairButton)
 		
 		################################################## Labels #######################################################
 		
