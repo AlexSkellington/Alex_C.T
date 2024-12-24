@@ -6983,9 +6983,9 @@ function Write-SQLScriptsToDesktop
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $true, HelpMessage = "Content of the LaneSQL script without @dbEXEC commands and timeout settings.")]
-		[string]$script:LaneSQLFiltered,
+		[string]$LaneSQL,
 		[Parameter(Mandatory = $true, HelpMessage = "Content of the ServerSQL script.")]
-		[string]$script:ServerSQLScript,
+		[string]$ServerSQL,
 		[Parameter(Mandatory = $false, HelpMessage = "Filename for the LaneSQL script.")]
 		[string]$LaneFilename = "Lane_Database_Maintenance.sqi",
 		[Parameter(Mandatory = $false, HelpMessage = "Filename for the ServerSQL script.")]
@@ -7002,7 +7002,7 @@ function Write-SQLScriptsToDesktop
 		$serverFilePath = Join-Path -Path $desktopPath -ChildPath $ServerFilename
 		
 		# Write the LaneSQL script to the Desktop
-		[System.IO.File]::WriteAllText($laneFilePath, $script:LaneSQLFiltered, [System.Text.Encoding]::UTF8)
+		[System.IO.File]::WriteAllText($laneFilePath, $LaneSQL, [System.Text.Encoding]::UTF8)
 		Write-Log "Lane SQL script successfully written to:`n$laneFilePath" -ForegroundColor Green
 	}
 	catch
@@ -7013,7 +7013,7 @@ function Write-SQLScriptsToDesktop
 	try
 	{
 		# Write the ServerSQL script to the Desktop
-		[System.IO.File]::WriteAllText($serverFilePath, $script:ServerSQLScript, [System.Text.Encoding]::UTF8)
+		[System.IO.File]::WriteAllText($serverFilePath, $ServerSQL, [System.Text.Encoding]::UTF8)
 		Write-Log "Server SQL script successfully written to:`n$serverFilePath" -ForegroundColor Green
 	}
 	catch
@@ -7521,7 +7521,7 @@ if (-not $SilentMode)
 		$ManualRepairButton.Location = New-Object System.Drawing.Point(695, 30)
 		$ManualRepairButton.Size = New-Object System.Drawing.Size(150, 30)
 		$ManualRepairButton.add_Click({
-				Write-SQLScriptsToDesktop
+				Write-SQLScriptsToDesktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
 			})
 		$form.Controls.Add($ManualRepairButton)
 		
