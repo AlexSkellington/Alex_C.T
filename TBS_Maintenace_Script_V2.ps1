@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.8.7"
+$VersionNumber = "1.8.8"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -4298,11 +4298,15 @@ ORDER BY c.ORDINAL_POSITION
 				
 				# Header (normalize any line breaks to CRLF)
 				$header = @"
+/* Set a long timeout so the entire script runs */
+@WIZRPL(DBASE_TIMEOUT=E);
+
 @CREATE($table,$tableAlias);
 CREATE VIEW $viewName AS SELECT $columnList FROM $table;
 
 INSERT INTO $viewName VALUES
 "@
+				# Normalize line endings to CRLF
 				$header = $header -replace "(\r\n|\n|\r)", "`r`n"
 				$streamWriter.WriteLine($header.TrimEnd()) # .WriteLine() uses CRLF from NewLine
 				
@@ -4410,6 +4414,9 @@ KEY=$keyString,
 SRC=SELECT * FROM $viewName);
 
 DROP TABLE $viewName;
+
+/* Clear the long database timeout */
+@WIZCLR(DBASE_TIMEOUT);
 "@
 				$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
 				$streamWriter.WriteLine($footer.TrimEnd())
