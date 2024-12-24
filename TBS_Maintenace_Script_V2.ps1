@@ -3674,13 +3674,19 @@ function Repair-Windows
 # Description:
 #   Processes SQL load files in the \\localhost\storeman\office\Load directory.
 #   For each XF lane folder corresponding to the specified StoreNumber and selected Lanes,
-#   it filters the SQL files to include only the records pertinent to that store and lane,
-#   copies the modified files to the corresponding lane directory as .sql files with ANSI (Windows-1252) encoding,
-#   copies the run_load.sql script exactly as provided,
-#   generates and copies a customized lnk_load.sql script containing only records for that lane,
-#   generates and copies a customized sto_load.sql script containing only records for that lane,
-#   and generates and copies a customized ter_load.sql script containing only records for that lane and store,
-#   including a standard '901' record.
+#   it copies and/or generates lane-specific .sql files strictly in ANSI (Windows-1252) encoding
+#   with CRLF line endings.
+#
+#   The created files are:
+#       - run_load.sql (copied as-is from the script below)
+#       - lnk_load.sql (dynamically generated)
+#       - sto_load.sql (dynamically generated)
+#       - ter_load.sql (dynamically generated)
+#
+#   All files are written with:
+#       - Windows-1252 encoding
+#       - CRLF line endings
+#       - No BOM
 # ===================================================================================================
 
 function Update-LaneFiles
@@ -3689,16 +3695,17 @@ function Update-LaneFiles
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
-		
+	
 	Write-Log "`r`n==================== Starting Update-LaneFiles Function ====================" "blue"
 	
+	# Ensure $LoadPath exists
 	if (-not (Test-Path $LoadPath))
 	{
 		Write-Log "`r`nLoad Base Path not found: $LoadPath" "yellow"
 		return
 	}
 	
-	# Get the user's selection
+	# Get the user's lane selection
 	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
 	
 	if ($selection -eq $null)
@@ -3722,12 +3729,10 @@ function Update-LaneFiles
 	{
 		try
 		{
-			#  Write-Log "User selected 'All Lanes'. Retrieving LaneContents..." "blue"
 			$LaneContents = $script:FunctionResults['LaneContents']
 			
 			if ($LaneContents -and $LaneContents.Count -gt 0)
 			{
-				#  Write-Log "Successfully retrieved LaneContents. Processing all lanes." "green"
 				$Lanes = $LaneContents
 			}
 			else
@@ -3739,11 +3744,13 @@ function Update-LaneFiles
 		{
 			Write-Log "Failed to retrieve LaneContents: $_. Falling back to user-selected lanes." "yellow"
 			$processAllLanes = $false
-			# Optionally, you can retain $Lanes as is or set to an empty array
 		}
 	}
 	
-	# Define the run_load script content as a here-string (exactly as provided)
+	# --------------------------------------------------------------------------------------------
+	# Define the run_load, lnk_load, sto_load, and ter_load script parts
+	# --------------------------------------------------------------------------------------------
+	
 	$runLoadScript = @"
 @CREATE(RUN_TAB,RUN);
 CREATE VIEW Run_Load AS SELECT F1102,F1000,F1103,F1104,F1105,F1106,F1107,F1108,F1109,F1110,F1111,F1112,F1113,F1114,F1115,F1116,F1117 FROM RUN_TAB;
@@ -3766,7 +3773,6 @@ SRC=SELECT * FROM Run_Load);
 DROP TABLE Run_Load;
 "@
 	
-	# Define the lnk_load script header and footer
 	$lnkLoadHeader = @"
 @CREATE(LNK_TAB,LNK);
 CREATE VIEW Lnk_Load AS SELECT F1000,F1056,F1057 FROM LNK_TAB;
@@ -3783,7 +3789,6 @@ SRC=SELECT * FROM Lnk_Load);
 DROP TABLE Lnk_Load;
 "@
 	
-	# Define the sto_load script header and footer
 	$stoLoadHeader = @"
 @CREATE(STO_TAB,STO);
 CREATE VIEW Sto_Load AS SELECT F1000,F1018,F1180,F1181,F1182,F1937,F1965,F1966,F2691 FROM STO_TAB;
@@ -3800,7 +3805,6 @@ SRC=SELECT * FROM Sto_Load);
 DROP TABLE Sto_Load;
 "@
 	
-	# Define the ter_load script header and footer
 	$terLoadHeader = @"
 @CREATE(TER_TAB,TER); 
 CREATE VIEW Ter_Load AS SELECT F1056,F1057,F1058,F1125,F1169 FROM TER_TAB;
@@ -3817,21 +3821,17 @@ SRC=SELECT * FROM Ter_Load);
 DROP TABLE Ter_Load;
 "@
 	
-	# Define the script filenames with .sql extension
+	# Script filenames
 	$runLoadFilename = "run_load.sql"
 	$lnkLoadFilename = "lnk_load.sql"
 	$stoLoadFilename = "sto_load.sql"
 	$terLoadFilename = "ter_load.sql"
 	
-	# If you need to process other .sql files in the load directory,
-	# you could do it here. (Currently commented out in your snippet.)
-	# $excludedFiles = @("run_load.sql", "lnk_load.sql", "sto_load.sql", "ter_load.sql")
-	# $loadFiles = Get-ChildItem -Path $LoadPath -File -Filter "*.sql" | 
-	#              Where-Object { $_.Name -notin $excludedFiles }
-	
+	# --------------------------------------------------------------------------------------------
+	# Loop each selected Lane
+	# --------------------------------------------------------------------------------------------
 	foreach ($laneNumber in $Lanes)
 	{
-		# Construct the lane folder name
 		$laneFolderName = "XF${StoreNumber}${laneNumber}"
 		$laneFolderPath = Join-Path -Path $OfficePath -ChildPath $laneFolderName
 		
@@ -3842,18 +3842,15 @@ DROP TABLE Ter_Load;
 		}
 		
 		$laneFolder = Get-Item -Path $laneFolderPath
-		
 		Write-Log "`r`nProcessing Lane #$laneNumber" "blue"
 		
-		# Initialize a list to hold action summaries for the current lane
 		$actionSummaries = @()
 		
-		# ======= Determine Machine Name from LaneMachines =======
+		# Determine Machine Name from LaneMachines
 		try
 		{
 			Write-Log "Determining machine name for Lane #$laneNumber..." "blue"
 			
-			# Retrieve the machine name from the LaneMachines hashtable
 			$MachineName = $script:FunctionResults['LaneMachines'][$laneNumber]
 			
 			if ($MachineName)
@@ -3872,75 +3869,72 @@ DROP TABLE Ter_Load;
 			$MachineName = "POS${laneNumber}"
 		}
 		
-		# --------------------------------------------------------------------------------------------
-		# EXAMPLE of processing arbitrary .sql files to filter by store & lane:
-		# (Currently commented out in your snippet-uncomment if/when needed.)
-		# --------------------------------------------------------------------------------------------
-        <#
-        foreach ($file in $loadFiles) 
-        {
-            Write-Log "Processing file '$($file.Name)' for Lane #$laneNumber..." "blue"
-            
-            # Read the original file content
-            try 
-            {
-                $originalContent = Get-Content -Path $file.FullName -ErrorAction Stop
-                Write-Log "Successfully read '$($file.Name)'." "green"
-            }
-            catch 
-            {
-                Write-Log "Failed to read '$($file.Name)'. Error: $_" "red"
-                $actionSummaries += "Failed to read $($file.Name)"
-                continue
-            }
-            
-            # Filter content to include only records matching the current StoreNumber and LaneNumber
-            $filteredContent = $originalContent | Where-Object { 
-                $_ -match "^\s*\(\s*'[^']+'\s*,\s*'$StoreNumber'\s*,\s*'$laneNumber'\s*\)\s*[;,]?$"
-            }
-            
-            if ($filteredContent) 
-            {
-                # Construct the destination path with .sql extension
-                $destinationPath = Join-Path -Path $laneFolder.FullName -ChildPath ($file.BaseName + ".sql")
-            
-                try 
-                {
-                    # Write the filtered content to the lane-specific .sql file using ANSI PC
-                    [System.IO.File]::WriteAllText($destinationPath, ($filteredContent -join "`r`n"), $ansiPcEncoding)
-            
-                    # Set the archive bit on the copied file
-                    $fileItem = Get-Item -Path $destinationPath
-                    $fileItem.Attributes = $fileItem.Attributes -bor [System.IO.FileAttributes]::Archive
-            
-                    Write-Log "Successfully copied to '$destinationPath'." "green"
-                    $actionSummaries += "Copied $($file.Name)"
-                }
-                catch 
-                {
-                    Write-Log "Failed to copy '$($file.Name)' to '$destinationPath'. Error: $_" "red"
-                    $actionSummaries += "Failed to copy $($file.Name)"
-                }
-            }
-            else 
-            {
-                Write-Log "No matching records found in '$($file.Name)' for Lane #$laneNumber." "yellow"
-            }
-        }
-        #>
+	<# 
+		# Process each load SQL file (currently commented out; uncomment if needed)
+		foreach ($file in $loadFiles) 
+		{
+		    Write-Log "Processing file '$($file.Name)' for Lane #$laneNumber..." "blue"
+		    
+		    # Read the original file content
+		    try 
+		    {
+		        $originalContent = Get-Content -Path $file.FullName -ErrorAction Stop
+		        Write-Log "Successfully read '$($file.Name)'." "green"
+		    }
+		    catch 
+		    {
+		        Write-Log "Failed to read '$($file.Name)'. Error: $_" "red"
+		        $actionSummaries += "Failed to read $($file.Name)"
+		        continue
+		    }
+		    
+		    # Filter content to include only records matching the current StoreNumber and LaneNumber
+		    $filteredContent = $originalContent | Where-Object { 
+		        $_ -match "^\s*\(\s*'[^']+'\s*,\s*'$StoreNumber'\s*,\s*'$laneNumber'\s*\)\s*[;,]?$"
+		    }
+		    
+		    if ($filteredContent) 
+		    {
+		        # Construct the destination path with .sql extension
+		        $destinationPath = Join-Path -Path $laneFolder.FullName -ChildPath ($file.BaseName + ".sql")
+		    
+		        try 
+		        {
+		            # Write the filtered content to the lane-specific .sql file using UTF8 without BOM
+		            [System.IO.File]::WriteAllText($destinationPath, ($filteredContent -join "`r`n"), $utf8NoBOM)
+		    
+		            # Set the archive bit on the copied file
+		            $fileItem = Get-Item -Path $destinationPath
+		            $fileItem.Attributes = $fileItem.Attributes -bor [System.IO.FileAttributes]::Archive
+		    
+		            Write-Log "Successfully copied to '$destinationPath'." "green"
+		            $actionSummaries += "Copied $($file.Name)"
+		        }
+		        catch 
+		        {
+		            Write-Log "Failed to copy '$($file.Name)' to '$destinationPath'. Error: $_" "red"
+		            $actionSummaries += "Failed to copy $($file.Name)"
+		        }
+		    }
+		    else 
+		    {
+		        Write-Log "No matching records found in '$($file.Name)' for Lane #$laneNumber." "yellow"
+		    }
+		}
+	#>
 		
-		# Handle the run_load script
+		# --------------------------------------------------------------------------------------------
+		# run_load.sql
+		# --------------------------------------------------------------------------------------------
 		try
 		{
-			# Define the destination path for run_load script with .sql extension
+			# Replace line endings with CRLF before writing
+			$runLoadScriptCRLF = $runLoadScript -replace "`r?`n", "`r`n"
+			
 			$runLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $runLoadFilename
+			[System.IO.File]::WriteAllText($runLoadDestinationPath, $runLoadScriptCRLF, $ansiPcEncoding)
 			
-			# Write the run_load script exactly as provided to the lane folder (ANSI PC)
-			[System.IO.File]::WriteAllText($runLoadDestinationPath, $runLoadScript, $ansiPcEncoding)
-			
-			# Set file attributes if necessary
 			Set-ItemProperty -Path $runLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			
 			$actionSummaries += "Copied run_load.sql"
 		}
 		catch
@@ -3948,30 +3942,28 @@ DROP TABLE Ter_Load;
 			$actionSummaries += "Failed to copy run_load.sql"
 		}
 		
-		# Handle the lnk_load script
+		# --------------------------------------------------------------------------------------------
+		# lnk_load.sql
+		# --------------------------------------------------------------------------------------------
 		try
 		{
-			# Define the destination path for lnk_load script with .sql extension
-			$lnkLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $lnkLoadFilename
-			
-			# Generate the INSERT statements specific to this lane and store, incorporating the machine name
 			$lnkLoadInsertStatements = @(
 				"('${laneNumber}','${StoreNumber}','${laneNumber}'),",
 				"('DSM','${StoreNumber}','${laneNumber}'),",
 				"('PAL','${StoreNumber}','${laneNumber}'),",
 				"('RAL','${StoreNumber}','${laneNumber}'),",
-				"('XAL','${StoreNumber}','${laneNumber}');" # Semicolon to end the INSERT statement
+				"('XAL','${StoreNumber}','${laneNumber}');"
 			)
 			
-			# Combine the header, INSERT statements, and footer with a blank line before the footer
 			$completeLnkLoadScript = $lnkLoadHeader + "`r`n" + ($lnkLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $lnkLoadFooter.TrimStart() + "`r`n"
 			
-			# Write the customized lnk_load script to the lane folder (ANSI PC)
-			[System.IO.File]::WriteAllText($lnkLoadDestinationPath, $completeLnkLoadScript, $ansiPcEncoding)
+			# Replace line endings with CRLF before writing
+			$completeLnkLoadScriptCRLF = $completeLnkLoadScript -replace "`r?`n", "`r`n"
 			
-			# Set file attributes if necessary
+			$lnkLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $lnkLoadFilename
+			[System.IO.File]::WriteAllText($lnkLoadDestinationPath, $completeLnkLoadScriptCRLF, $ansiPcEncoding)
+			
 			Set-ItemProperty -Path $lnkLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			
 			$actionSummaries += "Copied lnk_load.sql"
 		}
 		catch
@@ -3979,13 +3971,11 @@ DROP TABLE Ter_Load;
 			$actionSummaries += "Failed to copy lnk_load.sql"
 		}
 		
-		# Handle the sto_load script
+		# --------------------------------------------------------------------------------------------
+		# sto_load.sql
+		# --------------------------------------------------------------------------------------------
 		try
 		{
-			# Define the destination path for sto_load script with .sql extension
-			$stoLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $stoLoadFilename
-			
-			# Generate the INSERT statements specific to this lane (no store number needed)
 			$stoLoadInsertStatements = @(
 				"('${laneNumber}','Terminal ${laneNumber}',1,1,1,,,,),",
 				"('DSM','Deploy SMS',1,1,1,,,,),",
@@ -3994,15 +3984,15 @@ DROP TABLE Ter_Load;
 				"('XAL','Exchange all',0,1,0,,,,);"
 			)
 			
-			# Combine the header, INSERT statements, and footer with a blank line before the footer
 			$completeStoLoadScript = $stoLoadHeader + "`r`n" + ($stoLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $stoLoadFooter.TrimStart() + "`r`n"
 			
-			# Write the customized sto_load script to the lane folder (ANSI PC)
-			[System.IO.File]::WriteAllText($stoLoadDestinationPath, $completeStoLoadScript, $ansiPcEncoding)
+			# Replace line endings with CRLF before writing
+			$completeStoLoadScriptCRLF = $completeStoLoadScript -replace "`r?`n", "`r`n"
 			
-			# Set file attributes if necessary
+			$stoLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $stoLoadFilename
+			[System.IO.File]::WriteAllText($stoLoadDestinationPath, $completeStoLoadScriptCRLF, $ansiPcEncoding)
+			
 			Set-ItemProperty -Path $stoLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			
 			$actionSummaries += "Copied sto_load.sql"
 		}
 		catch
@@ -4010,27 +4000,25 @@ DROP TABLE Ter_Load;
 			$actionSummaries += "Failed to copy sto_load.sql"
 		}
 		
-		# Handle the ter_load script
+		# --------------------------------------------------------------------------------------------
+		# ter_load.sql
+		# --------------------------------------------------------------------------------------------
 		try
 		{
-			# Define the destination path for ter_load script with .sql extension
-			$terLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $terLoadFilename
-			
-			# Generate the INSERT statements specific to this lane and store, plus the '901' record
 			$terLoadInsertStatements = @(
 				"('${StoreNumber}','${laneNumber}','Terminal ${laneNumber}','\\${MachineName}\storeman\office\XF${StoreNumber}${laneNumber}\','\\${MachineName}\storeman\office\XF${StoreNumber}901\'),",
-				"('${StoreNumber}','901','Server','','');" # '901' record
+				"('${StoreNumber}','901','Server','','');"
 			)
 			
-			# Combine the header, INSERT statements, and footer with a blank line before the footer
 			$completeTerLoadScript = $terLoadHeader + "`r`n" + ($terLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $terLoadFooter.TrimStart() + "`r`n"
 			
-			# Write the customized ter_load script to the lane folder (ANSI PC)
-			[System.IO.File]::WriteAllText($terLoadDestinationPath, $completeTerLoadScript, $ansiPcEncoding)
+			# Replace line endings with CRLF before writing
+			$completeTerLoadScriptCRLF = $completeTerLoadScript -replace "`r?`n", "`r`n"
 			
-			# Set file attributes if necessary
+			$terLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $terLoadFilename
+			[System.IO.File]::WriteAllText($terLoadDestinationPath, $completeTerLoadScriptCRLF, $ansiPcEncoding)
+			
 			Set-ItemProperty -Path $terLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			
 			$actionSummaries += "Copied ter_load.sql"
 		}
 		catch
@@ -4038,11 +4026,11 @@ DROP TABLE Ter_Load;
 			$actionSummaries += "Failed to copy ter_load.sql"
 		}
 		
-		# Log a single summary line for the current lane, including the machine name
+		# Summarize
 		$summaryMessage = "Lane ${laneNumber} (Machine: ${MachineName}): " + ($actionSummaries -join "; ")
 		Write-Log $summaryMessage "green"
 		
-		# Add lane to processed lanes if not already added
+		# Mark lane as processed
 		if (-not ($script:ProcessedLanes -contains $laneNumber))
 		{
 			$script:ProcessedLanes += $laneNumber
