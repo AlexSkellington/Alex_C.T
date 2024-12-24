@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.8.6"
+$VersionNumber = "1.8.7"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -71,6 +71,9 @@ $NumberOfLanes = 0
 $NumberOfStores = 0
 $NumberOfServers = 0
 $NumberOfHosts = 0
+
+# "ANSI" on Western Windows systems
+$ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
 
 # Create a UTF8 encoding instance without BOM
 $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
@@ -3926,9 +3929,9 @@ DROP TABLE Ter_Load;
 		{
 			# Define the destination path for run_load script with .sql extension
 			$runLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $runLoadFilename
-			
+						
 			# Write the run_load script exactly as provided to the lane folder using UTF8 without BOM
-			[System.IO.File]::WriteAllText($runLoadDestinationPath, $runLoadScript, $utf8NoBOM)
+			[System.IO.File]::WriteAllText($runLoadDestinationPath, $runLoadScript, $ansiPcEncoding)
 			
 			# Set file attributes if necessary
 			Set-ItemProperty -Path $runLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
@@ -3959,7 +3962,7 @@ DROP TABLE Ter_Load;
 			$completeLnkLoadScript = $lnkLoadHeader + "`r`n" + ($lnkLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $lnkLoadFooter.TrimStart() + "`r`n"
 			
 			# Write the customized lnk_load script to the lane folder using UTF8 without BOM
-			[System.IO.File]::WriteAllText($lnkLoadDestinationPath, $completeLnkLoadScript, $utf8NoBOM)
+			[System.IO.File]::WriteAllText($lnkLoadDestinationPath, $completeLnkLoadScript, $ansiPcEncoding)
 			
 			# Set file attributes if necessary
 			Set-ItemProperty -Path $lnkLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
@@ -3990,7 +3993,7 @@ DROP TABLE Ter_Load;
 			$completeStoLoadScript = $stoLoadHeader + "`r`n" + ($stoLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $stoLoadFooter.TrimStart() + "`r`n"
 			
 			# Write the customized sto_load script to the lane folder using UTF8 without BOM
-			[System.IO.File]::WriteAllText($stoLoadDestinationPath, $completeStoLoadScript, $utf8NoBOM)
+			[System.IO.File]::WriteAllText($stoLoadDestinationPath, $completeStoLoadScript, $ansiPcEncoding)
 			
 			# Set file attributes if necessary
 			Set-ItemProperty -Path $stoLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
@@ -4018,7 +4021,7 @@ DROP TABLE Ter_Load;
 			$completeTerLoadScript = $terLoadHeader + "`r`n" + ($terLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $terLoadFooter.TrimStart() + "`r`n"
 			
 			# Write the customized ter_load script to the lane folder using UTF8 without BOM
-			[System.IO.File]::WriteAllText($terLoadDestinationPath, $completeTerLoadScript, $utf8NoBOM)
+			[System.IO.File]::WriteAllText($terLoadDestinationPath, $completeTerLoadScript, $ansiPcEncoding)
 			
 			# Set file attributes if necessary
 			Set-ItemProperty -Path $terLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
