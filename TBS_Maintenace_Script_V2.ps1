@@ -6992,6 +6992,8 @@ function Write-SQLScriptsToDesktop
 		[string]$ServerFilename = "Server_Database_Maintenance.sqi"
 	)
 	
+	Write-Log "`r`n==================== Starting Write-SQLScriptsToDesktop Function ====================`r`n" "blue"
+	
 	try
 	{
 		# Get the path to the user's Desktop
@@ -7003,23 +7005,24 @@ function Write-SQLScriptsToDesktop
 		
 		# Write the LaneSQL script to the Desktop
 		[System.IO.File]::WriteAllText($laneFilePath, $LaneSQL, [System.Text.Encoding]::UTF8)
-		Write-Log "Lane SQL script successfully written to:`n$laneFilePath" -ForegroundColor Green
+		Write-Log "Lane SQL script successfully written to:`n$laneFilePath" "Green"
 	}
 	catch
 	{
-		Write-Log "Error writing Lane SQL script to Desktop:`n$_" -ForegroundColor Red
+		Write-Log "Error writing Lane SQL script to Desktop:`n$_" "Red"
 	}
 	
 	try
 	{
 		# Write the ServerSQL script to the Desktop
 		[System.IO.File]::WriteAllText($serverFilePath, $ServerSQL, [System.Text.Encoding]::UTF8)
-		Write-Log "Server SQL script successfully written to:`n$serverFilePath" -ForegroundColor Green
+		Write-Log "Server SQL script successfully written to:`n$serverFilePath" "Green"
 	}
 	catch
 	{
-		Write-Log "Error writing Server SQL script to Desktop:`n$_" -ForegroundColor Red
+		Write-Log "Error writing Server SQL script to Desktop:`n$_" "Red"
 	}
+	Write-Log "`r`n==================== Write-SQLScriptsToDesktop Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
