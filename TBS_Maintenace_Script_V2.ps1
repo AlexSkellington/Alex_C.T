@@ -6221,7 +6221,7 @@ function InstallIntoSMS
 		[string]$OfficePath
 	)
 	
-	Write-Log "`r`n==================== Starting InstallIntoSMS Function ====================" "blue"
+	Write-Log "`r`n==================== Starting InstallIntoSMS Function ====================`r`n" "blue"
 	
 	# --------------------------------------------------------------------------------------------
 	# Define Destination Paths
@@ -6452,7 +6452,7 @@ ORDER BY F1000, F1063;
 	}
 	
 	# --------------------------------------------------------------------------------------------
-	# Remove Archive Bit from Pump_all_items_tables.sql
+	# Remove Archive Bit from Pump_all_items_tables.sql Only If the File Exists
 	# --------------------------------------------------------------------------------------------
 	try
 	{
