@@ -7503,7 +7503,7 @@ if (-not $SilentMode)
 		$InstallIntoSMSButton.Location = New-Object System.Drawing.Point(695, 100)
 		$InstallIntoSMSButton.Size = New-Object System.Drawing.Size(150, 30)
 		$InstallIntoSMSButton.add_Click({
-				InstallIntoSMS
+				InstallIntoSMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 			})
 		$form.Controls.Add($InstallIntoSMSButton)
 		
