@@ -1783,7 +1783,6 @@ ALTER DATABASE LANESQL SET RECOVERY FULL
 DECLARE @Memory25PercentMB BIGINT;
 SELECT @Memory25PercentMB = (total_physical_memory_kb / 1024) * 25 / 100
 FROM sys.dm_os_sys_memory;
-
 EXEC sp_configure 'show advanced options', 1;
 RECONFIGURE;
 EXEC sp_configure 'max server memory (MB)', @Memory25PercentMB;
@@ -1845,7 +1844,6 @@ RECONFIGURE;
 DECLARE @Memory25PercentMB BIGINT;
 SELECT @Memory25PercentMB = (total_physical_memory_kb / 1024) * 25 / 100
 FROM sys.dm_os_sys_memory;
-
 EXEC sp_configure 'show advanced options', 1;
 RECONFIGURE;
 EXEC sp_configure 'max server memory (MB)', @Memory25PercentMB;
