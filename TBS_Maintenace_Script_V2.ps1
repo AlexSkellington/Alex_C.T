@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.8.9"
+$VersionNumber = "1.9.0"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1778,6 +1778,20 @@ ALTER DATABASE LANESQL SET RECOVERY FULL
 	# Create a filtered version of LaneSQL by skipping sections using regex
 	# -------------------------------
 	
+	# The dynamic T-SQL memory config we want to use in the *filtered* Lane script
+	$ServerMemoryConfig = @"
+DECLARE @Memory25PercentMB BIGINT;
+SELECT @Memory25PercentMB = (total_physical_memory_kb / 1024) * 25 / 100
+FROM sys.dm_os_sys_memory;
+
+EXEC sp_configure 'show advanced options', 1;
+RECONFIGURE;
+EXEC sp_configure 'max server memory (MB)', @Memory25PercentMB;
+RECONFIGURE;
+EXEC sp_configure 'show advanced options', 0;
+RECONFIGURE;
+"@
+	
 	# Define the regex pattern to match sections
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	
@@ -1799,10 +1813,20 @@ ALTER DATABASE LANESQL SET RECOVERY FULL
 		$sectionName = $match.Groups['SectionName'].Value.Trim()
 		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
 		
-		if (-not ($sectionsToSkip -contains $sectionName))
+		if ($sectionsToSkip -contains $sectionName)
 		{
-			# Append the section to the filtered script
-			$LaneSQLFiltered += "/* $sectionName */`n$sqlCommands`n`n"
+			# 1) If it's in the skip list, do nothing (omit).
+			continue
+		}
+		elseif ($sectionName -eq 'Set memory configuration')
+		{
+			# 2) If it's the "Set memory configuration" block, replace it with the dynamic version:
+			$LaneSQLFiltered += "/* $sectionName */`r`n$ServerMemoryConfig`r`n`r`n"
+		}
+		else
+		{
+			# 3) Otherwise, keep the block exactly
+			$LaneSQLFiltered += "/* $sectionName */`r`n$sqlCommands`r`n`r`n"
 		}
 	}
 	
