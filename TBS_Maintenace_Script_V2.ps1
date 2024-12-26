@@ -6215,9 +6215,9 @@ function Refresh-Files
 function InstallIntoSMS
 {
 	param (
-		[Parameter(Mandatory = $true)]
+		[Parameter(Mandatory = $false)]
 		[string]$StoreNumber,
-		[Parameter(Mandatory = $true)]
+		[Parameter(Mandatory = $false)]
 		[string]$OfficePath
 	)
 	
