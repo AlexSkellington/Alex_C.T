@@ -6539,13 +6539,33 @@ function Organize-TBS_SCL_ver520
 	# 5. Set BufferTime for BIZERBA records: first one = 1, others = 5.
 	
 	$updateQueries = @"
--- Update ScaleName and BufferTime for ISHIDA WMAI records
-UPDATE [TBS_SCL_ver520]
-SET 
-    ScaleName = CONCAT('Ishida Wrapper ', IPDevice),
-    BufferTime = '1'
-WHERE 
-    ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
+-- Declare a variable to count ISHIDA WMAI records
+DECLARE @IshidaWMAICount INT;
+
+SELECT @IshidaWMAICount = COUNT(*)
+FROM [TBS_SCL_ver520]
+WHERE ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
+
+IF @IshidaWMAICount > 1
+BEGIN
+    -- Update ScaleName and BufferTime for multiple ISHIDA WMAI records
+    UPDATE [TBS_SCL_ver520]
+    SET 
+        ScaleName = CONCAT('Ishida Wrapper ', IPDevice),
+        BufferTime = '1'
+    WHERE 
+        ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
+END
+ELSE
+BEGIN
+    -- Update ScaleName and BufferTime for a single ISHIDA WMAI record
+    UPDATE [TBS_SCL_ver520]
+    SET 
+        ScaleName = 'Ishida Wrapper',
+        BufferTime = '1'
+    WHERE 
+        ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
+END
 
 -- Update ScaleName for BIZERBA records
 UPDATE [TBS_SCL_ver520]
