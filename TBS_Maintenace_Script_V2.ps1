@@ -6539,7 +6539,9 @@ function Organize-TBS_SCL_ver520
 	# 5. Set BufferTime for BIZERBA records: first one = 1, others = 5.
 	
 	$updateQueries = @"
--- Declare a variable to count ISHIDA WMAI records
+-------------------------------------------------------------------------------
+-- 1) Update ISHIDA WMAI ScaleName and BufferTime based on the record count
+-------------------------------------------------------------------------------
 DECLARE @IshidaWMAICount INT;
 
 SELECT @IshidaWMAICount = COUNT(*)
@@ -6548,7 +6550,6 @@ WHERE ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
 
 IF @IshidaWMAICount > 1
 BEGIN
-    -- Update ScaleName and BufferTime for multiple ISHIDA WMAI records
     UPDATE [TBS_SCL_ver520]
     SET 
         ScaleName = CONCAT('Ishida Wrapper ', IPDevice),
@@ -6558,37 +6559,46 @@ BEGIN
 END
 ELSE
 BEGIN
-    -- Update ScaleName and BufferTime for a single ISHIDA WMAI record
     UPDATE [TBS_SCL_ver520]
     SET 
         ScaleName = 'Ishida Wrapper',
         BufferTime = '1'
     WHERE 
         ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
-END
+END;
 
--- Update ScaleName for BIZERBA records
+-------------------------------------------------------------------------------
+-- 2) Update BIZERBA ScaleName
+-------------------------------------------------------------------------------
 UPDATE [TBS_SCL_ver520]
 SET 
     ScaleName = CONCAT('Scale ', IPDevice)
 WHERE 
     ScaleBrand = 'BIZERBA';
 
--- Update ScaleCode for BIZERBA records to start at 10, ordered by IPDevice ascending
+-------------------------------------------------------------------------------
+-- 3) Update ScaleCode for BIZERBA, starting at 10, in IPDevice ascending order
+--    Using ROW_NUMBER() ensures uniqueness within this group.
+-------------------------------------------------------------------------------
 WITH BIZERBA_CTE AS (
     SELECT 
         ScaleCode,
         IPDevice,
-        ROW_NUMBER() OVER (ORDER BY CAST(IPDevice AS INT) ASC) AS rn
-    FROM 
-        [TBS_SCL_ver520]
-    WHERE 
-        ScaleBrand = 'BIZERBA'
+        rn = ROW_NUMBER() OVER (ORDER BY TRY_CAST(IPDevice AS INT)) 
+    FROM [TBS_SCL_ver520]
+    WHERE ScaleBrand = 'BIZERBA'
 )
-UPDATE BIZERBA_CTE
-SET ScaleCode = 10 + rn - 1;
+UPDATE T
+SET T.ScaleCode = 10 + B.rn - 1
+FROM [TBS_SCL_ver520] AS T
+JOIN BIZERBA_CTE AS B 
+    ON T.ScaleCode = B.ScaleCode
+WHERE T.ScaleBrand = 'BIZERBA';
 
--- Update ScaleCode for ISHIDA records to start after the maximum ScaleCode of BIZERBA
+-------------------------------------------------------------------------------
+-- 4) Update ScaleCode for ISHIDA, starting after the new max BIZERBA ScaleCode.
+--    We add +1 so we don't overlap, or you can add +10 if you want a bigger gap.
+-------------------------------------------------------------------------------
 ;WITH MaxBizerba AS (
     SELECT MAX(ScaleCode) AS MaxCode
     FROM [TBS_SCL_ver520]
@@ -6598,28 +6608,35 @@ ISHIDA_CTE AS (
     SELECT 
         ScaleCode,
         IPDevice,
-        ROW_NUMBER() OVER (ORDER BY CAST(IPDevice AS INT) ASC) AS rn
-    FROM 
-        [TBS_SCL_ver520]
-    WHERE 
-        ScaleBrand = 'ISHIDA'
+        rn = ROW_NUMBER() OVER (ORDER BY TRY_CAST(IPDevice AS INT))
+    FROM [TBS_SCL_ver520]
+    WHERE ScaleBrand = 'ISHIDA'
 )
-UPDATE ISHIDA_CTE
-SET ScaleCode = (SELECT MaxCode FROM MaxBizerba) + 10 + rn - 1;
+UPDATE T
+SET T.ScaleCode = (SELECT MaxCode FROM MaxBizerba) + 1 + I.rn - 1
+FROM [TBS_SCL_ver520] AS T
+JOIN ISHIDA_CTE AS I
+    ON T.ScaleCode = I.ScaleCode
+WHERE T.ScaleBrand = 'ISHIDA';
 
--- Now set BufferTime for BIZERBA records:
--- The first BIZERBA record (lowest ScaleCode) gets BufferTime = 1, all others = 5.
+-------------------------------------------------------------------------------
+-- 5) Now set BufferTime for BIZERBA records:
+--    The lowest ScaleCode (i.e. first in ascending ScaleCode order) gets 1,
+--    and all others get 5.
+-------------------------------------------------------------------------------
 WITH BIZ_ORDER AS (
     SELECT 
         ScaleCode,
-        ROW_NUMBER() OVER (ORDER BY ScaleCode ASC) AS RN
+        RN = ROW_NUMBER() OVER (ORDER BY ScaleCode ASC)
     FROM [TBS_SCL_ver520]
     WHERE ScaleBrand = 'BIZERBA'
 )
 UPDATE T
 SET T.BufferTime = CASE WHEN B.RN = 1 THEN '1' ELSE '5' END
 FROM [TBS_SCL_ver520] T
-INNER JOIN BIZ_ORDER B ON T.ScaleCode = B.ScaleCode;
+INNER JOIN BIZ_ORDER B 
+    ON T.ScaleCode = B.ScaleCode
+WHERE T.ScaleBrand = 'BIZERBA';
 "@
 	
 	$selectQuery = @"
