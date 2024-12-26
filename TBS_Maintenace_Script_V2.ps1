@@ -6542,7 +6542,7 @@ function Organize-TBS_SCL_ver520
 -- Update ScaleName and BufferTime for ISHIDA WMAI records
 UPDATE [TBS_SCL_ver520]
 SET 
-    ScaleName = 'Ishida Wrapper',
+    ScaleName = CONCAT('Ishida Wrapper ', IPDevice),
     BufferTime = '1'
 WHERE 
     ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
