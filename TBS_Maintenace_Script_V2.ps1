@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.9.0"
+$VersionNumber = "1.9.1"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1717,7 +1717,7 @@ DECLARE @cmd varchar(4000)
 DECLARE cmds CURSOR FOR 
 SELECT 'drop table [' + name + ']' 
 FROM sys.tables 
-WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') AND DATEDIFF(DAY, create_date, GETDATE()) > 30 
+WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') 
 OPEN cmds 
 WHILE 1 = 1 
 BEGIN 
@@ -6204,40 +6204,55 @@ function Refresh-Files
 }
 
 # ===================================================================================================
-#                                       SECTION: Generate Specific SQL and SQM Files
+#                                       FUNCTION: InstallIntoSMS
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Generates two files in the %TEMP% directory:
-#     1. DEPLOY_SYS.sql containing a specific INSERT statement.
-#     2. DEPLOY_ONE_FCT.sqm containing a predefined script.
+#   Generates and deploys specific SQL and SQM files required for SMS installation.
+#   The files are written directly to their respective destinations in ANSI (Windows-1252) encoding
+#   with CRLF line endings and no BOM.
 # ===================================================================================================
 
 function InstallIntoSMS
 {
-	# Retrieve the path to the system's temporary directory
-	$tempDirectory = $env:TEMP
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[Parameter(Mandatory = $true)]
+		[string]$OfficePath
+	)
 	
-	# Define file paths within the %TEMP% directory
-	$PumpallitemstablesFilePath = Join-Path -Path $tempDirectory -ChildPath "Pump_all_items_tables.sql"
-	$DeploySysFilePath = Join-Path -Path $tempDirectory -ChildPath "DEPLOY_SYS.sql"
-	$DeployOneFctFilePath = Join-Path -Path $tempDirectory -ChildPath "DEPLOY_ONE_FCT.sqm"
+	Write-Log "`r`n==================== Starting InstallIntoSMS Function ====================" "blue"
 	
-	Write-Log "`r`n==================== Installing new buttons into SMS ====================`r`n" "blue"
+	# --------------------------------------------------------------------------------------------
+	# Define Destination Paths
+	# --------------------------------------------------------------------------------------------
 	
-	# Define the content for Pump_all_items_tables.sql
-	$PumpallitemstablesContent = @"
-/* First delete the record if it exist */
+	# Destination folder for Pump_all_items_tables.sql
+	$PumpAllItemsTablesDestinationFolder = Join-Path -Path $OfficePath -ChildPath "XF${StoreNumber}901"
+	$PumpAllItemsTablesFilePath = Join-Path -Path $PumpAllItemsTablesDestinationFolder -ChildPath "Pump_all_items_tables.sql"
+	
+	# Destination paths for DEPLOY_SYS.sql and DEPLOY_ONE_FCT.sqm
+	$DeploySysDestinationPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_SYS.sql"
+	$DeployOneFctDestinationPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_ONE_FCT.sqm"
+	
+	# --------------------------------------------------------------------------------------------
+	# Define File Contents
+	# --------------------------------------------------------------------------------------------
+	
+	# Content for Pump_all_items_tables.sql
+	$PumpAllItemsTablesContent = @"
+/* First delete the record if it exists */
 DELETE FROM FCT_TAB WHERE F1063 = 11899 AND F1000 = 'PAL';
 
 /* Insert the new function */
-INSERT INTO FCT_TAB (F1063,F1000,F1047,F1050,F1051,F1052,F1053,F1064,F1081) 
-VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPLOY_LOAD');
+INSERT INTO FCT_TAB (F1063, F1000, F1047, F1050, F1051, F1052, F1053, F1064, F1081) 
+VALUES (11899, 'PAL', 9, '', 'SKU', 'Preference', '1', 'Pump all item tables', 'sql=DEPLOY_LOAD');
 
 /* Activate the new function right away */
 @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
 "@
 	
-	# Define the content for DEPLOY_SYS.sql
+	# Content for DEPLOY_SYS.sql
 	$DeploySysContent = @"
 @FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,®WIZRPL(UD_RUN=0));
 @FMT(CMP,@WIZGET(UD_RUN)=,'®EXEC(SQL=UD_DEPLOY_SYS)®FMT(CHR,27)');
@@ -6264,11 +6279,12 @@ VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPL
 
 @WIZINIT;
 @WIZTARGET(TARGET=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
-SELECT F1000,F1018 FROM STO_TAB WHERE F1181=1 ORDER BY F1000","
-SELECT DISTINCT STO.F1000,STO.F1018 
-FROM LNK_TAB LN2 JOIN LNK_TAB LNK ON LN2.F1056=LNK.F1056 AND LN2.F1057=LNK.F1057
-JOIN STO_TAB STO ON STO.F1000=LNK.F1000 
-WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'
+SELECT F1000, F1018 FROM STO_TAB WHERE F1181=1 ORDER BY F1000","
+SELECT DISTINCT STO.F1000, STO.F1018 
+FROM LNK_TAB LN2 
+JOIN LNK_TAB LNK ON LN2.F1056 = LNK.F1056 AND LN2.F1057 = LNK.F1057
+JOIN STO_TAB STO ON STO.F1000 = LNK.F1000 
+WHERE STO.F1181 = '1' AND LN2.F1000 = '@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'
 ORDER BY STO.F1000"));
 @WIZDISPLAY;
 
@@ -6301,7 +6317,7 @@ ORDER BY STO.F1000"));
 @EXEC(sqi=USERE_DEPLOY_SYS);
 "@
 	
-	# Define the content for DEPLOY_ONE_FCT.sqm
+	# Content for DEPLOY_ONE_FCT.sqm
 	$DeployOneFctContent = @"
 INSERT INTO HEADER_DCT VALUES
 ('HC','00000001','001901','001001',,,1997001,0000,1997001,0001,,'LOAD','CREATE DCT',,,,,,'1/1.0','V1.0',,);
@@ -6322,11 +6338,13 @@ INSERT INTO FCT_CHG VALUES
 
 @WIZINIT;
 @WIZTARGET(TARGET_FILTER=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
-SELECT F1000,F1018 FROM STO_TAB WHERE F1181=1","
-SELECT DISTINCT STO.F1000,STO.F1018 
-FROM LNK_TAB LN2 JOIN LNK_TAB LNK ON LN2.F1056=LNK.F1056 AND LN2.F1057=LNK.F1057
-JOIN STO_TAB STO ON STO.F1000=LNK.F1000 
-WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'"));
+SELECT F1000, F1018 FROM STO_TAB WHERE F1181=1","
+SELECT DISTINCT STO.F1000, STO.F1018 
+FROM LNK_TAB LN2 
+JOIN LNK_TAB LNK ON LN2.F1056 = LNK.F1056 AND LN2.F1057 = LNK.F1057
+JOIN STO_TAB STO ON STO.F1000 = LNK.F1000 
+WHERE STO.F1181 = '1' AND LN2.F1000 = '@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'
+"));
 @WIZDISPLAY;
 
 @WIZINIT;
@@ -6346,165 +6364,122 @@ WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST
 @WIZSET(STYLE=SIL);
 
 @MAP_DEPLOY
-SELECT FCT.F1056,FCT.F1056+FCT.F1057 AS F1000,@dbFld(FCT_TAB,FCT.,F1000) FROM 
-	(SELECT LNI.F1056,LNI.F1057,FCT.*,ROW_NUMBER() OVER (PARTITION BY FCT.F1063,LNI.F1056,LNI.F1057 ORDER BY CASE WHEN FCT.F1000='PAL' THEN 1 ELSE 2 END DESC) AS F1301 
-	FROM FCT_TAB FCT
-	JOIN LNK_TAB LNI ON FCT.F1000=LNI.F1000
-	JOIN LNK_TAB LNO ON LNI.F1056=LNO.F1056 AND LNI.F1057=LNO.F1057
-	WHERE LNO.F1000 = '@WIZGET(TARGET_FILTER)' AND FCT.F1063 = '@WIZGET(FCT)') FCT
-WHERE FCT.F1301=1
-ORDER BY F1000,F1063;
+SELECT FCT.F1056, FCT.F1056 + FCT.F1057 AS F1000, @dbFld(FCT_TAB, FCT., F1000) 
+FROM 
+    (
+        SELECT LNI.F1056, LNI.F1057, FCT.*, 
+               ROW_NUMBER() OVER (PARTITION BY FCT.F1063, LNI.F1056, LNI.F1057 ORDER BY CASE WHEN FCT.F1000 = 'PAL' THEN 1 ELSE 2 END DESC) AS F1301 
+        FROM FCT_TAB FCT
+        JOIN LNK_TAB LNI ON FCT.F1000 = LNI.F1000
+        JOIN LNK_TAB LNO ON LNI.F1056 = LNO.F1056 AND LNI.F1057 = LNO.F1057
+        WHERE LNO.F1000 = '@WIZGET(TARGET_FILTER)' AND FCT.F1063 = '@WIZGET(FCT)'
+    ) FCT
+WHERE FCT.F1301 = 1
+ORDER BY F1000, F1063;
 
-/* RESTORE INITITAL PARAMETER POOL */
+/* RESTORE INITIAL PARAMETER POOL */
 @WIZRESET; 
 @DBHOT(HOT_WIZ,LINETOPARAM,PARAMSAV_FCT_LOAD);
 @DBHOT(HOT_WIZ,CLR,PARAMSAV_FCT_LOAD);
 "@
 	
+	# --------------------------------------------------------------------------------------------
+	# Prepare File Contents
+	# --------------------------------------------------------------------------------------------
+	
 	# Ensure content strings have Windows-style line endings
-	$PumpallitemstablesContent = $PumpallitemstablesContent -replace "`n", "`r`n"
+	$PumpAllItemsTablesContent = $PumpAllItemsTablesContent -replace "`n", "`r`n"
 	$DeploySysContent = $DeploySysContent -replace "`n", "`r`n"
 	$DeployOneFctContent = $DeployOneFctContent -replace "`n", "`r`n"
 	
-	# Define encoding as ANSI (Windows-1252)
+	# Define encoding as ANSI (Windows-1252) without BOM
 	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
 	
-	# Function to write file with error handling
-	function Write-File
-	{
-		param (
-			[string]$Path,
-			[string]$Content,
-			[System.Text.Encoding]$Encoding
-		)
-		try
-		{
-			[System.IO.File]::WriteAllText($Path, $Content, $Encoding)
-			Write-Log "Successfully wrote to '$Path'." "green"
-		}
-		catch
-		{
-			Write-Log "Failed to write to '$Path'. Error: $_" "red"
-		}
-	}
-	
-	# Write DEPLOY_SYS.sql
-	Write-File -Path $PumpallitemstablesFilePath -Content $PumpallitemstablesContent -Encoding $ansiEncoding
-	
-	# Write DEPLOY_SYS.sql
-	Write-File -Path $DeploySysFilePath -Content $DeploySysContent -Encoding $ansiEncoding
-	
-	# Write DEPLOY_ONE_FCT.sqm
-	Write-File -Path $DeployOneFctFilePath -Content $DeployOneFctContent -Encoding $ansiEncoding
-	
-	# Define destination paths
-	$PumpallitemstablesDestination = "$OfficePath\XF${StoreNumber}901"
-	$DeploySysDestination = "$OfficePath\DEPLOY_SYS.sql"
-	$DeployOneFctDestination = "$OfficePath\DEPLOY_ONE_FCT.sqm"
-	
-	# Additional Variables
-	$File1 = "Pump_all_items_tables.sql"
-	$File2 = "DEPLOY_SYS.sql"
-	$File3 = "DEPLOY_ONE_FCT.sqm"
-	
-	# Function to copy file with error handling
-	function Copy-File
-	{
-		param (
-			[string]$FileType,
-			[string]$SourcePath,
-			[string]$DestinationPath
-		)
-		
-		try
-		{
-			# Ensure the destination directory exists
-			$destDir = Split-Path -Path $DestinationPath -Parent
-			if (-not (Test-Path -Path $destDir))
-			{
-				New-Item -Path $destDir -ItemType Directory -Force | Out-Null
-				Write-Log "Created directory '$destDir'." "yellow"
-			}
-			
-			# Copy the file, overwriting if it exists
-			Copy-Item -Path $SourcePath -Destination $DestinationPath -Force
-			Write-Log "Successfully copied '$FileType' to '$DestinationPath'." "green"
-		}
-		catch
-		{
-			Write-Log "Failed to copy '$FileType' to '$DestinationPath'. Error: $_" "red"
-		}
-	}
-	
-	# Copy Pump_all_items_tables.sql to \\localhost\Storeman\Office\XF${StoreNumber}901
-	Copy-File -FileType $File1 -SourcePath $PumpallitemstablesFilePath -DestinationPath $PumpallitemstablesDestination
-	
-	# **Remove the Archive Bit from Pump_all_items_tables.sql at the destination**
+	# --------------------------------------------------------------------------------------------
+	# Ensure Destination Directories Exist
+	# --------------------------------------------------------------------------------------------
 	try
 	{
-		$destinationFile1 = Join-Path -Path $PumpallitemstablesDestination -ChildPath $File1
-		if (Test-Path $destinationFile1)
+		if (-not (Test-Path $PumpAllItemsTablesDestinationFolder))
 		{
-			$file = Get-Item $destinationFile1
-			if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
-			{
-				$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
-				Write-Log "Removed the archive bit from '$destinationFile1'." "green"
-			}
-			else
-			{
-				Write-Log "Archive bit was not set for '$destinationFile1'." "yellow"
-			}
-		}
-		else
-		{
-			Write-Log "Destination file '$destinationFile1' does not exist. Cannot remove archive bit." "red"
+			New-Item -Path $PumpAllItemsTablesDestinationFolder -ItemType Directory -Force | Out-Null
+			Write-Log "Created directory '$PumpAllItemsTablesDestinationFolder'." "yellow"
 		}
 	}
 	catch
 	{
-		Write-Log "Failed to remove the archive bit from '$destinationFile1'. Error: $_" "red"
+		Write-Log "Failed to create directory '$PumpAllItemsTablesDestinationFolder'. Error: $_" "red"
+		return
 	}
 	
-	# Copy DEPLOY_SYS.sql to \\localhost\Storeman\Office
-	Copy-File -FileType $File2 -SourcePath $DeploySysFilePath -DestinationPath $DeploySysDestination
-	
-	# Copy DEPLOY_ONE_FCT.sqm to \\localhost\Storeman\Office, replacing if it exists
-	Copy-File -FileType $File3 -SourcePath $DeployOneFctFilePath -DestinationPath $DeployOneFctDestination
-	
-	# Cleanup: Delete the generated files from the temp directory
-	function Cleanup-TempFiles
+	# --------------------------------------------------------------------------------------------
+	# Write Files Directly to Destination Paths
+	# --------------------------------------------------------------------------------------------
+	try
 	{
-		param (
-			[string[]]$FilesToDelete
-		)
-		
-		foreach ($file in $FilesToDelete)
+		# Write Pump_all_items_tables.sql
+		[System.IO.File]::WriteAllText($PumpAllItemsTablesFilePath, $PumpAllItemsTablesContent, $ansiEncoding)
+		Set-ItemProperty -Path $PumpAllItemsTablesFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write-Log "Successfully wrote 'Pump_all_items_tables.sql' to '$PumpAllItemsTablesDestinationFolder'." "green"
+	}
+	catch
+	{
+		Write-Log "Failed to write 'Pump_all_items_tables.sql'. Error: $_" "red"
+	}
+	
+	try
+	{
+		# Write DEPLOY_SYS.sql
+		[System.IO.File]::WriteAllText($DeploySysDestinationPath, $DeploySysContent, $ansiEncoding)
+		Set-ItemProperty -Path $DeploySysDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write-Log "Successfully wrote 'DEPLOY_SYS.sql' to '$OfficePath'." "green"
+	}
+	catch
+	{
+		Write-Log "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
+	}
+	
+	try
+	{
+		# Write DEPLOY_ONE_FCT.sqm
+		[System.IO.File]::WriteAllText($DeployOneFctDestinationPath, $DeployOneFctContent, $ansiEncoding)
+		Set-ItemProperty -Path $DeployOneFctDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write-Log "Successfully wrote 'DEPLOY_ONE_FCT.sqm' to '$OfficePath'." "green"
+	}
+	catch
+	{
+		Write-Log "Failed to write 'DEPLOY_ONE_FCT.sqm'. Error: $_" "red"
+	}
+	
+	# --------------------------------------------------------------------------------------------
+	# Remove Archive Bit from Pump_all_items_tables.sql
+	# --------------------------------------------------------------------------------------------
+	try
+	{
+		if (Test-Path $PumpAllItemsTablesFilePath)
 		{
-			if (Test-Path $file)
+			$file = Get-Item -Path $PumpAllItemsTablesFilePath
+			if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
 			{
-				try
-				{
-					Remove-Item -Path $file -Force
-					Write-Log "Deleted temporary file '$file'." "yellow"
-				}
-				catch
-				{
-					Write-Log "Failed to delete temporary file '$file'. Error: $_" "red"
-				}
+				$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
+				Write-Log "Removed the archive bit from '$PumpAllItemsTablesFilePath'." "green"
 			}
 			else
 			{
-				Write-Log "Temporary file '$file' does not exist and cannot be deleted." "yellow"
+				Write-Log "Archive bit was not set for '$PumpAllItemsTablesFilePath'." "yellow"
 			}
 		}
+		else
+		{
+			Write-Log "File '$PumpAllItemsTablesFilePath' does not exist. Cannot remove archive bit." "red"
+		}
+	}
+	catch
+	{
+		Write-Log "Failed to remove the archive bit from '$PumpAllItemsTablesFilePath'. Error: $_" "red"
 	}
 	
-	Cleanup-TempFiles -FilesToDelete @($PumpallitemstablesFilePath, $DeploySysFilePath, $DeployOneFctFilePath)
-	
-	#	Write-Log "`r`nDEPLOY_ONE_FCT.sqm copied to $deployOneFctDestination." "green"
-	#	Write-Log "DEPLOY_SYS.sql copied to $addMenuDestination." "green"
-	Write-Log "`r`n==================== Function execution completed ====================" "blue"
+	Write-Log "`r`n==================== InstallIntoSMS Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
