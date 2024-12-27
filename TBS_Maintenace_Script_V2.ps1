@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.9.3"
+$VersionNumber = "1.9.4"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1263,7 +1263,8 @@ function Count-ItemsGUI
 # Description:
 #   Performs an initial cleanup of the XE (Urgent Messages) folder by deleting all files and subdirectories,
 #   then starts a background job to continuously monitor and clear the folder at specified intervals,
-#   excluding any files or directories whose names start with "FATAL".
+#   excluding any files or directories whose names start with "FATAL", or files containing the snippet
+#   indicating a "FATAL ERROR" in the file content.
 # ===================================================================================================
 
 function Clear-XEFolder
@@ -1306,13 +1307,44 @@ function Clear-XEFolder
 	# Function to determine if a file should be kept during initial clearing
 	function ShouldKeepFileInitial($file)
 	{
-		# Do not keep FATAL* files
-		if ($file.Name -like 'FATAL*')
+		# --------------------------------------------------------
+		# 1) Read the file content safely. If it fails, discard it.
+		# --------------------------------------------------------
+		try
+		{
+			$content = Get-Content -Path $file.FullName -ErrorAction Stop
+		}
+		catch
 		{
 			return $false
 		}
+		$joinedContent = $content -join "`n"
 		
-		# Check if it's an S*.??? file
+		# --------------------------------------------------------
+		# 2) Check if the file has the "FATAL ERROR" snippet 
+		#    we want to preserve.
+		#
+		#    Here we require lines for:
+		#      Subject: FATAL ERROR
+		#      X-Priority: 1
+		#      FILE: EJ_LIST_TRS.SQI LINE: 18
+		# --------------------------------------------------------
+		$hasFatalSnippet = (
+			($joinedContent -match 'Subject:\s*FATAL ERROR') `
+			-and ($joinedContent -match 'X-Priority:\s*1') `
+			-and ($joinedContent -match 'FILE:\s*EJ_LIST_TRS\.SQI\s*LINE:\s*18') `
+		)
+		
+		# --------------------------------------------------------
+		# If it has the snippet, KEEP it (return $true), 
+		# regardless of file name.
+		# --------------------------------------------------------
+		if ($hasFatalSnippet)
+		{
+			return $true
+		}
+		
+		# (C) Check if it's an S*.??? file
 		if ($file.Name -match '^S.*\.\w{3}$')
 		{
 			# Check file age (not older than 30 days)
@@ -1322,17 +1354,7 @@ function Clear-XEFolder
 				return $false
 			}
 			
-			# Read file contents
-			try
-			{
-				$content = Get-Content -Path $file.FullName -ErrorAction Stop
-			}
-			catch
-			{
-				# If we can't read the file for some reason, discard it
-				return $false
-			}
-			
+			# We already read $content above.
 			$fromLine = $content | Where-Object { $_ -like 'From:*' }
 			$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
 			$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
@@ -1392,20 +1414,41 @@ function Clear-XEFolder
 			return $true
 		}
 		
-		# If it doesn't match a qualifying S file, we remove it
+		# If it doesn't match a qualifying S file and doesn't have our snippet, remove it
 		return $false
 	}
 	
 	# Function to determine if a file should be kept during background monitoring
 	function ShouldKeepFileBackground($file)
 	{
-		# Keep all FATAL* files
+		# 1) Keep all FATAL* files
+		# 2) Keep files containing the "FATAL ERROR" snippet
+		# 3) Keep valid S*.??? files that meet the Health criteria
+		# 4) Remove everything else.
+		
+		# (A) Keep all FATAL* files
 		if ($file.Name -like 'FATAL*')
 		{
 			return $true
 		}
 		
-		# Check if it's an S*.??? file
+		# (B) Check if file has the "FATAL ERROR" snippet
+		try
+		{
+			$content = Get-Content -Path $file.FullName -ErrorAction Stop
+		}
+		catch
+		{
+			return $false
+		}
+		
+		$joinedContent = $content -join "`n"
+		if ($joinedContent -match 'Subject:\s*FATAL ERROR')
+		{
+			return $true
+		}
+		
+		# (C) Check if it's an S*.??? file
 		if ($file.Name -match '^S.*\.\w{3}$')
 		{
 			# Check file age (not older than 30 days)
@@ -1415,28 +1458,29 @@ function Clear-XEFolder
 				return $false
 			}
 			
-			# Read file contents
-			try
-			{
-				$content = Get-Content -Path $file.FullName -ErrorAction Stop
-			}
-			catch
-			{
-				# If we can't read the file for some reason, discard it
-				return $false
-			}
-			
 			$fromLine = $content | Where-Object { $_ -like 'From:*' }
 			$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
 			$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
 			$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
 			
-			# Check prerequisites:
-			# From line: Extract store/lane
 			if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
 			{
 				$fileStoreNumber = $Matches[1]
 				$fileLaneNumber = $Matches[2]
+			}
+			else
+			{
+				return $false
+			}
+			
+			# Extract lane from filename
+			if ($file.Name -match '^S.*\.(\d{3})$')
+			{
+				$LaneNumber = $Matches[1]
+				if ($fileLaneNumber -ne $LaneNumber)
+				{
+					return $false
+				}
 			}
 			else
 			{
@@ -1448,48 +1492,29 @@ function Clear-XEFolder
 				return $false
 			}
 			
-			# From the original logic, $LaneNumber is derived from the filename. Let's extract it:
-			if ($file.Name -match '^S.*\.(\d{3})$')
-			{
-				$LaneNumber = $Matches[1]
-				# Confirm lane number matches that from the 'From' line
-				if ($fileLaneNumber -ne $LaneNumber)
-				{
-					return $false
-				}
-			}
-			else
-			{
-				return $false
-			}
-			
-			# Subject must be Health
 			if (-not ($subjectLine -match 'Subject:\s*(Health)'))
 			{
 				return $false
 			}
 			
-			# MSG must be "This application is not running."
 			if (-not ($msgLine -match 'MSG:\s*This application is not running\.'))
 			{
 				return $false
 			}
 			
-			# Last recorded status must contain TRANS,<number>
 			if (-not ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)'))
 			{
 				return $false
 			}
 			
-			# If we reach this point, all conditions are met
 			return $true
 		}
 		
-		# If it doesn't match either FATAL* or a qualifying S file, we remove it
+		# If it doesn't match either condition, remove it
 		return $false
 	}
 	
-	# Initial clearing - Delete all files including FATAL*
+	# Initial clearing - Delete all files except those passing ShouldKeepFileInitial
 	if (Test-Path -Path $folderPath)
 	{
 		try
@@ -1501,7 +1526,7 @@ function Clear-XEFolder
 				}
 			}
 			
-			Write-Log "Folder 'XE${StoreNumber}901' initially cleaned, deleting all except valid (S*) files for transaction closing." "green"
+			Write-Log "Folder 'XE${StoreNumber}901' initially cleaned, deleting all except valid (S*) or FATAL ERROR files." "green"
 		}
 		catch
 		{
@@ -1518,10 +1543,12 @@ function Clear-XEFolder
 	try
 	{
 		$job = Start-Job -Name "ClearXEFolderJob" -ScriptBlock {
-			param ($folderPath,
+			param (
+				$folderPath,
 				$checkIntervalSeconds,
 				$StoreNumber,
-				$OfficePath)
+				$OfficePath
+			)
 			
 			function ShouldKeepFileBackground($file)
 			{
@@ -1531,19 +1558,27 @@ function Clear-XEFolder
 					return $true
 				}
 				
+				# Check for "FATAL ERROR" snippet
+				try
+				{
+					$content = Get-Content -Path $file.FullName -ErrorAction Stop
+				}
+				catch
+				{
+					return $false
+				}
+				
+				$joinedContent = $content -join "`n"
+				if ($joinedContent -match 'Subject:\s*FATAL ERROR')
+				{
+					return $true
+				}
+				
+				# Check if it's an S*.??? file
 				if ($file.Name -match '^S.*\.\w{3}$')
 				{
 					$currentTime = Get-Date
 					if (($currentTime - $file.LastWriteTime).TotalDays -gt 30)
-					{
-						return $false
-					}
-					
-					try
-					{
-						$content = Get-Content -Path $file.FullName -ErrorAction Stop
-					}
-					catch
 					{
 						return $false
 					}
@@ -1626,7 +1661,7 @@ function Clear-XEFolder
 			}
 		} -ArgumentList $folderPath, $checkIntervalSeconds, $StoreNumber, $OfficePath
 		
-		Write-Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder, excluding FATAL* files." "green"
+		Write-Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder, excluding FATAL* files and those containing the 'FATAL ERROR' snippet." "green"
 	}
 	catch
 	{
@@ -1634,6 +1669,217 @@ function Clear-XEFolder
 	}
 	
 	return $job
+}
+
+# ===================================================================================================
+#                                  SECTION: Process-FatalErrorsFromXEFolder
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Processes FATAL* files within an XE folder to correct specific lines in matching EJ files.
+#   - Constructs XE and ZX folder paths.
+#   - Searches for FATAL* snippets.
+#   - Identifies related EJ files based on the date/store data.
+#   - Repairs lines in matching EJ files.
+# ===================================================================================================
+
+function Process-FatalErrorsFromXEFolder
+{
+	[CmdletBinding()]
+	param (
+		# The base "OfficePath", e.g. "C:\storeman\office"
+		[Parameter(Mandatory = $true)]
+		[string]$OfficePath,
+		# The store number (e.g., "001")
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	# ---------------------------------------------------------------------------------------------
+	# 1) Construct XE folder and ZX folder from $OfficePath + $StoreNumber
+	#    XE folder: $OfficePath\XE${StoreNumber}901
+	#    ZX folder: $OfficePath\ZX${StoreNumber}901
+	# ---------------------------------------------------------------------------------------------
+	$xeFolderPath = Join-Path $OfficePath "XE${StoreNumber}901"
+	$zxFolderPath = Join-Path $OfficePath "ZX${StoreNumber}901"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 2) Make sure the XE folder exists
+	# ---------------------------------------------------------------------------------------------
+	if (-not (Test-Path -Path $xeFolderPath))
+	{
+		Write-Host "XE folder not found: $xeFolderPath" -ForegroundColor Red
+		return
+	}
+	
+	# ---------------------------------------------------------------------------------------------
+	# 3) Grab all FATAL* files from the XE folder
+	# ---------------------------------------------------------------------------------------------
+	$fatalFiles = Get-ChildItem -Path $xeFolderPath -Filter 'FATAL*' -File -ErrorAction SilentlyContinue
+	if (-not $fatalFiles)
+	{
+		Write-Host "No FATAL* files found in: $xeFolderPath" -ForegroundColor Yellow
+		return
+	}
+	
+	Write-Host "Found $($fatalFiles.Count) FATAL* file(s) in: $xeFolderPath" -ForegroundColor Cyan
+	
+	# ---------------------------------------------------------------------------------------------
+	# 4) For each FATAL file, read the snippet, parse store/date, fix matching EJ files
+	# ---------------------------------------------------------------------------------------------
+	foreach ($fatalFile in $fatalFiles)
+	{
+		
+		Write-Host "Processing FATAL file: $($fatalFile.FullName)" -ForegroundColor Yellow
+		
+		# 4a) Read the file contents
+		try
+		{
+			$content = Get-Content -Path $fatalFile.FullName -ErrorAction Stop
+		}
+		catch
+		{
+			Write-Host "Could not read file: $($fatalFile.FullName). Skipping." -ForegroundColor Red
+			continue
+		}
+		
+		$joinedContent = $content -join "`n"
+		
+		# 4b) Check if we have the special "FATAL ERROR" snippet
+		#     (Adjust these patterns to match exactly what you need.)
+		$hasFatalSnippet = (
+			($joinedContent -match 'Subject:\s*FATAL ERROR') `
+			-and ($joinedContent -match 'X-Priority:\s*1') `
+			-and ($joinedContent -match 'FILE:\s*EJ_LIST_TRS\.SQI\s*LINE:\s*18') `
+			-and ($joinedContent -match 'MSG:\s*Error in c:\\storeman\\Office\\CGI\\ej_list_trs_frame\.htm') `
+			-and ($joinedContent -match 'Error in c:\\storeman\\Office\\CGI\\EJ_LIST_TRS_TMP\.htm')
+		)
+		
+		if (-not $hasFatalSnippet)
+		{
+			Write-Host "File does not contain the required FATAL ERROR snippet. Skipping." -ForegroundColor DarkGray
+			continue
+		}
+		
+		# 4c) Parse the Date line. Example: "Date: Fri, 27 Dec 2024 15:58:50"
+		$dateLine = $content | Where-Object { $_ -match '^Date:\s*' }
+		if (-not $dateLine)
+		{
+			Write-Host "No 'Date:' line found in snippet. Skipping." -ForegroundColor Red
+			continue
+		}
+		if ($dateLine -match '^Date:\s*(.+)$')
+		{
+			$dateString = $Matches[1] # e.g. "Fri, 27 Dec 2024 15:58:50"
+			try
+			{
+				$snippetDate = [DateTime]::Parse($dateString)
+			}
+			catch
+			{
+				Write-Host "Failed to parse date: $dateLine" -ForegroundColor Red
+				continue
+			}
+		}
+		else
+		{
+			Write-Host "Could not parse date from line: $dateLine" -ForegroundColor Red
+			continue
+		}
+		
+		# 4d) Build the file prefix: YMMDDSSS (ignoring lane)
+		#     Y = last digit of year
+		#     MM = 2-digit month
+		#     DD = 2-digit day
+		#     SSS = store number (3 digits, e.g. "001")
+		$yearLastDigit = ($snippetDate.Year % 10)
+		$mm = $snippetDate.ToString('MM')
+		$dd = $snippetDate.ToString('dd')
+		$filePrefix = "$($yearLastDigit)$mm$dd$StoreNumber" # e.g. 41227001
+		
+		Write-Host "Looking for files named '$filePrefix.*' in $zxFolderPath..." -ForegroundColor White
+		
+		# -----------------------------------------------------------------------------------------
+		# 4e) Confirm the ZX folder exists
+		# -----------------------------------------------------------------------------------------
+		if (-not (Test-Path -Path $zxFolderPath))
+		{
+			Write-Host "ZX folder not found: $zxFolderPath. Skipping." -ForegroundColor Red
+			continue
+		}
+		
+		# -----------------------------------------------------------------------------------------
+		# 4f) Find matching files in ZX folder: e.g. 41227001.*
+		# -----------------------------------------------------------------------------------------
+		$searchPattern = $filePrefix + ".*"
+		$matchingFiles = Get-ChildItem -Path $zxFolderPath -Filter $searchPattern -File
+		
+		if (-not $matchingFiles)
+		{
+			Write-Host "No files matching '$searchPattern' found in $zxFolderPath." -ForegroundColor Yellow
+			continue
+		}
+		
+		Write-Host "Found $($matchingFiles.Count) file(s) to fix." -ForegroundColor Green
+		
+		# -----------------------------------------------------------------------------------------
+		# 4g) For each matching EJ file, remove lines from </trs F10... up to <trs F1068...
+		# -----------------------------------------------------------------------------------------
+		foreach ($file in $matchingFiles)
+		{
+			
+			# [Optional] Skip files that have ".bak" anywhere in their name 
+			# to avoid infinite backup loops:
+			if ($file.Extension -eq ".bak")
+			{
+				Write-Host "Skipping backup file: $($file.Name)" -ForegroundColor DarkGray
+				continue
+			}
+			
+			Write-Host "Fixing lines in: $($file.FullName)" -ForegroundColor Cyan
+			
+			# Read the file lines
+			$originalLines = Get-Content -Path $file.FullName -ErrorAction Stop
+			
+			# Prepare a list for the fixed lines
+			$fixedLines = New-Object System.Collections.Generic.List[string]
+			
+			$skip = $false
+			
+			foreach ($line in $originalLines)
+			{
+				# 1) Start skipping at '</trs F10'
+				if ($line -match '^\s*<trs\s+F10\b')
+				{
+					$skip = $true
+					continue
+				}
+				
+				# 2) Stop skipping at '<trs F1068'
+				if ($skip -and ($line -match '^\s*<trs\s+F1068\b'))
+				{
+					$skip = $false
+					# We *do* want to keep this line
+					$fixedLines.Add($line)
+					continue
+				}
+				
+				# Keep the line if we're not skipping
+				if (-not $skip)
+				{
+					$fixedLines.Add($line)
+				}
+			}
+			
+			# Make a backup (only once)
+			$backupPath = $file.FullName + ".bak"
+			Copy-Item -Path $file.FullName -Destination $backupPath -Force
+			
+			# Overwrite the original file with our fixed lines
+			$fixedLines | Set-Content -Path $file.FullName -Encoding UTF8
+			
+			Write-Host "Done editing: $($file.FullName). Backup: $backupPath" -ForegroundColor Green
+		}
+	}
 }
 
 # ===================================================================================================
@@ -8231,7 +8477,7 @@ if (-not $SilentMode)
 			})
 		$form.Controls.Add($RepairBMSButton)
 		
-		# Repair BMS Service
+		# Manual Repair
 		$ManualRepairButton = New-Object System.Windows.Forms.Button
 		$ManualRepairButton.Text = "Manual Repair"
 		$ManualRepairButton.Location = New-Object System.Drawing.Point(695, 30)
@@ -8240,6 +8486,16 @@ if (-not $SilentMode)
 				Write-SQLScriptsToDesktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
 			})
 		$form.Controls.Add($ManualRepairButton)
+		
+		# Fix Journal
+		$FixJournalButton = New-Object System.Windows.Forms.Button
+		$FixJournalButton.Text = "Fix Journal"
+		$FixJournalButton.Location = New-Object System.Drawing.Point(540, 100)
+		$FixJournalButton.Size = New-Object System.Drawing.Size(150, 30)
+		$FixJournalButton.add_Click({
+				Process-FatalErrorsFromXEFolder -StoreNumber $StoreNumber -OfficePath $OfficePath
+			})
+		$form.Controls.Add($FixJournalButton)
 		
 		################################################## Labels #######################################################
 		
