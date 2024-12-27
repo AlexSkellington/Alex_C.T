@@ -1675,12 +1675,11 @@ function Clear-XEFolder
 #                                  SECTION: Process-FatalErrorsFromXEFolder
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Processes FATAL* files within an XE folder to correct specific lines in matching EJ files.
-#   - Constructs XE and ZX folder paths.
-#   - Searches for FATAL* snippets.
+#   Processes EJ files within a ZX folder to correct specific lines based on a user-provided date.
+#   - Prompts the user to select a date using a Windows Form.
+#   - Constructs the ZX folder path.
 #   - Identifies related EJ files based on the date/store data.
 #   - Repairs lines in matching EJ files.
-#   - Deletes processed FATAL files to avoid reprocessing.
 # ===================================================================================================
 
 function Process-FatalErrorsFromXEFolder
@@ -1694,226 +1693,189 @@ function Process-FatalErrorsFromXEFolder
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
+		
+	# ---------------------------------------------------------------------------------------------
+	# 1) Load Windows Forms assembly
+	# ---------------------------------------------------------------------------------------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
 	
 	# ---------------------------------------------------------------------------------------------
-	# 1) Construct XE folder and ZX folder from $OfficePath + $StoreNumber
-	#    XE folder: $OfficePath\XE${StoreNumber}901
+	# 2) Create and configure the Windows Form
+	# ---------------------------------------------------------------------------------------------
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Select Date"
+	$form.Size = New-Object System.Drawing.Size(300, 200)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = "FixedDialog"
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	# Create Label
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "Please select the date:"
+	$label.AutoSize = $true
+	$label.Location = New-Object System.Drawing.Point(10, 20)
+	$form.Controls.Add($label)
+	
+	# Create DateTimePicker
+	$dateTimePicker = New-Object System.Windows.Forms.DateTimePicker
+	$dateTimePicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
+	$dateTimePicker.Location = New-Object System.Drawing.Point(10, 50)
+	$dateTimePicker.Width = 260
+	$form.Controls.Add($dateTimePicker)
+	
+	# Create OK Button
+	$okButton = New-Object System.Windows.Forms.Button
+	$okButton.Text = "OK"
+	$okButton.Location = New-Object System.Drawing.Point(110, 100)
+	$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $okButton
+	$form.Controls.Add($okButton)
+	
+	# Show the form and capture the result
+	$dialogResult = $form.ShowDialog()
+	
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write-Log -Message "Date selection canceled by user. Exiting script." -Level Warning
+		return
+	}
+	
+	# ---------------------------------------------------------------------------------------------
+	# 3) Retrieve and format the selected date
+	# ---------------------------------------------------------------------------------------------
+	$snippetDate = $dateTimePicker.Value
+	$formattedDate = $snippetDate.ToString('MMddyyyy') # MMDDYYYY format
+	
+	Write-Log -Message "Selected date: $formattedDate" -Level Info
+	
+	# ---------------------------------------------------------------------------------------------
+	# 4) Construct ZX folder path from $OfficePath + $StoreNumber
 	#    ZX folder: $OfficePath\ZX${StoreNumber}901
 	# ---------------------------------------------------------------------------------------------
-	$xeFolderPath = Join-Path $OfficePath "XE${StoreNumber}901"
 	$zxFolderPath = Join-Path $OfficePath "ZX${StoreNumber}901"
 	
 	# ---------------------------------------------------------------------------------------------
-	# 2) Make sure the XE folder exists
+	# 5) Confirm the ZX folder exists
 	# ---------------------------------------------------------------------------------------------
-	if (-not (Test-Path -Path $xeFolderPath))
+	if (-not (Test-Path -Path $zxFolderPath))
 	{
-		Write-Log -Message "XE folder not found: $xeFolderPath" -Level Error
+		Write-Log -Message "ZX folder not found: $zxFolderPath." -Level Error
 		return
 	}
 	
 	# ---------------------------------------------------------------------------------------------
-	# 3) Grab all FATAL* files from the XE folder
+	# 6) Build the file prefix: YMMDDSSS (ignoring lane)
+	#     Y = last digit of year
+	#     MM = 2-digit month
+	#     DD = 2-digit day
+	#     SSS = store number (3 digits, e.g., "001")
 	# ---------------------------------------------------------------------------------------------
-	$fatalFiles = Get-ChildItem -Path $xeFolderPath -Filter 'FATAL*' -File -ErrorAction SilentlyContinue
-	if (-not $fatalFiles)
+	$yearLastDigit = ($snippetDate.Year % 10)
+	$mm = $snippetDate.ToString('MM')
+	$dd = $snippetDate.ToString('dd')
+	$filePrefix = "$yearLastDigit$mm$dd$StoreNumber" # e.g., 41227001
+	
+	Write-Log -Message "Looking for files named '$filePrefix.*' in $zxFolderPath..." -Level Info
+	
+	# ---------------------------------------------------------------------------------------------
+	# 7) Find matching EJ files in ZX folder: e.g., 41227001.*
+	# ---------------------------------------------------------------------------------------------
+	$searchPattern = "$filePrefix.*"
+	$matchingFiles = Get-ChildItem -Path $zxFolderPath -Filter $searchPattern -File -ErrorAction SilentlyContinue
+	
+	if (-not $matchingFiles)
 	{
-		Write-Log -Message "No FATAL* files found in: $xeFolderPath" -Level Warning
+		Write-Log -Message "No files matching '$searchPattern' found in $zxFolderPath." -Level Warning
 		return
 	}
 	
-	Write-Log -Message "Found $($fatalFiles.Count) FATAL* file(s) in: $xeFolderPath" -Level Info
+	Write-Log -Message "Found $($matchingFiles.Count) file(s) to fix." -Level Info
 	
 	# ---------------------------------------------------------------------------------------------
-	# 4) For each FATAL file, read the snippet, parse store/date, fix matching EJ files
+	# 8) For each matching EJ file, remove lines from <trs F10... up to <trs F1068...
 	# ---------------------------------------------------------------------------------------------
-	foreach ($fatalFile in $fatalFiles)
+	foreach ($file in $matchingFiles)
 	{
-		Write-Log -Message "Processing FATAL file: $($fatalFile.FullName)" -Level Warning
+		# [Optional] Skip files that have ".bak" anywhere in their name 
+		# to avoid infinite backup loops:
+		if ($file.Extension -eq ".bak")
+		{
+			Write-Log -Message "Skipping backup file: $($file.Name)" -Level Verbose
+			continue
+		}
 		
-		# 4a) Read the file contents
+		Write-Log -Message "Fixing lines in: $($file.FullName)" -Level Info
+		
+		# Read the file lines
 		try
 		{
-			$content = Get-Content -Path $fatalFile.FullName -ErrorAction Stop
+			$originalLines = Get-Content -Path $file.FullName -ErrorAction Stop
 		}
 		catch
 		{
-			Write-Log -Message "Could not read file: $($fatalFile.FullName). Skipping." -Level Error
+			Write-Log -Message "Failed to read EJ file: $($file.FullName). Skipping." -Level Error
 			continue
 		}
 		
-		$joinedContent = $content -join "`n"
+		# Prepare a list for the fixed lines
+		$fixedLines = New-Object System.Collections.Generic.List[string]
 		
-		# 4b) Check if we have the special "FATAL ERROR" snippet
-		#     (Adjust these patterns to match exactly what you need.)
-		$hasFatalSnippet = (
-			($joinedContent -match 'Subject:\s*FATAL ERROR') `
-			-and ($joinedContent -match 'X-Priority:\s*1') `
-			-and ($joinedContent -match 'FILE:\s*EJ_LIST_TRS\.SQI\s*LINE:\s*18') `
-			-and ($joinedContent -match 'MSG:\s*Error in c:\\storeman\\Office\\CGI\\ej_list_trs_frame\.htm') `
-			-and ($joinedContent -match 'Error in c:\\storeman\\Office\\CGI\\EJ_LIST_TRS_TMP\.htm')
-		)
+		$skip = $false
 		
-		if (-not $hasFatalSnippet)
+		foreach ($line in $originalLines)
 		{
-			Write-Log -Message "File does not contain the required FATAL ERROR snippet. Skipping." -Level Verbose
-			continue
-		}
-		
-		# 4c) Parse the Date line. Example: "Date: Fri, 27 Dec 2024 15:58:50"
-		$dateLine = $content | Where-Object { $_ -match '^Date:\s*' }
-		if (-not $dateLine)
-		{
-			Write-Log -Message "No 'Date:' line found in snippet. Skipping." -Level Error
-			continue
-		}
-		if ($dateLine -match '^Date:\s*(.+)$')
-		{
-			$dateString = $Matches[1] # e.g. "Fri, 27 Dec 2024 15:58:50"
-			try
+			# 1) Start skipping at '</trs F10'
+			if ($line -match '^\s*<trs\s+F10\b')
 			{
-				$snippetDate = [DateTime]::Parse($dateString)
-			}
-			catch
-			{
-				Write-Log -Message "Failed to parse date: $dateLine" -Level Error
-				continue
-			}
-		}
-		else
-		{
-			Write-Log -Message "Could not parse date from line: $dateLine" -Level Error
-			continue
-		}
-		
-		# 4d) Build the file prefix: YMMDDSSS (ignoring lane)
-		#     Y = last digit of year
-		#     MM = 2-digit month
-		#     DD = 2-digit day
-		#     SSS = store number (3 digits, e.g. "001")
-		$yearLastDigit = ($snippetDate.Year % 10)
-		$mm = $snippetDate.ToString('MM')
-		$dd = $snippetDate.ToString('dd')
-		$filePrefix = "$($yearLastDigit)$mm$dd$StoreNumber" # e.g. 41227001
-		
-		Write-Log -Message "Looking for files named '$filePrefix.*' in $zxFolderPath..." -Level Info
-		
-		# -----------------------------------------------------------------------------------------
-		# 4e) Confirm the ZX folder exists
-		# -----------------------------------------------------------------------------------------
-		if (-not (Test-Path -Path $zxFolderPath))
-		{
-			Write-Log -Message "ZX folder not found: $zxFolderPath. Skipping." -Level Error
-			continue
-		}
-		
-		# -----------------------------------------------------------------------------------------
-		# 4f) Find matching files in ZX folder: e.g. 41227001.*
-		# -----------------------------------------------------------------------------------------
-		$searchPattern = "$filePrefix.*"
-		$matchingFiles = Get-ChildItem -Path $zxFolderPath -Filter $searchPattern -File -ErrorAction SilentlyContinue
-		
-		if (-not $matchingFiles)
-		{
-			Write-Log -Message "No files matching '$searchPattern' found in $zxFolderPath." -Level Warning
-			continue
-		}
-		
-		Write-Log -Message "Found $($matchingFiles.Count) file(s) to fix." -Level Info
-		
-		# -----------------------------------------------------------------------------------------
-		# 4g) For each matching EJ file, remove lines from </trs F10... up to <trs F1068...
-		# -----------------------------------------------------------------------------------------
-		foreach ($file in $matchingFiles)
-		{
-			# [Optional] Skip files that have ".bak" anywhere in their name 
-			# to avoid infinite backup loops:
-			if ($file.Extension -eq ".bak")
-			{
-				Write-Log -Message "Skipping backup file: $($file.Name)" -Level Verbose
+				$skip = $true
 				continue
 			}
 			
-			Write-Log -Message "Fixing lines in: $($file.FullName)" -Level Info
-			
-			# Read the file lines
-			try
+			# 2) Stop skipping at '<trs F1068'
+			if ($skip -and ($line -match '^\s*<trs\s+F1068\b'))
 			{
-				$originalLines = Get-Content -Path $file.FullName -ErrorAction Stop
-			}
-			catch
-			{
-				Write-Log -Message "Failed to read EJ file: $($file.FullName). Skipping." -Level Error
+				$skip = $false
+				# We *do* want to keep this line
+				$fixedLines.Add($line)
 				continue
 			}
 			
-			# Prepare a list for the fixed lines
-			$fixedLines = New-Object System.Collections.Generic.List[string]
-			
-			$skip = $false
-			
-			foreach ($line in $originalLines)
+			# Keep the line if we're not skipping
+			if (-not $skip)
 			{
-				# 1) Start skipping at '</trs F10'
-				if ($line -match '^\s*<trs\s+F10\b')
-				{
-					$skip = $true
-					continue
-				}
-				
-				# 2) Stop skipping at '<trs F1068'
-				if ($skip -and ($line -match '^\s*<trs\s+F1068\b'))
-				{
-					$skip = $false
-					# We *do* want to keep this line
-					$fixedLines.Add($line)
-					continue
-				}
-				
-				# Keep the line if we're not skipping
-				if (-not $skip)
-				{
-					$fixedLines.Add($line)
-				}
-			}
-			
-			# Make a backup (only once)
-			$backupPath = "$($file.FullName).bak"
-			try
-			{
-				Copy-Item -Path $file.FullName -Destination $backupPath -Force -ErrorAction Stop
-				Write-Log -Message "Backup created: $backupPath" -Level Verbose
-			}
-			catch
-			{
-				Write-Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." -Level Error
-				continue
-			}
-			
-			# Overwrite the original file with our fixed lines
-			try
-			{
-				$fixedLines | Set-Content -Path $file.FullName -Encoding UTF8 -ErrorAction Stop
-				Write-Log -Message "Done editing: $($file.FullName). Backup: $backupPath" -Level Info
-			}
-			catch
-			{
-				Write-Log -Message "Failed to write fixed content to: $($file.FullName)." -Level Error
-				continue
+				$fixedLines.Add($line)
 			}
 		}
 		
 		# -----------------------------------------------------------------------------------------
-		# 5) Delete the processed FATAL file to prevent reprocessing
+		# 10) Make a backup of the original file
 		# -----------------------------------------------------------------------------------------
+		$backupPath = "$($file.FullName).bak"
 		try
 		{
-			Remove-Item -Path $fatalFile.FullName -Force -ErrorAction Stop
-			Write-Log -Message "Deleted processed FATAL file: $($fatalFile.FullName)" -Level Info
+			Copy-Item -Path $file.FullName -Destination $backupPath -Force -ErrorAction Stop
+			Write-Log -Message "Backup created: $backupPath" -Level Verbose
 		}
 		catch
 		{
-			Write-Log -Message "Failed to delete FATAL file: $($fatalFile.FullName). Please check manually." -Level Error
+			Write-Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." -Level Error
+			continue
+		}
+		
+		# -----------------------------------------------------------------------------------------
+		# 11) Overwrite the original file with the fixed lines in ANSI encoding
+		# -----------------------------------------------------------------------------------------
+		try
+		{
+			$fixedLines | Set-Content -Path $file.FullName -Encoding Default -ErrorAction Stop
+			Write-Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" -Level Info
+		}
+		catch
+		{
+			Write-Log -Message "Failed to write fixed content to: $($file.FullName)." -Level Error
+			continue
 		}
 	}
 }
