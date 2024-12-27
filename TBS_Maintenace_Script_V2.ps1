@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.9.2"
+$VersionNumber = "1.9.3"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1759,6 +1759,13 @@ IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 
 @dbEXEC(UPDATE SCL_TAB SET F2582 = REPLACE(REPLACE(REPLACE(F2582, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
 @dbEXEC(UPDATE SCL_TXT_TAB SET F297 = REPLACE(REPLACE(REPLACE(F297, CHAR(13),' '), CHAR(10),' '), CHAR(9),' '))
 
+/* Delete batches older than 7 days from lanes */
+@dbEXEC("DELETE FROM Header_bat WHERE created_at < DATEADD(day, -7, GETDATE())")
+@dbEXEC("DELETE FROM Header_dct WHERE created_at < DATEADD(day, -7, GETDATE())")
+@dbEXEC("DELETE FROM Header_old WHERE created_at < DATEADD(day, -7, GETDATE())")
+@dbEXEC("DELETE FROM Header_sav WHERE created_at < DATEADD(day, -7, GETDATE())")
+
+
 /* Shrink database and log files */
 ALTER DATABASE LANESQL SET RECOVERY SIMPLE
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD'
@@ -2001,6 +2008,12 @@ UPDATE SCL_TAB SET F1952 = REPLACE(REPLACE(REPLACE(F1952, CHAR(13),' '), CHAR(10
 UPDATE SCL_TAB SET F2581 = REPLACE(REPLACE(REPLACE(F2581, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
 UPDATE SCL_TAB SET F2582 = REPLACE(REPLACE(REPLACE(F2582, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
 UPDATE SCL_TXT_TAB SET F297 = REPLACE(REPLACE(REPLACE(F297, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
+
+/* Delete batches older than 14 days from the server */
+DELETE FROM Header_bat WHERE your_date_column < DATEADD(day, -14, GETDATE());
+DELETE FROM Header_dct WHERE your_date_column < DATEADD(day, -14, GETDATE());
+DELETE FROM Header_old WHERE your_date_column < DATEADD(day, -14, GETDATE());
+DELETE FROM Header_sav WHERE your_date_column < DATEADD(day, -14, GETDATE());
 
 /* Shrink database and log files */
 ALTER DATABASE STORESQL SET RECOVERY SIMPLE;
@@ -4646,6 +4659,449 @@ DROP TABLE $viewName;
 	{
 		Write-Log "Processed Lanes: $($ProcessedLanes -join ', ')" "green"
 		Write-Log "`r`n==================== Pump-AllItems Function Completed ====================" "blue"
+	}
+}
+
+# ===================================================================================================
+#                                       FUNCTION: Pump-Tables
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Allows a user to select a subset of tables (from Get-TableAliases) to extract from SQL Server
+#   and copy to the specified lanes or hosts. Similar to Pump-AllItems but restricted to a user-chosen
+#   list of tables.
+# ===================================================================================================
+
+function Pump-Tables
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	Write-Log "`r`n==================== Starting Pump-Tables Function ====================`r`n" "blue"
+	
+	if (-not (Test-Path $OfficePath))
+	{
+		Write-Log "XF Base Path not found: $OfficePath" "yellow"
+		return
+	}
+	
+	# Prompt for lane selection
+	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
+	if ($selection -eq $null)
+	{
+		Write-Log "Lane processing canceled by user." "yellow"
+		return
+	}
+	$Type = $selection.Type
+	$Lanes = $selection.Lanes
+	
+	# Determine if "All Lanes" is selected
+	$processAllLanes = $false
+	if ($Type -eq "All")
+	{
+		$processAllLanes = $true
+	}
+	
+	# If "All Lanes" is selected, attempt to retrieve LaneContents
+	if ($processAllLanes)
+	{
+		try
+		{
+			$LaneContents = $script:FunctionResults['LaneContents']
+			
+			if ($LaneContents -and $LaneContents.Count -gt 0)
+			{
+				$Lanes = $LaneContents
+			}
+			else
+			{
+				throw "LaneContents is empty or not available."
+			}
+		}
+		catch
+		{
+			$processAllLanes = $false
+		}
+	}
+	
+	# --------------------------------------------------------------------------------------------
+	# Fetch the alias data that Get-TableAliases stored
+	# --------------------------------------------------------------------------------------------
+	if ($script:FunctionResults.ContainsKey('Get-TableAliases'))
+	{
+		$aliasData = $script:FunctionResults['Get-TableAliases']
+		$aliasResults = $aliasData.Aliases
+		$aliasHash = $aliasData.AliasHash
+	}
+	else
+	{
+		Write-Log "Alias data not found. Ensure Get-TableAliases has been run." "red"
+		return
+	}
+	
+	if ($aliasResults.Count -eq 0)
+	{
+		Write-Log "No tables found to process. Exiting Pump-Tables." "red"
+		return
+	}
+	
+	# Prompt user to select which tables to pump
+	$selectedTables = Show-TableSelectionDialog -AliasResults $aliasResults
+	if (-not $selectedTables -or $selectedTables.Count -eq 0)
+	{
+		Write-Log "No tables were selected. Exiting Pump-Tables." "yellow"
+		return
+	}
+	
+	# --------------------------------------------------------------------------------------------
+	# Get the SQL ConnectionString from script-scoped results
+	# --------------------------------------------------------------------------------------------
+	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
+	{
+		Write-Log "Connection string not found. Cannot proceed with Pump-Tables." "red"
+		return
+	}
+	$ConnectionString = $script:FunctionResults['ConnectionString']
+	
+	# Open SQL connection
+	$sqlConnection = New-Object System.Data.SqlClient.SqlConnection
+	$sqlConnection.ConnectionString = $ConnectionString
+	$sqlConnection.Open()
+	
+	# Prepare tracking
+	$generatedFiles = @()
+	$copiedTables = @()
+	$skippedTables = @()
+	
+	# Filter out only the alias entries that match the user's selection
+	$filteredAliasEntries = $aliasResults | Where-Object {
+		$selectedTables -contains $_.Table
+	}
+	
+	# --------------------------------------------------------------------------------------------
+	# Process each user-selected table
+	# --------------------------------------------------------------------------------------------
+	foreach ($aliasEntry in $filteredAliasEntries)
+	{
+		$table = $aliasEntry.Table # e.g. "XYZ_TAB"
+		$tableAlias = $aliasEntry.Alias # e.g. "XYZ"
+		
+		if (-not $table -or -not $tableAlias)
+		{
+			Write-Log "Invalid table or alias: $($aliasEntry | ConvertTo-Json)" "yellow"
+			continue
+		}
+		
+		# Check row count
+		$dataCheckQuery = "SELECT COUNT(*) FROM [$table]"
+		$cmdCheck = $sqlConnection.CreateCommand()
+		$cmdCheck.CommandText = $dataCheckQuery
+		
+		try
+		{
+			$rowCount = $cmdCheck.ExecuteScalar()
+		}
+		catch
+		{
+			Write-Log "Error checking row count for '$table': $_" "red"
+			continue
+		}
+		
+		# Skip tables with zero rows
+		if ($rowCount -eq 0)
+		{
+			$skippedTables += $table
+			continue
+		}
+		
+		Write-Log "Processing table '$table'..." "blue"
+		
+		# Remove "_TAB" suffix for the base name
+		$baseTable = $table -replace '_TAB$', ''
+		
+		# File name for the extracted data
+		$sqlFileName = "${baseTable}_Load.sql"
+		$localTempPath = Join-Path $env:TEMP $sqlFileName
+		
+		# Check for a recent file in TEMP (less than 1 hour old)
+		$useExistingFile = $false
+		if (Test-Path $localTempPath)
+		{
+			$fileInfo = Get-Item $localTempPath
+			$fileAge = (Get-Date) - $fileInfo.LastWriteTime
+			if ($fileAge.TotalHours -le 1)
+			{
+				Write-Log "Recent SQL file found for '$table' in %TEMP%. Using existing file." "green"
+				$useExistingFile = $true
+			}
+			else
+			{
+				Write-Log "SQL file for '$table' is older than 1 hour. Regenerating." "yellow"
+			}
+		}
+		
+		# ----------------------------------------------------------------------------------------
+		# Generate or reuse the _Load.sql file
+		# ----------------------------------------------------------------------------------------
+		if (-not $useExistingFile)
+		{
+			try
+			{
+				# Create a StreamWriter in Windows-1252 encoding, CRLF endings
+				$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $ansiPcEncoding)
+				$streamWriter.NewLine = "`r`n" # Force CRLF
+				
+				# 1) Gather column data types
+				$columnDataTypesQuery = @"
+SELECT COLUMN_NAME, DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME = '$table'
+ORDER BY ORDINAL_POSITION
+"@
+				$cmdColumnTypes = $sqlConnection.CreateCommand()
+				$cmdColumnTypes.CommandText = $columnDataTypesQuery
+				$readerColumnTypes = $cmdColumnTypes.ExecuteReader()
+				
+				$columnDataTypes = [ordered]@{ }
+				while ($readerColumnTypes.Read())
+				{
+					$colName = $readerColumnTypes["COLUMN_NAME"]
+					$dataType = $readerColumnTypes["DATA_TYPE"]
+					$columnDataTypes[$colName] = $dataType
+				}
+				$readerColumnTypes.Close()
+				
+				# 2) Retrieve primary key columns
+				$pkQuery = @"
+SELECT c.COLUMN_NAME
+FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c
+    ON c.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+    AND c.TABLE_NAME = tc.TABLE_NAME
+WHERE tc.TABLE_NAME = '$table' AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+ORDER BY c.ORDINAL_POSITION
+"@
+				$cmdPK = $sqlConnection.CreateCommand()
+				$cmdPK.CommandText = $pkQuery
+				$readerPK = $cmdPK.ExecuteReader()
+				$pkColumns = @()
+				while ($readerPK.Read())
+				{
+					$pkColumns += $readerPK["COLUMN_NAME"]
+				}
+				$readerPK.Close()
+				
+				# If no PK, default to first column
+				if ($pkColumns.Count -eq 0)
+				{
+					$primaryKeyColumns = @()
+					$cmdFirstColumn = $sqlConnection.CreateCommand()
+					$cmdFirstColumn.CommandText = "SELECT TOP 1 * FROM [$table]"
+					$readerFirstColumn = $cmdFirstColumn.ExecuteReader()
+					
+					if ($readerFirstColumn.Read())
+					{
+						$primaryKeyColumns = @($readerFirstColumn.GetName(0))
+					}
+					$readerFirstColumn.Close()
+				}
+				else
+				{
+					$primaryKeyColumns = $pkColumns
+				}
+				
+				# Build the key string for @UPDATE_BATCH
+				$keyString = ($primaryKeyColumns | ForEach-Object { "$_=:$_" }) -join " AND "
+				
+				# 3) Generate @CREATE, CREATE VIEW, and INSERT lines
+				$viewName = $baseTable.Substring(0, 1).ToUpper() + $baseTable.Substring(1).ToLower() + '_Load'
+				$columnList = ($columnDataTypes.Keys) -join ','
+				
+				$header = @"
+@WIZRPL(DBASE_TIMEOUT=E);
+
+@CREATE($table,$tableAlias);
+CREATE VIEW $viewName AS SELECT $columnList FROM $table;
+
+INSERT INTO $viewName VALUES
+"@
+				# Normalize line endings to CRLF
+				$header = $header -replace "(\r\n|\n|\r)", "`r`n"
+				$streamWriter.WriteLine($header.TrimEnd())
+				
+				# 4) Fetch data from the table
+				$dataQuery = "SELECT * FROM [$table]"
+				$cmdData = $sqlConnection.CreateCommand()
+				$cmdData.CommandText = $dataQuery
+				$readerData = $cmdData.ExecuteReader()
+				
+				$firstRow = $true
+				while ($readerData.Read())
+				{
+					if ($firstRow)
+					{
+						$firstRow = $false
+					}
+					else
+					{
+						$streamWriter.WriteLine(",")
+					}
+					
+					$values = @()
+					foreach ($col in $columnDataTypes.Keys)
+					{
+						$val = $readerData[$col]
+						$dataType = $columnDataTypes[$col]
+						
+						if ($val -eq $null -or $val -is [System.DBNull])
+						{
+							$values += ""
+							continue
+						}
+						
+						switch -Wildcard ($dataType)
+						{
+							{ $_ -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext') } {
+								$escapedVal = $val.ToString().Replace("'", "''")
+								$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+								$values += "'$escapedVal'"
+								break
+							}
+							{ $_ -in @('datetime', 'smalldatetime', 'date', 'datetime2') } {
+								$dayOfYear = $val.DayOfYear.ToString("D3")
+								$formattedDate = "'{0}{1} {2}'" -f $val.Year, $dayOfYear, $val.ToString("HH:mm:ss")
+								$values += $formattedDate
+								break
+							}
+							{ $_ -eq 'bit' } {
+								$bitVal = if ($val) { "1" }
+								else { "0" }
+								$values += $bitVal
+								break
+							}
+							{ $_ -in @('decimal', 'numeric', 'float', 'real', 'money', 'smallmoney') } {
+								if ([math]::Floor($val) -eq $val)
+								{
+									$values += $val.ToString()
+								}
+								else
+								{
+									$values += $val.ToString("0.00")
+								}
+								break
+							}
+							{ $_ -in @('tinyint', 'smallint', 'int', 'bigint') } {
+								$values += $val.ToString()
+								break
+							}
+							default {
+								# Fallback to string
+								$escapedVal = $val.ToString().Replace("'", "''")
+								$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+								$values += "'$escapedVal'"
+								break
+							}
+						}
+					}
+					
+					$insertStatement = "(" + ($values -join ",") + ")"
+					$insertStatement = $insertStatement -replace "(\r\n|\n|\r)", " "
+					$streamWriter.Write($insertStatement)
+				}
+				$readerData.Close()
+				
+				# End the INSERT
+				$streamWriter.WriteLine(";")
+				$streamWriter.WriteLine()
+				
+				# Footer
+				$footer = @"
+@UPDATE_BATCH(JOB=ADD,TAR=$table,
+KEY=$keyString,
+SRC=SELECT * FROM $viewName);
+
+DROP TABLE $viewName;
+
+@WIZCLR(DBASE_TIMEOUT);
+"@
+				$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
+				$streamWriter.WriteLine($footer.TrimEnd())
+				$streamWriter.WriteLine()
+				
+				$streamWriter.Flush()
+				$streamWriter.Close()
+				$streamWriter.Dispose()
+				
+				$generatedFiles += $localTempPath
+				$copiedTables += $table
+			}
+			catch
+			{
+				Write-Log "Error generating SQL for table '$table': $_" "red"
+				continue
+			}
+		}
+		else
+		{
+			# Reuse existing file
+			$generatedFiles += $localTempPath
+			$copiedTables += $table
+		}
+	} # end foreach table
+	
+	$sqlConnection.Close()
+	
+	# Summaries
+	if ($copiedTables.Count -gt 0)
+	{
+		Write-Log "Successfully generated _Load.sql files for tables: $($copiedTables -join ', ')" "green"
+	}
+	if ($skippedTables.Count -gt 0)
+	{
+		Write-Log "Tables with no data (skipped): $($skippedTables -join ', ')" "yellow"
+	}
+	
+	# --------------------------------------------------------------------------------------------
+	# Copy the generated .sql files to each selected lane
+	# --------------------------------------------------------------------------------------------
+	Write-Log "`r`nDetermining selected lanes...`r`n" "magenta"
+	$ProcessedLanes = @()
+	foreach ($lane in $Lanes)
+	{
+		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${lane}"
+		
+		if (Test-Path $LaneLocalPath)
+		{
+			Write-Log "Copying _Load.sql files to Lane #$lane..." "blue"
+			try
+			{
+				foreach ($filePath in $generatedFiles)
+				{
+					$fileName = [System.IO.Path]::GetFileName($filePath)
+					$destinationPath = Join-Path $LaneLocalPath $fileName
+					
+					Copy-Item -Path $filePath -Destination $destinationPath -Force -ErrorAction Stop
+				}
+				Write-Log "Successfully copied all generated _Load.sql files to Lane #$lane." "green"
+				$ProcessedLanes += $lane
+			}
+			catch
+			{
+				Write-Log "Error copying files to Lane #${lane}: $_" "red"
+			}
+		}
+		else
+		{
+			Write-Log "Lane #$lane not found at path: $LaneLocalPath" "yellow"
+		}
+	}
+	
+	Write-Log "`r`nTotal Lane folders processed: $($ProcessedLanes.Count)" "green"
+	if ($ProcessedLanes.Count -gt 0)
+	{
+		Write-Log "Processed Lanes: $($ProcessedLanes -join ', ')" "green"
+		Write-Log "`r`n==================== Pump-Tables Function Completed ====================" "blue"
 	}
 }
 
@@ -7526,6 +7982,127 @@ function Show-SelectionDialog
 }
 
 # ===================================================================================================
+#                                FUNCTION: Show-TableSelectionDialog
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Displays a GUI dialog listing all discovered tables from Get-TableAliases in a checked list box,
+#   with buttons to Select All or Deselect All. Returns the list of checked table names (with _TAB).
+# ===================================================================================================
+function Show-TableSelectionDialog
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[System.Collections.ArrayList]$AliasResults
+	)
+	
+	# We assume $AliasResults is the .Aliases property from Get-TableAliases
+	# that contains objects with .Table and .Alias, e.g. "XYZ_TAB" and "XYZ".
+	
+	# Load necessary assemblies
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	# Create the form
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Select Tables to Process"
+	$form.Size = New-Object System.Drawing.Size(450, 550)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	# Label
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "Please select the tables you want to pump:"
+	$label.Location = New-Object System.Drawing.Point(10, 10)
+	$label.AutoSize = $true
+	$form.Controls.Add($label)
+	
+	# CheckedListBox
+	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
+	$checkedListBox.Location = New-Object System.Drawing.Point(10, 40)
+	$checkedListBox.Size = New-Object System.Drawing.Size(400, 400)
+	$checkedListBox.CheckOnClick = $true
+	$form.Controls.Add($checkedListBox)
+	
+	# Populate the checked list box with unique table names (with _TAB)
+	# Make a distinct list of tables from the $AliasResults
+	$distinctTables = $AliasResults |
+	Select-Object -ExpandProperty Table -Unique |
+	Sort-Object
+	
+	foreach ($tableName in $distinctTables)
+	{
+		[void]$checkedListBox.Items.Add($tableName, $false)
+	}
+	
+	# Button: Select All
+	$btnSelectAll = New-Object System.Windows.Forms.Button
+	$btnSelectAll.Text = "Select All"
+	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 450)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$form.Controls.Add($btnSelectAll)
+	
+	$btnSelectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $true)
+			}
+		})
+	
+	# Button: Deselect All
+	$btnDeselectAll = New-Object System.Windows.Forms.Button
+	$btnDeselectAll.Text = "Deselect All"
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(120, 450)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$form.Controls.Add($btnDeselectAll)
+	
+	$btnDeselectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $false)
+			}
+		})
+	
+	# OK Button
+	$btnOK = New-Object System.Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Location = New-Object System.Drawing.Point(240, 450)
+	$btnOK.Size = New-Object System.Drawing.Size(80, 30)
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.Controls.Add($btnOK)
+	
+	# Cancel Button
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(330, 450)
+	$btnCancel.Size = New-Object System.Drawing.Size(80, 30)
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.Controls.Add($btnCancel)
+	
+	$form.AcceptButton = $btnOK
+	$form.CancelButton = $btnCancel
+	
+	# Show the dialog
+	$dialogResult = $form.ShowDialog()
+	
+	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
+	{
+		# Gather checked items
+		$selectedTables = @()
+		foreach ($item in $checkedListBox.CheckedItems)
+		{
+			$selectedTables += $item
+		}
+		return $selectedTables
+	}
+	else
+	{
+		return $null
+	}
+}
+
+# ===================================================================================================
 #                                       SECTION: Initialize GUI
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -7859,11 +8436,11 @@ if (-not $SilentMode)
 			$form.Controls.Add($repairButton)
 			
 			$storeButton5 = New-Object System.Windows.Forms.Button
-			$storeButton5.Text = "Pump All Items"
+			$storeButton5.Text = "Pump Table to Lane"
 			$storeButton5.Location = New-Object System.Drawing.Point(50, 580)
 			$storeButton5.Size = New-Object System.Drawing.Size(200, 40)
 			$storeButton5.Add_Click({
-					Pump-AllItems -StoreNumber $StoreNumber
+					Pump-Tables -StoreNumber $StoreNumber
 				})
 			$form.Controls.Add($storeButton5)
 			
