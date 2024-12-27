@@ -1839,7 +1839,8 @@ function Fix-Journal
 		try
 		{
 			$fixedLines | Set-Content -Path $file.FullName -Encoding Default -ErrorAction Stop
-			Write-Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
+		#	Write-Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
+			Write-Log -Message "Successfully edited: $($file.FullName)" "green"
 		}
 		catch
 		{
