@@ -5081,7 +5081,17 @@ DROP TABLE $viewName;
 					$fileName = [System.IO.Path]::GetFileName($filePath)
 					$destinationPath = Join-Path $LaneLocalPath $fileName
 					
+					# Copy the file
 					Copy-Item -Path $filePath -Destination $destinationPath -Force -ErrorAction Stop
+					
+					# **Clear the Archive attribute on the copied file**
+					$fileItem = Get-Item $destinationPath
+					if ($fileItem.Attributes -band [System.IO.FileAttributes]::Archive)
+					{
+						$fileItem.Attributes -= [System.IO.FileAttributes]::Archive
+						Write-Log "Cleared Archive attribute for '$fileName' in Lane #$lane." "green"
+					}
+					
 				}
 				Write-Log "Successfully copied all generated _Load.sql files to Lane #$lane." "green"
 				$ProcessedLanes += $lane
