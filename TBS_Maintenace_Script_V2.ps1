@@ -1680,6 +1680,7 @@ function Clear-XEFolder
 #   - Searches for FATAL* snippets.
 #   - Identifies related EJ files based on the date/store data.
 #   - Repairs lines in matching EJ files.
+#   - Deletes processed FATAL files to avoid reprocessing.
 # ===================================================================================================
 
 function Process-FatalErrorsFromXEFolder
@@ -1707,7 +1708,7 @@ function Process-FatalErrorsFromXEFolder
 	# ---------------------------------------------------------------------------------------------
 	if (-not (Test-Path -Path $xeFolderPath))
 	{
-		Write-Host "XE folder not found: $xeFolderPath" -ForegroundColor Red
+		Write-Log -Message "XE folder not found: $xeFolderPath" -Level Error
 		return
 	}
 	
@@ -1717,19 +1718,18 @@ function Process-FatalErrorsFromXEFolder
 	$fatalFiles = Get-ChildItem -Path $xeFolderPath -Filter 'FATAL*' -File -ErrorAction SilentlyContinue
 	if (-not $fatalFiles)
 	{
-		Write-Host "No FATAL* files found in: $xeFolderPath" -ForegroundColor Yellow
+		Write-Log -Message "No FATAL* files found in: $xeFolderPath" -Level Warning
 		return
 	}
 	
-	Write-Host "Found $($fatalFiles.Count) FATAL* file(s) in: $xeFolderPath" -ForegroundColor Cyan
+	Write-Log -Message "Found $($fatalFiles.Count) FATAL* file(s) in: $xeFolderPath" -Level Info
 	
 	# ---------------------------------------------------------------------------------------------
 	# 4) For each FATAL file, read the snippet, parse store/date, fix matching EJ files
 	# ---------------------------------------------------------------------------------------------
 	foreach ($fatalFile in $fatalFiles)
 	{
-		
-		Write-Host "Processing FATAL file: $($fatalFile.FullName)" -ForegroundColor Yellow
+		Write-Log -Message "Processing FATAL file: $($fatalFile.FullName)" -Level Warning
 		
 		# 4a) Read the file contents
 		try
@@ -1738,7 +1738,7 @@ function Process-FatalErrorsFromXEFolder
 		}
 		catch
 		{
-			Write-Host "Could not read file: $($fatalFile.FullName). Skipping." -ForegroundColor Red
+			Write-Log -Message "Could not read file: $($fatalFile.FullName). Skipping." -Level Error
 			continue
 		}
 		
@@ -1756,7 +1756,7 @@ function Process-FatalErrorsFromXEFolder
 		
 		if (-not $hasFatalSnippet)
 		{
-			Write-Host "File does not contain the required FATAL ERROR snippet. Skipping." -ForegroundColor DarkGray
+			Write-Log -Message "File does not contain the required FATAL ERROR snippet. Skipping." -Level Verbose
 			continue
 		}
 		
@@ -1764,7 +1764,7 @@ function Process-FatalErrorsFromXEFolder
 		$dateLine = $content | Where-Object { $_ -match '^Date:\s*' }
 		if (-not $dateLine)
 		{
-			Write-Host "No 'Date:' line found in snippet. Skipping." -ForegroundColor Red
+			Write-Log -Message "No 'Date:' line found in snippet. Skipping." -Level Error
 			continue
 		}
 		if ($dateLine -match '^Date:\s*(.+)$')
@@ -1776,13 +1776,13 @@ function Process-FatalErrorsFromXEFolder
 			}
 			catch
 			{
-				Write-Host "Failed to parse date: $dateLine" -ForegroundColor Red
+				Write-Log -Message "Failed to parse date: $dateLine" -Level Error
 				continue
 			}
 		}
 		else
 		{
-			Write-Host "Could not parse date from line: $dateLine" -ForegroundColor Red
+			Write-Log -Message "Could not parse date from line: $dateLine" -Level Error
 			continue
 		}
 		
@@ -1796,49 +1796,56 @@ function Process-FatalErrorsFromXEFolder
 		$dd = $snippetDate.ToString('dd')
 		$filePrefix = "$($yearLastDigit)$mm$dd$StoreNumber" # e.g. 41227001
 		
-		Write-Host "Looking for files named '$filePrefix.*' in $zxFolderPath..." -ForegroundColor White
+		Write-Log -Message "Looking for files named '$filePrefix.*' in $zxFolderPath..." -Level Info
 		
 		# -----------------------------------------------------------------------------------------
 		# 4e) Confirm the ZX folder exists
 		# -----------------------------------------------------------------------------------------
 		if (-not (Test-Path -Path $zxFolderPath))
 		{
-			Write-Host "ZX folder not found: $zxFolderPath. Skipping." -ForegroundColor Red
+			Write-Log -Message "ZX folder not found: $zxFolderPath. Skipping." -Level Error
 			continue
 		}
 		
 		# -----------------------------------------------------------------------------------------
 		# 4f) Find matching files in ZX folder: e.g. 41227001.*
 		# -----------------------------------------------------------------------------------------
-		$searchPattern = $filePrefix + ".*"
-		$matchingFiles = Get-ChildItem -Path $zxFolderPath -Filter $searchPattern -File
+		$searchPattern = "$filePrefix.*"
+		$matchingFiles = Get-ChildItem -Path $zxFolderPath -Filter $searchPattern -File -ErrorAction SilentlyContinue
 		
 		if (-not $matchingFiles)
 		{
-			Write-Host "No files matching '$searchPattern' found in $zxFolderPath." -ForegroundColor Yellow
+			Write-Log -Message "No files matching '$searchPattern' found in $zxFolderPath." -Level Warning
 			continue
 		}
 		
-		Write-Host "Found $($matchingFiles.Count) file(s) to fix." -ForegroundColor Green
+		Write-Log -Message "Found $($matchingFiles.Count) file(s) to fix." -Level Info
 		
 		# -----------------------------------------------------------------------------------------
 		# 4g) For each matching EJ file, remove lines from </trs F10... up to <trs F1068...
 		# -----------------------------------------------------------------------------------------
 		foreach ($file in $matchingFiles)
 		{
-			
 			# [Optional] Skip files that have ".bak" anywhere in their name 
 			# to avoid infinite backup loops:
 			if ($file.Extension -eq ".bak")
 			{
-				Write-Host "Skipping backup file: $($file.Name)" -ForegroundColor DarkGray
+				Write-Log -Message "Skipping backup file: $($file.Name)" -Level Verbose
 				continue
 			}
 			
-			Write-Host "Fixing lines in: $($file.FullName)" -ForegroundColor Cyan
+			Write-Log -Message "Fixing lines in: $($file.FullName)" -Level Info
 			
 			# Read the file lines
-			$originalLines = Get-Content -Path $file.FullName -ErrorAction Stop
+			try
+			{
+				$originalLines = Get-Content -Path $file.FullName -ErrorAction Stop
+			}
+			catch
+			{
+				Write-Log -Message "Failed to read EJ file: $($file.FullName). Skipping." -Level Error
+				continue
+			}
 			
 			# Prepare a list for the fixed lines
 			$fixedLines = New-Object System.Collections.Generic.List[string]
@@ -1871,13 +1878,42 @@ function Process-FatalErrorsFromXEFolder
 			}
 			
 			# Make a backup (only once)
-			$backupPath = $file.FullName + ".bak"
-			Copy-Item -Path $file.FullName -Destination $backupPath -Force
+			$backupPath = "$($file.FullName).bak"
+			try
+			{
+				Copy-Item -Path $file.FullName -Destination $backupPath -Force -ErrorAction Stop
+				Write-Log -Message "Backup created: $backupPath" -Level Verbose
+			}
+			catch
+			{
+				Write-Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." -Level Error
+				continue
+			}
 			
 			# Overwrite the original file with our fixed lines
-			$fixedLines | Set-Content -Path $file.FullName -Encoding UTF8
-			
-			Write-Host "Done editing: $($file.FullName). Backup: $backupPath" -ForegroundColor Green
+			try
+			{
+				$fixedLines | Set-Content -Path $file.FullName -Encoding UTF8 -ErrorAction Stop
+				Write-Log -Message "Done editing: $($file.FullName). Backup: $backupPath" -Level Info
+			}
+			catch
+			{
+				Write-Log -Message "Failed to write fixed content to: $($file.FullName)." -Level Error
+				continue
+			}
+		}
+		
+		# -----------------------------------------------------------------------------------------
+		# 5) Delete the processed FATAL file to prevent reprocessing
+		# -----------------------------------------------------------------------------------------
+		try
+		{
+			Remove-Item -Path $fatalFile.FullName -Force -ErrorAction Stop
+			Write-Log -Message "Deleted processed FATAL file: $($fatalFile.FullName)" -Level Info
+		}
+		catch
+		{
+			Write-Log -Message "Failed to delete FATAL file: $($fatalFile.FullName). Please check manually." -Level Error
 		}
 	}
 }
