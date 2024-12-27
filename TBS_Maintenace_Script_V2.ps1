@@ -1816,8 +1816,9 @@ function Fix-Journal
 			}
 		}
 		
-		# -----------------------------------------------------------------------------------------
+		<# -----------------------------------------------------------------------------------------
 		# 10) Make a backup of the original file
+		# * Commented out for now
 		# -----------------------------------------------------------------------------------------
 		$backupPath = "$($file.FullName).bak"
 		try
@@ -1830,6 +1831,7 @@ function Fix-Journal
 			Write-Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." "red"
 			continue
 		}
+		#>
 		
 		# -----------------------------------------------------------------------------------------
 		# 11) Overwrite the original file with the fixed lines in ANSI encoding
