@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.9.1"
+$VersionNumber = "1.9.2"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1850,6 +1850,92 @@ EXEC sp_configure 'max server memory (MB)', @Memory25PercentMB;
 RECONFIGURE;
 EXEC sp_configure 'show advanced options', 0;
 RECONFIGURE;
+
+/* Create ScaleCommApp Triggers */
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateOBJ%')
+DROP TRIGGER [dbo].[SMApp_UpdateOBJ]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdatePOS%')
+DROP TRIGGER [dbo].[SMApp_UpdatePOS]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdatePrice%')
+DROP TRIGGER [dbo].[SMApp_UpdatePrice]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateSCL%')
+DROP TRIGGER [dbo].[SMApp_UpdateSCL]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateSCL_TXT%')
+DROP TRIGGER [dbo].[SMApp_UpdateSCL_TXT]
+GO
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdateOBJ]
+   ON  [dbo].[OBJ_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+	INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+	SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+END;
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdatePOS]
+   ON  [dbo].[POS_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+		SET NOCOUNT ON;
+		INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+		SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000' 
+END;
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdatePrice]
+   ON  [dbo].[PRICE_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+		SET NOCOUNT ON;
+		INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+		SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000' 
+END;
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdateSCL]
+   ON  [dbo].[SCL_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+       INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+	SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+END;
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER  [dbo].[SMApp_UpdateSCL_TXT]
+   ON  [dbo].[SCL_TXT_TAB] 
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+       INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+       SELECT '002'+cast(RIGHT('00000'+ CONVERT(VARCHAR,F267),5) as varchar)+'00000',0, GETDATE() 
+       FROM inserted,OBJ_TAB 
+       WHERE '002'+cast(RIGHT('00000'+ CONVERT(VARCHAR,F267),5) as varchar)+'00000' = F01 
+       and SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+ 
+END;
 
 /* Truncate unnecessary tables */
 IF OBJECT_ID('COST_REV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('COST_REV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE COST_REV;
