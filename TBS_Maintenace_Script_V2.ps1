@@ -1793,7 +1793,7 @@ function Fix-Journal
 		
 		foreach ($line in $originalLines)
 		{
-			# 1) Start skipping at '</trs F10'
+			# 1) Start skipping at '<trs F10'
 			if ($line -match '^\s*<trs\s+F10\b')
 			{
 				$skip = $true
@@ -1980,7 +1980,6 @@ IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 
 @dbEXEC("DELETE FROM Header_old WHERE F909 < DATEADD(day, -1, GETDATE())")
 @dbEXEC("DELETE FROM Header_sav WHERE F909 < DATEADD(day, -1, GETDATE())")
 
-
 /* Shrink database and log files */
 ALTER DATABASE LANESQL SET RECOVERY SIMPLE
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD'
@@ -2019,7 +2018,6 @@ RECONFIGURE;
 	# Define the names of the sections to skip
 	$sectionsToSkip = @(
 		'Set a long timeout so the entire script runs',
-		'Delete bad SMS items',
 		'Clear the long database timeout'
 	)
 	
@@ -2047,6 +2045,10 @@ RECONFIGURE;
 		else
 		{
 			# 3) Otherwise, keep the block exactly
+			# Additionally, remove the @dbEXEC() wrappers but keep the inner SQL commands
+			# Use regex to replace @dbEXEC(...) with the content inside the parentheses
+			# This handles both @dbEXEC("...") and @dbEXEC(...) without quotes
+			$sqlCommands = $sqlCommands -replace '@dbEXEC\((?:\"(.*?)\"|(.*?))\)', '$1$2'
 			$LaneSQLFiltered += "/* $sectionName */`r`n$sqlCommands`r`n`r`n"
 		}
 	}
