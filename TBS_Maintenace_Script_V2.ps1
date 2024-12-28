@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.9.5"
+$VersionNumber = "1.9.6"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -642,14 +642,14 @@ function Get-DatabaseConnectionString
 }
 
 # ===================================================================================================
-#                                      FUNCTION: Get-StoreNumberGUI
+#                                      FUNCTION: Get-StoreNumber
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Retrieves the store number via GUI prompts or configuration files.
 #   Stores the result in $script:FunctionResults['StoreNumber'].
 # ===================================================================================================
 
-function Get-StoreNumberGUI
+function Get-StoreNumber
 {
 	param (
 		[string]$IniFilePath = "$StartupIniPath",
@@ -1032,15 +1032,88 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 }
 
 # ===================================================================================================
-#                                       SECTION: Counting Functions
+#                           FUNCTION: Retrieve-Nodes
 # ---------------------------------------------------------------------------------------------------
-# Description:
-#   Contains functions to count various items like stores, lanes, servers, and hosts.
-#   First attempts to read counts from the TER_TAB database table.
-#   Falls back to the current mechanism if database access fails.
+# **Purpose:**
+#   The `Retrieve-Nodes` function is designed to count various entities within a 
+#   system, specifically **hosts**, **stores**, **lanes**, and **servers**. It primarily retrieves 
+#   these nodes from the `TER_TAB` database table. If database access fails, it gracefully falls 
+#   back to a file system-based mechanism to obtain the counts. Additionally, the function updates 
+#   GUI labels to reflect the current nodes and stores the results in a shared hashtable for use 
+#   by other parts of the script.
+#
+# **Parameters:**
+#   - `[string]$Mode` (Mandatory)
+#       - **Description:** Determines the operational mode of the function.
+#         - `"Host"`: Nodess the number of hosts and stores.
+#         - `"Store"`: Nodess the number of servers and lanes within a specific store.
+#   - `[string]$StoreNumber`
+#       - **Description:** Specifies the identifier for a particular store. This parameter is 
+#         **mandatory** when `$Mode` is set to `"Store"` and is ignored when `$Mode` is `"Host"`.
+#
+# **Variables:**
+#   - **Initialization Variables:**
+#       - `$HostPath`: Base directory path where store and host directories are located.
+#       - `$NumberOfLanes`, `$NumberOfStores`, `$NumberOfHosts`, `$NumberOfServers`: Counters initialized to `0`.
+#       - `$LaneContents`: Array to hold lane identifiers.
+#       - `$LaneMachines`: Hashtable to map lane numbers to machine names.
+#   - **Database Connection Variables:**
+#       - `$ConnectionString`: Retrieves the database connection string from the `FunctionResults` hashtable.
+#       - `$NodesFromDatabase`: Boolean flag indicating whether to retrieve counts from the database.
+#   - **Result Variables:**
+#       - `$Nodes`: Custom PowerShell object aggregating all Nodes results and related data.
+#   - **GUI-Related Variables:**
+#       - `$SilentMode`: Determines whether the GUI should be updated.
+#       - `$NodesHost`, `$NodesStore`: GUI label controls displaying the counts.
+#       - `$form`: GUI form that needs to be refreshed to display updated counts.
+#
+# **Workflow:**
+#   1. **Retrieve Database Connection String:**
+#      - Attempts to get the connection string from `FunctionResults`.
+#      - If unavailable, calls `Get-DatabaseConnectionString` to generate it.
+#      - Sets `$CountsFromDatabase` based on availability.
+#
+#   2. **Database Counting Mechanism (`$CountsFromDatabase = $true`):**
+#      - **Mode: `"Host"`**
+#          - Counts distinct stores excluding store number `'999'`.
+#          - Checks for the existence of the host server.
+#      - **Mode: `"Store"`**
+#          - Validates the presence of `$StoreNumber`.
+#          - Retrieves and counts lanes for the specified store.
+#          - Maps lane numbers to machine names.
+#          - Checks for the existence of the server for the store.
+#      - **Error Handling:**
+#          - Logs warnings and falls back if any database queries fail.
+#
+#   3. **Fallback Counting Mechanism (`$CountsFromDatabase = $false`):**
+#      - **Mode: `"Host"`**
+#          - Counts store directories matching specific patterns.
+#          - Checks for the existence of the host directory.
+#      - **Mode: `"Store"`**
+#          - Validates the presence of `$StoreNumber`.
+#          - Counts lane directories matching specific patterns.
+#          - Checks for the existence of the server directory for the store.
+#
+#   4. **Compile and Store Results:**
+#      - Creates a `[PSCustomObject]` containing all counts and related data.
+#      - Updates the `FunctionResults` hashtable with the count results.
+#
+#   5. **Update GUI Labels:**
+#      - If not in silent mode and GUI labels are available, updates them with the latest counts.
+#      - Refreshes the GUI form to display the updated counts.
+#
+#   6. **Return Value:**
+#      - Returns the `$Counts` custom object containing all the count information.
+#
+# **Summary:**
+#   The `Retrieve-Nodes` function is a robust PowerShell utility that accurately counts system entities 
+#   such as hosts, stores, lanes, and servers. It prioritizes retrieving counts from a database to 
+#   ensure accuracy and reliability but includes a fallback mechanism leveraging the file system for 
+#   resilience. Additionally, it integrates with a GUI to display real-time counts and stores results 
+#   for easy access by other script components.
 # ===================================================================================================
 
-function Count-ItemsGUI
+function Retrieve-Nodes
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -1069,20 +1142,20 @@ function Count-ItemsGUI
 		if (-not $ConnectionString)
 		{
 			Write-Log "Unable to generate connection string. Proceeding with fallback mechanism." "red"
-			$CountsFromDatabase = $false
+			$NodesFromDatabase = $false
 		}
 		else
 		{
-			$CountsFromDatabase = $true
+			$NodesFromDatabase = $true
 		}
 	}
 	else
 	{
-		$CountsFromDatabase = $true
+		$NodesFromDatabase = $true
 	}
 	
-	# Initialize a flag to check if we successfully got counts from TER_TAB
-	if ($CountsFromDatabase)
+	# Initialize a flag to check if we successfully got Nodes from TER_TAB
+	if ($NodesFromDatabase)
 	{
 		try
 		{
@@ -1177,12 +1250,12 @@ function Count-ItemsGUI
 		catch
 		{
 			Write-Log "Failed to retrieve counts from TER_TAB: $_" "yellow"
-			$CountsFromDatabase = $false
+			$NodesFromDatabase = $false
 		}
 	}
 	
 	# If counts from database failed, use the current mechanism as fallback
-	if (-not $CountsFromDatabase)
+	if (-not $NodesFromDatabase)
 	{
 		Write-Log "Using fallback mechanism to count items." "yellow"
 		
@@ -1218,7 +1291,7 @@ function Count-ItemsGUI
 	}
 	
 	# Create a custom object with the counts
-	$Counts = [PSCustomObject]@{
+	$Nodes = [PSCustomObject]@{
 		NumberOfStores  = $NumberOfStores
 		NumberOfHosts   = $NumberOfHosts
 		NumberOfLanes   = $NumberOfLanes
@@ -1234,27 +1307,27 @@ function Count-ItemsGUI
 	$script:FunctionResults['NumberOfServers'] = $NumberOfServers
 	$script:FunctionResults['LaneContents'] = $LaneContents
 	$script:FunctionResults['LaneMachines'] = $LaneMachines
-	$script:FunctionResults['Counts'] = $Counts
+	$script:FunctionResults['Nodes'] = $Nodes
 	
 	# Update the GUI countsLabel1 and countsLabel2 with the new counts
-	if (-not $SilentMode -and $countsLabel1 -ne $null -and $countsLabel2 -ne $null)
+	if (-not $SilentMode -and $NodesHost -ne $null -and $NodesStore -ne $null)
 	{
 		if ($Mode -eq "Host")
 		{
-			$countsLabel1.Text = "Number of Hosts: $NumberOfHosts"
-			$countsLabel2.Text = "Number of Stores: $NumberOfStores"
+			$NodesHost.Text = "Number of Hosts: $NumberOfHosts"
+			$NodesStore.Text = "Number of Stores: $NumberOfStores"
 		}
 		else
 		{
-			$countsLabel1.Text = "Number of Servers: $NumberOfServers"
-			$countsLabel2.Text = "Number of Lanes: $NumberOfLanes"
+			$NodesHost.Text = "Number of Servers: $NumberOfServers"
+			$NodesStore.Text = "Number of Lanes: $NumberOfLanes"
 		}
 		# Refresh the form to display updates
 		$form.Refresh()
 	}
 	
 	# Return counts as a custom object
-	return $Counts
+	return $Nodes
 }
 
 # ===================================================================================================
@@ -5438,7 +5511,7 @@ function Reboot-Lanes
 	else
 	{
 		# If not processing all lanes or LaneMachines not available, proceed to collect machine names individually
-		# This assumes that Update-LaneFiles or Count-ItemsGUI has already populated LaneMachines
+		# This assumes that Update-LaneFiles or Retrieve-Nodes has already populated LaneMachines
 		try
 		{
 			Write-Log "Retrieving machine names from FunctionResults for selected lanes..." "blue"
@@ -5826,7 +5899,7 @@ function CloseOpenTransactions
 #   For each selected lane, the function retrieves the associated machine name and performs a ping 
 #   to determine its reachability. Results are logged using the existing Write-Log function, providing
 #   a summary of successful and failed pings. This function leverages pre-stored lane information 
-#   from the Count-ItemsGUI function to identify machines associated with each lane.
+#   from the Retrieve-Nodes function to identify machines associated with each lane.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   -Mode (Mandatory)
@@ -5839,7 +5912,7 @@ function CloseOpenTransactions
 #   Ping-Lanes -Mode "Store" -StoreNumber "123"
 #
 # Prerequisites:
-#   - Ensure that the Count-ItemsGUI function has been executed prior to running Ping-Lanes.
+#   - Ensure that the Retrieve-Nodes function has been executed prior to running Ping-Lanes.
 #   - Verify that the Show-SelectionDialog and Write-Log functions are available in the session.
 #   - Confirm network accessibility to the machines associated with the lanes.
 # ===================================================================================================
@@ -5877,7 +5950,7 @@ function Ping-Lanes
 	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
 		-not $script:FunctionResults.ContainsKey('LaneMachines'))
 	{
-		Write-Log "Lane information is not available. Please run Count-ItemsGUI first." "Red"
+		Write-Log "Lane information is not available. Please run Retrieve-Nodes first." "Red"
 		return
 	}
 	
@@ -6043,7 +6116,7 @@ function PingAllLanes
 	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
 		-not $script:FunctionResults.ContainsKey('LaneMachines'))
 	{
-		Write-Log "Lane information is not available. Please run Count-ItemsGUI first." "Red"
+		Write-Log "Lane information is not available. Please run Retrieve-Nodes first." "Red"
 		return
 	}
 	
@@ -6149,7 +6222,7 @@ function PingAllLanes
 # Description:
 #   Enables users to delete specific file types (.txt and .dwr) from selected lanes within a specified
 #   store. Additionally, users are prompted to include or exclude .sus files from the deletion process.
-#   The function leverages pre-stored lane information from the Count-ItemsGUI function to identify 
+#   The function leverages pre-stored lane information from the Retrieve-Nodes function to identify 
 #   machine paths associated with each lane. File deletions are handled by the Delete-Files helper function,
 #   and all actions and results are logged using the existing Write-Log function.
 # ---------------------------------------------------------------------------------------------------
@@ -6164,7 +6237,7 @@ function PingAllLanes
 #   Delete-DBS -Mode "Store" -StoreNumber "123"
 #
 # Prerequisites:
-#   - Ensure that the Count-ItemsGUI function has been executed prior to running Delete-DBS.
+#   - Ensure that the Retrieve-Nodes function has been executed prior to running Delete-DBS.
 #   - Verify that the Show-SelectionDialog, Delete-Files, and Write-Log functions are available in the session.
 #   - Confirm network accessibility to the machines associated with the lanes.
 #   - The user must have the necessary permissions to delete files in the target directories.
@@ -6204,7 +6277,7 @@ function Delete-DBS
 	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
 		-not $script:FunctionResults.ContainsKey('LaneMachines'))
 	{
-		Write-Log "Lane information is not available. Please run Count-ItemsGUI first." "Red"
+		Write-Log "Lane information is not available. Please run Retrieve-Nodes first." "Red"
 		return
 	}
 	
@@ -6793,7 +6866,7 @@ function Configure-SystemSettings
 #   Refresh-Files -Mode "Store" -StoreNumber "123" -Silent
 #
 # Prerequisites:
-#   - Ensure that the Count-ItemsGUI function has been executed prior to running Refresh-Files.
+#   - Ensure that the Retrieve-Nodes function has been executed prior to running Refresh-Files.
 #   - Verify that the Show-SelectionDialog and Write-Log functions are available in the session.
 #   - Confirm network accessibility to the machines associated with the lanes.
 #   - The user must have the necessary permissions to modify files in the target directories.
@@ -6822,7 +6895,7 @@ function Refresh-Files
 	}
 	
 	# Ensure necessary functions are available
-	foreach ($func in @('Show-SelectionDialog', 'Write-Log', 'Count-ItemsGUI'))
+	foreach ($func in @('Show-SelectionDialog', 'Write-Log', 'Retrieve-Nodes'))
 	{
 		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
 		{
@@ -6841,7 +6914,7 @@ function Refresh-Files
 	# Ensure lane information is available
 	if (-not ($script:FunctionResults.ContainsKey('LaneContents') -and $script:FunctionResults.ContainsKey('LaneMachines')))
 	{
-		Write-Log "No lane information found. Please ensure Count-ItemsGUI has been executed." "Red"
+		Write-Log "No lane information found. Please ensure Retrieve-Nodes has been executed." "Red"
 		return
 	}
 	
@@ -8401,11 +8474,11 @@ if (-not $SilentMode)
 			})
 		$form.Controls.Add($ActivateWindowsButton)
 		
+		# Reboot button
 		$rebootButton = New-Object System.Windows.Forms.Button
 		$rebootButton.Text = "Reboot System"
 		$rebootButton.Location = New-Object System.Drawing.Point(850, 65)
 		$rebootButton.Size = New-Object System.Drawing.Size(100, 30)
-		# Event Handler for Reboot Button
 		$rebootButton.Add_Click({
 				$rebootResult = [System.Windows.Forms.MessageBox]::Show("Do you want to reboot now?", "Reboot", [System.Windows.Forms.MessageBoxButtons]::YesNo)
 				if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
@@ -8494,39 +8567,38 @@ if (-not $SilentMode)
 		$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$form.Controls.Add($storeNumberLabel)
 		
-		# Counts Labels
-		# Counts Label Line 1
-		$script:countsLabel1 = New-Object System.Windows.Forms.Label
-		$countsLabel1.Text = "Number of Servers: $($Counts.NumberOfServers)"
-		$countsLabel1.Location = New-Object System.Drawing.Point(50, 90)
-		$countsLabel1.Size = New-Object System.Drawing.Size(900, 20) # Reduced height
-		$countsLabel1.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$countsLabel1.AutoSize = $false
-		$form.Controls.Add($countsLabel1)
+		# Nodes Host Label
+		$script:NodesHost = New-Object System.Windows.Forms.Label
+		$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
+		$NodesHost.Location = New-Object System.Drawing.Point(50, 90)
+		$NodesHost.Size = New-Object System.Drawing.Size(900, 20) # Reduced height
+		$NodesHost.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$NodesHost.AutoSize = $false
+		$form.Controls.Add($NodesHost)
 		
-		# Counts Label Line 2
-		$script:countsLabel2 = New-Object System.Windows.Forms.Label
-		$countsLabel2.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
-		$countsLabel2.Location = New-Object System.Drawing.Point(50, 110) # Adjusted Y-position
-		$countsLabel2.Size = New-Object System.Drawing.Size(900, 20) # Reduced height
-		$countsLabel2.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$countsLabel2.AutoSize = $false
-		$form.Controls.Add($countsLabel2)
+		# Nodes Store Label
+		$script:NodesStore = New-Object System.Windows.Forms.Label
+		$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
+		$NodesStore.Location = New-Object System.Drawing.Point(50, 110) # Adjusted Y-position
+		$NodesStore.Size = New-Object System.Drawing.Size(900, 20) # Reduced height
+		$NodesStore.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$NodesStore.AutoSize = $false
+		$form.Controls.Add($NodesStore)
 		
 		# Alternatively, Adjust the Y-position to reduce spacing
 		# Example: Move countsLabel2 closer to countsLabel1
-		# $countsLabel2.Location = New-Object System.Drawing.Point(50, 85) # Reduced from 90 to 85
+		# $NodesStore.Location = New-Object System.Drawing.Point(50, 85) # Reduced from 90 to 85
 		
 		# Update Counts Labels Based on Mode
 		if ($Mode -eq "Host")
 		{
-			$countsLabel1.Text = "Number of Hosts: $($Counts.NumberOfHosts)"
-			$countsLabel2.Text = "Number of Stores: $($Counts.NumberOfStores)"
+			$NodesHost.Text = "Number of Hosts: $($Counts.NumberOfHosts)"
+			$NodesStore.Text = "Number of Stores: $($Counts.NumberOfStores)"
 		}
 		else
 		{
-			$countsLabel1.Text = "Number of Servers: $($Counts.NumberOfServers)"
-			$countsLabel2.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
+			$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
+			$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
 		}
 		
 		# Create a RichTextBox for log output
@@ -8821,7 +8893,7 @@ if (-not $SilentMode)
 	Get-DatabaseConnectionString
 	
 	# Get the Store Number
-	Get-StoreNumberGUI
+	Get-StoreNumber
 	$StoreNumber = $script:FunctionResults['StoreNumber']
 	
 	# Get the Store Name
@@ -8832,9 +8904,9 @@ if (-not $SilentMode)
 	$Mode = Determine-ModeGUI -StoreNumber $StoreNumber
 	$Mode = $script:FunctionResults['Mode']
 	
-	# Count items based on mode
-	$Counts = Count-ItemsGUI -Mode $Mode -StoreNumber $StoreNumber
-	$Counts = $script:FunctionResults['Counts']
+	# Count Nodes based on mode
+	$Nodes = Retrieve-Nodes -Mode $Mode -StoreNumber $StoreNumber
+	$Nodes = $script:FunctionResults['Nodes']
 	
 	# Populate the hash table with results from various functions
 	Get-TableAliases
@@ -8853,7 +8925,7 @@ if (-not $SilentMode)
 	$jobCount++
 	
 	# Clears the recycle bin on startup
-	$ClearRecycleBin = Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+	Clear-RecycleBin -Force -ErrorAction SilentlyContinue
 	
 	<#
 	# Retrieve the list of machine names from the FunctionResults dictionary
