@@ -795,14 +795,14 @@ function Get-StoreNumber
 }
 
 # ===================================================================================================
-#                                        FUNCTION: Get-StoreNameGUI
+#                                        FUNCTION: Get-StoreName
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Retrieves the store name from the system.ini file.
 #   Stores the result in $script:FunctionResults['StoreName'].
 # ===================================================================================================
 
-function Get-StoreNameGUI
+function Get-StoreName
 {
 	param (
 		[string]$INIPath = "$SystemIniPath"
@@ -848,7 +848,7 @@ function Get-StoreNameGUI
 #   and updates the GUI label accordingly.
 # ===================================================================================================
 
-function Determine-ModeGUI
+function Determine-Mode
 {
 	param (
 		[string]$StoreNumber
@@ -8947,7 +8947,7 @@ if (-not $SilentMode)
 	$StoreName = $script:FunctionResults['StoreName']
 	
 	# Determine the Mode
-	$Mode = Determine-ModeGUI -StoreNumber $StoreNumber
+	$Mode = Determine-Mode -StoreNumber $StoreNumber
 	$Mode = $script:FunctionResults['Mode']
 	
 	# Count Nodes based on mode
