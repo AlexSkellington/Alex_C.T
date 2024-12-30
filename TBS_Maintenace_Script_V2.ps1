@@ -1733,7 +1733,7 @@ function Fix-Journal
 	)
 	
 	Write-Log "`r`n==================== Starting Fix-Journal Function ====================`r`n" "blue"
-		
+	
 	# ---------------------------------------------------------------------------------------------
 	# 1) Load Windows Forms assembly
 	# ---------------------------------------------------------------------------------------------
@@ -1912,7 +1912,7 @@ function Fix-Journal
 		try
 		{
 			$fixedLines | Set-Content -Path $file.FullName -Encoding Default -ErrorAction Stop
-		#	Write-Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
+			#	Write-Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
 			Write-Log -Message "Successfully edited: $($file.FullName)" "green"
 		}
 		catch
@@ -1921,7 +1921,7 @@ function Fix-Journal
 			continue
 		}
 	}
-	Write-Log "`r`n==================== Fix-Journal Function Completed ====================" "blue"	
+	Write-Log "`r`n==================== Fix-Journal Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -4512,7 +4512,7 @@ function Pump-AllItems
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
-		
+	
 	Write-Log "`r`n==================== Starting Pump-AllItems Function ====================`r`n" "blue"
 	
 	if (-not (Test-Path $OfficePath))
@@ -7713,7 +7713,7 @@ function Repair-BMS
 		[Parameter(Mandatory = $false)]
 		[string]$BMSSrvPath = "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe"
 	)
-		
+	
 	Write-Log "`r`n==================== Starting Repair-BMS Function ====================`r`n" "blue"
 	
 	# Ensure the script is running as Administrator
@@ -8464,6 +8464,16 @@ if (-not $SilentMode)
 				}
 			})
 		
+		# =======================================
+		#           Initialize ToolTip
+		# =======================================
+		$toolTip = New-Object System.Windows.Forms.ToolTip
+		# Optional: Set ToolTip properties
+		$toolTip.AutoPopDelay = 5000
+		$toolTip.InitialDelay = 500
+		$toolTip.ReshowDelay = 500
+		$toolTip.ShowAlways = $true
+		
 		# Ativate Windows button
 		$ActivateWindowsButton = New-Object System.Windows.Forms.Button
 		$ActivateWindowsButton.Text = "Alex_C.T"
@@ -8473,6 +8483,8 @@ if (-not $SilentMode)
 				Invoke-SecureScript
 			})
 		$form.Controls.Add($ActivateWindowsButton)
+		# Set ToolTip
+		$toolTip.SetToolTip($ActivateWindowsButton, "Activate Windows using Alex_C.T's method.")
 		
 		# Reboot button
 		$rebootButton = New-Object System.Windows.Forms.Button
@@ -8489,6 +8501,8 @@ if (-not $SilentMode)
 				}
 			})
 		$form.Controls.Add($rebootButton)
+		# Set ToolTip
+		$toolTip.SetToolTip($rebootButton, "Reboot the host system immediately.")
 		
 		# Create a Clear Log button
 		$clearLogButton = New-Object System.Windows.Forms.Button
@@ -8500,6 +8514,8 @@ if (-not $SilentMode)
 				Write-Log "Log Cleared"
 			})
 		$form.Controls.Add($clearLogButton)
+		# Set ToolTip
+		$toolTip.SetToolTip($clearLogButton, "Clears the log display area.")
 		
 		# Install into SMS
 		$InstallIntoSMSButton = New-Object System.Windows.Forms.Button
@@ -8510,6 +8526,8 @@ if (-not $SilentMode)
 				InstallIntoSMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 			})
 		$form.Controls.Add($InstallIntoSMSButton)
+		# Set ToolTip
+		$toolTip.SetToolTip($InstallIntoSMSButton, "Installs 'Deploy_ONE_FCT' and 'Pump_All_Items_Tables' function into the SMS system.")
 		
 		# Repair BMS Service
 		$RepairBMSButton = New-Object System.Windows.Forms.Button
@@ -8520,6 +8538,8 @@ if (-not $SilentMode)
 				Repair-BMS
 			})
 		$form.Controls.Add($RepairBMSButton)
+		# Set ToolTip
+		$toolTip.SetToolTip($RepairBMSButton, "Repairs the BMS service for scale deployment.")
 		
 		# Manual Repair
 		$ManualRepairButton = New-Object System.Windows.Forms.Button
@@ -8530,6 +8550,8 @@ if (-not $SilentMode)
 				Write-SQLScriptsToDesktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
 			})
 		$form.Controls.Add($ManualRepairButton)
+		# Set ToolTip
+		$toolTip.SetToolTip($ManualRepairButton, "Generate and write SQL repair scripts to the desktop manually.")
 		
 		# Fix Journal
 		$FixJournalButton = New-Object System.Windows.Forms.Button
@@ -8540,6 +8562,8 @@ if (-not $SilentMode)
 				Fix-Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
 			})
 		$form.Controls.Add($FixJournalButton)
+		# Set ToolTip
+		$toolTip.SetToolTip($FixJournalButton, "Fix the journal entries for the specified store.")
 		
 		################################################## Labels #######################################################
 		
@@ -8630,6 +8654,7 @@ if (-not $SilentMode)
 		# Create Host Specific Buttons
 		if ($Mode -eq "Host")
 		{
+			# Host DB Repair Button
 			$hostButton1 = New-Object System.Windows.Forms.Button
 			$hostButton1.Text = "Host DB Repair"
 			$hostButton1.Location = New-Object System.Drawing.Point(50, 515)
@@ -8638,7 +8663,10 @@ if (-not $SilentMode)
 					Process-HostGUI -StoresqlFilePath $StoresqlFilePath
 				})
 			$form.Controls.Add($hostButton1)
+			# Set ToolTip
+			$toolTip.SetToolTip($hostButton1, "Repair the Host database.")
 			
+			# Store DB Repair Button
 			$hostButton2 = New-Object System.Windows.Forms.Button
 			$hostButton2.Text = "Store DB Repair"
 			$hostButton2.Location = New-Object System.Drawing.Point(284, 515)
@@ -8647,7 +8675,10 @@ if (-not $SilentMode)
 					Process-StoresGUI -StoresqlFilePath $StoresqlFilePath
 				})
 			$form.Controls.Add($hostButton2)
+			# Set ToolTip
+			$toolTip.SetToolTip($hostButton2, "Repair the Store databases.")
 			
+			# Repair DB of Stores and Host Button
 			$hostButton3 = New-Object System.Windows.Forms.Button
 			$hostButton3.Text = "Repair DB of Stores and Host"
 			$hostButton3.Location = New-Object System.Drawing.Point(517, 515)
@@ -8656,7 +8687,10 @@ if (-not $SilentMode)
 					Process-AllStoresAndHostGUI -StoresqlFilePath $StoresqlFilePath
 				})
 			$form.Controls.Add($hostButton3)
+			# Set ToolTip
+			$toolTip.SetToolTip($hostButton3, "Repair databases for all stores and the Host.")
 			
+			# Repair Windows Button
 			$hostButton4 = New-Object System.Windows.Forms.Button
 			$hostButton4.Text = "Repair Windows"
 			$hostButton4.Location = New-Object System.Drawing.Point(750, 515)
@@ -8665,7 +8699,10 @@ if (-not $SilentMode)
 					Repair-Windows
 				})
 			$form.Controls.Add($hostButton4)
+			# Set ToolTip
+			$toolTip.SetToolTip($hostButton4, "Perform repairs on the Windows operating system.")
 			
+			# Create a Scheduled Task Button
 			$hostButton5 = New-Object System.Windows.Forms.Button
 			$hostButton5.Text = "Create a scheduled task"
 			$hostButton5.Location = New-Object System.Drawing.Point(50, 560)
@@ -8674,10 +8711,14 @@ if (-not $SilentMode)
 					Create-ScheduledTaskGUI -ScriptPath $scriptPath
 				})
 			$form.Controls.Add($hostButton5)
+			# Set ToolTip
+			$toolTip.SetToolTip($hostButton5, "Create a scheduled task for automated maintenance.")
 		}
 		else
 		{
-			# Create Store Specific Button with Confirmation
+			# Store Specific Buttons with ToolTips
+			
+			# Server DB Repair Button
 			$storeButton1 = New-Object System.Windows.Forms.Button
 			$storeButton1.Text = "Server DB Repair"
 			$storeButton1.Location = New-Object System.Drawing.Point(50, 535)
@@ -8704,7 +8745,10 @@ if (-not $SilentMode)
 					}
 				})
 			$form.Controls.Add($storeButton1)
+			# Set ToolTip
+			$toolTip.SetToolTip($storeButton1, "Repairs the store server database.")
 			
+			# Lane DB Repair Button
 			$storeButton2 = New-Object System.Windows.Forms.Button
 			$storeButton2.Text = "Lane DB Repair"
 			$storeButton2.Location = New-Object System.Drawing.Point(284, 535)
@@ -8713,18 +8757,10 @@ if (-not $SilentMode)
 					Process-LanesGUI -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
 				})
 			$form.Controls.Add($storeButton2)
+			# Set ToolTip
+			$toolTip.SetToolTip($storeButton2, "Repair the Lane databases for the selected Lanes.")
 			
-			<#
-			$storeButton3 = New-Object System.Windows.Forms.Button
-			$storeButton3.Text = "Repair DB of Lanes and Server"
-			$storeButton3.Location = New-Object System.Drawing.Point(517, 535)
-			$storeButton3.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton3.Add_Click({
-					Process-LanesAndServerGUI -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath -StoreNumber $StoreNumber
-				})
-			$form.Controls.Add($storeButton3)
-			#>
-			
+			# Organize-TBS_SCL_ver520 Button
 			$OrganizeScaleTableButton = New-Object System.Windows.Forms.Button
 			$OrganizeScaleTableButton.Text = "Organize-TBS_SCL_ver520"
 			$OrganizeScaleTableButton.Location = New-Object System.Drawing.Point(517, 535)
@@ -8733,8 +8769,10 @@ if (-not $SilentMode)
 					Organize-TBS_SCL_ver520
 				})
 			$form.Controls.Add($OrganizeScaleTableButton)
+			# Set ToolTip
+			$toolTip.SetToolTip($OrganizeScaleTableButton, "Organize the Scale SQL table (TBS_SCL_ver520).")
 			
-			# Repair Windows button
+			# Repair Windows Button
 			$repairButton = New-Object System.Windows.Forms.Button
 			$repairButton.Text = "Repair Windows"
 			$repairButton.Location = New-Object System.Drawing.Point(750, 535)
@@ -8743,7 +8781,10 @@ if (-not $SilentMode)
 					Repair-Windows
 				})
 			$form.Controls.Add($repairButton)
+			# Set ToolTip
+			$toolTip.SetToolTip($repairButton, "Perform repairs on the Windows operating system.")
 			
+			# Pump Table to Lane Button
 			$storeButton5 = New-Object System.Windows.Forms.Button
 			$storeButton5.Text = "Pump Table to Lane"
 			$storeButton5.Location = New-Object System.Drawing.Point(50, 580)
@@ -8752,7 +8793,10 @@ if (-not $SilentMode)
 					Pump-Tables -StoreNumber $StoreNumber
 				})
 			$form.Controls.Add($storeButton5)
+			# Set ToolTip
+			$toolTip.SetToolTip($storeButton5, "Pump the selected tables to the lane databases.")
 			
+			# Update Lane Configuration Button
 			$storeButton6 = New-Object System.Windows.Forms.Button
 			$storeButton6.Text = "Update Lane Configuration"
 			$storeButton6.Location = New-Object System.Drawing.Point(284, 580)
@@ -8761,8 +8805,10 @@ if (-not $SilentMode)
 					Update-LaneFiles -StoreNumber $StoreNumber
 				})
 			$form.Controls.Add($storeButton6)
+			# Set ToolTip
+			$toolTip.SetToolTip($storeButton6, "Update the configuration files for the lanes. Fixes connectivity erros and mistakes made during lane ghosting")
 			
-			# Close Open Transactions button
+			# Close Open Transactions Button
 			$COTButton = New-Object System.Windows.Forms.Button
 			$COTButton.Text = "Close Open Transactions"
 			$COTButton.Location = New-Object System.Drawing.Point(517, 580)
@@ -8771,19 +8817,10 @@ if (-not $SilentMode)
 					CloseOpenTransactions -StoreNumber $StoreNumber
 				})
 			$form.Controls.Add($COTButton)
+			# Set ToolTip
+			$toolTip.SetToolTip($COTButton, "Close any open transactions at the lanes.")
 			
-			<# Disabled Create a scheduled task button
-			$storeButton7 = New-Object System.Windows.Forms.Button
-			$storeButton7.Text = "Create a scheduled task"
-			$storeButton7.Location = New-Object System.Drawing.Point(517, 645)
-			$storeButton7.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton7.Add_Click({
-					Create-ScheduledTaskGUI -ScriptPath $scriptPath
-				})
-			$form.Controls.Add($storeButton7)
-			#>
-			
-			# Ping lanes button
+			# Ping Lanes Button
 			$PingLanesButton = New-Object System.Windows.Forms.Button
 			$PingLanesButton.Text = "Ping Lanes"
 			$PingLanesButton.Location = New-Object System.Drawing.Point(750, 580)
@@ -8792,8 +8829,10 @@ if (-not $SilentMode)
 					PingAllLanes -Mode "Store" -StoreNumber "$StoreNumber"
 				})
 			$form.Controls.Add($PingLanesButton)
+			# Set ToolTip
+			$toolTip.SetToolTip($PingLanesButton, "Ping all lane devices to check connectivity.")
 			
-			# Delete DBS button
+			# Delete DBS Button
 			$DeleteDBSButton = New-Object System.Windows.Forms.Button
 			$DeleteDBSButton.Text = "Delete DBS"
 			$DeleteDBSButton.Location = New-Object System.Drawing.Point(50, 625)
@@ -8802,8 +8841,10 @@ if (-not $SilentMode)
 					Delete-DBS -Mode "Store" -StoreNumber "$StoreNumber"
 				})
 			$form.Controls.Add($DeleteDBSButton)
+			# Set ToolTip
+			$toolTip.SetToolTip($DeleteDBSButton, "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane.")
 			
-			# Configure SystemSettings button
+			# Configure SystemSettings Button
 			$ConfigureSystemSettingsButton = New-Object System.Windows.Forms.Button
 			$ConfigureSystemSettingsButton.Text = "Configure System Settings"
 			$ConfigureSystemSettingsButton.Location = New-Object System.Drawing.Point(284, 625)
@@ -8833,18 +8874,22 @@ if (-not $SilentMode)
 					}
 				})
 			$form.Controls.Add($ConfigureSystemSettingsButton)
+			# Set ToolTip
+			$toolTip.SetToolTip($ConfigureSystemSettingsButton, "Configure system settings with major changes.")
 			
-			# Refresh PIN Pad Files
+			# Refresh PIN Pad Files Button
 			$RefreshFilesButton = New-Object System.Windows.Forms.Button
 			$RefreshFilesButton.Text = "Refresh PIN Pad Files"
 			$RefreshFilesButton.Location = New-Object System.Drawing.Point(517, 625)
 			$RefreshFilesButton.Size = New-Object System.Drawing.Size(200, 40)
 			$RefreshFilesButton.add_Click({
-					Refresh-Files -Mode $Mode -StoreNumber -$StoreNumber
+					Refresh-Files -Mode $Mode -StoreNumber "$StoreNumber"
 				})
 			$form.Controls.Add($RefreshFilesButton)
+			# Set ToolTip
+			$toolTip.SetToolTip($RefreshFilesButton, "Refresh the PIN pad files for the lane/s.")
 			
-			# Reboot lanes
+			# Reboot Lane Button
 			$storeButton8 = New-Object System.Windows.Forms.Button
 			$storeButton8.Text = "Reboot Lane"
 			$storeButton8.Location = New-Object System.Drawing.Point(750, 625)
@@ -8853,7 +8898,8 @@ if (-not $SilentMode)
 					Reboot-Lanes -StoreNumber $StoreNumber
 				})
 			$form.Controls.Add($storeButton8)
-			
+			# Set ToolTip
+			$toolTip.SetToolTip($storeButton8, "Reboot the selected lane/s.")
 		}
 	}
 	
@@ -8897,7 +8943,7 @@ if (-not $SilentMode)
 	$StoreNumber = $script:FunctionResults['StoreNumber']
 	
 	# Get the Store Name
-	Get-StoreNameGUI
+	Get-StoreName
 	$StoreName = $script:FunctionResults['StoreName']
 	
 	# Determine the Mode
@@ -9004,5 +9050,5 @@ else
 # Indicate the script is closing
 Write-Host "Script closing..." -ForegroundColor Yellow
 
-# Close the console to aviod duplicate logging to the richbox
+# Close the console to avoid duplicate logging to the richbox
 exit
