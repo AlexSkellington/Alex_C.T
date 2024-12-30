@@ -8875,7 +8875,7 @@ if (-not $SilentMode)
 				})
 			$form.Controls.Add($ConfigureSystemSettingsButton)
 			# Set ToolTip
-			$toolTip.SetToolTip($ConfigureSystemSettingsButton, "Configure system settings with major changes.")
+			$toolTip.SetToolTip($ConfigureSystemSettingsButton, "Orginize the desktop, set power plan to maximize performance and make sure necessary services are running.")
 			
 			# Refresh PIN Pad Files Button
 			$RefreshFilesButton = New-Object System.Windows.Forms.Button
