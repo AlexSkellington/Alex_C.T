@@ -5322,14 +5322,13 @@ INSERT INTO $viewName VALUES
 				
 				# Footer
 				$footer = @"
-@UPDATE_BATCH(JOB=A,TAR=$table,
+@UPDATE_BATCH(JOB=ADDRPL,TAR=$table,
 KEY=$keyString,
 SRC=SELECT * FROM $viewName);
 
 DROP TABLE $viewName;
 
-@FMT(CMP,@WIZGET(exe_activate_accept)=0,,®EXEC(SQM=exe_activate_accept));
-@FMT(CMP,@WIZGET(exe_deploy_chg)=1,®EXEC(SQM=exe_deploy_chg));
+@EXEC(INI=HOST_STORE[ACTIVATE_ACCEPT_ALL]);
 
 @WIZCLR(DBASE_TIMEOUT);
 "@
