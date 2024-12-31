@@ -2149,6 +2149,8 @@ EXEC sp_configure 'show advanced options', 0;
 RECONFIGURE;
 
 /* Create Table TBS_ITM_SMAppUPDATED */
+-----Drop the table if it exist-----
+DROP TABLE IF EXISTS dbo.TBS_ITM_SMAppUPDATED;
 -----Create TBS_ITM_SMAppUPDATED Table with Optional ID Column-----
 CREATE TABLE dbo.TBS_ITM_SMAppUPDATED (
     Id INT IDENTITY(1,1) PRIMARY KEY,   -- Surrogate primary key
