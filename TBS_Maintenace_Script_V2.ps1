@@ -5322,7 +5322,7 @@ INSERT INTO $viewName VALUES
 				
 				# Footer
 				$footer = @"
-@UPDATE_BATCH(JOB=UPSERT,TAR=$table,
+@UPDATE_BATCH(JOB=ADDRPL,TAR=$table,
 KEY=$keyString,
 SRC=SELECT * FROM $viewName);
 
