@@ -5227,7 +5227,6 @@ ORDER BY c.ORDINAL_POSITION
 				$header = @"
 @WIZRPL(DBASE_TIMEOUT=E);
 
-@CREATE($table,$tableAlias);
 CREATE VIEW $viewName AS SELECT $columnList FROM $table;
 
 INSERT INTO $viewName VALUES
@@ -5323,12 +5322,6 @@ INSERT INTO $viewName VALUES
 				
 				# Footer
 				$footer = @"
-@UPDATE_BATCH(JOB=ADD,TAR=$table,
-KEY=$keyString,
-SRC=SELECT * FROM $viewName);
-
-DROP TABLE $viewName;
-
 @WIZCLR(DBASE_TIMEOUT);
 "@
 				$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
