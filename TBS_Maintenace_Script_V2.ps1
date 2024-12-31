@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.9.6"
+$VersionNumber = "1.9.8"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1931,7 +1931,7 @@ function Fix-Journal
 #   Generates SQL scripts for Lanes and Stores, including memory configuration and maintenance tasks.
 # ===================================================================================================
 
-function Generate-SQLScriptsGUI
+function Generate-SQLScripts
 {
 	param (
 		[string]$StoreNumber,
@@ -2148,7 +2148,21 @@ RECONFIGURE;
 EXEC sp_configure 'show advanced options', 0;
 RECONFIGURE;
 
-/* Create ScaleCommApp Triggers */
+/* Create Table TBS_ITM_SMAppUPDATED */
+-----Create TBS_ITM_SMAppUPDATED Table with Optional ID Column-----
+CREATE TABLE dbo.TBS_ITM_SMAppUPDATED (
+    Id INT IDENTITY(1,1) PRIMARY KEY,   -- Surrogate primary key
+    CodeF01 VARCHAR(13) NOT NULL,      -- Stores the constructed code
+    Sent BIT NOT NULL DEFAULT 0,       -- Indicates if the record has been sent
+    SentAt DATETIME NOT NULL DEFAULT GETDATE() -- Timestamp of insertion
+);
+-----Create Indexes for Performance-----
+CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_CodeF01 ON dbo.TBS_ITM_SMAppUPDATED (CodeF01);
+CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_Sent ON dbo.TBS_ITM_SMAppUPDATED (Sent);
+CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_SentAt ON dbo.TBS_ITM_SMAppUPDATED (SentAt);
+
+
+/* Create TBS_ITM_SMAppUPDATED Triggers */
 -----Drop existing triggers if they exist-----
 IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateOBJ%')
 DROP TRIGGER [dbo].[SMApp_UpdateOBJ]
@@ -8958,7 +8972,7 @@ if (-not $SilentMode)
 	Get-TableAliases
 	
 	# Generate SQL scripts
-	Generate-SQLScriptsGUI -StoreNumber $StoreNumber -Memory25PercentMB $Memory25PercentMB -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
+	Generate-SQLScripts -StoreNumber $StoreNumber -Memory25PercentMB $Memory25PercentMB -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
 	
 	# Clearing XE (Urgent Messages) folder.
 	$ClearXEJob = Clear-XEFolder
