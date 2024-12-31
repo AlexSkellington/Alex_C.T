@@ -5322,6 +5322,12 @@ INSERT INTO $viewName VALUES
 				
 				# Footer
 				$footer = @"
+@UPDATE_BATCH(JOB=UPSERT,TAR=$table,
+KEY=$keyString,
+SRC=SELECT * FROM $viewName);
+
+DROP TABLE $viewName;
+
 @WIZCLR(DBASE_TIMEOUT);
 "@
 				$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
