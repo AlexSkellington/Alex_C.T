@@ -7478,7 +7478,7 @@ ISHIDA_CTE AS (
     WHERE ScaleBrand = 'ISHIDA'
 )
 UPDATE T
-SET T.ScaleCode = (SELECT MaxCode FROM MaxBizerba) + 1 + I.rn - 1
+SET T.ScaleCode = (SELECT MaxCode FROM MaxBizerba) + 10 + I.rn - 1
 FROM [TBS_SCL_ver520] AS T
 JOIN ISHIDA_CTE AS I
     ON T.ScaleCode = I.ScaleCode
@@ -7799,8 +7799,7 @@ function Repair-BMS
 		{
 			Write-Log "Failed to delete '$serviceName' service: $_" "red"
 			return
-		}
-		
+		}	
 		# Wait for a few seconds to ensure the service is fully deleted
 		Start-Sleep -Seconds 5
 	}
@@ -7844,7 +7843,6 @@ function Repair-BMS
 		Write-Log "Failed to start '$serviceName' service: $_" "red"
 		return
 	}
-	
 	Write-Log "`r`n==================== Repair-BMS Function Completed ====================`r`n" "blue"
 }
 
@@ -8477,7 +8475,7 @@ if (-not $SilentMode)
 					Write-Log "Form is closing. Performing cleanup." "green"
 					
 					# Clean Temp Folder
-					Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
+					Delete-Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql" #"Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
 				}
 			})
 		
@@ -8988,7 +8986,7 @@ if (-not $SilentMode)
 	$jobCount++
 	
 	# Clears the recycle bin on startup
-	Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+	# Clear-RecycleBin -Force -ErrorAction SilentlyContinue
 	
 	<#
 	# Retrieve the list of machine names from the FunctionResults dictionary
