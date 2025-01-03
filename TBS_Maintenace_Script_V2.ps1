@@ -7799,7 +7799,7 @@ function Repair-BMS
 		{
 			Write-Log "Failed to delete '$serviceName' service: $_" "red"
 			return
-		}	
+		}
 		# Wait for a few seconds to ensure the service is fully deleted
 		Start-Sleep -Seconds 5
 	}
@@ -8981,7 +8981,8 @@ if (-not $SilentMode)
 	$jobCount++
 	
 	# Clear %Temp% foder on start
-	$FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
+	$ClearTempAtLaunch = Delete-Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
+	$ClearWinTempAtLaunch = Delete-Files -Path "$env:SystemRoot\Temp" -AsJob
 	# Increment the job counter
 	$jobCount++
 	
