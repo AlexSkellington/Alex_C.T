@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.9.8"
+$VersionNumber = "1.9.9"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -101,30 +101,23 @@ if (-not $IsOldBuild)
 	}
 }
 
-# If no UNC path is found or build is old, proceed to check local drives
+# If no UNC path is found or build is old, proceed to check the system drive
 if (-not $BasePath)
 {
-	# Define local drives to search
-	$localDrives = @("C:\", "D:\")
+	# Search for directories matching '*storeman*' in the root of $env:SystemDrive
+	$storemanDirs = Get-ChildItem -Path "$env:SystemDrive\" -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue
 	
-	foreach ($drive in $localDrives)
+	if ($storemanDirs)
 	{
-		# Retrieve directories matching '*storeman*' in the root of the drive
-		$storemanDirs = Get-ChildItem -Path $drive -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue
-		
-		if ($storemanDirs)
-		{
-			# Select the first matching directory
-			$BasePath = $storemanDirs[0].FullName
-			break
-		}
+		# Select the first matching directory
+		$BasePath = $storemanDirs[0].FullName
 	}
 }
 
-# Final check to ensure BasePath was set
+# Final check to ensure BasePath was set, defaulting to $env:SystemDrive\storeman if not found
 if (-not $BasePath)
 {
-	$BasePath = "C:\storeman"
+	$BasePath = "$env:SystemDrive\storeman"
 }
 
 # Now that we have a valid $BaseUNCPath, define the rest of the paths
