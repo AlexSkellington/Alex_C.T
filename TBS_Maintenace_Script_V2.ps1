@@ -7701,10 +7701,10 @@ ORDER BY
 }
 
 # ===================================================================================================
-#                                 FUNCTION: Manage-BMS
+#                                 FUNCTION: Repair-BMS
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Manages the "BMS" service by performing the following steps:
+#   Repairs the "BMS" service by performing the following steps:
 #     1. Stops the "BMS" service if it's running.
 #     2. Deletes the "BMS" service.
 #     3. Registers BMSSrv.exe to recreate the "BMS" service.
@@ -7721,7 +7721,7 @@ function Repair-BMS
 	param (
 		# (Optional) Full path to BMSSrv.exe
 		[Parameter(Mandatory = $false)]
-		[string]$BMSSrvPath = "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe"
+		[string]$BMSSrvPath = "$env:SystemDrive\Bizerba\RetailConnect\BMS\BMSSrv.exe"
 	)
 	
 	Write-Log "`r`n==================== Starting Repair-BMS Function ====================`r`n" "blue"
@@ -8559,7 +8559,7 @@ if (-not $SilentMode)
 			})
 		$form.Controls.Add($ManualRepairButton)
 		# Set ToolTip
-		$toolTip.SetToolTip($ManualRepairButton, "Generate and write SQL repair scripts to the desktop manually.")
+		$toolTip.SetToolTip($ManualRepairButton, "Writes SQL repair scripts to the desktop.")
 		
 		# Fix Journal
 		$FixJournalButton = New-Object System.Windows.Forms.Button
@@ -8571,7 +8571,7 @@ if (-not $SilentMode)
 			})
 		$form.Controls.Add($FixJournalButton)
 		# Set ToolTip
-		$toolTip.SetToolTip($FixJournalButton, "Fix the journal entries for the specified store.")
+		$toolTip.SetToolTip($FixJournalButton, "Fix the journal entries for the specified date.")
 		
 		################################################## Labels #######################################################
 		
@@ -8766,7 +8766,7 @@ if (-not $SilentMode)
 				})
 			$form.Controls.Add($storeButton2)
 			# Set ToolTip
-			$toolTip.SetToolTip($storeButton2, "Repair the Lane databases for the selected Lanes.")
+			$toolTip.SetToolTip($storeButton2, "Repair the Lane databases for the selected lane/s.")
 			
 			# Organize-TBS_SCL_ver520 Button
 			$OrganizeScaleTableButton = New-Object System.Windows.Forms.Button
@@ -8802,7 +8802,7 @@ if (-not $SilentMode)
 				})
 			$form.Controls.Add($storeButton5)
 			# Set ToolTip
-			$toolTip.SetToolTip($storeButton5, "Pump the selected tables to the lane databases.")
+			$toolTip.SetToolTip($storeButton5, "Pump the selected tables to the lane/s databases.")
 			
 			# Update Lane Configuration Button
 			$storeButton6 = New-Object System.Windows.Forms.Button
@@ -8826,7 +8826,7 @@ if (-not $SilentMode)
 				})
 			$form.Controls.Add($COTButton)
 			# Set ToolTip
-			$toolTip.SetToolTip($COTButton, "Close any open transactions at the lanes.")
+			$toolTip.SetToolTip($COTButton, "Close any open transactions at the lane/s.")
 			
 			# Ping Lanes Button
 			$PingLanesButton = New-Object System.Windows.Forms.Button
