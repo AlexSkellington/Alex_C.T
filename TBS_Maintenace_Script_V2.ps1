@@ -8504,10 +8504,10 @@ if (-not $SilentMode)
 		############################################################################
 		# Create a "resizable" Button that triggers the context menu
 		############################################################################
-		$generalToolsButton = New-Object System.Windows.Forms.Button
-		$generalToolsButton.Text = "General Tools"
-		$generalToolsButton.Location = New-Object System.Drawing.Point(517, 535)
-		$generalToolsButton.Size = New-Object System.Drawing.Size(200, 40)
+		$GeneralToolsButton = New-Object System.Windows.Forms.Button
+		$GeneralToolsButton.Text = "General Tools"
+		$GeneralToolsButton.Location = New-Object System.Drawing.Point(517, 535)
+		$GeneralToolsButton.Size = New-Object System.Drawing.Size(200, 40)
 		
 		############################################################################
 		# Create a ContextMenuStrip for the drop-down
@@ -8593,21 +8593,26 @@ if (-not $SilentMode)
 		
 		# (Optional) Make it grow/shrink when the form is resized:
 		# e.g., anchor to top + right side:
-		$generalToolsButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor `
+		$GeneralToolsButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor `
 		[System.Windows.Forms.AnchorStyles]::Right
 		
 		############################################################################
 		# Show the context menu when the General Tools button is clicked
 		############################################################################
-		$generalToolsButton.Add_Click({
+		$GeneralToolsButton.Add_Click({
 				# Show the context menu at the bottom-left corner of the button
-				$contextMenuGeneral.Show($generalToolsButton, 0, $generalToolsButton.Height)
+				$contextMenuGeneral.Show($GeneralToolsButton, 0, $GeneralToolsButton.Height)
 			})
+		
+		############################################################################
+		# (Optional) If you have a ToolTip object for normal controls:
+		############################################################################
+		$toolTip.SetToolTip($GeneralToolsButton, "Click to see some tools created for SMS.")
 		
 		############################################################################
 		# Finally, add the Server Tools button to the form
 		############################################################################			
-		$form.Controls.Add($generalToolsButton)
+		$form.Controls.Add($GeneralToolsButton)
 		
 		################################################## Labels #######################################################
 		
@@ -8923,7 +8928,7 @@ if (-not $SilentMode)
 			############################################################################
 			# (Optional) If you have a ToolTip object for normal controls:
 			############################################################################
-			$toolTip.SetToolTip($ServerToolsButton, "Click to see server-related tools.")
+			$toolTip.SetToolTip($ServerToolsButton, "Click to see Server-related tools.")
 			
 			############################################################################
 			# Finally, add the Server Tools button to the form
