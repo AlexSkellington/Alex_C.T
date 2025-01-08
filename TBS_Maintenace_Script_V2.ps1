@@ -8434,7 +8434,7 @@ if (-not $SilentMode)
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
 		$form.Text = "Created by Alex_C.T - Version $VersionNumber"
-		$form.Size = New-Object System.Drawing.Size(1005, 620)
+		$form.Size = New-Object System.Drawing.Size(1005, 570)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
 		# Banner Label
@@ -8485,8 +8485,8 @@ if (-not $SilentMode)
 		# Create a Clear Log button
 		$clearLogButton = New-Object System.Windows.Forms.Button
 		$clearLogButton.Text = "Clear Log"
-		$clearLogButton.Location = New-Object System.Drawing.Point(850, 100)
-		$clearLogButton.Size = New-Object System.Drawing.Size(100, 30)
+		$clearLogButton.Location = New-Object System.Drawing.Point(885, 440)
+		$clearLogButton.Size = New-Object System.Drawing.Size(65, 30)
 		$clearLogButton.add_Click({
 				$logBox.Clear()
 				Write-Log "Log Cleared"
@@ -8506,8 +8506,8 @@ if (-not $SilentMode)
 		############################################################################
 		$GeneralToolsButton = New-Object System.Windows.Forms.Button
 		$GeneralToolsButton.Text = "General Tools"
-		$GeneralToolsButton.Location = New-Object System.Drawing.Point(517, 535)
-		$GeneralToolsButton.Size = New-Object System.Drawing.Size(200, 40)
+		$GeneralToolsButton.Location = New-Object System.Drawing.Point(650, 475)
+		$GeneralToolsButton.Size = New-Object System.Drawing.Size(300, 50)
 		
 		############################################################################
 		# Create a ContextMenuStrip for the drop-down
@@ -8620,31 +8620,32 @@ if (-not $SilentMode)
 		$script:modeLabel = New-Object System.Windows.Forms.Label
 		$modeLabel.Text = "Processing Mode: N/A"
 		$modeLabel.Location = New-Object System.Drawing.Point(50, 30)
-		$modeLabel.Size = New-Object System.Drawing.Size(900, 20)
+		$modeLabel.Size = New-Object System.Drawing.Size(200, 20)
 		$modeLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$form.Controls.Add($modeLabel)
 		
 		# Store Name Label
 		$script:storeNameLabel = New-Object System.Windows.Forms.Label
 		$storeNameLabel.Text = "Store Name: N/A"
-		$storeNameLabel.Location = New-Object System.Drawing.Point(50, 50)
-		$storeNameLabel.Size = New-Object System.Drawing.Size(900, 20)
+		$storeNameLabel.Location = New-Object System.Drawing.Point(455, 30)
+		$storeNameLabel.Size = New-Object System.Drawing.Size(200, 20)
 		$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		#$storeNameLabel.TextAlign = 'MiddleCenter'
 		$form.Controls.Add($storeNameLabel)
 		
 		# Store Number Label
 		$script:storeNumberLabel = New-Object System.Windows.Forms.Label
 		$storeNumberLabel.Text = "Store Number: N/A"
-		$storeNumberLabel.Location = New-Object System.Drawing.Point(50, 70)
-		$storeNumberLabel.Size = New-Object System.Drawing.Size(900, 20)
+		$storeNumberLabel.Location = New-Object System.Drawing.Point(825, 30)
+		$storeNumberLabel.Size = New-Object System.Drawing.Size(200, 20)
 		$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$form.Controls.Add($storeNumberLabel)
 		
 		# Nodes Host Label
 		$script:NodesHost = New-Object System.Windows.Forms.Label
 		$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
-		$NodesHost.Location = New-Object System.Drawing.Point(50, 90)
-		$NodesHost.Size = New-Object System.Drawing.Size(900, 20) # Reduced height
+		$NodesHost.Location = New-Object System.Drawing.Point(255, 50)
+		$NodesHost.Size = New-Object System.Drawing.Size(200, 20) # Reduced height
 		$NodesHost.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$NodesHost.AutoSize = $false
 		$form.Controls.Add($NodesHost)
@@ -8652,8 +8653,8 @@ if (-not $SilentMode)
 		# Nodes Store Label
 		$script:NodesStore = New-Object System.Windows.Forms.Label
 		$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
-		$NodesStore.Location = New-Object System.Drawing.Point(50, 110) # Adjusted Y-position
-		$NodesStore.Size = New-Object System.Drawing.Size(900, 20) # Reduced height
+		$NodesStore.Location = New-Object System.Drawing.Point(625, 50) # Adjusted Y-position
+		$NodesStore.Size = New-Object System.Drawing.Size(200, 20) # Reduced height
 		$NodesStore.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$NodesStore.AutoSize = $false
 		$form.Controls.Add($NodesStore)
@@ -8676,7 +8677,7 @@ if (-not $SilentMode)
 		
 		# Create a RichTextBox for log output
 		$logBox = New-Object System.Windows.Forms.RichTextBox
-		$logBox.Location = New-Object System.Drawing.Point(50, 130)
+		$logBox.Location = New-Object System.Drawing.Point(50, 70)
 		$logBox.Size = New-Object System.Drawing.Size(900, 400)
 		$logBox.ReadOnly = $true
 		$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
@@ -8825,8 +8826,8 @@ if (-not $SilentMode)
 			############################################################################
 			$ServerToolsButton = New-Object System.Windows.Forms.Button
 			$ServerToolsButton.Text = "Server Tools"
-			$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 535)
-			$ServerToolsButton.Size = New-Object System.Drawing.Size(200, 40)
+			$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 475)
+			$ServerToolsButton.Size = New-Object System.Drawing.Size(300, 50)
 			
 			############################################################################
 			# Create a ContextMenuStrip for the drop-down
@@ -8946,8 +8947,8 @@ if (-not $SilentMode)
 			############################################################################
 			$LaneToolsButton = New-Object System.Windows.Forms.Button
 			$LaneToolsButton.Text = "Lane Tools"
-			$LaneToolsButton.Location = New-Object System.Drawing.Point(284, 535)
-			$LaneToolsButton.Size = New-Object System.Drawing.Size(200, 40)
+			$LaneToolsButton.Location = New-Object System.Drawing.Point(350, 475)
+			$LaneToolsButton.Size = New-Object System.Drawing.Size(300, 50)
 			
 			############################################################################
 			# Create a ContextMenuStrip for the drop-down
