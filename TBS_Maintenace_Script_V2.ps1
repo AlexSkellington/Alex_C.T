@@ -8627,7 +8627,7 @@ if (-not $SilentMode)
 		# Store Name Label
 		$script:storeNameLabel = New-Object System.Windows.Forms.Label
 		$storeNameLabel.Text = "Store Name: N/A"
-		$storeNameLabel.Location = New-Object System.Drawing.Point(455, 30)
+		$storeNameLabel.Location = New-Object System.Drawing.Point(445, 30)
 		$storeNameLabel.Size = New-Object System.Drawing.Size(200, 20)
 		$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		#$storeNameLabel.TextAlign = 'MiddleCenter'
