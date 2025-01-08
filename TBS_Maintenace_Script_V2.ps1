@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.0"
+$VersionNumber = "2.0.1"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -8434,7 +8434,7 @@ if (-not $SilentMode)
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
 		$form.Text = "Created by Alex_C.T - Version $VersionNumber"
-		$form.Size = New-Object System.Drawing.Size(1005, 710)
+		$form.Size = New-Object System.Drawing.Size(1005, 620)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
 		# Banner Label
@@ -8495,21 +8495,27 @@ if (-not $SilentMode)
 		# Set ToolTip
 		$toolTip.SetToolTip($clearLogButton, "Clears the log display area.")
 		
+		######################################################################################################################
+		# 
+		# General Tools Button
+		#
+		######################################################################################################################
+		
 		############################################################################
 		# Create a "resizable" Button that triggers the context menu
 		############################################################################
 		$generalToolsButton = New-Object System.Windows.Forms.Button
 		$generalToolsButton.Text = "General Tools"
-		$generalToolsButton.Location = New-Object System.Drawing.Point(725, 100)
-		$generalToolsButton.Size = New-Object System.Drawing.Size(120, 30)
+		$generalToolsButton.Location = New-Object System.Drawing.Point(517, 535)
+		$generalToolsButton.Size = New-Object System.Drawing.Size(200, 40)
 		
 		############################################################################
 		# Create a ContextMenuStrip for the drop-down
 		############################################################################
-		$contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
+		$contextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
 		
 		# (Optional) If you want tooltips to appear when hovering over menu items:
-		$contextMenu.ShowItemToolTips = $true
+		$contextMenuGeneral.ShowItemToolTips = $true
 		
 		############################################################################
 		# 1) Activate Windows ("Alex_C.T")
@@ -8519,7 +8525,7 @@ if (-not $SilentMode)
 		$activateItem.Add_Click({
 				Invoke-SecureScript # your existing function call
 			})
-		[void] $contextMenu.Items.Add($activateItem)
+		[void] $contextMenuGeneral.Items.Add($activateItem)
 		
 		############################################################################
 		# 2) Reboot System
@@ -8541,7 +8547,7 @@ if (-not $SilentMode)
 								 "TBS_Maintenance_Script.ps1"
 				}
 			})
-		[void] $contextMenu.Items.Add($rebootItem)
+		[void] $contextMenuGeneral.Items.Add($rebootItem)
 				
 		############################################################################
 		# 3) Install Function in SMS
@@ -8551,7 +8557,7 @@ if (-not $SilentMode)
 		$installIntoSMSItem.Add_Click({
 				InstallIntoSMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 			})
-		[void] $contextMenu.Items.Add($installIntoSMSItem)
+		[void] $contextMenuGeneral.Items.Add($installIntoSMSItem)
 		
 		############################################################################
 		# 4) Repair BMS Service
@@ -8561,7 +8567,7 @@ if (-not $SilentMode)
 		$repairBMSItem.Add_Click({
 				Repair-BMS
 			})
-		[void] $contextMenu.Items.Add($repairBMSItem)
+		[void] $contextMenuGeneral.Items.Add($repairBMSItem)
 		
 		############################################################################
 		# 5) Manual Repair
@@ -8571,7 +8577,7 @@ if (-not $SilentMode)
 		$manualRepairItem.Add_Click({
 				Write-SQLScriptsToDesktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
 			})
-		[void] $contextMenu.Items.Add($manualRepairItem)
+		[void] $contextMenuGeneral.Items.Add($manualRepairItem)
 		
 		############################################################################
 		# 6) Fix Journal
@@ -8581,7 +8587,7 @@ if (-not $SilentMode)
 		$fixJournalItem.Add_Click({
 				Fix-Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
 			})
-		[void] $contextMenu.Items.Add($fixJournalItem)
+		[void] $contextMenuGeneral.Items.Add($fixJournalItem)
 		
 		############################################################################
 		
@@ -8590,13 +8596,17 @@ if (-not $SilentMode)
 		$generalToolsButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor `
 		[System.Windows.Forms.AnchorStyles]::Right
 		
-		# The Click event shows the drop-down below the button
+		############################################################################
+		# Show the context menu when the General Tools button is clicked
+		############################################################################
 		$generalToolsButton.Add_Click({
 				# Show the context menu at the bottom-left corner of the button
-				$contextMenu.Show($generalToolsButton, 0, $generalToolsButton.Height)
+				$contextMenuGeneral.Show($generalToolsButton, 0, $generalToolsButton.Height)
 			})
 		
-		# Add the button to the form
+		############################################################################
+		# Finally, add the Server Tools button to the form
+		############################################################################			
 		$form.Controls.Add($generalToolsButton)
 		
 		################################################## Labels #######################################################
@@ -8684,206 +8694,52 @@ if (-not $SilentMode)
 		# Description:
 		#   Sets up the buttons on the main form, including their size, position, and labels based on the processing mode.
 		# ===================================================================================================
-		
+				
 		# Create Host Specific Buttons
 		if ($Mode -eq "Host")
 		{
-			# Host DB Repair Button
-			$hostButton1 = New-Object System.Windows.Forms.Button
-			$hostButton1.Text = "Host DB Repair"
-			$hostButton1.Location = New-Object System.Drawing.Point(50, 515)
-			$hostButton1.Size = New-Object System.Drawing.Size(200, 40)
-			$hostButton1.Add_Click({
+			############################################################################
+			# Create a "resizable" Button that triggers the context menu
+			############################################################################
+			$HostToolsButton = New-Object System.Windows.Forms.Button
+			$HostToolsButton.Text = "Host Tools"
+			$HostToolsButton.Location = New-Object System.Drawing.Point(725, 100)
+			$HostToolsButton.Size = New-Object System.Drawing.Size(120, 30)
+			
+			############################################################################
+			# Create a ContextMenuStrip for the drop-down
+			############################################################################
+			$ContextMenuHost = New-Object System.Windows.Forms.ContextMenuStrip
+			
+			# (Optional) If you want tooltips to appear when hovering over menu items:
+			$ContextMenuHost.ShowItemToolTips = $true
+			
+			############################################################################
+			# 1) Host DB Repair Menu Item
+			############################################################################
+			$HostDBRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Host DB Repair")
+			$HostDBRepairItem.ToolTipText = "Repair the Host database."
+			$HostDBRepairItem.Add_Click({
 					Process-HostGUI -StoresqlFilePath $StoresqlFilePath
 				})
-			$form.Controls.Add($hostButton1)
-			# Set ToolTip
-			$toolTip.SetToolTip($hostButton1, "Repair the Host database.")
+			[void]$ContextMenuHost.Items.Add($HostDBRepairItem)
 			
-			# Store DB Repair Button
-			$hostButton2 = New-Object System.Windows.Forms.Button
-			$hostButton2.Text = "Store DB Repair"
-			$hostButton2.Location = New-Object System.Drawing.Point(284, 515)
-			$hostButton2.Size = New-Object System.Drawing.Size(200, 40)
-			$hostButton2.Add_Click({
-					Process-StoresGUI -StoresqlFilePath $StoresqlFilePath
-				})
-			$form.Controls.Add($hostButton2)
-			# Set ToolTip
-			$toolTip.SetToolTip($hostButton2, "Repair the Store databases.")
-			
-			# Repair DB of Stores and Host Button
-			$hostButton3 = New-Object System.Windows.Forms.Button
-			$hostButton3.Text = "Repair DB of Stores and Host"
-			$hostButton3.Location = New-Object System.Drawing.Point(517, 515)
-			$hostButton3.Size = New-Object System.Drawing.Size(200, 40)
-			$hostButton3.Add_Click({
-					Process-AllStoresAndHostGUI -StoresqlFilePath $StoresqlFilePath
-				})
-			$form.Controls.Add($hostButton3)
-			# Set ToolTip
-			$toolTip.SetToolTip($hostButton3, "Repair databases for all stores and the Host.")
-			
-			# Repair Windows Button
-			$hostButton4 = New-Object System.Windows.Forms.Button
-			$hostButton4.Text = "Repair Windows"
-			$hostButton4.Location = New-Object System.Drawing.Point(750, 515)
-			$hostButton4.Size = New-Object System.Drawing.Size(200, 40)
-			$hostButton4.Add_Click({
+			############################################################################
+			# 2) Repair Windows Menu Item
+			############################################################################
+			$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
+			$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
+			$RepairWindowsItem.Add_Click({
 					Repair-Windows
 				})
-			$form.Controls.Add($hostButton4)
-			# Set ToolTip
-			$toolTip.SetToolTip($hostButton4, "Perform repairs on the Windows operating system.")
+			[void]$ContextMenuHost.Items.Add($RepairWindowsItem)
 			
-			# Create a Scheduled Task Button
-			$hostButton5 = New-Object System.Windows.Forms.Button
-			$hostButton5.Text = "Create a scheduled task"
-			$hostButton5.Location = New-Object System.Drawing.Point(50, 560)
-			$hostButton5.Size = New-Object System.Drawing.Size(200, 40)
-			$hostButton5.Add_Click({
-					Create-ScheduledTaskGUI -ScriptPath $scriptPath
-				})
-			$form.Controls.Add($hostButton5)
-			# Set ToolTip
-			$toolTip.SetToolTip($hostButton5, "Create a scheduled task for automated maintenance.")
-		}
-		else
-		{
-			# Store Specific Buttons with ToolTips
-			
-			# Server DB Repair Button
-			$storeButton1 = New-Object System.Windows.Forms.Button
-			$storeButton1.Text = "Server DB Repair"
-			$storeButton1.Location = New-Object System.Drawing.Point(50, 535)
-			$storeButton1.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton1.Add_Click({
-					$confirmation = [System.Windows.Forms.MessageBox]::Show(
-						"Do you want to proceed with the server database repair?",
-						"Confirmation",
-						[System.Windows.Forms.MessageBoxButtons]::YesNo,
-						[System.Windows.Forms.MessageBoxIcon]::Question
-					)
-					if ($confirmation -eq [System.Windows.Forms.DialogResult]::Yes)
-					{
-						Process-ServerGUI -StoresqlFilePath $StoresqlFilePath
-					}
-					else
-					{
-						[System.Windows.Forms.MessageBox]::Show(
-							"Operation canceled.",
-							"Canceled",
-							[System.Windows.Forms.MessageBoxButtons]::OK,
-							[System.Windows.Forms.MessageBoxIcon]::Information
-						)
-					}
-				})
-			$form.Controls.Add($storeButton1)
-			# Set ToolTip
-			$toolTip.SetToolTip($storeButton1, "Repairs the store server database.")
-			
-			# Lane DB Repair Button
-			$storeButton2 = New-Object System.Windows.Forms.Button
-			$storeButton2.Text = "Lane DB Repair"
-			$storeButton2.Location = New-Object System.Drawing.Point(284, 535)
-			$storeButton2.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton2.Add_Click({
-					Process-LanesGUI -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
-				})
-			$form.Controls.Add($storeButton2)
-			# Set ToolTip
-			$toolTip.SetToolTip($storeButton2, "Repair the Lane databases for the selected lane/s.")
-			
-			# Organize-TBS_SCL_ver520 Button
-			$OrganizeScaleTableButton = New-Object System.Windows.Forms.Button
-			$OrganizeScaleTableButton.Text = "Organize-TBS_SCL_ver520"
-			$OrganizeScaleTableButton.Location = New-Object System.Drawing.Point(517, 535)
-			$OrganizeScaleTableButton.Size = New-Object System.Drawing.Size(200, 40)
-			$OrganizeScaleTableButton.Add_Click({
-					Organize-TBS_SCL_ver520
-				})
-			$form.Controls.Add($OrganizeScaleTableButton)
-			# Set ToolTip
-			$toolTip.SetToolTip($OrganizeScaleTableButton, "Organize the Scale SQL table (TBS_SCL_ver520).")
-			
-			# Repair Windows Button
-			$repairButton = New-Object System.Windows.Forms.Button
-			$repairButton.Text = "Repair Windows"
-			$repairButton.Location = New-Object System.Drawing.Point(750, 535)
-			$repairButton.Size = New-Object System.Drawing.Size(200, 40)
-			$repairButton.Add_Click({
-					Repair-Windows
-				})
-			$form.Controls.Add($repairButton)
-			# Set ToolTip
-			$toolTip.SetToolTip($repairButton, "Perform repairs on the Windows operating system.")
-			
-			# Pump Table to Lane Button
-			$storeButton5 = New-Object System.Windows.Forms.Button
-			$storeButton5.Text = "Pump Table to Lane"
-			$storeButton5.Location = New-Object System.Drawing.Point(50, 580)
-			$storeButton5.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton5.Add_Click({
-					Pump-Tables -StoreNumber $StoreNumber
-				})
-			$form.Controls.Add($storeButton5)
-			# Set ToolTip
-			$toolTip.SetToolTip($storeButton5, "Pump the selected tables to the lane/s databases.")
-			
-			# Update Lane Configuration Button
-			$storeButton6 = New-Object System.Windows.Forms.Button
-			$storeButton6.Text = "Update Lane Configuration"
-			$storeButton6.Location = New-Object System.Drawing.Point(284, 580)
-			$storeButton6.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton6.Add_Click({
-					Update-LaneFiles -StoreNumber $StoreNumber
-				})
-			$form.Controls.Add($storeButton6)
-			# Set ToolTip
-			$toolTip.SetToolTip($storeButton6, "Update the configuration files for the lanes. Fixes connectivity erros and mistakes made during lane ghosting")
-			
-			# Close Open Transactions Button
-			$COTButton = New-Object System.Windows.Forms.Button
-			$COTButton.Text = "Close Open Transactions"
-			$COTButton.Location = New-Object System.Drawing.Point(517, 580)
-			$COTButton.Size = New-Object System.Drawing.Size(200, 40)
-			$COTButton.add_Click({
-					CloseOpenTransactions -StoreNumber $StoreNumber
-				})
-			$form.Controls.Add($COTButton)
-			# Set ToolTip
-			$toolTip.SetToolTip($COTButton, "Close any open transactions at the lane/s.")
-			
-			# Ping Lanes Button
-			$PingLanesButton = New-Object System.Windows.Forms.Button
-			$PingLanesButton.Text = "Ping Lanes"
-			$PingLanesButton.Location = New-Object System.Drawing.Point(750, 580)
-			$PingLanesButton.Size = New-Object System.Drawing.Size(200, 40)
-			$PingLanesButton.add_Click({
-					Ping-AllLanes -Mode "Store" -StoreNumber "$StoreNumber"
-				})
-			$form.Controls.Add($PingLanesButton)
-			# Set ToolTip
-			$toolTip.SetToolTip($PingLanesButton, "Ping all lane devices to check connectivity.")
-			
-			# Delete DBS Button
-			$DeleteDBSButton = New-Object System.Windows.Forms.Button
-			$DeleteDBSButton.Text = "Delete DBS"
-			$DeleteDBSButton.Location = New-Object System.Drawing.Point(50, 625)
-			$DeleteDBSButton.Size = New-Object System.Drawing.Size(200, 40)
-			$DeleteDBSButton.add_Click({
-					Delete-DBS -Mode "Store" -StoreNumber "$StoreNumber"
-				})
-			$form.Controls.Add($DeleteDBSButton)
-			# Set ToolTip
-			$toolTip.SetToolTip($DeleteDBSButton, "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane.")
-			
-			# Configure SystemSettings Button
-			$ConfigureSystemSettingsButton = New-Object System.Windows.Forms.Button
-			$ConfigureSystemSettingsButton.Text = "Configure System Settings"
-			$ConfigureSystemSettingsButton.Location = New-Object System.Drawing.Point(284, 625)
-			$ConfigureSystemSettingsButton.Size = New-Object System.Drawing.Size(200, 40)
-			$ConfigureSystemSettingsButton.add_Click({
+			############################################################################
+			# 3) Configure System Settings Menu Item
+			############################################################################
+			$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
+			$ConfigureSystemSettingsItem.ToolTipText = "Organize the desktop, set power plan to maximize performance and make sure necessary services are running."
+			$ConfigureSystemSettingsItem.Add_Click({
 					# Warning message box to confirm major changes
 					$confirmResult = [System.Windows.Forms.MessageBox]::Show(
 						"Warning: Configuring system settings will make major changes. Do you want to continue?",
@@ -8907,33 +8763,292 @@ if (-not $SilentMode)
 						)
 					}
 				})
-			$form.Controls.Add($ConfigureSystemSettingsButton)
-			# Set ToolTip
-			$toolTip.SetToolTip($ConfigureSystemSettingsButton, "Orginize the desktop, set power plan to maximize performance and make sure necessary services are running.")
+			[void]$ContextMenuHost.Items.Add($ConfigureSystemSettingsItem)
 			
-			# Refresh PIN Pad Files Button
-			$RefreshFilesButton = New-Object System.Windows.Forms.Button
-			$RefreshFilesButton.Text = "Refresh PIN Pad Files"
-			$RefreshFilesButton.Location = New-Object System.Drawing.Point(517, 625)
-			$RefreshFilesButton.Size = New-Object System.Drawing.Size(200, 40)
-			$RefreshFilesButton.add_Click({
+			############################################################################
+			# Show the context menu when the Server Tools button is clicked
+			############################################################################
+			$HostToolsButton.Add_Click({
+					# Show the menu at (0, button height) => just below the button
+					$ContextMenuServer.Show($HostToolsButton, 0, $HostToolsButton.Height)
+				}) 
+			
+			############################################################################
+			# (Optional) If you have a ToolTip object for normal controls:
+			############################################################################
+			$toolTip.SetToolTip($HostToolsButton, "Click to see Host-related tools.")
+			
+			############################################################################
+			# Finally, add the Server Tools button to the form
+			############################################################################			
+			$form.Controls.Add($HostToolsButton)
+						
+			# Store DB Repair Button
+			$hostButton2 = New-Object System.Windows.Forms.Button
+			$hostButton2.Text = "Store DB Repair"
+			$hostButton2.Location = New-Object System.Drawing.Point(284, 515)
+			$hostButton2.Size = New-Object System.Drawing.Size(200, 40)
+			$hostButton2.Add_Click({
+					Process-StoresGUI -StoresqlFilePath $StoresqlFilePath
+				})
+			$form.Controls.Add($hostButton2)
+			# Set ToolTip
+			$toolTip.SetToolTip($hostButton2, "Repair the Store databases.")			
+			
+			# Create a Scheduled Task Button
+			$hostButton5 = New-Object System.Windows.Forms.Button
+			$hostButton5.Text = "Create a scheduled task"
+			$hostButton5.Location = New-Object System.Drawing.Point(50, 560)
+			$hostButton5.Size = New-Object System.Drawing.Size(200, 40)
+			$hostButton5.Add_Click({
+					Create-ScheduledTaskGUI -ScriptPath $scriptPath
+				})
+			$form.Controls.Add($hostButton5)
+			# Set ToolTip
+			$toolTip.SetToolTip($hostButton5, "Create a scheduled task for automated maintenance.")
+		}
+		else
+		{
+			######################################################################################################################
+			# 
+			# Server Tools Button
+			#
+			######################################################################################################################
+			
+			############################################################################
+			# Create a "resizable" Button that triggers the context menu
+			############################################################################
+			$ServerToolsButton = New-Object System.Windows.Forms.Button
+			$ServerToolsButton.Text = "Server Tools"
+			$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 535)
+			$ServerToolsButton.Size = New-Object System.Drawing.Size(200, 40)
+			
+			############################################################################
+			# Create a ContextMenuStrip for the drop-down
+			############################################################################
+			$ContextMenuServer = New-Object System.Windows.Forms.ContextMenuStrip
+			
+			# (Optional) If you want tooltips to appear when hovering over menu items:
+			$ContextMenuServer.ShowItemToolTips = $true
+			
+			############################################################################
+			# 1) Server DB Repair 
+			############################################################################
+			$ServerDBRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Server DB Repair")
+			$ServerDBRepairItem.ToolTipText = "Repairs the store server database."
+			$ServerDBRepairItem.Add_Click({
+					$confirmation = [System.Windows.Forms.MessageBox]::Show(
+						"Do you want to proceed with the server database repair?",
+						"Confirmation",
+						[System.Windows.Forms.MessageBoxButtons]::YesNo,
+						[System.Windows.Forms.MessageBoxIcon]::Question
+					)
+					if ($confirmation -eq [System.Windows.Forms.DialogResult]::Yes)
+					{
+						Process-ServerGUI -StoresqlFilePath $StoresqlFilePath
+					}
+					else
+					{
+						[System.Windows.Forms.MessageBox]::Show(
+							"Operation canceled.",
+							"Canceled",
+							[System.Windows.Forms.MessageBoxButtons]::OK,
+							[System.Windows.Forms.MessageBoxIcon]::Information
+						)
+					}
+				})
+			
+			# Add the "Server DB Repair" item to the context menu
+			[void]$ContextMenuServer.Items.Add($ServerDBRepairItem)
+			
+			############################################################################
+			# 2) Organize-TBS_SCL_ver520 Menu Item
+			############################################################################
+			$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize-TBS_SCL_ver520")
+			$OrganizeScaleTableItem.ToolTipText = "Organize the Scale SQL table (TBS_SCL_ver520)."
+			$OrganizeScaleTableItem.Add_Click({
+					Organize-TBS_SCL_ver520
+				})
+			[void]$ContextMenuServer.Items.Add($OrganizeScaleTableItem)
+			
+			############################################################################
+			# 3) Repair Windows Menu Item
+			############################################################################
+			$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
+			$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
+			$RepairWindowsItem.Add_Click({
+					Repair-Windows
+				})
+			[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
+			
+			############################################################################
+			# 4) Configure System Settings Menu Item
+			############################################################################
+			$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
+			$ConfigureSystemSettingsItem.ToolTipText = "Organize the desktop, set power plan to maximize performance and make sure necessary services are running."
+			$ConfigureSystemSettingsItem.Add_Click({
+					# Warning message box to confirm major changes
+					$confirmResult = [System.Windows.Forms.MessageBox]::Show(
+						"Warning: Configuring system settings will make major changes. Do you want to continue?",
+						"Confirm Changes",
+						[System.Windows.Forms.MessageBoxButtons]::YesNo,
+						[System.Windows.Forms.MessageBoxIcon]::Warning
+					)
+					
+					# If the user clicks Yes, proceed with the configuration
+					if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes)
+					{
+						Configure-SystemSettings
+					}
+					else
+					{
+						[System.Windows.Forms.MessageBox]::Show(
+							"Operation canceled.",
+							"Canceled",
+							[System.Windows.Forms.MessageBoxButtons]::OK,
+							[System.Windows.Forms.MessageBoxIcon]::Information
+						)
+					}
+				})
+			[void]$ContextMenuServer.Items.Add($ConfigureSystemSettingsItem)
+						
+			############################################################################
+			# Show the context menu when the Server Tools button is clicked
+			############################################################################
+			$ServerToolsButton.Add_Click({
+					# Show the menu at (0, button height) => just below the button
+					$ContextMenuServer.Show($ServerToolsButton, 0, $ServerToolsButton.Height)
+				})
+			
+			############################################################################
+			# (Optional) If you have a ToolTip object for normal controls:
+			############################################################################
+			$toolTip.SetToolTip($ServerToolsButton, "Click to see server-related tools.")
+			
+			############################################################################
+			# Finally, add the Server Tools button to the form
+			############################################################################			
+			$form.Controls.Add($ServerToolsButton)
+			
+			######################################################################################################################
+			# 
+			# Lane Tools Button
+			#
+			######################################################################################################################
+			
+			############################################################################
+			# Create a "resizable" Button that triggers the context menu
+			############################################################################
+			$LaneToolsButton = New-Object System.Windows.Forms.Button
+			$LaneToolsButton.Text = "Lane Tools"
+			$LaneToolsButton.Location = New-Object System.Drawing.Point(284, 535)
+			$LaneToolsButton.Size = New-Object System.Drawing.Size(200, 40)
+			
+			############################################################################
+			# Create a ContextMenuStrip for the drop-down
+			############################################################################
+			$ContextMenuLane = New-Object System.Windows.Forms.ContextMenuStrip
+			
+			# (Optional) If you want tooltips to appear when hovering over menu items:
+			$ContextMenuLane.ShowItemToolTips = $true
+			
+			############################################################################
+			# 1) Lane DB Repair Button
+			############################################################################
+			$LaneDBRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Lane DB Repair")
+			$LaneDBRepairItem.ToolTipText = "Repair the Lane databases for the selected lane(s)."
+			$LaneDBRepairItem.Add_Click({
+					Process-LanesGUI -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($LaneDBRepairItem)
+			
+			############################################################################
+			# 2) Pump Table to Lane Menu Item
+			############################################################################
+			$PumpTableToLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Pump Table to Lane")
+			$PumpTableToLaneItem.ToolTipText = "Pump the selected tables to the lane/s databases."
+			$PumpTableToLaneItem.Add_Click({
+					Pump-Tables -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
+			
+			############################################################################
+			# 3) Update Lane Configuration Menu Item
+			############################################################################
+			$UpdateLaneConfigItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Lane Configuration")
+			$UpdateLaneConfigItem.ToolTipText = "Update the configuration files for the lanes. Fixes connectivity errors and mistakes made during lane ghosting."
+			$UpdateLaneConfigItem.Add_Click({
+					Update-LaneFiles -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($UpdateLaneConfigItem)
+			
+			############################################################################
+			# 4) Close Open Transactions Menu Item
+			############################################################################
+			$CloseOpenTransItem = New-Object System.Windows.Forms.ToolStripMenuItem("Close Open Transactions")
+			$CloseOpenTransItem.ToolTipText = "Close any open transactions at the lane/s."
+			$CloseOpenTransItem.Add_Click({
+					CloseOpenTransactions -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
+			
+			############################################################################
+			# 5) Ping Lanes Menu Item
+			############################################################################
+			$PingLanesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Lanes")
+			$PingLanesItem.ToolTipText = "Ping all lane devices to check connectivity."
+			$PingLanesItem.Add_Click({
+					Ping-AllLanes -Mode "Store" -StoreNumber "$StoreNumber"
+				})
+			[void]$ContextMenuLane.Items.Add($PingLanesItem)
+			
+			############################################################################
+			# 6) Delete DBS Menu Item
+			############################################################################
+			$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
+			$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
+			$DeleteDBSItem.Add_Click({
+					Delete-DBS -Mode "Store" -StoreNumber "$StoreNumber"
+				})
+			[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
+			
+			############################################################################
+			# 7) Refresh PIN Pad Files Menu Item
+			############################################################################
+			$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
+			$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
+			$RefreshPinPadFilesItem.Add_Click({
 					Refresh-Files -Mode $Mode -StoreNumber "$StoreNumber"
 				})
-			$form.Controls.Add($RefreshFilesButton)
-			# Set ToolTip
-			$toolTip.SetToolTip($RefreshFilesButton, "Refresh the PIN pad files for the lane/s.")
+			[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 			
-			# Reboot Lane Button
-			$storeButton8 = New-Object System.Windows.Forms.Button
-			$storeButton8.Text = "Reboot Lane"
-			$storeButton8.Location = New-Object System.Drawing.Point(750, 625)
-			$storeButton8.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton8.Add_Click({
+			############################################################################
+			# Reboot Lane Menu Item
+			############################################################################
+			$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
+			$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
+			$RebootLaneItem.Add_Click({
 					Reboot-Lanes -StoreNumber $StoreNumber
 				})
-			$form.Controls.Add($storeButton8)
-			# Set ToolTip
-			$toolTip.SetToolTip($storeButton8, "Reboot the selected lane/s.")
+			[void]$ContextMenuLane.Items.Add($RebootLaneItem)
+			
+			############################################################################
+			# Show the context menu when the Server Tools button is clicked
+			############################################################################
+			$LaneToolsButton.Add_Click({
+					# Show the menu at (0, button height) => just below the button
+					$ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height)
+				})
+			
+			############################################################################
+			# (Optional) If you have a ToolTip object for normal controls:
+			############################################################################
+			$toolTip.SetToolTip($LaneToolsButton, "Click to see Lane-related tools.")
+			
+			############################################################################
+			# Finally, add the Server Tools button to the form
+			############################################################################			
+			$form.Controls.Add($LaneToolsButton)
 		}
 	}
 	
