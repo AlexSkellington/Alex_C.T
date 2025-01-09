@@ -1966,7 +1966,7 @@ function Generate-SQLScripts
 	# $laneDbName remains as 'LANESQL' unless you wish to make it dynamic as well
 	$laneDbName = $defaultLaneDbName # If LANESQL is also dynamic, you can retrieve it similarly
 	
-	Write-Log "Generating SQL scripts using Store DB: '$storeDbName' and Lane DB: '$laneDbName'..." "blue"
+	# Write-Log "Generating SQL scripts using Store DB: '$storeDbName' and Lane DB: '$laneDbName'..." "blue"
 	
 	# Generate Lanesql script
 	$LaneSQLScript = @"
@@ -2332,7 +2332,7 @@ ALTER DATABASE STORESQL SET RECOVERY FULL;
 		[System.IO.File]::WriteAllText($StoresqlFilePath, $script:ServerSQLScript, $utf8NoBOM)
 	}
 	
-	Write-Log "SQL scripts generated successfully." "green"
+	# Write-Log "SQL scripts generated successfully." "green"
 }
 
 # ===================================================================================================
@@ -9075,7 +9075,7 @@ if (-not $SilentMode)
 	#>
 	
 	# Show the running version of PowerShell
-	Write-Log "Powershell version installed: $major.$minor | Build-$build | Revision-$revision" "blue"
+	# Write-Log "Powershell version installed: $major.$minor | Build-$build | Revision-$revision" "blue"
 	
 	# Initialize a counter for the number of jobs started
 	$jobCount = 0
