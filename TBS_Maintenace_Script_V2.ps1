@@ -7909,10 +7909,10 @@ function Write-SQLScriptsToDesktop
 }
 
 # ===================================================================================================
-#                               FUNCTION: Send-RestartCommand
+#                               FUNCTION: Send-RestartAllPrograms
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   The `Send-RestartCommand` function automates sending a restart command to selected lanes
+#   The `Send-RestartAllPrograms` function automates sending a restart command to selected lanes
 #   within a specified store. It retrieves lane-to-machine mappings using the `Retrieve-Nodes` 
 #   function, prompts the user to select lanes via the `Show-SelectionDialog` function, and
 #   then constructs and sends a mailslot command to each selected lane using the correct 
@@ -7938,7 +7938,7 @@ function Write-SQLScriptsToDesktop
 #   None. Outputs success or failure messages to the console for each lane processed.
 #
 # Example Usage:
-#   Send-RestartCommand -StoreNumber "123"
+#   Send-RestartAllPrograms -StoreNumber "123"
 #
 # Notes:
 #   - Ensure that the helper functions (`Retrieve-Nodes`, `Show-SelectionDialog`) and the 
@@ -7946,14 +7946,14 @@ function Write-SQLScriptsToDesktop
 #     session before invoking this function.
 # ===================================================================================================
 
-function Send-RestartCommand
+function Send-RestartAllPrograms
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber # Expecting a 3-digit store number (SSS)
 	)
 	
-	Write-Log "`r`n==================== Starting Send-RestartCommand Function ====================`r`n" "blue"
+	Write-Log "`r`n==================== Starting Send-RestartAllPrograms Function ====================`r`n" "blue"
 	
 	if (-not ([System.Management.Automation.PSTypeName]'MailslotSender').Type)
 	{
@@ -8057,7 +8057,7 @@ public class MailslotSender {
 			Write-Log "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
 		}
 	}
-	Write-Log "`r`n==================== Send-RestartCommand Function Completed ====================" "blue"
+	Write-Log "`r`n==================== Send-RestartAllPrograms Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -9185,7 +9185,7 @@ if (-not $SilentMode)
 			$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 			$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
 			$SendRestartCommandItem.Add_Click({
-					Send-RestartCommand -StoreNumber "$StoreNumber"
+					Send-RestartAllPrograms -StoreNumber "$StoreNumber"
 				})
 			[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 			
