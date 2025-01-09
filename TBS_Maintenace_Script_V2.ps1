@@ -8048,11 +8048,11 @@ public class MailslotSender {
 		
 		if ($result)
 		{
-			Write-Host "Command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)."
+			Write-Log "Command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)."
 		}
 		else
 		{
-			Write-Host "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)."
+			Write-Log "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)."
 		}
 	}
 }
