@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.1"
+$VersionNumber = "2.0.1" 
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
