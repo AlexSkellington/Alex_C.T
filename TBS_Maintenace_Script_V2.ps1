@@ -5749,6 +5749,38 @@ function CloseOpenTransactions
 													
 													Write-Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
 													$MatchedTransactions = $true
+													
+													# Send restart command 3 seconds after deployment
+													Start-Sleep -Seconds 3
+													
+													# Retrieve updated node information to get machine mapping
+													$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
+													if ($nodes)
+													{
+														$machineName = $nodes.LaneMachines[$LaneNumber]
+														if ($machineName)
+														{
+															$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
+															$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+															$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+															if ($result)
+															{
+																Write-Log -Message "Restart command sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after deployment." "green"
+															}
+															else
+															{
+																Write-Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
+															}
+														}
+														else
+														{
+															Write-Log -Message "No machine found for lane $LaneNumber. Restart command not sent." "yellow"
+														}
+													}
+													else
+													{
+														Write-Log -Message "Could not retrieve node information for store $StoreNumber. Restart command not sent." "red"
+													}
 												}
 												else
 												{
@@ -5883,6 +5915,36 @@ function CloseOpenTransactions
 				
 				# After user deploys the file, clear the folder except for files with "FATAL" in the name
 				Get-ChildItem -Path $XEFolderPath -File | Where-Object { $_.Name -notlike "*FATAL*" } | Remove-Item -Force
+				
+				# Send restart command 3 seconds after deployment by the user
+				# Start-Sleep -Seconds 3
+				$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
+				if ($nodes)
+				{
+					$machineName = $nodes.LaneMachines[$LaneNumber]
+					if ($machineName)
+					{
+						$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
+						$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+						$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+						if ($result)
+						{
+							Write-Log -Message "Restart command sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after user deployment." "green"
+						}
+						else
+						{
+							Write-Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
+						}
+					}
+					else
+					{
+						Write-Log -Message "No machine found for lane $LaneNumber. Restart command not sent." "yellow"
+					}
+				}
+				else
+				{
+					Write-Log -Message "Could not retrieve node information for store $StoreNumber. Restart command not sent." "red"
+				}
 			}
 			else
 			{
