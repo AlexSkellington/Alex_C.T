@@ -8478,8 +8478,8 @@ if (-not $SilentMode)
 		# Create a Clear Log button
 		$clearLogButton = New-Object System.Windows.Forms.Button
 		$clearLogButton.Text = "Clear Log"
-		$clearLogButton.Location = New-Object System.Drawing.Point(890, 48)
-		$clearLogButton.Size = New-Object System.Drawing.Size(60, 22)
+		$clearLogButton.Location = New-Object System.Drawing.Point(889, 48)
+		$clearLogButton.Size = New-Object System.Drawing.Size(61, 22)
 		$clearLogButton.add_Click({
 				$logBox.Clear()
 				Write-Log "Log Cleared"
