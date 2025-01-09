@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.2"
+$VersionNumber = "2.0.3"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -7952,40 +7952,22 @@ function Show-SelectionDialog
 	
 	# Radio buttons for selection type
 	$radioSpecific = New-Object System.Windows.Forms.RadioButton
-	if ($Mode -eq "Host")
-	{
-		$radioSpecific.Text = "Specific Store"
-	}
-	else
-	{
-		$radioSpecific.Text = "Specific Lane"
-	}
+	$radioSpecific.Text = if ($Mode -eq "Host") { "Specific Store" }
+	else { "Specific Lane" }
 	$radioSpecific.Location = New-Object System.Drawing.Point(20, 20)
 	$radioSpecific.AutoSize = $true
 	$form.Controls.Add($radioSpecific)
 	
 	$radioRange = New-Object System.Windows.Forms.RadioButton
-	if ($Mode -eq "Host")
-	{
-		$radioRange.Text = "Range of Stores"
-	}
-	else
-	{
-		$radioRange.Text = "Range of Lanes"
-	}
+	$radioRange.Text = if ($Mode -eq "Host") { "Range of Stores" }
+	else { "Range of Lanes" }
 	$radioRange.Location = New-Object System.Drawing.Point(20, 50)
 	$radioRange.AutoSize = $true
 	$form.Controls.Add($radioRange)
 	
 	$radioAll = New-Object System.Windows.Forms.RadioButton
-	if ($Mode -eq "Host")
-	{
-		$radioAll.Text = "All Stores"
-	}
-	else
-	{
-		$radioAll.Text = "All Lanes"
-	}
+	$radioAll.Text = if ($Mode -eq "Host") { "All Stores" }
+	else { "All Lanes" }
 	$radioAll.Location = New-Object System.Drawing.Point(20, 80)
 	$radioAll.AutoSize = $true
 	$form.Controls.Add($radioAll)
@@ -7993,14 +7975,14 @@ function Show-SelectionDialog
 	# Inputs for selection
 	if ($Mode -eq "Host")
 	{
-		# TextBox for Specific Host(s)
+		# TextBox for Specific Store(s)
 		$textSpecific = New-Object System.Windows.Forms.TextBox
 		$textSpecific.Location = New-Object System.Drawing.Point(220, 18)
 		$textSpecific.Width = 200
 		$textSpecific.Enabled = $false
 		$form.Controls.Add($textSpecific)
 		
-		# Labels and TextBoxes for Range
+		# Labels and TextBoxes for Range of Stores
 		$labelStart = New-Object System.Windows.Forms.Label
 		$labelStart.Text = "Start Store:"
 		$labelStart.Location = New-Object System.Drawing.Point(20, 120)
@@ -8029,19 +8011,39 @@ function Show-SelectionDialog
 	}
 	elseif ($Mode -eq "Store")
 	{
-		# Label and TextBox for Lane inputs
-		$labelInput = New-Object System.Windows.Forms.Label
-		$labelInput.Text = "Enter Lane Number:"
-		$labelInput.Location = New-Object System.Drawing.Point(20, 150)
-		$labelInput.Size = New-Object System.Drawing.Size(400, 20)
-		$labelInput.Visible = $false
-		$form.Controls.Add($labelInput)
+		# TextBox for Specific Lane(s)
+		$textSpecific = New-Object System.Windows.Forms.TextBox
+		$textSpecific.Location = New-Object System.Drawing.Point(220, 18)
+		$textSpecific.Width = 200
+		$textSpecific.Enabled = $false
+		$form.Controls.Add($textSpecific)
 		
-		$textBoxInput = New-Object System.Windows.Forms.TextBox
-		$textBoxInput.Location = New-Object System.Drawing.Point(20, 180)
-		$textBoxInput.Size = New-Object System.Drawing.Size(400, 20)
-		$textBoxInput.Visible = $false
-		$form.Controls.Add($textBoxInput)
+		# Labels and TextBoxes for Range of Lanes
+		$labelStart = New-Object System.Windows.Forms.Label
+		$labelStart.Text = "Start Lane:"
+		$labelStart.Location = New-Object System.Drawing.Point(20, 120)
+		$labelStart.AutoSize = $true
+		$labelStart.Enabled = $false
+		$form.Controls.Add($labelStart)
+		
+		$textStart = New-Object System.Windows.Forms.TextBox
+		$textStart.Location = New-Object System.Drawing.Point(150, 118)
+		$textStart.Width = 60
+		$textStart.Enabled = $false
+		$form.Controls.Add($textStart)
+		
+		$labelEnd = New-Object System.Windows.Forms.Label
+		$labelEnd.Text = "End Lane:"
+		$labelEnd.Location = New-Object System.Drawing.Point(220, 120)
+		$labelEnd.AutoSize = $true
+		$labelEnd.Enabled = $false
+		$form.Controls.Add($labelEnd)
+		
+		$textEnd = New-Object System.Windows.Forms.TextBox
+		$textEnd.Location = New-Object System.Drawing.Point(350, 118)
+		$textEnd.Width = 60
+		$textEnd.Enabled = $false
+		$form.Controls.Add($textEnd)
 	}
 	
 	# OK and Cancel buttons
@@ -8082,29 +8084,17 @@ function Show-SelectionDialog
 	elseif ($Mode -eq "Store")
 	{
 		$radioSpecific.Add_CheckedChanged({
-				if ($radioSpecific.Checked)
-				{
-					$labelInput.Text = "Enter Lane Number (e.g., 005):"
-					$labelInput.Visible = $true
-					$textBoxInput.Visible = $true
-				}
+				$textSpecific.Enabled = $radioSpecific.Checked
+				$labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $false
 			})
 		
 		$radioRange.Add_CheckedChanged({
-				if ($radioRange.Checked)
-				{
-					$labelInput.Text = "Enter Lanes Range (e.g., 001-010):"
-					$labelInput.Visible = $true
-					$textBoxInput.Visible = $true
-				}
+				$labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $radioRange.Checked
+				$textSpecific.Enabled = $false
 			})
 		
 		$radioAll.Add_CheckedChanged({
-				if ($radioAll.Checked)
-				{
-					$labelInput.Visible = $false
-					$textBoxInput.Visible = $false
-				}
+				$textSpecific.Enabled = $labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $false
 			})
 	}
 	
@@ -8128,7 +8118,8 @@ function Show-SelectionDialog
 			$storesInput = $textSpecific.Text
 			if ([string]::IsNullOrWhiteSpace($storesInput))
 			{
-				[System.Windows.Forms.MessageBox]::Show("Please enter at least one store number.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				[System.Windows.Forms.MessageBox]::Show("Please enter at least one store number.", "Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				return $null
 			}
 			# Split the input by commas and trim spaces
@@ -8138,7 +8129,8 @@ function Show-SelectionDialog
 			{
 				if (-not ($store -match "^\d{3}$"))
 				{
-					[System.Windows.Forms.MessageBox]::Show("Invalid store number: $store. Numbers must be exactly 3 digits.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+					[System.Windows.Forms.MessageBox]::Show("Invalid store number: $store. Numbers must be exactly 3 digits.",
+						"Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 					return $null
 				}
 			}
@@ -8150,19 +8142,30 @@ function Show-SelectionDialog
 		elseif ($Mode -eq "Store")
 		{
 			# Process specific lanes
-			$input = $textBoxInput.Text.Trim()
-			if ($input -match "^\d{1,3}$")
+			$lanesInput = $textSpecific.Text
+			if ([string]::IsNullOrWhiteSpace($lanesInput))
 			{
-				$laneNumber = $input.PadLeft(3, '0')
-				return @{
-					Type  = 'Specific'
-					Lanes = @($laneNumber)
+				[System.Windows.Forms.MessageBox]::Show("Please enter at least one lane number.", "Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				return $null
+			}
+			# Split the input by commas and trim spaces
+			$lanes = $lanesInput.Split(",") | ForEach-Object { $_.Trim() }
+			# Validate that each lane is up to a 3-digit number
+			foreach ($lane in $lanes)
+			{
+				if (-not ($lane -match "^\d{1,3}$"))
+				{
+					[System.Windows.Forms.MessageBox]::Show("Invalid lane number: $lane. Numbers must be up to 3 digits.",
+						"Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+					return $null
 				}
 			}
-			else
-			{
-				[System.Windows.Forms.MessageBox]::Show("Invalid lane number. Please enter a 1 to 3-digit number.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-				return $null
+			# Pad each lane to 3 digits
+			$lanes = $lanes | ForEach-Object { $_.PadLeft(3, '0') }
+			return @{
+				Type  = 'Specific'
+				Lanes = $lanes
 			}
 		}
 	}
@@ -8175,12 +8178,14 @@ function Show-SelectionDialog
 			$endHost = $textEnd.Text.Trim()
 			if (-not ($startHost -match "^\d{3}$") -or -not ($endHost -match "^\d{3}$"))
 			{
-				[System.Windows.Forms.MessageBox]::Show("Start and End store numbers must be exactly 3 digits.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				[System.Windows.Forms.MessageBox]::Show("Start and End store numbers must be exactly 3 digits.", "Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				return $null
 			}
 			if ([int]$startHost -gt [int]$endHost)
 			{
-				[System.Windows.Forms.MessageBox]::Show("Start store number cannot be greater than end store number.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				[System.Windows.Forms.MessageBox]::Show("Start store number cannot be greater than end store number.", "Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				return $null
 			}
 			# Generate the list of store numbers
@@ -8197,30 +8202,29 @@ function Show-SelectionDialog
 		elseif ($Mode -eq "Store")
 		{
 			# Process range of lanes
-			$input = $textBoxInput.Text.Trim()
-			if ($input -match "^\d{1,3}\s*-\s*\d{1,3}$")
+			$startLane = $textStart.Text.Trim()
+			$endLane = $textEnd.Text.Trim()
+			if (-not ($startLane -match "^\d{1,3}$") -or -not ($endLane -match "^\d{1,3}$"))
 			{
-				$parts = $input -split '\s*-\s*'
-				$startLane = [int]$parts[0]
-				$endLane = [int]$parts[1]
-				if ($startLane -le $endLane)
-				{
-					$laneNumbers = ($startLane .. $endLane) | ForEach-Object { $_.ToString("D3") }
-					return @{
-						Type  = 'Range'
-						Lanes = $laneNumbers
-					}
-				}
-				else
-				{
-					[System.Windows.Forms.MessageBox]::Show("Start lane number cannot be greater than end lane number.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-					return $null
-				}
-			}
-			else
-			{
-				[System.Windows.Forms.MessageBox]::Show("Invalid lane range. Please use the format 001-010.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				[System.Windows.Forms.MessageBox]::Show("Start and End lane numbers must be 1 to 3 digits.", "Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				return $null
+			}
+			if ([int]$startLane -gt [int]$endLane)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Start lane number cannot be greater than end lane number.", "Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				return $null
+			}
+			# Generate the list of lane numbers
+			$laneNumbers = @()
+			for ($i = [int]$startLane; $i -le [int]$endLane; $i++)
+			{
+				$laneNumbers += $i.ToString("D3")
+			}
+			return @{
+				Type  = 'Range'
+				Lanes = $laneNumbers
 			}
 		}
 	}
@@ -8237,7 +8241,8 @@ function Show-SelectionDialog
 		{
 			if (-not $StoreNumber)
 			{
-				[System.Windows.Forms.MessageBox]::Show("Store number is required to fetch all lanes.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				[System.Windows.Forms.MessageBox]::Show("Store number is required to fetch all lanes.", "Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				return $null
 			}
 			# Attempt to use $LaneContents from $script:FunctionResults
@@ -8254,7 +8259,8 @@ function Show-SelectionDialog
 				# Fallback to current mechanism
 				if (-not (Test-Path -Path $OfficePath))
 				{
-					[System.Windows.Forms.MessageBox]::Show("The path '$OfficePath' does not exist.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+					[System.Windows.Forms.MessageBox]::Show("The path '$OfficePath' does not exist.", "Error",
+						[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 					return $null
 				}
 				$laneFolders = Get-ChildItem -Path $OfficePath -Directory -Filter "XF${StoreNumber}0*"
