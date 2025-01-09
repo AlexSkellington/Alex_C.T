@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.1" 
+$VersionNumber = "2.0.1"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -7095,20 +7095,20 @@ function InstallIntoSMS
 	# Define File Contents
 	# --------------------------------------------------------------------------------------------
 	
-	# Content for Pump_all_items_tables.sql
+	# Define the content for Pump_all_items_tables.sql
 	$PumpAllItemsTablesContent = @"
-/* First delete the record if it exists */
+/* First delete the record if it exist */
 DELETE FROM FCT_TAB WHERE F1063 = 11899 AND F1000 = 'PAL';
 
 /* Insert the new function */
-INSERT INTO FCT_TAB (F1063, F1000, F1047, F1050, F1051, F1052, F1053, F1064, F1081) 
-VALUES (11899, 'PAL', 9, '', 'SKU', 'Preference', '1', 'Pump all item tables', 'sql=DEPLOY_LOAD');
+INSERT INTO FCT_TAB (F1063,F1000,F1047,F1050,F1051,F1052,F1053,F1064,F1081) 
+VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPLOY_LOAD');
 
 /* Activate the new function right away */
 @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
 "@
 	
-	# Content for DEPLOY_SYS.sql
+	# Define the content for DEPLOY_SYS.sql
 	$DeploySysContent = @"
 @FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,®WIZRPL(UD_RUN=0));
 @FMT(CMP,@WIZGET(UD_RUN)=,'®EXEC(SQL=UD_DEPLOY_SYS)®FMT(CHR,27)');
@@ -7135,12 +7135,11 @@ VALUES (11899, 'PAL', 9, '', 'SKU', 'Preference', '1', 'Pump all item tables', '
 
 @WIZINIT;
 @WIZTARGET(TARGET=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
-SELECT F1000, F1018 FROM STO_TAB WHERE F1181=1 ORDER BY F1000","
-SELECT DISTINCT STO.F1000, STO.F1018 
-FROM LNK_TAB LN2 
-JOIN LNK_TAB LNK ON LN2.F1056 = LNK.F1056 AND LN2.F1057 = LNK.F1057
-JOIN STO_TAB STO ON STO.F1000 = LNK.F1000 
-WHERE STO.F1181 = '1' AND LN2.F1000 = '@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'
+SELECT F1000,F1018 FROM STO_TAB WHERE F1181=1 ORDER BY F1000","
+SELECT DISTINCT STO.F1000,STO.F1018 
+FROM LNK_TAB LN2 JOIN LNK_TAB LNK ON LN2.F1056=LNK.F1056 AND LN2.F1057=LNK.F1057
+JOIN STO_TAB STO ON STO.F1000=LNK.F1000 
+WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'
 ORDER BY STO.F1000"));
 @WIZDISPLAY;
 
@@ -7173,7 +7172,7 @@ ORDER BY STO.F1000"));
 @EXEC(sqi=USERE_DEPLOY_SYS);
 "@
 	
-	# Content for DEPLOY_ONE_FCT.sqm
+	# Define the content for DEPLOY_ONE_FCT.sqm
 	$DeployOneFctContent = @"
 INSERT INTO HEADER_DCT VALUES
 ('HC','00000001','001901','001001',,,1997001,0000,1997001,0001,,'LOAD','CREATE DCT',,,,,,'1/1.0','V1.0',,);
@@ -7316,7 +7315,7 @@ ORDER BY F1000,F1063;
 			}
 			else
 			{
-				Write-Log "Archive bit was not set for '$PumpAllItemsTablesFilePath'." "yellow"
+			#	Write-Log "Archive bit was not set for '$PumpAllItemsTablesFilePath'." "yellow"
 			}
 		}
 		else
