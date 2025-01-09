@@ -136,7 +136,7 @@ $StoresqlFilePath = "$env:TEMP\Server_Database_Maintenance.sqi"
 # Script Name
 # $scriptName = Split-Path -Leaf $PSCommandPath
 
-# Add the MailSlotSender
+# Add the MailSlotSender to send MailSlot messages to the lanes
 if (-not ([System.Management.Automation.PSTypeName]'MailslotSender').Type)
 {
 	Add-Type -TypeDefinition @"
@@ -8842,7 +8842,7 @@ if (-not $SilentMode)
 		$script:storeNameLabel = New-Object System.Windows.Forms.Label
 		$storeNameLabel.Text = "Store Name: N/A"
 		$storeNameLabel.Location = New-Object System.Drawing.Point(445, 30)
-		$storeNameLabel.Size = New-Object System.Drawing.Size(200, 20)
+		$storeNameLabel.Size = New-Object System.Drawing.Size(400, 20)
 		$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		#$storeNameLabel.TextAlign = 'MiddleCenter'
 		$form.Controls.Add($storeNameLabel)
