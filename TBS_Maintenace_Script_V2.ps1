@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.3"
+$VersionNumber = "2.0.4"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -7909,6 +7909,104 @@ function Write-SQLScriptsToDesktop
 }
 
 # ===================================================================================================
+#                               FUNCTION: Send-RestartCommand
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   The `Send-RestartCommand` function automates sending a restart command to selected lanes
+#   within a specified store. It retrieves lane-to-machine mappings using the `Retrieve-Nodes` 
+#   function, prompts the user to select lanes via the `Show-SelectionDialog` function, and
+#   then constructs and sends a mailslot command to each selected lane using the correct 
+#   machine address.
+#
+# Parameters:
+#   - [string]$StoreNumber
+#         A 3-digit identifier for the store (SSS). This parameter is mandatory and is used
+#         to retrieve node details, select lanes, and construct mailslot addresses.
+#
+# Workflow:
+#   1. Retrieve node information for the specified store using `Retrieve-Nodes`, which
+#      provides a mapping between lanes and their corresponding machine names.
+#   2. Launch `Show-SelectionDialog` in 'Store' mode to allow the user to select one
+#      or more lanes (TTT).
+#   3. For each selected lane:
+#         - Look up the machine name from the lane-to-machine mapping.
+#         - Construct the mailslot address using the machine name, store number, and lane number.
+#         - Send the restart command via `[MailslotSender]::SendMailslotCommand`.
+#         - Report success or failure for each command sent.
+#
+# Returns:
+#   None. Outputs success or failure messages to the console for each lane processed.
+#
+# Example Usage:
+#   Send-RestartCommand -StoreNumber "123"
+#
+# Notes:
+#   - Ensure that the helper functions (`Retrieve-Nodes`, `Show-SelectionDialog`) and the 
+#     `[MailslotSender]::SendMailslotCommand` method are defined and accessible in the 
+#     session before invoking this function.
+# ===================================================================================================
+
+function Send-RestartCommand
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber # Expecting a 3-digit store number (SSS)
+	)
+	
+	# Retrieve node information for the specified store to obtain lane-machine mapping.
+	$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
+	if (-not $nodes)
+	{
+		Write-Host "Failed to retrieve node information for store $StoreNumber."
+		return
+	}
+	
+	# Use lane selection dialog to get lanes (TTT) for the specified store.
+	$selection = Show-SelectionDialog -Mode Store -StoreNumber $StoreNumber
+	if (-not $selection)
+	{
+		Write-Host "No lanes selected or selection cancelled. Exiting."
+		return
+	}
+	
+	# Extract lanes from selection.
+	$lanes = $selection.Lanes
+	if (-not $lanes -or $lanes.Count -eq 0)
+	{
+		Write-Host "No valid lanes found. Exiting."
+		return
+	}
+	
+	# Loop through each selected lane to send the restart command.
+	foreach ($lane in $lanes)
+	{
+		# Look up machine name for given lane using the LaneMachines mapping.
+		$machineName = $nodes.LaneMachines[$lane]
+		if (-not $machineName)
+		{
+			Write-Host "No machine found for lane $lane. Skipping."
+			continue
+		}
+		
+		# Construct the mailslot address using the correct machine name, store, and lane numbers.
+		$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${lane}"
+		$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+		
+		# Attempt to send the command
+		$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+		
+		if ($result)
+		{
+			Write-Host "Command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)."
+		}
+		else
+		{
+			Write-Host "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)."
+		}
+	}
+}
+
+# ===================================================================================================
 #                                       FUNCTION: Show-SelectionDialog
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -9026,6 +9124,16 @@ if (-not $SilentMode)
 					Refresh-Files -Mode $Mode -StoreNumber "$StoreNumber"
 				})
 			[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
+			
+			############################################################################
+			# 8) Send Restart Command Menu Item
+			############################################################################
+			$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart Command")
+			$SendRestartCommandItem.ToolTipText = "Send restart commands to selected lane(s) for the store."
+			$SendRestartCommandItem.Add_Click({
+					Send-RestartCommand -StoreNumber "$StoreNumber"
+				})
+			[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 			
 			############################################################################
 			# Reboot Lane Menu Item
