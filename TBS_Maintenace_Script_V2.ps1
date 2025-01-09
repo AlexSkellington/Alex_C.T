@@ -9190,7 +9190,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 			
 			############################################################################
-			# Reboot Lane Menu Item
+			# 9) Reboot Lane Menu Item
 			############################################################################
 			$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 			$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
