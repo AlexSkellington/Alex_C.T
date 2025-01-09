@@ -9182,8 +9182,8 @@ if (-not $SilentMode)
 			############################################################################
 			# 8) Send Restart Command Menu Item
 			############################################################################
-			$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart Command")
-			$SendRestartCommandItem.ToolTipText = "Send restart commands to selected lane(s) for the store."
+			$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
+			$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
 			$SendRestartCommandItem.Add_Click({
 					Send-RestartCommand -StoreNumber "$StoreNumber"
 				})
