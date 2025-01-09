@@ -3,7 +3,7 @@ Param (
 	[switch]$IsRelaunched
 )
 #>
- 
+
 # Write-Host "Script started. IsRelaunched: $IsRelaunched"
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.4"
+$VersionNumber = "2.0.5"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -135,6 +135,58 @@ $StoresqlFilePath = "$env:TEMP\Server_Database_Maintenance.sqi"
 
 # Script Name
 # $scriptName = Split-Path -Leaf $PSCommandPath
+
+# Add the MailSlotSender
+if (-not ([System.Management.Automation.PSTypeName]'MailslotSender').Type)
+{
+	Add-Type -TypeDefinition @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+
+public class MailslotSender {
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern IntPtr CreateFile(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        IntPtr lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        IntPtr hTemplateFile
+    );
+    
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool WriteFile(
+        IntPtr hFile,
+        byte[] lpBuffer,
+        uint nNumberOfBytesToWrite,
+        out uint lpNumberOfBytesWritten,
+        IntPtr lpOverlapped
+    );
+        
+    [DllImport("kernel32.dll")]
+    public static extern bool CloseHandle(IntPtr hObject);
+    
+    public static bool SendMailslotCommand(string mailslotName, string command) {
+        const uint GENERIC_WRITE = 0x40000000;
+        const uint FILE_SHARE_READ = 0x00000001;
+        const uint OPEN_EXISTING = 3;
+        
+        IntPtr hFile = CreateFile(mailslotName, GENERIC_WRITE, FILE_SHARE_READ, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+        if (hFile == new IntPtr(-1)) {
+            return false;
+        }
+
+        byte[] data = Encoding.ASCII.GetBytes(command);
+        uint bytesWritten;
+        bool success = WriteFile(hFile, data, (uint)data.Length, out bytesWritten, IntPtr.Zero);
+        CloseHandle(hFile);
+        return success;
+    }
+}
+"@
+}
 
 # ===================================================================================================
 #                                   FUNCTION: Download-AndRelaunchSelf
@@ -8016,58 +8068,7 @@ function Send-RestartAllPrograms
 	)
 	
 	Write-Log "`r`n==================== Starting Send-RestartAllPrograms Function ====================`r`n" "blue"
-	
-	if (-not ([System.Management.Automation.PSTypeName]'MailslotSender').Type)
-	{
-		Add-Type -TypeDefinition @"
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-
-public class MailslotSender {
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-    public static extern IntPtr CreateFile(
-        string lpFileName,
-        uint dwDesiredAccess,
-        uint dwShareMode,
-        IntPtr lpSecurityAttributes,
-        uint dwCreationDisposition,
-        uint dwFlagsAndAttributes,
-        IntPtr hTemplateFile
-    );
-    
-    [DllImport("kernel32.dll", SetLastError=true)]
-    public static extern bool WriteFile(
-        IntPtr hFile,
-        byte[] lpBuffer,
-        uint nNumberOfBytesToWrite,
-        out uint lpNumberOfBytesWritten,
-        IntPtr lpOverlapped
-    );
-        
-    [DllImport("kernel32.dll")]
-    public static extern bool CloseHandle(IntPtr hObject);
-    
-    public static bool SendMailslotCommand(string mailslotName, string command) {
-        const uint GENERIC_WRITE = 0x40000000;
-        const uint FILE_SHARE_READ = 0x00000001;
-        const uint OPEN_EXISTING = 3;
-        
-        IntPtr hFile = CreateFile(mailslotName, GENERIC_WRITE, FILE_SHARE_READ, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
-        if (hFile == new IntPtr(-1)) {
-            return false;
-        }
-
-        byte[] data = Encoding.ASCII.GetBytes(command);
-        uint bytesWritten;
-        bool success = WriteFile(hFile, data, (uint)data.Length, out bytesWritten, IntPtr.Zero);
-        CloseHandle(hFile);
-        return success;
-    }
-}
-"@
-	}
-	
+		
 	# Retrieve node information for the specified store to obtain lane-machine mapping.
 	$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
 	if (-not $nodes)
