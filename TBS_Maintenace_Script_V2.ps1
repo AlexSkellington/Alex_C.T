@@ -5981,7 +5981,7 @@ function CloseOpenTransactions
 						$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
 						if ($result)
 						{
-							Write-Log -Message "Restart command sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after user deployment." "green"
+							Write-Log -Message "Restart All Programs sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after user deployment." "green"
 						}
 						else
 						{
