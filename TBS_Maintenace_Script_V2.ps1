@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.1"
+$VersionNumber = "2.0.2"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -550,7 +550,7 @@ function Get-DatabaseConnectionString
 	
 	if ($StartupIniPath -ne $null)
 	{
-		Write-Log "Found Startup.ini at: $startupIniPath" "green"
+	#	Write-Log "Found Startup.ini at: $startupIniPath" "green"
 	}
 	
 	if (-not $StartupIniPath)
@@ -559,7 +559,7 @@ function Get-DatabaseConnectionString
 		return
 	}
 	
-	Write-Log "Generating connection string..." "blue"
+	# Write-Log "Generating connection string..." "blue"
 	
 	# Read the Startup.ini file
 	try
@@ -631,7 +631,7 @@ function Get-DatabaseConnectionString
 	# Store the connection string in the FunctionResults hashtable
 	$script:FunctionResults['ConnectionString'] = $ConnectionString
 	
-	Write-Log "Variables ($ConnectionString) stored." "green"
+	# Write-Log "Variables ($ConnectionString) stored." "green"
 }
 
 # ===================================================================================================
@@ -661,7 +661,7 @@ function Get-StoreNumber
 		if ($storeNumber)
 		{
 			$script:FunctionResults['StoreNumber'] = $storeNumber
-			Write-Log "Store number found in startup.ini: $storeNumber" "green"
+		#	Write-Log "Store number found in startup.ini: $storeNumber" "green"
 		}
 		else
 		{
@@ -1567,7 +1567,7 @@ function Clear-XEFolder
 				}
 			}
 			
-			Write-Log "Folder 'XE${StoreNumber}901' initially cleaned, deleting all except valid (S*) files for transaction closing." "green"
+		#	Write-Log "Folder 'XE${StoreNumber}901' initially cleaned, deleting all except valid (S*) files for transaction closing." "green"
 		}
 		catch
 		{
@@ -1692,7 +1692,7 @@ function Clear-XEFolder
 			}
 		} -ArgumentList $folderPath, $checkIntervalSeconds, $StoreNumber, $OfficePath
 		
-		Write-Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder, excluding FATAL* files." "green"
+	#	Write-Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder, excluding FATAL* files." "green"
 	}
 	catch
 	{
@@ -1952,7 +1952,7 @@ function Generate-SQLScripts
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
 		$dbName = $script:FunctionResults['DBNAME']
-		Write-Log "Using DBNAME from FunctionResults: $dbName" "blue"
+	#	Write-Log "Using DBNAME from FunctionResults: $dbName" "blue"
 		$storeDbName = $dbName
 	}
 	else
