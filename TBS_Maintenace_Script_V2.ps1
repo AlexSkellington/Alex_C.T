@@ -8010,7 +8010,7 @@ public class MailslotSender {
 	$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
 	if (-not $nodes)
 	{
-		Write-Host "Failed to retrieve node information for store $StoreNumber."
+		Write-Log "Failed to retrieve node information for store $StoreNumber." "red"
 		return
 	}
 	
@@ -8018,7 +8018,7 @@ public class MailslotSender {
 	$selection = Show-SelectionDialog -Mode Store -StoreNumber $StoreNumber
 	if (-not $selection)
 	{
-		Write-Host "No lanes selected or selection cancelled. Exiting."
+		Write-Log "No lanes selected or selection cancelled. Exiting." "yellow"
 		return
 	}
 	
@@ -8026,7 +8026,7 @@ public class MailslotSender {
 	$lanes = $selection.Lanes
 	if (-not $lanes -or $lanes.Count -eq 0)
 	{
-		Write-Host "No valid lanes found. Exiting."
+		Write-Log "No valid lanes found. Exiting." "yellow"
 		return
 	}
 	
@@ -8037,7 +8037,7 @@ public class MailslotSender {
 		$machineName = $nodes.LaneMachines[$lane]
 		if (-not $machineName)
 		{
-			Write-Host "No machine found for lane $lane. Skipping."
+			Write-Log "No machine found for lane $lane. Skipping." "yellow"
 			continue
 		}
 		
