@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.8.3"
+$VersionNumber = "2.0.1"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -72,6 +72,9 @@ $NumberOfStores = 0
 $NumberOfServers = 0
 $NumberOfHosts = 0
 
+# "ANSI" on Western Windows systems
+$ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
+
 # Create a UTF8 encoding instance without BOM
 $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 
@@ -98,30 +101,23 @@ if (-not $IsOldBuild)
 	}
 }
 
-# If no UNC path is found or build is old, proceed to check local drives
+# If no UNC path is found or build is old, proceed to check the system drive
 if (-not $BasePath)
 {
-	# Define local drives to search
-	$localDrives = @("C:\", "D:\")
+	# Search for directories matching '*storeman*' in the root of $env:SystemDrive
+	$storemanDirs = Get-ChildItem -Path "$env:SystemDrive\" -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue
 	
-	foreach ($drive in $localDrives)
+	if ($storemanDirs)
 	{
-		# Retrieve directories matching '*storeman*' in the root of the drive
-		$storemanDirs = Get-ChildItem -Path $drive -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue
-		
-		if ($storemanDirs)
-		{
-			# Select the first matching directory
-			$BasePath = $storemanDirs[0].FullName
-			break
-		}
+		# Select the first matching directory
+		$BasePath = $storemanDirs[0].FullName
 	}
 }
 
-# Final check to ensure BasePath was set
+# Final check to ensure BasePath was set, defaulting to $env:SystemDrive\storeman if not found
 if (-not $BasePath)
 {
-	$BasePath = "C:\storeman"
+	$BasePath = "$env:SystemDrive\storeman"
 }
 
 # Now that we have a valid $BaseUNCPath, define the rest of the paths
@@ -639,14 +635,14 @@ function Get-DatabaseConnectionString
 }
 
 # ===================================================================================================
-#                                      FUNCTION: Get-StoreNumberGUI
+#                                      FUNCTION: Get-StoreNumber
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Retrieves the store number via GUI prompts or configuration files.
 #   Stores the result in $script:FunctionResults['StoreNumber'].
 # ===================================================================================================
 
-function Get-StoreNumberGUI
+function Get-StoreNumber
 {
 	param (
 		[string]$IniFilePath = "$StartupIniPath",
@@ -792,14 +788,14 @@ function Get-StoreNumberGUI
 }
 
 # ===================================================================================================
-#                                        FUNCTION: Get-StoreNameGUI
+#                                        FUNCTION: Get-StoreName
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Retrieves the store name from the system.ini file.
 #   Stores the result in $script:FunctionResults['StoreName'].
 # ===================================================================================================
 
-function Get-StoreNameGUI
+function Get-StoreName
 {
 	param (
 		[string]$INIPath = "$SystemIniPath"
@@ -845,7 +841,7 @@ function Get-StoreNameGUI
 #   and updates the GUI label accordingly.
 # ===================================================================================================
 
-function Determine-ModeGUI
+function Determine-Mode
 {
 	param (
 		[string]$StoreNumber
@@ -1029,15 +1025,88 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 }
 
 # ===================================================================================================
-#                                       SECTION: Counting Functions
+#                           FUNCTION: Retrieve-Nodes
 # ---------------------------------------------------------------------------------------------------
-# Description:
-#   Contains functions to count various items like stores, lanes, servers, and hosts.
-#   First attempts to read counts from the TER_TAB database table.
-#   Falls back to the current mechanism if database access fails.
+# **Purpose:**
+#   The `Retrieve-Nodes` function is designed to count various entities within a 
+#   system, specifically **hosts**, **stores**, **lanes**, and **servers**. It primarily retrieves 
+#   these nodes from the `TER_TAB` database table. If database access fails, it gracefully falls 
+#   back to a file system-based mechanism to obtain the counts. Additionally, the function updates 
+#   GUI labels to reflect the current nodes and stores the results in a shared hashtable for use 
+#   by other parts of the script.
+#
+# **Parameters:**
+#   - `[string]$Mode` (Mandatory)
+#       - **Description:** Determines the operational mode of the function.
+#         - `"Host"`: Nodess the number of hosts and stores.
+#         - `"Store"`: Nodess the number of servers and lanes within a specific store.
+#   - `[string]$StoreNumber`
+#       - **Description:** Specifies the identifier for a particular store. This parameter is 
+#         **mandatory** when `$Mode` is set to `"Store"` and is ignored when `$Mode` is `"Host"`.
+#
+# **Variables:**
+#   - **Initialization Variables:**
+#       - `$HostPath`: Base directory path where store and host directories are located.
+#       - `$NumberOfLanes`, `$NumberOfStores`, `$NumberOfHosts`, `$NumberOfServers`: Counters initialized to `0`.
+#       - `$LaneContents`: Array to hold lane identifiers.
+#       - `$LaneMachines`: Hashtable to map lane numbers to machine names.
+#   - **Database Connection Variables:**
+#       - `$ConnectionString`: Retrieves the database connection string from the `FunctionResults` hashtable.
+#       - `$NodesFromDatabase`: Boolean flag indicating whether to retrieve counts from the database.
+#   - **Result Variables:**
+#       - `$Nodes`: Custom PowerShell object aggregating all Nodes results and related data.
+#   - **GUI-Related Variables:**
+#       - `$SilentMode`: Determines whether the GUI should be updated.
+#       - `$NodesHost`, `$NodesStore`: GUI label controls displaying the counts.
+#       - `$form`: GUI form that needs to be refreshed to display updated counts.
+#
+# **Workflow:**
+#   1. **Retrieve Database Connection String:**
+#      - Attempts to get the connection string from `FunctionResults`.
+#      - If unavailable, calls `Get-DatabaseConnectionString` to generate it.
+#      - Sets `$CountsFromDatabase` based on availability.
+#
+#   2. **Database Counting Mechanism (`$CountsFromDatabase = $true`):**
+#      - **Mode: `"Host"`**
+#          - Counts distinct stores excluding store number `'999'`.
+#          - Checks for the existence of the host server.
+#      - **Mode: `"Store"`**
+#          - Validates the presence of `$StoreNumber`.
+#          - Retrieves and counts lanes for the specified store.
+#          - Maps lane numbers to machine names.
+#          - Checks for the existence of the server for the store.
+#      - **Error Handling:**
+#          - Logs warnings and falls back if any database queries fail.
+#
+#   3. **Fallback Counting Mechanism (`$CountsFromDatabase = $false`):**
+#      - **Mode: `"Host"`**
+#          - Counts store directories matching specific patterns.
+#          - Checks for the existence of the host directory.
+#      - **Mode: `"Store"`**
+#          - Validates the presence of `$StoreNumber`.
+#          - Counts lane directories matching specific patterns.
+#          - Checks for the existence of the server directory for the store.
+#
+#   4. **Compile and Store Results:**
+#      - Creates a `[PSCustomObject]` containing all counts and related data.
+#      - Updates the `FunctionResults` hashtable with the count results.
+#
+#   5. **Update GUI Labels:**
+#      - If not in silent mode and GUI labels are available, updates them with the latest counts.
+#      - Refreshes the GUI form to display the updated counts.
+#
+#   6. **Return Value:**
+#      - Returns the `$Counts` custom object containing all the count information.
+#
+# **Summary:**
+#   The `Retrieve-Nodes` function is a robust PowerShell utility that accurately counts system entities 
+#   such as hosts, stores, lanes, and servers. It prioritizes retrieving counts from a database to 
+#   ensure accuracy and reliability but includes a fallback mechanism leveraging the file system for 
+#   resilience. Additionally, it integrates with a GUI to display real-time counts and stores results 
+#   for easy access by other script components.
 # ===================================================================================================
 
-function Count-ItemsGUI
+function Retrieve-Nodes
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -1066,20 +1135,20 @@ function Count-ItemsGUI
 		if (-not $ConnectionString)
 		{
 			Write-Log "Unable to generate connection string. Proceeding with fallback mechanism." "red"
-			$CountsFromDatabase = $false
+			$NodesFromDatabase = $false
 		}
 		else
 		{
-			$CountsFromDatabase = $true
+			$NodesFromDatabase = $true
 		}
 	}
 	else
 	{
-		$CountsFromDatabase = $true
+		$NodesFromDatabase = $true
 	}
 	
-	# Initialize a flag to check if we successfully got counts from TER_TAB
-	if ($CountsFromDatabase)
+	# Initialize a flag to check if we successfully got Nodes from TER_TAB
+	if ($NodesFromDatabase)
 	{
 		try
 		{
@@ -1174,12 +1243,12 @@ function Count-ItemsGUI
 		catch
 		{
 			Write-Log "Failed to retrieve counts from TER_TAB: $_" "yellow"
-			$CountsFromDatabase = $false
+			$NodesFromDatabase = $false
 		}
 	}
 	
 	# If counts from database failed, use the current mechanism as fallback
-	if (-not $CountsFromDatabase)
+	if (-not $NodesFromDatabase)
 	{
 		Write-Log "Using fallback mechanism to count items." "yellow"
 		
@@ -1215,7 +1284,7 @@ function Count-ItemsGUI
 	}
 	
 	# Create a custom object with the counts
-	$Counts = [PSCustomObject]@{
+	$Nodes = [PSCustomObject]@{
 		NumberOfStores  = $NumberOfStores
 		NumberOfHosts   = $NumberOfHosts
 		NumberOfLanes   = $NumberOfLanes
@@ -1231,27 +1300,27 @@ function Count-ItemsGUI
 	$script:FunctionResults['NumberOfServers'] = $NumberOfServers
 	$script:FunctionResults['LaneContents'] = $LaneContents
 	$script:FunctionResults['LaneMachines'] = $LaneMachines
-	$script:FunctionResults['Counts'] = $Counts
+	$script:FunctionResults['Nodes'] = $Nodes
 	
 	# Update the GUI countsLabel1 and countsLabel2 with the new counts
-	if (-not $SilentMode -and $countsLabel1 -ne $null -and $countsLabel2 -ne $null)
+	if (-not $SilentMode -and $NodesHost -ne $null -and $NodesStore -ne $null)
 	{
 		if ($Mode -eq "Host")
 		{
-			$countsLabel1.Text = "Number of Hosts: $NumberOfHosts"
-			$countsLabel2.Text = "Number of Stores: $NumberOfStores"
+			$NodesHost.Text = "Number of Hosts: $NumberOfHosts"
+			$NodesStore.Text = "Number of Stores: $NumberOfStores"
 		}
 		else
 		{
-			$countsLabel1.Text = "Number of Servers: $NumberOfServers"
-			$countsLabel2.Text = "Number of Lanes: $NumberOfLanes"
+			$NodesHost.Text = "Number of Servers: $NumberOfServers"
+			$NodesStore.Text = "Number of Lanes: $NumberOfLanes"
 		}
 		# Refresh the form to display updates
 		$form.Refresh()
 	}
 	
 	# Return counts as a custom object
-	return $Counts
+	return $Nodes
 }
 
 # ===================================================================================================
@@ -1300,8 +1369,101 @@ function Clear-XEFolder
 		}
 	}
 	
-	# Function to determine if a file should be kept
-	function ShouldKeepFile($file)
+	# Function to determine if a file should be kept during initial clearing
+	function ShouldKeepFileInitial($file)
+	{
+		# Do not keep FATAL* files
+		if ($file.Name -like 'FATAL*')
+		{
+			return $false
+		}
+		
+		# Check if it's an S*.??? file
+		if ($file.Name -match '^S.*\.\w{3}$')
+		{
+			# Check file age (not older than 30 days)
+			$currentTime = Get-Date
+			if (($currentTime - $file.LastWriteTime).TotalDays -gt 30)
+			{
+				return $false
+			}
+			
+			# Read file contents
+			try
+			{
+				$content = Get-Content -Path $file.FullName -ErrorAction Stop
+			}
+			catch
+			{
+				# If we can't read the file for some reason, discard it
+				return $false
+			}
+			
+			$fromLine = $content | Where-Object { $_ -like 'From:*' }
+			$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
+			$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
+			$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
+			
+			# Check prerequisites:
+			# From line: Extract store/lane
+			if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
+			{
+				$fileStoreNumber = $Matches[1]
+				$fileLaneNumber = $Matches[2]
+			}
+			else
+			{
+				return $false
+			}
+			
+			if ($fileStoreNumber -ne $StoreNumber)
+			{
+				return $false
+			}
+			
+			# From the original logic, $LaneNumber is derived from the filename. Let's extract it:
+			if ($file.Name -match '^S.*\.(\d{3})$')
+			{
+				$LaneNumber = $Matches[1]
+				# Confirm lane number matches that from the 'From' line
+				if ($fileLaneNumber -ne $LaneNumber)
+				{
+					return $false
+				}
+			}
+			else
+			{
+				return $false
+			}
+			
+			# Subject must be Health
+			if (-not ($subjectLine -match 'Subject:\s*(Health)'))
+			{
+				return $false
+			}
+			
+			# MSG must be "This application is not running."
+			if (-not ($msgLine -match 'MSG:\s*This application is not running\.'))
+			{
+				return $false
+			}
+			
+			# Last recorded status must contain TRANS,<number>
+			if (-not ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)'))
+			{
+				return $false
+			}
+			
+			# If we reach this point, all conditions are met
+			return $true
+		}
+		
+		# If it doesn't match a qualifying S file, we remove it
+		return $false
+	}
+	
+	# Function to determine if a file should be kept during background monitoring
+	function ShouldKeepFileBackground($file)
 	{
 		# Keep all FATAL* files
 		if ($file.Name -like 'FATAL*')
@@ -1393,19 +1555,19 @@ function Clear-XEFolder
 		return $false
 	}
 	
-	# Initial clearing
+	# Initial clearing - Delete all files including FATAL*
 	if (Test-Path -Path $folderPath)
 	{
 		try
 		{
 			Get-ChildItem -Path $folderPath -Recurse -Force | ForEach-Object {
-				if (-not (ShouldKeepFile $_))
+				if (-not (ShouldKeepFileInitial $_))
 				{
 					Remove-Item -Path $_.FullName -Force -Recurse
 				}
 			}
 			
-			Write-Log "Folder 'XE${StoreNumber}901' cleaned, keeping only (FATAL*) files and valid (S*) files for transaction closing." "green"
+			Write-Log "Folder 'XE${StoreNumber}901' initially cleaned, deleting all except valid (S*) files for transaction closing." "green"
 		}
 		catch
 		{
@@ -1427,8 +1589,9 @@ function Clear-XEFolder
 				$StoreNumber,
 				$OfficePath)
 			
-			function ShouldKeepFile($file)
+			function ShouldKeepFileBackground($file)
 			{
+				# Keep all FATAL* files
 				if ($file.Name -like 'FATAL*')
 				{
 					return $true
@@ -1513,7 +1676,7 @@ function Clear-XEFolder
 					if (Test-Path -Path $folderPath)
 					{
 						Get-ChildItem -Path $folderPath -Recurse -Force | ForEach-Object {
-							if (-not (ShouldKeepFile $_))
+							if (-not (ShouldKeepFileBackground $_))
 							{
 								Remove-Item -Path $_.FullName -Force -Recurse
 							}
@@ -1529,7 +1692,7 @@ function Clear-XEFolder
 			}
 		} -ArgumentList $folderPath, $checkIntervalSeconds, $StoreNumber, $OfficePath
 		
-		#Write-Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder." "green"
+		Write-Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder, excluding FATAL* files." "green"
 	}
 	catch
 	{
@@ -1540,13 +1703,228 @@ function Clear-XEFolder
 }
 
 # ===================================================================================================
+#                                  SECTION: Process-FatalErrorsFromXEFolder
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Processes EJ files within a ZX folder to correct specific lines based on a user-provided date.
+#   - Prompts the user to select a date using a Windows Form.
+#   - Constructs the ZX folder path.
+#   - Identifies related EJ files based on the date/store data.
+#   - Repairs lines in matching EJ files.
+# ===================================================================================================
+
+function Fix-Journal
+{
+	[CmdletBinding()]
+	param (
+		# The base "OfficePath", e.g. "C:\storeman\office"
+		[Parameter(Mandatory = $true)]
+		[string]$OfficePath,
+		# The store number (e.g., "001")
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	Write-Log "`r`n==================== Starting Fix-Journal Function ====================`r`n" "blue"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 1) Load Windows Forms assembly
+	# ---------------------------------------------------------------------------------------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	# ---------------------------------------------------------------------------------------------
+	# 2) Create and configure the Windows Form
+	# ---------------------------------------------------------------------------------------------
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Select Date"
+	$form.Size = New-Object System.Drawing.Size(300, 200)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = "FixedDialog"
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	# Create Label
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "Please select the date:"
+	$label.AutoSize = $true
+	$label.Location = New-Object System.Drawing.Point(10, 20)
+	$form.Controls.Add($label)
+	
+	# Create DateTimePicker
+	$dateTimePicker = New-Object System.Windows.Forms.DateTimePicker
+	$dateTimePicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
+	$dateTimePicker.Location = New-Object System.Drawing.Point(10, 50)
+	$dateTimePicker.Width = 260
+	$form.Controls.Add($dateTimePicker)
+	
+	# Create OK Button
+	$okButton = New-Object System.Windows.Forms.Button
+	$okButton.Text = "OK"
+	$okButton.Location = New-Object System.Drawing.Point(110, 100)
+	$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $okButton
+	$form.Controls.Add($okButton)
+	
+	# Show the form and capture the result
+	$dialogResult = $form.ShowDialog()
+	
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write-Log -Message "Date selection canceled by user. Exiting function." "yellow"
+		return
+	}
+	
+	# ---------------------------------------------------------------------------------------------
+	# 3) Retrieve and format the selected date
+	# ---------------------------------------------------------------------------------------------
+	$snippetDate = $dateTimePicker.Value
+	$formattedDate = $snippetDate.ToString('MMddyyyy') # MMDDYYYY format
+	
+	Write-Log -Message "Selected date: $formattedDate" "magenta"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 4) Construct ZX folder path from $OfficePath + $StoreNumber
+	#    ZX folder: $OfficePath\ZX${StoreNumber}901
+	# ---------------------------------------------------------------------------------------------
+	$zxFolderPath = Join-Path $OfficePath "ZX${StoreNumber}901"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 5) Confirm the ZX folder exists
+	# ---------------------------------------------------------------------------------------------
+	if (-not (Test-Path -Path $zxFolderPath))
+	{
+		Write-Log -Message "ZX folder not found: $zxFolderPath." "red"
+		return
+	}
+	
+	# ---------------------------------------------------------------------------------------------
+	# 6) Build the file prefix: YMMDDSSS (ignoring lane)
+	#     Y = last digit of year
+	#     MM = 2-digit month
+	#     DD = 2-digit day
+	#     SSS = store number (3 digits, e.g., "001")
+	# ---------------------------------------------------------------------------------------------
+	$yearLastDigit = ($snippetDate.Year % 10)
+	$mm = $snippetDate.ToString('MM')
+	$dd = $snippetDate.ToString('dd')
+	$filePrefix = "$yearLastDigit$mm$dd$StoreNumber" # e.g., 41227001
+	
+	Write-Log -Message "Looking for files named '$filePrefix.*' in $zxFolderPath..." "blue"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 7) Find matching EJ files in ZX folder: e.g., 41227001.*
+	# ---------------------------------------------------------------------------------------------
+	$searchPattern = "$filePrefix.*"
+	$matchingFiles = Get-ChildItem -Path $zxFolderPath -Filter $searchPattern -File -ErrorAction SilentlyContinue
+	
+	if (-not $matchingFiles)
+	{
+		Write-Log -Message "No files matching '$searchPattern' found in $zxFolderPath." "yellow"
+		return
+	}
+	
+	Write-Log -Message "Found $($matchingFiles.Count) file(s) to fix." "green"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 8) For each matching EJ file, remove lines from <trs F10... up to <trs F1068...
+	# ---------------------------------------------------------------------------------------------
+	foreach ($file in $matchingFiles)
+	{
+		# [Optional] Skip files that have ".bak" anywhere in their name 
+		# to avoid infinite backup loops:
+		if ($file.Extension -eq ".bak")
+		{
+			Write-Log -Message "Skipping backup file: $($file.Name)" "yellow"
+			continue
+		}
+		
+		Write-Log -Message "Fixing lines in: $($file.FullName)" "yellow"
+		
+		# Read the file lines
+		try
+		{
+			$originalLines = Get-Content -Path $file.FullName -ErrorAction Stop
+		}
+		catch
+		{
+			Write-Log -Message "Failed to read EJ file: $($file.FullName). Skipping." "red"
+			continue
+		}
+		
+		# Prepare a list for the fixed lines
+		$fixedLines = New-Object System.Collections.Generic.List[string]
+		
+		$skip = $false
+		
+		foreach ($line in $originalLines)
+		{
+			# 1) Start skipping at '<trs F10'
+			if ($line -match '^\s*<trs\s+F10\b')
+			{
+				$skip = $true
+				continue
+			}
+			
+			# 2) Stop skipping at '<trs F1068'
+			if ($skip -and ($line -match '^\s*<trs\s+F1068\b'))
+			{
+				$skip = $false
+				# We *do* want to keep this line
+				$fixedLines.Add($line)
+				continue
+			}
+			
+			# Keep the line if we're not skipping
+			if (-not $skip)
+			{
+				$fixedLines.Add($line)
+			}
+		}
+		
+		<# -----------------------------------------------------------------------------------------
+		# 10) Make a backup of the original file
+		# * Commented out for now
+		# -----------------------------------------------------------------------------------------
+		$backupPath = "$($file.FullName).bak"
+		try
+		{
+			Copy-Item -Path $file.FullName -Destination $backupPath -Force -ErrorAction Stop
+			Write-Log -Message "Backup created: $backupPath" "green"
+		}
+		catch
+		{
+			Write-Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." "red"
+			continue
+		}
+		#>
+		
+		# -----------------------------------------------------------------------------------------
+		# 11) Overwrite the original file with the fixed lines in ANSI encoding
+		# -----------------------------------------------------------------------------------------
+		try
+		{
+			$fixedLines | Set-Content -Path $file.FullName -Encoding Default -ErrorAction Stop
+			#	Write-Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
+			Write-Log -Message "Successfully edited: $($file.FullName)" "green"
+		}
+		catch
+		{
+			Write-Log -Message "Failed to write fixed content to: $($file.FullName)." "red"
+			continue
+		}
+	}
+	Write-Log "`r`n==================== Fix-Journal Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                                       SECTION: Generate SQL Scripts
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Generates SQL scripts for Lanes and Stores, including memory configuration and maintenance tasks.
 # ===================================================================================================
 
-function Generate-SQLScriptsGUI
+function Generate-SQLScripts
 {
 	param (
 		[string]$StoreNumber,
@@ -1620,7 +1998,7 @@ DECLARE @cmd varchar(4000)
 DECLARE cmds CURSOR FOR 
 SELECT 'drop table [' + name + ']' 
 FROM sys.tables 
-WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') AND DATEDIFF(DAY, create_date, GETDATE()) > 30 
+WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') 
 OPEN cmds 
 WHILE 1 = 1 
 BEGIN 
@@ -1649,18 +2027,24 @@ IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 
 @dbEXEC(DELETE FROM SCL_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)) 
 @dbEXEC(DELETE FROM SCL_TAB WHERE SUBSTRING(F01,1,3) <> '002') 
 @dbEXEC(DELETE FROM SCL_TAB WHERE SUBSTRING(F01,1,3) = '002' AND SUBSTRING(F01,9,5) > '00000') 
-@dbEXEC(UPDATE SCL_TAB SET SCL_TAB.F267 = SCL_TXT.F267 ,SCL_TAB.F1001=1 FROM SCL_TAB SCL JOIN SCL_TXT_TAB SCL_TXT ON (SCL.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000'))) 
-@dbEXEC(UPDATE SCL_TAB SET SCL_TAB.F268 = SCL_NUT.F268 ,SCL_TAB.F1001=1 FROM SCL_TAB SCL JOIN SCL_NUT_TAB SCL_NUT ON (SCL.F01=CONCAT('002',FORMAT(SCL_NUT.F268,'00000'),'00000'))) 
+@dbEXEC(UPDATE SCL_TAB SET SCL_TAB.F267 = SCL_TXT.F267 FROM SCL_TAB SCL JOIN SCL_TXT_TAB SCL_TXT ON (SCL.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000'))) 
+@dbEXEC(UPDATE SCL_TAB SET SCL_TAB.F268 = SCL_NUT.F268 FROM SCL_TAB SCL JOIN SCL_NUT_TAB SCL_NUT ON (SCL.F01=CONCAT('002',FORMAT(SCL_NUT.F268,'00000'),'00000'))) 
 @dbEXEC(DELETE FROM SCL_TXT_TAB WHERE F267 NOT IN (SELECT F267 FROM SCL_TAB)) 
 @dbEXEC(DELETE FROM SCL_NUT_TAB WHERE F268 NOT IN (SELECT F268 FROM SCL_TAB)) 
-@dbEXEC(UPDATE SCL_TAB SET F267 = NULL, F1001 = 1 WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F267,'00000'),'00000') FROM SCL_TXT_TAB)) 
-@dbEXEC(UPDATE SCL_TAB SET F268 = NULL, F1001 = 1 WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F268,'00000'),'00000') FROM SCL_NUT_TAB)) 
-@dbEXEC(UPDATE SCL_TXT_TAB SET SCL_TXT_TAB.F04 = POS.F04, SCL_TXT_TAB.F1001=1 FROM SCL_TXT_TAB SCL_TXT JOIN POS_TAB POS ON (POS.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000')) WHERE ISNUMERIC(SCL_TXT.F04)=0) 
+@dbEXEC(UPDATE SCL_TAB SET F267 = NULL WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F267,'00000'),'00000') FROM SCL_TXT_TAB)) 
+@dbEXEC(UPDATE SCL_TAB SET F268 = NULL WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F268,'00000'),'00000') FROM SCL_NUT_TAB)) 
+@dbEXEC(UPDATE SCL_TXT_TAB SET SCL_TXT_TAB.F04 = POS.F04 FROM SCL_TXT_TAB SCL_TXT JOIN POS_TAB POS ON (POS.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000')) WHERE ISNUMERIC(SCL_TXT.F04)=0) 
 @dbEXEC(UPDATE SCL_TAB SET F256 = REPLACE(REPLACE(REPLACE(F256, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
 @dbEXEC(UPDATE SCL_TAB SET F1952 = REPLACE(REPLACE(REPLACE(F1952, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
 @dbEXEC(UPDATE SCL_TAB SET F2581 = REPLACE(REPLACE(REPLACE(F2581, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
 @dbEXEC(UPDATE SCL_TAB SET F2582 = REPLACE(REPLACE(REPLACE(F2582, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
 @dbEXEC(UPDATE SCL_TXT_TAB SET F297 = REPLACE(REPLACE(REPLACE(F297, CHAR(13),' '), CHAR(10),' '), CHAR(9),' '))
+
+/* Delete batches older than 7 days from lanes */
+@dbEXEC("DELETE FROM Header_bat WHERE F909 < DATEADD(day, -7, GETDATE())")
+@dbEXEC("DELETE FROM Header_dct WHERE F909 < DATEADD(day, -7, GETDATE())")
+@dbEXEC("DELETE FROM Header_old WHERE F909 < DATEADD(day, -1, GETDATE())")
+@dbEXEC("DELETE FROM Header_sav WHERE F909 < DATEADD(day, -1, GETDATE())")
 
 /* Shrink database and log files */
 ALTER DATABASE LANESQL SET RECOVERY SIMPLE
@@ -1677,6 +2061,67 @@ ALTER DATABASE LANESQL SET RECOVERY FULL
 	# Store the LaneSQLScript in the script scope
 	$script:LaneSQLScript = $LaneSQLScript
 	
+	# -------------------------------
+	# Create a filtered version of LaneSQL by skipping sections using regex
+	# -------------------------------
+	
+	# The dynamic T-SQL memory config we want to use in the *filtered* Lane script
+	$ServerMemoryConfig = @"
+DECLARE @Memory25PercentMB BIGINT;
+SELECT @Memory25PercentMB = (total_physical_memory_kb / 1024) * 25 / 100
+FROM sys.dm_os_sys_memory;
+EXEC sp_configure 'show advanced options', 1;
+RECONFIGURE;
+EXEC sp_configure 'max server memory (MB)', @Memory25PercentMB;
+RECONFIGURE;
+EXEC sp_configure 'show advanced options', 0;
+RECONFIGURE;
+"@
+	
+	# Define the regex pattern to match sections
+	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
+	
+	# Define the names of the sections to skip
+	$sectionsToSkip = @(
+		'Set a long timeout so the entire script runs',
+		'Clear the long database timeout'
+	)
+	
+	# Initialize the filtered script
+	$LaneSQLFiltered = ""
+	
+	# Use regex to parse the script into sections
+	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
+	
+	foreach ($match in $matches)
+	{
+		$sectionName = $match.Groups['SectionName'].Value.Trim()
+		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
+		
+		if ($sectionsToSkip -contains $sectionName)
+		{
+			# 1) If it's in the skip list, do nothing (omit).
+			continue
+		}
+		elseif ($sectionName -eq 'Set memory configuration')
+		{
+			# 2) If it's the "Set memory configuration" block, replace it with the dynamic version:
+			$LaneSQLFiltered += "/* $sectionName */`r`n$ServerMemoryConfig`r`n`r`n"
+		}
+		else
+		{
+			# 3) Otherwise, keep the block exactly
+			# Additionally, remove the @dbEXEC() wrappers but keep the inner SQL commands
+			# Use regex to replace @dbEXEC(...) with the content inside the parentheses
+			# This handles both @dbEXEC("...") and @dbEXEC(...) without quotes
+			$sqlCommands = $sqlCommands -replace '@dbEXEC\((?:\"(.*?)\"|(.*?))\)', '$1$2'
+			$LaneSQLFiltered += "/* $sectionName */`r`n$sqlCommands`r`n`r`n"
+		}
+	}
+	
+	# Store the filtered LaneSQL script in the script scope for later use
+	$script:LaneSQLFiltered = $LaneSQLFiltered
+	
 	# Optionally write to file as fallback
 	if ($LanesqlFilePath)
 	{
@@ -1689,13 +2134,120 @@ ALTER DATABASE LANESQL SET RECOVERY FULL
 DECLARE @Memory25PercentMB BIGINT;
 SELECT @Memory25PercentMB = (total_physical_memory_kb / 1024) * 25 / 100
 FROM sys.dm_os_sys_memory;
-
 EXEC sp_configure 'show advanced options', 1;
 RECONFIGURE;
 EXEC sp_configure 'max server memory (MB)', @Memory25PercentMB;
 RECONFIGURE;
 EXEC sp_configure 'show advanced options', 0;
 RECONFIGURE;
+
+/* Create Table TBS_ITM_SMAppUPDATED */
+-----Drop the table if it exist-----
+DROP TABLE IF EXISTS dbo.TBS_ITM_SMAppUPDATED;
+-----Create TBS_ITM_SMAppUPDATED Table with Optional ID Column-----
+CREATE TABLE dbo.TBS_ITM_SMAppUPDATED (
+    Id INT IDENTITY(1,1) PRIMARY KEY,   -- Surrogate primary key
+    CodeF01 VARCHAR(13) NOT NULL,      -- Stores the constructed code
+    Sent BIT NOT NULL DEFAULT 0,       -- Indicates if the record has been sent
+    SentAt DATETIME NOT NULL DEFAULT GETDATE() -- Timestamp of insertion
+);
+-----Create Indexes for Performance-----
+CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_CodeF01 ON dbo.TBS_ITM_SMAppUPDATED (CodeF01);
+CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_Sent ON dbo.TBS_ITM_SMAppUPDATED (Sent);
+CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_SentAt ON dbo.TBS_ITM_SMAppUPDATED (SentAt);
+
+
+/* Create TBS_ITM_SMAppUPDATED Triggers */
+-----Drop existing triggers if they exist-----
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateOBJ%')
+DROP TRIGGER [dbo].[SMApp_UpdateOBJ]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdatePOS%')
+DROP TRIGGER [dbo].[SMApp_UpdatePOS]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdatePrice%')
+DROP TRIGGER [dbo].[SMApp_UpdatePrice]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateSCL%')
+DROP TRIGGER [dbo].[SMApp_UpdateSCL]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateSCL_TXT%')
+DROP TRIGGER [dbo].[SMApp_UpdateSCL_TXT]
+GO
+-----Triggers for OBJ_TAB-----
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdateOBJ]
+   ON  [dbo].[OBJ_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+	INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+	SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+END;
+-----Triggers for POS_TAB-----
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdatePOS]
+   ON  [dbo].[POS_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+		SET NOCOUNT ON;
+		INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+		SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000' 
+END;
+-----Triggers for PRICE_TAB-----
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdatePrice]
+   ON  [dbo].[PRICE_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+		SET NOCOUNT ON;
+		INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+		SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000' 
+END;
+-----Triggers for SCL_TAB-----
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdateSCL]
+   ON  [dbo].[SCL_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+       INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+	SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+END;
+-----Triggers for SCL_TXT_TAB-----
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER  [dbo].[SMApp_UpdateSCL_TXT]
+   ON  [dbo].[SCL_TXT_TAB] 
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+       INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+       SELECT '002'+cast(RIGHT('00000'+ CONVERT(VARCHAR,F267),5) as varchar)+'00000',0, GETDATE() 
+       FROM inserted,OBJ_TAB 
+       WHERE '002'+cast(RIGHT('00000'+ CONVERT(VARCHAR,F267),5) as varchar)+'00000' = F01 
+       and SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+ 
+END;
 
 /* Truncate unnecessary tables */
 IF OBJECT_ID('COST_REV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('COST_REV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE COST_REV;
@@ -1743,18 +2295,24 @@ DELETE FROM COST_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)
 DELETE FROM SCL_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)
 DELETE FROM SCL_TAB WHERE SUBSTRING(F01,1,3) <> '002' 
 DELETE FROM SCL_TAB WHERE SUBSTRING(F01,1,3) = '002' AND SUBSTRING(F01,9,5) > '00000'
-UPDATE SCL_TAB SET SCL_TAB.F267 = SCL_TXT.F267 ,SCL_TAB.F1001=1 FROM SCL_TAB SCL JOIN SCL_TXT_TAB SCL_TXT ON (SCL.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000')) 
-UPDATE SCL_TAB SET SCL_TAB.F268 = SCL_NUT.F268 ,SCL_TAB.F1001=1 FROM SCL_TAB SCL JOIN SCL_NUT_TAB SCL_NUT ON (SCL.F01=CONCAT('002',FORMAT(SCL_NUT.F268,'00000'),'00000')) 
+UPDATE SCL_TAB SET SCL_TAB.F267 = SCL_TXT.F267 FROM SCL_TAB SCL JOIN SCL_TXT_TAB SCL_TXT ON (SCL.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000')) 
+UPDATE SCL_TAB SET SCL_TAB.F268 = SCL_NUT.F268 FROM SCL_TAB SCL JOIN SCL_NUT_TAB SCL_NUT ON (SCL.F01=CONCAT('002',FORMAT(SCL_NUT.F268,'00000'),'00000')) 
 DELETE FROM SCL_TXT_TAB WHERE F267 NOT IN (SELECT F267 FROM SCL_TAB)
 DELETE FROM SCL_NUT_TAB WHERE F268 NOT IN (SELECT F268 FROM SCL_TAB) 
-UPDATE SCL_TAB SET F267 = NULL, F1001 = 1 WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F267,'00000'),'00000') FROM SCL_TXT_TAB) 
-UPDATE SCL_TAB SET F268 = NULL, F1001 = 1 WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F268,'00000'),'00000') FROM SCL_NUT_TAB) 
-UPDATE SCL_TXT_TAB SET SCL_TXT_TAB.F04 = POS.F04, SCL_TXT_TAB.F1001=1 FROM SCL_TXT_TAB SCL_TXT JOIN POS_TAB POS ON (POS.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000')) WHERE ISNUMERIC(SCL_TXT.F04)=0
+UPDATE SCL_TAB SET F267 = NULL WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F267,'00000'),'00000') FROM SCL_TXT_TAB) 
+UPDATE SCL_TAB SET F268 = NULL WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F268,'00000'),'00000') FROM SCL_NUT_TAB) 
+UPDATE SCL_TXT_TAB SET SCL_TXT_TAB.F04 = POS.F04 FROM SCL_TXT_TAB SCL_TXT JOIN POS_TAB POS ON (POS.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000')) WHERE ISNUMERIC(SCL_TXT.F04)=0
 UPDATE SCL_TAB SET F256 = REPLACE(REPLACE(REPLACE(F256, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
 UPDATE SCL_TAB SET F1952 = REPLACE(REPLACE(REPLACE(F1952, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
 UPDATE SCL_TAB SET F2581 = REPLACE(REPLACE(REPLACE(F2581, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
 UPDATE SCL_TAB SET F2582 = REPLACE(REPLACE(REPLACE(F2582, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
 UPDATE SCL_TXT_TAB SET F297 = REPLACE(REPLACE(REPLACE(F297, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
+
+/* Delete batches older than 14 days from the server */
+DELETE FROM Header_bat WHERE F909 < DATEADD(day, -14, GETDATE());
+DELETE FROM Header_dct WHERE F909 < DATEADD(day, -14, GETDATE());
+DELETE FROM Header_old WHERE F909 < DATEADD(day, -14, GETDATE());
+DELETE FROM Header_sav WHERE F909 < DATEADD(day, -14, GETDATE());
 
 /* Shrink database and log files */
 ALTER DATABASE STORESQL SET RECOVERY SIMPLE;
@@ -2225,6 +2783,7 @@ function Create-ScheduledTaskGUI
 #   Executes SQL scripts either from a script content variable or from a SQL file.
 #   If the script content variable is present and not empty, it takes precedence.
 #   Otherwise, it executes the SQL script from the specified file path.
+#   Incorporates enhanced exception handling for ParameterBindingException.
 # ===================================================================================================
 
 function Execute-SQLLocallyGUI
@@ -2304,6 +2863,19 @@ function Execute-SQLLocallyGUI
 		}
 	}
 	
+	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
+	$supportsConnectionString = $false
+	try
+	{
+		$cmd = Get-Command Invoke-Sqlcmd -ErrorAction Stop
+		$supportsConnectionString = $cmd.Parameters.Keys -contains 'ConnectionString'
+	}
+	catch
+	{
+		Write-Log "Invoke-Sqlcmd cmdlet not found: $_" "red"
+		$supportsConnectionString = $false
+	}
+	
 	# Initialize variables to track execution
 	$retryCount = 0
 	$success = $false
@@ -2340,8 +2912,42 @@ function Execute-SQLLocallyGUI
 				# Execute the SQL commands for the current section
 				try
 				{
-					Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+					if ($supportsConnectionString)
+					{
+						Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+					}
+					else
+					{
+						# Parse ServerInstance and Database from ConnectionString
+						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+						Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+					}
 					Write-Log "Section '$sectionName' executed successfully." "green"
+				}
+				catch [System.Management.Automation.ParameterBindingException]
+				{
+					Write-Log "ParameterBindingException encountered while executing section '$sectionName'. Attempting fallback." "yellow"
+					
+					# If using ConnectionString caused a ParameterBindingException, try using ServerInstance and Database
+					try
+					{
+						# Parse ServerInstance and Database from ConnectionString
+						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+						Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+						Write-Log "Section '$sectionName' executed successfully using fallback parameters." "green"
+					}
+					catch
+					{
+						Write-Log "Error executing section '$sectionName' with fallback parameters: $_" "red"
+						$failedSections += $match
+						# Only add failed commands to $failedCommands on the last retry
+						if ($retryCount -eq $MaxRetries - 1)
+						{
+							$failedCommands += "/* $sectionName */`r`n$sqlCommands`r`n"
+						}
+					}
 				}
 				catch
 				{
@@ -2384,10 +2990,17 @@ function Execute-SQLLocallyGUI
 		# Create a string from the failed commands array
 		$failedCommandsText = $failedCommands -join "`r`n"
 		# Write the failed commands to a file
-		[System.IO.File]::WriteAllText($FailedCommandsPath, $failedCommandsText, $utf8NoBOM)
-		Write-Log "`r`nFailed SQL sections written to: $FailedCommandsPath" "yellow"
-		# Remove the archived attribute to ensure it can be processed
-		Set-ItemProperty -Path $FailedCommandsPath -Name Attributes -Value ((Get-Item $FailedCommandsPath).Attributes -band (-bnot [System.IO.FileAttributes]::Archive))
+		try
+		{
+			[System.IO.File]::WriteAllText($FailedCommandsPath, $failedCommandsText, [System.Text.Encoding]::UTF8)
+			Write-Log "`r`nFailed SQL sections written to: $FailedCommandsPath" "yellow"
+			# Remove the archived attribute to ensure it can be processed
+			Set-ItemProperty -Path $FailedCommandsPath -Name Attributes -Value ((Get-Item $FailedCommandsPath).Attributes -band (-bnot [System.IO.FileAttributes]::Archive))
+		}
+		catch
+		{
+			Write-Log "Failed to write failed commands to file: $_" "red"
+		}
 	}
 	else
 	{
@@ -3522,13 +4135,19 @@ function Repair-Windows
 # Description:
 #   Processes SQL load files in the \\localhost\storeman\office\Load directory.
 #   For each XF lane folder corresponding to the specified StoreNumber and selected Lanes,
-#   it filters the SQL files to include only the records pertinent to that store and lane,
-#   copies the modified files to the corresponding lane directory as .sql files with UTF8 encoding without BOM,
-#   copies the run_load.sql script exactly as provided,
-#   generates and copies a customized lnk_load.sql script containing only records for that lane,
-#   generates and copies a customized sto_load.sql script containing only records for that lane,
-#   and generates and copies a customized ter_load.sql script containing only records for that lane and store,
-#   including a standard '901' record.
+#   it copies and/or generates lane-specific .sql files strictly in ANSI (Windows-1252) encoding
+#   with CRLF line endings.
+#
+#   The created files are:
+#       - run_load.sql (copied as-is from the script below)
+#       - lnk_load.sql (dynamically generated)
+#       - sto_load.sql (dynamically generated)
+#       - ter_load.sql (dynamically generated)
+#
+#   All files are written with:
+#       - Windows-1252 encoding
+#       - CRLF line endings
+#       - No BOM
 # ===================================================================================================
 
 function Update-LaneFiles
@@ -3540,13 +4159,14 @@ function Update-LaneFiles
 	
 	Write-Log "`r`n==================== Starting Update-LaneFiles Function ====================" "blue"
 	
+	# Ensure $LoadPath exists
 	if (-not (Test-Path $LoadPath))
 	{
 		Write-Log "`r`nLoad Base Path not found: $LoadPath" "yellow"
 		return
 	}
 	
-	# Get the user's selection
+	# Get the user's lane selection
 	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
 	
 	if ($selection -eq $null)
@@ -3570,12 +4190,10 @@ function Update-LaneFiles
 	{
 		try
 		{
-			#	Write-Log "User selected 'All Lanes'. Retrieving LaneContents..." "blue"
 			$LaneContents = $script:FunctionResults['LaneContents']
 			
 			if ($LaneContents -and $LaneContents.Count -gt 0)
 			{
-				#	Write-Log "Successfully retrieved LaneContents. Processing all lanes." "green"
 				$Lanes = $LaneContents
 			}
 			else
@@ -3587,11 +4205,13 @@ function Update-LaneFiles
 		{
 			Write-Log "Failed to retrieve LaneContents: $_. Falling back to user-selected lanes." "yellow"
 			$processAllLanes = $false
-			# Optionally, you can retain $Lanes as is or set to an empty array
 		}
 	}
 	
-	# Define the run_load script content as a here-string (exactly as provided)
+	# --------------------------------------------------------------------------------------------
+	# Define the run_load, lnk_load, sto_load, and ter_load script parts
+	# --------------------------------------------------------------------------------------------
+	
 	$runLoadScript = @"
 @CREATE(RUN_TAB,RUN);
 CREATE VIEW Run_Load AS SELECT F1102,F1000,F1103,F1104,F1105,F1106,F1107,F1108,F1109,F1110,F1111,F1112,F1113,F1114,F1115,F1116,F1117 FROM RUN_TAB;
@@ -3614,7 +4234,6 @@ SRC=SELECT * FROM Run_Load);
 DROP TABLE Run_Load;
 "@
 	
-	# Define the lnk_load script header and footer
 	$lnkLoadHeader = @"
 @CREATE(LNK_TAB,LNK);
 CREATE VIEW Lnk_Load AS SELECT F1000,F1056,F1057 FROM LNK_TAB;
@@ -3631,7 +4250,6 @@ SRC=SELECT * FROM Lnk_Load);
 DROP TABLE Lnk_Load;
 "@
 	
-	# Define the sto_load script header and footer
 	$stoLoadHeader = @"
 @CREATE(STO_TAB,STO);
 CREATE VIEW Sto_Load AS SELECT F1000,F1018,F1180,F1181,F1182,F1937,F1965,F1966,F2691 FROM STO_TAB;
@@ -3648,7 +4266,6 @@ SRC=SELECT * FROM Sto_Load);
 DROP TABLE Sto_Load;
 "@
 	
-	# Define the ter_load script header and footer
 	$terLoadHeader = @"
 @CREATE(TER_TAB,TER); 
 CREATE VIEW Ter_Load AS SELECT F1056,F1057,F1058,F1125,F1169 FROM TER_TAB;
@@ -3665,19 +4282,17 @@ SRC=SELECT * FROM Ter_Load);
 DROP TABLE Ter_Load;
 "@
 	
-	# Define the script filenames with .sql extension
+	# Script filenames
 	$runLoadFilename = "run_load.sql"
 	$lnkLoadFilename = "lnk_load.sql"
 	$stoLoadFilename = "sto_load.sql"
 	$terLoadFilename = "ter_load.sql"
 	
-	# Get all Load SQL files in the Load directory excluding specific scripts
-	# $excludedFiles = @("run_load.sql", "lnk_load.sql", "sto_load.sql", "ter_load.sql")
-	# $loadFiles = Get-ChildItem -Path $LoadPath -File -Filter "*.sql" | Where-Object { $_.Name -notin $excludedFiles }
-	
+	# --------------------------------------------------------------------------------------------
+	# Loop each selected Lane
+	# --------------------------------------------------------------------------------------------
 	foreach ($laneNumber in $Lanes)
 	{
-		# Construct the lane folder name
 		$laneFolderName = "XF${StoreNumber}${laneNumber}"
 		$laneFolderPath = Join-Path -Path $OfficePath -ChildPath $laneFolderName
 		
@@ -3688,18 +4303,15 @@ DROP TABLE Ter_Load;
 		}
 		
 		$laneFolder = Get-Item -Path $laneFolderPath
-		
 		Write-Log "`r`nProcessing Lane #$laneNumber" "blue"
 		
-		# Initialize a list to hold action summaries for the current lane
 		$actionSummaries = @()
 		
-		# ======= Determine Machine Name from LaneMachines =======
+		# Determine Machine Name from LaneMachines
 		try
 		{
 			Write-Log "Determining machine name for Lane #$laneNumber..." "blue"
 			
-			# Retrieve the machine name from the LaneMachines hashtable
 			$MachineName = $script:FunctionResults['LaneMachines'][$laneNumber]
 			
 			if ($MachineName)
@@ -3718,7 +4330,7 @@ DROP TABLE Ter_Load;
 			$MachineName = "POS${laneNumber}"
 		}
 		
-		<# 
+	<# 
 		# Process each load SQL file (currently commented out; uncomment if needed)
 		foreach ($file in $loadFiles) 
 		{
@@ -3770,20 +4382,20 @@ DROP TABLE Ter_Load;
 		        Write-Log "No matching records found in '$($file.Name)' for Lane #$laneNumber." "yellow"
 		    }
 		}
-		#>
+	#>
 		
-		# Handle the run_load script
+		# --------------------------------------------------------------------------------------------
+		# run_load.sql
+		# --------------------------------------------------------------------------------------------
 		try
 		{
-			# Define the destination path for run_load script with .sql extension
+			# Replace line endings with CRLF before writing
+			$runLoadScriptCRLF = $runLoadScript -replace "`r?`n", "`r`n"
+			
 			$runLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $runLoadFilename
+			[System.IO.File]::WriteAllText($runLoadDestinationPath, $runLoadScriptCRLF, $ansiPcEncoding)
 			
-			# Write the run_load script exactly as provided to the lane folder using UTF8 without BOM
-			[System.IO.File]::WriteAllText($runLoadDestinationPath, $runLoadScript, $utf8NoBOM)
-			
-			# Set file attributes if necessary
 			Set-ItemProperty -Path $runLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			
 			$actionSummaries += "Copied run_load.sql"
 		}
 		catch
@@ -3791,30 +4403,28 @@ DROP TABLE Ter_Load;
 			$actionSummaries += "Failed to copy run_load.sql"
 		}
 		
-		# Handle the lnk_load script
+		# --------------------------------------------------------------------------------------------
+		# lnk_load.sql
+		# --------------------------------------------------------------------------------------------
 		try
 		{
-			# Define the destination path for lnk_load script with .sql extension
-			$lnkLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $lnkLoadFilename
-			
-			# Generate the INSERT statements specific to this lane and store, incorporating the machine name
 			$lnkLoadInsertStatements = @(
 				"('${laneNumber}','${StoreNumber}','${laneNumber}'),",
 				"('DSM','${StoreNumber}','${laneNumber}'),",
 				"('PAL','${StoreNumber}','${laneNumber}'),",
 				"('RAL','${StoreNumber}','${laneNumber}'),",
-				"('XAL','${StoreNumber}','${laneNumber}');" # Semicolon to end the INSERT statement
+				"('XAL','${StoreNumber}','${laneNumber}');"
 			)
 			
-			# Combine the header, INSERT statements, and footer with a blank line before the footer
 			$completeLnkLoadScript = $lnkLoadHeader + "`r`n" + ($lnkLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $lnkLoadFooter.TrimStart() + "`r`n"
 			
-			# Write the customized lnk_load script to the lane folder using UTF8 without BOM
-			[System.IO.File]::WriteAllText($lnkLoadDestinationPath, $completeLnkLoadScript, $utf8NoBOM)
+			# Replace line endings with CRLF before writing
+			$completeLnkLoadScriptCRLF = $completeLnkLoadScript -replace "`r?`n", "`r`n"
 			
-			# Set file attributes if necessary
+			$lnkLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $lnkLoadFilename
+			[System.IO.File]::WriteAllText($lnkLoadDestinationPath, $completeLnkLoadScriptCRLF, $ansiPcEncoding)
+			
 			Set-ItemProperty -Path $lnkLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			
 			$actionSummaries += "Copied lnk_load.sql"
 		}
 		catch
@@ -3822,13 +4432,11 @@ DROP TABLE Ter_Load;
 			$actionSummaries += "Failed to copy lnk_load.sql"
 		}
 		
-		# Handle the sto_load script
+		# --------------------------------------------------------------------------------------------
+		# sto_load.sql
+		# --------------------------------------------------------------------------------------------
 		try
 		{
-			# Define the destination path for sto_load script with .sql extension
-			$stoLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $stoLoadFilename
-			
-			# Generate the INSERT statements specific to this lane (no store number needed)
 			$stoLoadInsertStatements = @(
 				"('${laneNumber}','Terminal ${laneNumber}',1,1,1,,,,),",
 				"('DSM','Deploy SMS',1,1,1,,,,),",
@@ -3837,15 +4445,15 @@ DROP TABLE Ter_Load;
 				"('XAL','Exchange all',0,1,0,,,,);"
 			)
 			
-			# Combine the header, INSERT statements, and footer with a blank line before the footer
 			$completeStoLoadScript = $stoLoadHeader + "`r`n" + ($stoLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $stoLoadFooter.TrimStart() + "`r`n"
 			
-			# Write the customized sto_load script to the lane folder using UTF8 without BOM
-			[System.IO.File]::WriteAllText($stoLoadDestinationPath, $completeStoLoadScript, $utf8NoBOM)
+			# Replace line endings with CRLF before writing
+			$completeStoLoadScriptCRLF = $completeStoLoadScript -replace "`r?`n", "`r`n"
 			
-			# Set file attributes if necessary
+			$stoLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $stoLoadFilename
+			[System.IO.File]::WriteAllText($stoLoadDestinationPath, $completeStoLoadScriptCRLF, $ansiPcEncoding)
+			
 			Set-ItemProperty -Path $stoLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			
 			$actionSummaries += "Copied sto_load.sql"
 		}
 		catch
@@ -3853,27 +4461,25 @@ DROP TABLE Ter_Load;
 			$actionSummaries += "Failed to copy sto_load.sql"
 		}
 		
-		# Handle the ter_load script
+		# --------------------------------------------------------------------------------------------
+		# ter_load.sql
+		# --------------------------------------------------------------------------------------------
 		try
 		{
-			# Define the destination path for ter_load script with .sql extension
-			$terLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $terLoadFilename
-			
-			# Generate the INSERT statements specific to this lane and store, plus the '901' record
 			$terLoadInsertStatements = @(
 				"('${StoreNumber}','${laneNumber}','Terminal ${laneNumber}','\\${MachineName}\storeman\office\XF${StoreNumber}${laneNumber}\','\\${MachineName}\storeman\office\XF${StoreNumber}901\'),",
-				"('${StoreNumber}','901','Server','','');" # '901' record with StoreNumber and fixed values
+				"('${StoreNumber}','901','Server','','');"
 			)
 			
-			# Combine the header, INSERT statements, and footer with a blank line before the footer
 			$completeTerLoadScript = $terLoadHeader + "`r`n" + ($terLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $terLoadFooter.TrimStart() + "`r`n"
 			
-			# Write the customized ter_load script to the lane folder using UTF8 without BOM
-			[System.IO.File]::WriteAllText($terLoadDestinationPath, $completeTerLoadScript, $utf8NoBOM)
+			# Replace line endings with CRLF before writing
+			$completeTerLoadScriptCRLF = $completeTerLoadScript -replace "`r?`n", "`r`n"
 			
-			# Set file attributes if necessary
+			$terLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $terLoadFilename
+			[System.IO.File]::WriteAllText($terLoadDestinationPath, $completeTerLoadScriptCRLF, $ansiPcEncoding)
+			
 			Set-ItemProperty -Path $terLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			
 			$actionSummaries += "Copied ter_load.sql"
 		}
 		catch
@@ -3881,11 +4487,11 @@ DROP TABLE Ter_Load;
 			$actionSummaries += "Failed to copy ter_load.sql"
 		}
 		
-		# Log a single summary line for the current lane, including the machine name
+		# Summarize
 		$summaryMessage = "Lane ${laneNumber} (Machine: ${MachineName}): " + ($actionSummaries -join "; ")
 		Write-Log $summaryMessage "green"
 		
-		# Add lane to processed lanes if not already added
+		# Mark lane as processed
 		if (-not ($script:ProcessedLanes -contains $laneNumber))
 		{
 			$script:ProcessedLanes += $laneNumber
@@ -3903,6 +4509,10 @@ DROP TABLE Ter_Load;
 #   batch file named PUMP_ALL_ITEMS_TABLES.sql. Handles large tables efficiently while preserving
 #   compatibility. This function now relies on Get-TableAliases to retrieve the table and alias
 #   information, eliminating the need to define the table list within this function.
+#
+#   This version enforces:
+#       - Windows-1252 ("ANSI") encoding (no BOM)
+#       - CRLF line endings (`\r\n`)
 # ===================================================================================================
 
 function Pump-AllItems
@@ -3961,7 +4571,9 @@ function Pump-AllItems
 		}
 	}
 	
-	# Access the table and alias information from the script-scoped hash table
+	# --------------------------------------------------------------------------------------------
+	# Fetch the alias data that Get-TableAliases stored
+	# --------------------------------------------------------------------------------------------
 	if ($script:FunctionResults.ContainsKey('Get-TableAliases'))
 	{
 		$aliasData = $script:FunctionResults['Get-TableAliases']
@@ -3970,7 +4582,7 @@ function Pump-AllItems
 	}
 	else
 	{
-		Write-Log "Alias data not found in the script-scoped hash table. Ensure that Get-TableAliases has been run." "red"
+		Write-Log "Alias data not found. Ensure Get-TableAliases has been run." "red"
 		return
 	}
 	
@@ -3980,10 +4592,12 @@ function Pump-AllItems
 		return
 	}
 	
-	# Use the locally stored connection string
+	# --------------------------------------------------------------------------------------------
+	# Get the SQL ConnectionString from script-scoped results
+	# --------------------------------------------------------------------------------------------
 	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
 	{
-		Write-Log "Connection string not found in script variables. Cannot proceed with Pump-AllItems." "red"
+		Write-Log "Connection string not found. Cannot proceed with Pump-AllItems." "red"
 		return
 	}
 	$ConnectionString = $script:FunctionResults['ConnectionString']
@@ -3993,24 +4607,26 @@ function Pump-AllItems
 	$sqlConnection.ConnectionString = $ConnectionString
 	$sqlConnection.Open()
 	
-	# Process each alias entry sequentially
-	$generatedFiles = @() # List to keep track of all generated files
-	$copiedTables = @() # List to keep track of processed tables
-	$skippedTables = @() # List to keep track of skipped tables
+	# Lists to keep track of processed tables and files
+	$generatedFiles = @()
+	$copiedTables = @()
+	$skippedTables = @()
 	
+	# --------------------------------------------------------------------------------------------
+	# Process each table in $aliasResults
+	# --------------------------------------------------------------------------------------------
 	foreach ($aliasEntry in $aliasResults)
 	{
-		$table = $aliasEntry.Table # Full table name with _TAB
-		$tableAlias = $aliasEntry.Alias
+		$table = $aliasEntry.Table # e.g. "XYZ_TAB"
+		$tableAlias = $aliasEntry.Alias # e.g. "XYZ"
 		
-		# Proceed only if both table and alias are present
 		if (-not $table -or -not $tableAlias)
 		{
-			Write-Log "Invalid table or alias for entry: $($aliasEntry | ConvertTo-Json)" "yellow"
+			Write-Log "Invalid table or alias: $($aliasEntry | ConvertTo-Json)" "yellow"
 			continue
 		}
 		
-		# Check if the table has any rows
+		# Check if this table has data
 		$dataCheckQuery = "SELECT COUNT(*) FROM [$table]"
 		$cmdCheck = $sqlConnection.CreateCommand()
 		$cmdCheck.CommandText = $dataCheckQuery
@@ -4021,28 +4637,27 @@ function Pump-AllItems
 		}
 		catch
 		{
-			Write-Log "Error checking row count for table '$table': $_" "red"
+			Write-Log "Error checking row count for '$table': $_" "red"
 			continue
 		}
 		
+		# Skip tables with zero rows
 		if ($rowCount -eq 0)
 		{
-			# Add to skipped tables
 			$skippedTables += $table
 			continue
 		}
 		
-		# === Added Write-Log for Processing Table ===
 		Write-Log "Processing table '$table'..." "blue"
 		
-		# Remove the _TAB suffix from the table name for view name construction
+		# Remove "_TAB" suffix for the base name
 		$baseTable = $table -replace '_TAB$', ''
 		
-		# Define file name for individual table
+		# File name for the extracted data
 		$sqlFileName = "${baseTable}_Load.sql"
-		$localTempPath = Join-Path -Path $env:TEMP -ChildPath $sqlFileName
+		$localTempPath = Join-Path $env:TEMP $sqlFileName
 		
-		# Check if the SQL file already exists and is recent (within an hour)
+		# Check for a recent file in TEMP
 		$useExistingFile = $false
 		if (Test-Path $localTempPath)
 		{
@@ -4050,25 +4665,29 @@ function Pump-AllItems
 			$fileAge = (Get-Date) - $fileInfo.LastWriteTime
 			if ($fileAge.TotalHours -le 1)
 			{
+				Write-Log "Recent SQL file found for '$table' in %TEMP%. Using existing file." "green"
 				$useExistingFile = $true
-				Write-Log "Existing SQL file found for table '$table' in %TEMP% and is within an hour. Reusing the file." "green"
 			}
 			else
 			{
-				Write-Log "Existing SQL file for table '$table' in %TEMP% is older than an hour. Regenerating the file." "yellow"
+				Write-Log "SQL file for '$table' is older than 1 hour. Regenerating." "yellow"
 			}
 		}
 		
+		# ----------------------------------------------------------------------------------------
+		# Generate or reuse the _Load.sql file
+		# ----------------------------------------------------------------------------------------
 		if (-not $useExistingFile)
 		{
-			# Write-Log "Generating _Load.sql batch files in %TEMP%, this might take a while, please wait..." "blue"
 			try
 			{
-				# Initialize StreamWriter with UTF8 encoding without BOM and set NewLine to CRLF
-				$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $utf8NoBOM)
-				$streamWriter.NewLine = "`r`n" # Ensure CRLF line endings
+				# Create a StreamWriter in Windows-1252 encoding, CRLF endings
+				$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $ansiPcEncoding)
+				$streamWriter.NewLine = "`r`n" # Force CRLF
 				
-				# Retrieve column data types using an ordered hashtable
+				# --------------------------------------------------------------------------------
+				# 1) Gather column data types
+				# --------------------------------------------------------------------------------
 				$columnDataTypesQuery = @"
 SELECT COLUMN_NAME, DATA_TYPE
 FROM INFORMATION_SCHEMA.COLUMNS
@@ -4078,16 +4697,19 @@ ORDER BY ORDINAL_POSITION
 				$cmdColumnTypes = $sqlConnection.CreateCommand()
 				$cmdColumnTypes.CommandText = $columnDataTypesQuery
 				$readerColumnTypes = $cmdColumnTypes.ExecuteReader()
+				
 				$columnDataTypes = [ordered]@{ }
 				while ($readerColumnTypes.Read())
 				{
-					$columnName = $readerColumnTypes["COLUMN_NAME"]
+					$colName = $readerColumnTypes["COLUMN_NAME"]
 					$dataType = $readerColumnTypes["DATA_TYPE"]
-					$columnDataTypes[$columnName] = $dataType
+					$columnDataTypes[$colName] = $dataType
 				}
 				$readerColumnTypes.Close()
 				
-				# Retrieve primary key columns
+				# --------------------------------------------------------------------------------
+				# 2) Retrieve primary key columns
+				# --------------------------------------------------------------------------------
 				$pkQuery = @"
 SELECT c.COLUMN_NAME
 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
@@ -4107,13 +4729,14 @@ ORDER BY c.ORDINAL_POSITION
 				}
 				$readerPK.Close()
 				
+				# If no PK, default to first column
 				if ($pkColumns.Count -eq 0)
 				{
-					# If no primary key found, default to first column
 					$primaryKeyColumns = @()
 					$cmdFirstColumn = $sqlConnection.CreateCommand()
 					$cmdFirstColumn.CommandText = "SELECT TOP 1 * FROM [$table]"
 					$readerFirstColumn = $cmdFirstColumn.ExecuteReader()
+					
 					if ($readerFirstColumn.Read())
 					{
 						$primaryKeyColumns = @($readerFirstColumn.GetName(0))
@@ -4125,22 +4748,487 @@ ORDER BY c.ORDINAL_POSITION
 					$primaryKeyColumns = $pkColumns
 				}
 				
-				# Build the key string for @UPDATE_BATCH using 'AND'
-				$keyString = ($primaryKeyColumns | ForEach-Object { "$_=:$_" }) -join ' AND '
+				# Build the key string for @UPDATE_BATCH
+				$keyString = ($primaryKeyColumns | ForEach-Object { "$_=:$_" }) -join " AND "
 				
-				# Generate the header for the SQL batch file
+				# --------------------------------------------------------------------------------
+				# 3) Generate @CREATE, CREATE VIEW, and INSERT lines
+				# --------------------------------------------------------------------------------
 				$viewName = $baseTable.Substring(0, 1).ToUpper() + $baseTable.Substring(1).ToLower() + '_Load'
 				$columnList = ($columnDataTypes.Keys) -join ','
 				
-				$header = "@CREATE($table,$tableAlias);
+				# Header (normalize any line breaks to CRLF)
+				$header = @"
+/* Set a long timeout so the entire script runs */
+@WIZRPL(DBASE_TIMEOUT=E);
+
+@CREATE($table,$tableAlias);
 CREATE VIEW $viewName AS SELECT $columnList FROM $table;
 
-INSERT INTO $viewName VALUES`r`n"
+INSERT INTO $viewName VALUES
+"@
+				# Normalize line endings to CRLF
+				$header = $header -replace "(\r\n|\n|\r)", "`r`n"
+				$streamWriter.WriteLine($header.TrimEnd()) # .WriteLine() uses CRLF from NewLine
 				
-				# Write header to the file
-				$streamWriter.Write($header)
+				# --------------------------------------------------------------------------------
+				# 4) Fetch data from the table
+				# --------------------------------------------------------------------------------
+				$dataQuery = "SELECT * FROM [$table]"
+				$cmdData = $sqlConnection.CreateCommand()
+				$cmdData.CommandText = $dataQuery
+				$readerData = $cmdData.ExecuteReader()
 				
-				# Initialize SqlCommand and SqlDataReader for data retrieval
+				$firstRow = $true
+				while ($readerData.Read())
+				{
+					# For each row, we gather column values
+					if ($firstRow)
+					{
+						$firstRow = $false
+					}
+					else
+					{
+						# For subsequent rows => separate with comma & newline
+						$streamWriter.WriteLine(",")
+					}
+					
+					$values = @()
+					foreach ($col in $columnDataTypes.Keys)
+					{
+						$val = $readerData[$col]
+						$dataType = $columnDataTypes[$col]
+						
+						if ($val -eq $null -or $val -is [System.DBNull])
+						{
+							$values += ""
+							continue
+						}
+						
+						# For string-like columns
+						if ($dataType -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext'))
+						{
+							$escapedVal = $val.ToString().Replace("'", "''")
+							# Also remove/normalize any embedded newlines
+							$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+							$values += "'$escapedVal'"
+						}
+						elseif ($dataType -in @('datetime', 'smalldatetime', 'date', 'datetime2'))
+						{
+							# Format as YYYYDDD HH:mm:ss
+							$dayOfYear = $val.DayOfYear.ToString("D3")
+							$formattedDate = "'{0}{1} {2}'" -f $val.Year, $dayOfYear, $val.ToString("HH:mm:ss")
+							$values += $formattedDate
+						}
+						elseif ($dataType -eq 'bit')
+						{
+							$bitVal = if ($val) { "1" }
+							else { "0" }
+							$values += $bitVal
+						}
+						elseif ($dataType -in @('decimal', 'numeric', 'float', 'real', 'money', 'smallmoney'))
+						{
+							# Numeric: either integer or decimal
+							if ([math]::Floor($val) -eq $val)
+							{
+								$values += $val.ToString()
+							}
+							else
+							{
+								$values += $val.ToString("0.00")
+							}
+						}
+						elseif ($dataType -in @('tinyint', 'smallint', 'int', 'bigint'))
+						{
+							$values += $val.ToString()
+						}
+						else
+						{
+							# Default => treat as string
+							$escapedVal = $val.ToString().Replace("'", "''")
+							$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+							$values += "'$escapedVal'"
+						}
+					}
+					
+					$insertStatement = "(" + ($values -join ",") + ")"
+					# Normalize any hidden newlines
+					$insertStatement = $insertStatement -replace "(\r\n|\n|\r)", " "
+					
+					# Write this row (no newline yet)
+					$streamWriter.Write($insertStatement)
+				}
+				$readerData.Close()
+				
+				# --------------------------------------------------------------------------------
+				# 5) End the INSERT statements
+				# --------------------------------------------------------------------------------
+				$streamWriter.WriteLine(";")
+				$streamWriter.WriteLine() # blank line
+				
+				# --------------------------------------------------------------------------------
+				# 6) Write the footer (UPDATE_BATCH, DROP TABLE, etc.)
+				# --------------------------------------------------------------------------------
+				$footer = @"
+@UPDATE_BATCH(JOB=ADD,TAR=$table,
+KEY=$keyString,
+SRC=SELECT * FROM $viewName);
+
+DROP TABLE $viewName;
+
+/* Clear the long database timeout */
+@WIZCLR(DBASE_TIMEOUT);
+"@
+				$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
+				$streamWriter.WriteLine($footer.TrimEnd())
+				$streamWriter.WriteLine()
+				
+				# Done writing
+				$streamWriter.Flush()
+				$streamWriter.Close()
+				$streamWriter.Dispose()
+				
+				$generatedFiles += $localTempPath
+				$copiedTables += $table
+			}
+			catch
+			{
+				Write-Log "Error generating SQL for table '$table': $_" "red"
+				continue
+			}
+		}
+		else
+		{
+			# If we re-used a file from %TEMP%
+			$generatedFiles += $localTempPath
+			$copiedTables += $table
+		}
+	}
+	
+	# Close the SQL connection
+	$sqlConnection.Close()
+	
+	# Summaries
+	if ($copiedTables.Count -gt 0)
+	{
+		Write-Log "Successfully generated _Load.sql files for tables: $($copiedTables -join ', ')" "green"
+	}
+	if ($skippedTables.Count -gt 0)
+	{
+		Write-Log "Tables with no data (skipped): $($skippedTables -join ', ')" "yellow"
+	}
+	
+	# --------------------------------------------------------------------------------------------
+	# Copy the generated .sql files to each selected lane
+	# --------------------------------------------------------------------------------------------
+	Write-Log "`r`nDetermining selected lanes...`r`n" "magenta"
+	$ProcessedLanes = @()
+	foreach ($lane in $Lanes)
+	{
+		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${lane}"
+		
+		if (Test-Path $LaneLocalPath)
+		{
+			Write-Log "Copying _Load.sql files to Lane #$lane..." "blue"
+			try
+			{
+				foreach ($filePath in $generatedFiles)
+				{
+					$fileName = [System.IO.Path]::GetFileName($filePath)
+					$destinationPath = Join-Path $LaneLocalPath $fileName
+					
+					Copy-Item -Path $filePath -Destination $destinationPath -Force -ErrorAction Stop
+				}
+				Write-Log "Successfully copied all generated _Load.sql files to Lane #$lane." "green"
+				$ProcessedLanes += $lane
+			}
+			catch
+			{
+				Write-Log "Error copying files to Lane #${lane}: $_" "red"
+			}
+		}
+		else
+		{
+			Write-Log "Lane #$lane not found at path: $LaneLocalPath" "yellow"
+		}
+	}
+	
+	Write-Log "`r`nTotal Lane folders processed: $($ProcessedLanes.Count)" "green"
+	if ($ProcessedLanes.Count -gt 0)
+	{
+		Write-Log "Processed Lanes: $($ProcessedLanes -join ', ')" "green"
+		Write-Log "`r`n==================== Pump-AllItems Function Completed ====================" "blue"
+	}
+}
+
+# ===================================================================================================
+#                                       FUNCTION: Pump-Tables
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Allows a user to select a subset of tables (from Get-TableAliases) to extract from SQL Server
+#   and copy to the specified lanes or hosts. Similar to Pump-AllItems but restricted to a user-chosen
+#   list of tables.
+# ===================================================================================================
+
+function Pump-Tables
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	Write-Log "`r`n==================== Starting Pump-Tables Function ====================`r`n" "blue"
+	
+	if (-not (Test-Path $OfficePath))
+	{
+		Write-Log "XF Base Path not found: $OfficePath" "yellow"
+		return
+	}
+	
+	# Prompt for lane selection
+	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
+	if ($selection -eq $null)
+	{
+		Write-Log "Lane processing canceled by user." "yellow"
+		return
+	}
+	$Type = $selection.Type
+	$Lanes = $selection.Lanes
+	
+	# Determine if "All Lanes" is selected
+	$processAllLanes = $false
+	if ($Type -eq "All")
+	{
+		$processAllLanes = $true
+	}
+	
+	# If "All Lanes" is selected, attempt to retrieve LaneContents
+	if ($processAllLanes)
+	{
+		try
+		{
+			$LaneContents = $script:FunctionResults['LaneContents']
+			
+			if ($LaneContents -and $LaneContents.Count -gt 0)
+			{
+				$Lanes = $LaneContents
+			}
+			else
+			{
+				throw "LaneContents is empty or not available."
+			}
+		}
+		catch
+		{
+			$processAllLanes = $false
+		}
+	}
+	
+	# --------------------------------------------------------------------------------------------
+	# Fetch the alias data that Get-TableAliases stored
+	# --------------------------------------------------------------------------------------------
+	if ($script:FunctionResults.ContainsKey('Get-TableAliases'))
+	{
+		$aliasData = $script:FunctionResults['Get-TableAliases']
+		$aliasResults = $aliasData.Aliases
+		$aliasHash = $aliasData.AliasHash
+	}
+	else
+	{
+		Write-Log "Alias data not found. Ensure Get-TableAliases has been run." "red"
+		return
+	}
+	
+	if ($aliasResults.Count -eq 0)
+	{
+		Write-Log "No tables found to process. Exiting Pump-Tables." "red"
+		return
+	}
+	
+	# Prompt user to select which tables to pump
+	$selectedTables = Show-TableSelectionDialog -AliasResults $aliasResults
+	if (-not $selectedTables -or $selectedTables.Count -eq 0)
+	{
+		Write-Log "No tables were selected. Exiting Pump-Tables." "yellow"
+		return
+	}
+	
+	# --------------------------------------------------------------------------------------------
+	# Get the SQL ConnectionString from script-scoped results
+	# --------------------------------------------------------------------------------------------
+	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
+	{
+		Write-Log "Connection string not found. Cannot proceed with Pump-Tables." "red"
+		return
+	}
+	$ConnectionString = $script:FunctionResults['ConnectionString']
+	
+	# Open SQL connection
+	$sqlConnection = New-Object System.Data.SqlClient.SqlConnection
+	$sqlConnection.ConnectionString = $ConnectionString
+	$sqlConnection.Open()
+	
+	# Prepare tracking
+	$generatedFiles = @()
+	$copiedTables = @()
+	$skippedTables = @()
+	
+	# Filter out only the alias entries that match the user's selection
+	$filteredAliasEntries = $aliasResults | Where-Object {
+		$selectedTables -contains $_.Table
+	}
+	
+	# --------------------------------------------------------------------------------------------
+	# Process each user-selected table
+	# --------------------------------------------------------------------------------------------
+	foreach ($aliasEntry in $filteredAliasEntries)
+	{
+		$table = $aliasEntry.Table # e.g. "XYZ_TAB"
+		$tableAlias = $aliasEntry.Alias # e.g. "XYZ"
+		
+		if (-not $table -or -not $tableAlias)
+		{
+			Write-Log "Invalid table or alias: $($aliasEntry | ConvertTo-Json)" "yellow"
+			continue
+		}
+		
+		# Check row count
+		$dataCheckQuery = "SELECT COUNT(*) FROM [$table]"
+		$cmdCheck = $sqlConnection.CreateCommand()
+		$cmdCheck.CommandText = $dataCheckQuery
+		
+		try
+		{
+			$rowCount = $cmdCheck.ExecuteScalar()
+		}
+		catch
+		{
+			Write-Log "Error checking row count for '$table': $_" "red"
+			continue
+		}
+		
+		# Skip tables with zero rows
+		if ($rowCount -eq 0)
+		{
+			$skippedTables += $table
+			continue
+		}
+		
+		Write-Log "Processing table '$table'..." "blue"
+		
+		# Remove "_TAB" suffix for the base name
+		$baseTable = $table -replace '_TAB$', ''
+		
+		# File name for the extracted data
+		$sqlFileName = "${baseTable}_Load.sql"
+		$localTempPath = Join-Path $env:TEMP $sqlFileName
+		
+		# Check for a recent file in TEMP (less than 1 hour old)
+		$useExistingFile = $false
+		if (Test-Path $localTempPath)
+		{
+			$fileInfo = Get-Item $localTempPath
+			$fileAge = (Get-Date) - $fileInfo.LastWriteTime
+			if ($fileAge.TotalHours -le 1)
+			{
+				Write-Log "Recent SQL file found for '$table' in %TEMP%. Using existing file." "green"
+				$useExistingFile = $true
+			}
+			else
+			{
+				Write-Log "SQL file for '$table' is older than 1 hour. Regenerating." "yellow"
+			}
+		}
+		
+		# ----------------------------------------------------------------------------------------
+		# Generate or reuse the _Load.sql file
+		# ----------------------------------------------------------------------------------------
+		if (-not $useExistingFile)
+		{
+			try
+			{
+				# Create a StreamWriter in Windows-1252 encoding, CRLF endings
+				$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $ansiPcEncoding)
+				$streamWriter.NewLine = "`r`n" # Force CRLF
+				
+				# 1) Gather column data types
+				$columnDataTypesQuery = @"
+SELECT COLUMN_NAME, DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME = '$table'
+ORDER BY ORDINAL_POSITION
+"@
+				$cmdColumnTypes = $sqlConnection.CreateCommand()
+				$cmdColumnTypes.CommandText = $columnDataTypesQuery
+				$readerColumnTypes = $cmdColumnTypes.ExecuteReader()
+				
+				$columnDataTypes = [ordered]@{ }
+				while ($readerColumnTypes.Read())
+				{
+					$colName = $readerColumnTypes["COLUMN_NAME"]
+					$dataType = $readerColumnTypes["DATA_TYPE"]
+					$columnDataTypes[$colName] = $dataType
+				}
+				$readerColumnTypes.Close()
+				
+				# 2) Retrieve primary key columns
+				$pkQuery = @"
+SELECT c.COLUMN_NAME
+FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c
+    ON c.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+    AND c.TABLE_NAME = tc.TABLE_NAME
+WHERE tc.TABLE_NAME = '$table' AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+ORDER BY c.ORDINAL_POSITION
+"@
+				$cmdPK = $sqlConnection.CreateCommand()
+				$cmdPK.CommandText = $pkQuery
+				$readerPK = $cmdPK.ExecuteReader()
+				$pkColumns = @()
+				while ($readerPK.Read())
+				{
+					$pkColumns += $readerPK["COLUMN_NAME"]
+				}
+				$readerPK.Close()
+				
+				# If no PK, default to first column
+				if ($pkColumns.Count -eq 0)
+				{
+					$primaryKeyColumns = @()
+					$cmdFirstColumn = $sqlConnection.CreateCommand()
+					$cmdFirstColumn.CommandText = "SELECT TOP 1 * FROM [$table]"
+					$readerFirstColumn = $cmdFirstColumn.ExecuteReader()
+					
+					if ($readerFirstColumn.Read())
+					{
+						$primaryKeyColumns = @($readerFirstColumn.GetName(0))
+					}
+					$readerFirstColumn.Close()
+				}
+				else
+				{
+					$primaryKeyColumns = $pkColumns
+				}
+				
+				# Build the key string for @UPDATE_BATCH
+				$keyString = ($primaryKeyColumns | ForEach-Object { "$_=:$_" }) -join " AND "
+				
+				# 3) Generate @CREATE, CREATE VIEW, and INSERT lines
+				$viewName = $baseTable.Substring(0, 1).ToUpper() + $baseTable.Substring(1).ToLower() + '_Load'
+				$columnList = ($columnDataTypes.Keys) -join ','
+				
+				$header = @"
+@WIZRPL(DBASE_TIMEOUT=E);
+
+CREATE VIEW $viewName AS SELECT $columnList FROM $table;
+
+INSERT INTO $viewName VALUES
+"@
+				# Normalize line endings to CRLF
+				$header = $header -replace "(\r\n|\n|\r)", "`r`n"
+				$streamWriter.WriteLine($header.TrimEnd())
+				
+				# 4) Fetch data from the table
 				$dataQuery = "SELECT * FROM [$table]"
 				$cmdData = $sqlConnection.CreateCommand()
 				$cmdData.CommandText = $dataQuery
@@ -4155,147 +5243,162 @@ INSERT INTO $viewName VALUES`r`n"
 					}
 					else
 					{
-						# Prepend a comma and CRLF for subsequent rows
-						$streamWriter.Write(",`r`n")
+						$streamWriter.WriteLine(",")
 					}
 					
-					# Prepare values for SQL INSERT
 					$values = @()
-					foreach ($column in $columnDataTypes.Keys)
+					foreach ($col in $columnDataTypes.Keys)
 					{
-						$value = $readerData[$column]
-						$dataType = $columnDataTypes[$column]
+						$val = $readerData[$col]
+						$dataType = $columnDataTypes[$col]
 						
-						if ($value -eq $null -or $value -is [System.DBNull])
+						if ($val -eq $null -or $val -is [System.DBNull])
 						{
-							$values += "" # Use empty for database nulls as per your example
+							$values += ""
+							continue
 						}
-						elseif ($dataType -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext'))
+						
+						switch -Wildcard ($dataType)
 						{
-							# String data types, enclose in single quotes and escape single quotes
-							$escapedValue = $value.ToString().Replace("'", "''")
-							$values += "'$escapedValue'"
-						}
-						elseif ($dataType -in @('datetime', 'smalldatetime', 'date', 'datetime2'))
-						{
-							# Date/time data types with original calculation
-							$dayOfYear = $value.DayOfYear.ToString("D3") # Day of year with leading zeros
-							$formattedDate = "'{0}{1} {2}'" -f $value.Year, $dayOfYear, $value.ToString("HH:mm:ss")
-							$values += $formattedDate
-						}
-						elseif ($dataType -in @('bit'))
-						{
-							# Boolean data types
-							$bitValue = if ($value) { "1" }
-							else { "0" }
-							$values += $bitValue
-						}
-						elseif ($dataType -in @('decimal', 'numeric', 'float', 'real', 'money', 'smallmoney'))
-						{
-							# Numeric data types with potential decimals
-							if ([math]::Floor($value) -eq $value)
-							{
-								# Integer, output as is
-								$values += $value.ToString()
+							{ $_ -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext') } {
+								$escapedVal = $val.ToString().Replace("'", "''")
+								$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+								$values += "'$escapedVal'"
+								break
 							}
-							else
-							{
-								# Decimal, format to two decimal places
-								$values += $value.ToString("0.00")
+							{ $_ -in @('datetime', 'smalldatetime', 'date', 'datetime2') } {
+								$dayOfYear = $val.DayOfYear.ToString("D3")
+								$formattedDate = "'{0}{1} {2}'" -f $val.Year, $dayOfYear, $val.ToString("HH:mm:ss")
+								$values += $formattedDate
+								break
 							}
-						}
-						elseif ($dataType -in @('tinyint', 'smallint', 'int', 'bigint'))
-						{
-							# Integer data types
-							$values += $value.ToString()
-						}
-						else
-						{
-							# Default to treating as string
-							$escapedValue = $value.ToString().Replace("'", "''")
-							$values += "'$escapedValue'"
+							{ $_ -eq 'bit' } {
+								$bitVal = if ($val) { "1" }
+								else { "0" }
+								$values += $bitVal
+								break
+							}
+							{ $_ -in @('decimal', 'numeric', 'float', 'real', 'money', 'smallmoney') } {
+								if ([math]::Floor($val) -eq $val)
+								{
+									$values += $val.ToString()
+								}
+								else
+								{
+									$values += $val.ToString("0.00")
+								}
+								break
+							}
+							{ $_ -in @('tinyint', 'smallint', 'int', 'bigint') } {
+								$values += $val.ToString()
+								break
+							}
+							default {
+								# Fallback to string
+								$escapedVal = $val.ToString().Replace("'", "''")
+								$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+								$values += "'$escapedVal'"
+								break
+							}
 						}
 					}
 					
-					# Combine values into an INSERT statement
-					$insertStatement = "(" + ($values -join ',') + ")"
+					$insertStatement = "(" + ($values -join ",") + ")"
+					$insertStatement = $insertStatement -replace "(\r\n|\n|\r)", " "
 					$streamWriter.Write($insertStatement)
 				}
-				
-				# Close the data reader
 				$readerData.Close()
 				
-				# Finish the INSERT statement with a semicolon
-				$streamWriter.Write(";`r`n`r`n")
+				# End the INSERT
+				$streamWriter.WriteLine(";")
+				$streamWriter.WriteLine()
 				
-				# Generate the footer for the SQL batch file
-				$footer = "@UPDATE_BATCH(JOB=ADD,TAR=$table,
+				# Footer
+				$footer = @"
+@UPDATE_BATCH(JOB=ADDRPL,TAR=$table,
 KEY=$keyString,
 SRC=SELECT * FROM $viewName);
 
-DROP TABLE $viewName;`r`n`r`n"
+DROP TABLE $viewName;
+
+@EXEC(INI=HOST_STORE[ACTIVATE_ACCEPT_ALL]);
+
+@WIZCLR(DBASE_TIMEOUT);
+"@
+				$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
+				$streamWriter.WriteLine($footer.TrimEnd())
+				$streamWriter.WriteLine()
 				
-				# Write footer to the file
-				$streamWriter.Write($footer)
-				
-				# Close the StreamWriter
+				$streamWriter.Flush()
 				$streamWriter.Close()
 				$streamWriter.Dispose()
 				
-				# Write-Log "Successfully generated SQL file: $sqlFileName" "green"
 				$generatedFiles += $localTempPath
 				$copiedTables += $table
 			}
 			catch
 			{
-				Write-Log "Error generating SQL file for table '$table': $_" "red"
+				Write-Log "Error generating SQL for table '$table': $_" "red"
 				continue
 			}
 		}
 		else
 		{
+			# Reuse existing file
 			$generatedFiles += $localTempPath
 			$copiedTables += $table
 		}
-	}
+	} # end foreach table
 	
-	# Close the SQL connection
 	$sqlConnection.Close()
 	
+	# Summaries
 	if ($copiedTables.Count -gt 0)
 	{
-		Write-Log "Successfully generated _Load.sql files with tables: $($copiedTables -join ', ')" "green"
+		Write-Log "Successfully generated _Load.sql files for tables: $($copiedTables -join ', ')" "green"
 	}
 	if ($skippedTables.Count -gt 0)
 	{
-		Write-Log "The following tables were skipped since they had no data: $($skippedTables -join ', ')" "yellow"
+		Write-Log "Tables with no data (skipped): $($skippedTables -join ', ')" "yellow"
 	}
 	
-	# Now copy all generated files to each selected lane
+	# --------------------------------------------------------------------------------------------
+	# Copy the generated .sql files to each selected lane
+	# --------------------------------------------------------------------------------------------
 	Write-Log "`r`nDetermining selected lanes...`r`n" "magenta"
 	$ProcessedLanes = @()
 	foreach ($lane in $Lanes)
 	{
-		$LaneLocalPath = Join-Path -Path $OfficePath -ChildPath "XF${StoreNumber}${lane}"
+		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${lane}"
 		
 		if (Test-Path $LaneLocalPath)
 		{
 			Write-Log "Copying _Load.sql files to Lane #$lane..." "blue"
 			try
 			{
-				# Copy all generated SQL files to the destination lane
 				foreach ($filePath in $generatedFiles)
 				{
 					$fileName = [System.IO.Path]::GetFileName($filePath)
-					$destinationPath = Join-Path -Path $LaneLocalPath -ChildPath $fileName
+					$destinationPath = Join-Path $LaneLocalPath $fileName
+					
+					# Copy the file
 					Copy-Item -Path $filePath -Destination $destinationPath -Force -ErrorAction Stop
+					
+					# **Clear the Archive attribute on the copied file**
+					$fileItem = Get-Item $destinationPath
+					if ($fileItem.Attributes -band [System.IO.FileAttributes]::Archive)
+					{
+						$fileItem.Attributes -= [System.IO.FileAttributes]::Archive
+						Write-Log "Cleared Archive attribute for '$fileName' in Lane #$lane." "green"
+					}
+					
 				}
 				Write-Log "Successfully copied all generated _Load.sql files to Lane #$lane." "green"
 				$ProcessedLanes += $lane
 			}
 			catch
 			{
-				Write-Log "Error copying generated _Load.sql files to Lane #${lane}: $_" "red"
+				Write-Log "Error copying files to Lane #${lane}: $_" "red"
 			}
 		}
 		else
@@ -4308,7 +5411,7 @@ DROP TABLE $viewName;`r`n`r`n"
 	if ($ProcessedLanes.Count -gt 0)
 	{
 		Write-Log "Processed Lanes: $($ProcessedLanes -join ', ')" "green"
-		Write-Log "`r`n==================== Pump-AllItems Function Completed ====================" "blue"
+		Write-Log "`r`n==================== Pump-Tables Function Completed ====================" "blue"
 	}
 }
 
@@ -4418,7 +5521,7 @@ function Reboot-Lanes
 	else
 	{
 		# If not processing all lanes or LaneMachines not available, proceed to collect machine names individually
-		# This assumes that Update-LaneFiles or Count-ItemsGUI has already populated LaneMachines
+		# This assumes that Update-LaneFiles or Retrieve-Nodes has already populated LaneMachines
 		try
 		{
 			Write-Log "Retrieving machine names from FunctionResults for selected lanes..." "blue"
@@ -4806,7 +5909,7 @@ function CloseOpenTransactions
 #   For each selected lane, the function retrieves the associated machine name and performs a ping 
 #   to determine its reachability. Results are logged using the existing Write-Log function, providing
 #   a summary of successful and failed pings. This function leverages pre-stored lane information 
-#   from the Count-ItemsGUI function to identify machines associated with each lane.
+#   from the Retrieve-Nodes function to identify machines associated with each lane.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   -Mode (Mandatory)
@@ -4819,7 +5922,7 @@ function CloseOpenTransactions
 #   Ping-Lanes -Mode "Store" -StoreNumber "123"
 #
 # Prerequisites:
-#   - Ensure that the Count-ItemsGUI function has been executed prior to running Ping-Lanes.
+#   - Ensure that the Retrieve-Nodes function has been executed prior to running Ping-Lanes.
 #   - Verify that the Show-SelectionDialog and Write-Log functions are available in the session.
 #   - Confirm network accessibility to the machines associated with the lanes.
 # ===================================================================================================
@@ -4857,7 +5960,7 @@ function Ping-Lanes
 	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
 		-not $script:FunctionResults.ContainsKey('LaneMachines'))
 	{
-		Write-Log "Lane information is not available. Please run Count-ItemsGUI first." "Red"
+		Write-Log "Lane information is not available. Please run Retrieve-Nodes first." "Red"
 		return
 	}
 	
@@ -4990,7 +6093,7 @@ function Ping-Lanes
 # Alternatibely we can use this one to ping all without user input
 #----------------------------------------------------------------------------------------------------
 
-function PingAllLanes
+function Ping-AllLanes
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -5000,7 +6103,7 @@ function PingAllLanes
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting PingAllLanes Function ====================`r`n" "blue"
+	Write-Log "`r`n==================== Starting Ping-AllLanes Function ====================`r`n" "blue"
 	
 	# Ensure necessary functions are available
 	foreach ($func in @('Write-Log'))
@@ -5015,7 +6118,7 @@ function PingAllLanes
 	# Validate Mode
 	if ($Mode -ne "Store")
 	{
-		Write-Log "PingAllLanes is only applicable in 'Store' mode." "Red"
+		Write-Log "Ping-AllLanes is only applicable in 'Store' mode." "Red"
 		return
 	}
 	
@@ -5023,7 +6126,7 @@ function PingAllLanes
 	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
 		-not $script:FunctionResults.ContainsKey('LaneMachines'))
 	{
-		Write-Log "Lane information is not available. Please run Count-ItemsGUI first." "Red"
+		Write-Log "Lane information is not available. Please run Retrieve-Nodes first." "Red"
 		return
 	}
 	
@@ -5120,7 +6223,7 @@ function PingAllLanes
 	
 	# Summary of ping results
 	Write-Log "Ping Summary for Store Number: $StoreNumber - Success: $successCount, Failed: $failureCount." "Blue"
-	Write-Log "`r`n==================== PingAllLanes Function Completed ====================" "blue"
+	Write-Log "`r`n==================== Ping-AllLanes Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -5129,7 +6232,7 @@ function PingAllLanes
 # Description:
 #   Enables users to delete specific file types (.txt and .dwr) from selected lanes within a specified
 #   store. Additionally, users are prompted to include or exclude .sus files from the deletion process.
-#   The function leverages pre-stored lane information from the Count-ItemsGUI function to identify 
+#   The function leverages pre-stored lane information from the Retrieve-Nodes function to identify 
 #   machine paths associated with each lane. File deletions are handled by the Delete-Files helper function,
 #   and all actions and results are logged using the existing Write-Log function.
 # ---------------------------------------------------------------------------------------------------
@@ -5144,7 +6247,7 @@ function PingAllLanes
 #   Delete-DBS -Mode "Store" -StoreNumber "123"
 #
 # Prerequisites:
-#   - Ensure that the Count-ItemsGUI function has been executed prior to running Delete-DBS.
+#   - Ensure that the Retrieve-Nodes function has been executed prior to running Delete-DBS.
 #   - Verify that the Show-SelectionDialog, Delete-Files, and Write-Log functions are available in the session.
 #   - Confirm network accessibility to the machines associated with the lanes.
 #   - The user must have the necessary permissions to delete files in the target directories.
@@ -5184,7 +6287,7 @@ function Delete-DBS
 	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
 		-not $script:FunctionResults.ContainsKey('LaneMachines'))
 	{
-		Write-Log "Lane information is not available. Please run Count-ItemsGUI first." "Red"
+		Write-Log "Lane information is not available. Please run Retrieve-Nodes first." "Red"
 		return
 	}
 	
@@ -5773,7 +6876,7 @@ function Configure-SystemSettings
 #   Refresh-Files -Mode "Store" -StoreNumber "123" -Silent
 #
 # Prerequisites:
-#   - Ensure that the Count-ItemsGUI function has been executed prior to running Refresh-Files.
+#   - Ensure that the Retrieve-Nodes function has been executed prior to running Refresh-Files.
 #   - Verify that the Show-SelectionDialog and Write-Log functions are available in the session.
 #   - Confirm network accessibility to the machines associated with the lanes.
 #   - The user must have the necessary permissions to modify files in the target directories.
@@ -5802,7 +6905,7 @@ function Refresh-Files
 	}
 	
 	# Ensure necessary functions are available
-	foreach ($func in @('Show-SelectionDialog', 'Write-Log', 'Count-ItemsGUI'))
+	foreach ($func in @('Show-SelectionDialog', 'Write-Log', 'Retrieve-Nodes'))
 	{
 		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
 		{
@@ -5821,7 +6924,7 @@ function Refresh-Files
 	# Ensure lane information is available
 	if (-not ($script:FunctionResults.ContainsKey('LaneContents') -and $script:FunctionResults.ContainsKey('LaneMachines')))
 	{
-		Write-Log "No lane information found. Please ensure Count-ItemsGUI has been executed." "Red"
+		Write-Log "No lane information found. Please ensure Retrieve-Nodes has been executed." "Red"
 		return
 	}
 	
@@ -5957,40 +7060,55 @@ function Refresh-Files
 }
 
 # ===================================================================================================
-#                                       SECTION: Generate Specific SQL and SQM Files
+#                                       FUNCTION: InstallIntoSMS
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Generates two files in the %TEMP% directory:
-#     1. DEPLOY_SYS.sql containing a specific INSERT statement.
-#     2. DEPLOY_ONE_FCT.sqm containing a predefined script.
+#   Generates and deploys specific SQL and SQM files required for SMS installation.
+#   The files are written directly to their respective destinations in ANSI (Windows-1252) encoding
+#   with CRLF line endings and no BOM.
 # ===================================================================================================
 
 function InstallIntoSMS
 {
-	# Retrieve the path to the system's temporary directory
-	$tempDirectory = $env:TEMP
+	param (
+		[Parameter(Mandatory = $false)]
+		[string]$StoreNumber,
+		[Parameter(Mandatory = $false)]
+		[string]$OfficePath
+	)
 	
-	# Define file paths within the %TEMP% directory
-	$PumpallitemstablesFilePath = Join-Path -Path $tempDirectory -ChildPath "Pump_all_items_tables.sql"
-	$DeploySysFilePath = Join-Path -Path $tempDirectory -ChildPath "DEPLOY_SYS.sql"
-	$DeployOneFctFilePath = Join-Path -Path $tempDirectory -ChildPath "DEPLOY_ONE_FCT.sqm"
+	Write-Log "`r`n==================== Starting InstallIntoSMS Function ====================`r`n" "blue"
 	
-	Write-Log "`r`n==================== Installing new buttons into SMS ====================`r`n" "blue"
+	# --------------------------------------------------------------------------------------------
+	# Define Destination Paths
+	# --------------------------------------------------------------------------------------------
 	
-	# Define the content for Pump_all_items_tables.sql
-	$PumpallitemstablesContent = @"
-/* First delete the record if it exist */
+	# Destination folder for Pump_all_items_tables.sql
+	$PumpAllItemsTablesDestinationFolder = Join-Path -Path $OfficePath -ChildPath "XF${StoreNumber}901"
+	$PumpAllItemsTablesFilePath = Join-Path -Path $PumpAllItemsTablesDestinationFolder -ChildPath "Pump_all_items_tables.sql"
+	
+	# Destination paths for DEPLOY_SYS.sql and DEPLOY_ONE_FCT.sqm
+	$DeploySysDestinationPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_SYS.sql"
+	$DeployOneFctDestinationPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_ONE_FCT.sqm"
+	
+	# --------------------------------------------------------------------------------------------
+	# Define File Contents
+	# --------------------------------------------------------------------------------------------
+	
+	# Content for Pump_all_items_tables.sql
+	$PumpAllItemsTablesContent = @"
+/* First delete the record if it exists */
 DELETE FROM FCT_TAB WHERE F1063 = 11899 AND F1000 = 'PAL';
 
 /* Insert the new function */
-INSERT INTO FCT_TAB (F1063,F1000,F1047,F1050,F1051,F1052,F1053,F1064,F1081) 
-VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPLOY_LOAD');
+INSERT INTO FCT_TAB (F1063, F1000, F1047, F1050, F1051, F1052, F1053, F1064, F1081) 
+VALUES (11899, 'PAL', 9, '', 'SKU', 'Preference', '1', 'Pump all item tables', 'sql=DEPLOY_LOAD');
 
 /* Activate the new function right away */
 @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
 "@
 	
-	# Define the content for DEPLOY_SYS.sql
+	# Content for DEPLOY_SYS.sql
 	$DeploySysContent = @"
 @FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,®WIZRPL(UD_RUN=0));
 @FMT(CMP,@WIZGET(UD_RUN)=,'®EXEC(SQL=UD_DEPLOY_SYS)®FMT(CHR,27)');
@@ -6017,11 +7135,12 @@ VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPL
 
 @WIZINIT;
 @WIZTARGET(TARGET=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
-SELECT F1000,F1018 FROM STO_TAB WHERE F1181=1 ORDER BY F1000","
-SELECT DISTINCT STO.F1000,STO.F1018 
-FROM LNK_TAB LN2 JOIN LNK_TAB LNK ON LN2.F1056=LNK.F1056 AND LN2.F1057=LNK.F1057
-JOIN STO_TAB STO ON STO.F1000=LNK.F1000 
-WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'
+SELECT F1000, F1018 FROM STO_TAB WHERE F1181=1 ORDER BY F1000","
+SELECT DISTINCT STO.F1000, STO.F1018 
+FROM LNK_TAB LN2 
+JOIN LNK_TAB LNK ON LN2.F1056 = LNK.F1056 AND LN2.F1057 = LNK.F1057
+JOIN STO_TAB STO ON STO.F1000 = LNK.F1000 
+WHERE STO.F1181 = '1' AND LN2.F1000 = '@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'
 ORDER BY STO.F1000"));
 @WIZDISPLAY;
 
@@ -6054,7 +7173,7 @@ ORDER BY STO.F1000"));
 @EXEC(sqi=USERE_DEPLOY_SYS);
 "@
 	
-	# Define the content for DEPLOY_ONE_FCT.sqm
+	# Content for DEPLOY_ONE_FCT.sqm
 	$DeployOneFctContent = @"
 INSERT INTO HEADER_DCT VALUES
 ('HC','00000001','001901','001001',,,1997001,0000,1997001,0001,,'LOAD','CREATE DCT',,,,,,'1/1.0','V1.0',,);
@@ -6114,150 +7233,103 @@ ORDER BY F1000,F1063;
 @DBHOT(HOT_WIZ,CLR,PARAMSAV_FCT_LOAD);
 "@
 	
+	# --------------------------------------------------------------------------------------------
+	# Prepare File Contents
+	# --------------------------------------------------------------------------------------------
+	
 	# Ensure content strings have Windows-style line endings
-	$PumpallitemstablesContent = $PumpallitemstablesContent -replace "`n", "`r`n"
+	$PumpAllItemsTablesContent = $PumpAllItemsTablesContent -replace "`n", "`r`n"
 	$DeploySysContent = $DeploySysContent -replace "`n", "`r`n"
 	$DeployOneFctContent = $DeployOneFctContent -replace "`n", "`r`n"
 	
-	# Define encoding as ANSI (Windows-1252)
+	# Define encoding as ANSI (Windows-1252) without BOM
 	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
 	
-	# Function to write file with error handling
-	function Write-File
-	{
-		param (
-			[string]$Path,
-			[string]$Content,
-			[System.Text.Encoding]$Encoding
-		)
-		try
-		{
-			[System.IO.File]::WriteAllText($Path, $Content, $Encoding)
-			Write-Log "Successfully wrote to '$Path'." "green"
-		}
-		catch
-		{
-			Write-Log "Failed to write to '$Path'. Error: $_" "red"
-		}
-	}
-	
-	# Write DEPLOY_SYS.sql
-	Write-File -Path $PumpallitemstablesFilePath -Content $PumpallitemstablesContent -Encoding $ansiEncoding
-	
-	# Write DEPLOY_SYS.sql
-	Write-File -Path $DeploySysFilePath -Content $DeploySysContent -Encoding $ansiEncoding
-	
-	# Write DEPLOY_ONE_FCT.sqm
-	Write-File -Path $DeployOneFctFilePath -Content $DeployOneFctContent -Encoding $ansiEncoding
-	
-	# Define destination paths
-	$PumpallitemstablesDestination = "$OfficePath\XF${StoreNumber}901"
-	$DeploySysDestination = "$OfficePath\DEPLOY_SYS.sql"
-	$DeployOneFctDestination = "$OfficePath\DEPLOY_ONE_FCT.sqm"
-	
-	# Additional Variables
-	$File1 = "Pump_all_items_tables.sql"
-	$File2 = "DEPLOY_SYS.sql"
-	$File3 = "DEPLOY_ONE_FCT.sqm"
-	
-	# Function to copy file with error handling
-	function Copy-File
-	{
-		param (
-			[string]$FileType,
-			[string]$SourcePath,
-			[string]$DestinationPath
-		)
-		
-		try
-		{
-			# Ensure the destination directory exists
-			$destDir = Split-Path -Path $DestinationPath -Parent
-			if (-not (Test-Path -Path $destDir))
-			{
-				New-Item -Path $destDir -ItemType Directory -Force | Out-Null
-				Write-Log "Created directory '$destDir'." "yellow"
-			}
-			
-			# Copy the file, overwriting if it exists
-			Copy-Item -Path $SourcePath -Destination $DestinationPath -Force
-			Write-Log "Successfully copied '$FileType' to '$DestinationPath'." "green"
-		}
-		catch
-		{
-			Write-Log "Failed to copy '$FileType' to '$DestinationPath'. Error: $_" "red"
-		}
-	}
-	
-	# Copy Pump_all_items_tables.sql to \\localhost\Storeman\Office\XF${StoreNumber}901
-	Copy-File -FileType $File1 -SourcePath $PumpallitemstablesFilePath -DestinationPath $PumpallitemstablesDestination
-	
-	# **Remove the Archive Bit from Pump_all_items_tables.sql at the destination**
+	# --------------------------------------------------------------------------------------------
+	# Ensure Destination Directories Exist
+	# --------------------------------------------------------------------------------------------
 	try
 	{
-		$destinationFile1 = Join-Path -Path $PumpallitemstablesDestination -ChildPath $File1
-		if (Test-Path $destinationFile1)
+		if (-not (Test-Path $PumpAllItemsTablesDestinationFolder))
 		{
-			$file = Get-Item $destinationFile1
-			if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
-			{
-				$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
-				Write-Log "Removed the archive bit from '$destinationFile1'." "green"
-			}
-			else
-			{
-				Write-Log "Archive bit was not set for '$destinationFile1'." "yellow"
-			}
-		}
-		else
-		{
-			Write-Log "Destination file '$destinationFile1' does not exist. Cannot remove archive bit." "red"
+			New-Item -Path $PumpAllItemsTablesDestinationFolder -ItemType Directory -Force | Out-Null
+			Write-Log "Created directory '$PumpAllItemsTablesDestinationFolder'." "yellow"
 		}
 	}
 	catch
 	{
-		Write-Log "Failed to remove the archive bit from '$destinationFile1'. Error: $_" "red"
+		Write-Log "Failed to create directory '$PumpAllItemsTablesDestinationFolder'. Error: $_" "red"
+		return
 	}
 	
-	# Copy DEPLOY_SYS.sql to \\localhost\Storeman\Office
-	Copy-File -FileType $File2 -SourcePath $DeploySysFilePath -DestinationPath $DeploySysDestination
-	
-	# Copy DEPLOY_ONE_FCT.sqm to \\localhost\Storeman\Office, replacing if it exists
-	Copy-File -FileType $File3 -SourcePath $DeployOneFctFilePath -DestinationPath $DeployOneFctDestination
-	
-	# Cleanup: Delete the generated files from the temp directory
-	function Cleanup-TempFiles
+	# --------------------------------------------------------------------------------------------
+	# Write Files Directly to Destination Paths
+	# --------------------------------------------------------------------------------------------
+	try
 	{
-		param (
-			[string[]]$FilesToDelete
-		)
-		
-		foreach ($file in $FilesToDelete)
+		# Write Pump_all_items_tables.sql
+		[System.IO.File]::WriteAllText($PumpAllItemsTablesFilePath, $PumpAllItemsTablesContent, $ansiEncoding)
+		Set-ItemProperty -Path $PumpAllItemsTablesFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write-Log "Successfully wrote 'Pump_all_items_tables.sql' to '$PumpAllItemsTablesDestinationFolder'." "green"
+	}
+	catch
+	{
+		Write-Log "Failed to write 'Pump_all_items_tables.sql'. Error: $_" "red"
+	}
+	
+	try
+	{
+		# Write DEPLOY_SYS.sql
+		[System.IO.File]::WriteAllText($DeploySysDestinationPath, $DeploySysContent, $ansiEncoding)
+		Set-ItemProperty -Path $DeploySysDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write-Log "Successfully wrote 'DEPLOY_SYS.sql' to '$OfficePath'." "green"
+	}
+	catch
+	{
+		Write-Log "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
+	}
+	
+	try
+	{
+		# Write DEPLOY_ONE_FCT.sqm
+		[System.IO.File]::WriteAllText($DeployOneFctDestinationPath, $DeployOneFctContent, $ansiEncoding)
+		Set-ItemProperty -Path $DeployOneFctDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write-Log "Successfully wrote 'DEPLOY_ONE_FCT.sqm' to '$OfficePath'." "green"
+	}
+	catch
+	{
+		Write-Log "Failed to write 'DEPLOY_ONE_FCT.sqm'. Error: $_" "red"
+	}
+	
+	# --------------------------------------------------------------------------------------------
+	# Remove Archive Bit from Pump_all_items_tables.sql Only If the File Exists
+	# --------------------------------------------------------------------------------------------
+	try
+	{
+		if (Test-Path $PumpAllItemsTablesFilePath)
 		{
-			if (Test-Path $file)
+			$file = Get-Item -Path $PumpAllItemsTablesFilePath
+			if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
 			{
-				try
-				{
-					Remove-Item -Path $file -Force
-					Write-Log "Deleted temporary file '$file'." "yellow"
-				}
-				catch
-				{
-					Write-Log "Failed to delete temporary file '$file'. Error: $_" "red"
-				}
+				$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
+				Write-Log "Removed the archive bit from '$PumpAllItemsTablesFilePath'." "green"
 			}
 			else
 			{
-				Write-Log "Temporary file '$file' does not exist and cannot be deleted." "yellow"
+				Write-Log "Archive bit was not set for '$PumpAllItemsTablesFilePath'." "yellow"
 			}
 		}
+		else
+		{
+			Write-Log "File '$PumpAllItemsTablesFilePath' does not exist. Cannot remove archive bit." "red"
+		}
+	}
+	catch
+	{
+		Write-Log "Failed to remove the archive bit from '$PumpAllItemsTablesFilePath'. Error: $_" "red"
 	}
 	
-	Cleanup-TempFiles -FilesToDelete @($PumpallitemstablesFilePath, $DeploySysFilePath, $DeployOneFctFilePath)
-	
-	#	Write-Log "`r`nDEPLOY_ONE_FCT.sqm copied to $deployOneFctDestination." "green"
-	#	Write-Log "DEPLOY_SYS.sql copied to $addMenuDestination." "green"
-	Write-Log "`r`n==================== Function execution completed ====================" "blue"
+	Write-Log "`r`n==================== InstallIntoSMS Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -6271,7 +7343,6 @@ ORDER BY F1000,F1063;
 #     - Reassigns ScaleCode to ensure BIZERBA records are first, followed by ISHIDA records.
 #     - Updates ScaleName and BufferTime for ISHIDA WMAI records.
 #   Optionally exports the organized data to a CSV file.
-#   Optionally manages the "BMS" service by stopping, deleting, registering, and restarting it based on user input.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   - OutputCsvPath (Optional): Path to export the organized CSV file. If not provided, the data
@@ -6287,55 +7358,29 @@ function Organize-TBS_SCL_ver520
 		[string]$OutputCsvPath
 	)
 	
-	# Function to display a Windows Form prompt
-	function Show-BMSPrompt
-	{
-		Add-Type -AssemblyName System.Windows.Forms
-		Add-Type -AssemblyName System.Drawing
-		
-		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "BMS Service Management"
-		$form.Size = New-Object System.Drawing.Size(400, 150)
-		$form.StartPosition = "CenterScreen"
-		$form.FormBorderStyle = "FixedDialog"
-		$form.MaximizeBox = $false
-		$form.MinimizeBox = $false
-		
-		$label = New-Object System.Windows.Forms.Label
-		$label.Text = "Do you want to execute the BMS service management steps?"
-		$label.AutoSize = $true
-		$label.Location = New-Object System.Drawing.Point(20, 20)
-		$form.Controls.Add($label)
-		
-		$yesButton = New-Object System.Windows.Forms.Button
-		$yesButton.Text = "Yes"
-		$yesButton.DialogResult = [System.Windows.Forms.DialogResult]::Yes
-		$yesButton.Location = New-Object System.Drawing.Point(80, 60)
-		$form.Controls.Add($yesButton)
-		
-		$noButton = New-Object System.Windows.Forms.Button
-		$noButton.Text = "No"
-		$noButton.DialogResult = [System.Windows.Forms.DialogResult]::No
-		$noButton.Location = New-Object System.Drawing.Point(200, 60)
-		$form.Controls.Add($noButton)
-		
-		$form.AcceptButton = $yesButton
-		$form.CancelButton = $noButton
-		
-		$dialogResult = $form.ShowDialog()
-		
-		return $dialogResult -eq [System.Windows.Forms.DialogResult]::Yes
-	}
-	
-	Write-Log "`r`n==================== Starting Organize-TBS_SCL_ver520 Function ====================`r`n" "Blue"
+	Write-Log "`r`n==================== Starting Organize-TBS_SCL_ver520 Function ====================`r`n" "blue"
 	
 	# Access the connection string from the script-scoped variable
+	# Ensure that you have set $script:FunctionResults['ConnectionString'] before calling this function
 	$connectionString = $script:FunctionResults['ConnectionString']
 	
 	if (-not $connectionString)
 	{
-		Write-Log "Connection string not found in `$script:FunctionResults['ConnectionString']`." "Red"
+		Write-Log "Connection string not found in `$script:FunctionResults['ConnectionString']`." "red"
 		return
+	}
+	
+	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
+	$supportsConnectionString = $false
+	try
+	{
+		$cmd = Get-Command Invoke-Sqlcmd -ErrorAction Stop
+		$supportsConnectionString = $cmd.Parameters.Keys -contains 'ConnectionString'
+	}
+	catch
+	{
+		Write-Log "Invoke-Sqlcmd cmdlet not found: $_" "red"
+		$supportsConnectionString = $false
 	}
 	
 	# Define the SQL commands:
@@ -6346,36 +7391,66 @@ function Organize-TBS_SCL_ver520
 	# 5. Set BufferTime for BIZERBA records: first one = 1, others = 5.
 	
 	$updateQueries = @"
--- Update ScaleName and BufferTime for ISHIDA WMAI records
-UPDATE [TBS_SCL_ver520]
-SET 
-    ScaleName = 'Ishida Wrapper',
-    BufferTime = '1'
-WHERE 
-    ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
+-------------------------------------------------------------------------------
+-- 1) Update ISHIDA WMAI ScaleName and BufferTime based on the record count
+-------------------------------------------------------------------------------
+DECLARE @IshidaWMAICount INT;
 
--- Update ScaleName for BIZERBA records
+SELECT @IshidaWMAICount = COUNT(*)
+FROM [TBS_SCL_ver520]
+WHERE ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
+
+IF @IshidaWMAICount > 1
+BEGIN
+    UPDATE [TBS_SCL_ver520]
+    SET 
+        ScaleName = CONCAT('Ishida Wrapper ', IPDevice),
+        BufferTime = '1'
+    WHERE 
+        ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
+END
+ELSE
+BEGIN
+    UPDATE [TBS_SCL_ver520]
+    SET 
+        ScaleName = 'Ishida Wrapper',
+        BufferTime = '1'
+    WHERE 
+        ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
+END;
+
+-------------------------------------------------------------------------------
+-- 2) Update BIZERBA ScaleName
+-------------------------------------------------------------------------------
 UPDATE [TBS_SCL_ver520]
 SET 
     ScaleName = CONCAT('Scale ', IPDevice)
 WHERE 
     ScaleBrand = 'BIZERBA';
 
--- Update ScaleCode for BIZERBA records to start at 10, ordered by IPDevice ascending
+-------------------------------------------------------------------------------
+-- 3) Update ScaleCode for BIZERBA, starting at 10, in IPDevice ascending order
+--    Using ROW_NUMBER() ensures uniqueness within this group.
+-------------------------------------------------------------------------------
 WITH BIZERBA_CTE AS (
     SELECT 
         ScaleCode,
         IPDevice,
-        ROW_NUMBER() OVER (ORDER BY CAST(IPDevice AS INT) ASC) AS rn
-    FROM 
-        [TBS_SCL_ver520]
-    WHERE 
-        ScaleBrand = 'BIZERBA'
+        rn = ROW_NUMBER() OVER (ORDER BY TRY_CAST(IPDevice AS INT)) 
+    FROM [TBS_SCL_ver520]
+    WHERE ScaleBrand = 'BIZERBA'
 )
-UPDATE BIZERBA_CTE
-SET ScaleCode = 10 + rn - 1;
+UPDATE T
+SET T.ScaleCode = 10 + B.rn - 1
+FROM [TBS_SCL_ver520] AS T
+JOIN BIZERBA_CTE AS B 
+    ON T.ScaleCode = B.ScaleCode
+WHERE T.ScaleBrand = 'BIZERBA';
 
--- Update ScaleCode for ISHIDA records to start after the maximum ScaleCode of BIZERBA
+-------------------------------------------------------------------------------
+-- 4) Update ScaleCode for ISHIDA, starting after the new max BIZERBA ScaleCode.
+--    We add +1 so we don't overlap, or you can add +10 if you want a bigger gap.
+-------------------------------------------------------------------------------
 ;WITH MaxBizerba AS (
     SELECT MAX(ScaleCode) AS MaxCode
     FROM [TBS_SCL_ver520]
@@ -6385,28 +7460,35 @@ ISHIDA_CTE AS (
     SELECT 
         ScaleCode,
         IPDevice,
-        ROW_NUMBER() OVER (ORDER BY CAST(IPDevice AS INT) ASC) AS rn
-    FROM 
-        [TBS_SCL_ver520]
-    WHERE 
-        ScaleBrand = 'ISHIDA'
+        rn = ROW_NUMBER() OVER (ORDER BY TRY_CAST(IPDevice AS INT))
+    FROM [TBS_SCL_ver520]
+    WHERE ScaleBrand = 'ISHIDA'
 )
-UPDATE ISHIDA_CTE
-SET ScaleCode = (SELECT MaxCode FROM MaxBizerba) + 10 + rn - 1;
+UPDATE T
+SET T.ScaleCode = (SELECT MaxCode FROM MaxBizerba) + 10 + I.rn - 1
+FROM [TBS_SCL_ver520] AS T
+JOIN ISHIDA_CTE AS I
+    ON T.ScaleCode = I.ScaleCode
+WHERE T.ScaleBrand = 'ISHIDA';
 
--- Now set BufferTime for BIZERBA records:
--- The first BIZERBA record (lowest ScaleCode) gets BufferTime = 1, all others = 5.
+-------------------------------------------------------------------------------
+-- 5) Now set BufferTime for BIZERBA records:
+--    The lowest ScaleCode (i.e. first in ascending ScaleCode order) gets 1,
+--    and all others get 5.
+-------------------------------------------------------------------------------
 WITH BIZ_ORDER AS (
     SELECT 
         ScaleCode,
-        ROW_NUMBER() OVER (ORDER BY ScaleCode ASC) AS RN
+        RN = ROW_NUMBER() OVER (ORDER BY ScaleCode ASC)
     FROM [TBS_SCL_ver520]
     WHERE ScaleBrand = 'BIZERBA'
 )
 UPDATE T
 SET T.BufferTime = CASE WHEN B.RN = 1 THEN '1' ELSE '5' END
 FROM [TBS_SCL_ver520] T
-INNER JOIN BIZ_ORDER B ON T.ScaleCode = B.ScaleCode;
+INNER JOIN BIZ_ORDER B 
+    ON T.ScaleCode = B.ScaleCode
+WHERE T.ScaleBrand = 'BIZERBA';
 "@
 	
 	$selectQuery = @"
@@ -6429,168 +7511,402 @@ ORDER BY
     ScaleCode ASC; -- Sort by ScaleCode ascending to have BIZERBA first, then ISHIDA
 "@
 	
-	# Execute the update queries
-	Write-Log "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." "Blue"
-	try
+	# Initialize variables to track execution
+	$retryCount = 0
+	$MaxRetries = 2
+	$RetryDelaySeconds = 5
+	$success = $false
+	$failedSections = @()
+	$failedCommands = @()
+	
+	while (-not $success -and $retryCount -lt $MaxRetries)
 	{
-		Invoke-Sqlcmd -ConnectionString $connectionString -Query $updateQueries
-		Write-Log "Update queries executed successfully." "Green"
+		try
+		{
+			Write-Log "Starting execution of Organize-TBS_SCL_ver520. Attempt $($retryCount + 1) of $MaxRetries." "blue"
+			
+			# Execute the update queries
+			Write-Log "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." "blue"
+			try
+			{
+				if ($supportsConnectionString)
+				{
+					Invoke-Sqlcmd -ConnectionString $connectionString -Query $updateQueries -ErrorAction Stop
+				}
+				else
+				{
+					# Parse ServerInstance and Database from ConnectionString
+					$server = ($connectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($connectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					
+					if (-not $server -or -not $database)
+					{
+						Write-Log "Invalid ConnectionString. Missing Server or Database information." "red"
+						throw "Invalid ConnectionString. Cannot parse Server or Database."
+					}
+					
+					Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $updateQueries -ErrorAction Stop
+				}
+				Write-Log "Update queries executed successfully." "green"
+			}
+			catch [System.Management.Automation.ParameterBindingException]
+			{
+				Write-Log "ParameterBindingException encountered while executing update queries. Attempting fallback." "yellow"
+				
+				# Attempt to execute using ServerInstance and Database
+				try
+				{
+					# Parse ServerInstance and Database from ConnectionString
+					$server = ($connectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($connectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					
+					if (-not $server -or -not $database)
+					{
+						Write-Log "Invalid ConnectionString for fallback. Missing Server or Database information." "red"
+						throw "Invalid ConnectionString. Cannot parse Server or Database."
+					}
+					
+					Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $updateQueries -ErrorAction Stop
+					Write-Log "Update queries executed successfully using fallback parameters." "green"
+				}
+				catch
+				{
+					Write-Log "Error executing update queries with fallback parameters: $_" "red"
+					throw $_
+				}
+			}
+			catch
+			{
+				Write-Log "An error occurred while executing update queries: $_" "red"
+				throw $_
+			}
+			
+			# Execute the select query to retrieve organized data
+			Write-Log "Retrieving organized data..." "blue"
+			try
+			{
+				if ($supportsConnectionString)
+				{
+					$data = Invoke-Sqlcmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
+				}
+				else
+				{
+					# Parse ServerInstance and Database from ConnectionString
+					$server = ($connectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($connectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					
+					if (-not $server -or -not $database)
+					{
+						Write-Log "Invalid ConnectionString. Missing Server or Database information." "red"
+						throw "Invalid ConnectionString. Cannot parse Server or Database."
+					}
+					
+					$data = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
+				}
+				Write-Log "Data retrieval successful." "green"
+			}
+			catch [System.Management.Automation.ParameterBindingException]
+			{
+				Write-Log "ParameterBindingException encountered while retrieving data. Attempting fallback." "yellow"
+				
+				# Attempt to execute using ServerInstance and Database
+				try
+				{
+					# Parse ServerInstance and Database from ConnectionString
+					$server = ($connectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($connectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					
+					if (-not $server -or -not $database)
+					{
+						Write-Log "Invalid ConnectionString for fallback. Missing Server or Database information." "red"
+						throw "Invalid ConnectionString. Cannot parse Server or Database."
+					}
+					
+					$data = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
+					Write-Log "Data retrieval successful using fallback parameters." "green"
+				}
+				catch
+				{
+					Write-Log "Error retrieving data with fallback parameters: $_" "red"
+					throw $_
+				}
+			}
+			catch
+			{
+				Write-Log "An error occurred while retrieving data: $_" "red"
+				throw $_
+			}
+			
+			# Check if data was retrieved
+			if (-not $data)
+			{
+				Write-Log "No data retrieved from the table 'TBS_SCL_ver520'." "red"
+				throw "No data retrieved from the table 'TBS_SCL_ver520'."
+			}
+			
+			# Export the data if an output path is provided
+			if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
+			{
+				Write-Log "Exporting organized data to '$OutputCsvPath'..." "blue"
+				try
+				{
+					$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation -Encoding UTF8
+					Write-Log "Data exported successfully to '$OutputCsvPath'." "green"
+				}
+				catch
+				{
+					Write-Log "Failed to export data to CSV: $_" "red"
+				}
+			}
+			
+			# Display the organized data
+			Write-Log "Displaying organized data:" "yellow"
+			try
+			{
+				$formattedData = $data | Format-Table -AutoSize | Out-String
+				Write-Log $formattedData "Blue"
+			}
+			catch
+			{
+				Write-Log "Failed to format and display data: $_" "red"
+			}
+			
+			Write-Log "==================== Organize-TBS_SCL_ver520 Function Completed ====================" "blue"
+			$success = $true
+		}
+		catch
+		{
+			$retryCount++
+			Write-Log "Error during Organize-TBS_SCL_ver520 execution: $_" "red"
+			
+			if ($retryCount -lt $MaxRetries)
+			{
+				Write-Log "Retrying execution in $RetryDelaySeconds seconds..." "yellow"
+				Start-Sleep -Seconds $RetryDelaySeconds
+			}
+		}
 	}
-	catch
+	
+	if (-not $success)
 	{
-		Write-Log "An error occurred while executing update queries: $_" "Red"
+		Write-Log "Maximum retry attempts reached. Organize-TBS_SCL_ver520 function failed." "red"
+		# Optionally, you can handle further actions like sending notifications or logging to a file
+	}
+}
+
+# ===================================================================================================
+#                                 FUNCTION: Repair-BMS
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Repairs the "BMS" service by performing the following steps:
+#     1. Stops the "BMS" service if it's running.
+#     2. Deletes the "BMS" service.
+#     3. Registers BMSSrv.exe to recreate the "BMS" service.
+#     4. Starts the newly registered "BMS" service.
+#   Ensures that the script waits appropriately between deleting and registering to prevent errors.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - BMSSrvPath (Optional): Full path to BMSSrv.exe. Defaults to "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe".
+# ===================================================================================================
+
+function Repair-BMS
+{
+	[CmdletBinding()]
+	param (
+		# (Optional) Full path to BMSSrv.exe
+		[Parameter(Mandatory = $false)]
+		[string]$BMSSrvPath = "$env:SystemDrive\Bizerba\RetailConnect\BMS\BMSSrv.exe"
+	)
+	
+	Write-Log "`r`n==================== Starting Repair-BMS Function ====================`r`n" "blue"
+	
+	# Ensure the script is running as Administrator
+	$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+	if (-not $isAdmin)
+	{
+		Write-Log "Insufficient permissions. Please run this script as an Administrator." "red"
 		return
 	}
 	
-	# Execute the select query to retrieve organized data
-	Write-Log "Retrieving organized data..." "Blue"
-	try
+	# Check if BMSSrv.exe exists
+	if (-not (Test-Path $BMSSrvPath))
 	{
-		$data = Invoke-Sqlcmd -ConnectionString $connectionString -Query $selectQuery
-		Write-Log "Data retrieval successful." "Green"
-	}
-	catch
-	{
-		Write-Log "An error occurred while retrieving data: $_" "Red"
+		Write-Log "BMSSrv.exe not found at path: $BMSSrvPath" "red"
 		return
 	}
 	
-	# Check if data was retrieved
-	if (-not $data)
+	# Function to check if service exists
+	function Test-ServiceExists
 	{
-		Write-Log "No data retrieved from the table 'TBS_SCL_ver520'." "Red"
-		Throw "No data retrieved from the table 'TBS_SCL_ver520'."
-	}
-	
-	# Export the data if an output path is provided
-	if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
-	{
-		Write-Log "Exporting organized data to '$OutputCsvPath'..." "Blue"
+		param (
+			[string]$ServiceName
+		)
 		try
 		{
-			$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation
-			Write-Log "Data exported successfully to '$OutputCsvPath'." "Green"
+			Get-Service -Name $ServiceName -ErrorAction Stop | Out-Null
+			return $true
 		}
 		catch
 		{
-			Write-Log "Failed to export data to CSV: $_" "Red"
+			return $false
 		}
 	}
 	
-	# Display the organized data
-	Write-Log "Displaying organized data:" "Yellow"
-	$data | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log $_ "Blue" }
-	Write-Log "==================== Organize-TBS_SCL_ver520 Function Completed ====================" "Blue"
-	
-	# ===================================================================================================
-	#                                 SERVICE: BMS Management (Optional)
-	# ---------------------------------------------------------------------------------------------------
-	# Description:
-	#   Optionally stops and deletes the "BMS" service, re-registers BMSSrv.exe, and restarts the service
-	#   based on user input via a Windows Form prompt.
-	# ===================================================================================================
-	
-	# Prompt the user whether to execute BMS service management
-	$executeBMS = Show-BMSPrompt
-	
-	if ($executeBMS)
+	# Stop the BMS service if it exists and is running
+	$serviceName = "BMS"
+	if (Test-ServiceExists -ServiceName $serviceName)
 	{
-		Write-Log "`r`n==================== Starting BMS Service Management ====================`r`n" "Blue"
-		
-		# Ensure the script is running as Administrator
-		if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
-		{
-			Write-Log "Insufficient permissions. BMS service management requires administrative privileges." "Red"
-			return
-		}
-		
-		# Stop the BMS service
-		Write-Log "Stopping the 'BMS' service..." "Blue"
+		Write-Log "Attempting to stop the '$serviceName' service..." "blue"
 		try
 		{
-			sc.exe stop "BMS" | Out-Null
-			Write-Log "'BMS' service stopped successfully." "Green"
+			Stop-Service -Name $serviceName -Force -ErrorAction Stop
+			Write-Log "'$serviceName' service stopped successfully." "green"
 		}
 		catch
 		{
-			Write-Log "Failed to stop 'BMS' service: $_" "Red"
+			Write-Log "Failed to stop '$serviceName' service: $_" "red"
 			return
 		}
-		
-		# Delete the BMS service
-		Write-Log "Deleting the 'BMS' service..." "Blue"
-		try
-		{
-			sc.exe delete "BMS" | Out-Null
-			Write-Log "'BMS' service deleted successfully." "Green"
-		}
-		catch
-		{
-			Write-Log "Failed to delete 'BMS' service: $_" "Red"
-			return
-		}
-		
-		# Change directory to the BMS installation path
-		Write-Log "Changing directory to 'C:\Bizerba\RetailConnect\BMS'..." "Blue"
-		try
-		{
-			Set-Location -Path "C:\Bizerba\RetailConnect\BMS" -ErrorAction Stop
-			Write-Log "Directory changed to 'C:\Bizerba\RetailConnect\BMS' successfully." "Green"
-		}
-		catch
-		{
-			Write-Log "Failed to change directory to 'C:\Bizerba\RetailConnect\BMS': $_" "Red"
-			return
-		}
-		
-		# Register BMSSrv.exe
-		Write-Log "Registering 'BMSSrv.exe'..." "Blue"
-		try
-		{
-			$bmssrvPath = "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe"
-			if (-not (Test-Path $bmssrvPath))
-			{
-				Throw "BMSSrv.exe not found at path $bmssrvPath."
-			}
-			
-			# Execute BMSSrv.exe with -reg parameter and capture the process
-			$process = Start-Process -FilePath $bmssrvPath -ArgumentList "-reg" -NoNewWindow -Wait -PassThru
-			
-			if ($process.ExitCode -eq 0)
-			{
-				Write-Log "'BMSSrv.exe' registered successfully." "Green"
-			}
-			else
-			{
-				Write-Log "'BMSSrv.exe' registration failed with exit code $($process.ExitCode)." "Red"
-				Throw "'BMSSrv.exe' registration failed."
-			}
-		}
-		catch
-		{
-			Write-Log "Failed to register 'BMSSrv.exe': $_" "Red"
-			return
-		}
-		
-		# Start the BMS service
-		Write-Log "Starting the 'BMS' service..." "Blue"
-		try
-		{
-			sc.exe start "BMS" | Out-Null
-			Write-Log "'BMS' service started successfully." "Green"
-		}
-		catch
-		{
-			Write-Log "Failed to start 'BMS' service: $_" "Red"
-			return
-		}
-		
-		Write-Log "`r`n==================== BMS Service Management Completed ====================" "Blue"
 	}
 	else
 	{
-		Write-Log "`r`n==================== BMS Service Management Skipped ====================" "Yellow"
+		Write-Log "'$serviceName' service does not exist or is already stopped." "yellow"
 	}
+	
+	# Delete the BMS service if it exists
+	if (Test-ServiceExists -ServiceName $serviceName)
+	{
+		Write-Log "Attempting to delete the '$serviceName' service..." "blue"
+		try
+		{
+			sc.exe delete $serviceName | Out-Null
+			Write-Log "'$serviceName' service deleted successfully." "green"
+		}
+		catch
+		{
+			Write-Log "Failed to delete '$serviceName' service: $_" "red"
+			return
+		}
+		# Wait for a few seconds to ensure the service is fully deleted
+		Start-Sleep -Seconds 5
+	}
+	else
+	{
+		Write-Log "'$serviceName' service does not exist. Skipping deletion." "yellow"
+	}
+	
+	# Register BMSSrv.exe to recreate the BMS service
+	Write-Log "Registering BMSSrv.exe to recreate the '$serviceName' service..." "blue"
+	try
+	{
+		# Execute BMSSrv.exe with -reg parameter
+		$process = Start-Process -FilePath $BMSSrvPath -ArgumentList "-reg" -NoNewWindow -Wait -PassThru
+		
+		if ($process.ExitCode -eq 0)
+		{
+			Write-Log "BMSSrv.exe registered successfully." "green"
+		}
+		else
+		{
+			Write-Log "BMSSrv.exe registration failed with exit code $($process.ExitCode)." "red"
+			return
+		}
+	}
+	catch
+	{
+		Write-Log "An error occurred while registering BMSSrv.exe: $_" "red"
+		return
+	}
+	
+	# Start the BMS service
+	Write-Log "Attempting to start the '$serviceName' service..." "blue"
+	try
+	{
+		Start-Service -Name $serviceName -ErrorAction Stop
+		Write-Log "'$serviceName' service started successfully." "green"
+	}
+	catch
+	{
+		Write-Log "Failed to start '$serviceName' service: $_" "red"
+		return
+	}
+	Write-Log "`r`n==================== Repair-BMS Function Completed ====================`r`n" "blue"
+}
+
+# ===================================================================================================
+#                                         FUNCTION: Write-SQLScriptsToDesktop
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Writes the provided LaneSQL and ServerSQL scripts to the user's Desktop with specified filenames.
+#   This function ensures that the scripts are saved with UTF-8 encoding and includes error handling
+#   to manage any issues that may arise during the file writing process.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   -LaneSQL (Mandatory)
+#       The content of the LaneSQL script without @dbEXEC commands and timeout settings.
+#
+#   -ServerSQL (Mandatory)
+#       The content of the ServerSQL script.
+#
+#   -LaneFilename (Optional)
+#       The filename for the LaneSQL script. Defaults to "Lane_Database_Maintenance.sqi".
+#
+#   -ServerFilename (Optional)
+#       The filename for the ServerSQL script. Defaults to "Server_Database_Maintenance.sqi".
+# ---------------------------------------------------------------------------------------------------
+# Usage Example:
+#   Write-SQLScriptsToDesktop -LaneSQL $LaneSQLNoDbExecAndTimeout -ServerSQL $script:ServerSQLScript
+#
+# Prerequisites:
+#   - Ensure that the SQL script contents are correctly generated and stored in the provided variables.
+#   - Verify that the user has write permissions to the Desktop directory.
+# ===================================================================================================
+
+function Write-SQLScriptsToDesktop
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true, HelpMessage = "Content of the LaneSQL script without @dbEXEC commands and timeout settings.")]
+		[string]$LaneSQL,
+		[Parameter(Mandatory = $true, HelpMessage = "Content of the ServerSQL script.")]
+		[string]$ServerSQL,
+		[Parameter(Mandatory = $false, HelpMessage = "Filename for the LaneSQL script.")]
+		[string]$LaneFilename = "Lane_Database_Maintenance.sqi",
+		[Parameter(Mandatory = $false, HelpMessage = "Filename for the ServerSQL script.")]
+		[string]$ServerFilename = "Server_Database_Maintenance.sqi"
+	)
+	
+	Write-Log "`r`n==================== Starting Write-SQLScriptsToDesktop Function ====================`r`n" "blue"
+	
+	try
+	{
+		# Get the path to the user's Desktop
+		$desktopPath = [Environment]::GetFolderPath("Desktop")
+		
+		# Define full file paths
+		$laneFilePath = Join-Path -Path $desktopPath -ChildPath $LaneFilename
+		$serverFilePath = Join-Path -Path $desktopPath -ChildPath $ServerFilename
+		
+		# Write the LaneSQL script to the Desktop
+		[System.IO.File]::WriteAllText($laneFilePath, $LaneSQL, [System.Text.Encoding]::UTF8)
+		Write-Log "Lane SQL script successfully written to:`n$laneFilePath" "Green"
+	}
+	catch
+	{
+		Write-Log "Error writing Lane SQL script to Desktop:`n$_" "Red"
+	}
+	
+	try
+	{
+		# Write the ServerSQL script to the Desktop
+		[System.IO.File]::WriteAllText($serverFilePath, $ServerSQL, [System.Text.Encoding]::UTF8)
+		Write-Log "Server SQL script successfully written to:`n$serverFilePath" "Green"
+	}
+	catch
+	{
+		Write-Log "Error writing Server SQL script to Desktop:`n$_" "Red"
+	}
+	Write-Log "`r`n==================== Write-SQLScriptsToDesktop Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -6968,6 +8284,127 @@ function Show-SelectionDialog
 }
 
 # ===================================================================================================
+#                                FUNCTION: Show-TableSelectionDialog
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Displays a GUI dialog listing all discovered tables from Get-TableAliases in a checked list box,
+#   with buttons to Select All or Deselect All. Returns the list of checked table names (with _TAB).
+# ===================================================================================================
+function Show-TableSelectionDialog
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[System.Collections.ArrayList]$AliasResults
+	)
+	
+	# We assume $AliasResults is the .Aliases property from Get-TableAliases
+	# that contains objects with .Table and .Alias, e.g. "XYZ_TAB" and "XYZ".
+	
+	# Load necessary assemblies
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	# Create the form
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Select Tables to Process"
+	$form.Size = New-Object System.Drawing.Size(450, 550)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	# Label
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "Please select the tables you want to pump:"
+	$label.Location = New-Object System.Drawing.Point(10, 10)
+	$label.AutoSize = $true
+	$form.Controls.Add($label)
+	
+	# CheckedListBox
+	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
+	$checkedListBox.Location = New-Object System.Drawing.Point(10, 40)
+	$checkedListBox.Size = New-Object System.Drawing.Size(400, 400)
+	$checkedListBox.CheckOnClick = $true
+	$form.Controls.Add($checkedListBox)
+	
+	# Populate the checked list box with unique table names (with _TAB)
+	# Make a distinct list of tables from the $AliasResults
+	$distinctTables = $AliasResults |
+	Select-Object -ExpandProperty Table -Unique |
+	Sort-Object
+	
+	foreach ($tableName in $distinctTables)
+	{
+		[void]$checkedListBox.Items.Add($tableName, $false)
+	}
+	
+	# Button: Select All
+	$btnSelectAll = New-Object System.Windows.Forms.Button
+	$btnSelectAll.Text = "Select All"
+	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 450)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$form.Controls.Add($btnSelectAll)
+	
+	$btnSelectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $true)
+			}
+		})
+	
+	# Button: Deselect All
+	$btnDeselectAll = New-Object System.Windows.Forms.Button
+	$btnDeselectAll.Text = "Deselect All"
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(120, 450)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$form.Controls.Add($btnDeselectAll)
+	
+	$btnDeselectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $false)
+			}
+		})
+	
+	# OK Button
+	$btnOK = New-Object System.Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Location = New-Object System.Drawing.Point(240, 450)
+	$btnOK.Size = New-Object System.Drawing.Size(80, 30)
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.Controls.Add($btnOK)
+	
+	# Cancel Button
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(330, 450)
+	$btnCancel.Size = New-Object System.Drawing.Size(80, 30)
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.Controls.Add($btnCancel)
+	
+	$form.AcceptButton = $btnOK
+	$form.CancelButton = $btnCancel
+	
+	# Show the dialog
+	$dialogResult = $form.ShowDialog()
+	
+	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
+	{
+		# Gather checked items
+		$selectedTables = @()
+		foreach ($item in $checkedListBox.CheckedItems)
+		{
+			$selectedTables += $item
+		}
+		return $selectedTables
+	}
+	else
+	{
+		return $null
+	}
+}
+
+# ===================================================================================================
 #                                       SECTION: Initialize GUI
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -6991,7 +8428,7 @@ if (-not $SilentMode)
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
 		$form.Text = "Created by Alex_C.T - Version $VersionNumber"
-		$form.Size = New-Object System.Drawing.Size(1005, 710)
+		$form.Size = New-Object System.Drawing.Size(1005, 570)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
 		# Banner Label
@@ -7025,56 +8462,151 @@ if (-not $SilentMode)
 					Write-Log "Form is closing. Performing cleanup." "green"
 					
 					# Clean Temp Folder
-					Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
+					Delete-Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql" #"Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
 				}
 			})
 		
-		# Ativate Windows button
-		$ActivateWindowsButton = New-Object System.Windows.Forms.Button
-		$ActivateWindowsButton.Text = "Alex_C.T"
-		$ActivateWindowsButton.Location = New-Object System.Drawing.Point(850, 30)
-		$ActivateWindowsButton.Size = New-Object System.Drawing.Size(100, 30)
-		$ActivateWindowsButton.add_Click({
-				Invoke-SecureScript
-			})
-		$form.Controls.Add($ActivateWindowsButton)
-		
-		$rebootButton = New-Object System.Windows.Forms.Button
-		$rebootButton.Text = "Reboot System"
-		$rebootButton.Location = New-Object System.Drawing.Point(850, 65)
-		$rebootButton.Size = New-Object System.Drawing.Size(100, 30)
-		# Event Handler for Reboot Button
-		$rebootButton.Add_Click({
-				$rebootResult = [System.Windows.Forms.MessageBox]::Show("Do you want to reboot now?", "Reboot", [System.Windows.Forms.MessageBoxButtons]::YesNo)
-				if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
-				{
-					Restart-Computer -Force
-					# Clean Temp Folder
-					Delete-Files -Path "$TempDir" -SpecifiedFiles "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
-				}
-			})
-		$form.Controls.Add($rebootButton)
+		# =======================================
+		#           Initialize ToolTip
+		# =======================================
+		$toolTip = New-Object System.Windows.Forms.ToolTip
+		# Optional: Set ToolTip properties
+		$toolTip.AutoPopDelay = 5000
+		$toolTip.InitialDelay = 500
+		$toolTip.ReshowDelay = 500
+		$toolTip.ShowAlways = $true
 		
 		# Create a Clear Log button
 		$clearLogButton = New-Object System.Windows.Forms.Button
 		$clearLogButton.Text = "Clear Log"
-		$clearLogButton.Location = New-Object System.Drawing.Point(850, 100)
-		$clearLogButton.Size = New-Object System.Drawing.Size(100, 30)
+		$clearLogButton.Location = New-Object System.Drawing.Point(885, 440)
+		$clearLogButton.Size = New-Object System.Drawing.Size(65, 30)
 		$clearLogButton.add_Click({
 				$logBox.Clear()
 				Write-Log "Log Cleared"
 			})
 		$form.Controls.Add($clearLogButton)
+		# Set ToolTip
+		$toolTip.SetToolTip($clearLogButton, "Clears the log display area.")
 		
-		# Install into SMS
-		$InstallIntoSMSButton = New-Object System.Windows.Forms.Button
-		$InstallIntoSMSButton.Text = "Install Function in SMS"
-		$InstallIntoSMSButton.Location = New-Object System.Drawing.Point(695, 100)
-		$InstallIntoSMSButton.Size = New-Object System.Drawing.Size(150, 30)
-		$InstallIntoSMSButton.add_Click({
-				InstallIntoSMS
+		######################################################################################################################
+		# 
+		# General Tools Button
+		#
+		######################################################################################################################
+		
+		############################################################################
+		# Create a "resizable" Button that triggers the context menu
+		############################################################################
+		$GeneralToolsButton = New-Object System.Windows.Forms.Button
+		$GeneralToolsButton.Text = "General Tools"
+		$GeneralToolsButton.Location = New-Object System.Drawing.Point(650, 475)
+		$GeneralToolsButton.Size = New-Object System.Drawing.Size(300, 50)
+		
+		############################################################################
+		# Create a ContextMenuStrip for the drop-down
+		############################################################################
+		$contextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
+		
+		# (Optional) If you want tooltips to appear when hovering over menu items:
+		$contextMenuGeneral.ShowItemToolTips = $true
+		
+		############################################################################
+		# 1) Activate Windows ("Alex_C.T")
+		############################################################################
+		$activateItem = New-Object System.Windows.Forms.ToolStripMenuItem("Alex_C.T")
+		$activateItem.ToolTipText = "Activate Windows using Alex_C.T's method."
+		$activateItem.Add_Click({
+				Invoke-SecureScript # your existing function call
 			})
-		$form.Controls.Add($InstallIntoSMSButton)
+		[void] $contextMenuGeneral.Items.Add($activateItem)
+		
+		############################################################################
+		# 2) Reboot System
+		############################################################################
+		$rebootItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot System")
+		$rebootItem.ToolTipText = "Reboot the host system immediately."
+		$rebootItem.Add_Click({
+				$rebootResult = [System.Windows.Forms.MessageBox]::Show(
+					"Do you want to reboot now?",
+					"Reboot",
+					[System.Windows.Forms.MessageBoxButtons]::YesNo
+				)
+				if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
+				{
+					Restart-Computer -Force
+					Delete-Files -Path "$TempDir" -SpecifiedFiles `
+								 "Server_Database_Maintenance.sqi", `
+								 "Lane_Database_Maintenance.sqi", `
+								 "TBS_Maintenance_Script.ps1"
+				}
+			})
+		[void] $contextMenuGeneral.Items.Add($rebootItem)
+				
+		############################################################################
+		# 3) Install Function in SMS
+		############################################################################
+		$installIntoSMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install Function in SMS")
+		$installIntoSMSItem.ToolTipText = "Installs 'Deploy_ONE_FCT' & 'Pump_All_Items_Tables' into the SMS system."
+		$installIntoSMSItem.Add_Click({
+				InstallIntoSMS -StoreNumber $StoreNumber -OfficePath $OfficePath
+			})
+		[void] $contextMenuGeneral.Items.Add($installIntoSMSItem)
+		
+		############################################################################
+		# 4) Repair BMS Service
+		############################################################################
+		$repairBMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair BMS Service")
+		$repairBMSItem.ToolTipText = "Repairs the BMS service for scale deployment."
+		$repairBMSItem.Add_Click({
+				Repair-BMS
+			})
+		[void] $contextMenuGeneral.Items.Add($repairBMSItem)
+		
+		############################################################################
+		# 5) Manual Repair
+		############################################################################
+		$manualRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manual Repair")
+		$manualRepairItem.ToolTipText = "Writes SQL repair scripts to the desktop."
+		$manualRepairItem.Add_Click({
+				Write-SQLScriptsToDesktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
+			})
+		[void] $contextMenuGeneral.Items.Add($manualRepairItem)
+		
+		############################################################################
+		# 6) Fix Journal
+		############################################################################
+		$fixJournalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Journal")
+		$fixJournalItem.ToolTipText = "Fix journal entries for the specified date."
+		$fixJournalItem.Add_Click({
+				Fix-Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
+			})
+		[void] $contextMenuGeneral.Items.Add($fixJournalItem)
+		
+		############################################################################
+		
+		# (Optional) Make it grow/shrink when the form is resized:
+		# e.g., anchor to top + right side:
+		$GeneralToolsButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor `
+		[System.Windows.Forms.AnchorStyles]::Right
+		
+		############################################################################
+		# Show the context menu when the General Tools button is clicked
+		############################################################################
+		$GeneralToolsButton.Add_Click({
+				# Show the context menu at the bottom-left corner of the button
+				$contextMenuGeneral.Show($GeneralToolsButton, 0, $GeneralToolsButton.Height)
+			})
+		
+		############################################################################
+		# (Optional) If you have a ToolTip object for normal controls:
+		############################################################################
+		$toolTip.SetToolTip($GeneralToolsButton, "Click to see some tools created for SMS.")
+		
+		############################################################################
+		# Finally, add the Server Tools button to the form
+		############################################################################			
+		$form.Controls.Add($GeneralToolsButton)
 		
 		################################################## Labels #######################################################
 		
@@ -7082,64 +8614,64 @@ if (-not $SilentMode)
 		$script:modeLabel = New-Object System.Windows.Forms.Label
 		$modeLabel.Text = "Processing Mode: N/A"
 		$modeLabel.Location = New-Object System.Drawing.Point(50, 30)
-		$modeLabel.Size = New-Object System.Drawing.Size(900, 20)
+		$modeLabel.Size = New-Object System.Drawing.Size(200, 20)
 		$modeLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$form.Controls.Add($modeLabel)
 		
 		# Store Name Label
 		$script:storeNameLabel = New-Object System.Windows.Forms.Label
 		$storeNameLabel.Text = "Store Name: N/A"
-		$storeNameLabel.Location = New-Object System.Drawing.Point(50, 50)
-		$storeNameLabel.Size = New-Object System.Drawing.Size(900, 20)
+		$storeNameLabel.Location = New-Object System.Drawing.Point(445, 30)
+		$storeNameLabel.Size = New-Object System.Drawing.Size(200, 20)
 		$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		#$storeNameLabel.TextAlign = 'MiddleCenter'
 		$form.Controls.Add($storeNameLabel)
 		
 		# Store Number Label
 		$script:storeNumberLabel = New-Object System.Windows.Forms.Label
 		$storeNumberLabel.Text = "Store Number: N/A"
-		$storeNumberLabel.Location = New-Object System.Drawing.Point(50, 70)
-		$storeNumberLabel.Size = New-Object System.Drawing.Size(900, 20)
+		$storeNumberLabel.Location = New-Object System.Drawing.Point(830, 30)
+		$storeNumberLabel.Size = New-Object System.Drawing.Size(200, 20)
 		$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$form.Controls.Add($storeNumberLabel)
 		
-		# Counts Labels
-		# Counts Label Line 1
-		$script:countsLabel1 = New-Object System.Windows.Forms.Label
-		$countsLabel1.Text = "Number of Servers: $($Counts.NumberOfServers)"
-		$countsLabel1.Location = New-Object System.Drawing.Point(50, 90)
-		$countsLabel1.Size = New-Object System.Drawing.Size(900, 20) # Reduced height
-		$countsLabel1.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$countsLabel1.AutoSize = $false
-		$form.Controls.Add($countsLabel1)
+		# Nodes Host Label
+		$script:NodesHost = New-Object System.Windows.Forms.Label
+		$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
+		$NodesHost.Location = New-Object System.Drawing.Point(255, 50)
+		$NodesHost.Size = New-Object System.Drawing.Size(200, 20) # Reduced height
+		$NodesHost.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$NodesHost.AutoSize = $false
+		$form.Controls.Add($NodesHost)
 		
-		# Counts Label Line 2
-		$script:countsLabel2 = New-Object System.Windows.Forms.Label
-		$countsLabel2.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
-		$countsLabel2.Location = New-Object System.Drawing.Point(50, 110) # Adjusted Y-position
-		$countsLabel2.Size = New-Object System.Drawing.Size(900, 20) # Reduced height
-		$countsLabel2.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$countsLabel2.AutoSize = $false
-		$form.Controls.Add($countsLabel2)
+		# Nodes Store Label
+		$script:NodesStore = New-Object System.Windows.Forms.Label
+		$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
+		$NodesStore.Location = New-Object System.Drawing.Point(625, 50) # Adjusted Y-position
+		$NodesStore.Size = New-Object System.Drawing.Size(200, 20) # Reduced height
+		$NodesStore.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$NodesStore.AutoSize = $false
+		$form.Controls.Add($NodesStore)
 		
 		# Alternatively, Adjust the Y-position to reduce spacing
 		# Example: Move countsLabel2 closer to countsLabel1
-		# $countsLabel2.Location = New-Object System.Drawing.Point(50, 85) # Reduced from 90 to 85
+		# $NodesStore.Location = New-Object System.Drawing.Point(50, 85) # Reduced from 90 to 85
 		
 		# Update Counts Labels Based on Mode
 		if ($Mode -eq "Host")
 		{
-			$countsLabel1.Text = "Number of Hosts: $($Counts.NumberOfHosts)"
-			$countsLabel2.Text = "Number of Stores: $($Counts.NumberOfStores)"
+			$NodesHost.Text = "Number of Hosts: $($Counts.NumberOfHosts)"
+			$NodesStore.Text = "Number of Stores: $($Counts.NumberOfStores)"
 		}
 		else
 		{
-			$countsLabel1.Text = "Number of Servers: $($Counts.NumberOfServers)"
-			$countsLabel2.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
+			$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
+			$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
 		}
 		
 		# Create a RichTextBox for log output
 		$logBox = New-Object System.Windows.Forms.RichTextBox
-		$logBox.Location = New-Object System.Drawing.Point(50, 130)
+		$logBox.Location = New-Object System.Drawing.Point(50, 70)
 		$logBox.Size = New-Object System.Drawing.Size(900, 400)
 		$logBox.ReadOnly = $true
 		$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
@@ -7162,189 +8694,52 @@ if (-not $SilentMode)
 		# Description:
 		#   Sets up the buttons on the main form, including their size, position, and labels based on the processing mode.
 		# ===================================================================================================
-		
+				
 		# Create Host Specific Buttons
 		if ($Mode -eq "Host")
 		{
-			$hostButton1 = New-Object System.Windows.Forms.Button
-			$hostButton1.Text = "Host DB Repair"
-			$hostButton1.Location = New-Object System.Drawing.Point(50, 515)
-			$hostButton1.Size = New-Object System.Drawing.Size(200, 40)
-			$hostButton1.Add_Click({
+			############################################################################
+			# Create a "resizable" Button that triggers the context menu
+			############################################################################
+			$HostToolsButton = New-Object System.Windows.Forms.Button
+			$HostToolsButton.Text = "Host Tools"
+			$HostToolsButton.Location = New-Object System.Drawing.Point(725, 100)
+			$HostToolsButton.Size = New-Object System.Drawing.Size(120, 30)
+			
+			############################################################################
+			# Create a ContextMenuStrip for the drop-down
+			############################################################################
+			$ContextMenuHost = New-Object System.Windows.Forms.ContextMenuStrip
+			
+			# (Optional) If you want tooltips to appear when hovering over menu items:
+			$ContextMenuHost.ShowItemToolTips = $true
+			
+			############################################################################
+			# 1) Host DB Repair Menu Item
+			############################################################################
+			$HostDBRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Host DB Repair")
+			$HostDBRepairItem.ToolTipText = "Repair the Host database."
+			$HostDBRepairItem.Add_Click({
 					Process-HostGUI -StoresqlFilePath $StoresqlFilePath
 				})
-			$form.Controls.Add($hostButton1)
+			[void]$ContextMenuHost.Items.Add($HostDBRepairItem)
 			
-			$hostButton2 = New-Object System.Windows.Forms.Button
-			$hostButton2.Text = "Store DB Repair"
-			$hostButton2.Location = New-Object System.Drawing.Point(284, 515)
-			$hostButton2.Size = New-Object System.Drawing.Size(200, 40)
-			$hostButton2.Add_Click({
-					Process-StoresGUI -StoresqlFilePath $StoresqlFilePath
-				})
-			$form.Controls.Add($hostButton2)
-			
-			$hostButton3 = New-Object System.Windows.Forms.Button
-			$hostButton3.Text = "Repair DB of Stores and Host"
-			$hostButton3.Location = New-Object System.Drawing.Point(517, 515)
-			$hostButton3.Size = New-Object System.Drawing.Size(200, 40)
-			$hostButton3.Add_Click({
-					Process-AllStoresAndHostGUI -StoresqlFilePath $StoresqlFilePath
-				})
-			$form.Controls.Add($hostButton3)
-			
-			$hostButton4 = New-Object System.Windows.Forms.Button
-			$hostButton4.Text = "Repair Windows"
-			$hostButton4.Location = New-Object System.Drawing.Point(750, 515)
-			$hostButton4.Size = New-Object System.Drawing.Size(200, 40)
-			$hostButton4.Add_Click({
+			############################################################################
+			# 2) Repair Windows Menu Item
+			############################################################################
+			$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
+			$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
+			$RepairWindowsItem.Add_Click({
 					Repair-Windows
 				})
-			$form.Controls.Add($hostButton4)
+			[void]$ContextMenuHost.Items.Add($RepairWindowsItem)
 			
-			$hostButton5 = New-Object System.Windows.Forms.Button
-			$hostButton5.Text = "Create a scheduled task"
-			$hostButton5.Location = New-Object System.Drawing.Point(50, 560)
-			$hostButton5.Size = New-Object System.Drawing.Size(200, 40)
-			$hostButton5.Add_Click({
-					Create-ScheduledTaskGUI -ScriptPath $scriptPath
-				})
-			$form.Controls.Add($hostButton5)
-		}
-		else
-		{
-			# Create Store Specific Button with Confirmation
-			$storeButton1 = New-Object System.Windows.Forms.Button
-			$storeButton1.Text = "Server DB Repair"
-			$storeButton1.Location = New-Object System.Drawing.Point(50, 535)
-			$storeButton1.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton1.Add_Click({
-					$confirmation = [System.Windows.Forms.MessageBox]::Show(
-						"Do you want to proceed with the server database repair?",
-						"Confirmation",
-						[System.Windows.Forms.MessageBoxButtons]::YesNo,
-						[System.Windows.Forms.MessageBoxIcon]::Question
-					)
-					if ($confirmation -eq [System.Windows.Forms.DialogResult]::Yes)
-					{
-						Process-ServerGUI -StoresqlFilePath $StoresqlFilePath
-					}
-					else
-					{
-						[System.Windows.Forms.MessageBox]::Show(
-							"Operation canceled.",
-							"Canceled",
-							[System.Windows.Forms.MessageBoxButtons]::OK,
-							[System.Windows.Forms.MessageBoxIcon]::Information
-						)
-					}
-				})
-			$form.Controls.Add($storeButton1)
-			
-			$storeButton2 = New-Object System.Windows.Forms.Button
-			$storeButton2.Text = "Lane DB Repair"
-			$storeButton2.Location = New-Object System.Drawing.Point(284, 535)
-			$storeButton2.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton2.Add_Click({
-					Process-LanesGUI -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
-				})
-			$form.Controls.Add($storeButton2)
-			
-			<#
-			$storeButton3 = New-Object System.Windows.Forms.Button
-			$storeButton3.Text = "Repair DB of Lanes and Server"
-			$storeButton3.Location = New-Object System.Drawing.Point(517, 535)
-			$storeButton3.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton3.Add_Click({
-					Process-LanesAndServerGUI -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath -StoreNumber $StoreNumber
-				})
-			$form.Controls.Add($storeButton3)
-			#>
-			
-			$OrganizeScaleTableButton = New-Object System.Windows.Forms.Button
-			$OrganizeScaleTableButton.Text = "Organize-TBS_SCL_ver520"
-			$OrganizeScaleTableButton.Location = New-Object System.Drawing.Point(517, 535)
-			$OrganizeScaleTableButton.Size = New-Object System.Drawing.Size(200, 40)
-			$OrganizeScaleTableButton.Add_Click({
-					Organize-TBS_SCL_ver520
-				})
-			$form.Controls.Add($OrganizeScaleTableButton)
-			
-			# Repair Windows button
-			$repairButton = New-Object System.Windows.Forms.Button
-			$repairButton.Text = "Repair Windows"
-			$repairButton.Location = New-Object System.Drawing.Point(750, 535)
-			$repairButton.Size = New-Object System.Drawing.Size(200, 40)
-			$repairButton.Add_Click({
-					Repair-Windows
-				})
-			$form.Controls.Add($repairButton)
-			
-			$storeButton5 = New-Object System.Windows.Forms.Button
-			$storeButton5.Text = "Pump All Items"
-			$storeButton5.Location = New-Object System.Drawing.Point(50, 580)
-			$storeButton5.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton5.Add_Click({
-					Pump-AllItems -StoreNumber $StoreNumber
-				})
-			$form.Controls.Add($storeButton5)
-			
-			$storeButton6 = New-Object System.Windows.Forms.Button
-			$storeButton6.Text = "Update Lane Configuration"
-			$storeButton6.Location = New-Object System.Drawing.Point(284, 580)
-			$storeButton6.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton6.Add_Click({
-					Update-LaneFiles -StoreNumber $StoreNumber
-				})
-			$form.Controls.Add($storeButton6)
-			
-			# Close Open Transactions button
-			$COTButton = New-Object System.Windows.Forms.Button
-			$COTButton.Text = "Close Open Transactions"
-			$COTButton.Location = New-Object System.Drawing.Point(517, 580)
-			$COTButton.Size = New-Object System.Drawing.Size(200, 40)
-			$COTButton.add_Click({
-					CloseOpenTransactions -StoreNumber $StoreNumber
-				})
-			$form.Controls.Add($COTButton)
-			
-			<# Disabled Create a scheduled task button
-			$storeButton7 = New-Object System.Windows.Forms.Button
-			$storeButton7.Text = "Create a scheduled task"
-			$storeButton7.Location = New-Object System.Drawing.Point(517, 645)
-			$storeButton7.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton7.Add_Click({
-					Create-ScheduledTaskGUI -ScriptPath $scriptPath
-				})
-			$form.Controls.Add($storeButton7)
-			#>
-			
-			# Ping lanes button
-			$PingLanesButton = New-Object System.Windows.Forms.Button
-			$PingLanesButton.Text = "Ping Lanes"
-			$PingLanesButton.Location = New-Object System.Drawing.Point(750, 580)
-			$PingLanesButton.Size = New-Object System.Drawing.Size(200, 40)
-			$PingLanesButton.add_Click({
-					PingAllLanes -Mode "Store" -StoreNumber "$StoreNumber"
-				})
-			$form.Controls.Add($PingLanesButton)
-			
-			# Delete DBS button
-			$DeleteDBSButton = New-Object System.Windows.Forms.Button
-			$DeleteDBSButton.Text = "Delete DBS"
-			$DeleteDBSButton.Location = New-Object System.Drawing.Point(50, 625)
-			$DeleteDBSButton.Size = New-Object System.Drawing.Size(200, 40)
-			$DeleteDBSButton.add_Click({
-					Delete-DBS -Mode "Store" -StoreNumber "$StoreNumber"
-				})
-			$form.Controls.Add($DeleteDBSButton)
-			
-			# Configure SystemSettings button
-			$ConfigureSystemSettingsButton = New-Object System.Windows.Forms.Button
-			$ConfigureSystemSettingsButton.Text = "Configure System Settings"
-			$ConfigureSystemSettingsButton.Location = New-Object System.Drawing.Point(284, 625)
-			$ConfigureSystemSettingsButton.Size = New-Object System.Drawing.Size(200, 40)
-			$ConfigureSystemSettingsButton.add_Click({
+			############################################################################
+			# 3) Configure System Settings Menu Item
+			############################################################################
+			$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
+			$ConfigureSystemSettingsItem.ToolTipText = "Organize the desktop, set power plan to maximize performance and make sure necessary services are running."
+			$ConfigureSystemSettingsItem.Add_Click({
 					# Warning message box to confirm major changes
 					$confirmResult = [System.Windows.Forms.MessageBox]::Show(
 						"Warning: Configuring system settings will make major changes. Do you want to continue?",
@@ -7368,28 +8763,292 @@ if (-not $SilentMode)
 						)
 					}
 				})
-			$form.Controls.Add($ConfigureSystemSettingsButton)
+			[void]$ContextMenuHost.Items.Add($ConfigureSystemSettingsItem)
 			
-			# Refresh PIN Pad Files
-			$RefreshFilesButton = New-Object System.Windows.Forms.Button
-			$RefreshFilesButton.Text = "Refresh PIN Pad Files"
-			$RefreshFilesButton.Location = New-Object System.Drawing.Point(517, 625)
-			$RefreshFilesButton.Size = New-Object System.Drawing.Size(200, 40)
-			$RefreshFilesButton.add_Click({
-					Refresh-Files -Mode $Mode -StoreNumber -$StoreNumber
+			############################################################################
+			# Show the context menu when the Server Tools button is clicked
+			############################################################################
+			$HostToolsButton.Add_Click({
+					# Show the menu at (0, button height) => just below the button
+					$ContextMenuServer.Show($HostToolsButton, 0, $HostToolsButton.Height)
+				}) 
+			
+			############################################################################
+			# (Optional) If you have a ToolTip object for normal controls:
+			############################################################################
+			$toolTip.SetToolTip($HostToolsButton, "Click to see Host-related tools.")
+			
+			############################################################################
+			# Finally, add the Server Tools button to the form
+			############################################################################			
+			$form.Controls.Add($HostToolsButton)
+						
+			# Store DB Repair Button
+			$hostButton2 = New-Object System.Windows.Forms.Button
+			$hostButton2.Text = "Store DB Repair"
+			$hostButton2.Location = New-Object System.Drawing.Point(284, 515)
+			$hostButton2.Size = New-Object System.Drawing.Size(200, 40)
+			$hostButton2.Add_Click({
+					Process-StoresGUI -StoresqlFilePath $StoresqlFilePath
 				})
-			$form.Controls.Add($RefreshFilesButton)
+			$form.Controls.Add($hostButton2)
+			# Set ToolTip
+			$toolTip.SetToolTip($hostButton2, "Repair the Store databases.")			
 			
-			# Reboot lanes
-			$storeButton8 = New-Object System.Windows.Forms.Button
-			$storeButton8.Text = "Reboot Lane"
-			$storeButton8.Location = New-Object System.Drawing.Point(750, 625)
-			$storeButton8.Size = New-Object System.Drawing.Size(200, 40)
-			$storeButton8.Add_Click({
+			# Create a Scheduled Task Button
+			$hostButton5 = New-Object System.Windows.Forms.Button
+			$hostButton5.Text = "Create a scheduled task"
+			$hostButton5.Location = New-Object System.Drawing.Point(50, 560)
+			$hostButton5.Size = New-Object System.Drawing.Size(200, 40)
+			$hostButton5.Add_Click({
+					Create-ScheduledTaskGUI -ScriptPath $scriptPath
+				})
+			$form.Controls.Add($hostButton5)
+			# Set ToolTip
+			$toolTip.SetToolTip($hostButton5, "Create a scheduled task for automated maintenance.")
+		}
+		else
+		{
+			######################################################################################################################
+			# 
+			# Server Tools Button
+			#
+			######################################################################################################################
+			
+			############################################################################
+			# Create a "resizable" Button that triggers the context menu
+			############################################################################
+			$ServerToolsButton = New-Object System.Windows.Forms.Button
+			$ServerToolsButton.Text = "Server Tools"
+			$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 475)
+			$ServerToolsButton.Size = New-Object System.Drawing.Size(300, 50)
+			
+			############################################################################
+			# Create a ContextMenuStrip for the drop-down
+			############################################################################
+			$ContextMenuServer = New-Object System.Windows.Forms.ContextMenuStrip
+			
+			# (Optional) If you want tooltips to appear when hovering over menu items:
+			$ContextMenuServer.ShowItemToolTips = $true
+			
+			############################################################################
+			# 1) Server DB Repair 
+			############################################################################
+			$ServerDBRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Server DB Repair")
+			$ServerDBRepairItem.ToolTipText = "Repairs the store server database."
+			$ServerDBRepairItem.Add_Click({
+					$confirmation = [System.Windows.Forms.MessageBox]::Show(
+						"Do you want to proceed with the server database repair?",
+						"Confirmation",
+						[System.Windows.Forms.MessageBoxButtons]::YesNo,
+						[System.Windows.Forms.MessageBoxIcon]::Question
+					)
+					if ($confirmation -eq [System.Windows.Forms.DialogResult]::Yes)
+					{
+						Process-ServerGUI -StoresqlFilePath $StoresqlFilePath
+					}
+					else
+					{
+						[System.Windows.Forms.MessageBox]::Show(
+							"Operation canceled.",
+							"Canceled",
+							[System.Windows.Forms.MessageBoxButtons]::OK,
+							[System.Windows.Forms.MessageBoxIcon]::Information
+						)
+					}
+				})
+			
+			# Add the "Server DB Repair" item to the context menu
+			[void]$ContextMenuServer.Items.Add($ServerDBRepairItem)
+			
+			############################################################################
+			# 2) Organize-TBS_SCL_ver520 Menu Item
+			############################################################################
+			$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize-TBS_SCL_ver520")
+			$OrganizeScaleTableItem.ToolTipText = "Organize the Scale SQL table (TBS_SCL_ver520)."
+			$OrganizeScaleTableItem.Add_Click({
+					Organize-TBS_SCL_ver520
+				})
+			[void]$ContextMenuServer.Items.Add($OrganizeScaleTableItem)
+			
+			############################################################################
+			# 3) Repair Windows Menu Item
+			############################################################################
+			$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
+			$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
+			$RepairWindowsItem.Add_Click({
+					Repair-Windows
+				})
+			[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
+			
+			############################################################################
+			# 4) Configure System Settings Menu Item
+			############################################################################
+			$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
+			$ConfigureSystemSettingsItem.ToolTipText = "Organize the desktop, set power plan to maximize performance and make sure necessary services are running."
+			$ConfigureSystemSettingsItem.Add_Click({
+					# Warning message box to confirm major changes
+					$confirmResult = [System.Windows.Forms.MessageBox]::Show(
+						"Warning: Configuring system settings will make major changes. Do you want to continue?",
+						"Confirm Changes",
+						[System.Windows.Forms.MessageBoxButtons]::YesNo,
+						[System.Windows.Forms.MessageBoxIcon]::Warning
+					)
+					
+					# If the user clicks Yes, proceed with the configuration
+					if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes)
+					{
+						Configure-SystemSettings
+					}
+					else
+					{
+						[System.Windows.Forms.MessageBox]::Show(
+							"Operation canceled.",
+							"Canceled",
+							[System.Windows.Forms.MessageBoxButtons]::OK,
+							[System.Windows.Forms.MessageBoxIcon]::Information
+						)
+					}
+				})
+			[void]$ContextMenuServer.Items.Add($ConfigureSystemSettingsItem)
+						
+			############################################################################
+			# Show the context menu when the Server Tools button is clicked
+			############################################################################
+			$ServerToolsButton.Add_Click({
+					# Show the menu at (0, button height) => just below the button
+					$ContextMenuServer.Show($ServerToolsButton, 0, $ServerToolsButton.Height)
+				})
+			
+			############################################################################
+			# (Optional) If you have a ToolTip object for normal controls:
+			############################################################################
+			$toolTip.SetToolTip($ServerToolsButton, "Click to see Server-related tools.")
+			
+			############################################################################
+			# Finally, add the Server Tools button to the form
+			############################################################################			
+			$form.Controls.Add($ServerToolsButton)
+			
+			######################################################################################################################
+			# 
+			# Lane Tools Button
+			#
+			######################################################################################################################
+			
+			############################################################################
+			# Create a "resizable" Button that triggers the context menu
+			############################################################################
+			$LaneToolsButton = New-Object System.Windows.Forms.Button
+			$LaneToolsButton.Text = "Lane Tools"
+			$LaneToolsButton.Location = New-Object System.Drawing.Point(350, 475)
+			$LaneToolsButton.Size = New-Object System.Drawing.Size(300, 50)
+			
+			############################################################################
+			# Create a ContextMenuStrip for the drop-down
+			############################################################################
+			$ContextMenuLane = New-Object System.Windows.Forms.ContextMenuStrip
+			
+			# (Optional) If you want tooltips to appear when hovering over menu items:
+			$ContextMenuLane.ShowItemToolTips = $true
+			
+			############################################################################
+			# 1) Lane DB Repair Button
+			############################################################################
+			$LaneDBRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Lane DB Repair")
+			$LaneDBRepairItem.ToolTipText = "Repair the Lane databases for the selected lane(s)."
+			$LaneDBRepairItem.Add_Click({
+					Process-LanesGUI -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($LaneDBRepairItem)
+			
+			############################################################################
+			# 2) Pump Table to Lane Menu Item
+			############################################################################
+			$PumpTableToLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Pump Table to Lane")
+			$PumpTableToLaneItem.ToolTipText = "Pump the selected tables to the lane/s databases."
+			$PumpTableToLaneItem.Add_Click({
+					Pump-Tables -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
+			
+			############################################################################
+			# 3) Update Lane Configuration Menu Item
+			############################################################################
+			$UpdateLaneConfigItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Lane Configuration")
+			$UpdateLaneConfigItem.ToolTipText = "Update the configuration files for the lanes. Fixes connectivity errors and mistakes made during lane ghosting."
+			$UpdateLaneConfigItem.Add_Click({
+					Update-LaneFiles -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($UpdateLaneConfigItem)
+			
+			############################################################################
+			# 4) Close Open Transactions Menu Item
+			############################################################################
+			$CloseOpenTransItem = New-Object System.Windows.Forms.ToolStripMenuItem("Close Open Transactions")
+			$CloseOpenTransItem.ToolTipText = "Close any open transactions at the lane/s."
+			$CloseOpenTransItem.Add_Click({
+					CloseOpenTransactions -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
+			
+			############################################################################
+			# 5) Ping Lanes Menu Item
+			############################################################################
+			$PingLanesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Lanes")
+			$PingLanesItem.ToolTipText = "Ping all lane devices to check connectivity."
+			$PingLanesItem.Add_Click({
+					Ping-AllLanes -Mode "Store" -StoreNumber "$StoreNumber"
+				})
+			[void]$ContextMenuLane.Items.Add($PingLanesItem)
+			
+			############################################################################
+			# 6) Delete DBS Menu Item
+			############################################################################
+			$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
+			$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
+			$DeleteDBSItem.Add_Click({
+					Delete-DBS -Mode "Store" -StoreNumber "$StoreNumber"
+				})
+			[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
+			
+			############################################################################
+			# 7) Refresh PIN Pad Files Menu Item
+			############################################################################
+			$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
+			$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
+			$RefreshPinPadFilesItem.Add_Click({
+					Refresh-Files -Mode $Mode -StoreNumber "$StoreNumber"
+				})
+			[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
+			
+			############################################################################
+			# Reboot Lane Menu Item
+			############################################################################
+			$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
+			$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
+			$RebootLaneItem.Add_Click({
 					Reboot-Lanes -StoreNumber $StoreNumber
 				})
-			$form.Controls.Add($storeButton8)
+			[void]$ContextMenuLane.Items.Add($RebootLaneItem)
 			
+			############################################################################
+			# Show the context menu when the Server Tools button is clicked
+			############################################################################
+			$LaneToolsButton.Add_Click({
+					# Show the menu at (0, button height) => just below the button
+					$ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height)
+				})
+			
+			############################################################################
+			# (Optional) If you have a ToolTip object for normal controls:
+			############################################################################
+			$toolTip.SetToolTip($LaneToolsButton, "Click to see Lane-related tools.")
+			
+			############################################################################
+			# Finally, add the Server Tools button to the form
+			############################################################################			
+			$form.Controls.Add($LaneToolsButton)
 		}
 	}
 	
@@ -7429,26 +9088,26 @@ if (-not $SilentMode)
 	Get-DatabaseConnectionString
 	
 	# Get the Store Number
-	Get-StoreNumberGUI
+	Get-StoreNumber
 	$StoreNumber = $script:FunctionResults['StoreNumber']
 	
 	# Get the Store Name
-	Get-StoreNameGUI
+	Get-StoreName
 	$StoreName = $script:FunctionResults['StoreName']
 	
 	# Determine the Mode
-	$Mode = Determine-ModeGUI -StoreNumber $StoreNumber
+	$Mode = Determine-Mode -StoreNumber $StoreNumber
 	$Mode = $script:FunctionResults['Mode']
 	
-	# Count items based on mode
-	$Counts = Count-ItemsGUI -Mode $Mode -StoreNumber $StoreNumber
-	$Counts = $script:FunctionResults['Counts']
+	# Count Nodes based on mode
+	$Nodes = Retrieve-Nodes -Mode $Mode -StoreNumber $StoreNumber
+	$Nodes = $script:FunctionResults['Nodes']
 	
 	# Populate the hash table with results from various functions
 	Get-TableAliases
 	
 	# Generate SQL scripts
-	Generate-SQLScriptsGUI -StoreNumber $StoreNumber -Memory25PercentMB $Memory25PercentMB -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
+	Generate-SQLScripts -StoreNumber $StoreNumber -Memory25PercentMB $Memory25PercentMB -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
 	
 	# Clearing XE (Urgent Messages) folder.
 	$ClearXEJob = Clear-XEFolder
@@ -7456,12 +9115,13 @@ if (-not $SilentMode)
 	$jobCount++
 	
 	# Clear %Temp% foder on start
-	$FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
+	$ClearTempAtLaunch = Delete-Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
+	$ClearWinTempAtLaunch = Delete-Files -Path "$env:SystemRoot\Temp" -AsJob
 	# Increment the job counter
 	$jobCount++
 	
 	# Clears the recycle bin on startup
-	$ClearRecycleBin = Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+	# Clear-RecycleBin -Force -ErrorAction SilentlyContinue
 	
 	<#
 	# Retrieve the list of machine names from the FunctionResults dictionary
@@ -7540,5 +9200,5 @@ else
 # Indicate the script is closing
 Write-Host "Script closing..." -ForegroundColor Yellow
 
-# Close the console to aviod duplicate logging to the richbox
+# Close the console to avoid duplicate logging to the richbox
 exit
