@@ -7953,6 +7953,8 @@ function Send-RestartCommand
 		[string]$StoreNumber # Expecting a 3-digit store number (SSS)
 	)
 	
+	Write-Log "`r`n==================== Starting Send-RestartCommand Function ====================`r`n" "blue"
+	
 	if (-not ([System.Management.Automation.PSTypeName]'MailslotSender').Type)
 	{
 		Add-Type -TypeDefinition @"
@@ -8048,13 +8050,14 @@ public class MailslotSender {
 		
 		if ($result)
 		{
-			Write-Log "Command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)."
+			Write-Log "Command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
 		}
 		else
 		{
-			Write-Log "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)."
+			Write-Log "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
 		}
 	}
+	Write-Log "`r`n==================== Send-RestartCommand Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
