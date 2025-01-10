@@ -1307,10 +1307,8 @@ WHERE F1056 = '$StoreNumber'
 					$scaleContentsResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryScaleContents -ErrorAction Stop
 				}
 				
-				if ($scaleContentsResult)
-				{
-					$NumberOfScales += $scaleContentsResult.Count
-				}
+				$ScaleContents = $scaleContentsResult | Select-Object -ExpandProperty F1057
+				$NumberOfScales += $ScaleContents.Count
 				
 				#--------------------------------------------------------------------------------
 				# 3) Retrieve additional scales from TBS_SCL_ver520
