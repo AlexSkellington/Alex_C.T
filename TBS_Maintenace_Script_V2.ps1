@@ -1076,6 +1076,88 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 	Write-Log "`r`n=== Get-LaneDatabaseInfo Function Completed ===" "blue"
 }
 
+# ===================================================================================================
+#                           FUNCTION: Retrieve-Nodes
+# ---------------------------------------------------------------------------------------------------
+# **Purpose:**
+#   The `Retrieve-Nodes` function is designed to count various entities within a 
+#   system, specifically **hosts**, **stores**, **lanes**, and **servers**. It primarily retrieves 
+#   these nodes from the `TER_TAB` database table. If database access fails, it gracefully falls 
+#   back to a file system-based mechanism to obtain the counts. Additionally, the function updates 
+#   GUI labels to reflect the current nodes and stores the results in a shared hashtable for use 
+#   by other parts of the script.
+#
+# **Parameters:**
+#   - `[string]$Mode` (Mandatory)
+#       - **Description:** Determines the operational mode of the function.
+#         - `"Host"`: Nodess the number of hosts and stores.
+#         - `"Store"`: Nodess the number of servers and lanes within a specific store.
+#   - `[string]$StoreNumber`
+#       - **Description:** Specifies the identifier for a particular store. This parameter is 
+#         **mandatory** when `$Mode` is set to `"Store"` and is ignored when `$Mode` is `"Host"`.
+#
+# **Variables:**
+#   - **Initialization Variables:**
+#       - `$HostPath`: Base directory path where store and host directories are located.
+#       - `$NumberOfLanes`, `$NumberOfStores`, `$NumberOfHosts`, `$NumberOfServers`: Counters initialized to `0`.
+#       - `$LaneContents`: Array to hold lane identifiers.
+#       - `$LaneMachines`: Hashtable to map lane numbers to machine names.
+#   - **Database Connection Variables:**
+#       - `$ConnectionString`: Retrieves the database connection string from the `FunctionResults` hashtable.
+#       - `$NodesFromDatabase`: Boolean flag indicating whether to retrieve counts from the database.
+#   - **Result Variables:**
+#       - `$Nodes`: Custom PowerShell object aggregating all Nodes results and related data.
+#   - **GUI-Related Variables:**
+#       - `$SilentMode`: Determines whether the GUI should be updated.
+#       - `$NodesHost`, `$NodesStore`: GUI label controls displaying the counts.
+#       - `$form`: GUI form that needs to be refreshed to display updated counts.
+#
+# **Workflow:**
+#   1. **Retrieve Database Connection String:**
+#      - Attempts to get the connection string from `FunctionResults`.
+#      - If unavailable, calls `Get-DatabaseConnectionString` to generate it.
+#      - Sets `$CountsFromDatabase` based on availability.
+#
+#   2. **Database Counting Mechanism (`$CountsFromDatabase = $true`):**
+#      - **Mode: `"Host"`**
+#          - Counts distinct stores excluding store number `'999'`.
+#          - Checks for the existence of the host server.
+#      - **Mode: `"Store"`**
+#          - Validates the presence of `$StoreNumber`.
+#          - Retrieves and counts lanes for the specified store.
+#          - Maps lane numbers to machine names.
+#          - Checks for the existence of the server for the store.
+#      - **Error Handling:**
+#          - Logs warnings and falls back if any database queries fail.
+#
+#   3. **Fallback Counting Mechanism (`$CountsFromDatabase = $false`):**
+#      - **Mode: `"Host"`**
+#          - Counts store directories matching specific patterns.
+#          - Checks for the existence of the host directory.
+#      - **Mode: `"Store"`**
+#          - Validates the presence of `$StoreNumber`.
+#          - Counts lane directories matching specific patterns.
+#          - Checks for the existence of the server directory for the store.
+#
+#   4. **Compile and Store Results:**
+#      - Creates a `[PSCustomObject]` containing all counts and related data.
+#      - Updates the `FunctionResults` hashtable with the count results.
+#
+#   5. **Update GUI Labels:**
+#      - If not in silent mode and GUI labels are available, updates them with the latest counts.
+#      - Refreshes the GUI form to display the updated counts.
+#
+#   6. **Return Value:**
+#      - Returns the `$Counts` custom object containing all the count information.
+#
+# **Summary:**
+#   The `Retrieve-Nodes` function is a robust PowerShell utility that accurately counts system entities 
+#   such as hosts, stores, lanes, and servers. It prioritizes retrieving counts from a database to 
+#   ensure accuracy and reliability but includes a fallback mechanism leveraging the file system for 
+#   resilience. Additionally, it integrates with a GUI to display real-time counts and stores results 
+#   for easy access by other script components.
+# ===================================================================================================
+
 function Retrieve-Nodes
 {
 	param (
@@ -1214,7 +1296,6 @@ WHERE F1056 = '$StoreNumber'
   AND F1057 LIKE '8%'
   AND F1057 NOT LIKE '0%' 
   AND F1057 NOT LIKE '9%'
-
 "@
 				try
 				{
@@ -1233,7 +1314,6 @@ WHERE F1056 = '$StoreNumber'
 				
 				#--------------------------------------------------------------------------------
 				# 3) Retrieve additional scales from TBS_SCL_ver520
-				#    (Assuming there's a column named [StoreNumber] or similar.)
 				#--------------------------------------------------------------------------------
 				$queryTbsSclScales = @"
 SELECT COUNT(*) AS TbsScaleCount
