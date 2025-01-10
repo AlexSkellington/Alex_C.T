@@ -8658,10 +8658,18 @@ if (-not $SilentMode)
 			})
 		$refreshTimer.Start()
 		
+		# Initialize ToolTip
+		$toolTip = New-Object System.Windows.Forms.ToolTip
+		# Optional: Set ToolTip properties
+		$toolTip.AutoPopDelay = 5000
+		$toolTip.InitialDelay = 500
+		$toolTip.ReshowDelay = 500
+		$toolTip.ShowAlways = $true
+		
 		# Create the main form
 		$form = New-Object System.Windows.Forms.Form
 		$form.Text = "Created by Alex_C.T - Version $VersionNumber"
-		$form.Size = New-Object System.Drawing.Size(1005, 570)
+		$form.Size = New-Object System.Drawing.Size(1006, 570)
 		$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 		
 		# Banner Label
@@ -8698,21 +8706,11 @@ if (-not $SilentMode)
 					Delete-Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql" #"Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
 				}
 			})
-		
-		# =======================================
-		#           Initialize ToolTip
-		# =======================================
-		$toolTip = New-Object System.Windows.Forms.ToolTip
-		# Optional: Set ToolTip properties
-		$toolTip.AutoPopDelay = 5000
-		$toolTip.InitialDelay = 500
-		$toolTip.ReshowDelay = 500
-		$toolTip.ShowAlways = $true
-		
+				
 		# Create a Clear Log button
 		$clearLogButton = New-Object System.Windows.Forms.Button
 		$clearLogButton.Text = "Clear Log"
-		$clearLogButton.Location = New-Object System.Drawing.Point(950, 70)
+		$clearLogButton.Location = New-Object System.Drawing.Point(951, 70)
 		$clearLogButton.Size = New-Object System.Drawing.Size(39, 34)
 		$clearLogButton.add_Click({
 				$logBox.Clear()
@@ -8721,6 +8719,105 @@ if (-not $SilentMode)
 		$form.Controls.Add($clearLogButton)
 		# Set ToolTip
 		$toolTip.SetToolTip($clearLogButton, "Clears the log display area.")
+		
+		################################################## Labels #######################################################
+		
+		# Create labels for Mode, Store Name, Store Number, and Counts
+		$script:modeLabel = New-Object System.Windows.Forms.Label
+		$modeLabel.Text = "Processing Mode: N/A"
+		$modeLabel.Location = New-Object System.Drawing.Point(50, 30)
+		$modeLabel.Size = New-Object System.Drawing.Size(200, 20)
+		$modeLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$form.Controls.Add($modeLabel)
+		
+		# Store Name label
+		$storeNameLabel = New-Object System.Windows.Forms.Label
+		$storeNameLabel.Text = "Store Name: N/A"
+		$storeNameLabel.Size = New-Object System.Drawing.Size(350, 20)
+		$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+		$form.Controls.Add($storeNameLabel)
+		function Center-Label
+		{
+			# Calculate the centered horizontal position based on current form width
+			$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
+			# Set the vertical position to 30
+			$storeNameLabel.Top = 30
+		}
+		# Center the label initially
+		Center-Label
+		# Recenter the label on every form resize
+		$form.add_Resize({ Center-Label })
+		
+		# Store Number Label
+		$script:storeNumberLabel = New-Object System.Windows.Forms.Label
+		$storeNumberLabel.Text = "Store Number: N/A"
+		$storeNumberLabel.Location = New-Object System.Drawing.Point(830, 30)
+		$storeNumberLabel.Size = New-Object System.Drawing.Size(200, 20)
+		$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$form.Controls.Add($storeNumberLabel)
+		
+		# Nodes Host Label
+		$script:NodesHost = New-Object System.Windows.Forms.Label
+		$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
+		$NodesHost.Location = New-Object System.Drawing.Point(50, 50)
+		$NodesHost.Size = New-Object System.Drawing.Size(200, 20) # Reduced height
+		$NodesHost.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$NodesHost.AutoSize = $false
+		$form.Controls.Add($NodesHost)
+		
+		# Nodes Store Label
+		$script:NodesStore = New-Object System.Windows.Forms.Label
+		$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
+		$NodesStore.Location = New-Object System.Drawing.Point(420, 50) # Adjusted Y-position
+		$NodesStore.Size = New-Object System.Drawing.Size(200, 20) # Reduced height
+		$NodesStore.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$NodesStore.AutoSize = $false
+		$form.Controls.Add($NodesStore)
+		
+		# Nodes Scale Label
+		$script:scalesLabel = New-Object System.Windows.Forms.Label
+		$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
+		$scalesLabel.Location = New-Object System.Drawing.Point(820, 50) # Adjust Y-coordinate as needed
+		$scalesLabel.Size = New-Object System.Drawing.Size(200, 20)
+		$scalesLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$form.Controls.Add($scalesLabel)
+		
+		# Alternatively, Adjust the Y-position to reduce spacing
+		# Example: Move countsLabel2 closer to countsLabel1
+		# $NodesStore.Location = New-Object System.Drawing.Point(50, 85) # Reduced from 90 to 85
+		
+		# Update Counts Labels Based on Mode
+		if ($Mode -eq "Host")
+		{
+			$NodesHost.Text = "Number of Hosts: $($Counts.NumberOfHosts)"
+			$NodesStore.Text = "Number of Stores: $($Counts.NumberOfStores)"
+		}
+		else
+		{
+			$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
+			$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
+			$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
+		}
+		
+		# Create a RichTextBox for log output
+		$logBox = New-Object System.Windows.Forms.RichTextBox
+		$logBox.Location = New-Object System.Drawing.Point(50, 70)
+		$logBox.Size = New-Object System.Drawing.Size(900, 400)
+		$logBox.ReadOnly = $true
+		$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
+		
+		# Set background color
+		# $logBox.BackColor = [System.Drawing.Color]::LightGray
+		
+		# Set text color to white for better readability
+		# $logBox.ForeColor = [System.Drawing.Color]::White
+		
+		# Optionally, you can remove the border for a cleaner look
+		# $logBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+		
+		# Add the RichTextBox to the form
+		$form.Controls.Add($logBox)
 		
 		######################################################################################################################
 		# 
@@ -8840,106 +8937,7 @@ if (-not $SilentMode)
 		# Finally, add the Server Tools button to the form
 		############################################################################			
 		$form.Controls.Add($GeneralToolsButton)
-		
-		################################################## Labels #######################################################
-		
-		# Create labels for Mode, Store Name, Store Number, and Counts
-		$script:modeLabel = New-Object System.Windows.Forms.Label
-		$modeLabel.Text = "Processing Mode: N/A"
-		$modeLabel.Location = New-Object System.Drawing.Point(50, 30)
-		$modeLabel.Size = New-Object System.Drawing.Size(200, 20)
-		$modeLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$form.Controls.Add($modeLabel)
-		
-		# Store Name label
-		$storeNameLabel = New-Object System.Windows.Forms.Label
-		$storeNameLabel.Text = "Store Name: N/A"
-		$storeNameLabel.Size = New-Object System.Drawing.Size(350, 20)
-		$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-		$form.Controls.Add($storeNameLabel)
-		function Center-Label
-		{
-			# Calculate the centered horizontal position based on current form width
-			$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
-			# Set the vertical position to 30
-			$storeNameLabel.Top = 30
-		}
-		# Center the label initially
-		Center-Label		
-		# Recenter the label on every form resize
-		$form.add_Resize({ Center-Label })
-		
-		# Store Number Label
-		$script:storeNumberLabel = New-Object System.Windows.Forms.Label
-		$storeNumberLabel.Text = "Store Number: N/A"
-		$storeNumberLabel.Location = New-Object System.Drawing.Point(830, 30)
-		$storeNumberLabel.Size = New-Object System.Drawing.Size(200, 20)
-		$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$form.Controls.Add($storeNumberLabel)
-		
-		# Nodes Host Label
-		$script:NodesHost = New-Object System.Windows.Forms.Label
-		$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
-		$NodesHost.Location = New-Object System.Drawing.Point(50, 50)
-		$NodesHost.Size = New-Object System.Drawing.Size(200, 20) # Reduced height
-		$NodesHost.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$NodesHost.AutoSize = $false
-		$form.Controls.Add($NodesHost)
-		
-		# Nodes Store Label
-		$script:NodesStore = New-Object System.Windows.Forms.Label
-		$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
-		$NodesStore.Location = New-Object System.Drawing.Point(420, 50) # Adjusted Y-position
-		$NodesStore.Size = New-Object System.Drawing.Size(200, 20) # Reduced height
-		$NodesStore.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$NodesStore.AutoSize = $false
-		$form.Controls.Add($NodesStore)
-		
-		# Nodes Scale Label
-		$script:scalesLabel = New-Object System.Windows.Forms.Label
-		$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
-		$scalesLabel.Location = New-Object System.Drawing.Point(820, 50) # Adjust Y-coordinate as needed
-		$scalesLabel.Size = New-Object System.Drawing.Size(200, 20)
-		$scalesLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		$form.Controls.Add($scalesLabel)
-		
-		# Alternatively, Adjust the Y-position to reduce spacing
-		# Example: Move countsLabel2 closer to countsLabel1
-		# $NodesStore.Location = New-Object System.Drawing.Point(50, 85) # Reduced from 90 to 85
-		
-		# Update Counts Labels Based on Mode
-		if ($Mode -eq "Host")
-		{
-			$NodesHost.Text = "Number of Hosts: $($Counts.NumberOfHosts)"
-			$NodesStore.Text = "Number of Stores: $($Counts.NumberOfStores)"
-		}
-		else
-		{
-			$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
-			$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
-			$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
-		}
-		
-		# Create a RichTextBox for log output
-		$logBox = New-Object System.Windows.Forms.RichTextBox
-		$logBox.Location = New-Object System.Drawing.Point(50, 70)
-		$logBox.Size = New-Object System.Drawing.Size(900, 400)
-		$logBox.ReadOnly = $true
-		$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
-		
-		# Set background color
-		# $logBox.BackColor = [System.Drawing.Color]::LightGray
-		
-		# Set text color to white for better readability
-		# $logBox.ForeColor = [System.Drawing.Color]::White
-		
-		# Optionally, you can remove the border for a cleaner look
-		# $logBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
-		
-		# Add the RichTextBox to the form
-		$form.Controls.Add($logBox)
-		
+				
 		# ===================================================================================================
 		#                                       SECTION: GUI Buttons Setup
 		# ---------------------------------------------------------------------------------------------------
