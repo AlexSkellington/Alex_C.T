@@ -2265,11 +2265,13 @@ RECONFIGURE;
 	# Store the filtered LaneSQL script in the script scope for later use
 	$script:LaneSQLFiltered = $LaneSQLFiltered
 	
+	<#
 	# Optionally write to file as fallback
 	if ($LanesqlFilePath)
 	{
 		[System.IO.File]::WriteAllText($LanesqlFilePath, $script:LaneSQLScript, $utf8NoBOM)
 	}
+	#>
 	
 	# Similarly generate Storesql script
 	$ServerSQLScript = @"
@@ -2298,7 +2300,6 @@ CREATE TABLE dbo.TBS_ITM_SMAppUPDATED (
 CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_CodeF01 ON dbo.TBS_ITM_SMAppUPDATED (CodeF01);
 CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_Sent ON dbo.TBS_ITM_SMAppUPDATED (Sent);
 CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_SentAt ON dbo.TBS_ITM_SMAppUPDATED (SentAt);
-
 
 /* Create TBS_ITM_SMAppUPDATED Triggers */
 -----Drop existing triggers if they exist-----
@@ -2469,11 +2470,13 @@ ALTER DATABASE STORESQL SET RECOVERY FULL;
 	# Store the ServerSQLScript in the script scope
 	$script:ServerSQLScript = $ServerSQLScript
 	
+	<#
 	# Optionally write to file as fallback
 	if ($StoresqlFilePath)
 	{
 		[System.IO.File]::WriteAllText($StoresqlFilePath, $script:ServerSQLScript, $utf8NoBOM)
 	}
+	#>
 	
 	# Write-Log "SQL scripts generated successfully." "green"
 }
@@ -3895,9 +3898,11 @@ function Process-Lane
 		
 		try
 		{
-			Copy-Item -Path $LanesqlFilePath -Destination "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Force
+			# Copy-Item -Path $LanesqlFilePath -Destination "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Force
+			# Write-Log "Copied successfully to Lane #${LaneNumber}." "green"
+			Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $LaneSQLScript -Encoding Ascii
 			Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			Write-Log "Copied successfully to Lane #${LaneNumber}." "green"
+			Write-Log "Created and wrote to file at Lane #${LaneNumber} successfully." "green"
 			
 			# Add lane to processed lanes if not already added
 			if (-not ($script:ProcessedLanes -contains $LaneNumber))
@@ -3907,7 +3912,8 @@ function Process-Lane
 		}
 		catch
 		{
-			Write-Log "Failed to copy to Lane #${LaneNumber}: $_" "red"
+			# Write-Log "Failed to copy to Lane #${LaneNumber}: $_" "red"
+			Write-Log "Failed to created and write to file at Lane #${LaneNumber} successfully." "green"
 		}
 	}
 	else
@@ -9461,13 +9467,12 @@ if (-not $SilentMode)
 	# Clears the recycle bin on startup
 	# Clear-RecycleBin -Force -ErrorAction SilentlyContinue
 	
-	<#
 	# Retrieve the list of machine names from the FunctionResults dictionary
 	$LaneMachines = $script:FunctionResults['LaneMachines']
 	
+	<#
 	# Define the list of user profiles to process
 	$userProfiles = @('Administrator', 'Operator')
-	
 	# Iterate over each machine and each user profile, then invoke Delete-Files as a background job
 	foreach ($machine in $LaneMachines.Values)
 	{
@@ -9475,17 +9480,23 @@ if (-not $SilentMode)
     	{
        		# Construct the full UNC path to the Temp directory on the remote machine
         	$tempPath = "\\$machine\C$\Users\$user\AppData\Local\Temp\"
-        
+        	$wintempPath = "\\$machine\C$\Windows\Temp\"
+	
         	try
         	{
             	# Invoke the Delete-Files function with the -AsJob parameter
-            	$DeleteJob = Delete-Files -Path $tempPath -AsJob
-            
+            	$DeleteJob1 = Delete-Files -Path $tempPath -AsJob
             	# Increment the job counter
             	$jobCount++
-            
+                        	
+				# Invoke the Delete-Files function with the -AsJob parameter
+	            $DeleteJob2 = Delete-Files -Path $wintempPath -AsJob
+	            # Increment the job counter
+            	$jobCount++
+
             	# Log that the deletion job has been started
-            	# Write-Log "Started deletion job for %temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
+            	# Write-Log "Started deletion job for %Temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
+				# Write-Log "Started deletion job for %Temp% folder in user '$user' on machine '$machine' at path '$wintempPath'." "green"
         	}
         	catch
         	{
@@ -9494,11 +9505,11 @@ if (-not $SilentMode)
         	}
     	}
 	}
-
+	#>
+	
 	# Log the summary of jobs started
 	# Write-Log "Total deletion jobs started: $jobCount" "blue"
 	# Write-Log "All deletion jobs started" "blue"
-	#>
 	
 	# Indicate the script has started
 	Write-Host "Script started" -ForegroundColor Green
