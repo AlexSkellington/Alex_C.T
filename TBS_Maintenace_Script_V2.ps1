@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.5"
+$VersionNumber = "2.0.6"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1076,88 +1076,6 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 	Write-Log "`r`n=== Get-LaneDatabaseInfo Function Completed ===" "blue"
 }
 
-# ===================================================================================================
-#                           FUNCTION: Retrieve-Nodes
-# ---------------------------------------------------------------------------------------------------
-# **Purpose:**
-#   The `Retrieve-Nodes` function is designed to count various entities within a 
-#   system, specifically **hosts**, **stores**, **lanes**, and **servers**. It primarily retrieves 
-#   these nodes from the `TER_TAB` database table. If database access fails, it gracefully falls 
-#   back to a file system-based mechanism to obtain the counts. Additionally, the function updates 
-#   GUI labels to reflect the current nodes and stores the results in a shared hashtable for use 
-#   by other parts of the script.
-#
-# **Parameters:**
-#   - `[string]$Mode` (Mandatory)
-#       - **Description:** Determines the operational mode of the function.
-#         - `"Host"`: Nodess the number of hosts and stores.
-#         - `"Store"`: Nodess the number of servers and lanes within a specific store.
-#   - `[string]$StoreNumber`
-#       - **Description:** Specifies the identifier for a particular store. This parameter is 
-#         **mandatory** when `$Mode` is set to `"Store"` and is ignored when `$Mode` is `"Host"`.
-#
-# **Variables:**
-#   - **Initialization Variables:**
-#       - `$HostPath`: Base directory path where store and host directories are located.
-#       - `$NumberOfLanes`, `$NumberOfStores`, `$NumberOfHosts`, `$NumberOfServers`: Counters initialized to `0`.
-#       - `$LaneContents`: Array to hold lane identifiers.
-#       - `$LaneMachines`: Hashtable to map lane numbers to machine names.
-#   - **Database Connection Variables:**
-#       - `$ConnectionString`: Retrieves the database connection string from the `FunctionResults` hashtable.
-#       - `$NodesFromDatabase`: Boolean flag indicating whether to retrieve counts from the database.
-#   - **Result Variables:**
-#       - `$Nodes`: Custom PowerShell object aggregating all Nodes results and related data.
-#   - **GUI-Related Variables:**
-#       - `$SilentMode`: Determines whether the GUI should be updated.
-#       - `$NodesHost`, `$NodesStore`: GUI label controls displaying the counts.
-#       - `$form`: GUI form that needs to be refreshed to display updated counts.
-#
-# **Workflow:**
-#   1. **Retrieve Database Connection String:**
-#      - Attempts to get the connection string from `FunctionResults`.
-#      - If unavailable, calls `Get-DatabaseConnectionString` to generate it.
-#      - Sets `$CountsFromDatabase` based on availability.
-#
-#   2. **Database Counting Mechanism (`$CountsFromDatabase = $true`):**
-#      - **Mode: `"Host"`**
-#          - Counts distinct stores excluding store number `'999'`.
-#          - Checks for the existence of the host server.
-#      - **Mode: `"Store"`**
-#          - Validates the presence of `$StoreNumber`.
-#          - Retrieves and counts lanes for the specified store.
-#          - Maps lane numbers to machine names.
-#          - Checks for the existence of the server for the store.
-#      - **Error Handling:**
-#          - Logs warnings and falls back if any database queries fail.
-#
-#   3. **Fallback Counting Mechanism (`$CountsFromDatabase = $false`):**
-#      - **Mode: `"Host"`**
-#          - Counts store directories matching specific patterns.
-#          - Checks for the existence of the host directory.
-#      - **Mode: `"Store"`**
-#          - Validates the presence of `$StoreNumber`.
-#          - Counts lane directories matching specific patterns.
-#          - Checks for the existence of the server directory for the store.
-#
-#   4. **Compile and Store Results:**
-#      - Creates a `[PSCustomObject]` containing all counts and related data.
-#      - Updates the `FunctionResults` hashtable with the count results.
-#
-#   5. **Update GUI Labels:**
-#      - If not in silent mode and GUI labels are available, updates them with the latest counts.
-#      - Refreshes the GUI form to display the updated counts.
-#
-#   6. **Return Value:**
-#      - Returns the `$Counts` custom object containing all the count information.
-#
-# **Summary:**
-#   The `Retrieve-Nodes` function is a robust PowerShell utility that accurately counts system entities 
-#   such as hosts, stores, lanes, and servers. It prioritizes retrieving counts from a database to 
-#   ensure accuracy and reliability but includes a fallback mechanism leveraging the file system for 
-#   resilience. Additionally, it integrates with a GUI to display real-time counts and stores results 
-#   for easy access by other script components.
-# ===================================================================================================
-
 function Retrieve-Nodes
 {
 	param (
@@ -1172,6 +1090,8 @@ function Retrieve-Nodes
 	$NumberOfStores = 0
 	$NumberOfHosts = 0
 	$NumberOfServers = 0
+	$NumberOfScales = 0 # <--- NEW/UPDATED COUNTER FOR SCALES
+	
 	$LaneContents = @()
 	$LaneMachines = @{ }
 	
@@ -1199,14 +1119,14 @@ function Retrieve-Nodes
 		$NodesFromDatabase = $true
 	}
 	
-	# Initialize a flag to check if we successfully got Nodes from TER_TAB
+	# Initialize a flag to check if we successfully got Nodes from the database
 	if ($NodesFromDatabase)
 	{
 		try
 		{
 			if ($Mode -eq "Host")
 			{
-				# Get NumberOfStores (excluding StoreNumber = '999')
+				# -- Count Stores (excluding StoreNumber = '999') --
 				$queryStores = "SELECT COUNT(DISTINCT F1056) AS StoreCount FROM TER_TAB WHERE F1056 <> '999'"
 				try
 				{
@@ -1220,7 +1140,7 @@ function Retrieve-Nodes
 				
 				$NumberOfStores = $storeResult.StoreCount
 				
-				# Check if host exists
+				# -- Check if host exists --
 				$queryHost = "SELECT COUNT(*) AS HostCount FROM TER_TAB WHERE F1056 = '999' AND F1057 = '901'"
 				try
 				{
@@ -1234,7 +1154,6 @@ function Retrieve-Nodes
 				
 				$NumberOfHosts = if ($hostResult.HostCount -gt 0) { 1 }
 				else { 0 }
-				
 			}
 			elseif ($Mode -eq "Store")
 			{
@@ -1244,8 +1163,17 @@ function Retrieve-Nodes
 					return
 				}
 				
-				# Retrieve lane contents
-				$queryLaneContents = "SELECT F1057, F1125 FROM TER_TAB WHERE F1056 = '$StoreNumber' AND F1057 LIKE '0%' AND F1057 NOT LIKE '8%' AND F1057 NOT LIKE '9%'"
+				#--------------------------------------------------------------------------------
+				# 1) Retrieve Lanes from TER_TAB
+				#--------------------------------------------------------------------------------
+				$queryLaneContents = @"
+SELECT F1057, F1125 
+FROM TER_TAB 
+WHERE F1056 = '$StoreNumber' 
+  AND F1057 LIKE '0%' 
+  AND F1057 NOT LIKE '8%' 
+  AND F1057 NOT LIKE '9%'
+"@
 				try
 				{
 					$laneContentsResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryLaneContents -ErrorAction Stop
@@ -1276,8 +1204,65 @@ function Retrieve-Nodes
 					}
 				}
 				
-				# Check if server exists for the store
-				$queryServer = "SELECT COUNT(*) AS ServerCount FROM TER_TAB WHERE F1056 = '$StoreNumber' AND F1057 = '901'"
+				#--------------------------------------------------------------------------------
+				# 2) Retrieve Scales from TER_TAB (F1057 LIKE '8%')
+				#--------------------------------------------------------------------------------
+				$queryScaleContents = @"
+SELECT F1057, F1125
+FROM TER_TAB
+WHERE F1056 = '$StoreNumber'
+  AND F1057 LIKE '8%'
+  AND F1057 NOT LIKE '0%' 
+  AND F1057 NOT LIKE '9%'
+
+"@
+				try
+				{
+					$scaleContentsResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryScaleContents -ErrorAction Stop
+				}
+				catch [System.Management.Automation.ParameterBindingException] {
+					$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					$scaleContentsResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryScaleContents -ErrorAction Stop
+				}
+				
+				if ($scaleContentsResult)
+				{
+					$NumberOfScales += $scaleContentsResult.Count
+				}
+				
+				#--------------------------------------------------------------------------------
+				# 3) Retrieve additional scales from TBS_SCL_ver520
+				#    (Assuming there's a column named [StoreNumber] or similar.)
+				#--------------------------------------------------------------------------------
+				$queryTbsSclScales = @"
+SELECT COUNT(*) AS TbsScaleCount
+FROM TBS_SCL_ver520
+"@
+				try
+				{
+					$tbsSclScalesResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryTbsSclScales -ErrorAction Stop
+				}
+				catch [System.Management.Automation.ParameterBindingException] {
+					$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+					$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+					$tbsSclScalesResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryTbsSclScales -ErrorAction Stop
+				}
+				
+				if ($tbsSclScalesResult)
+				{
+					$NumberOfScales += $tbsSclScalesResult.TbsScaleCount
+				}
+				
+				#--------------------------------------------------------------------------------
+				# 4) Check if server exists for the store (F1057 = '901')
+				#--------------------------------------------------------------------------------
+				$queryServer = @"
+SELECT COUNT(*) AS ServerCount
+FROM TER_TAB
+WHERE F1056 = '$StoreNumber'
+  AND F1057 = '901'
+"@
 				try
 				{
 					$serverResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryServer -ErrorAction Stop
@@ -1294,12 +1279,14 @@ function Retrieve-Nodes
 		}
 		catch
 		{
-			Write-Log "Failed to retrieve counts from TER_TAB: $_" "yellow"
+			Write-Log "Failed to retrieve counts from the database: $_" "yellow"
 			$NodesFromDatabase = $false
 		}
 	}
 	
-	# If counts from database failed, use the current mechanism as fallback
+	#--------------------------------------------------------------------------------
+	# Fallback: If counts from database failed, use directory-based logic
+	#--------------------------------------------------------------------------------
 	if (-not $NodesFromDatabase)
 	{
 		Write-Log "Using fallback mechanism to count items." "yellow"
@@ -1322,51 +1309,77 @@ function Retrieve-Nodes
 				return
 			}
 			
-			# Count lanes directly under the office directory matching the pattern
+			# Lanes (directories like XF<StoreNumber>0??)
 			if (Test-Path $HostPath)
 			{
 				$LaneFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}0??"
 				$NumberOfLanes = $LaneFolders.Count
 			}
 			
-			# Check for the server directory under the store
+			# Scales (directories like XF<StoreNumber>8??)
+			if (Test-Path $HostPath)
+			{
+				$ScaleFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}8??"
+				$NumberOfScales = $ScaleFolders.Count
+			}
+			
+			# Server
 			$NumberOfServers = if (Test-Path "$HostPath\XF${StoreNumber}901") { 1 }
 			else { 0 }
+			
+			# NOTE: If your fallback mechanism needs to read TBS_SCL_ver520 data from somewhere,
+			#       add additional fallback logic here as needed.
 		}
 	}
 	
-	# Create a custom object with the counts
+	#--------------------------------------------------------------------------------
+	# Final: Create a custom object with the counts
+	#--------------------------------------------------------------------------------
 	$Nodes = [PSCustomObject]@{
 		NumberOfStores  = $NumberOfStores
 		NumberOfHosts   = $NumberOfHosts
 		NumberOfLanes   = $NumberOfLanes
 		NumberOfServers = $NumberOfServers
+		NumberOfScales  = $NumberOfScales
 		LaneContents    = $LaneContents
 		LaneMachines    = $LaneMachines
 	}
 	
+	#--------------------------------------------------------------------------------
 	# Store counts in FunctionResults
+	#--------------------------------------------------------------------------------
 	$script:FunctionResults['NumberOfStores'] = $NumberOfStores
 	$script:FunctionResults['NumberOfHosts'] = $NumberOfHosts
 	$script:FunctionResults['NumberOfLanes'] = $NumberOfLanes
 	$script:FunctionResults['NumberOfServers'] = $NumberOfServers
+	$script:FunctionResults['NumberOfScales'] = $NumberOfScales
 	$script:FunctionResults['LaneContents'] = $LaneContents
 	$script:FunctionResults['LaneMachines'] = $LaneMachines
 	$script:FunctionResults['Nodes'] = $Nodes
 	
-	# Update the GUI countsLabel1 and countsLabel2 with the new counts
+	#--------------------------------------------------------------------------------
+	# Update the GUI labels if not in silent mode
+	#--------------------------------------------------------------------------------
 	if (-not $SilentMode -and $NodesHost -ne $null -and $NodesStore -ne $null)
 	{
 		if ($Mode -eq "Host")
 		{
-			$NodesHost.Text = "Number of Hosts: $NumberOfHosts"
+			$NodesHost.Text = "Number of Hosts:  $NumberOfHosts"
 			$NodesStore.Text = "Number of Stores: $NumberOfStores"
 		}
 		else
 		{
 			$NodesHost.Text = "Number of Servers: $NumberOfServers"
-			$NodesStore.Text = "Number of Lanes: $NumberOfLanes"
+			$NodesStore.Text = "Number of Lanes:   $NumberOfLanes"
+			$scalesLabel.Text = "Number of Scales: $NumberOfScales"
+			
+			# Update the Scales label if it exists
+			if ($NodesScales -ne $null)
+			{
+				$NodesScales.Text = "Number of Scales: $NumberOfScales"
+			}
 		}
+		
 		# Refresh the form to display updates
 		$form.Refresh()
 	}
@@ -8655,7 +8668,7 @@ if (-not $SilentMode)
 		$bannerLabel = New-Object System.Windows.Forms.Label
 		$bannerLabel.Text = "PowerShell Script - TBS_Maintenance_Script"
 		$bannerLabel.Font = New-Object System.Drawing.Font("Arial", 16, [System.Drawing.FontStyle]::Bold)
-		$bannerLabel.Size = New-Object System.Drawing.Size(500, 30)
+		# $bannerLabel.Size = New-Object System.Drawing.Size(500, 30)
 		$bannerLabel.TextAlign = 'MiddleCenter'
 		$bannerLabel.Dock = 'Top'
 		
@@ -8699,8 +8712,8 @@ if (-not $SilentMode)
 		# Create a Clear Log button
 		$clearLogButton = New-Object System.Windows.Forms.Button
 		$clearLogButton.Text = "Clear Log"
-		$clearLogButton.Location = New-Object System.Drawing.Point(889, 48)
-		$clearLogButton.Size = New-Object System.Drawing.Size(61, 22)
+		$clearLogButton.Location = New-Object System.Drawing.Point(950, 70)
+		$clearLogButton.Size = New-Object System.Drawing.Size(39, 34)
 		$clearLogButton.add_Click({
 				$logBox.Clear()
 				Write-Log "Log Cleared"
@@ -8838,14 +8851,24 @@ if (-not $SilentMode)
 		$modeLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$form.Controls.Add($modeLabel)
 		
-		# Store Name Label
-		$script:storeNameLabel = New-Object System.Windows.Forms.Label
+		# Store Name label
+		$storeNameLabel = New-Object System.Windows.Forms.Label
 		$storeNameLabel.Text = "Store Name: N/A"
-		$storeNameLabel.Location = New-Object System.Drawing.Point(445, 30)
-		$storeNameLabel.Size = New-Object System.Drawing.Size(400, 20)
+		$storeNameLabel.Size = New-Object System.Drawing.Size(350, 20)
 		$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-		#$storeNameLabel.TextAlign = 'MiddleCenter'
+		$storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 		$form.Controls.Add($storeNameLabel)
+		function Center-Label
+		{
+			# Calculate the centered horizontal position based on current form width
+			$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
+			# Set the vertical position to 30
+			$storeNameLabel.Top = 30
+		}
+		# Center the label initially
+		Center-Label		
+		# Recenter the label on every form resize
+		$form.add_Resize({ Center-Label })
 		
 		# Store Number Label
 		$script:storeNumberLabel = New-Object System.Windows.Forms.Label
@@ -8858,7 +8881,7 @@ if (-not $SilentMode)
 		# Nodes Host Label
 		$script:NodesHost = New-Object System.Windows.Forms.Label
 		$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
-		$NodesHost.Location = New-Object System.Drawing.Point(255, 50)
+		$NodesHost.Location = New-Object System.Drawing.Point(50, 50)
 		$NodesHost.Size = New-Object System.Drawing.Size(200, 20) # Reduced height
 		$NodesHost.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$NodesHost.AutoSize = $false
@@ -8867,11 +8890,19 @@ if (-not $SilentMode)
 		# Nodes Store Label
 		$script:NodesStore = New-Object System.Windows.Forms.Label
 		$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
-		$NodesStore.Location = New-Object System.Drawing.Point(625, 50) # Adjusted Y-position
+		$NodesStore.Location = New-Object System.Drawing.Point(420, 50) # Adjusted Y-position
 		$NodesStore.Size = New-Object System.Drawing.Size(200, 20) # Reduced height
 		$NodesStore.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$NodesStore.AutoSize = $false
 		$form.Controls.Add($NodesStore)
+		
+		# Nodes Scale Label
+		$script:scalesLabel = New-Object System.Windows.Forms.Label
+		$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
+		$scalesLabel.Location = New-Object System.Drawing.Point(820, 50) # Adjust Y-coordinate as needed
+		$scalesLabel.Size = New-Object System.Drawing.Size(200, 20)
+		$scalesLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+		$form.Controls.Add($scalesLabel)
 		
 		# Alternatively, Adjust the Y-position to reduce spacing
 		# Example: Move countsLabel2 closer to countsLabel1
@@ -8887,6 +8918,7 @@ if (-not $SilentMode)
 		{
 			$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
 			$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
+			$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
 		}
 		
 		# Create a RichTextBox for log output
