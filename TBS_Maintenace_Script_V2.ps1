@@ -2183,11 +2183,11 @@ IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 
 @dbEXEC(UPDATE SCL_TAB SET F2582 = REPLACE(REPLACE(REPLACE(F2582, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
 @dbEXEC(UPDATE SCL_TXT_TAB SET F297 = REPLACE(REPLACE(REPLACE(F297, CHAR(13),' '), CHAR(10),' '), CHAR(9),' '))
 
-/* Delete batches older than 7 days from lanes */
-@dbEXEC("DELETE FROM Header_bat WHERE F909 < DATEADD(day, -7, GETDATE())")
-@dbEXEC("DELETE FROM Header_dct WHERE F909 < DATEADD(day, -7, GETDATE())")
-@dbEXEC("DELETE FROM Header_old WHERE F909 < DATEADD(day, -1, GETDATE())")
-@dbEXEC("DELETE FROM Header_sav WHERE F909 < DATEADD(day, -1, GETDATE())")
+/* Delete batches older than 7 days from the lane */
+DELETE FROM Header_bat WHERE F909 < DATEADD(day, -7, GETDATE());
+DELETE FROM Header_dct WHERE F909 < DATEADD(day, -7, GETDATE());
+DELETE FROM Header_old WHERE F909 < DATEADD(day, -7, GETDATE());
+DELETE FROM Header_sav WHERE F909 < DATEADD(day, -7, GETDATE());
 
 /* Shrink database and log files */
 ALTER DATABASE LANESQL SET RECOVERY SIMPLE
