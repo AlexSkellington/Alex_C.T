@@ -3133,12 +3133,12 @@ function Execute-SQLLocallyGUI
 	if (-not $success)
 	{
 		Write-Log "Maximum retry attempts reached. SQL script execution failed." "red"
-		# Create a string from the failed commands array
-		$failedCommandsText = $failedCommands -join "`r`n"
-		# Write the failed commands to a file
+		# Join the failed commands with CRLF and append a trailing CRLF
+		$failedCommandsText = ($failedCommands -join "`r`n") + "`r`n"
+		# Write the failed commands to a file in ANSI (Windows-1252) with CRLF endings		
 		try
 		{
-			[System.IO.File]::WriteAllText($FailedCommandsPath, $failedCommandsText, [System.Text.Encoding]::UTF8)
+			[System.IO.File]::WriteAllText($FailedCommandsPath, $failedCommandsText, $ansiPcEncoding)
 			Write-Log "`r`nFailed SQL sections written to: $FailedCommandsPath" "yellow"
 			# Remove the archived attribute to ensure it can be processed
 			Set-ItemProperty -Path $FailedCommandsPath -Name Attributes -Value ((Get-Item $FailedCommandsPath).Attributes -band (-bnot [System.IO.FileAttributes]::Archive))
