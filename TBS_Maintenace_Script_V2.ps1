@@ -2288,7 +2288,7 @@ RECONFIGURE;
 
 /* Create Table TBS_ITM_SMAppUPDATED */
 -----Drop the table if it exist-----
-DROP TABLE IF EXISTS dbo.TBS_ITM_SMAppUPDATED;
+IF OBJECT_ID('dbo.TBS_ITM_SMAppUPDATED', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('dbo.TBS_ITM_SMAppUPDATED', 'OBJECT', 'DELETE') = 1 DELETE FROM dbo.TBS_ITM_SMAppUPDATED;
 -----Create TBS_ITM_SMAppUPDATED Table with Optional ID Column-----
 CREATE TABLE dbo.TBS_ITM_SMAppUPDATED (
     Id INT IDENTITY(1,1) PRIMARY KEY,   -- Surrogate primary key
