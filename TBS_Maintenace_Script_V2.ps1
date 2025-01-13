@@ -2256,7 +2256,7 @@ RECONFIGURE;
 			# Additionally, remove the @dbEXEC() wrappers but keep the inner SQL commands
 			# Use regex to replace @dbEXEC(...) with the content inside the parentheses
 			# This handles both @dbEXEC("...") and @dbEXEC(...) without quotes
-			$sqlCommands = $sqlCommands -replace '@dbEXEC\((?:\"(.*?)\"|(.*?))\)', '$1$2'
+			$sqlCommands = $sqlCommands -replace '@dbEXEC\((.*?)\)', '$1'
 			$LaneSQLFiltered += "/* $sectionName */`r`n$sqlCommands`r`n`r`n"
 		}
 	}
