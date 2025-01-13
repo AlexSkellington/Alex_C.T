@@ -2291,7 +2291,7 @@ IF OBJECT_ID('dbo.TBS_ITM_SMAppUPDATED', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME(
 -----Create TBS_ITM_SMAppUPDATED Table with Optional ID Column-----
 CREATE TABLE dbo.TBS_ITM_SMAppUPDATED (
     Id INT IDENTITY(1,1) PRIMARY KEY,   -- Surrogate primary key
-    CodeF01 VARCHAR(13) NOT NULL,      -- Stores the constructed code
+    CodeF01 VARCHAR(13) NULL,      -- Stores the constructed code
     Sent BIT NOT NULL DEFAULT 0,       -- Indicates if the record has been sent
     SentAt DATETIME NOT NULL DEFAULT GETDATE() -- Timestamp of insertion
 );
