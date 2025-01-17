@@ -2220,6 +2220,7 @@ EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD'
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN'
 DBCC SHRINKFILE ($laneDbName)
 DBCC SHRINKFILE (${laneDbName}_Log)
+ALTER DATABASE $laneDbName SET RECOVERY SIMPLE
 
 /* Clear the long database timeout */
 @WIZCLR(DBASE_TIMEOUT);
@@ -2487,6 +2488,7 @@ EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD';
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN';
 DBCC SHRINKFILE ($storeDbName);
 DBCC SHRINKFILE (${storeDbName}_Log);
+ALTER DATABASE $storeDbName SET RECOVERY SIMPLE
 "@
 	
 	# Store the ServerSQLScript in the script scope
