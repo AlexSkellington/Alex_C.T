@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.7"
+$VersionNumber = "2.0.8"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -2956,19 +2956,28 @@ function Create-ScheduledTaskGUI
 
 function Execute-SQLLocallyGUI
 {
+	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $false)]
-		[string]$SqlFilePath
+		[string]$SqlFilePath,
+		[Parameter(Mandatory = $false)]
+		[string[]]$SectionsToRun,
+		# Switch: if used, show a form with checkboxes for each section
+		[Parameter(Mandatory = $false)]
+		[switch]$PromptForSections
 	)
+	
+	# Make sure .NET WinForms assemblies are loaded
+	[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
+	[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
 	
 	# Configuration for retry mechanism
 	$MaxRetries = 2
 	$RetryDelaySeconds = 5
 	$FailedCommandsPath = "$OfficePath\XF${StoreNumber}901\Failed_ServerSQLScript_Sections.sql"
 	
-	# Attempt to retrieve the SQL script from the script-scoped variable
+	# Attempt to retrieve the SQL script
 	$sqlScript = $script:ServerSQLScript
-	
 	$dbName = $script:FunctionResults['DBNAME']
 	
 	if (-not [string]::IsNullOrWhiteSpace($sqlScript))
@@ -2977,7 +2986,7 @@ function Execute-SQLLocallyGUI
 	}
 	elseif ($SqlFilePath)
 	{
-		# If the script variable is empty, attempt to execute from the file
+		# If the script variable is empty, try reading from file
 		if (-not (Test-Path $SqlFilePath))
 		{
 			Write-Log "SQL file not found: $SqlFilePath" "red"
@@ -3000,10 +3009,8 @@ function Execute-SQLLocallyGUI
 		return
 	}
 	
-	# Split the SQL script into sections based on /* Section Name */ comments
-	# The regex captures the section name and the subsequent SQL commands until the next section or end of script
+	# Regex to capture sections: /* SectionName */ ...commands...
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-	
 	$matches = [regex]::Matches($sqlScript, $sectionPattern)
 	
 	if ($matches.Count -eq 0)
@@ -3012,7 +3019,33 @@ function Execute-SQLLocallyGUI
 		return
 	}
 	
-	# Retrieve the connection string from script FunctionResults
+	# ------------------------------------------------------------------
+	# If the user wants a GUI prompt for sections, show the form now.
+	# ------------------------------------------------------------------
+	if ($PromptForSections)
+	{
+		# Collect all section names
+		$allSectionNames = $matches | ForEach-Object {
+			$_.Groups['SectionName'].Value.Trim()
+		}
+		
+		# Show the GUI form with checkboxes
+		$SectionsToRun = Show-SectionSelectionForm -SectionNames $allSectionNames
+		if (-not $SectionsToRun -or $SectionsToRun.Count -eq 0)
+		{
+			Write-Log "No sections selected or form was canceled. Aborting execution." "yellow"
+			return
+		}
+	}
+	
+	# If user did NOT specify sections or prompt, run all by default
+	$useSpecificSections = $false
+	if ($SectionsToRun -and $SectionsToRun.Count -gt 0)
+	{
+		$useSpecificSections = $true
+	}
+	
+	# Retrieve the connection string
 	if (-not $script:FunctionResults)
 	{
 		$script:FunctionResults = @{ }
@@ -3044,7 +3077,7 @@ function Execute-SQLLocallyGUI
 		$supportsConnectionString = $false
 	}
 	
-	# Initialize variables to track execution
+	# Initialize variables for retries
 	$retryCount = 0
 	$success = $false
 	$failedSections = @()
@@ -3059,25 +3092,30 @@ function Execute-SQLLocallyGUI
 			# Only execute failed sections after the first attempt
 			$sectionsToExecute = if ($retryCount -eq 0) { $matches }
 			else { $failedSections }
-			$failedSections = @() # Reset failed sections for this retry
+			$failedSections = @() # reset for this iteration
 			
 			foreach ($match in $sectionsToExecute)
 			{
 				$sectionName = $match.Groups['SectionName'].Value.Trim()
 				$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
 				
+				# If user specifically chose sections, skip any not in that selection
+				if ($useSpecificSections -and ($SectionsToRun -notcontains $sectionName))
+				{
+					continue
+				}
+				
 				if ([string]::IsNullOrWhiteSpace($sqlCommands))
 				{
-					Write-Log "Section '$sectionName' contains no SQL commands. Skipping..." "yellow"
+					Write-Log "Section '$sectionName' has no commands. Skipping..." "yellow"
 					continue
 				}
 				
 				Write-Log "`r`nExecuting section: '$sectionName'" "blue"
-				Write-Log "----------------------------------------------------------------------------------------------------------------"
+				Write-Log "--------------------------------------------------------------------------------"
 				Write-Log "$sqlCommands" "orange"
-				Write-Log "----------------------------------------------------------------------------------------------------------------"
+				Write-Log "--------------------------------------------------------------------------------"
 				
-				# Execute the SQL commands for the current section
 				try
 				{
 					if ($supportsConnectionString)
@@ -3093,24 +3131,19 @@ function Execute-SQLLocallyGUI
 					}
 					Write-Log "Section '$sectionName' executed successfully." "green"
 				}
-				catch [System.Management.Automation.ParameterBindingException]
-				{
-					Write-Log "ParameterBindingException encountered while executing section '$sectionName'. Attempting fallback." "yellow"
-					
-					# If using ConnectionString caused a ParameterBindingException, try using ServerInstance and Database
+				catch [System.Management.Automation.ParameterBindingException] {
+					Write-Log "ParameterBindingException in section '$sectionName'. Attempting fallback." "yellow"
 					try
 					{
-						# Parse ServerInstance and Database from ConnectionString
 						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
 						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
 						Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
-						Write-Log "Section '$sectionName' executed successfully using fallback parameters." "green"
+						Write-Log "Section '$sectionName' executed successfully with fallback." "green"
 					}
 					catch
 					{
-						Write-Log "Error executing section '$sectionName' with fallback parameters: $_" "red"
+						Write-Log "Error executing section '$sectionName' with fallback: $_" "red"
 						$failedSections += $match
-						# Only add failed commands to $failedCommands on the last retry
 						if ($retryCount -eq $MaxRetries - 1)
 						{
 							$failedCommands += "/* $sectionName */`r`n$sqlCommands`r`n"
@@ -3121,7 +3154,6 @@ function Execute-SQLLocallyGUI
 				{
 					Write-Log "Error executing section '$sectionName': $_" "red"
 					$failedSections += $match
-					# Only add failed commands to $failedCommands on the last retry
 					if ($retryCount -eq $MaxRetries - 1)
 					{
 						$failedCommands += "/* $sectionName */`r`n$sqlCommands`r`n"
@@ -3143,10 +3175,9 @@ function Execute-SQLLocallyGUI
 		{
 			$retryCount++
 			Write-Log "Error during SQL script execution: $_" "red"
-			
 			if ($retryCount -lt $MaxRetries)
 			{
-				Write-Log "Retrying execution in $RetryDelaySeconds seconds..." "yellow"
+				Write-Log "Retrying in $RetryDelaySeconds seconds..." "yellow"
 				Start-Sleep -Seconds $RetryDelaySeconds
 			}
 		}
@@ -3154,25 +3185,24 @@ function Execute-SQLLocallyGUI
 	
 	if (-not $success)
 	{
-		Write-Log "Maximum retry attempts reached. SQL script execution failed." "red"
-		# Join the failed commands with CRLF and append a trailing CRLF
+		Write-Log "Max retries reached. SQL script execution failed." "red"
 		$failedCommandsText = ($failedCommands -join "`r`n") + "`r`n"
-		# Write the failed commands to a file in ANSI (Windows-1252) with CRLF endings		
 		try
 		{
 			[System.IO.File]::WriteAllText($FailedCommandsPath, $failedCommandsText, $ansiPcEncoding)
 			Write-Log "`r`nFailed SQL sections written to: $FailedCommandsPath" "yellow"
-			# Remove the archived attribute to ensure it can be processed
-			Set-ItemProperty -Path $FailedCommandsPath -Name Attributes -Value ((Get-Item $FailedCommandsPath).Attributes -band (-bnot [System.IO.FileAttributes]::Archive))
+			Set-ItemProperty -Path $FailedCommandsPath -Name Attributes -Value (
+				(Get-Item $FailedCommandsPath).Attributes -band (-bnot [System.IO.FileAttributes]::Archive)
+			)
 		}
 		catch
 		{
-			Write-Log "Failed to write failed commands to file: $_" "red"
+			Write-Log "Failed to write failed commands: $_" "red"
 		}
 	}
 	else
 	{
-		Write-Log "SQL script executed successfully on the database '$dbName'." "green"
+		Write-Log "SQL script executed successfully on '$dbName'." "green"
 	}
 }
 
@@ -3769,7 +3799,7 @@ function Process-ServerGUI
 	Write-Log "`r`n==================== Starting Server Database Repair ====================`r`n" "blue"
 	
 	# Execute the SQL script
-	Execute-SQLLocallyGUI -SqlFilePath $StoresqlFilePath
+	Execute-SQLLocallyGUI -SqlFilePath $StoresqlFilePath -PromptForSections
 	
 	# Add server to processed servers if not already added
 	if (-not ($script:ProcessedServers -contains "localhost"))
@@ -8629,6 +8659,7 @@ function Show-SelectionDialog
 #   Displays a GUI dialog listing all discovered tables from Get-TableAliases in a checked list box,
 #   with buttons to Select All or Deselect All. Returns the list of checked table names (with _TAB).
 # ===================================================================================================
+
 function Show-TableSelectionDialog
 {
 	param (
@@ -8736,6 +8767,134 @@ function Show-TableSelectionDialog
 			$selectedTables += $item
 		}
 		return $selectedTables
+	}
+	else
+	{
+		return $null
+	}
+}
+
+# ===================================================================================================
+#                                FUNCTION: Show-SectionSelectionForm
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Helper function that creates a form with checkboxes for each section. Returns an array of the 
+#   selected section names or $null if canceled.#   
+# ===================================================================================================
+
+function Show-SectionSelectionForm
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string[]]$SectionNames
+	)
+	
+	# Make sure .NET WinForms is loaded
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	# Create the form
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Select SQL Sections"
+	$form.StartPosition = "CenterScreen"
+	$form.Size = New-Object System.Drawing.Size(550, 420)
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	# Label: brief instructions
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "Check the sections you want to run, then click OK."
+	$label.AutoSize = $true
+	$label.Left = 20
+	$label.Top = 10
+	$form.Controls.Add($label)
+	
+	# CheckedListBox
+	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
+	$checkedListBox.Width = 500
+	$checkedListBox.Height = 280
+	$checkedListBox.Left = 20
+	$checkedListBox.Top = 40
+	$checkedListBox.CheckOnClick = $true
+	$form.Controls.Add($checkedListBox)
+	
+	# Populate with section names
+	foreach ($name in $SectionNames)
+	{
+		[void]$checkedListBox.Items.Add($name, $false)
+	}
+	
+	# "Select All" button
+	$selectAllButton = New-Object System.Windows.Forms.Button
+	$selectAllButton.Text = "Select All"
+	$selectAllButton.Width = 90
+	$selectAllButton.Height = 30
+	$selectAllButton.Left = 20
+	$selectAllButton.Top = 330
+	$form.Controls.Add($selectAllButton)
+	
+	$selectAllButton.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $true)
+			}
+		})
+	
+	# "Deselect All" button
+	$deselectAllButton = New-Object System.Windows.Forms.Button
+	$deselectAllButton.Text = "Deselect All"
+	$deselectAllButton.Width = 90
+	$deselectAllButton.Height = 30
+	$deselectAllButton.Left = 120
+	$deselectAllButton.Top = 330
+	$form.Controls.Add($deselectAllButton)
+	
+	$deselectAllButton.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $false)
+			}
+		})
+	
+	# OK button
+	$okButton = New-Object System.Windows.Forms.Button
+	$okButton.Text = "OK"
+	$okButton.Width = 80
+	$okButton.Height = 30
+	$okButton.Left = 240
+	$okButton.Top = 330
+	# Crucial: set DialogResult, not a manual event
+	$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.Controls.Add($okButton)
+	
+	# Cancel button
+	$cancelButton = New-Object System.Windows.Forms.Button
+	$cancelButton.Text = "Cancel"
+	$cancelButton.Width = 80
+	$cancelButton.Height = 30
+	$cancelButton.Left = 340
+	$cancelButton.Top = 330
+	$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.Controls.Add($cancelButton)
+	
+	# Set AcceptButton and CancelButton so Enter/Esc work
+	$form.AcceptButton = $okButton
+	$form.CancelButton = $cancelButton
+	
+	# Show the dialog
+	$dialogResult = $form.ShowDialog()
+	
+	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
+	{
+		# Gather checked items AFTER the form closes
+		$selectedSections = @()
+		foreach ($item in $checkedListBox.CheckedItems)
+		{
+			$selectedSections += $item
+		}
+		
+		return $selectedSections
 	}
 	else
 	{
