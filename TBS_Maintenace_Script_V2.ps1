@@ -2215,7 +2215,6 @@ DELETE FROM Header_old WHERE F909 < DATEADD(day, -7, GETDATE());
 DELETE FROM Header_sav WHERE F909 < DATEADD(day, -7, GETDATE());
 
 /* Shrink database and log files */
-DBCC CHECKDB('$laneDbName', REPAIR_REBUILD)
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD'
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN'
 DBCC SHRINKFILE ($laneDbName)
@@ -2483,12 +2482,11 @@ DELETE FROM Header_old WHERE F909 < DATEADD(day, -14, GETDATE());
 DELETE FROM Header_sav WHERE F909 < DATEADD(day, -14, GETDATE());
 
 /* Shrink database and log files */
-DBCC CHECKDB('$storeDbName', REPAIR_REBUILD);
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD';
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN';
 DBCC SHRINKFILE ($storeDbName);
 DBCC SHRINKFILE (${storeDbName}_Log);
-ALTER DATABASE $storeDbName SET RECOVERY SIMPLE
+ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 "@
 	
 	# Store the ServerSQLScript in the script scope
