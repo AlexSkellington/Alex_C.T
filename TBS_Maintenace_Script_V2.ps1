@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.6"
+$VersionNumber = "2.0.7"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -26,10 +26,11 @@ $revision = $PSVersionTable.PSVersion.Revision
 # Combine them into a single version string
 $PowerShellVersion = "$major.$minor.$build.$revision"
 
-# Determine if build version is considered too old
+<# Determine if build version is considered too old
 # Adjust the threshold as needed
 $BuildThreshold = 15000
 $IsOldBuild = $build -lt $BuildThreshold
+#>
 
 # Set Execution Policy to Bypass for the current process
 # Set-ExecutionPolicy Bypass -Scope Process -Force
@@ -81,8 +82,43 @@ $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 # Initialize BasePath variable
 $BasePath = $null
 
-# If the build version is too old, skip UNC paths and go directly to local drives.
-if (-not $IsOldBuild)
+# Search for directories matching '*storeman*' in the root of $env:SystemDrive
+$storemanDirs = Get-ChildItem -Path "$env:SystemDrive\" -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue
+
+if ($storemanDirs)
+{
+	# If more than one directory is found
+	if ($storemanDirs.Count -gt 1)
+	{
+		# Retrieve a list of all current SMB shares on the system
+		$shares = Get-SmbShare -ErrorAction SilentlyContinue
+		
+		foreach ($dir in $storemanDirs)
+		{
+			# Check if the current directory is shared by comparing paths
+			$matchingShare = $shares | Where-Object { $_.Path -eq $dir.FullName }
+			if ($matchingShare)
+			{
+				$BasePath = $dir.FullName
+				break
+			}
+		}
+		
+		# If no shared directory was found among the multiples, select the first one by default
+		if (-not $BasePath)
+		{
+			$BasePath = $storemanDirs[0].FullName
+		}
+	}
+	else
+	{
+		# Only one storeman directory exists; select it directly
+		$BasePath = $storemanDirs[0].FullName
+	}
+}
+
+# If no local storeman directory was found or BasePath isn't set, proceed to check UNC paths.
+if (-not $BasePath)
 {
 	# Define the UNC paths to check in order of priority
 	$uncPaths = @(
@@ -101,24 +137,14 @@ if (-not $IsOldBuild)
 	}
 }
 
-# If no UNC path is found or build is old, proceed to check the system drive
-if (-not $BasePath)
-{
-	# Search for directories matching '*storeman*' in the root of $env:SystemDrive
-	$storemanDirs = Get-ChildItem -Path "$env:SystemDrive\" -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue
-	
-	if ($storemanDirs)
-	{
-		# Select the first matching directory
-		$BasePath = $storemanDirs[0].FullName
-	}
-}
-
-# Final check to ensure BasePath was set, defaulting to $env:SystemDrive\storeman if not found
+# Final check to ensure BasePath was set; default to $env:SystemDrive\storeman if not found
 if (-not $BasePath)
 {
 	$BasePath = "$env:SystemDrive\storeman"
 }
+
+# Output or use $BasePath as needed
+Write-Host "Selected (storeman) folder: '$BasePath'" -ForegroundColor Magenta
 
 # Now that we have a valid $BaseUNCPath, define the rest of the paths
 $OfficePath = Join-Path $BasePath "office"
@@ -1846,7 +1872,7 @@ function Clear-XEFolder
 }
 
 # ===================================================================================================
-#                                  SECTION: Process-FatalErrorsFromXEFolder
+#                                  SECTION: Fix-Journal
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Processes EJ files within a ZX folder to correct specific lines based on a user-provided date.
