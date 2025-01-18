@@ -2481,11 +2481,17 @@ DELETE FROM Header_dct WHERE F909 < DATEADD(day, -14, GETDATE());
 DELETE FROM Header_old WHERE F909 < DATEADD(day, -14, GETDATE());
 DELETE FROM Header_sav WHERE F909 < DATEADD(day, -14, GETDATE());
 
-/* Shrink database and log files */
+/* Rebuild indexes and update database statistics */
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD';
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN';
+
+/* Shrink the main database file */
 DBCC SHRINKFILE ($storeDbName);
+
+/* Shrink the database log file */
 DBCC SHRINKFILE (${storeDbName}_Log);
+
+/* Restrict the indefinite log file growth */
 ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 "@
 	
