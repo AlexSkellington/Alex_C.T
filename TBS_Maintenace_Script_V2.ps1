@@ -3070,13 +3070,18 @@ function Execute-SQLLocallyGUI
 		}
 	}
 	
-	# ----------------------------
-	# Append TrustServerCertificate if not already set
-	# ----------------------------
+	# Ensure the connection string contains Encrypt=True and TrustServerCertificate=True.
+	if ($ConnectionString -notmatch '(?i)Encrypt\s*=')
+	{
+		$ConnectionString += ";Encrypt=True"
+	}
 	if ($ConnectionString -notmatch '(?i)TrustServerCertificate\s*=')
 	{
 		$ConnectionString += ";TrustServerCertificate=True"
 	}
+	
+	# Optionally, log the connection string for debugging (remove sensitive info if necessary)
+	Write-Log "Using connection string: $ConnectionString" "gray"
 	
 	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
 	$supportsConnectionString = $false
@@ -3134,7 +3139,7 @@ function Execute-SQLLocallyGUI
 				{
 					if ($supportsConnectionString)
 					{
-						# Using the connection string that now includes TrustServerCertificate=True
+						# Using the connection string that now includes Encrypt and TrustServerCertificate
 						Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
 					}
 					else
