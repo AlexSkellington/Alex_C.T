@@ -8316,10 +8316,11 @@ function Send-RestartAllPrograms
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deploys a drawer control SQI command to selected lanes for a specified store.
-#   The function first prompts the user to enter the desired drawer state (0 = disable, 1 = enable)
-#   and then uses the Show-SelectionDialog GUI (in "Store" mode) to allow selection of one or more lanes.
-#   For each selected lane, the function writes an SQI file with the embedded drawer state and sends
-#   a restart command to the corresponding machine.
+#   The function first presents a GUI for the user to select the desired drawer state 
+#   (Enable = 1, Disable = 0) and then uses the Show-SelectionDialog GUI (in "Store" mode) to 
+#   allow selection of one or more lanes. For each selected lane, the function writes an SQI file 
+#   (in ANSI PC format with CRLF line endings) with the embedded drawer state and sends a restart 
+#   command to the corresponding machine.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   - StoreNumber: The store number to process. (Mandatory)
@@ -8340,48 +8341,60 @@ function SetDrawerControl
 	
 	Write-Log "==================== Starting SetDrawerControl ====================" "blue"
 	
-	# -------------------------------
-	# STEP 1: Prompt for Drawer State
-	# -------------------------------
+	# --------------------------------------------------
+	# STEP 1: Prompt for Drawer State using Enable/Disable radio buttons
+	# --------------------------------------------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
 	$stateForm = New-Object System.Windows.Forms.Form
-	$stateForm.Text = "Drawer State Selection"
-	$stateForm.Size = New-Object System.Drawing.Size(400, 150)
+	$stateForm.Text = "Select Drawer State"
+	$stateForm.Size = New-Object System.Drawing.Size(400, 200)
 	$stateForm.StartPosition = "CenterScreen"
 	
 	$stateLabel = New-Object System.Windows.Forms.Label
-	$stateLabel.Text = "Enter Drawer State (0 = disable, 1 = enable):"
+	$stateLabel.Text = "Select Drawer State:"
 	$stateLabel.Location = New-Object System.Drawing.Point(10, 20)
 	$stateLabel.AutoSize = $true
 	$stateForm.Controls.Add($stateLabel)
 	
-	$stateTextBox = New-Object System.Windows.Forms.TextBox
-	$stateTextBox.Location = New-Object System.Drawing.Point(10, 50)
-	$stateTextBox.Width = 360
-	$stateForm.Controls.Add($stateTextBox)
+	# Radio button for Enable (value = 1)
+	$radioEnable = New-Object System.Windows.Forms.RadioButton
+	$radioEnable.Text = "Enable"
+	$radioEnable.Location = New-Object System.Drawing.Point(10, 50)
+	$radioEnable.AutoSize = $true
+	$radioEnable.Checked = $true # default selection
+	$stateForm.Controls.Add($radioEnable)
 	
+	# Radio button for Disable (value = 0)
+	$radioDisable = New-Object System.Windows.Forms.RadioButton
+	$radioDisable.Text = "Disable"
+	$radioDisable.Location = New-Object System.Drawing.Point(10, 80)
+	$radioDisable.AutoSize = $true
+	$stateForm.Controls.Add($radioDisable)
+	
+	# OK Button
 	$okButton = New-Object System.Windows.Forms.Button
 	$okButton.Text = "OK"
-	$okButton.Location = New-Object System.Drawing.Point(150, 80)
+	$okButton.Location = New-Object System.Drawing.Point(80, 120)
 	$okButton.Add_Click({
-			if ($stateTextBox.Text -match '^(0|1)$')
+			if ($radioEnable.Checked)
 			{
-				$stateForm.Tag = $stateTextBox.Text
-				$stateForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
-				$stateForm.Close()
+				$stateForm.Tag = "1"
 			}
-			else
+			elseif ($radioDisable.Checked)
 			{
-				[System.Windows.Forms.MessageBox]::Show("Please enter a valid drawer state (0 or 1).", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				$stateForm.Tag = "0"
 			}
+			$stateForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+			$stateForm.Close()
 		})
 	$stateForm.Controls.Add($okButton)
 	
+	# Cancel Button
 	$cancelButton = New-Object System.Windows.Forms.Button
 	$cancelButton.Text = "Cancel"
-	$cancelButton.Location = New-Object System.Drawing.Point(250, 80)
+	$cancelButton.Location = New-Object System.Drawing.Point(180, 120)
 	$cancelButton.Add_Click({
 			$stateForm.Tag = "Cancelled"
 			$stateForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -8393,21 +8406,18 @@ function SetDrawerControl
 	$stateForm.CancelButton = $cancelButton
 	
 	$resultState = $stateForm.ShowDialog()
-	
 	if ($stateForm.Tag -eq "Cancelled" -or $resultState -eq [System.Windows.Forms.DialogResult]::Cancel)
 	{
 		Write-Log "User cancelled the operation at drawer state selection." "yellow"
 		Write-Log "==================== SetDrawerControl Function Completed ====================" "blue"
 		return
 	}
-	
 	$DrawerState = $stateForm.Tag
 	Write-Log "Drawer state selected: $DrawerState" "green"
 	
-	# -------------------------------------------------
-	# STEP 2: Select Lanes using Show-SelectionDialog
-	# -------------------------------------------------
-	# Call your provided selection dialog (mode "Store" for lanes)
+	# --------------------------------------------------
+	# STEP 2: Use Show-SelectionDialog to select lanes (Store mode)
+	# --------------------------------------------------
 	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
 	if ($null -eq $selection)
 	{
@@ -8418,11 +8428,7 @@ function SetDrawerControl
 	
 	# Determine the list of lanes to process.
 	$lanesToProcess = @()
-	if ($selection.Type -eq "Specific" -or $selection.Type -eq "Range")
-	{
-		$lanesToProcess = $selection.Lanes
-	}
-	elseif ($selection.Type -eq "All")
+	if ($selection.Type -eq "Specific" -or $selection.Type -eq "Range" -or $selection.Type -eq "All")
 	{
 		$lanesToProcess = $selection.Lanes
 	}
@@ -8432,12 +8438,12 @@ function SetDrawerControl
 		return
 	}
 	
-	# -----------------------------------------------------
-	# STEP 3: For each selected lane, deploy the SQI command
-	# -----------------------------------------------------
+	# --------------------------------------------------
+	# STEP 3: For each selected lane, deploy the SQI command file in ANSI (PC) format and send restart command.
+	# --------------------------------------------------
 	foreach ($lane in $lanesToProcess)
 	{
-		# Construct the lane directory path (assumes folders named XF<StoreNumber><Lane>)
+		# Construct the lane directory path (assumes folder naming: XF<StoreNumber><Lane>)
 		$LaneDirectory = "$OfficePath\XF${StoreNumber}${lane}"
 		if (-not (Test-Path $LaneDirectory))
 		{
@@ -8459,16 +8465,23 @@ SRC=SELECT * FROM Fct_Load);
 
 DROP TABLE Fct_Load;
 "@
-		# Ensure the SQI content uses CRLF line endings
+		
+		# Ensure the SQI content uses CRLF line endings (ANSI PC format)
 		$SQIContent = $SQIContent -replace "`n", "`r`n"
 		
-		# Write the SQI file into the lane directory (named "DrawerControl.sqi")
+		# Define the full path to the SQI file (named "DrawerControl.sqi")
 		$SQIFilePath = Join-Path -Path $LaneDirectory -ChildPath "DrawerControl.sqi"
+		
+		# Write the SQI file using ASCII encoding (ANSI PC)
 		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
+		
+		# Remove the Archive attribute (set file attributes to Normal)
 		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
 		Write-Log "Deployed drawer control SQI command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
 		
-		# Retrieve node information and send a restart command to the machine for this lane
+		# --------------------------------------------------
+		# STEP 4: Retrieve node information and send the restart command
+		# --------------------------------------------------
 		$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
 		if ($nodes)
 		{
