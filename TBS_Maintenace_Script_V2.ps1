@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.8"
+$VersionNumber = "2.0.9"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -628,7 +628,7 @@ function Get-DatabaseConnectionString
 	
 	if ($StartupIniPath -ne $null)
 	{
-	#	Write-Log "Found Startup.ini at: $startupIniPath" "green"
+		#	Write-Log "Found Startup.ini at: $startupIniPath" "green"
 	}
 	
 	if (-not $StartupIniPath)
@@ -739,7 +739,7 @@ function Get-StoreNumber
 		if ($storeNumber)
 		{
 			$script:FunctionResults['StoreNumber'] = $storeNumber
-		#	Write-Log "Store number found in startup.ini: $storeNumber" "green"
+			#	Write-Log "Store number found in startup.ini: $storeNumber" "green"
 		}
 		else
 		{
@@ -1736,7 +1736,7 @@ function Clear-XEFolder
 				}
 			}
 			
-		#	Write-Log "Folder 'XE${StoreNumber}901' initially cleaned, deleting all except valid (S*) files for transaction closing." "green"
+			#	Write-Log "Folder 'XE${StoreNumber}901' initially cleaned, deleting all except valid (S*) files for transaction closing." "green"
 		}
 		catch
 		{
@@ -1861,7 +1861,7 @@ function Clear-XEFolder
 			}
 		} -ArgumentList $folderPath, $checkIntervalSeconds, $StoreNumber, $OfficePath
 		
-	#	Write-Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder, excluding FATAL* files." "green"
+		#	Write-Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder, excluding FATAL* files." "green"
 	}
 	catch
 	{
@@ -2121,7 +2121,7 @@ function Generate-SQLScripts
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
 		$dbName = $script:FunctionResults['DBNAME']
-	#	Write-Log "Using DBNAME from FunctionResults: $dbName" "blue"
+		#	Write-Log "Using DBNAME from FunctionResults: $dbName" "blue"
 		$storeDbName = $dbName
 	}
 	else
@@ -3070,6 +3070,14 @@ function Execute-SQLLocallyGUI
 		}
 	}
 	
+	# ----------------------------
+	# Append TrustServerCertificate if not already set
+	# ----------------------------
+	if ($ConnectionString -notmatch '(?i)TrustServerCertificate\s*=')
+	{
+		$ConnectionString += ";TrustServerCertificate=True"
+	}
+	
 	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
 	$supportsConnectionString = $false
 	try
@@ -3126,6 +3134,7 @@ function Execute-SQLLocallyGUI
 				{
 					if ($supportsConnectionString)
 					{
+						# Using the connection string that now includes TrustServerCertificate=True
 						Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
 					}
 					else
@@ -3133,7 +3142,17 @@ function Execute-SQLLocallyGUI
 						# Parse ServerInstance and Database from ConnectionString
 						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
 						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
-						Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+						
+						# Check if Invoke-Sqlcmd supports the -TrustServerCertificate parameter
+						$cmdParams = (Get-Command Invoke-Sqlcmd).Parameters.Keys
+						if ($cmdParams -contains 'TrustServerCertificate')
+						{
+							Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0 -TrustServerCertificate $true
+						}
+						else
+						{
+							Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+						}
 					}
 					Write-Log "Section '$sectionName' executed successfully." "green"
 				}
@@ -3143,7 +3162,16 @@ function Execute-SQLLocallyGUI
 					{
 						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
 						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
-						Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+						# Try to use the TrustServerCertificate flag if available
+						$cmdParams = (Get-Command Invoke-Sqlcmd).Parameters.Keys
+						if ($cmdParams -contains 'TrustServerCertificate')
+						{
+							Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0 -TrustServerCertificate $true
+						}
+						else
+						{
+							Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
+						}
 						Write-Log "Section '$sectionName' executed successfully with fallback." "green"
 					}
 					catch
@@ -7584,7 +7612,7 @@ ORDER BY F1000,F1063;
 			}
 			else
 			{
-			#	Write-Log "Archive bit was not set for '$PumpAllItemsTablesFilePath'." "yellow"
+				#	Write-Log "Archive bit was not set for '$PumpAllItemsTablesFilePath'." "yellow"
 			}
 		}
 		else
@@ -8223,7 +8251,7 @@ function Send-RestartAllPrograms
 	)
 	
 	Write-Log "`r`n==================== Starting Send-RestartAllPrograms Function ====================`r`n" "blue"
-		
+	
 	# Retrieve node information for the specified store to obtain lane-machine mapping.
 	$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
 	if (-not $nodes)
@@ -8977,7 +9005,7 @@ if (-not $SilentMode)
 					Delete-Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql" #"Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
 				}
 			})
-				
+		
 		# Create a Clear Log button
 		$clearLogButton = New-Object System.Windows.Forms.Button
 		$clearLogButton.Text = "Clear Log"
@@ -9120,7 +9148,7 @@ if (-not $SilentMode)
 		$activateItem.Add_Click({
 				Invoke-SecureScript # your existing function call
 			})
-		[void] $contextMenuGeneral.Items.Add($activateItem)
+		[void]$contextMenuGeneral.Items.Add($activateItem)
 		
 		############################################################################
 		# 2) Reboot System
@@ -9142,8 +9170,8 @@ if (-not $SilentMode)
 								 "TBS_Maintenance_Script.ps1"
 				}
 			})
-		[void] $contextMenuGeneral.Items.Add($rebootItem)
-				
+		[void]$contextMenuGeneral.Items.Add($rebootItem)
+		
 		############################################################################
 		# 3) Install Function in SMS
 		############################################################################
@@ -9152,7 +9180,7 @@ if (-not $SilentMode)
 		$installIntoSMSItem.Add_Click({
 				InstallIntoSMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 			})
-		[void] $contextMenuGeneral.Items.Add($installIntoSMSItem)
+		[void]$contextMenuGeneral.Items.Add($installIntoSMSItem)
 		
 		############################################################################
 		# 4) Repair BMS Service
@@ -9162,7 +9190,7 @@ if (-not $SilentMode)
 		$repairBMSItem.Add_Click({
 				Repair-BMS
 			})
-		[void] $contextMenuGeneral.Items.Add($repairBMSItem)
+		[void]$contextMenuGeneral.Items.Add($repairBMSItem)
 		
 		############################################################################
 		# 5) Manual Repair
@@ -9172,7 +9200,7 @@ if (-not $SilentMode)
 		$manualRepairItem.Add_Click({
 				Write-SQLScriptsToDesktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
 			})
-		[void] $contextMenuGeneral.Items.Add($manualRepairItem)
+		[void]$contextMenuGeneral.Items.Add($manualRepairItem)
 		
 		############################################################################
 		# 6) Fix Journal
@@ -9182,7 +9210,7 @@ if (-not $SilentMode)
 		$fixJournalItem.Add_Click({
 				Fix-Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
 			})
-		[void] $contextMenuGeneral.Items.Add($fixJournalItem)
+		[void]$contextMenuGeneral.Items.Add($fixJournalItem)
 		
 		############################################################################
 		
@@ -9208,14 +9236,14 @@ if (-not $SilentMode)
 		# Finally, add the Server Tools button to the form
 		############################################################################			
 		$form.Controls.Add($GeneralToolsButton)
-				
+		
 		# ===================================================================================================
 		#                                       SECTION: GUI Buttons Setup
 		# ---------------------------------------------------------------------------------------------------
 		# Description:
 		#   Sets up the buttons on the main form, including their size, position, and labels based on the processing mode.
 		# ===================================================================================================
-				
+		
 		# Create Host Specific Buttons
 		if ($Mode -eq "Host")
 		{
@@ -9292,7 +9320,7 @@ if (-not $SilentMode)
 			$HostToolsButton.Add_Click({
 					# Show the menu at (0, button height) => just below the button
 					$ContextMenuServer.Show($HostToolsButton, 0, $HostToolsButton.Height)
-				}) 
+				})
 			
 			############################################################################
 			# (Optional) If you have a ToolTip object for normal controls:
@@ -9303,7 +9331,7 @@ if (-not $SilentMode)
 			# Finally, add the Server Tools button to the form
 			############################################################################			
 			$form.Controls.Add($HostToolsButton)
-						
+			
 			# Store DB Repair Button
 			$hostButton2 = New-Object System.Windows.Forms.Button
 			$hostButton2.Text = "Store DB Repair"
@@ -9314,7 +9342,7 @@ if (-not $SilentMode)
 				})
 			$form.Controls.Add($hostButton2)
 			# Set ToolTip
-			$toolTip.SetToolTip($hostButton2, "Repair the Store databases.")			
+			$toolTip.SetToolTip($hostButton2, "Repair the Store databases.")
 			
 			# Create a Scheduled Task Button
 			$hostButton5 = New-Object System.Windows.Forms.Button
@@ -9432,7 +9460,7 @@ if (-not $SilentMode)
 					}
 				})
 			[void]$ContextMenuServer.Items.Add($ConfigureSystemSettingsItem)
-						
+			
 			############################################################################
 			# Show the context menu when the Server Tools button is clicked
 			############################################################################
