@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.0.9"
+$VersionNumber = "2.1.0"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -8312,6 +8312,194 @@ function Send-RestartAllPrograms
 }
 
 # ===================================================================================================
+#                                       FUNCTION: SetDrawerControl
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Deploys a drawer control SQI command to selected lanes for a specified store.
+#   The function first prompts the user to enter the desired drawer state (0 = disable, 1 = enable)
+#   and then uses the Show-SelectionDialog GUI (in "Store" mode) to allow selection of one or more lanes.
+#   For each selected lane, the function writes an SQI file with the embedded drawer state and sends
+#   a restart command to the corresponding machine.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - StoreNumber: The store number to process. (Mandatory)
+# ---------------------------------------------------------------------------------------------------
+# Requirements:
+#   - The Show-SelectionDialog function must be available.
+#   - Variables such as $OfficePath must be defined.
+#   - Helper functions like Write-Log, Retrieve-Nodes, and the class [MailslotSender] must be available.
+# ===================================================================================================
+
+function SetDrawerControl
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	Write-Log "==================== Starting SetDrawerControl ====================" "blue"
+	
+	# -------------------------------
+	# STEP 1: Prompt for Drawer State
+	# -------------------------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	$stateForm = New-Object System.Windows.Forms.Form
+	$stateForm.Text = "Drawer State Selection"
+	$stateForm.Size = New-Object System.Drawing.Size(400, 150)
+	$stateForm.StartPosition = "CenterScreen"
+	
+	$stateLabel = New-Object System.Windows.Forms.Label
+	$stateLabel.Text = "Enter Drawer State (0 = disable, 1 = enable):"
+	$stateLabel.Location = New-Object System.Drawing.Point(10, 20)
+	$stateLabel.AutoSize = $true
+	$stateForm.Controls.Add($stateLabel)
+	
+	$stateTextBox = New-Object System.Windows.Forms.TextBox
+	$stateTextBox.Location = New-Object System.Drawing.Point(10, 50)
+	$stateTextBox.Width = 360
+	$stateForm.Controls.Add($stateTextBox)
+	
+	$okButton = New-Object System.Windows.Forms.Button
+	$okButton.Text = "OK"
+	$okButton.Location = New-Object System.Drawing.Point(150, 80)
+	$okButton.Add_Click({
+			if ($stateTextBox.Text -match '^(0|1)$')
+			{
+				$stateForm.Tag = $stateTextBox.Text
+				$stateForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+				$stateForm.Close()
+			}
+			else
+			{
+				[System.Windows.Forms.MessageBox]::Show("Please enter a valid drawer state (0 or 1).", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			}
+		})
+	$stateForm.Controls.Add($okButton)
+	
+	$cancelButton = New-Object System.Windows.Forms.Button
+	$cancelButton.Text = "Cancel"
+	$cancelButton.Location = New-Object System.Drawing.Point(250, 80)
+	$cancelButton.Add_Click({
+			$stateForm.Tag = "Cancelled"
+			$stateForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+			$stateForm.Close()
+		})
+	$stateForm.Controls.Add($cancelButton)
+	
+	$stateForm.AcceptButton = $okButton
+	$stateForm.CancelButton = $cancelButton
+	
+	$resultState = $stateForm.ShowDialog()
+	
+	if ($stateForm.Tag -eq "Cancelled" -or $resultState -eq [System.Windows.Forms.DialogResult]::Cancel)
+	{
+		Write-Log "User cancelled the operation at drawer state selection." "yellow"
+		Write-Log "==================== SetDrawerControl Function Completed ====================" "blue"
+		return
+	}
+	
+	$DrawerState = $stateForm.Tag
+	Write-Log "Drawer state selected: $DrawerState" "green"
+	
+	# -------------------------------------------------
+	# STEP 2: Select Lanes using Show-SelectionDialog
+	# -------------------------------------------------
+	# Call your provided selection dialog (mode "Store" for lanes)
+	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+	if ($null -eq $selection)
+	{
+		Write-Log "No lanes selected or selection cancelled." "yellow"
+		Write-Log "==================== SetDrawerControl Function Completed ====================" "blue"
+		return
+	}
+	
+	# Determine the list of lanes to process.
+	$lanesToProcess = @()
+	if ($selection.Type -eq "Specific" -or $selection.Type -eq "Range")
+	{
+		$lanesToProcess = $selection.Lanes
+	}
+	elseif ($selection.Type -eq "All")
+	{
+		$lanesToProcess = $selection.Lanes
+	}
+	else
+	{
+		Write-Log "Unexpected selection type returned." "red"
+		return
+	}
+	
+	# -----------------------------------------------------
+	# STEP 3: For each selected lane, deploy the SQI command
+	# -----------------------------------------------------
+	foreach ($lane in $lanesToProcess)
+	{
+		# Construct the lane directory path (assumes folders named XF<StoreNumber><Lane>)
+		$LaneDirectory = "$OfficePath\XF${StoreNumber}${lane}"
+		if (-not (Test-Path $LaneDirectory))
+		{
+			Write-Log "Lane directory $LaneDirectory not found. Skipping lane $lane." "yellow"
+			continue
+		}
+		
+		# Define the SQI content with the chosen drawer state
+		$SQIContent = @"
+@CREATE(FCT_TAB,FCT);
+CREATE VIEW Fct_Load AS SELECT F1063,F1000,F81,F85,F96,F97,F98,F99,F100,F101,F102,F125,F172,F239,F240,F241,F242,F1042,F1043,F1044,F1045,F1046,F1047,F1050,F1051,F1052,F1053,F1054,F1055,F1064,F1081,F1082,F1083,F1084,F1085,F1086,F1088,F1089,F1090,F1091,F1092,F1147,F1817,F1818,F1895,F1897,F1965,F1966 FROM FCT_TAB;
+
+INSERT INTO Fct_Load VALUES
+(10010,'PAL',,,,,,,,,,,,,,,,1,1,1,1,1,9,'F3','TRS','Log',1,1,1,'Login operator','DRAWEROPEN=$DrawerState',,,,,,,,,,,,,,'',,,),
+
+@UPDATE_BATCH(JOB=ADD,TAR=FCT_TAB,
+KEY=F1063=:F1063 AND F1000=:F1000,
+SRC=SELECT * FROM Fct_Load);
+
+DROP TABLE Fct_Load;
+"@
+		
+		# Write the SQI file into the lane directory (named "DrawerControl.sqi")
+		$SQIFilePath = Join-Path -Path $LaneDirectory -ChildPath "DrawerControl.sqi"
+		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
+		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write-Log "Deployed drawer control SQI command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
+		
+		# Retrieve node information and send a restart command to the machine for this lane
+		$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
+		if ($nodes)
+		{
+			$machineName = $nodes.LaneMachines[$lane]
+			if ($machineName)
+			{
+				$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${lane}"
+				$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+				$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+				if ($result)
+				{
+					Write-Log "Restart command sent to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
+				}
+				else
+				{
+					Write-Log "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
+				}
+			}
+			else
+			{
+				Write-Log "No machine found for lane $lane." "yellow"
+			}
+		}
+		else
+		{
+			Write-Log "Could not retrieve node information for store $StoreNumber." "red"
+		}
+	}
+	
+	Write-Log "==================== SetDrawerControl Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                                       FUNCTION: Show-SelectionDialog
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -9577,7 +9765,17 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 			
 			############################################################################
-			# 8) Send Restart Command Menu Item
+			# 8) Drawer Control Item
+			############################################################################
+			$DrawerControlItem = New-Object System.Windows.Forms.ToolStripMenuItem("Drawer Control")
+			$DrawerControlItem.ToolTipText = "Set the Drawer Control for a lane for testing"
+			$DrawerControlItem.Add_Click({
+					SetDrawerControl -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($DrawerControlItem)
+			
+			############################################################################
+			# 9) Send Restart Command Menu Item
 			############################################################################
 			$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 			$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
@@ -9587,7 +9785,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 			
 			############################################################################
-			# 9) Reboot Lane Menu Item
+			# 10) Reboot Lane Menu Item
 			############################################################################
 			$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 			$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
