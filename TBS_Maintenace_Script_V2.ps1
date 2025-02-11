@@ -8459,6 +8459,8 @@ SRC=SELECT * FROM Fct_Load);
 
 DROP TABLE Fct_Load;
 "@
+		# Ensure the SQI content uses CRLF line endings
+		$SQIContent = $SQIContent -replace "`n", "`r`n"
 		
 		# Write the SQI file into the lane directory (named "DrawerControl.sqi")
 		$SQIFilePath = Join-Path -Path $LaneDirectory -ChildPath "DrawerControl.sqi"
