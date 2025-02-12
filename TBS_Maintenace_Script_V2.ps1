@@ -8479,7 +8479,7 @@ DROP TABLE Fct_Load;
 		
 		# Remove the Archive attribute (set file attributes to Normal)
 		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write-Log "Deployed drawer control SQI command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
+		Write-Log "Deployed Drawer_Control.sqi command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
 	}
 	Write-Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 }
