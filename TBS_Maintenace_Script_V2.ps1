@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.1.1"
+$VersionNumber = "2.1.2"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -8552,7 +8552,7 @@ function Refresh_Database
 	$SQIContent = $SQIContent -replace "`n", "`r`n"
 	
 	# --------------------------------------------------
-	# STEP 3: For each selected register, deploy the SQI file and send restart command
+	# STEP 3: For each selected register, deploy the SQI file
 	# --------------------------------------------------
 	foreach ($register in $registersToProcess)
 	{
@@ -8575,6 +8575,190 @@ function Refresh_Database
 		Write-Log "Deployed Refresh_Database.sqi command to register $register in directory $RegisterDirectory." "green"
 	}
 	Write-Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                                       FUNCTION: Retrive_Transactions
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Prompts the user for a start date and a stop date, then deploys an SQI file to selected
+#   registers for a specified store. The SQI file retrieves transactions from SAL_HDR based on the
+#   provided dates. The file is written in ANSI PC format (ASCII encoding with CRLF line endings).
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - StoreNumber: The store number to process. (Mandatory)
+# ---------------------------------------------------------------------------------------------------
+# Requirements:
+#   - The Show-SelectionDialog function must be available.
+#   - Variables such as $OfficePath must be defined.
+#   - Helper functions like Write-Log, Retrieve-Nodes, and the class [MailslotSender] must be available.
+# ===================================================================================================
+
+function Retrive_Transactions
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	Write-Log "`r`n==================== Starting Retrive_Transactions ====================`r`n" "blue"
+	
+	# --------------------------------------------------
+	# STEP 1: Prompt for Start and Stop Dates using DateTimePickers
+	# --------------------------------------------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	$dateForm = New-Object System.Windows.Forms.Form
+	$dateForm.Text = "Select Date Range for Transactions"
+	$dateForm.Size = New-Object System.Drawing.Size(400, 250)
+	$dateForm.StartPosition = "CenterScreen"
+	
+	# Start Date Label
+	$startLabel = New-Object System.Windows.Forms.Label
+	$startLabel.Text = "Start Date:"
+	$startLabel.Location = New-Object System.Drawing.Point(10, 20)
+	$startLabel.AutoSize = $true
+	$dateForm.Controls.Add($startLabel)
+	
+	# Start Date Picker
+	$startPicker = New-Object System.Windows.Forms.DateTimePicker
+	$startPicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
+	$startPicker.Location = New-Object System.Drawing.Point(100, 15)
+	$startPicker.Width = 100
+	$dateForm.Controls.Add($startPicker)
+	
+	# Stop Date Label
+	$stopLabel = New-Object System.Windows.Forms.Label
+	$stopLabel.Text = "Stop Date:"
+	$stopLabel.Location = New-Object System.Drawing.Point(10, 60)
+	$stopLabel.AutoSize = $true
+	$dateForm.Controls.Add($stopLabel)
+	
+	# Stop Date Picker
+	$stopPicker = New-Object System.Windows.Forms.DateTimePicker
+	$stopPicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
+	$stopPicker.Location = New-Object System.Drawing.Point(100, 55)
+	$stopPicker.Width = 100
+	$dateForm.Controls.Add($stopPicker)
+	
+	# OK Button
+	$okButton = New-Object System.Windows.Forms.Button
+	$okButton.Text = "OK"
+	$okButton.Location = New-Object System.Drawing.Point(80, 120)
+	$okButton.Add_Click({
+			$dateForm.Tag = @{
+				StartDate = $startPicker.Value
+				StopDate  = $stopPicker.Value
+			}
+			$dateForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+			$dateForm.Close()
+		})
+	$dateForm.Controls.Add($okButton)
+	
+	# Cancel Button
+	$cancelButton = New-Object System.Windows.Forms.Button
+	$cancelButton.Text = "Cancel"
+	$cancelButton.Location = New-Object System.Drawing.Point(180, 120)
+	$cancelButton.Add_Click({
+			$dateForm.Tag = "Cancelled"
+			$dateForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+			$dateForm.Close()
+		})
+	$dateForm.Controls.Add($cancelButton)
+	
+	$dateForm.AcceptButton = $okButton
+	$dateForm.CancelButton = $cancelButton
+	
+	$resultDate = $dateForm.ShowDialog()
+	if ($dateForm.Tag -eq "Cancelled" -or $resultDate -eq [System.Windows.Forms.DialogResult]::Cancel)
+	{
+		Write-Log "User cancelled the date selection." "yellow"
+		Write-Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
+		return
+	}
+	
+	# Format the dates as ddMMyyyy
+	$startDateFormatted = $dateForm.Tag.StartDate.ToString("ddMMyyyy")
+	$stopDateFormatted = $dateForm.Tag.StopDate.ToString("ddMMyyyy")
+	Write-Log "Start Date selected: $startDateFormatted" "green"
+	Write-Log "Stop Date selected: $stopDateFormatted" "green"
+	
+	# --------------------------------------------------
+	# STEP 2: Use Show-SelectionDialog to select registers (lanes)
+	# --------------------------------------------------
+	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+	if ($null -eq $selection)
+	{
+		Write-Log "No registers selected or selection cancelled." "yellow"
+		Write-Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
+		return
+	}
+	
+	# Get the list of registers (lanes) to process.
+	$registersToProcess = @()
+	if ($selection.Type -eq "Specific" -or $selection.Type -eq "Range" -or $selection.Type -eq "All")
+	{
+		$registersToProcess = $selection.Lanes
+	}
+	else
+	{
+		Write-Log "Unexpected selection type returned." "red"
+		return
+	}
+	
+	# --------------------------------------------------
+	# STEP 3: Build the SQI content using the selected dates
+	# --------------------------------------------------
+	$SQIContent = @"
+@WIZSET(DETAIL=D);
+@WIZINIT;
+@WIZDATES(START=$startDateFormatted,STOP=$stopDateFormatted);
+@WIZDISPLAY;
+
+@WIZINIT;
+@WIZFIL(FIL1=0,FIL2=99999999,SELECT F1032,F254,F1036 FROM SAL_HDR@WIZGET(TRANS_LOCAL) 
+WHERE F1067='CLOSE' and  F254>='@WIZGET(START)' and F254<='@WIZGET(STOP)'
+ORDER BY F1032);
+@WIZFIL(FRM,width=700,label='SELECT A RANGE OF TRANSACTIONS');
+@WIZDISPLAY;
+
+@WIZRPL(TRANS_LIST=SAL_HDR_SUS@TER);
+@CREATE(@WIZGET(TRANS_LIST),HDRSAL);
+
+INSERT INTO @WIZGET(TRANS_LIST) SELECT @DBFLD(@WIZGET(TRANS_LIST)) FROM SAL_HDR@WIZGET(TRANS_LOCAL)
+WHERE F1067='CLOSE' and F254>='@WIZGET(START)' and F254<='@WIZGET(STOP)' AND
+F1032>=@WIZGET(FIL1) and F1032<=@WIZGET(FIL2);
+"@
+	
+	# Ensure the SQI content uses CRLF line endings (ANSI PC format)
+	$SQIContent = $SQIContent -replace "`n", "`r`n"
+	
+	# --------------------------------------------------
+	# STEP 4: For each selected register, deploy the SQI file
+	# --------------------------------------------------
+	foreach ($reg in $registersToProcess)
+	{
+		# Construct the register (lane) directory path (assumes naming: XF<StoreNumber><Register>)
+		$RegisterDirectory = "$OfficePath\XF${StoreNumber}${reg}"
+		if (-not (Test-Path $RegisterDirectory))
+		{
+			Write-Log "Register directory $RegisterDirectory not found. Skipping register $reg." "yellow"
+			continue
+		}
+		
+		# Define the full path to the SQI file (named "Retrive_Transactions.sqi")
+		$SQIFilePath = Join-Path -Path $RegisterDirectory -ChildPath "Retrive_Transactions.sqi"
+		
+		# Write the SQI file using ASCII encoding (ANSI PC)
+		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
+		
+		# Remove the Archive attribute (set file attributes to Normal)
+		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write-Log "Deployed Retrive_Transactions.sqi command to register $reg in directory $RegisterDirectory." "green"
+	}
+	Write-Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -9843,7 +10027,17 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 			
 			############################################################################
-			# 8) Drawer Control Item
+			# 8) Retrieve Transactions fron lanes
+			############################################################################
+			$RetrieveTransactionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions")
+			$RetrieveTransactionsItem.ToolTipText = "Retrive Transactions from the lane/s."
+			$RetrieveTransactionsItem.Add_Click({
+					Retrive_Transactions -Mode $Mode -StoreNumber "$StoreNumber"
+				})
+			[void]$ContextMenuLane.Items.Add($RetrieveTransactionsItem)
+			
+			############################################################################
+			# 9) Drawer Control Item
 			############################################################################
 			$DrawerControlItem = New-Object System.Windows.Forms.ToolStripMenuItem("Drawer Control")
 			$DrawerControlItem.ToolTipText = "Set the Drawer Control for a lane for testing"
@@ -9853,7 +10047,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($DrawerControlItem)
 			
 			############################################################################
-			# 9) Drawer Control Item
+			# 10) Drawer Control Item
 			############################################################################
 			$RefreshDatabaseItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh Database")
 			$RefreshDatabaseItem.ToolTipText = "Refresh the database at the lane/s"
@@ -9863,7 +10057,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 			
 			############################################################################
-			# 10) Send Restart Command Menu Item
+			# 11) Send Restart Command Menu Item
 			############################################################################
 			$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 			$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
@@ -9873,7 +10067,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 			
 			############################################################################
-			# 11) Reboot Lane Menu Item
+			# 12) Reboot Lane Menu Item
 			############################################################################
 			$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 			$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
