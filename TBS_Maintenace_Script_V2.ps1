@@ -8339,7 +8339,7 @@ function Drawer_Control
 		[string]$StoreNumber
 	)
 	
-	Write-Log "==================== Starting Drawer_Control ====================`r`n" "blue"
+	Write-Log "`r`n==================== Starting Drawer_Control ====================`r`n" "blue"
 	
 	# --------------------------------------------------
 	# STEP 1: Prompt for Drawer State using Enable/Disable radio buttons
@@ -8515,7 +8515,7 @@ function Refresh_Database
 		[string]$StoreNumber
 	)
 	
-	Write-Log "==================== Starting Refresh_Database ====================`r`n" "blue"
+	Write-Log "`r`n==================== Starting Refresh_Database ====================`r`n" "blue"
 	
 	# --------------------------------------------------
 	# STEP 1: Use Show-SelectionDialog to select registers
