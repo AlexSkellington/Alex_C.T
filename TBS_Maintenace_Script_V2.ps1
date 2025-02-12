@@ -8680,8 +8680,8 @@ function Retrive_Transactions
 	}
 	
 	# Format the dates as ddMMyyyy
-	$startDateFormatted = $dateForm.Tag.StartDate.ToString("ddMMyyyy")
-	$stopDateFormatted = $dateForm.Tag.StopDate.ToString("ddMMyyyy")
+	$startDateFormatted = $dateForm.Tag.StartDate.ToString("yyyyMMdd")
+	$stopDateFormatted = $dateForm.Tag.StopDate.ToString("yyyyMMdd")
 	Write-Log "Start Date selected: $startDateFormatted" "green"
 	Write-Log "Stop Date selected: $stopDateFormatted" "green"
 	
