@@ -8680,8 +8680,8 @@ function Retrive_Transactions
 	}
 	
 	# Format the dates as ddMMyyyy
-	$startDateFormatted = $dateForm.Tag.StartDate.ToString("yyyyMMdd")
-	$stopDateFormatted = $dateForm.Tag.StopDate.ToString("yyyyMMdd")
+	$startDateFormatted = $dateForm.Tag.StartDate.ToString("dd/MM/yyyy")
+	$stopDateFormatted = $dateForm.Tag.StopDate.ToString("dd/MM/yyyy")
 	Write-Log "Start Date selected: $startDateFormatted" "green"
 	Write-Log "Stop Date selected: $stopDateFormatted" "green"
 	
@@ -8715,14 +8715,12 @@ function Retrive_Transactions
 @WIZSET(DETAIL=D);
 @WIZINIT;
 @WIZDATES(START=$startDateFormatted,STOP=$stopDateFormatted);
-@WIZDISPLAY;
 
 @WIZINIT;
 @WIZFIL(FIL1=0,FIL2=99999999,SELECT F1032,F254,F1036 FROM SAL_HDR@WIZGET(TRANS_LOCAL) 
 WHERE F1067='CLOSE' and  F254>='@WIZGET(START)' and F254<='@WIZGET(STOP)'
 ORDER BY F1032);
 @WIZFIL(FRM,width=700,label='SELECT A RANGE OF TRANSACTIONS');
-@WIZDISPLAY;
 
 @WIZRPL(TRANS_LIST=SAL_HDR_SUS@TER);
 @CREATE(@WIZGET(TRANS_LIST),HDRSAL);
