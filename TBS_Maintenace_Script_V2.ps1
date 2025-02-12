@@ -8713,7 +8713,8 @@ function Retrive_Transactions
 	# --------------------------------------------------
 	$SQIContent = @"
 @WIZSET(DETAIL=D);
-@WIZSET(START=$startDateFormatted,STOP=$stopDateFormatted);
+@WIZSET(START=$startDateFormatted);
+@WIZSET(STOP=$stopDateFormatted);
 
 @WIZFIL(FIL1=0,FIL2=99999999,SELECT F1032,F254,F1036 FROM SAL_HDR@WIZGET(TRANS_LOCAL) 
 WHERE F1067='CLOSE' and  F254>='@WIZGET(START)' and F254<='@WIZGET(STOP)'
