@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.1.0"
+$VersionNumber = "2.1.1"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -4467,7 +4467,7 @@ INSERT INTO Run_Load VALUES
 (125,'@TER','sql=UPDATE_AUTOMATIC','@TER',,,,1,'Automatic update execution',,0,,'',1,,,),
 (250,'SMS','sqi=TRS_POS_BANK_EOS_PUP OUTPUT=RECEIPT','901',,,,1,'Automatic bank close',,,,,1,,,);
 
-@UPDATE_BATCH(JOB=ADD,TAR=RUN_TAB,
+@UPDATE_BATCH(JOB=ADDRPL,TAR=RUN_TAB,
 KEY=F1102=:F1102 AND F1000=:F1000,
 SRC=SELECT * FROM Run_Load);
 
@@ -4483,7 +4483,7 @@ INSERT INTO Lnk_Load VALUES
 	
 	$lnkLoadFooter = @"
 
-@UPDATE_BATCH(JOB=ADD,TAR=LNK_TAB,
+@UPDATE_BATCH(JOB=ADDRPL,TAR=LNK_TAB,
 KEY=F1000=:F1000 AND F1056=:F1056 AND F1057=:F1057,
 SRC=SELECT * FROM Lnk_Load);
 
@@ -4499,7 +4499,7 @@ INSERT INTO Sto_Load VALUES
 	
 	$stoLoadFooter = @"
 
-@UPDATE_BATCH(JOB=ADD,TAR=STO_TAB,
+@UPDATE_BATCH(JOB=ADDRPL,TAR=STO_TAB,
 KEY=F1000=:F1000,
 SRC=SELECT * FROM Sto_Load);
 
@@ -4515,7 +4515,7 @@ INSERT INTO Ter_Load VALUES
 	
 	$terLoadFooter = @"
 
-@UPDATE_BATCH(JOB=ADD,TAR=TER_TAB,
+@UPDATE_BATCH(JOB=ADDRPL,TAR=TER_TAB,
 KEY=F1056=:F1056 AND F1057=:F1057,
 SRC=SELECT * FROM Ter_Load);
 
@@ -8312,7 +8312,7 @@ function Send-RestartAllPrograms
 }
 
 # ===================================================================================================
-#                                       FUNCTION: SetDrawerControl
+#                                       FUNCTION: Drawer_Control
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deploys a drawer control SQI command to selected lanes for a specified store.
@@ -8331,7 +8331,7 @@ function Send-RestartAllPrograms
 #   - Helper functions like Write-Log, Retrieve-Nodes, and the class [MailslotSender] must be available.
 # ===================================================================================================
 
-function SetDrawerControl
+function Drawer_Control
 {
 	[CmdletBinding()]
 	param (
@@ -8339,7 +8339,7 @@ function SetDrawerControl
 		[string]$StoreNumber
 	)
 	
-	Write-Log "==================== Starting SetDrawerControl ====================" "blue"
+	Write-Log "==================== Starting Drawer_Control ====================`r`n" "blue"
 	
 	# --------------------------------------------------
 	# STEP 1: Prompt for Drawer State using Enable/Disable radio buttons
@@ -8409,7 +8409,7 @@ function SetDrawerControl
 	if ($stateForm.Tag -eq "Cancelled" -or $resultState -eq [System.Windows.Forms.DialogResult]::Cancel)
 	{
 		Write-Log "User cancelled the operation at drawer state selection." "yellow"
-		Write-Log "==================== SetDrawerControl Function Completed ====================" "blue"
+		Write-Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 		return
 	}
 	$DrawerState = $stateForm.Tag
@@ -8422,7 +8422,7 @@ function SetDrawerControl
 	if ($null -eq $selection)
 	{
 		Write-Log "No lanes selected or selection cancelled." "yellow"
-		Write-Log "==================== SetDrawerControl Function Completed ====================" "blue"
+		Write-Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 		return
 	}
 	
@@ -8463,6 +8463,9 @@ KEY=F1063=:F1063 AND F1000=:F1000,
 SRC=SELECT * FROM Fct_Load);
 
 DROP TABLE Fct_Load;
+
+@WIZSET(TARGET=@TER);
+@EXEC(SQM=exe_activate_accept_sys);
 "@
 		
 		# Ensure the SQI content uses CRLF line endings (ANSI PC format)
@@ -8477,40 +8480,101 @@ DROP TABLE Fct_Load;
 		# Remove the Archive attribute (set file attributes to Normal)
 		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
 		Write-Log "Deployed drawer control SQI command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
-		
-		# --------------------------------------------------
-		# STEP 4: Retrieve node information and send the restart command
-		# --------------------------------------------------
-		$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
-		if ($nodes)
-		{
-			$machineName = $nodes.LaneMachines[$lane]
-			if ($machineName)
-			{
-				$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${lane}"
-				$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
-				$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
-				if ($result)
-				{
-					Write-Log "Restart command sent to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
-				}
-				else
-				{
-					Write-Log "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
-				}
-			}
-			else
-			{
-				Write-Log "No machine found for lane $lane." "yellow"
-			}
-		}
-		else
-		{
-			Write-Log "Could not retrieve node information for store $StoreNumber." "red"
-		}
+		Write-Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
+	}
+}
+
+# ===================================================================================================
+#                                       FUNCTION: Refresh_Database
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Deploys a database refresh SQI command to selected registers for a specified store.
+#   The function uses the Show-SelectionDialog GUI (in "Store" mode) to allow selection of one or 
+#   more registers. For each selected register, it writes an SQI file (in ANSI PC format with CRLF 
+#   line endings) containing:
+#
+#       @WIZSET(TARGET=@TER);
+#       @EXEC(SQM=exe_activate_accept_sys);
+#
+#   Then, it sends a restart command to the corresponding machine.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - StoreNumber: The store number to process. (Mandatory)
+# ---------------------------------------------------------------------------------------------------
+# Requirements:
+#   - The Show-SelectionDialog function must be available.
+#   - Variables such as $OfficePath must be defined.
+#   - Helper functions like Write-Log, Retrieve-Nodes, and the class [MailslotSender] must be available.
+# ===================================================================================================
+
+function Refresh_Database
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	Write-Log "==================== Starting Refresh_Database ====================`r`n" "blue"
+	
+	# --------------------------------------------------
+	# STEP 1: Use Show-SelectionDialog to select registers
+	# --------------------------------------------------
+	# The Show-SelectionDialog function is assumed to be available and operating in "Store" mode.
+	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+	if ($null -eq $selection)
+	{
+		Write-Log "No registers selected or selection cancelled." "yellow"
+		Write-Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
+		return
 	}
 	
-	Write-Log "==================== SetDrawerControl Function Completed ====================" "blue"
+	# Determine the list of registers to process.
+	$registersToProcess = @()
+	if ($selection.Type -eq "Specific" -or $selection.Type -eq "Range" -or $selection.Type -eq "All")
+	{
+		$registersToProcess = $selection.Lanes # In this context, each "lane" is treated as a register.
+	}
+	else
+	{
+		Write-Log "Unexpected selection type returned." "red"
+		return
+	}
+	
+	# --------------------------------------------------
+	# STEP 2: Define the SQI content to refresh the database
+	# --------------------------------------------------
+	$SQIContent = @"
+@WIZSET(TARGET=@TER);
+@EXEC(SQM=exe_activate_accept_sys);
+"@
+	# Ensure the SQI content uses CRLF line endings (ANSI PC format)
+	$SQIContent = $SQIContent -replace "`n", "`r`n"
+	
+	# --------------------------------------------------
+	# STEP 3: For each selected register, deploy the SQI file and send restart command
+	# --------------------------------------------------
+	foreach ($register in $registersToProcess)
+	{
+		# Construct the register directory path (assumes folder naming: XF<StoreNumber><Register>)
+		$RegisterDirectory = "$OfficePath\XF${StoreNumber}${register}"
+		if (-not (Test-Path $RegisterDirectory))
+		{
+			Write-Log "Register directory $RegisterDirectory not found. Skipping register $register." "yellow"
+			continue
+		}
+		
+		# Define the full path to the SQI file (named "Refresh_Database.sqi")
+		$SQIFilePath = Join-Path -Path $RegisterDirectory -ChildPath "Refresh_Database.sqi"
+		
+		# Write the SQI file in ANSI (PC) format (using ASCII encoding)
+		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
+		
+		# Remove the Archive attribute (set file attributes to Normal)
+		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write-Log "Deployed Refresh_Database.sqi command to register $register in directory $RegisterDirectory." "green"
+		Write-Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
+	}
 }
 
 # ===================================================================================================
@@ -9784,12 +9848,22 @@ if (-not $SilentMode)
 			$DrawerControlItem = New-Object System.Windows.Forms.ToolStripMenuItem("Drawer Control")
 			$DrawerControlItem.ToolTipText = "Set the Drawer Control for a lane for testing"
 			$DrawerControlItem.Add_Click({
-					SetDrawerControl -StoreNumber $StoreNumber
+					Drawer_Control -StoreNumber $StoreNumber
 				})
 			[void]$ContextMenuLane.Items.Add($DrawerControlItem)
 			
 			############################################################################
-			# 9) Send Restart Command Menu Item
+			# 9) Drawer Control Item
+			############################################################################
+			$RefreshDatabaseItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh Database")
+			$RefreshDatabaseItem.ToolTipText = "Refresh the database at the lane/s"
+			$RefreshDatabaseItem.Add_Click({
+					Refresh_Database -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
+			
+			############################################################################
+			# 10) Send Restart Command Menu Item
 			############################################################################
 			$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 			$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
@@ -9799,7 +9873,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 			
 			############################################################################
-			# 10) Reboot Lane Menu Item
+			# 11) Reboot Lane Menu Item
 			############################################################################
 			$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 			$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
