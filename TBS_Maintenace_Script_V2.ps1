@@ -8573,8 +8573,8 @@ function Refresh_Database
 		# Remove the Archive attribute (set file attributes to Normal)
 		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
 		Write-Log "Deployed Refresh_Database.sqi command to register $register in directory $RegisterDirectory." "green"
-		Write-Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
 	}
+	Write-Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
