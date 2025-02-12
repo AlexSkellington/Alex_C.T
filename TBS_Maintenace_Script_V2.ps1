@@ -10032,7 +10032,7 @@ if (-not $SilentMode)
 			$RetrieveTransactionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions")
 			$RetrieveTransactionsItem.ToolTipText = "Retrive Transactions from the lane/s."
 			$RetrieveTransactionsItem.Add_Click({
-					Retrive_Transactions -Mode $Mode -StoreNumber "$StoreNumber"
+					Retrive_Transactions -StoreNumber "$StoreNumber"
 				})
 			[void]$ContextMenuLane.Items.Add($RetrieveTransactionsItem)
 			
