@@ -8712,14 +8712,14 @@ function Retrive_Transactions
 	# STEP 3: Build the SQI content using the selected dates
 	# --------------------------------------------------
 	$SQIContent = @"
-@WIZSET(DETAIL=D);
+@WIZINIT;
+@WIZDISPLAY;
 
 @WIZRPL(TRANS_LIST=SAL_HDR_SUS@TER);
 @CREATE(@WIZGET(TRANS_LIST),HDRSAL);
 
 INSERT INTO @WIZGET(TRANS_LIST) SELECT @DBFLD(@WIZGET(TRANS_LIST)) FROM SAL_HDR@WIZGET(TRANS_LOCAL)
-WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatted' AND
-F1032>=0 and F1032<=99999999;
+WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatted';
 "@
 	
 	# Ensure the SQI content uses CRLF line endings (ANSI PC format)
