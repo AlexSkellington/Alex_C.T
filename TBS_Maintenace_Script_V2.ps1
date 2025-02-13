@@ -8736,7 +8736,7 @@ WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatte
 		}
 		
 		# Define the full path to the SQI file (named "Retrive_Transactions.sqi")
-		$SQIFilePath = Join-Path -Path $RegisterDirectory -ChildPath "Retrive_Transactions.sqi"
+		$SQIFilePath = Join-Path -Path $RegisterDirectory -ChildPath "trs_clt_reprocess.sqi"
 		
 		# Write the SQI file using ASCII encoding (ANSI PC)
 		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
