@@ -5787,27 +5787,27 @@ function Reboot-Lanes
 				{
 					$laneNumber = $item.LaneNumber
 					$machineName = $item.MachineName
-					Write-Host "Attempting to reboot Lane $laneNumber on machine: $machineName"
+					Write-Log "Attempting to reboot Lane $laneNumber on machine: $machineName" "Yellow"
 					try
 					{
 						# First, attempt to reboot using the shutdown command
 						$shutdownCommand = "shutdown /r /m \\$machineName /t 0 /f"
-						Write-Host "Executing: $shutdownCommand"
+						Write-Log "Executing: $shutdownCommand" "Yellow"
 						$shutdownResult = & cmd.exe /c $shutdownCommand 2>&1
 						if ($LASTEXITCODE -eq 0)
 						{
-							Write-Host "Shutdown command executed successfully for $machineName."
+							Write-Log "Shutdown command executed successfully for $machineName." "Green"
 						}
 						else
 						{
-							Write-Host "Shutdown command failed for $machineName with exit code $LASTEXITCODE. Trying Restart-Computer..."
+							Write-Log "Shutdown command failed for $machineName with exit code $LASTEXITCODE. Trying Restart-Computer..." "Red"
 							Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop
-							Write-Host "Restart-Computer command executed successfully for $machineName."
+							Write-Log "Restart-Computer command executed successfully for $machineName." "Green"
 						}
 					}
 					catch
 					{
-						Write-Host "Failed to reboot machine $machineName for Lane $laneNumber. Error: $_"
+						Write-Log "Failed to reboot machine $machineName for Lane $laneNumber. Error: $_" "Red"
 					}
 				}
 				[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected lanes.", "Reboot",
@@ -5815,11 +5815,11 @@ function Reboot-Lanes
 			}
 		})
 	
-	# "Cancel" button
+	# "Close" button
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Location = New-Object System.Drawing.Point(10, 410)
 	$btnCancel.Size = New-Object System.Drawing.Size(360, 30)
-	$btnCancel.Text = "Cancel"
+	$btnCancel.Text = "Close"
 	$btnCancel.Add_Click({
 			$form.Close()
 		})
@@ -8881,7 +8881,7 @@ function Reboot_Scales
 				foreach ($item in $selectedItems)
 				{
 					$machineName = $item.IP # Using the full IP address
-					Write-Host "Attempting to reboot scale: $($item.DisplayName) at $machineName"
+					Write-Log "Attempting to reboot scale: $($item.DisplayName) at $machineName" "Yellow"
 					try
 					{
 						# First, attempt to reboot using the shutdown command
@@ -8891,19 +8891,19 @@ function Reboot_Scales
 						{
 							throw "Shutdown command exited with code $($process.ExitCode)"
 						}
-						Write-Host "Shutdown command executed successfully for $machineName."
+						Write-Log "Shutdown command executed successfully for $machineName." "Green"
 					}
 					catch
 					{
-						Write-Host "Shutdown command failed for $machineName. Falling back to Restart-Computer."
+						Write-Log "Shutdown command failed for $machineName. Falling back to Restart-Computer." "Red"
 						try
 						{
 							Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop
-							Write-Host "Restart-Computer command executed successfully for $machineName."
+							Write-Log "Restart-Computer command executed successfully for $machineName." "Green"
 						}
 						catch
 						{
-							Write-Host "Failed to reboot scale $machineName using both methods: $_"
+							Write-Log "Failed to reboot scale $machineName using both methods: $_" "Red"
 						}
 					}
 				}
@@ -8912,11 +8912,11 @@ function Reboot_Scales
 			}
 		})
 	
-	# "Cancel" button
+	# "Close" button
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Location = New-Object System.Drawing.Point(10, 410)
 	$btnCancel.Size = New-Object System.Drawing.Size(360, 30)
-	$btnCancel.Text = "Cancel"
+	$btnCancel.Text = "Close"
 	$btnCancel.Add_Click({
 			$form.Close()
 		})
