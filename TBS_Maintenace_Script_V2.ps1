@@ -5736,8 +5736,8 @@ function Reboot-Lanes
 		$laneItems += $item
 	}
 	
-	# Sort lane items in descending order by LaneNumber (numerically)
-	$sortedLaneItems = $laneItems | Sort-Object -Property { [int]$_.LaneNumber } -Descending
+	# Sort lane items in ascending order by LaneNumber (numerically)
+	$sortedLaneItems = $laneItems | Sort-Object -Property { [int]$_.LaneNumber }
 	
 	# Add sorted lane items to the CheckedListBox
 	foreach ($item in $sortedLaneItems)
@@ -8834,8 +8834,8 @@ function Reboot_Scales
 		$scaleItems += $item
 	}
 	
-	# Sort items descending by DisplayName
-	$sortedScaleItems = $scaleItems | Sort-Object -Property DisplayName -Descending
+	# Sort items in ascending order by DisplayName
+	$sortedScaleItems = $scaleItems | Sort-Object -Property DisplayName 
 	
 	# Add sorted items to the CheckedListBox
 	foreach ($item in $sortedScaleItems)
