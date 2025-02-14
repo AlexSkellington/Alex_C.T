@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.1.2"
+$VersionNumber = "2.1.4"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1107,17 +1107,18 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 # ---------------------------------------------------------------------------------------------------
 # **Purpose:**
 #   The `Retrieve-Nodes` function is designed to count various entities within a 
-#   system, specifically **hosts**, **stores**, **lanes**, and **servers**. It primarily retrieves 
-#   these nodes from the `TER_TAB` database table. If database access fails, it gracefully falls 
+#   system, specifically **hosts**, **stores**, **lanes**, **servers**, and **scales**. It primarily retrieves 
+#   these nodes from the `TER_TAB` database table and additional tables as needed. If database access fails, it gracefully falls 
 #   back to a file system-based mechanism to obtain the counts. Additionally, the function updates 
 #   GUI labels to reflect the current nodes and stores the results in a shared hashtable for use 
-#   by other parts of the script.
+#   by other parts of the script. For scales, the function retrieves the IPNetwork information from the 
+#   TBS_SCL_ver520 table.
 #
 # **Parameters:**
 #   - `[string]$Mode` (Mandatory)
 #       - **Description:** Determines the operational mode of the function.
-#         - `"Host"`: Nodess the number of hosts and stores.
-#         - `"Store"`: Nodess the number of servers and lanes within a specific store.
+#         - `"Host"`: Counts the number of hosts and stores.
+#         - `"Store"`: Counts the number of servers, lanes, and scales (retrieving IPNetwork data for scales) within a specific store.
 #   - `[string]$StoreNumber`
 #       - **Description:** Specifies the identifier for a particular store. This parameter is 
 #         **mandatory** when `$Mode` is set to `"Store"` and is ignored when `$Mode` is `"Host"`.
@@ -1125,17 +1126,18 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 # **Variables:**
 #   - **Initialization Variables:**
 #       - `$HostPath`: Base directory path where store and host directories are located.
-#       - `$NumberOfLanes`, `$NumberOfStores`, `$NumberOfHosts`, `$NumberOfServers`: Counters initialized to `0`.
+#       - `$NumberOfLanes`, `$NumberOfStores`, `$NumberOfHosts`, `$NumberOfServers`, `$NumberOfScales`: Counters initialized to `0`.
 #       - `$LaneContents`: Array to hold lane identifiers.
 #       - `$LaneMachines`: Hashtable to map lane numbers to machine names.
+#       - `$ScaleIPNetworks`: Hashtable to map scale identifiers to their IPNetwork values.
 #   - **Database Connection Variables:**
 #       - `$ConnectionString`: Retrieves the database connection string from the `FunctionResults` hashtable.
 #       - `$NodesFromDatabase`: Boolean flag indicating whether to retrieve counts from the database.
 #   - **Result Variables:**
-#       - `$Nodes`: Custom PowerShell object aggregating all Nodes results and related data.
+#       - `$Nodes`: Custom PowerShell object aggregating all nodes counts and related data.
 #   - **GUI-Related Variables:**
 #       - `$SilentMode`: Determines whether the GUI should be updated.
-#       - `$NodesHost`, `$NodesStore`: GUI label controls displaying the counts.
+#       - `$NodesHost`, `$NodesStore`, `$NodesScales`: GUI label controls displaying the counts.
 #       - `$form`: GUI form that needs to be refreshed to display updated counts.
 #
 # **Workflow:**
@@ -1152,6 +1154,7 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 #          - Validates the presence of `$StoreNumber`.
 #          - Retrieves and counts lanes for the specified store.
 #          - Maps lane numbers to machine names.
+#          - Retrieves scales from TER_TAB (count only) and additional scales from TBS_SCL_ver520 (which provides the IPNetwork info).
 #          - Checks for the existence of the server for the store.
 #      - **Error Handling:**
 #          - Logs warnings and falls back if any database queries fail.
@@ -1162,7 +1165,7 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 #          - Checks for the existence of the host directory.
 #      - **Mode: `"Store"`**
 #          - Validates the presence of `$StoreNumber`.
-#          - Counts lane directories matching specific patterns.
+#          - Counts lane and scale directories matching specific patterns.
 #          - Checks for the existence of the server directory for the store.
 #
 #   4. **Compile and Store Results:**
@@ -1174,14 +1177,14 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 #      - Refreshes the GUI form to display the updated counts.
 #
 #   6. **Return Value:**
-#      - Returns the `$Counts` custom object containing all the count information.
+#      - Returns the `$Nodes` custom object containing all the count information.
 #
 # **Summary:**
 #   The `Retrieve-Nodes` function is a robust PowerShell utility that accurately counts system entities 
-#   such as hosts, stores, lanes, and servers. It prioritizes retrieving counts from a database to 
+#   such as hosts, stores, lanes, servers, and scales. It prioritizes retrieving counts from a database to 
 #   ensure accuracy and reliability but includes a fallback mechanism leveraging the file system for 
-#   resilience. Additionally, it integrates with a GUI to display real-time counts and stores results 
-#   for easy access by other script components.
+#   resilience. Additionally, it integrates with a GUI to display real-time counts, stores results 
+#   for easy access by other script components, and retrieves IPNetwork information for scales from the TBS_SCL_ver520 table.
 # ===================================================================================================
 
 function Retrieve-Nodes
@@ -1198,10 +1201,11 @@ function Retrieve-Nodes
 	$NumberOfStores = 0
 	$NumberOfHosts = 0
 	$NumberOfServers = 0
-	$NumberOfScales = 0 # <--- NEW/UPDATED COUNTER FOR SCALES
+	$NumberOfScales = 0 # NEW/UPDATED COUNTER FOR SCALES
 	
 	$LaneContents = @()
 	$LaneMachines = @{ }
+	$ScaleIPNetworks = @{ } # NEW: Hashtable to store IPNetwork info for scales
 	
 	# Retrieve the connection string from script variables
 	$ConnectionString = $script:FunctionResults['ConnectionString']
@@ -1313,7 +1317,7 @@ WHERE F1056 = '$StoreNumber'
 				}
 				
 				#--------------------------------------------------------------------------------
-				# 2) Retrieve Scales from TER_TAB (F1057 LIKE '8%')
+				# 2) Retrieve scales from TER_TAB (count only, no IPNetwork here)
 				#--------------------------------------------------------------------------------
 				$queryScaleContents = @"
 SELECT F1057, F1125
@@ -1337,10 +1341,10 @@ WHERE F1056 = '$StoreNumber'
 				$NumberOfScales += $ScaleContents.Count
 				
 				#--------------------------------------------------------------------------------
-				# 3) Retrieve additional scales from TBS_SCL_ver520
+				# 3) Retrieve additional scales from TBS_SCL_ver520 (with IPNetwork)
 				#--------------------------------------------------------------------------------
 				$queryTbsSclScales = @"
-SELECT COUNT(*) AS TbsScaleCount
+SELECT F1057, IPNetwork
 FROM TBS_SCL_ver520
 "@
 				try
@@ -1355,7 +1359,11 @@ FROM TBS_SCL_ver520
 				
 				if ($tbsSclScalesResult)
 				{
-					$NumberOfScales += $tbsSclScalesResult.TbsScaleCount
+					$NumberOfScales += $tbsSclScalesResult.Count
+					foreach ($row in $tbsSclScalesResult)
+					{
+						$ScaleIPNetworks[$row.F1057] = $row.IPNetwork
+					}
 				}
 				
 				#--------------------------------------------------------------------------------
@@ -1447,6 +1455,7 @@ WHERE F1056 = '$StoreNumber'
 		NumberOfScales  = $NumberOfScales
 		LaneContents    = $LaneContents
 		LaneMachines    = $LaneMachines
+		ScaleIPNetworks = $ScaleIPNetworks # Contains IPNetwork info for scales from TBS_SCL_ver520
 	}
 	
 	#--------------------------------------------------------------------------------
@@ -1459,6 +1468,7 @@ WHERE F1056 = '$StoreNumber'
 	$script:FunctionResults['NumberOfScales'] = $NumberOfScales
 	$script:FunctionResults['LaneContents'] = $LaneContents
 	$script:FunctionResults['LaneMachines'] = $LaneMachines
+	$script:FunctionResults['ScaleIPNetworks'] = $ScaleIPNetworks
 	$script:FunctionResults['Nodes'] = $Nodes
 	
 	#--------------------------------------------------------------------------------
@@ -8749,6 +8759,171 @@ WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatte
 }
 
 # ===================================================================================================
+#                           FUNCTION: Reboot_Scales
+# ---------------------------------------------------------------------------------------------------
+# **Purpose:**
+#   The `Reboot_Scales` function displays a Windows Form that allows the user to select which scales
+#   to reboot based on their IP addresses. For each scale, the function extracts the last octet of the IP
+#   to generate a friendly display name (e.g., "Scale101"). Users can select scales via a
+#   checklist, use "Select All" or "Deselect All" buttons to update selections, and finally click "Reboot Selected"
+#   to issue reboot commands. The reboot process first attempts to run the shutdown command 
+#   `shutdown /r /m \\$machineName /t 0 /f` and, if that fails, falls back to 
+#   `Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop`. A Cancel button is provided
+#   to allow the user to exit without performing any action.
+#
+# **Parameters:**
+#   - [hashtable]$ScaleIPNetworks
+#       - **Description:** A hashtable where each key represents a scale identifier and its value is
+#         the corresponding IP address (e.g., "192.168.1.101").
+#
+# **Usage:**
+#   ```powershell
+#   Reboot_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
+#   ```
+#
+# **Notes:**
+#   - Replace or adjust the reboot logic as needed for your environment.
+# ===================================================================================================
+
+function Reboot_Scales
+{
+	param (
+		[hashtable]$ScaleIPNetworks # Keys: scale IDs; Values: IP addresses (e.g., "192.168.1.101")
+	)
+	
+	# Load Windows Forms assemblies
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	# Create the form
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Reboot Scales"
+	$form.Size = New-Object System.Drawing.Size(400, 500)
+	$form.StartPosition = "CenterScreen"
+	
+	# Create a CheckedListBox to list scales
+	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
+	$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
+	$checkedListBox.Size = New-Object System.Drawing.Size(360, 350)
+	$checkedListBox.CheckOnClick = $true
+	
+	# Populate the CheckedListBox
+	foreach ($key in $ScaleIPNetworks.Keys)
+	{
+		$ip = $ScaleIPNetworks[$key]
+		$octets = $ip -split "\."
+		if ($octets.Count -ge 4)
+		{
+			$lastOctet = $octets[3]
+			$displayName = "Scale$lastOctet"
+		}
+		else
+		{
+			$displayName = $key
+		}
+		# Create an object for the list item and override ToString so the display text is used.
+		$item = New-Object PSObject -Property @{
+			DisplayName = $displayName
+			IP		    = $ip
+		}
+		$item | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName }
+		$checkedListBox.Items.Add($item) | Out-Null
+	}
+	
+	# "Select All" button
+	$btnSelectAll = New-Object System.Windows.Forms.Button
+	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 370)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$btnSelectAll.Text = "Select All"
+	$btnSelectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $true)
+			}
+		})
+	
+	# "Deselect All" button
+	$btnDeselectAll = New-Object System.Windows.Forms.Button
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(120, 370)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$btnDeselectAll.Text = "Deselect All"
+	$btnDeselectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $false)
+			}
+		})
+	
+	# "Reboot Selected" button
+	$btnReboot = New-Object System.Windows.Forms.Button
+	$btnReboot.Location = New-Object System.Drawing.Point(230, 370)
+	$btnReboot.Size = New-Object System.Drawing.Size(140, 30)
+	$btnReboot.Text = "Reboot Selected"
+	$btnReboot.Add_Click({
+			$selectedItems = $checkedListBox.CheckedItems
+			if ($selectedItems.Count -eq 0)
+			{
+				[System.Windows.Forms.MessageBox]::Show("No scales selected.", "Information", `
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+			}
+			else
+			{
+				foreach ($item in $selectedItems)
+				{
+					$machineName = $item.IP # Assuming the IP or a resolvable name
+					Write-Host "Attempting to reboot scale: $($item.DisplayName) at $machineName"
+					try
+					{
+						# First, attempt to reboot using the shutdown command
+						$shutdownArgs = "/r /m \\$machineName /t 0 /f"
+						$process = Start-Process -FilePath "shutdown.exe" -ArgumentList $shutdownArgs -Wait -PassThru -ErrorAction Stop
+						if ($process.ExitCode -ne 0)
+						{
+							throw "Shutdown command exited with code $($process.ExitCode)"
+						}
+						Write-Host "Shutdown command executed successfully for $machineName."
+					}
+					catch
+					{
+						Write-Host "Shutdown command failed for $machineName. Falling back to Restart-Computer."
+						try
+						{
+							Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop
+							Write-Host "Restart-Computer command executed successfully for $machineName."
+						}
+						catch
+						{
+							Write-Host "Failed to reboot scale $machineName using both methods: $_"
+						}
+					}
+				}
+				[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected scales.", "Reboot", `
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+			}
+		})
+	
+	# "Cancel" button
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Location = New-Object System.Drawing.Point(10, 410)
+	$btnCancel.Size = New-Object System.Drawing.Size(360, 30)
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Add_Click({
+			$form.Close()
+		})
+	
+	# Add controls to the form
+	$form.Controls.Add($checkedListBox)
+	$form.Controls.Add($btnSelectAll)
+	$form.Controls.Add($btnDeselectAll)
+	$form.Controls.Add($btnReboot)
+	$form.Controls.Add($btnCancel)
+	
+	# Show the form
+	$form.Add_Shown({ $form.Activate() })
+	[void]$form.ShowDialog()
+}
+
+# ===================================================================================================
 #                                       FUNCTION: Show-SelectionDialog
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -9653,6 +9828,16 @@ if (-not $SilentMode)
 				Fix-Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
 			})
 		[void]$contextMenuGeneral.Items.Add($fixJournalItem)
+		
+		############################################################################
+		# 7) Reboot Scales
+		############################################################################
+		$Reboot_ScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Scales")
+		$Reboot_ScalesItem.ToolTipText = "Reboot Scale/s."
+		$Reboot_ScalesItem.Add_Click({
+				Reboot_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
+			})
+		[void]$contextMenuGeneral.Items.Add($Reboot_ScalesItem)		
 		
 		############################################################################
 		
