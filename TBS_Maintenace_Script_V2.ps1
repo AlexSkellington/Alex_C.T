@@ -1344,7 +1344,7 @@ WHERE F1056 = '$StoreNumber'
 				# 3) Retrieve additional scales from TBS_SCL_ver520 (with IPNetwork)
 				#--------------------------------------------------------------------------------
 				$queryTbsSclScales = @"
-SELECT COUNT(*) AS TbsScaleCount, IPNetwork
+SELECT IPNetwork
 FROM TBS_SCL_ver520
 "@
 				try
@@ -1359,10 +1359,12 @@ FROM TBS_SCL_ver520
 				
 				if ($tbsSclScalesResult)
 				{
+					# Count the number of rows returned as the number of additional scales
 					$NumberOfScales += $tbsSclScalesResult.Count
 					foreach ($row in $tbsSclScalesResult)
 					{
-						$ScaleIPNetworks[$row.F1057] = $row.IPNetwork
+						# Use the IPNetwork field as the key and value in the ScaleIPNetworks hashtable
+						$ScaleIPNetworks[$row.IPNetwork] = $row.IPNetwork
 					}
 				}
 				
