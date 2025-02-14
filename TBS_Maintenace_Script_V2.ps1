@@ -1341,11 +1341,12 @@ WHERE F1056 = '$StoreNumber'
 				$NumberOfScales += $ScaleContents.Count
 				
 				#--------------------------------------------------------------------------------
-				# 3) Retrieve additional scales from TBS_SCL_ver520 (with IPNetwork and IPDevice)
+				# 3) Retrieve additional scales from TBS_SCL_ver520 (with IPNetwork, IPDevice, ScaleName, ScaleCode)
 				#--------------------------------------------------------------------------------
 				$queryTbsSclScales = @"
-SELECT IPNetwork, IPDevice
+SELECT ScaleCode, ScaleName, IPNetwork, IPDevice
 FROM TBS_SCL_ver520
+WHERE Active = 'Y'
 "@
 				try
 				{
@@ -1359,13 +1360,22 @@ FROM TBS_SCL_ver520
 				
 				if ($tbsSclScalesResult)
 				{
-					# Count the number of rows returned as the number of additional scales
+					# Increase the total count by the number of rows returned
 					$NumberOfScales += $tbsSclScalesResult.Count
 					foreach ($row in $tbsSclScalesResult)
 					{
-						# Build the full IP using IPNetwork and IPDevice
-						$fullIP = "$($row.IPNetwork).$($row.IPDevice)"
-						$ScaleIPNetworks[$fullIP] = $fullIP
+						# Build the full IP address by concatenating IPNetwork and IPDevice
+						$fullIP = "$($row.IPNetwork)$($row.IPDevice)"
+						# Build a custom object that includes the relevant fields
+						$scaleObj = [PSCustomObject]@{
+							ScaleCode = $row.ScaleCode
+							ScaleName = $row.ScaleName
+							FullIP    = $fullIP
+							IPNetwork = $row.IPNetwork
+							IPDevice  = $row.IPDevice
+						}
+						# Store the object in the hashtable (using ScaleCode as a unique key)
+						$ScaleIPNetworks[$row.ScaleCode] = $scaleObj
 					}
 				}
 				
@@ -8767,19 +8777,20 @@ WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatte
 # **Purpose:**
 #   The `Reboot_Scales` function displays a Windows Form that allows the user to select which scales
 #   to reboot based on their full IP addresses. The full IP address should already be built by 
-#   concatenating the IPNetwork (first 3 octets) with the IPDevice (last octet). For each scale,
-#   the function extracts the last octet of the IP to generate a friendly display name (e.g., "Scale 101").
-#   Users can select scales via a checklist, use "Select All" or "Deselect All" buttons to update selections,
-#   and finally click "Reboot Selected" to issue reboot commands. The reboot process first attempts to run 
-#   the shutdown command `shutdown /r /m \\$machineName /t 0 /f` and, if that fails, falls back to 
+#   concatenating the IPNetwork (first 3 octets) with the IPDevice (last octet). If available, the function
+#   uses the ScaleName (from the table) for a friendly display; otherwise, it extracts the last octet
+#   of the IP to generate a display name (e.g., "Scale 101"). Users can select scales via a checklist,
+#   use "Select All" or "Deselect All" buttons to update selections, and finally click "Reboot Selected" to 
+#   issue reboot commands. The reboot process first attempts to run the shutdown command 
+#   `shutdown /r /m \\$machineName /t 0 /f` and, if that fails, falls back to 
 #   `Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop`. A Cancel button is provided to 
 #   allow the user to exit without performing any action.
 #
 # **Parameters:**
 #   - [hashtable]$ScaleIPNetworks
-#       - **Description:** A hashtable where each key represents a scale identifier and its value is
-#         the full IP address (e.g., "192.168.5.101"). The full IP should be constructed beforehand 
-#         (IPNetwork concatenated with IPDevice).
+#       - **Description:** A hashtable where each key represents a scale identifier. The value may either be:
+#           1. A full IP address as a string (e.g., "192.168.5.101"), or
+#           2. A custom object with at least the properties **FullIP** and **ScaleName**.
 #
 # **Usage:**
 #   ```powershell
@@ -8793,7 +8804,7 @@ WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatte
 function Reboot_Scales
 {
 	param (
-		[hashtable]$ScaleIPNetworks # Keys: scale IDs; Values: full IP addresses (e.g., "192.168.5.101")
+		[hashtable]$ScaleIPNetworks
 	)
 	
 	# Load Windows Forms assemblies
@@ -8815,18 +8826,44 @@ function Reboot_Scales
 	# Populate the CheckedListBox
 	foreach ($key in $ScaleIPNetworks.Keys)
 	{
-		$ip = $ScaleIPNetworks[$key]
-		$ipTrimmed = $ip.Trim()
-		$octets = $ipTrimmed -split "\."
-		if ($octets.Count -ge 1)
+		$entry = $ScaleIPNetworks[$key]
+		if ($entry -is [string])
 		{
-			$lastOctet = $octets[-1]
-			$displayName = "Scale $lastOctet"
+			# Entry is a string containing the full IP.
+			$ip = $entry.Trim()
+			$octets = $ip -split "\."
+			if ($octets.Count -ge 1)
+			{
+				$lastOctet = $octets[-1]
+				$displayName = "Scale $lastOctet"
+			}
+			else
+			{
+				$displayName = $key
+			}
+		}
+		elseif ($entry -is [psobject] -and $entry.PSObject.Properties.Name -contains "ScaleName")
+		{
+			# Entry is a custom object with ScaleName and FullIP.
+			$ip = $entry.FullIP.Trim()
+			$displayName = $entry.ScaleName
 		}
 		else
 		{
-			$displayName = $key
+			# Fallback: treat entry as a string.
+			$ip = "$entry".Trim()
+			$octets = $ip -split "\."
+			if ($octets.Count -ge 1)
+			{
+				$lastOctet = $octets[-1]
+				$displayName = "Scale $lastOctet"
+			}
+			else
+			{
+				$displayName = $key
+			}
 		}
+		
 		# Create an object for the list item and override ToString so the display text is used.
 		$item = New-Object PSObject -Property @{
 			DisplayName = $displayName
