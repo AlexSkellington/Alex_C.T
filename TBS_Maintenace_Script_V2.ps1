@@ -8766,18 +8766,20 @@ WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatte
 # ---------------------------------------------------------------------------------------------------
 # **Purpose:**
 #   The `Reboot_Scales` function displays a Windows Form that allows the user to select which scales
-#   to reboot based on their IP addresses. For each scale, the function extracts the last octet of the IP
-#   to generate a friendly display name (e.g., "Scale101"). Users can select scales via a
-#   checklist, use "Select All" or "Deselect All" buttons to update selections, and finally click "Reboot Selected"
-#   to issue reboot commands. The reboot process first attempts to run the shutdown command 
-#   `shutdown /r /m \\$machineName /t 0 /f` and, if that fails, falls back to 
-#   `Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop`. A Cancel button is provided
-#   to allow the user to exit without performing any action.
+#   to reboot based on their full IP addresses. The full IP address should already be built by 
+#   concatenating the IPNetwork (first 3 octets) with the IPDevice (last octet). For each scale,
+#   the function extracts the last octet of the IP to generate a friendly display name (e.g., "Scale 101").
+#   Users can select scales via a checklist, use "Select All" or "Deselect All" buttons to update selections,
+#   and finally click "Reboot Selected" to issue reboot commands. The reboot process first attempts to run 
+#   the shutdown command `shutdown /r /m \\$machineName /t 0 /f` and, if that fails, falls back to 
+#   `Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop`. A Cancel button is provided to 
+#   allow the user to exit without performing any action.
 #
 # **Parameters:**
 #   - [hashtable]$ScaleIPNetworks
 #       - **Description:** A hashtable where each key represents a scale identifier and its value is
-#         the corresponding IP address (e.g., "192.168.1.101").
+#         the full IP address (e.g., "192.168.5.101"). The full IP should be constructed beforehand 
+#         (IPNetwork concatenated with IPDevice).
 #
 # **Usage:**
 #   ```powershell
@@ -8791,7 +8793,7 @@ WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatte
 function Reboot_Scales
 {
 	param (
-		[hashtable]$ScaleIPNetworks # Keys: scale IDs; Values: IP addresses (e.g., "192.168.1.101")
+		[hashtable]$ScaleIPNetworks # Keys: scale IDs; Values: full IP addresses (e.g., "192.168.5.101")
 	)
 	
 	# Load Windows Forms assemblies
@@ -8818,7 +8820,7 @@ function Reboot_Scales
 		if ($octets.Count -ge 4)
 		{
 			$lastOctet = $octets[3]
-			$displayName = "Scale$lastOctet"
+			$displayName = "Scale $lastOctet"
 		}
 		else
 		{
@@ -8873,7 +8875,7 @@ function Reboot_Scales
 			{
 				foreach ($item in $selectedItems)
 				{
-					$machineName = $item.IP # Assuming the IP or a resolvable name
+					$machineName = $item.IP # Using the full IP address
 					Write-Host "Attempting to reboot scale: $($item.DisplayName) at $machineName"
 					try
 					{
