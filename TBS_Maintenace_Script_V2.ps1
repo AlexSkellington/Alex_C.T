@@ -1341,10 +1341,10 @@ WHERE F1056 = '$StoreNumber'
 				$NumberOfScales += $ScaleContents.Count
 				
 				#--------------------------------------------------------------------------------
-				# 3) Retrieve additional scales from TBS_SCL_ver520 (with IPNetwork)
+				# 3) Retrieve additional scales from TBS_SCL_ver520 (with IPNetwork and IPDevice)
 				#--------------------------------------------------------------------------------
 				$queryTbsSclScales = @"
-SELECT IPNetwork
+SELECT IPNetwork, IPDevice
 FROM TBS_SCL_ver520
 "@
 				try
@@ -1363,8 +1363,9 @@ FROM TBS_SCL_ver520
 					$NumberOfScales += $tbsSclScalesResult.Count
 					foreach ($row in $tbsSclScalesResult)
 					{
-						# Use the IPNetwork field as the key and value in the ScaleIPNetworks hashtable
-						$ScaleIPNetworks[$row.IPNetwork] = $row.IPNetwork
+						# Build the full IP using IPNetwork and IPDevice
+						$fullIP = "$($row.IPNetwork).$($row.IPDevice)"
+						$ScaleIPNetworks[$fullIP] = $fullIP
 					}
 				}
 				
