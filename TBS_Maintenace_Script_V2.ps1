@@ -8740,12 +8740,8 @@ WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatte
 #   to reboot based on their full IP addresses. The full IP address should already be built by 
 #   concatenating the IPNetwork (first 3 octets) with the IPDevice (last octet). If available, the function
 #   uses the ScaleName (from the table) for a friendly display; otherwise, it extracts the last octet
-#   of the IP to generate a display name (e.g., "Scale 101"). Users can select scales via a checklist,
-#   use "Select All" or "Deselect All" buttons to update selections, and finally click "Reboot Selected" to 
-#   issue reboot commands. The reboot process first attempts to run the shutdown command 
-#   `shutdown /r /m \\$machineName /t 0 /f` and, if that fails, falls back to 
-#   `Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop`. A Cancel button is provided to 
-#   allow the user to exit without performing any action.
+#   of the IP to generate a display name. In either case, the full IP is shown in parentheses next to
+#   the name (e.g., "Scale 101 (192.168.5.101)").
 #
 # **Parameters:**
 #   - [hashtable]$ScaleIPNetworks
@@ -8797,7 +8793,8 @@ function Reboot_Scales
 			if ($octets.Count -ge 1)
 			{
 				$lastOctet = $octets[-1]
-				$displayName = "Scale $lastOctet"
+				# Build display name with the IP in parentheses.
+				$displayName = "Scale $lastOctet ($ip)"
 			}
 			else
 			{
@@ -8808,7 +8805,7 @@ function Reboot_Scales
 		{
 			# Entry is a custom object with ScaleName and FullIP.
 			$ip = $entry.FullIP.Trim()
-			$displayName = $entry.ScaleName
+			$displayName = "$($entry.ScaleName) ($ip)"
 		}
 		else
 		{
@@ -8818,7 +8815,7 @@ function Reboot_Scales
 			if ($octets.Count -ge 1)
 			{
 				$lastOctet = $octets[-1]
-				$displayName = "Scale $lastOctet"
+				$displayName = "Scale $lastOctet ($ip)"
 			}
 			else
 			{
@@ -8835,7 +8832,7 @@ function Reboot_Scales
 	}
 	
 	# Sort items in ascending order by DisplayName
-	$sortedScaleItems = $scaleItems | Sort-Object -Property DisplayName 
+	$sortedScaleItems = $scaleItems | Sort-Object -Property DisplayName
 	
 	# Add sorted items to the CheckedListBox
 	foreach ($item in $sortedScaleItems)
