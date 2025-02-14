@@ -8828,7 +8828,7 @@ function Reboot_Scales
 			DisplayName = $displayName
 			IP		    = $ip
 		}
-		$item | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName }
+		$item | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
 		$checkedListBox.Items.Add($item) | Out-Null
 	}
 	
