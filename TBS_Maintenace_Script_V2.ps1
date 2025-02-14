@@ -8816,10 +8816,11 @@ function Reboot_Scales
 	foreach ($key in $ScaleIPNetworks.Keys)
 	{
 		$ip = $ScaleIPNetworks[$key]
-		$octets = $ip -split "\."
-		if ($octets.Count -ge 4)
+		$ipTrimmed = $ip.Trim()
+		$octets = $ipTrimmed -split "\."
+		if ($octets.Count -ge 1)
 		{
-			$lastOctet = $octets[3]
+			$lastOctet = $octets[-1]
 			$displayName = "Scale $lastOctet"
 		}
 		else
