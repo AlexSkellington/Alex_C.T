@@ -5682,11 +5682,11 @@ DROP TABLE $viewName;
 #                                     FUNCTION: Reboot-Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Reboots one, a range, or all machines based on the user's selection.
-#   Uses the Show-SelectionDialog function for lane selection.
-#   Queries the TER_TAB table to get machine names and lane numbers.
-#   Reboots the selected machines.
-#   If Restart-Computer fails, falls back to using the shutdown command.
+#   Reboots one, a range, or all lane machines based on the user's selection.
+#   Builds a Windows Form for lane selection using the LaneMachines hashtable from FunctionResults.
+#   For each lane, creates a custom object (with LaneNumber, MachineName, and a friendly DisplayName).
+#   Reboots the selected machines by first attempting the shutdown command and, if that fails, 
+#   falling back to Restart-Computer.
 # ===================================================================================================
 
 function Reboot-Lanes
@@ -5696,183 +5696,135 @@ function Reboot-Lanes
 		[string]$StoreNumber
 	)
 	
-	# Initialize an array to store machine names and lane numbers
-	$machinesToReboot = @()
-	
-	Write-Log "`r`n==================== Starting Reboot-Lanes Function ====================" "blue"
-	
-	if (-not (Test-Path $OfficePath))
+	# Ensure LaneMachines is available in the global FunctionResults
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	if (-not $LaneMachines -or $LaneMachines.Count -eq 0)
 	{
-		Write-Log "`r`nXF Base Path not found: $OfficePath" "yellow"
+		Write-Log "LaneMachines not available in FunctionResults. Cannot proceed with lane reboot." "red"
 		return
 	}
 	
-	# Get the user's selection
-	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
+	# Load Windows Forms assemblies
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
 	
-	if ($selection -eq $null)
+	# Create the form
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Select Lanes to Reboot"
+	$form.Size = New-Object System.Drawing.Size(400, 500)
+	$form.StartPosition = "CenterScreen"
+	
+	# Create a CheckedListBox to list lanes
+	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
+	$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
+	$checkedListBox.Size = New-Object System.Drawing.Size(360, 350)
+	$checkedListBox.CheckOnClick = $true
+	
+	# Populate the CheckedListBox from LaneMachines (a hashtable where keys are lane numbers and values are machine names)
+	foreach ($lane in $LaneMachines.Keys)
 	{
-		Write-Log "`r`nLane reboot canceled by user." "yellow"
-		return
+		$machineName = $LaneMachines[$lane]
+		# Build a friendly display name. Example: "Lane 5 (MachineName)"
+		$displayName = "Lane $lane ($machineName)"
+		$item = New-Object PSObject -Property @{
+			LaneNumber  = $lane
+			MachineName = $machineName
+			DisplayName = $displayName
+		}
+		# Override ToString so the CheckedListBox shows the DisplayName
+		$item | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
+		$checkedListBox.Items.Add($item) | Out-Null
 	}
 	
-	$Type = $selection.Type
-	$Lanes = $selection.Lanes
-	
-	# Determine if "All Lanes" is selected
-	$processAllLanes = $false
-	if ($Type -eq "All")
-	{
-		$processAllLanes = $true
-	}
-	
-	# If "All Lanes" is selected, attempt to retrieve LaneContents and LaneMachines
-	if ($processAllLanes)
-	{
-		try
-		{
-			#	Write-Log "User selected 'All Lanes'. Retrieving LaneContents and LaneMachines..." "blue"
-			$LaneContents = $script:FunctionResults['LaneContents']
-			$LaneMachines = $script:FunctionResults['LaneMachines']
-			
-			if ($LaneContents -and $LaneContents.Count -gt 0)
+	# "Select All" button
+	$btnSelectAll = New-Object System.Windows.Forms.Button
+	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 370)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$btnSelectAll.Text = "Select All"
+	$btnSelectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
 			{
-				#	Write-Log "Successfully retrieved LaneContents. Processing all lanes." "green"
-				$Lanes = $LaneContents
+				$checkedListBox.SetItemChecked($i, $true)
+			}
+		})
+	
+	# "Deselect All" button
+	$btnDeselectAll = New-Object System.Windows.Forms.Button
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(120, 370)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$btnDeselectAll.Text = "Deselect All"
+	$btnDeselectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $false)
+			}
+		})
+	
+	# "Reboot Selected" button
+	$btnReboot = New-Object System.Windows.Forms.Button
+	$btnReboot.Location = New-Object System.Drawing.Point(230, 370)
+	$btnReboot.Size = New-Object System.Drawing.Size(140, 30)
+	$btnReboot.Text = "Reboot Selected"
+	$btnReboot.Add_Click({
+			$selectedItems = $checkedListBox.CheckedItems
+			if ($selectedItems.Count -eq 0)
+			{
+				[System.Windows.Forms.MessageBox]::Show("No lanes selected.", "Information",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			}
 			else
 			{
-				throw "LaneContents is empty or not available."
-			}
-			
-			if ($LaneMachines -and $LaneMachines.Count -gt 0)
-			{
-				#	Write-Log "Successfully retrieved LaneMachines. Proceeding with reboot." "green"
-			}
-			else
-			{
-				throw "LaneMachines is empty or not available."
-			}
-		}
-		catch
-		{
-			#	Write-Log "Failed to retrieve LaneContents or LaneMachines: $_. Falling back to user-selected lanes." "yellow"
-			$processAllLanes = $false
-			# Optionally, retain $Lanes as provided by the user
-		}
-	}
-	
-	# Retrieve machine names from FunctionResults
-	if ($processAllLanes -and $LaneMachines)
-	{
-		foreach ($laneNumber in $Lanes)
-		{
-			if ($LaneMachines.ContainsKey($laneNumber))
-			{
-				$machineName = $LaneMachines[$laneNumber]
-				$machinesToReboot += @{
-					LaneNumber  = $laneNumber
-					MachineName = $machineName
-				}
-			}
-			else
-			{
-				Write-Log "Lane #${laneNumber}: Machine name not found in FunctionResults. Skipping reboot." "yellow"
-			}
-		}
-	}
-	else
-	{
-		# If not processing all lanes or LaneMachines not available, proceed to collect machine names individually
-		# This assumes that Update-LaneFiles or Retrieve-Nodes has already populated LaneMachines
-		try
-		{
-			Write-Log "Retrieving machine names from FunctionResults for selected lanes..." "blue"
-			$LaneMachines = $script:FunctionResults['LaneMachines']
-			
-			if ($LaneMachines -and $LaneMachines.Count -gt 0)
-			{
-				foreach ($laneNumber in $Lanes)
+				foreach ($item in $selectedItems)
 				{
-					if ($LaneMachines.ContainsKey($laneNumber))
+					$laneNumber = $item.LaneNumber
+					$machineName = $item.MachineName
+					Write-Host "Attempting to reboot Lane $laneNumber on machine: $machineName"
+					try
 					{
-						$machineName = $LaneMachines[$laneNumber]
-						$machinesToReboot += @{
-							LaneNumber  = $laneNumber
-							MachineName = $machineName
+						# First, attempt to reboot using the shutdown command
+						$shutdownCommand = "shutdown /r /m \\$machineName /t 0 /f"
+						Write-Host "Executing: $shutdownCommand"
+						$shutdownResult = & cmd.exe /c $shutdownCommand 2>&1
+						if ($LASTEXITCODE -eq 0)
+						{
+							Write-Host "Shutdown command executed successfully for $machineName."
+						}
+						else
+						{
+							Write-Host "Shutdown command failed for $machineName with exit code $LASTEXITCODE. Trying Restart-Computer..."
+							Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop
+							Write-Host "Restart-Computer command executed successfully for $machineName."
 						}
 					}
-					else
+					catch
 					{
-						Write-Log "Lane #${laneNumber}: Machine name not found in FunctionResults. Skipping reboot." "yellow"
+						Write-Host "Failed to reboot machine $machineName for Lane $laneNumber. Error: $_"
 					}
 				}
+				[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected lanes.", "Reboot",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			}
-			else
-			{
-				Write-Log "LaneMachines not available in FunctionResults. Cannot retrieve machine names." "red"
-				return
-			}
-		}
-		catch
-		{
-			Write-Log "Failed to retrieve LaneMachines from FunctionResults: $_. Cannot proceed with reboot." "red"
-			return
-		}
-	}
+		})
 	
-	# Check if there are machines to reboot
-	if ($machinesToReboot.Count -eq 0)
-	{
-		Write-Log "No machines to reboot based on the current selection." "yellow"
-		return
-	}
+	# "Cancel" button
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Location = New-Object System.Drawing.Point(10, 410)
+	$btnCancel.Size = New-Object System.Drawing.Size(360, 30)
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Add_Click({
+			$form.Close()
+		})
 	
-	# Reboot the machines
-	foreach ($machine in $machinesToReboot)
-	{
-		$laneNumber = $machine.LaneNumber
-		$machineName = $machine.MachineName
-		
-		Write-Log "`r`nRebooting Machine '$machineName' for Lane #$laneNumber using shutdown command..." "blue"
-		
-		try
-		{
-			# Use shutdown command as the main reboot mechanism
-			$shutdownCommand = "shutdown /r /m \\$machineName /t 0 /f"
-			Write-Log "Executing: $shutdownCommand" "blue"
-			
-			$shutdownResult = & cmd.exe /c $shutdownCommand 2>&1
-			
-			if ($LASTEXITCODE -eq 0)
-			{
-				Write-Log "Successfully sent shutdown command to Machine '$machineName' for Lane #$laneNumber." "green"
-			}
-			else
-			{
-				Write-Log "Shutdown command failed for Machine '$machineName' with exit code $LASTEXITCODE." "red"
-				Write-Log "Error: $shutdownResult" "red"
-				Write-Log "Attempting to reboot Machine '$machineName' using Restart-Computer as a fallback..." "yellow"
-				
-				try
-				{
-					# Use Restart-Computer as a fallback mechanism
-					Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop
-					Write-Log "Successfully sent reboot command to Machine '$machineName' for Lane #$laneNumber using Restart-Computer." "green"
-				}
-				catch
-				{
-					Write-Log "Failed to reboot Machine '$machineName' for Lane #$laneNumber using Restart-Computer. Error: $_" "red"
-				}
-			}
-		}
-		catch
-		{
-			Write-Log "Failed to reboot Machine '$machineName' for Lane #$laneNumber using shutdown command. Error: $_" "red"
-		}
-	}
+	# Add controls to the form
+	$form.Controls.Add($checkedListBox)
+	$form.Controls.Add($btnSelectAll)
+	$form.Controls.Add($btnDeselectAll)
+	$form.Controls.Add($btnReboot)
+	$form.Controls.Add($btnCancel)
 	
-	Write-Log "`r`n==================== Reboot-Lanes Function Completed ====================" "blue"
+	# Show the form
+	$form.Add_Shown({ $form.Activate() })
+	[void]$form.ShowDialog()
 }
 
 # ===================================================================================================
