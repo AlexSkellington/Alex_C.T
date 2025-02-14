@@ -1344,7 +1344,7 @@ WHERE F1056 = '$StoreNumber'
 				# 3) Retrieve additional scales from TBS_SCL_ver520 (with IPNetwork)
 				#--------------------------------------------------------------------------------
 				$queryTbsSclScales = @"
-SELECT F1057, IPNetwork
+SELECT COUNT(*) AS TbsScaleCount, IPNetwork
 FROM TBS_SCL_ver520
 "@
 				try
