@@ -5685,8 +5685,8 @@ DROP TABLE $viewName;
 #   Reboots one, a range, or all lane machines based on the user's selection.
 #   Builds a Windows Form for lane selection using the LaneMachines hashtable from FunctionResults.
 #   For each lane, creates a custom object (with LaneNumber, MachineName, and a friendly DisplayName).
-#   Reboots the selected machines by first attempting the shutdown command and, if that fails, 
-#   falling back to Restart-Computer.
+#   Reboots the selected machines by first attempting the shutdown command and, if that fails, falling
+#   back to using Restart-Computer.
 # ===================================================================================================
 
 function Reboot-Lanes
@@ -5720,19 +5720,28 @@ function Reboot-Lanes
 	$checkedListBox.Size = New-Object System.Drawing.Size(360, 350)
 	$checkedListBox.CheckOnClick = $true
 	
-	# Populate the CheckedListBox from LaneMachines (a hashtable where keys are lane numbers and values are machine names)
+	# Accumulate lane items in an array
+	$laneItems = @()
 	foreach ($lane in $LaneMachines.Keys)
 	{
 		$machineName = $LaneMachines[$lane]
-		# Build a friendly display name. Example: "Lane 5 (MachineName)"
+		# Build a friendly display name, e.g., "Lane 5 (MachineName)"
 		$displayName = "Lane $lane ($machineName)"
 		$item = New-Object PSObject -Property @{
 			LaneNumber  = $lane
 			MachineName = $machineName
 			DisplayName = $displayName
 		}
-		# Override ToString so the CheckedListBox shows the DisplayName
 		$item | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
+		$laneItems += $item
+	}
+	
+	# Sort lane items in descending order by LaneNumber (numerically)
+	$sortedLaneItems = $laneItems | Sort-Object -Property { [int]$_.LaneNumber } -Descending
+	
+	# Add sorted lane items to the CheckedListBox
+	foreach ($item in $sortedLaneItems)
+	{
 		$checkedListBox.Items.Add($item) | Out-Null
 	}
 	
@@ -8775,7 +8784,8 @@ function Reboot_Scales
 	$checkedListBox.Size = New-Object System.Drawing.Size(360, 350)
 	$checkedListBox.CheckOnClick = $true
 	
-	# Populate the CheckedListBox
+	# Accumulate items in an array
+	$scaleItems = @()
 	foreach ($key in $ScaleIPNetworks.Keys)
 	{
 		$entry = $ScaleIPNetworks[$key]
@@ -8816,12 +8826,20 @@ function Reboot_Scales
 			}
 		}
 		
-		# Create an object for the list item and override ToString so the display text is used.
 		$item = New-Object PSObject -Property @{
 			DisplayName = $displayName
 			IP		    = $ip
 		}
 		$item | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
+		$scaleItems += $item
+	}
+	
+	# Sort items descending by DisplayName
+	$sortedScaleItems = $scaleItems | Sort-Object -Property DisplayName -Descending
+	
+	# Add sorted items to the CheckedListBox
+	foreach ($item in $sortedScaleItems)
+	{
 		$checkedListBox.Items.Add($item) | Out-Null
 	}
 	
