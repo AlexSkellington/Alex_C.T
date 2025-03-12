@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.1.4"
+$VersionNumber = "2.1.5"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -8296,6 +8296,118 @@ function Send-RestartAllPrograms
 }
 
 # ===================================================================================================
+#                               FUNCTION: Set-TimeOnRemoteLanes
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   The `Set-TimeOnRemoteLanes` function automates sending a time synchronization command 
+#   to selected lanes within a specified store. It retrieves lane-to-machine mappings using
+#   the `Retrieve-Nodes` function, prompts the user to select lanes via the `Show-SelectionDialog`
+#   function, and then constructs and sends a mailslot command to each selected lane using the
+#   correct machine address to synchronize the lane's time with the server.
+#
+# Parameters:
+#   - [string]$StoreNumber
+#         A 3-digit identifier for the store (SSS). This parameter is mandatory and is used
+#         to retrieve node details, select lanes, and construct mailslot addresses.
+#
+# Workflow:
+#   1. Retrieve node information for the specified store using `Retrieve-Nodes`, which
+#      provides a mapping between lanes and their corresponding machine names.
+#   2. Launch `Show-SelectionDialog` in 'Store' mode to allow the user to select one
+#      or more lanes (TTT).
+#   3. For each selected lane:
+#         - Look up the machine name from the lane-to-machine mapping.
+#         - Construct the mailslot address using the machine name (targeting terminal 900 for
+#           time synchronization).
+#         - Build the time synchronization command using the special symbols:
+#             - "®" to mark commands executed remotely.
+#             - "©" to mark commands returned for local execution.
+#         - Send the time synchronization command via `[MailslotSender]::SendMailslotCommand`.
+#         - Report success or failure for each command sent.
+#
+# Returns:
+#   None. Outputs success or failure messages to the console for each lane processed.
+#
+# Example Usage:
+#   Set-TimeOnRemoteLanes -StoreNumber "123"
+#
+# Notes:
+#   - Ensure that the helper functions (`Retrieve-Nodes`, `Show-SelectionDialog`) and the 
+#     `[MailslotSender]::SendMailslotCommand` method are defined and accessible in the session
+#     before invoking this function.
+# ===================================================================================================
+
+function Set-TimeOnRemoteLanes
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber # Expecting a 3-digit store number (SSS)
+	)
+	
+	Write-Log "`r`n==================== Starting Set-TimeOnRemoteLanes Function ====================`r`n" "blue"
+	
+	# Retrieve node information for the specified store to obtain lane-to-machine mapping.
+	$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
+	if (-not $nodes)
+	{
+		Write-Log "Failed to retrieve node information for store $StoreNumber." "red"
+		return
+	}
+	
+	# Use the lane selection dialog to get lanes (TTT) for the specified store.
+	$selection = Show-SelectionDialog -Mode Store -StoreNumber $StoreNumber
+	if (-not $selection)
+	{
+		Write-Log "No lanes selected or selection cancelled. Exiting." "yellow"
+		return
+	}
+	
+	# Extract lanes from selection.
+	$lanes = $selection.Lanes
+	if (-not $lanes -or $lanes.Count -eq 0)
+	{
+		Write-Log "No valid lanes found. Exiting." "yellow"
+		return
+	}
+	
+	# Loop through each selected lane to send the time sync command.
+	foreach ($lane in $lanes)
+	{
+		# Look up the machine name for the given lane using the LaneMachines mapping.
+		$machineName = $nodes.LaneMachines[$lane]
+		if (-not $machineName)
+		{
+			Write-Log "No machine found for lane $lane. Skipping." "yellow"
+			continue
+		}
+		
+		# Construct the mailslot address.
+		# For time synchronization we assume that the target is the Launchpad on terminal 900.
+		$mailslotAddress = "\\$machineName\mailslot\WIN900"
+		
+		# Build the time synchronization command.
+		# Note:
+		# - The "®" (registered symbol) is used to mark the command portion to be executed remotely.
+		# - The "©" (copyright symbol) marks the command that will be returned unexecuted and then
+		#   converted to "@" locally.
+		$commandMessage = "©WIZRPL(DATE=®DSSF)©WIZRPL(TIME=®NOW)"
+		
+		# Send the time sync command via the MailslotSender.
+		$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+		
+		if ($result)
+		{
+			Write-Log "Time synchronization command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
+		}
+		else
+		{
+			Write-Log "Failed to send time synchronization command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
+		}
+	}
+	Write-Log "`r`n==================== Set-TimeOnRemoteLanes Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                                       FUNCTION: Drawer_Control
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -10249,7 +10361,17 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 			
 			############################################################################
-			# 12) Reboot Lane Menu Item
+			# 12) Set the time on the lanes
+			############################################################################
+			$SetTimeOnRemoteLanesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set the time on lanes")
+			$SetTimeOnRemoteLanesItem.ToolTipText = "Synchronize the time for the selected lanes."
+			$SetTimeOnRemoteLanesItem.Add_Click({
+					Set-TimeOnRemoteLanes -StoreNumber "$StoreNumber"
+				})
+			[void]$ContextMenuLane.Items.Add($SetTimeOnRemoteLanesItem)
+			
+			############################################################################
+			# 13) Reboot Lane Menu Item
 			############################################################################
 			$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 			$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
