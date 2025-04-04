@@ -6983,7 +6983,7 @@ function Configure-SystemSettings
 		$UnorganizedFolder = Join-Path -Path $DesktopPath -ChildPath $UnorganizedFolderName
 		
 		# Define system icons and excluded folders
-		$systemIcons = @("This PC.lnk", "Network.lnk", "Control Panel.lnk", "Recycle Bin.lnk", "User's Files.lnk", "$scriptName")
+		$systemIcons = @("This PC.lnk", "Network.lnk", "Control Panel.lnk", "Recycle Bin.lnk", "User's Files.lnk", "Execute(TBS_Maintenance_Script).bat", "Execute(MiniGhost).bat", "$scriptName")
 		$excludedFolders = @("Lanes", "Scales", "BackOffices", "My Unorganized Items")
 		
 		# Create excluded folders if they don't exist
