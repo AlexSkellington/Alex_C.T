@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.1.5"
+$VersionNumber = "2.1.6"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -9059,14 +9059,16 @@ function Show-SelectionDialog
 		[Parameter(Mandatory = $true)]
 		[ValidateSet("Host", "Store")]
 		[string]$Mode,
-		[string]$StoreNumber # Required only if $Mode is "Store" and "All" is selected
+		[string]$StoreNumber,
+		# Required only when $Mode is "Store" and "All" is selected
+		[string]$LaneType = "POS" # Optional: default lane type to use (e.g., "POS" or "SCO")
 	)
 	
 	# Load necessary assemblies
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
-	# Initialize the form
+	# Create and configure the form
 	$form = New-Object System.Windows.Forms.Form
 	if ($Mode -eq "Host")
 	{
@@ -9076,45 +9078,40 @@ function Show-SelectionDialog
 	{
 		$form.Text = "Select Lanes to Process"
 	}
-	$form.Size = New-Object System.Drawing.Size(450, 350)
+	$form.Size = New-Object System.Drawing.Size(330, 350)
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
 	
-	# Radio buttons for selection type
-	$radioSpecific = New-Object System.Windows.Forms.RadioButton
-	$radioSpecific.Text = if ($Mode -eq "Host") { "Specific Store" }
-	else { "Specific Lane" }
-	$radioSpecific.Location = New-Object System.Drawing.Point(20, 20)
-	$radioSpecific.AutoSize = $true
-	$form.Controls.Add($radioSpecific)
-	
-	$radioRange = New-Object System.Windows.Forms.RadioButton
-	$radioRange.Text = if ($Mode -eq "Host") { "Range of Stores" }
-	else { "Range of Lanes" }
-	$radioRange.Location = New-Object System.Drawing.Point(20, 50)
-	$radioRange.AutoSize = $true
-	$form.Controls.Add($radioRange)
-	
-	$radioAll = New-Object System.Windows.Forms.RadioButton
-	$radioAll.Text = if ($Mode -eq "Host") { "All Stores" }
-	else { "All Lanes" }
-	$radioAll.Location = New-Object System.Drawing.Point(20, 80)
-	$radioAll.AutoSize = $true
-	$form.Controls.Add($radioAll)
-	
-	# Inputs for selection
 	if ($Mode -eq "Host")
 	{
-		# TextBox for Specific Store(s)
+		# **************** Host Mode - Original Controls ****************
+		
+		$radioSpecific = New-Object System.Windows.Forms.RadioButton
+		$radioSpecific.Text = "Specific Store"
+		$radioSpecific.Location = New-Object System.Drawing.Point(20, 20)
+		$radioSpecific.AutoSize = $true
+		$form.Controls.Add($radioSpecific)
+		
+		$radioRange = New-Object System.Windows.Forms.RadioButton
+		$radioRange.Text = "Range of Stores"
+		$radioRange.Location = New-Object System.Drawing.Point(20, 50)
+		$radioRange.AutoSize = $true
+		$form.Controls.Add($radioRange)
+		
+		$radioAll = New-Object System.Windows.Forms.RadioButton
+		$radioAll.Text = "All Stores"
+		$radioAll.Location = New-Object System.Drawing.Point(20, 80)
+		$radioAll.AutoSize = $true
+		$form.Controls.Add($radioAll)
+		
 		$textSpecific = New-Object System.Windows.Forms.TextBox
 		$textSpecific.Location = New-Object System.Drawing.Point(220, 18)
 		$textSpecific.Width = 200
 		$textSpecific.Enabled = $false
 		$form.Controls.Add($textSpecific)
 		
-		# Labels and TextBoxes for Range of Stores
 		$labelStart = New-Object System.Windows.Forms.Label
 		$labelStart.Text = "Start Store:"
 		$labelStart.Location = New-Object System.Drawing.Point(20, 120)
@@ -9140,55 +9137,128 @@ function Show-SelectionDialog
 		$textEnd.Width = 60
 		$textEnd.Enabled = $false
 		$form.Controls.Add($textEnd)
+		
+		# Enable and disable text fields based on radio button selection
+		$radioSpecific.Add_CheckedChanged({
+				$textSpecific.Enabled = $radioSpecific.Checked
+				$labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $false
+			})
+		$radioRange.Add_CheckedChanged({
+				$labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $radioRange.Checked
+				$textSpecific.Enabled = $false
+			})
+		$radioAll.Add_CheckedChanged({
+				$textSpecific.Enabled = $labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $false
+			})
+		$radioSpecific.Checked = $true
 	}
 	elseif ($Mode -eq "Store")
 	{
-		# TextBox for Specific Lane(s)
-		$textSpecific = New-Object System.Windows.Forms.TextBox
-		$textSpecific.Location = New-Object System.Drawing.Point(220, 18)
-		$textSpecific.Width = 200
-		$textSpecific.Enabled = $false
-		$form.Controls.Add($textSpecific)
+		# **************** Store Mode - Lane Selection via CheckedListBox ****************
 		
-		# Labels and TextBoxes for Range of Lanes
-		$labelStart = New-Object System.Windows.Forms.Label
-		$labelStart.Text = "Start Lane:"
-		$labelStart.Location = New-Object System.Drawing.Point(20, 120)
-		$labelStart.AutoSize = $true
-		$labelStart.Enabled = $false
-		$form.Controls.Add($labelStart)
+		$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
+		$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
+		$checkedListBox.Size = New-Object System.Drawing.Size(300, 200)
+		$checkedListBox.CheckOnClick = $true
+		$form.Controls.Add($checkedListBox)
 		
-		$textStart = New-Object System.Windows.Forms.TextBox
-		$textStart.Location = New-Object System.Drawing.Point(150, 118)
-		$textStart.Width = 60
-		$textStart.Enabled = $false
-		$form.Controls.Add($textStart)
+		# Retrieve available lanes: try to use global LaneContents; fallback to directory query.
+		$allLanes = @()
+		if ($script:FunctionResults.ContainsKey('LaneContents') -and $script:FunctionResults['LaneContents'].Count -gt 0)
+		{
+			$allLanes = $script:FunctionResults['LaneContents']
+		}
+		else
+		{
+			if (-not (Test-Path -Path $OfficePath))
+			{
+				[System.Windows.Forms.MessageBox]::Show("The path '$OfficePath' does not exist.", "Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				return $null
+			}
+			$laneFolders = Get-ChildItem -Path $OfficePath -Directory -Filter "XF${StoreNumber}0*"
+			if ($laneFolders)
+			{
+				$allLanes = $laneFolders | ForEach-Object { $_.Name.Substring($_.Name.Length - 3, 3) }
+			}
+		}
 		
-		$labelEnd = New-Object System.Windows.Forms.Label
-		$labelEnd.Text = "End Lane:"
-		$labelEnd.Location = New-Object System.Drawing.Point(220, 120)
-		$labelEnd.AutoSize = $true
-		$labelEnd.Enabled = $false
-		$form.Controls.Add($labelEnd)
+		# Populate the CheckedListBox with sorted lane objects
+		$sortedLanes = $allLanes | Sort-Object
+		foreach ($lane in $sortedLanes)
+		{
+			# Determine display name: if a friendly machine name exists, use it (without parentheses); otherwise, use fallback format.
+			if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'].ContainsKey($lane))
+			{
+				$friendlyName = $script:FunctionResults['LaneMachines'][$lane]
+				$displayName = "$friendlyName"
+			}
+			else
+			{
+				$displayName = "$LaneType $lane"
+			}
+			# Create an object that stores both the display name and the lane number
+			$laneObj = New-Object PSObject -Property @{
+				DisplayName = $displayName
+				LaneNumber  = $lane
+			}
+			# Override ToString so the CheckedListBox shows the DisplayName
+			$laneObj | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
+			$checkedListBox.Items.Add($laneObj) | Out-Null
+		}
 		
-		$textEnd = New-Object System.Windows.Forms.TextBox
-		$textEnd.Location = New-Object System.Drawing.Point(350, 118)
-		$textEnd.Width = 60
-		$textEnd.Enabled = $false
-		$form.Controls.Add($textEnd)
+		# "Select All" button for lanes
+		$btnSelectAll = New-Object System.Windows.Forms.Button
+		$btnSelectAll.Location = New-Object System.Drawing.Point(10, 220)
+		$btnSelectAll.Size = New-Object System.Drawing.Size(150, 30)
+		$btnSelectAll.Text = "Select All"
+		$btnSelectAll.Add_Click({
+				for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+				{
+					$checkedListBox.SetItemChecked($i, $true)
+				}
+			})
+		$form.Controls.Add($btnSelectAll)
+		
+		# "Deselect All" button for lanes
+		$btnDeselectAll = New-Object System.Windows.Forms.Button
+		$btnDeselectAll.Location = New-Object System.Drawing.Point(160, 220)
+		$btnDeselectAll.Size = New-Object System.Drawing.Size(150, 30)
+		$btnDeselectAll.Text = "Deselect All"
+		$btnDeselectAll.Add_Click({
+				for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+				{
+					$checkedListBox.SetItemChecked($i, $false)
+				}
+			})
+		$form.Controls.Add($btnDeselectAll)
 	}
 	
-	# OK and Cancel buttons
+	# OK and Cancel buttons (common to both modes)
 	$buttonOK = New-Object System.Windows.Forms.Button
 	$buttonOK.Text = "OK"
-	$buttonOK.Location = New-Object System.Drawing.Point(100, 250)
+	$buttonOK.Location = if ($Mode -eq "Store")
+	{
+		New-Object System.Drawing.Point(20, 270)
+	}
+	else
+	{
+		New-Object System.Drawing.Point(20, 250)
+	}
 	$buttonOK.Size = New-Object System.Drawing.Size(100, 30)
 	$buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 	$form.Controls.Add($buttonOK)
 	
 	$buttonCancel = New-Object System.Windows.Forms.Button
 	$buttonCancel.Text = "Cancel"
-	$buttonCancel.Location = New-Object System.Drawing.Point(250, 250)
+	$buttonCancel.Location = if ($Mode -eq "Store")
+	{
+		New-Object System.Drawing.Point(200, 270)
+	}
+	else
+	{
+		New-Object System.Drawing.Point(200, 250)
+	}
 	$buttonCancel.Size = New-Object System.Drawing.Size(100, 30)
 	$buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 	$form.Controls.Add($buttonCancel)
@@ -9196,57 +9266,17 @@ function Show-SelectionDialog
 	$form.AcceptButton = $buttonOK
 	$form.CancelButton = $buttonCancel
 	
-	# Event handlers to enable/disable input fields based on radio button selection
-	if ($Mode -eq "Host")
-	{
-		$radioSpecific.Add_CheckedChanged({
-				$textSpecific.Enabled = $radioSpecific.Checked
-				$labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $false
-			})
-		
-		$radioRange.Add_CheckedChanged({
-				$labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $radioRange.Checked
-				$textSpecific.Enabled = $false
-			})
-		
-		$radioAll.Add_CheckedChanged({
-				$textSpecific.Enabled = $labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $false
-			})
-	}
-	elseif ($Mode -eq "Store")
-	{
-		$radioSpecific.Add_CheckedChanged({
-				$textSpecific.Enabled = $radioSpecific.Checked
-				$labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $false
-			})
-		
-		$radioRange.Add_CheckedChanged({
-				$labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $radioRange.Checked
-				$textSpecific.Enabled = $false
-			})
-		
-		$radioAll.Add_CheckedChanged({
-				$textSpecific.Enabled = $labelStart.Enabled = $textStart.Enabled = $labelEnd.Enabled = $textEnd.Enabled = $false
-			})
-	}
-	
-	# Set default selection
-	$radioSpecific.Checked = $true
-	
-	# Show the form
 	$dialogResult = $form.ShowDialog()
-	
 	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
 	{
 		return $null
 	}
 	
-	# Process the user's input
-	if ($radioSpecific.Checked)
+	# Process and return user selections based on the mode
+	if ($Mode -eq "Host")
 	{
-		if ($Mode -eq "Host")
+		if ($radioSpecific.Checked)
 		{
-			# Process specific stores
 			$storesInput = $textSpecific.Text
 			if ([string]::IsNullOrWhiteSpace($storesInput))
 			{
@@ -9254,9 +9284,7 @@ function Show-SelectionDialog
 					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				return $null
 			}
-			# Split the input by commas and trim spaces
 			$stores = $storesInput.Split(",") | ForEach-Object { $_.Trim() }
-			# Validate that each store is a 3-digit number
 			foreach ($store in $stores)
 			{
 				if (-not ($store -match "^\d{3}$"))
@@ -9271,41 +9299,8 @@ function Show-SelectionDialog
 				Stores = $stores
 			}
 		}
-		elseif ($Mode -eq "Store")
+		elseif ($radioRange.Checked)
 		{
-			# Process specific lanes
-			$lanesInput = $textSpecific.Text
-			if ([string]::IsNullOrWhiteSpace($lanesInput))
-			{
-				[System.Windows.Forms.MessageBox]::Show("Please enter at least one lane number.", "Error",
-					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-				return $null
-			}
-			# Split the input by commas and trim spaces
-			$lanes = $lanesInput.Split(",") | ForEach-Object { $_.Trim() }
-			# Validate that each lane is up to a 3-digit number
-			foreach ($lane in $lanes)
-			{
-				if (-not ($lane -match "^\d{1,3}$"))
-				{
-					[System.Windows.Forms.MessageBox]::Show("Invalid lane number: $lane. Numbers must be up to 3 digits.",
-						"Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-					return $null
-				}
-			}
-			# Pad each lane to 3 digits
-			$lanes = $lanes | ForEach-Object { $_.PadLeft(3, '0') }
-			return @{
-				Type  = 'Specific'
-				Lanes = $lanes
-			}
-		}
-	}
-	elseif ($radioRange.Checked)
-	{
-		if ($Mode -eq "Host")
-		{
-			# Process range of stores
 			$startHost = $textStart.Text.Trim()
 			$endHost = $textEnd.Text.Trim()
 			if (-not ($startHost -match "^\d{3}$") -or -not ($endHost -match "^\d{3}$"))
@@ -9320,7 +9315,6 @@ function Show-SelectionDialog
 					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				return $null
 			}
-			# Generate the list of store numbers
 			$stores = @()
 			for ($i = [int]$startHost; $i -le [int]$endHost; $i++)
 			{
@@ -9331,91 +9325,38 @@ function Show-SelectionDialog
 				Stores = $stores
 			}
 		}
-		elseif ($Mode -eq "Store")
-		{
-			# Process range of lanes
-			$startLane = $textStart.Text.Trim()
-			$endLane = $textEnd.Text.Trim()
-			if (-not ($startLane -match "^\d{1,3}$") -or -not ($endLane -match "^\d{1,3}$"))
-			{
-				[System.Windows.Forms.MessageBox]::Show("Start and End lane numbers must be 1 to 3 digits.", "Error",
-					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-				return $null
-			}
-			if ([int]$startLane -gt [int]$endLane)
-			{
-				[System.Windows.Forms.MessageBox]::Show("Start lane number cannot be greater than end lane number.", "Error",
-					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-				return $null
-			}
-			# Generate the list of lane numbers
-			$laneNumbers = @()
-			for ($i = [int]$startLane; $i -le [int]$endLane; $i++)
-			{
-				$laneNumbers += $i.ToString("D3")
-			}
-			return @{
-				Type  = 'Range'
-				Lanes = $laneNumbers
-			}
-		}
-	}
-	elseif ($radioAll.Checked)
-	{
-		if ($Mode -eq "Host")
+		elseif ($radioAll.Checked)
 		{
 			return @{
 				Type   = "All"
 				Stores = @()
 			}
 		}
-		elseif ($Mode -eq "Store")
+	}
+	elseif ($Mode -eq "Store")
+	{
+		# Gather selected lanes from the CheckedListBox using the underlying LaneNumber property
+		$selectedLanes = @()
+		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
 		{
-			if (-not $StoreNumber)
+			if ($checkedListBox.GetItemChecked($i))
 			{
-				[System.Windows.Forms.MessageBox]::Show("Store number is required to fetch all lanes.", "Error",
-					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-				return $null
+				$selectedLanes += $checkedListBox.Items[$i].LaneNumber
 			}
-			# Attempt to use $LaneContents from $script:FunctionResults
-			if ($script:FunctionResults.ContainsKey('LaneContents') -and $script:FunctionResults['LaneContents'].Count -gt 0)
-			{
-				$allLanes = $script:FunctionResults['LaneContents']
-				return @{
-					Type  = 'All'
-					Lanes = $allLanes
-				}
-			}
-			else
-			{
-				# Fallback to current mechanism
-				if (-not (Test-Path -Path $OfficePath))
-				{
-					[System.Windows.Forms.MessageBox]::Show("The path '$OfficePath' does not exist.", "Error",
-						[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-					return $null
-				}
-				$laneFolders = Get-ChildItem -Path $OfficePath -Directory -Filter "XF${StoreNumber}0*"
-				if (-not $laneFolders)
-				{
-					return @{
-						Type  = 'All'
-						Lanes = @()
-					}
-				}
-				$allLanes = $laneFolders | ForEach-Object {
-					$_.Name.Substring($_.Name.Length - 3, 3)
-				}
-				return @{
-					Type  = 'All'
-					Lanes = $allLanes
-				}
-			}
+		}
+		if ($selectedLanes.Count -eq 0)
+		{
+			[System.Windows.Forms.MessageBox]::Show("No lanes selected.", "Information",
+				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+			return $null
+		}
+		return @{
+			Type  = 'Specific'
+			Lanes = $selectedLanes
 		}
 	}
 	else
 	{
-		# Should not reach here
 		return $null
 	}
 }
