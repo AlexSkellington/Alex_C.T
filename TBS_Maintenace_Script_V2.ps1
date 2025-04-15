@@ -10256,7 +10256,7 @@ if (-not $SilentMode)
 				})
 			[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 			
-			############################################################################
+			<############################################################################
 			# 8) Retrieve Transactions fron lanes
 			############################################################################
 			$RetrieveTransactionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions")
@@ -10264,7 +10264,7 @@ if (-not $SilentMode)
 			$RetrieveTransactionsItem.Add_Click({
 					Retrive_Transactions -StoreNumber "$StoreNumber"
 				})
-			[void]$ContextMenuLane.Items.Add($RetrieveTransactionsItem)
+			[void]$ContextMenuLane.Items.Add($RetrieveTransactionsItem)#>
 			
 			############################################################################
 			# 9) Drawer Control Item
