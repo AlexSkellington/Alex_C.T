@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.1.7"
+$VersionNumber = "2.1.8"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -82,29 +82,25 @@ $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 # Initialize BasePath variable
 $BasePath = $null
 
-# Search for directories matching '*storeman*' in the root of $env:SystemDrive
-$storemanDirs = Get-ChildItem -Path "$env:SystemDrive\" -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue
+# 1) Look for local storeman* directories containing Startup.ini
+$storemanDirs = Get-ChildItem -Path "$env:SystemDrive\" -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue |
+Where-Object { Test-Path -Path (Join-Path $_.FullName 'Startup.ini') }
 
 if ($storemanDirs)
 {
-	# If more than one directory is found
 	if ($storemanDirs.Count -gt 1)
 	{
-		# Retrieve a list of all current SMB shares on the system
+		# Prefer one that is actually shared
 		$shares = Get-SmbShare -ErrorAction SilentlyContinue
-		
 		foreach ($dir in $storemanDirs)
 		{
-			# Check if the current directory is shared by comparing paths
-			$matchingShare = $shares | Where-Object { $_.Path -eq $dir.FullName }
-			if ($matchingShare)
+			if ($shares.Path -contains $dir.FullName)
 			{
 				$BasePath = $dir.FullName
 				break
 			}
 		}
-		
-		# If no shared directory was found among the multiples, select the first one by default
+		# If still none, pick the first
 		if (-not $BasePath)
 		{
 			$BasePath = $storemanDirs[0].FullName
@@ -112,24 +108,21 @@ if ($storemanDirs)
 	}
 	else
 	{
-		# Only one storeman directory exists; select it directly
+		# Only one candidate
 		$BasePath = $storemanDirs[0].FullName
 	}
 }
 
-# If no local storeman directory was found or BasePath isn't set, proceed to check UNC paths.
+# 2) If no local match, try UNC paths that contain Startup.ini
 if (-not $BasePath)
 {
-	# Define the UNC paths to check in order of priority
-	$uncPaths = @(
+	$uncCandidates = @(
 		"\\localhost\storeman",
 		"\\$env:COMPUTERNAME\storeman"
 	)
-	
-	# Check each UNC path for existence
-	foreach ($path in $uncPaths)
+	foreach ($path in $uncCandidates)
 	{
-		if (Test-Path -Path $path -PathType Container)
+		if (Test-Path -Path (Join-Path $path 'Startup.ini') -PathType Leaf)
 		{
 			$BasePath = $path
 			break
@@ -137,16 +130,23 @@ if (-not $BasePath)
 	}
 }
 
-# Final check to ensure BasePath was set; default to $env:SystemDrive\storeman if not found
+# 3) Final fallback: C:\storeman only if it has Startup.ini
 if (-not $BasePath)
 {
-	$BasePath = "$env:SystemDrive\storeman"
+	$fallback = "$env:SystemDrive\storeman"
+	if (Test-Path -Path (Join-Path $fallback 'Startup.ini') -PathType Leaf)
+	{
+		$BasePath = $fallback
+	}
+	else
+	{
+		Throw "Could not locate a storeman folder containing Startup.ini."
+	}
 }
 
-# Output or use $BasePath as needed
 Write-Host "Selected (storeman) folder: '$BasePath'" -ForegroundColor Magenta
 
-# Now that we have a valid $BaseUNCPath, define the rest of the paths
+# Now define the rest of your paths
 $OfficePath = Join-Path $BasePath "office"
 $LoadPath = Join-Path $OfficePath "Load"
 $StartupIniPath = Join-Path $BasePath "Startup.ini"
