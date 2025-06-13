@@ -13,9 +13,9 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # Description:
 #   Defines the script parameters, allowing users to run the script in silent mode.
 # ===================================================================================================
-
+ 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.1.8"
+$VersionNumber = "2.1.9"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -151,6 +151,7 @@ $OfficePath = Join-Path $BasePath "office"
 $LoadPath = Join-Path $OfficePath "Load"
 $StartupIniPath = Join-Path $BasePath "Startup.ini"
 $SystemIniPath = Join-Path $OfficePath "system.ini"
+$GasInboxPath = "$OfficePath\XchGAS\INBOX"
 
 # Temp Directory
 $TempDir = [System.IO.Path]::GetTempPath()
@@ -7399,10 +7400,10 @@ VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPL
 	
 	# Define the content for DEPLOY_SYS.sql
 	$DeploySysContent = @"
-@FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,®WIZRPL(UD_RUN=0));
-@FMT(CMP,@WIZGET(UD_RUN)=,'®EXEC(SQL=UD_DEPLOY_SYS)®FMT(CHR,27)');
+@FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,Â®WIZRPL(UD_RUN=0));
+@FMT(CMP,@WIZGET(UD_RUN)=,'Â®EXEC(SQL=UD_DEPLOY_SYS)Â®FMT(CHR,27)');
 
-@FMT(CMP,@TOOLS(MESSAGEDLG,"!TO KEEP THE LANE'S REFERENCE SAMPLE UP TO DATE YOU SHOULD USE THE "REFERENCE SAMPLE MECHANISM". DO YOU WANT TO CONTINUE?",,NO,YES)=1,'®FMT(CHR,27)');
+@FMT(CMP,@TOOLS(MESSAGEDLG,"!TO KEEP THE LANE'S REFERENCE SAMPLE UP TO DATE YOU SHOULD USE THE "REFERENCE SAMPLE MECHANISM". DO YOU WANT TO CONTINUE?",,NO,YES)=1,'Â®FMT(CHR,27)');
 
 @EXEC(INI=HOST_OFFICE[DEPLOY_SYS]);
 
@@ -7432,7 +7433,7 @@ WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST
 ORDER BY STO.F1000"));
 @WIZDISPLAY;
 
-@FMT(CMP,@dbSelect(select distinct 1 from lnk_tab where F1000='@Wizget(Target)' and f1056='999')=,,"®EXEC(msg=!*****_can_not_deploy_system_tables_to_a_host_****);®FMT(CHR,27);")
+@FMT(CMP,@dbSelect(select distinct 1 from lnk_tab where F1000='@Wizget(Target)' and f1056='999')=,,"Â®EXEC(msg=!*****_can_not_deploy_system_tables_to_a_host_****);Â®FMT(CHR,27);")
 
 @WIZINIT;
 @WIZMENU(ACTION=Action on the target database,Add or replace=ADDRPL,Add only=ADD,Replace only=UPDATE,Clean and load=LOAD);
@@ -7440,23 +7441,23 @@ ORDER BY STO.F1000"));
 
 /* SEND ONLY ONE TABLE */
 
-@FMT(CMP,@wizget(ONESQM)=tlz_load,®EXEC(SQM=tlz_load));
-@FMT(CMP,@wizget(ONESQM)=fcz_load,®EXEC(SQM=fcz_load));
-@FMT(CMP,@wizget(ONESQM)=fct_load,®EXEC(SQM=fct_load));
-@FMT(CMP,@wizget(ONESQM)=dril_file_load,®EXEC(SQM=DRIL_FILE_LOAD));
-@FMT(CMP,@wizget(ONESQM)=dril_page_load,®EXEC(SQM=DRIL_PAGE_LOAD));
-@FMT(CMP,@wizget(ONESQM)=DEPLOY_ONE_FCT,®EXEC(SQM=DEPLOY_ONE_FCT));
+@FMT(CMP,@wizget(ONESQM)=tlz_load,Â®EXEC(SQM=tlz_load));
+@FMT(CMP,@wizget(ONESQM)=fcz_load,Â®EXEC(SQM=fcz_load));
+@FMT(CMP,@wizget(ONESQM)=fct_load,Â®EXEC(SQM=fct_load));
+@FMT(CMP,@wizget(ONESQM)=dril_file_load,Â®EXEC(SQM=DRIL_FILE_LOAD));
+@FMT(CMP,@wizget(ONESQM)=dril_page_load,Â®EXEC(SQM=DRIL_PAGE_LOAD));
+@FMT(CMP,@wizget(ONESQM)=DEPLOY_ONE_FCT,Â®EXEC(SQM=DEPLOY_ONE_FCT));
 
-@FMT(CMP,@WIZGET(ONESQM)=ALL,,'®EXEC(SQM=exe_activate_accept_sys)®fmt(chr,27)');
+@FMT(CMP,@WIZGET(ONESQM)=ALL,,'Â®EXEC(SQM=exe_activate_accept_sys)Â®fmt(chr,27)');
 
-@FMT(CMP,@wizget(tlz_load)=0,,®EXEC(SQM=tlz_load));
-@FMT(CMP,@wizget(fcz_load)=0,,®EXEC(SQM=fcz_load));
-@FMT(CMP,@wizget(fct_load)=0,,®EXEC(SQM=fct_load));
-@FMT(CMP,@wizget(DRIL_FILE_LOAD)=0,,®EXEC(SQM=DRIL_FILE_LOAD));
-@FMT(CMP,@wizget(DRIL_PAGE_LOAD)=0,,®EXEC(SQM=DRIL_PAGE_LOAD));
+@FMT(CMP,@wizget(tlz_load)=0,,Â®EXEC(SQM=tlz_load));
+@FMT(CMP,@wizget(fcz_load)=0,,Â®EXEC(SQM=fcz_load));
+@FMT(CMP,@wizget(fct_load)=0,,Â®EXEC(SQM=fct_load));
+@FMT(CMP,@wizget(DRIL_FILE_LOAD)=0,,Â®EXEC(SQM=DRIL_FILE_LOAD));
+@FMT(CMP,@wizget(DRIL_PAGE_LOAD)=0,,Â®EXEC(SQM=DRIL_PAGE_LOAD));
 
-@FMT(CMP,@wizget(exe_activate_accept_all)=0,,®EXEC(SQM=exe_activate_accept_sys));
-@FMT(CMP,@wizget(exe_refresh_menu)=1,®EXEC(SQM=exe_refresh_menu));
+@FMT(CMP,@wizget(exe_activate_accept_all)=0,,Â®EXEC(SQM=exe_activate_accept_sys));
+@FMT(CMP,@wizget(exe_refresh_menu)=1,Â®EXEC(SQM=exe_refresh_menu));
 
 @EXEC(sqi=USERE_DEPLOY_SYS);
 "@
@@ -7478,7 +7479,7 @@ INSERT INTO FCT_CHG VALUES
 /* EXTRACT SECTION */
 
 @DBHOT(HOT_WIZ,PARAMTOLINE,PARAMSAV_FCT_LOAD);
-@FMT(CMP,'@WIZGET(TARGET)<>','®WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
+@FMT(CMP,'@WIZGET(TARGET)<>','Â®WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
 
 @WIZINIT;
 @WIZTARGET(TARGET_FILTER=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
@@ -8842,6 +8843,156 @@ WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatte
 	Write-Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
 }
 
+<#function Retrive_Transactions (Mailslot)
+{
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$StoreNumber
+    )
+
+    Write-Log "`r`n==================== Starting Retrive_Transactions Function ====================`r`n" "blue"
+
+    # STEP 1: Date Range Picker
+    Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text          = "Select Date Range for Transactions"
+    $form.Size          = New-Object System.Drawing.Size(400,220)
+    $form.StartPosition = "CenterScreen"
+
+    # Start
+    $lbl1 = New-Object System.Windows.Forms.Label
+    $lbl1.Text     = "Start Date:"
+    $lbl1.Location = New-Object System.Drawing.Point(10,20)
+    $lbl1.AutoSize = $true
+    $form.Controls.Add($lbl1)
+
+    $dtpStart = New-Object System.Windows.Forms.DateTimePicker
+    $dtpStart.Format   = [System.Windows.Forms.DateTimePickerFormat]::Short
+    $dtpStart.Location = New-Object System.Drawing.Point(100,16)
+    $dtpStart.Width    = 100
+    $form.Controls.Add($dtpStart)
+
+    # Stop
+    $lbl2 = New-Object System.Windows.Forms.Label
+    $lbl2.Text     = "Stop Date:"
+    $lbl2.Location = New-Object System.Drawing.Point(10,60)
+    $lbl2.AutoSize = $true
+    $form.Controls.Add($lbl2)
+
+    $dtpStop = New-Object System.Windows.Forms.DateTimePicker
+    $dtpStop.Format   = [System.Windows.Forms.DateTimePickerFormat]::Short
+    $dtpStop.Location = New-Object System.Drawing.Point(100,56)
+    $dtpStop.Width    = 100
+    $form.Controls.Add($dtpStop)
+
+    # OK / Cancel
+    $btnOK = New-Object System.Windows.Forms.Button
+    $btnOK.Text     = "OK"
+    $btnOK.Location = New-Object System.Drawing.Point(80,120)
+    $btnOK.Add_Click({
+        $form.Tag          = @{ Start = $dtpStart.Value; Stop = $dtpStop.Value }
+        $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $form.Close()
+    })
+    $form.Controls.Add($btnOK)
+
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Text     = "Cancel"
+    $btnCancel.Location = New-Object System.Drawing.Point(180,120)
+    $btnCancel.Add_Click({
+        $form.Tag          = 'Cancelled'
+        $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+        $form.Close()
+    })
+    $form.Controls.Add($btnCancel)
+
+    $form.AcceptButton = $btnOK
+    $form.CancelButton = $btnCancel
+
+    if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK -or $form.Tag -eq 'Cancelled') {
+        Write-Log "User cancelled date selection." "yellow"
+        Write-Log "===== Retrive_Transactions aborted =====`r`n" "blue"
+        return
+    }
+
+    # Grab dates
+    $startDate = $form.Tag.Start
+    $stopDate  = $form.Tag.Stop
+    $sdSql     = $startDate.ToString('MM/dd/yyyy')
+    $edSql     = $stopDate.ToString('MM/dd/yyyy')
+    $sdFile    = $startDate.ToString('yyyyMMdd')
+    $edFile    = $stopDate.ToString('yyyyMMdd')
+
+    Write-Log "Date range: $sdSql → $edSql" "green"
+
+    # STEP 2: Get nodes & select lanes
+    $nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
+    if (-not $nodes) {
+        Write-Log "Failed to retrieve node info for store $StoreNumber." "red"
+        return
+    }
+    $selection = Show-SelectionDialog -Mode Store -StoreNumber $StoreNumber
+    if (-not $selection) {
+        Write-Log "No lanes selected or cancelled." "yellow"
+        return
+    }
+    $lanes = $selection.Lanes
+    Write-Log "Lanes to process: $($lanes -join ', ')" "green"
+
+    # STEP 3: Pull each day's dump from each lane's console
+    foreach ($lane in $lanes) {
+        $machine = $nodes.LaneMachines[$lane]
+        if (-not $machine) {
+            Write-Log "No machine for lane $lane; skipping." "yellow"
+            continue
+        }
+
+        Write-Log "`r`n-- Processing lane $lane on $machine --" "cyan"
+        for ($d = $startDate; $d -le $stopDate; $d = $d.AddDays(1)) {
+            $dateSql = $d.ToString('MM/dd/yyyy')
+            $tag     = $d.ToString('yyyyMMdd')
+            $outFile = Join-Path $GasInboxPath "GAS_TRS_${tag}.txt"
+			$message = "@exec(PCC=T$lane;CMD=GETTRSSIL DATE=$dateSql FileName=$outFile)DONE"
+			$slot    = "\\$machine\mailslot\DEBUG"
+
+            $ok = [MailslotSender]::SendMailslotCommand($slot, $message)
+            if ($ok) {
+                Write-Log "Requested $dateSql from $machine → $outFile" "green"
+            } else {
+                Write-Log "Failed to send to $slot for $dateSql" "red"
+            }
+
+            Start-Sleep -Seconds 1
+        }
+    }
+
+    # STEP 4: Filter & combine
+    Write-Log "`r`nFiltering transactions per lane..." "cyan"
+    $dumps = Get-ChildItem "$GasInboxPath\GAS_TRS_*.txt" | Sort-Object Name | Select-Object -ExpandProperty FullName
+
+    foreach ($lane in $lanes) {
+        $code    = '{0:00}' -f $lane
+        $pattern = "^$}code}:"                                # <-- fixed here
+
+        $matched = foreach ($f in $dumps) {
+            Get-Content $f | Where-Object { $_ -match $pattern }
+        }
+
+        if ($matched) {
+            $outName = "GAS_TRS_Lane${code}_${sdFile}_${edFile}.txt"
+            $outPath = Join-Path $GasInboxPath $outName
+            $matched | Out-File $outPath -Encoding ASCII
+            Write-Log "Wrote lane $code file → $outName" "green"
+        } else {
+            Write-Log "No data for lane $code in that range." "yellow"
+        }
+    }
+
+    Write-Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
+}
+#>
+
 # ===================================================================================================
 #                           FUNCTION: Reboot_Scales
 # ---------------------------------------------------------------------------------------------------
@@ -9898,7 +10049,7 @@ if (-not $SilentMode)
 		$Reboot_ScalesItem.Add_Click({
 				Reboot_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
 			})
-		[void]$contextMenuGeneral.Items.Add($Reboot_ScalesItem)		
+		[void]$contextMenuGeneral.Items.Add($Reboot_ScalesItem)
 		
 		############################################################################
 		
@@ -10230,7 +10381,17 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
 			
 			############################################################################
-			# 5) Ping Lanes Menu Item
+			# 5) Retrive Transactions
+			############################################################################
+			$RetriveTransactionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions")
+			$RetriveTransactionsItem.ToolTipText = "Retrive Transactions from lane/s."
+			$RetriveTransactionsItem.Add_Click({
+					Retrive_Transactions -StoreNumber "$StoreNumber"
+				})
+			[void]$ContextMenuLane.Items.Add($RetriveTransactionsItem)
+			
+			############################################################################
+			# 6) Ping Lanes Menu Item
 			############################################################################
 			$PingLanesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Lanes")
 			$PingLanesItem.ToolTipText = "Ping all lane devices to check connectivity."
@@ -10240,7 +10401,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($PingLanesItem)
 			
 			############################################################################
-			# 6) Delete DBS Menu Item
+			# 7) Delete DBS Menu Item
 			############################################################################
 			$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
 			$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
@@ -10250,7 +10411,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
 			
 			############################################################################
-			# 7) Refresh PIN Pad Files Menu Item
+			# 8) Refresh PIN Pad Files Menu Item
 			############################################################################
 			$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
 			$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
@@ -10260,7 +10421,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 			
 			<############################################################################
-			# 8) Retrieve Transactions fron lanes
+			# 9) Retrieve Transactions fron lanes
 			############################################################################
 			$RetrieveTransactionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions")
 			$RetrieveTransactionsItem.ToolTipText = "Retrive Transactions from the lane/s."
@@ -10270,7 +10431,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($RetrieveTransactionsItem)#>
 			
 			############################################################################
-			# 9) Drawer Control Item
+			# 10) Drawer Control Item
 			############################################################################
 			$DrawerControlItem = New-Object System.Windows.Forms.ToolStripMenuItem("Drawer Control")
 			$DrawerControlItem.ToolTipText = "Set the Drawer Control for a lane for testing"
@@ -10280,7 +10441,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($DrawerControlItem)
 			
 			############################################################################
-			# 10) Drawer Control Item
+			# 11) Drawer Control Item
 			############################################################################
 			$RefreshDatabaseItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh Database")
 			$RefreshDatabaseItem.ToolTipText = "Refresh the database at the lane/s"
@@ -10290,7 +10451,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 			
 			############################################################################
-			# 11) Send Restart Command Menu Item
+			# 12) Send Restart Command Menu Item
 			############################################################################
 			$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 			$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
@@ -10300,7 +10461,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 			
 			############################################################################
-			# 12) Set the time on the lanes
+			# 13) Set the time on the lanes
 			############################################################################
 			$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set the time on lanes")
 			$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize the time for the selected lanes."
@@ -10310,7 +10471,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 			
 			############################################################################
-			# 13) Reboot Lane Menu Item
+			# 14) Reboot Lane Menu Item
 			############################################################################
 			$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 			$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
