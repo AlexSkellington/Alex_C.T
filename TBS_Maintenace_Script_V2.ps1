@@ -7440,10 +7440,10 @@ VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPL
 	
 	# Define the content for DEPLOY_SYS.sql
 	$DeploySysContent = @"
-@FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,Â®WIZRPL(UD_RUN=0));
-@FMT(CMP,@WIZGET(UD_RUN)=,'Â®EXEC(SQL=UD_DEPLOY_SYS)Â®FMT(CHR,27)');
+@FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,®WIZRPL(UD_RUN=0));
+@FMT(CMP,@WIZGET(UD_RUN)=,'®EXEC(SQL=UD_DEPLOY_SYS)®FMT(CHR,27)');
 
-@FMT(CMP,@TOOLS(MESSAGEDLG,"!TO KEEP THE LANE'S REFERENCE SAMPLE UP TO DATE YOU SHOULD USE THE "REFERENCE SAMPLE MECHANISM". DO YOU WANT TO CONTINUE?",,NO,YES)=1,'Â®FMT(CHR,27)');
+@FMT(CMP,@TOOLS(MESSAGEDLG,"!TO KEEP THE LANE'S REFERENCE SAMPLE UP TO DATE YOU SHOULD USE THE "REFERENCE SAMPLE MECHANISM". DO YOU WANT TO CONTINUE?",,NO,YES)=1,'®FMT(CHR,27)');
 
 @EXEC(INI=HOST_OFFICE[DEPLOY_SYS]);
 
@@ -7473,7 +7473,7 @@ WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST
 ORDER BY STO.F1000"));
 @WIZDISPLAY;
 
-@FMT(CMP,@dbSelect(select distinct 1 from lnk_tab where F1000='@Wizget(Target)' and f1056='999')=,,"Â®EXEC(msg=!*****_can_not_deploy_system_tables_to_a_host_****);Â®FMT(CHR,27);")
+@FMT(CMP,@dbSelect(select distinct 1 from lnk_tab where F1000='@Wizget(Target)' and f1056='999')=,,"®EXEC(msg=!*****_can_not_deploy_system_tables_to_a_host_****);®FMT(CHR,27);")
 
 @WIZINIT;
 @WIZMENU(ACTION=Action on the target database,Add or replace=ADDRPL,Add only=ADD,Replace only=UPDATE,Clean and load=LOAD);
@@ -7481,23 +7481,23 @@ ORDER BY STO.F1000"));
 
 /* SEND ONLY ONE TABLE */
 
-@FMT(CMP,@wizget(ONESQM)=tlz_load,Â®EXEC(SQM=tlz_load));
-@FMT(CMP,@wizget(ONESQM)=fcz_load,Â®EXEC(SQM=fcz_load));
-@FMT(CMP,@wizget(ONESQM)=fct_load,Â®EXEC(SQM=fct_load));
-@FMT(CMP,@wizget(ONESQM)=dril_file_load,Â®EXEC(SQM=DRIL_FILE_LOAD));
-@FMT(CMP,@wizget(ONESQM)=dril_page_load,Â®EXEC(SQM=DRIL_PAGE_LOAD));
-@FMT(CMP,@wizget(ONESQM)=DEPLOY_ONE_FCT,Â®EXEC(SQM=DEPLOY_ONE_FCT));
+@FMT(CMP,@wizget(ONESQM)=tlz_load,®EXEC(SQM=tlz_load));
+@FMT(CMP,@wizget(ONESQM)=fcz_load,®EXEC(SQM=fcz_load));
+@FMT(CMP,@wizget(ONESQM)=fct_load,®EXEC(SQM=fct_load));
+@FMT(CMP,@wizget(ONESQM)=dril_file_load,®EXEC(SQM=DRIL_FILE_LOAD));
+@FMT(CMP,@wizget(ONESQM)=dril_page_load,®EXEC(SQM=DRIL_PAGE_LOAD));
+@FMT(CMP,@wizget(ONESQM)=DEPLOY_ONE_FCT,®EXEC(SQM=DEPLOY_ONE_FCT));
 
-@FMT(CMP,@WIZGET(ONESQM)=ALL,,'Â®EXEC(SQM=exe_activate_accept_sys)Â®fmt(chr,27)');
+@FMT(CMP,@WIZGET(ONESQM)=ALL,,'®EXEC(SQM=exe_activate_accept_sys)®fmt(chr,27)');
 
-@FMT(CMP,@wizget(tlz_load)=0,,Â®EXEC(SQM=tlz_load));
-@FMT(CMP,@wizget(fcz_load)=0,,Â®EXEC(SQM=fcz_load));
-@FMT(CMP,@wizget(fct_load)=0,,Â®EXEC(SQM=fct_load));
-@FMT(CMP,@wizget(DRIL_FILE_LOAD)=0,,Â®EXEC(SQM=DRIL_FILE_LOAD));
-@FMT(CMP,@wizget(DRIL_PAGE_LOAD)=0,,Â®EXEC(SQM=DRIL_PAGE_LOAD));
+@FMT(CMP,@wizget(tlz_load)=0,,®EXEC(SQM=tlz_load));
+@FMT(CMP,@wizget(fcz_load)=0,,®EXEC(SQM=fcz_load));
+@FMT(CMP,@wizget(fct_load)=0,,®EXEC(SQM=fct_load));
+@FMT(CMP,@wizget(DRIL_FILE_LOAD)=0,,®EXEC(SQM=DRIL_FILE_LOAD));
+@FMT(CMP,@wizget(DRIL_PAGE_LOAD)=0,,®EXEC(SQM=DRIL_PAGE_LOAD));
 
-@FMT(CMP,@wizget(exe_activate_accept_all)=0,,Â®EXEC(SQM=exe_activate_accept_sys));
-@FMT(CMP,@wizget(exe_refresh_menu)=1,Â®EXEC(SQM=exe_refresh_menu));
+@FMT(CMP,@wizget(exe_activate_accept_all)=0,,®EXEC(SQM=exe_activate_accept_sys));
+@FMT(CMP,@wizget(exe_refresh_menu)=1,®EXEC(SQM=exe_refresh_menu));
 
 @EXEC(sqi=USERE_DEPLOY_SYS);
 "@
@@ -7519,7 +7519,7 @@ INSERT INTO FCT_CHG VALUES
 /* EXTRACT SECTION */
 
 @DBHOT(HOT_WIZ,PARAMTOLINE,PARAMSAV_FCT_LOAD);
-@FMT(CMP,'@WIZGET(TARGET)<>','Â®WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
+@FMT(CMP,'@WIZGET(TARGET)<>','®WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
 
 @WIZINIT;
 @WIZTARGET(TARGET_FILTER=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
