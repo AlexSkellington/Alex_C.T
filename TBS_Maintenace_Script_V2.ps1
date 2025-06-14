@@ -4884,10 +4884,57 @@ LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'"));
 @FMT(CMP,@WIZGET(clt_itm_load)=0,,®EXEC(SQM=clt_itm_load));
 @FMT(CMP,@WIZGET(bmp_load)=0,,®EXEC(SQM=bmp_load));
 
-@FMT(CMP,@WIZGET(exe_activate_accept)=0,,®EXEC(SQM=exe_activate_accept));
-@FMT(CMP,@WIZGET(exe_deploy_chg)=1,®EXEC(SQM=exe_deploy_chg));
+ 																					/* DEPLOY_AUX */
 
-@EXEC(sqi=USERE_DEPLOY_LOAD);
+/* SAVE ALL PARAMETERS */
+@DBHOT(HOT_WIZ,PARAMTOLINE,PARAMSAV_DEPLOYAUX);
+
+/* DEPLOY WITHOUT F1000 */
+@FMT(CMP,@wizget(sdp_load)=0,,®EXEC(SQM=sdp_load));
+@FMT(CMP,@wizget(dept_load)=0,,®EXEC(SQM=dept_load));
+@FMT(CMP,@wizget(cat_load)=0,,®EXEC(SQM=cat_load));
+@FMT(CMP,@wizget(fam_load)=0,,®EXEC(SQM=fam_load));
+@FMT(CMP,@wizget(rpc_load)=0,,®EXEC(SQM=rpc_load));
+@FMT(CMP,@wizget(btl_load)=0,,®EXEC(SQM=btl_load));
+@FMT(CMP,@wizget(tar_load)=0,,®EXEC(SQM=tar_load));
+@FMT(CMP,@wizget(lvl_load)=0,,®EXEC(SQM=lvl_load));
+@FMT(CMP,@wizget(reason_load)=0,,®EXEC(SQM=reason_load));
+@FMT(CMP,@wizget(res_load)=0,,®EXEC(SQM=res_load));
+@FMT(CMP,@wizget(cpn_load)=0,,®EXEC(SQM=cpn_load));
+@FMT(CMP,@wizget(clf_load)=0,,®EXEC(SQM=clf_load));
+@FMT(CMP,@wizget(clg_load)=0,,®EXEC(SQM=clg_load));
+@FMT(CMP,@wizget(clr_load)=0,,®EXEC(SQM=clr_load));
+@FMT(CMP,@wizget(clf_sdp_load)=0,,®EXEC(SQM=clf_sdp_load));
+@FMT(CMP,@wizget(mod_load)=0,,®EXEC(SQM=mod_load));
+@FMT(CMP,@wizget(mod_itm_load)=0,,®EXEC(SQM=mod_itm_load));
+@FMT(CMP,@wizget(like_load)=0,,®EXEC(SQM=like_load));
+@FMT(CMP,@wizget(rcp_load)=0,,®EXEC(SQM=rcp_load));
+@FMT(CMP,@wizget(rcp_det_load)=0,,®EXEC(SQM=rcp_det_load));
+@FMT(CMP,@wizget(rcp_itm_load)=0,,®EXEC(SQM=rcp_itm_load));
+@FMT(CMP,@wizget(label_tpl_load)=0,,®EXEC(SQM=Label_Tpl_load));
+@FMT(CMP,@wizget(std_load)=0,,®EXEC(SQM=std_load));
+@FMT(CMP,@wizget(unt_load)=0,,®EXEC(SQM=unt_load));
+@FMT(CMP,@wizget(route_load)=0,,®EXEC(SQM=route_load));
+@FMT(CMP,@wizget(cls_aux_load)=0,,®EXEC(SQM=cls_aux_load));
+
+/* DEPLOY USING F1000 */
+@WIZRESET; 
+@DBHOT(HOT_WIZ,LINETOPARAM,PARAMSAV_DEPLOYAUX);
+@WIZRPL(TARGET_FILTER=@WIZGET(TARGET));
+@WIZCLR(TARGET);
+
+@FMT(CMP,@wizget(cfg_load)=0,,®EXEC(SQM=cfg_load));
+@FMT(CMP,@wizget(shf_load)=0,,®EXEC(SQM=shf_load));
+@FMT(CMP,@wizget(delv_load)=0,,®EXEC(SQM=delv_load));
+
+/* RESTORE TARGET */
+@WIZRESET; 
+@DBHOT(HOT_WIZ,LINETOPARAM,PARAMSAV_DEPLOYAUX);
+@DBHOT(HOT_WIZ,CLR,PARAMSAV_DEPLOYAUX);
+
+@FMT(CMP,@WIZGET(exe_activate_accept)=0,,®EXEC(SQM=exe_activate_accept));
+@FMT(CMP,@wizget(exe_activate_accept_all)=0,,®EXEC(SQM=exe_activate_accept_aux));
+@FMT(CMP,@WIZGET(exe_deploy_chg)=1,®EXEC(SQM=exe_deploy_chg));
 
 /* KEEP THE LONG TIMEOUT FOR OTHER DEPLOY_LOAD */
 @FMT(CMP,@WIZGET(UD_RUN)=0,®WIZCLR(DBASE_TIMEOUT));
