@@ -9017,10 +9017,15 @@ function Retrive_Transactions
 	# --------------------------------------------------
 	$SQIContent = @"
 @WIZSET(DETAIL=D);
-@CREATE(SAL_HDR_SUS@TER,HDRSAL);
+@WIZINIT;
+@WIZDATES(START='$startDateFormatted',STOP='$stopDateFormatted');
 
-INSERT INTO SAL_HDR_SUS@TER SELECT @DBFLD(SAL_HDR_SUS@TER) FROM SAL_HDR@WIZGET(TRANS_LOCAL)
-WHERE F1067='CLOSE' and F254>='$startDateFormatted' and F254<='$stopDateFormatted';
+@WIZRPL(TRANS_LIST=SAL_HDR_SUS@TER);
+@CREATE(@WIZGET(TRANS_LIST),HDRSAL);
+
+INSERT INTO @WIZGET(TRANS_LIST) SELECT @DBFLD(@WIZGET(TRANS_LIST)) FROM SAL_HDR@WIZGET(TRANS_LOCAL)
+WHERE F1067='CLOSE' and F254>='@WIZGET(START)' and F254<='@WIZGET(STOP)' AND
+F1032>=0 and F1032<=99999999;
 "@
 	
 	# Ensure the SQI content uses CRLF line endings (ANSI PC format)
