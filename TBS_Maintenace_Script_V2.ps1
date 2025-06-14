@@ -4807,10 +4807,6 @@ function Deploy_Load
 	
 	# ---- STEP 2: Build the macro file ----
 	$MacroContent = @"
-@WIZSET(TER=$TER)
-@WIZSET(ACTION=ADDRPL)
-@WIZSET(DETAIL=D);
-
 /* GET THE SCENARIO SWITCH */
 @wizRpl(SCENARIO_SWITCH=@dbHot(INI,SAMPLES.INI,SWITCHES,DEPLOY_SCENARIO));
 
@@ -4838,6 +4834,20 @@ function Deploy_Load
 @WIZCLR(TARGET);
 
 @EXEC(sqi=USERB_DEPLOY_LOAD);
+
+@WIZINIT;
+@WIZTARGET(DEPLOYLOAD.STORE=$TER,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
+SELECT F1000,F1018 FROM STO_TAB WHERE F1181=1","
+SELECT DISTINCT STO.F1000,STO.F1018 
+FROM LNK_TAB LN2 
+JOIN LNK_TAB LNK ON LN2.F1056=LNK.F1056 AND LN2.F1057=LNK.F1057
+JOIN STO_TAB STO ON STO.F1000=LNK.F1000 
+WHERE STO.F1181='1' AND STO.F1000<>'XAL' AND 
+LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'"));
+
+@WIZINIT;
+@WIZSET(ACTION=ADDRPL(ACTION_CHOICE));
+@WIZDATE(DATE=@DSSF,TIME=@NOW);
 
 /* TABLES WITH F1000 */
 @FMT(CMP,@WIZGET(clk_load)=0,,®EXEC(SQM=clk_load));
@@ -10490,12 +10500,22 @@ if (-not $SilentMode)
 			$PumpTableToLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Pump Table to Lane")
 			$PumpTableToLaneItem.ToolTipText = "Pump the selected tables to the lane/s databases."
 			$PumpTableToLaneItem.Add_Click({
-					Deploy_Load -StoreNumber $StoreNumber
+					Pump-Tables -StoreNumber $StoreNumber
 				})
 			[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
 			
 			############################################################################
-			# 3) Update Lane Configuration Menu Item
+			# 3) Pump Table to Lane Menu Item
+			############################################################################
+			$DeployLoadItem = New-Object System.Windows.Forms.ToolStripMenuItem("Deploy all Items")
+			$DeployLoadItem.ToolTipText = "Deploy all items to the lane/s databases."
+			$DeployLoadItem.Add_Click({
+					Deploy_Load -StoreNumber $StoreNumber
+				})
+			[void]$ContextMenuLane.Items.Add($DeployLoadItem)
+			
+			############################################################################
+			# 4) Update Lane Configuration Menu Item
 			############################################################################
 			$UpdateLaneConfigItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Lane Configuration")
 			$UpdateLaneConfigItem.ToolTipText = "Update the configuration files for the lanes. Fixes connectivity errors and mistakes made during lane ghosting."
@@ -10505,7 +10525,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($UpdateLaneConfigItem)
 			
 			############################################################################
-			# 4) Close Open Transactions Menu Item
+			# 5) Close Open Transactions Menu Item
 			############################################################################
 			$CloseOpenTransItem = New-Object System.Windows.Forms.ToolStripMenuItem("Close Open Transactions")
 			$CloseOpenTransItem.ToolTipText = "Close any open transactions at the lane/s."
@@ -10515,7 +10535,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
 			
 			############################################################################
-			# 5) Retrive Transactions
+			# 6) Retrive Transactions
 			############################################################################
 			$RetriveTransactionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions")
 			$RetriveTransactionsItem.ToolTipText = "Retrive Transactions from lane/s."
@@ -10525,7 +10545,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($RetriveTransactionsItem)
 			
 			############################################################################
-			# 6) Ping Lanes Menu Item
+			# 7) Ping Lanes Menu Item
 			############################################################################
 			$PingLanesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Lanes")
 			$PingLanesItem.ToolTipText = "Ping all lane devices to check connectivity."
@@ -10535,7 +10555,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($PingLanesItem)
 			
 			############################################################################
-			# 7) Delete DBS Menu Item
+			# 8) Delete DBS Menu Item
 			############################################################################
 			$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
 			$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
@@ -10545,7 +10565,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
 			
 			############################################################################
-			# 8) Refresh PIN Pad Files Menu Item
+			# 9) Refresh PIN Pad Files Menu Item
 			############################################################################
 			$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
 			$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
@@ -10565,7 +10585,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($RetrieveTransactionsItem)#>
 			
 			############################################################################
-			# 10) Drawer Control Item
+			# 11) Drawer Control Item
 			############################################################################
 			$DrawerControlItem = New-Object System.Windows.Forms.ToolStripMenuItem("Drawer Control")
 			$DrawerControlItem.ToolTipText = "Set the Drawer Control for a lane for testing"
@@ -10575,7 +10595,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($DrawerControlItem)
 			
 			############################################################################
-			# 11) Drawer Control Item
+			# 12) Drawer Control Item
 			############################################################################
 			$RefreshDatabaseItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh Database")
 			$RefreshDatabaseItem.ToolTipText = "Refresh the database at the lane/s"
@@ -10585,7 +10605,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 			
 			############################################################################
-			# 12) Send Restart Command Menu Item
+			# 13) Send Restart Command Menu Item
 			############################################################################
 			$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 			$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
@@ -10595,7 +10615,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 			
 			############################################################################
-			# 13) Set the time on the lanes
+			# 14) Set the time on the lanes
 			############################################################################
 			$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set the time on lanes")
 			$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize the time for the selected lanes."
@@ -10605,7 +10625,7 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 			
 			############################################################################
-			# 14) Reboot Lane Menu Item
+			# 15) Reboot Lane Menu Item
 			############################################################################
 			$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 			$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
