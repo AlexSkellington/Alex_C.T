@@ -4785,7 +4785,7 @@ DROP TABLE Ter_Load;
 #   - Write-Log function must be available.
 # ===================================================================================================
 
-function Deploy_UD_DEPLOY_LOAD
+function Deploy_Load
 {
 	[CmdletBinding()]
 	param (
