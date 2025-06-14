@@ -4796,7 +4796,7 @@ function Deploy_Load
 	Write-Log "`r`n==================== Starting Deploy_UD_DEPLOY_LOAD ====================`r`n" "blue"
 	
 	# ---- STEP 1: Pick lane (TER) ----
-	$selection = Show-SelectionDialog -Mode "SingleLane" -StoreNumber $StoreNumber -DialogTitle "Select Lane for UD_DEPLOY_LOAD"
+	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
 	if ($null -eq $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 	{
 		Write-Log "No lane selected or operation cancelled." "yellow"
