@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
  
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.1.9"
+$VersionNumber = "2.2.0"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -4766,6 +4766,140 @@ DROP TABLE Ter_Load;
 	}
 	
 	Write-Log "`r`n==================== Update-LaneFiles Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                                 FUNCTION: Deploy_Load
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Lets you pick a lane (for @TER) using Show-SelectionDialog, then writes a ready-to-execute macro
+#   for UD_DEPLOY_LOAD with ACTION always set to ADDRPL, all scenario and business logic blocks included.
+#   Deploys the SQI macro file directly to XF<Store>901.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - StoreNumber: The store number to process. (Mandatory)
+# ---------------------------------------------------------------------------------------------------
+# Requirements:
+#   - Show-SelectionDialog function must exist and return lane (TER).
+#   - $OfficePath must be defined.
+#   - Write-Log function must be available.
+# ===================================================================================================
+
+function Deploy_Load
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	Write-Log "`r`n==================== Starting Deploy_UD_DEPLOY_LOAD ====================`r`n" "blue"
+	
+	# ---- STEP 1: Pick lane (TER) ----
+	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+	if ($null -eq $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
+	{
+		Write-Log "No lane selected or operation cancelled." "yellow"
+		Write-Log "`r`n==================== Deploy_UD_DEPLOY_LOAD Completed ====================" "blue"
+		return
+	}
+	$TER = $selection.Lanes[0].PadLeft(3, '0')
+	
+	# ---- STEP 2: Build the macro file ----
+	$MacroContent = @"
+@WIZSET(TER=$TER)
+@WIZSET(ACTION=ADDRPL)
+@WIZSET(DETAIL=D);
+
+/* GET THE SCANERIO SWITCH */
+@wizRpl(SCENARIO_SWITCH=@dbHot(INI,SAMPLES.INI,SWITCHES,DEPLOY_SCENARIO));
+
+/* NOT PERMITTED MESSAGES */
+@wizRpl(SCENARIO_MSG=A @WIZGET(SCENARIO_SWITCH) sample scenario is installed and does not allow using this script);
+@fmt(CMP,'@dbHot(LANGUAGE)=ES','®wizRpl(SCENARIO_MSG=Se instala un escenario de muestra @WIZGET(SCENARIO_SWITCH) y no permite usar este script)');
+@fmt(CMP,'@dbHot(LANGUAGE)=FR',"®wizRpl(SCENARIO_MSG=Un sample scenario @WIZGET(SCENARIO_SWITCH) est installé et ne permet pas d'utiliser ce script)");
+
+/* CHECK TO SEE IF OPERATION IS PERMITTED BASED ON SCENARIO */
+@fmt(CMP,'@STORE@wizGet(SCENARIO_SWITCH)=999STORE','®wizRpl(SCENARIO_EXIT=1)','®wizClr(SCENARIO_EXIT)®wizClr(SCENARIO_MSG)');
+@FMT(CMP,'@dbHot(INI,SAMPLES.INI,SWITCHES,LOC_SUBSAMPLE)=LOC_BACK','®wizClr(SCENARIO_EXIT)®wizClr(SCENARIO_MSG)');
+
+@fmt(CMP,'@wizGet(SCENARIO_EXIT)=1',"®wizRpl(OK=®tools(MESSAGEDLG,'!@wizGet(SCENARIO_MSG)',10,,OK))®fmt(CHR,27)");
+
+/* REDIRECT THE BATCH EXECUTION BASED ON SCHEDULER */
+@FMT(CMP,@WIZEXIST(BATCH_FILENAME)=1,"®WIZRPL(REDIRECT=®DBSELECT(SELECT LNK.F1056+LNK.F1057 FROM RUN_TAB RUN JOIN LNK_TAB LNK ON LNK.F1000=RUN.F1000 WHERE RUN.F1103 LIKE '%SQL=DEPLOY_CHG%' AND LNK.F1056+LNK.F1057<>'@STORE@TER'))");
+@fmt(CMP,@wizIsBlank(REDIRECT)=1,'®wizClr(REDIRECT)','®wizRpl(SRC_PATH=®OFFICEXF®STORE®TER\®WIZGET(BATCH_FILENAME))®wizRpl(TAR_PATH=®OFFICEXF®wizGet(REDIRECT)\®wizGet(BATCH_FILENAME))®exec(XCH=COPYFILE)®fmt(CHR,26)');
+
+@FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_LOAD.SQL)=,®WIZRPL(UD_RUN=0));
+@FMT(CMP,@WIZGET(UD_RUN)=,'®EXEC(SQL=UD_DEPLOY_LOAD)®FMT(CHR,27)');
+@WIZRPL(DBASE_TIMEOUT=E);
+
+@EXEC(INI=HOST_OFFICE[DEPLOY_LOAD]);
+@WIZRPL(STYLE=SIL);
+@WIZCLR(TARGET);
+
+@EXEC(sqi=USERB_DEPLOY_LOAD);
+
+/* TABLES WITH F1000 */
+
+@FMT(CMP,@WIZGET(clk_load)=0,,®EXEC(SQM=clk_load));
+@FMT(CMP,@WIZGET(clt_load)=0,,®EXEC(SQM=clt_load));
+@FMT(CMP,@WIZGET(cll_load)=0,,®EXEC(SQM=cll_load));
+@FMT(CMP,@WIZGET(pos_load)=0,,®EXEC(SQM=pos_load));
+@FMT(CMP,@WIZGET(price_load)=0,,®EXEC(SQM=price_load));
+@FMT(CMP,@WIZGET(cost_load)=0,,®EXEC(SQM=cost_load));
+@FMT(CMP,@WIZGET(dsd_load)=0,,®EXEC(SQM=dsd_load));
+@FMT(CMP,@WIZGET(ecl_load)=0,,®EXEC(SQM=ecl_load));
+@FMT(CMP,@WIZGET(scl_load)=0,,®EXEC(SQM=scl_load));
+@FMT(CMP,@WIZGET(scl_txt_load)=0,,®EXEC(SQM=scl_txt_load));
+@FMT(CMP,@WIZGET(scl_nut_load)=0,,®EXEC(SQM=scl_nut_load));
+@FMT(CMP,@WIZGET(scl_cpt_load)=0,,®EXEC(SQM=scl_cpt_load));
+@FMT(CMP,@WIZGET(scl_cct_load)=0,,®EXEC(SQM=scl_cct_load));
+@FMT(CMP,@WIZGET(scl_csl_load)=0,,®EXEC(SQM=scl_csl_load));
+@FMT(CMP,@WIZGET(scl_ctx_load)=0,,®EXEC(SQM=scl_ctx_load));
+@FMT(CMP,@WIZGET(scl_sto_load)=0,,®EXEC(SQM=scl_sto_load));
+@FMT(CMP,@WIZGET(loc_load)=0,,®EXEC(SQM=loc_load));
+@FMT(CMP,@WIZGET(alt_load)=0,,®EXEC(SQM=alt_load));
+@FMT(CMP,@WIZGET(itz_load)=0,,®EXEC(SQM=itz_load));
+@FMT(CMP,@WIZGET(itd_load)=0,,®EXEC(SQM=itd_load));
+@FMT(CMP,@WIZGET(cls_load)=0,,®EXEC(SQM=cls_load));
+
+@WIZRPL(TARGET=@WIZGET(DEPLOYLOAD.STORE));
+@WIZRPL(TARGET_FILTER=@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE));
+
+/* TABLES WITHOUT F1000 */
+
+@FMT(CMP,@WIZGET(mix_load)=0,,®EXEC(SQM=mix_load));
+@FMT(CMP,@WIZGET(bio_load)=0,,®EXEC(SQM=bio_load));
+@FMT(CMP,@WIZGET(vendor_load)=0,,®EXEC(SQM=vendor_load));
+@FMT(CMP,@WIZGET(obj_load)=0,,®EXEC(SQM=obj_load));
+@FMT(CMP,@WIZGET(kit_load)=0,,®EXEC(SQM=kit_load));
+@FMT(CMP,@WIZGET(clt_itm_load)=0,,®EXEC(SQM=clt_itm_load));
+@FMT(CMP,@WIZGET(bmp_load)=0,,®EXEC(SQM=bmp_load));
+
+@FMT(CMP,@WIZGET(exe_activate_accept)=0,,®EXEC(SQM=exe_activate_accept));
+@FMT(CMP,@WIZGET(exe_deploy_chg)=1,®EXEC(SQM=exe_deploy_chg));
+
+@EXEC(sqi=USERE_DEPLOY_LOAD);
+
+/* KEEP THE LONG TIMEOUT FOR OTHER DEPLOY_LOAD */
+@FMT(CMP,@WIZGET(UD_RUN)=0,®WIZCLR(DBASE_TIMEOUT));
+"@
+	
+	# Ensure CRLF (ANSI PC format)
+	$MacroContent = $MacroContent -replace "`n", "`r`n"
+	
+	# ---- STEP 3: Write to XF<Store>901 ----
+	$DeployPath = Join-Path -Path $OfficePath -ChildPath "XF${StoreNumber}901"
+	if (-not (Test-Path $DeployPath))
+	{
+		Write-Log "Deploy path $DeployPath not found. Aborting." "red"
+		return
+	}
+	$MacroFile = Join-Path -Path $DeployPath -ChildPath "UD_DEPLOY_LOAD.sqi"
+	Set-Content -Path $MacroFile -Value $MacroContent -Encoding ASCII
+	Set-ItemProperty -Path $MacroFile -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+	Write-Log "Deployed UD_DEPLOY_LOAD macro for lane $TER in $DeployPath." "green"
+	Write-Log "`r`n==================== Deploy_UD_DEPLOY_LOAD Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -10356,7 +10490,7 @@ if (-not $SilentMode)
 			$PumpTableToLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Pump Table to Lane")
 			$PumpTableToLaneItem.ToolTipText = "Pump the selected tables to the lane/s databases."
 			$PumpTableToLaneItem.Add_Click({
-					Pump-Tables -StoreNumber $StoreNumber
+					Deploy_Load -StoreNumber $StoreNumber
 				})
 			[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
 			
