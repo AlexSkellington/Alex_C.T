@@ -4785,7 +4785,7 @@ DROP TABLE Ter_Load;
 #   - Write-Log function must be available.
 # ===================================================================================================
 
-function Deploy_Load
+function Deploy_UD_DEPLOY_LOAD
 {
 	[CmdletBinding()]
 	param (
@@ -4796,7 +4796,7 @@ function Deploy_Load
 	Write-Log "`r`n==================== Starting Deploy_UD_DEPLOY_LOAD ====================`r`n" "blue"
 	
 	# ---- STEP 1: Pick lane (TER) ----
-	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+	$selection = Show-SelectionDialog -Mode "SingleLane" -StoreNumber $StoreNumber -DialogTitle "Select Lane for UD_DEPLOY_LOAD"
 	if ($null -eq $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 	{
 		Write-Log "No lane selected or operation cancelled." "yellow"
@@ -4811,7 +4811,7 @@ function Deploy_Load
 @WIZSET(ACTION=ADDRPL)
 @WIZSET(DETAIL=D);
 
-/* GET THE SCANERIO SWITCH */
+/* GET THE SCENARIO SWITCH */
 @wizRpl(SCENARIO_SWITCH=@dbHot(INI,SAMPLES.INI,SWITCHES,DEPLOY_SCENARIO));
 
 /* NOT PERMITTED MESSAGES */
@@ -4840,7 +4840,6 @@ function Deploy_Load
 @EXEC(sqi=USERB_DEPLOY_LOAD);
 
 /* TABLES WITH F1000 */
-
 @FMT(CMP,@WIZGET(clk_load)=0,,®EXEC(SQM=clk_load));
 @FMT(CMP,@WIZGET(clt_load)=0,,®EXEC(SQM=clt_load));
 @FMT(CMP,@WIZGET(cll_load)=0,,®EXEC(SQM=cll_load));
@@ -4867,7 +4866,6 @@ function Deploy_Load
 @WIZRPL(TARGET_FILTER=@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE));
 
 /* TABLES WITHOUT F1000 */
-
 @FMT(CMP,@WIZGET(mix_load)=0,,®EXEC(SQM=mix_load));
 @FMT(CMP,@WIZGET(bio_load)=0,,®EXEC(SQM=bio_load));
 @FMT(CMP,@WIZGET(vendor_load)=0,,®EXEC(SQM=vendor_load));
@@ -4885,10 +4883,7 @@ function Deploy_Load
 @FMT(CMP,@WIZGET(UD_RUN)=0,®WIZCLR(DBASE_TIMEOUT));
 "@
 	
-	# Ensure CRLF (ANSI PC format)
-	$MacroContent = $MacroContent -replace "`n", "`r`n"
-	
-	# ---- STEP 3: Write to XF<Store>901 ----
+	# ---- STEP 3: Write file with forced CRLF and ANSI encoding ----
 	$DeployPath = Join-Path -Path $OfficePath -ChildPath "XF${StoreNumber}901"
 	if (-not (Test-Path $DeployPath))
 	{
@@ -4896,8 +4891,13 @@ function Deploy_Load
 		return
 	}
 	$MacroFile = Join-Path -Path $DeployPath -ChildPath "UD_DEPLOY_LOAD.sqi"
-	Set-Content -Path $MacroFile -Value $MacroContent -Encoding ASCII
+	
+	# CRLF normalization
+	$MacroContentCRLF = $MacroContent -replace "`r?`n", "`r`n"
+		
+	[System.IO.File]::WriteAllText($MacroFile, $MacroContentCRLF, $ansiPcEncoding)
 	Set-ItemProperty -Path $MacroFile -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+	
 	Write-Log "Deployed UD_DEPLOY_LOAD macro for lane $TER in $DeployPath." "green"
 	Write-Log "`r`n==================== Deploy_UD_DEPLOY_LOAD Completed ====================" "blue"
 }
