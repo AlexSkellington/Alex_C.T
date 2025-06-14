@@ -4932,8 +4932,27 @@ LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'"));
 @DBHOT(HOT_WIZ,LINETOPARAM,PARAMSAV_DEPLOYAUX);
 @DBHOT(HOT_WIZ,CLR,PARAMSAV_DEPLOYAUX);
 
+ 																					/* DEPLOY_SYS */
+
+@FMT(CMP,@wizget(ONESQM)=tlz_load,®EXEC(SQM=tlz_load));
+@FMT(CMP,@wizget(ONESQM)=fcz_load,®EXEC(SQM=fcz_load));
+@FMT(CMP,@wizget(ONESQM)=fct_load,®EXEC(SQM=fct_load));
+@FMT(CMP,@wizget(ONESQM)=dril_file_load,®EXEC(SQM=DRIL_FILE_LOAD));
+@FMT(CMP,@wizget(ONESQM)=dril_page_load,®EXEC(SQM=DRIL_PAGE_LOAD));
+@FMT(CMP,@wizget(ONESQM)=DEPLOY_ONE_FCT,®EXEC(SQM=DEPLOY_ONE_FCT));
+
+@FMT(CMP,@WIZGET(ONESQM)=ALL,,'®EXEC(SQM=exe_activate_accept_sys)®fmt(chr,27)');
+
+@FMT(CMP,@wizget(tlz_load)=0,,®EXEC(SQM=tlz_load));
+@FMT(CMP,@wizget(fcz_load)=0,,®EXEC(SQM=fcz_load));
+@FMT(CMP,@wizget(fct_load)=0,,®EXEC(SQM=fct_load));
+@FMT(CMP,@wizget(DRIL_FILE_LOAD)=0,,®EXEC(SQM=DRIL_FILE_LOAD));
+@FMT(CMP,@wizget(DRIL_PAGE_LOAD)=0,,®EXEC(SQM=DRIL_PAGE_LOAD));
+
 @FMT(CMP,@WIZGET(exe_activate_accept)=0,,®EXEC(SQM=exe_activate_accept));
 @FMT(CMP,@wizget(exe_activate_accept_all)=0,,®EXEC(SQM=exe_activate_accept_aux));
+@FMT(CMP,@wizget(exe_activate_accept_all)=0,,®EXEC(SQM=exe_activate_accept_sys));
+@FMT(CMP,@wizget(exe_refresh_menu)=1,®EXEC(SQM=exe_refresh_menu));
 @FMT(CMP,@WIZGET(exe_deploy_chg)=1,®EXEC(SQM=exe_deploy_chg));
 
 /* KEEP THE LONG TIMEOUT FOR OTHER DEPLOY_LOAD */
