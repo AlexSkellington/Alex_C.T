@@ -6,6 +6,7 @@ Param (
 
 # Write-Host "Script started. IsRelaunched: $IsRelaunched"
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
+Write-Host "®Tecnica Bussiness System" -ForegroundColor Blue
 
 # ===================================================================================================
 #                                       SECTION: Parameters
