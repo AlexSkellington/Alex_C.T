@@ -10572,10 +10572,10 @@ if (-not $SilentMode)
 			[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
 			
 			############################################################################
-			# 3) Pump Table to Lane Menu Item
+			# 3) Pump all tables
 			############################################################################
-			$DeployLoadItem = New-Object System.Windows.Forms.ToolStripMenuItem("Deploy all Items")
-			$DeployLoadItem.ToolTipText = "Deploy all items to the lane/s databases."
+			$DeployLoadItem = New-Object System.Windows.Forms.ToolStripMenuItem("Pump Lane/s")
+			$DeployLoadItem.ToolTipText = "Pump all tables to the lane/s."
 			$DeployLoadItem.Add_Click({
 					Deploy_Load -StoreNumber $StoreNumber
 				})
