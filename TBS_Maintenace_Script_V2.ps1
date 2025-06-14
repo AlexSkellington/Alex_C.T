@@ -6256,71 +6256,22 @@ function CloseOpenTransactions
 		{
 			Write-Log -Message "No files or no matching transactions found. Prompting for lane number." "yellow"
 			
-			# Show Windows form to ask for lane number
-			Add-Type -AssemblyName System.Windows.Forms
-			Add-Type -AssemblyName System.Drawing
-			
-			# Initialize the form
-			$form = New-Object System.Windows.Forms.Form
-			$form.Text = "Lane Deployment"
-			$form.Size = New-Object System.Drawing.Size(400, 150)
-			$form.StartPosition = "CenterScreen"
-			
-			# Label
-			$label = New-Object System.Windows.Forms.Label
-			$label.Text = "Enter Lane Number to deploy the file to:"
-			$label.AutoSize = $true
-			$label.Location = New-Object System.Drawing.Point(10, 20)
-			$form.Controls.Add($label)
-			
-			# TextBox
-			$textBox = New-Object System.Windows.Forms.TextBox
-			$textBox.Location = New-Object System.Drawing.Point(10, 50)
-			$textBox.Width = 360
-			$form.Controls.Add($textBox)
-			
-			# OK Button
-			$okButton = New-Object System.Windows.Forms.Button
-			$okButton.Text = "OK"
-			$okButton.Location = New-Object System.Drawing.Point(150, 80)
-			$okButton.Add_Click({
-					# Validate that the input is numeric and pad it
-					if ($textBox.Text -match '^\d+$')
-					{
-						$form.Tag = $textBox.Text.PadLeft(3, '0')
-						$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
-						$form.Close()
-					}
-					else
-					{
-						[System.Windows.Forms.MessageBox]::Show("Please enter a numeric lane number.", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-					}
-				})
-			$form.Controls.Add($okButton)
-			
-			# Cancel Button
-			$cancelButton = New-Object System.Windows.Forms.Button
-			$cancelButton.Text = "Cancel"
-			$cancelButton.Location = New-Object System.Drawing.Point(230, 80)
-			$cancelButton.Add_Click({
-					$form.Tag = "Cancelled"
-					$form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-					$form.Close()
-				})
-			$form.Controls.Add($cancelButton)
-			
-			# Set Accept and Cancel buttons
-			$form.AcceptButton = $okButton
-			$form.CancelButton = $cancelButton
-			
-			$result = $form.ShowDialog()
-			
-			if ($form.Tag -eq "Cancelled" -or $result -eq [System.Windows.Forms.DialogResult]::Cancel)
+			$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+			if ($null -eq $selection)
 			{
-				Write-Log -Message "User cancelled the operation." "yellow"
-				Write-Log "`r`n==================== CloseOpenTransactions Function Completed ====================" "blue"
+				Write-Log "Selection cancelled by user." "yellow"
+				Write-Log "`r`n==================== CloseOpenTransactions Completed ====================" "blue"
 				return
 			}
+			
+			foreach ($LaneNumber in $selection.Lanes)
+			{
+				$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
+				if (-not (Test-Path $LaneDirectory))
+				{
+					Write-Log "Skipped missing lane dir: $LaneDirectory" "yellow"
+					continue
+				}
 			
 			$LaneNumber = $form.Tag
 			
