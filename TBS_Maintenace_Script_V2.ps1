@@ -6,7 +6,6 @@ Param (
 
 # Write-Host "Script started. IsRelaunched: $IsRelaunched"
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
-Write-Host "®Tecnica Bussiness System" -ForegroundColor Blue
 
 # ===================================================================================================
 #                                       SECTION: Parameters
@@ -131,7 +130,7 @@ if (-not $BasePath)
 	}
 }
 
-# 3) Final fallback: C:\storeman only if it has Startup.ini
+# 3) Final fallback: C:\storeman 
 if (-not $BasePath)
 {
 	$fallback = "$env:SystemDrive\storeman"
@@ -141,7 +140,10 @@ if (-not $BasePath)
 	}
 	else
 	{
-		Throw "Could not locate a storeman folder containing Startup.ini."
+		# Warn & continue in limited mode
+		Write-Warning "Could not locate any storeman folder containing Startup.ini. `nRunning with limited functionality."
+		# Still set BasePath so the rest of the script can run
+		$BasePath = $fallback
 	}
 }
 
@@ -3571,7 +3573,7 @@ function Delete-Files
 #   Cleans the temporary folder by deleting all files and directories within it.
 # ===================================================================================================
 
-function Clean-TempFolderGUI
+function Clean_TempFolder
 {
 	Write-Log "`nClearing temp folder..." "blue"
 	$FilesAndDirsDeleted = 0
@@ -8816,8 +8818,8 @@ function Retrive_Transactions
 	}
 	
 	# Format the dates as ddMMyyyy
-	$startDateFormatted = $dateForm.Tag.StartDate.ToString("dd/MM/yyyy")
-	$stopDateFormatted = $dateForm.Tag.StopDate.ToString("dd/MM/yyyy")
+	$startDateFormatted = $dateForm.Tag.StartDate.ToString("MM/dd/yyyy")
+	$stopDateFormatted = $dateForm.Tag.StopDate.ToString("MM/dd/yyyy")
 	Write-Log "Start Date selected: $startDateFormatted" "green"
 	Write-Log "Stop Date selected: $stopDateFormatted" "green"
 	
@@ -8850,7 +8852,7 @@ function Retrive_Transactions
 	$SQIContent = @"
 @WIZSET(DETAIL=D);
 @WIZINIT;
-@WIZDATES(START='$startDateFormatted',STOP='$stopDateFormatted');
+@WIZDATES(START=$startDateFormatted,STOP=$stopDateFormatted);
 
 @WIZRPL(TRANS_LIST=SAL_HDR_SUS@TER);
 @CREATE(@WIZGET(TRANS_LIST),HDRSAL);
@@ -9911,7 +9913,7 @@ if (-not $SilentMode)
 		$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 		$storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 		$form.Controls.Add($storeNameLabel)
-		function Center-Label
+		function Center_Label
 		{
 			# Calculate the centered horizontal position based on current form width
 			$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
@@ -9919,9 +9921,9 @@ if (-not $SilentMode)
 			$storeNameLabel.Top = 30
 		}
 		# Center the label initially
-		Center-Label
+		Center_Label
 		# Recenter the label on every form resize
-		$form.add_Resize({ Center-Label })
+		$form.add_Resize({ Center_Label })
 		
 		# Store Number Label
 		$script:storeNumberLabel = New-Object System.Windows.Forms.Label
