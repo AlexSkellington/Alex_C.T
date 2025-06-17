@@ -219,7 +219,7 @@ public class MailslotSender {
 }
 
 # ===================================================================================================
-#                                   FUNCTION: Download-AndRelaunchSelf
+#                                   FUNCTION: Download_and_Relaunch
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   This function downloads a specified PowerShell script from a given URL, saves it to a designated
@@ -231,7 +231,7 @@ public class MailslotSender {
 #   further actions within the function.
 # ===================================================================================================
 
-function Download-AndRelaunchSelf
+function Download_and_Relaunch
 {
 	[CmdletBinding()]
 	param (
@@ -244,7 +244,7 @@ function Download-AndRelaunchSelf
 		[switch]$IsRelaunched
 	)
 	
-	Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
+	Write-Host "Entering Download_and_Relaunch. IsRelaunched: $IsRelaunched"
 	
 	# If the script has already been relaunched, do not proceed
 	if ($IsRelaunched)
@@ -352,7 +352,7 @@ function Download-AndRelaunchSelf
 #   Ensures that the script is running with administrative privileges. If not, it attempts to restart the script with elevated rights.
 # ===================================================================================================
 
-function Ensure-Administrator
+function Ensure_Administrator
 {
 	# Retrieve the current Windows identity
 	$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -404,7 +404,7 @@ function Ensure-Administrator
 #   Contains function to write messages to the log, either to a GUI log box or to a log file in silent mode.
 # ===================================================================================================
 
-function Write-Log
+function Write_Log
 {
 	param (
 		[string]$Message,
@@ -451,11 +451,11 @@ function Write-Log
 			# Output to console until logBox is initialized
 			if ($timestamp)
 			{
-				Write-Log "[$timestamp] $Message" -ForegroundColor $Color
+				Write_Log "[$timestamp] $Message" -ForegroundColor $Color
 			}
 			else
 			{
-				Write-Log $Message -ForegroundColor $Color
+				Write_Log $Message -ForegroundColor $Color
 			}
 		}
 	}
@@ -477,7 +477,7 @@ function Write-Log
 }
 
 # ===================================================================================================
-#                             FUNCTION: Get-ScriptOrExecutablePath
+#                             FUNCTION: Get_Script_Or_Executable_Path
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Determines the full path of the current script or executable. This ensures that the script can
@@ -486,23 +486,23 @@ function Write-Log
 #   location.
 # ===================================================================================================
 
-function Get-ScriptOrExecutablePath
+function Get_Script_Or_Executable_Path
 {
 	try
 	{
-		Write-Log "Attempting to determine execution context..."  "Yellow"
+		Write_Log "Attempting to determine execution context..."  "Yellow"
 		
 		# 1. Check if running as a PowerShell script via MyInvocation
 		if ($MyInvocation -and $MyInvocation.MyCommand -and $MyInvocation.MyCommand.Path)
 		{
-			Write-Log "Detected execution as a PowerShell script via MyInvocation."  "Green"
+			Write_Log "Detected execution as a PowerShell script via MyInvocation."  "Green"
 			return $MyInvocation.MyCommand.Path
 		}
 		
 		# 2. Check $PSCommandPath, available in PowerShell 3.0+
 		if ($PSCommandPath)
 		{
-			Write-Log "Detected execution as a PowerShell script via `$PSCommandPath."  "Green"
+			Write_Log "Detected execution as a PowerShell script via `$PSCommandPath."  "Green"
 			return $PSCommandPath
 		}
 		
@@ -512,17 +512,17 @@ function Get-ScriptOrExecutablePath
 			$exePath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 			if ($exePath -and (Test-Path $exePath))
 			{
-				Write-Log "Detected execution as an executable via Process.MainModule.FileName: $exePath"  "Green"
+				Write_Log "Detected execution as an executable via Process.MainModule.FileName: $exePath"  "Green"
 				return $exePath
 			}
 			else
 			{
-				Write-Log "Process.MainModule.FileName returned invalid path: $exePath"  "Red"
+				Write_Log "Process.MainModule.FileName returned invalid path: $exePath"  "Red"
 			}
 		}
 		catch
 		{
-			Write-Log "Error using Process.MainModule.FileName: $_"  "Red"
+			Write_Log "Error using Process.MainModule.FileName: $_"  "Red"
 		}
 		
 		# 4. Try GetExecutingAssembly().Location
@@ -531,17 +531,17 @@ function Get-ScriptOrExecutablePath
 			$exePath = [System.Reflection.Assembly]::GetExecutingAssembly().Location
 			if ($exePath -and (Test-Path $exePath))
 			{
-				Write-Log "Detected execution as an executable via GetExecutingAssembly().Location: $exePath"  "Green"
+				Write_Log "Detected execution as an executable via GetExecutingAssembly().Location: $exePath"  "Green"
 				return $exePath
 			}
 			else
 			{
-				Write-Log "GetExecutingAssembly().Location returned invalid path: $exePath"  "Red"
+				Write_Log "GetExecutingAssembly().Location returned invalid path: $exePath"  "Red"
 			}
 		}
 		catch
 		{
-			Write-Log "Error using GetExecutingAssembly().Location: $_"  "Red"
+			Write_Log "Error using GetExecutingAssembly().Location: $_"  "Red"
 		}
 		
 		# 5. Try GetEntryAssembly().Location
@@ -550,33 +550,33 @@ function Get-ScriptOrExecutablePath
 			$exePath = [System.Reflection.Assembly]::GetEntryAssembly().Location
 			if ($exePath -and (Test-Path $exePath))
 			{
-				Write-Log "Detected execution as an executable via GetEntryAssembly().Location: $exePath"  "Green"
+				Write_Log "Detected execution as an executable via GetEntryAssembly().Location: $exePath"  "Green"
 				return $exePath
 			}
 			else
 			{
-				Write-Log "GetEntryAssembly().Location returned invalid path: $exePath"  "Red"
+				Write_Log "GetEntryAssembly().Location returned invalid path: $exePath"  "Red"
 			}
 		}
 		catch
 		{
-			Write-Log "Error using GetEntryAssembly().Location: $_"  "Red"
+			Write_Log "Error using GetEntryAssembly().Location: $_"  "Red"
 		}
 		
 		# 6. Check $PSScriptRoot, if available
 		if ($PSScriptRoot)
 		{
-			Write-Log "Detected execution with PSScriptRoot: $PSScriptRoot"  "Green"
+			Write_Log "Detected execution with PSScriptRoot: $PSScriptRoot"  "Green"
 			return $PSScriptRoot
 		}
 		
 		# If none of the above worked
-		Write-Log "Unable to determine execution context."  "Red"
+		Write_Log "Unable to determine execution context."  "Red"
 		return $null
 	}
 	catch
 	{
-		Write-Log "Error retrieving script or executable path: $_"  "Red"
+		Write_Log "Error retrieving script or executable path: $_"  "Red"
 		return $null
 	}
 }
@@ -595,7 +595,7 @@ function Get-ScriptOrExecutablePath
 
 
 # ===================================================================================================
-#                                       FUNCTION: Get-MemoryInfo
+#                                       FUNCTION: Get_Memory_Capacity_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Retrieves the total system memory and calculates 25% of it in megabytes.
@@ -605,7 +605,7 @@ function Get-ScriptOrExecutablePath
 #   Temporarily disabled due to [found a different way to get this].
 # ===================================================================================================
 
-function Get-MemoryInfo
+function Get_Memory_Capacity_Info
 {
 	$TotalMemoryKB = (Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize
 	$TotalMemoryMB = [math]::Floor($TotalMemoryKB / 1024)
@@ -614,34 +614,34 @@ function Get-MemoryInfo
 }
 
 # ===================================================================================================
-#                               FUNCTION: Get-DatabaseConnectionString
+#                               FUNCTION: Get_Database_Connection_String
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Searches for the Startup.ini file in specified locations, extracts the DBNAME value,
 #   constructs the connection string, and stores it in a script-level hashtable.
 # ===================================================================================================
 
-function Get-DatabaseConnectionString
+function Get_Database_Connection_String
 {
 	# Ensure that the FunctionResults hashtable exists at the script level
 	if (-not $script:FunctionResults)
 	{
 		$script:FunctionResults = @{ }
-		Write-Log "Initialized script:FunctionResults hashtable." "green"
+		Write_Log "Initialized script:FunctionResults hashtable." "green"
 	}
 	
 	if ($StartupIniPath -ne $null)
 	{
-		#	Write-Log "Found Startup.ini at: $startupIniPath" "green"
+		#	Write_Log "Found Startup.ini at: $startupIniPath" "green"
 	}
 	
 	if (-not $StartupIniPath)
 	{
-		Write-Log "Startup.ini file not found in any of the expected locations." "red"
+		Write_Log "Startup.ini file not found in any of the expected locations." "red"
 		return
 	}
 	
-	# Write-Log "Generating connection string..." "blue"
+	# Write_Log "Generating connection string..." "blue"
 	
 	# Read the Startup.ini file
 	try
@@ -656,17 +656,17 @@ function Get-DatabaseConnectionString
 			$dbServer = $dbServer.Trim()
 			if (-not $dbServer)
 			{
-				Write-Log "DBSERVER entry in Startup.ini is empty. Using 'localhost'." "yellow"
+				Write_Log "DBSERVER entry in Startup.ini is empty. Using 'localhost'." "yellow"
 				$dbServer = "localhost"
 			}
 			else
 			{
-				#	Write-Log "Found DBSERVER in Startup.ini: $dbServer" "green"
+				#	Write_Log "Found DBSERVER in Startup.ini: $dbServer" "green"
 			}
 		}
 		else
 		{
-			Write-Log "DBSERVER entry not found in Startup.ini. Using 'localhost'." "yellow"
+			Write_Log "DBSERVER entry not found in Startup.ini. Using 'localhost'." "yellow"
 			$dbServer = "localhost"
 		}
 		
@@ -678,53 +678,53 @@ function Get-DatabaseConnectionString
 			$dbName = $dbName.Trim()
 			if (-not $dbName)
 			{
-				Write-Log "DBNAME entry in Startup.ini is empty." "red"
+				Write_Log "DBNAME entry in Startup.ini is empty." "red"
 				return
 			}
 			else
 			{
-				#	Write-Log "Found DBNAME in Startup.ini: $dbName" "green"
+				#	Write_Log "Found DBNAME in Startup.ini: $dbName" "green"
 			}
 		}
 		else
 		{
-			Write-Log "DBNAME entry not found in Startup.ini." "red"
+			Write_Log "DBNAME entry not found in Startup.ini." "red"
 			return
 		}
 	}
 	catch
 	{
-		Write-Log "Failed to read Startup.ini: $_" "red"
+		Write_Log "Failed to read Startup.ini: $_" "red"
 		return
 	}
 	
 	# Store DBSERVER and DBNAME in the FunctionResults hashtable
 	$script:FunctionResults['DBSERVER'] = $dbServer
-	# Write-Log "Stored DBSERVER in FunctionResults: $dbServer" "green"
+	# Write_Log "Stored DBSERVER in FunctionResults: $dbServer" "green"
 	
 	$script:FunctionResults['DBNAME'] = $dbName
-	# Write-Log "Stored DBNAME in FunctionResults: $dbName" "green"
+	# Write_Log "Stored DBNAME in FunctionResults: $dbName" "green"
 	
 	# Build the connection string
 	$ConnectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
 	# Optionally, log the constructed connection string (be cautious with sensitive information)
-	# Write-Log "Constructed connection string: $ConnectionString" "green"
+	# Write_Log "Constructed connection string: $ConnectionString" "green"
 	
 	# Store the connection string in the FunctionResults hashtable
 	$script:FunctionResults['ConnectionString'] = $ConnectionString
 	
-	# Write-Log "Variables ($ConnectionString) stored." "green"
+	# Write_Log "Variables ($ConnectionString) stored." "green"
 }
 
 # ===================================================================================================
-#                                      FUNCTION: Get-StoreNumber
+#                                      FUNCTION: Get_Store_Number
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Retrieves the store number via GUI prompts or configuration files.
 #   Stores the result in $script:FunctionResults['StoreNumber'].
 # ===================================================================================================
 
-function Get-StoreNumber
+function Get_Store_Number
 {
 	param (
 		[string]$IniFilePath = "$StartupIniPath",
@@ -743,16 +743,16 @@ function Get-StoreNumber
 		if ($storeNumber)
 		{
 			$script:FunctionResults['StoreNumber'] = $storeNumber
-			#	Write-Log "Store number found in startup.ini: $storeNumber" "green"
+			#	Write_Log "Store number found in startup.ini: $storeNumber" "green"
 		}
 		else
 		{
-			Write-Log "Store number not found in startup.ini." "yellow"
+			Write_Log "Store number not found in startup.ini." "yellow"
 		}
 	}
 	else
 	{
-		Write-Log "INI file not found: $IniFilePath" "yellow"
+		Write_Log "INI file not found: $IniFilePath" "yellow"
 	}
 	
 	# **Only proceed to check XF directories if StoreNumber was not found in INI**
@@ -769,19 +769,19 @@ function Get-StoreNumber
 					if ($storeNumber -ne "999")
 					{
 						$script:FunctionResults['StoreNumber'] = $storeNumber
-						Write-Log "Store number found from XF directory: $storeNumber" "green"
+						Write_Log "Store number found from XF directory: $storeNumber" "green"
 						break # Exit loop after finding the store number
 					}
 				}
 			}
 			if ($script:FunctionResults['StoreNumber'] -eq "N/A")
 			{
-				Write-Log "No valid XF directories found in $BasePath" "yellow"
+				Write_Log "No valid XF directories found in $BasePath" "yellow"
 			}
 		}
 		else
 		{
-			Write-Log "Base path not found: $BasePath" "yellow"
+			Write_Log "Base path not found: $BasePath" "yellow"
 		}
 	}
 	
@@ -844,7 +844,7 @@ function Get-StoreNumber
 				# Pad the input with leading zeros to ensure it is 3 digits
 				$paddedInput = $input.PadLeft(3, '0')
 				$script:FunctionResults['StoreNumber'] = $paddedInput
-				Write-Log "Store number entered by user: $paddedInput" "green"
+				Write_Log "Store number entered by user: $paddedInput" "green"
 				
 				# Update the storeNumberLabel in the GUI
 				if (-not $SilentMode -and $storeNumberLabel -ne $null)
@@ -863,21 +863,21 @@ function Get-StoreNumber
 		}
 		else
 		{
-			Write-Log "Store number input canceled by user." "red"
+			Write_Log "Store number input canceled by user." "red"
 			exit 1
 		}
 	}
 }
 
 # ===================================================================================================
-#                                        FUNCTION: Get-StoreName
+#                                        FUNCTION: Get_Store_Name
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Retrieves the store name from the system.ini file.
 #   Stores the result in $script:FunctionResults['StoreName'].
 # ===================================================================================================
 
-function Get-StoreName
+function Get_Store_Name
 {
 	param (
 		[string]$INIPath = "$SystemIniPath"
@@ -894,16 +894,16 @@ function Get-StoreName
 		if ($storeName)
 		{
 			$script:FunctionResults['StoreName'] = $storeName
-			# Write-Log "Store name found in system.ini: $storeName" "green"
+			# Write_Log "Store name found in system.ini: $storeName" "green"
 		}
 		else
 		{
-			Write-Log "Store name not found in system.ini." "yellow"
+			Write_Log "Store name not found in system.ini." "yellow"
 		}
 	}
 	else
 	{
-		Write-Log "INI file not found: $INIPath" "yellow"
+		Write_Log "INI file not found: $INIPath" "yellow"
 	}
 	
 	# Update the storeNameLabel in the GUI
@@ -923,7 +923,7 @@ function Get-StoreName
 #   and updates the GUI label accordingly.
 # ===================================================================================================
 
-function Determine-Mode
+function Determine_Mode
 {
 	param (
 		[string]$StoreNumber
@@ -955,7 +955,7 @@ function Determine-Mode
 }
 
 # ===================================================================================================
-#                                FUNCTION: Get-LaneDatabaseInfo
+#                                FUNCTION: Get_Lane_Database_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Retrieves the DB server names and database names for all lanes in TER_TAB.
@@ -963,9 +963,9 @@ function Determine-Mode
 #   Constructs a unique connection string for each lane and stores it in $script:FunctionResults['LaneDatabaseInfo'].
 # ===================================================================================================
 
-function Get-LaneDatabaseInfo
+function Get_Lane_Database_Info
 {
-	Write-Log "`r`n=== Starting Get-LaneDatabaseInfo Function ===" "blue"
+	Write_Log "`r`n=== Starting Get_Lane_Database_Info Function ===" "blue"
 	
 	# Initialize the hashtable in FunctionResults to store the info
 	$script:FunctionResults['LaneDatabaseInfo'] = @{ }
@@ -976,12 +976,12 @@ function Get-LaneDatabaseInfo
 	# If connection string is not available, attempt to get it
 	if (-not $ConnectionString)
 	{
-		Write-Log "Connection string not found. Attempting to generate it..." "yellow"
-		Get-DatabaseConnectionString
+		Write_Log "Connection string not found. Attempting to generate it..." "yellow"
+		Get_Database_Connection_String
 		$ConnectionString = $script:FunctionResults['ConnectionString']
 		if (-not $ConnectionString)
 		{
-			Write-Log "Unable to generate connection string. Cannot query TER_TAB." "red"
+			Write_Log "Unable to generate connection string. Cannot query TER_TAB." "red"
 			return
 		}
 	}
@@ -989,7 +989,7 @@ function Get-LaneDatabaseInfo
 	# Query the TER_TAB table to get machine names and lane numbers
 	try
 	{
-		Write-Log "Querying TER_TAB to get machine names for lanes..." "blue"
+		Write_Log "Querying TER_TAB to get machine names for lanes..." "blue"
 		
 		# Define the SQL query to get all lanes starting with '0' (excluding '901' and '999')
 		$query = @"
@@ -1022,7 +1022,7 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 					
 					# Access \\{MachineName}\storeman\Startup.ini
 					$startupIniPath = "\\$machineName\storeman\Startup.ini"
-					Write-Log "Attempting to access Startup.ini at $startupIniPath for Machine '$machineName'..." "blue"
+					Write_Log "Attempting to access Startup.ini at $startupIniPath for Machine '$machineName'..." "blue"
 					
 					if (Test-Path $startupIniPath)
 					{
@@ -1039,7 +1039,7 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 							}
 							else
 							{
-								Write-Log "DBNAME entry not found in Startup.ini for Machine '$machineName'." "red"
+								Write_Log "DBNAME entry not found in Startup.ini for Machine '$machineName'." "red"
 								continue
 							}
 							
@@ -1051,20 +1051,20 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 								$dbServer = $dbServer.Trim()
 								if (-not $dbServer)
 								{
-									Write-Log "DBSERVER entry is empty in Startup.ini for Machine '$machineName'. Defaulting to machine name." "yellow"
+									Write_Log "DBSERVER entry is empty in Startup.ini for Machine '$machineName'. Defaulting to machine name." "yellow"
 									$dbServer = $machineName
 								}
 							}
 							else
 							{
-								Write-Log "DBSERVER entry not found in Startup.ini for Machine '$machineName'. Defaulting to machine name." "yellow"
+								Write_Log "DBSERVER entry not found in Startup.ini for Machine '$machineName'. Defaulting to machine name." "yellow"
 								$dbServer = $machineName
 							}
 							
 							# Build the connection string
 							$laneConnectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
 							
-							Write-Log "Found DBNAME '$dbName' and DBSERVER '$dbServer' for Machine '$machineName'." "green"
+							Write_Log "Found DBNAME '$dbName' and DBSERVER '$dbServer' for Machine '$machineName'." "green"
 							
 							# Store in FunctionResults with LaneNumber as key
 							$script:FunctionResults['LaneDatabaseInfo'][$laneNumber] = @{
@@ -1077,40 +1077,40 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 						}
 						catch
 						{
-							Write-Log "Failed to read Startup.ini from Machine '$machineName': $_" "red"
+							Write_Log "Failed to read Startup.ini from Machine '$machineName': $_" "red"
 						}
 					}
 					else
 					{
-						Write-Log "Startup.ini not found at $startupIniPath for Machine '$machineName'." "red"
+						Write_Log "Startup.ini not found at $startupIniPath for Machine '$machineName'." "red"
 					}
 				}
 				else
 				{
-					Write-Log "Lane #${laneNumber}: Invalid machine path '$machinePath'. Skipping." "yellow"
+					Write_Log "Lane #${laneNumber}: Invalid machine path '$machinePath'. Skipping." "yellow"
 				}
 			}
 		}
 		else
 		{
-			Write-Log "No lanes found in TER_TAB." "yellow"
+			Write_Log "No lanes found in TER_TAB." "yellow"
 			return
 		}
 	}
 	catch
 	{
-		Write-Log "Failed to query TER_TAB. Error: $_" "red"
+		Write_Log "Failed to query TER_TAB. Error: $_" "red"
 		return
 	}
 	
-	Write-Log "`r`n=== Get-LaneDatabaseInfo Function Completed ===" "blue"
+	Write_Log "`r`n=== Get_Lane_Database_Info Function Completed ===" "blue"
 }
 
 # ===================================================================================================
-#                           FUNCTION: Retrieve-Nodes
+#                           FUNCTION: Retrieve_Nodes
 # ---------------------------------------------------------------------------------------------------
 # **Purpose:**
-#   The `Retrieve-Nodes` function is designed to count various entities within a 
+#   The `Retrieve_Nodes` function is designed to count various entities within a 
 #   system, specifically **hosts**, **stores**, **lanes**, **servers**, and **scales**. It primarily retrieves 
 #   these nodes from the `TER_TAB` database table and additional tables as needed. If database access fails, it gracefully falls 
 #   back to a file system-based mechanism to obtain the counts. Additionally, the function updates 
@@ -1147,7 +1147,7 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 # **Workflow:**
 #   1. **Retrieve Database Connection String:**
 #      - Attempts to get the connection string from `FunctionResults`.
-#      - If unavailable, calls `Get-DatabaseConnectionString` to generate it.
+#      - If unavailable, calls `Get_Database_Connection_String` to generate it.
 #      - Sets `$CountsFromDatabase` based on availability.
 #
 #   2. **Database Counting Mechanism (`$CountsFromDatabase = $true`):**
@@ -1184,14 +1184,14 @@ WHERE F1057 LIKE '0%' AND F1057 NOT IN ('8%', '9%')
 #      - Returns the `$Nodes` custom object containing all the count information.
 #
 # **Summary:**
-#   The `Retrieve-Nodes` function is a robust PowerShell utility that accurately counts system entities 
+#   The `Retrieve_Nodes` function is a robust PowerShell utility that accurately counts system entities 
 #   such as hosts, stores, lanes, servers, and scales. It prioritizes retrieving counts from a database to 
 #   ensure accuracy and reliability but includes a fallback mechanism leveraging the file system for 
 #   resilience. Additionally, it integrates with a GUI to display real-time counts, stores results 
 #   for easy access by other script components, and retrieves IPNetwork information for scales from the TBS_SCL_ver520 table.
 # ===================================================================================================
 
-function Retrieve-Nodes
+function Retrieve_Nodes
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -1217,12 +1217,12 @@ function Retrieve-Nodes
 	# If connection string is not available, attempt to get it
 	if (-not $ConnectionString)
 	{
-		Write-Log "Connection string not found. Attempting to generate it..." "yellow"
-		Get-DatabaseConnectionString
+		Write_Log "Connection string not found. Attempting to generate it..." "yellow"
+		Get_Database_Connection_String
 		$ConnectionString = $script:FunctionResults['ConnectionString']
 		if (-not $ConnectionString)
 		{
-			Write-Log "Unable to generate connection string. Proceeding with fallback mechanism." "red"
+			Write_Log "Unable to generate connection string. Proceeding with fallback mechanism." "red"
 			$NodesFromDatabase = $false
 		}
 		else
@@ -1275,7 +1275,7 @@ function Retrieve-Nodes
 			{
 				if (-not $StoreNumber)
 				{
-					Write-Log "Store number is required in 'Store' mode." "red"
+					Write_Log "Store number is required in 'Store' mode." "red"
 					return
 				}
 				
@@ -1316,7 +1316,7 @@ WHERE F1056 = '$StoreNumber'
 					}
 					else
 					{
-						Write-Log "Lane #${laneNumber}: Invalid machine path '$machinePath'. Skipping machine name capture." "yellow"
+						Write_Log "Lane #${laneNumber}: Invalid machine path '$machinePath'. Skipping machine name capture." "yellow"
 					}
 				}
 				
@@ -1408,7 +1408,7 @@ WHERE F1056 = '$StoreNumber'
 		}
 		catch
 		{
-			Write-Log "Failed to retrieve counts from the database: $_" "yellow"
+			Write_Log "Failed to retrieve counts from the database: $_" "yellow"
 			$NodesFromDatabase = $false
 		}
 	}
@@ -1418,7 +1418,7 @@ WHERE F1056 = '$StoreNumber'
 	#--------------------------------------------------------------------------------
 	if (-not $NodesFromDatabase)
 	{
-		Write-Log "Using fallback mechanism to count items." "yellow"
+		Write_Log "Using fallback mechanism to count items." "yellow"
 		
 		if ($Mode -eq "Host")
 		{
@@ -1434,7 +1434,7 @@ WHERE F1056 = '$StoreNumber'
 		{
 			if (-not $StoreNumber)
 			{
-				Write-Log "Store number is required in 'Store' mode." "red"
+				Write_Log "Store number is required in 'Store' mode." "red"
 				return
 			}
 			
@@ -1528,7 +1528,7 @@ WHERE F1056 = '$StoreNumber'
 #   excluding any files or directories whose names start with "FATAL".
 # ===================================================================================================
 
-function Clear-XEFolder
+function Clear_XE_Folder
 {
 	[CmdletBinding()]
 	param (
@@ -1553,20 +1553,20 @@ function Clear-XEFolder
 			{
 				$folderPath = $localPath
 				$foundPath = $true
-				Write-Log "UNC path not accessible. Using local path: $localPath" "yellow"
+				Write_Log "UNC path not accessible. Using local path: $localPath" "yellow"
 				break
 			}
 		}
 		
 		if (-not $foundPath)
 		{
-			Write-Log "Folder 'XE${StoreNumber}901' was not found on UNC or local paths." "red"
+			Write_Log "Folder 'XE${StoreNumber}901' was not found on UNC or local paths." "red"
 			return
 		}
 	}
 	
 	# Function to determine if a file should be kept during initial clearing
-	function ShouldKeepFileInitial($file)
+	function Should_Keep_File_Initial($file)
 	{
 		# Do not keep FATAL* files
 		if ($file.Name -like 'FATAL*')
@@ -1659,7 +1659,7 @@ function Clear-XEFolder
 	}
 	
 	# Function to determine if a file should be kept during background monitoring
-	function ShouldKeepFileBackground($file)
+	function Should_Keep_File_Background($file)
 	{
 		# Keep all FATAL* files
 		if ($file.Name -like 'FATAL*')
@@ -1757,22 +1757,22 @@ function Clear-XEFolder
 		try
 		{
 			Get-ChildItem -Path $folderPath -Recurse -Force | ForEach-Object {
-				if (-not (ShouldKeepFileInitial $_))
+				if (-not (Should_Keep_File_Initial $_))
 				{
 					Remove-Item -Path $_.FullName -Force -Recurse
 				}
 			}
 			
-			#	Write-Log "Folder 'XE${StoreNumber}901' initially cleaned, deleting all except valid (S*) files for transaction closing." "green"
+			#	Write_Log "Folder 'XE${StoreNumber}901' initially cleaned, deleting all except valid (S*) files for transaction closing." "green"
 		}
 		catch
 		{
-			Write-Log "An error occurred during initial cleaning of 'XE${StoreNumber}901': $_" "red"
+			Write_Log "An error occurred during initial cleaning of 'XE${StoreNumber}901': $_" "red"
 		}
 	}
 	else
 	{
-		Write-Log "Folder 'XE${StoreNumber}901' (Urgent Messages) does not exist." "red"
+		Write_Log "Folder 'XE${StoreNumber}901' (Urgent Messages) does not exist." "red"
 		return
 	}
 	
@@ -1785,7 +1785,7 @@ function Clear-XEFolder
 				$StoreNumber,
 				$OfficePath)
 			
-			function ShouldKeepFileBackground($file)
+			function Should_Keep_File_Background($file)
 			{
 				# Keep all FATAL* files
 				if ($file.Name -like 'FATAL*')
@@ -1872,7 +1872,7 @@ function Clear-XEFolder
 					if (Test-Path -Path $folderPath)
 					{
 						Get-ChildItem -Path $folderPath -Recurse -Force | ForEach-Object {
-							if (-not (ShouldKeepFileBackground $_))
+							if (-not (Should_Keep_File_Background $_))
 							{
 								Remove-Item -Path $_.FullName -Force -Recurse
 							}
@@ -1888,18 +1888,18 @@ function Clear-XEFolder
 			}
 		} -ArgumentList $folderPath, $checkIntervalSeconds, $StoreNumber, $OfficePath
 		
-		#	Write-Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder, excluding FATAL* files." "green"
+		#	Write_Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder, excluding FATAL* files." "green"
 	}
 	catch
 	{
-		Write-Log "Failed to start background job for 'XE${StoreNumber}901': $_" "red"
+		Write_Log "Failed to start background job for 'XE${StoreNumber}901': $_" "red"
 	}
 	
 	return $job
 }
 
 # ===================================================================================================
-#                                  SECTION: Fix-Journal
+#                                  SECTION: Fix_Journal
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Processes EJ files within a ZX folder to correct specific lines based on a user-provided date.
@@ -1909,7 +1909,7 @@ function Clear-XEFolder
 #   - Repairs lines in matching EJ files.
 # ===================================================================================================
 
-function Fix-Journal
+function Fix_Journal
 {
 	[CmdletBinding()]
 	param (
@@ -1921,7 +1921,7 @@ function Fix-Journal
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Fix-Journal Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Fix_Journal Function ====================`r`n" "blue"
 	
 	# ---------------------------------------------------------------------------------------------
 	# 1) Load Windows Forms assembly
@@ -1967,7 +1967,7 @@ function Fix-Journal
 	
 	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
 	{
-		Write-Log -Message "Date selection canceled by user. Exiting function." "yellow"
+		Write_Log -Message "Date selection canceled by user. Exiting function." "yellow"
 		return
 	}
 	
@@ -1977,7 +1977,7 @@ function Fix-Journal
 	$snippetDate = $dateTimePicker.Value
 	$formattedDate = $snippetDate.ToString('MMddyyyy') # MMDDYYYY format
 	
-	Write-Log -Message "Selected date: $formattedDate" "magenta"
+	Write_Log -Message "Selected date: $formattedDate" "magenta"
 	
 	# ---------------------------------------------------------------------------------------------
 	# 4) Construct ZX folder path from $OfficePath + $StoreNumber
@@ -1990,7 +1990,7 @@ function Fix-Journal
 	# ---------------------------------------------------------------------------------------------
 	if (-not (Test-Path -Path $zxFolderPath))
 	{
-		Write-Log -Message "ZX folder not found: $zxFolderPath." "red"
+		Write_Log -Message "ZX folder not found: $zxFolderPath." "red"
 		return
 	}
 	
@@ -2006,7 +2006,7 @@ function Fix-Journal
 	$dd = $snippetDate.ToString('dd')
 	$filePrefix = "$yearLastDigit$mm$dd$StoreNumber" # e.g., 41227001
 	
-	Write-Log -Message "Looking for files named '$filePrefix.*' in $zxFolderPath..." "blue"
+	Write_Log -Message "Looking for files named '$filePrefix.*' in $zxFolderPath..." "blue"
 	
 	# ---------------------------------------------------------------------------------------------
 	# 7) Find matching EJ files in ZX folder: e.g., 41227001.*
@@ -2016,11 +2016,11 @@ function Fix-Journal
 	
 	if (-not $matchingFiles)
 	{
-		Write-Log -Message "No files matching '$searchPattern' found in $zxFolderPath." "yellow"
+		Write_Log -Message "No files matching '$searchPattern' found in $zxFolderPath." "yellow"
 		return
 	}
 	
-	Write-Log -Message "Found $($matchingFiles.Count) file(s) to fix." "green"
+	Write_Log -Message "Found $($matchingFiles.Count) file(s) to fix." "green"
 	
 	# ---------------------------------------------------------------------------------------------
 	# 8) For each matching EJ file, remove lines from <trs F10... up to <trs F1068...
@@ -2031,11 +2031,11 @@ function Fix-Journal
 		# to avoid infinite backup loops:
 		if ($file.Extension -eq ".bak")
 		{
-			Write-Log -Message "Skipping backup file: $($file.Name)" "yellow"
+			Write_Log -Message "Skipping backup file: $($file.Name)" "yellow"
 			continue
 		}
 		
-		Write-Log -Message "Fixing lines in: $($file.FullName)" "yellow"
+		Write_Log -Message "Fixing lines in: $($file.FullName)" "yellow"
 		
 		# Read the file lines
 		try
@@ -2044,7 +2044,7 @@ function Fix-Journal
 		}
 		catch
 		{
-			Write-Log -Message "Failed to read EJ file: $($file.FullName). Skipping." "red"
+			Write_Log -Message "Failed to read EJ file: $($file.FullName). Skipping." "red"
 			continue
 		}
 		
@@ -2086,11 +2086,11 @@ function Fix-Journal
 		try
 		{
 			Copy-Item -Path $file.FullName -Destination $backupPath -Force -ErrorAction Stop
-			Write-Log -Message "Backup created: $backupPath" "green"
+			Write_Log -Message "Backup created: $backupPath" "green"
 		}
 		catch
 		{
-			Write-Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." "red"
+			Write_Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." "red"
 			continue
 		}
 		#>
@@ -2101,16 +2101,16 @@ function Fix-Journal
 		try
 		{
 			$fixedLines | Set-Content -Path $file.FullName -Encoding Default -ErrorAction Stop
-			#	Write-Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
-			Write-Log -Message "Successfully edited: $($file.FullName)" "green"
+			#	Write_Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
+			Write_Log -Message "Successfully edited: $($file.FullName)" "green"
 		}
 		catch
 		{
-			Write-Log -Message "Failed to write fixed content to: $($file.FullName)." "red"
+			Write_Log -Message "Failed to write fixed content to: $($file.FullName)." "red"
 			continue
 		}
 	}
-	Write-Log "`r`n==================== Fix-Journal Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Fix_Journal Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -2120,7 +2120,7 @@ function Fix-Journal
 #   Generates SQL scripts for Lanes and Stores, including memory configuration and maintenance tasks.
 # ===================================================================================================
 
-function Generate-SQLScripts
+function Generate_SQL_Scripts
 {
 	param (
 		[string]$StoreNumber,
@@ -2134,7 +2134,7 @@ function Generate-SQLScripts
 	
 	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
 	{
-		Write-Log "Failed to retrieve the connection string." "red"
+		Write_Log "Failed to retrieve the connection string." "red"
 		return
 	}
 	
@@ -2148,12 +2148,12 @@ function Generate-SQLScripts
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
 		$dbName = $script:FunctionResults['DBNAME']
-		#	Write-Log "Using DBNAME from FunctionResults: $dbName" "blue"
+		#	Write_Log "Using DBNAME from FunctionResults: $dbName" "blue"
 		$storeDbName = $dbName
 	}
 	else
 	{
-		Write-Log "No 'Database' in $script:FunctionResults. Defaulting to '$defaultStoreDbName'." "yellow"
+		Write_Log "No 'Database' in $script:FunctionResults. Defaulting to '$defaultStoreDbName'." "yellow"
 		$storeDbName = $defaultStoreDbName
 	}
 	
@@ -2162,7 +2162,7 @@ function Generate-SQLScripts
 	# $laneDbName remains as 'LANESQL' unless you wish to make it dynamic as well
 	$laneDbName = $defaultLaneDbName # If LANESQL is also dynamic, you can retrieve it similarly
 	
-	# Write-Log "Generating SQL scripts using Store DB: '$storeDbName' and Lane DB: '$laneDbName'..." "blue"
+	# Write_Log "Generating SQL scripts using Store DB: '$storeDbName' and Lane DB: '$laneDbName'..." "blue"
 	
 	# Generate Lanesql script
 	$LaneSQLScript = @"
@@ -2536,11 +2536,11 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 	}
 	#>
 	
-	# Write-Log "SQL scripts generated successfully." "green"
+	# Write_Log "SQL scripts generated successfully." "green"
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Get-TableAliases
+#                                       FUNCTION: Get_Table_Aliases
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Parses SQL files in the specified target directory to extract table names and their corresponding
@@ -2550,7 +2550,7 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 #   lookups in both directions (Table Name ? Alias).
 # ===================================================================================================
 
-function Get-TableAliases
+function Get_Table_Aliases
 {
 	# Define the target directory for SQL files
 	$targetDirectory = "$LoadPath"
@@ -2594,7 +2594,7 @@ function Get-TableAliases
 		catch
 		{
 			# If fallback also fails, handle it without showing a big red error
-			Write-Log "Could not find load files in either of the specified paths." "red"
+			Write_Log "Could not find load files in either of the specified paths." "red"
 			$allLoadSqlFiles = @() # Provide an empty array so the script continues gracefully
 		}
 	}
@@ -2707,7 +2707,7 @@ function Get-TableAliases
 	}
 	
 	# Store results in script-scoped hash table
-	$script:FunctionResults['Get-TableAliases'] = @{
+	$script:FunctionResults['Get_Table_Aliases'] = @{
 		Aliases   = $sortedResults
 		AliasHash = $tableAliasHash
 	}
@@ -2718,28 +2718,28 @@ function Get-TableAliases
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Creates scheduled tasks to automate the execution of scripts at specified intervals.
-#   Uses Write-Log to update the user via GUI after each command runs.
+#   Uses Write_Log to update the user via GUI after each command runs.
 # ===================================================================================================
 
-function Create-ScheduledTaskGUI
+function Create_Scheduled_Task
 {
 	param (
 		[string]$ScriptPath = $null # Default to null; will be set inside the function if not provided
 	)
 	
-	Write-Log "`r`n=== Starting Create-ScheduledTaskGUI Function ==="  "blue"
+	Write_Log "`r`n=== Starting Create_Scheduled_Task Function ==="  "blue"
 	
-	# If ScriptPath is not provided, determine it using Get-ScriptOrExecutablePath
+	# If ScriptPath is not provided, determine it using Get_Script_Or_Executable_Path
 	if (-not $ScriptPath)
 	{
-		$ScriptPath = Get-ScriptOrExecutablePath
-		Write-Log "Determined ScriptPath: $ScriptPath"  "blue"
+		$ScriptPath = Get_Script_Or_Executable_Path
+		Write_Log "Determined ScriptPath: $ScriptPath"  "blue"
 	}
 	
 	# Ensure that $ScriptPath is not null
 	if (-not $ScriptPath)
 	{
-		Write-Log "Unable to determine the script or executable path."  Red
+		Write_Log "Unable to determine the script or executable path."  Red
 		exit 1
 	}
 	
@@ -2799,7 +2799,7 @@ function Create-ScheduledTaskGUI
 			if (Test-Path -Path $path)
 			{
 				$destinationPath = $path
-				Write-Log "Using existing path: $destinationPath" "blue"
+				Write_Log "Using existing path: $destinationPath" "blue"
 				break
 			}
 		}
@@ -2814,12 +2814,12 @@ function Create-ScheduledTaskGUI
 					# Attempt to create the directory
 					New-Item -Path $path -ItemType Directory -Force | Out-Null
 					$destinationPath = $path
-					Write-Log "Created and using path: $destinationPath" "blue"
+					Write_Log "Created and using path: $destinationPath" "blue"
 					break
 				}
 				catch
 				{
-					Write-Log "Failed to create directory '$path'. Error: $_" "red"
+					Write_Log "Failed to create directory '$path'. Error: $_" "red"
 					continue
 				}
 			}
@@ -2839,13 +2839,13 @@ function Create-ScheduledTaskGUI
 		# Copy the script to the destination directory
 		try
 		{
-			Write-Log "Copying script to '$destinationPath' for scheduled execution..." "blue"
+			Write_Log "Copying script to '$destinationPath' for scheduled execution..." "blue"
 			Copy-Item -Path $ScriptPath -Destination $copiedScript -Force
-			Write-Log "Script copied successfully." "green"
+			Write_Log "Script copied successfully." "green"
 		}
 		catch
 		{
-			Write-Log "Failed to copy script to '$destinationPath'. Error: $_" "red"
+			Write_Log "Failed to copy script to '$destinationPath'. Error: $_" "red"
 			[System.Windows.Forms.MessageBox]::Show("Failed to copy script to '$destinationPath'. Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 			return
 		}
@@ -2895,18 +2895,18 @@ function Create-ScheduledTaskGUI
 			if ($taskIntervalInput -match "^\d+$" -and [int]$taskIntervalInput -ge 1)
 			{
 				$taskInterval = [int]$taskIntervalInput
-				Write-Log "Interval set to $taskInterval months." "green"
+				Write_Log "Interval set to $taskInterval months." "green"
 			}
 			else
 			{
-				Write-Log "Invalid interval entered. Please enter a positive integer." "red"
+				Write_Log "Invalid interval entered. Please enter a positive integer." "red"
 				[System.Windows.Forms.MessageBox]::Show("Invalid interval entered. Please enter a positive integer.", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				return
 			}
 		}
 		else
 		{
-			Write-Log "Scheduled task creation canceled by user." "yellow"
+			Write_Log "Scheduled task creation canceled by user." "yellow"
 			return
 		}
 		
@@ -2920,7 +2920,7 @@ function Create-ScheduledTaskGUI
 			$overwrite = [System.Windows.Forms.MessageBox]::Show("A task named '$taskName' already exists. Do you want to overwrite it?", "Task Exists", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
 			if ($overwrite -ne [System.Windows.Forms.DialogResult]::Yes)
 			{
-				Write-Log "Scheduled task creation aborted to prevent overwriting existing task." "yellow"
+				Write_Log "Scheduled task creation aborted to prevent overwriting existing task." "yellow"
 				return
 			}
 		}
@@ -2930,7 +2930,7 @@ function Create-ScheduledTaskGUI
 		$powerShellPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
 		if (-not (Test-Path -Path $powerShellPath))
 		{
-			Write-Log "PowerShell executable not found at '$powerShellPath'." "red"
+			Write_Log "PowerShell executable not found at '$powerShellPath'." "red"
 			[System.Windows.Forms.MessageBox]::Show("PowerShell executable not found at '$powerShellPath'.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 			return
 		}
@@ -2959,29 +2959,29 @@ function Create-ScheduledTaskGUI
 		# Execute the schtasks.exe command
 		try
 		{
-			Write-Log "Creating scheduled task..." "blue"
+			Write_Log "Creating scheduled task..." "blue"
 			schtasks.exe @schtasksParams | Out-Null
 			if ($LASTEXITCODE -eq 0)
 			{
-				Write-Log "Scheduled task '$taskName' created successfully." "green"
+				Write_Log "Scheduled task '$taskName' created successfully." "green"
 				[System.Windows.Forms.MessageBox]::Show("Scheduled task '$taskName' created successfully.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			}
 			else
 			{
-				Write-Log "Failed to create scheduled task. schtasks.exe exited with code $LASTEXITCODE." "red"
+				Write_Log "Failed to create scheduled task. schtasks.exe exited with code $LASTEXITCODE." "red"
 				[System.Windows.Forms.MessageBox]::Show("Failed to create scheduled task. schtasks.exe exited with code $LASTEXITCODE.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 			}
 		}
 		catch
 		{
-			Write-Log "Failed to create scheduled task using schtasks.exe. Error: $_" "red"
+			Write_Log "Failed to create scheduled task using schtasks.exe. Error: $_" "red"
 			[System.Windows.Forms.MessageBox]::Show("Failed to create scheduled task using schtasks.exe. Error: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 		}
 	}
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Execute-SQLLocallyGUI
+#                                       FUNCTION: Execute_SQL_Locally
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Executes SQL scripts either from a script content variable or from a SQL file.
@@ -2990,7 +2990,7 @@ function Create-ScheduledTaskGUI
 #   Incorporates enhanced exception handling for ParameterBindingException.
 # ===================================================================================================
 
-function Execute-SQLLocallyGUI
+function Execute_SQL_Locally
 {
 	[CmdletBinding()]
 	param (
@@ -3018,30 +3018,30 @@ function Execute-SQLLocallyGUI
 	
 	if (-not [string]::IsNullOrWhiteSpace($sqlScript))
 	{
-		Write-Log "Executing SQL script from variable..." "blue"
+		Write_Log "Executing SQL script from variable..." "blue"
 	}
 	elseif ($SqlFilePath)
 	{
 		# If the script variable is empty, try reading from file
 		if (-not (Test-Path $SqlFilePath))
 		{
-			Write-Log "SQL file not found: $SqlFilePath" "red"
+			Write_Log "SQL file not found: $SqlFilePath" "red"
 			return
 		}
-		Write-Log "Executing SQL file: $SqlFilePath" "blue"
+		Write_Log "Executing SQL file: $SqlFilePath" "blue"
 		try
 		{
 			$sqlScript = Get-Content -Path $SqlFilePath -Raw -ErrorAction Stop
 		}
 		catch
 		{
-			Write-Log "Failed to read SQL file: $_" "red"
+			Write_Log "Failed to read SQL file: $_" "red"
 			return
 		}
 	}
 	else
 	{
-		Write-Log "No SQL script content or file path provided." "red"
+		Write_Log "No SQL script content or file path provided." "red"
 		return
 	}
 	
@@ -3051,7 +3051,7 @@ function Execute-SQLLocallyGUI
 	
 	if ($matches.Count -eq 0)
 	{
-		Write-Log "No SQL sections found to execute." "red"
+		Write_Log "No SQL sections found to execute." "red"
 		return
 	}
 	
@@ -3066,10 +3066,10 @@ function Execute-SQLLocallyGUI
 		}
 		
 		# Show the GUI form with checkboxes
-		$SectionsToRun = Show-SectionSelectionForm -SectionNames $allSectionNames
+		$SectionsToRun = Show_Section_Selection_Form -SectionNames $allSectionNames
 		if (-not $SectionsToRun -or $SectionsToRun.Count -eq 0)
 		{
-			Write-Log "No sections selected or form was canceled. Aborting execution." "yellow"
+			Write_Log "No sections selected or form was canceled. Aborting execution." "yellow"
 			return
 		}
 	}
@@ -3091,11 +3091,11 @@ function Execute-SQLLocallyGUI
 	# If connection string is not available, attempt to get it
 	if (-not $ConnectionString)
 	{
-		Write-Log "Connection string not found. Attempting to generate it..." "yellow"
-		$ConnectionString = Get-DatabaseConnectionString
+		Write_Log "Connection string not found. Attempting to generate it..." "yellow"
+		$ConnectionString = Get_Database_Connection_String
 		if (-not $ConnectionString)
 		{
-			Write-Log "Unable to generate connection string. Cannot execute SQL script." "red"
+			Write_Log "Unable to generate connection string. Cannot execute SQL script." "red"
 			return
 		}
 	}
@@ -3111,7 +3111,7 @@ function Execute-SQLLocallyGUI
 	}
 	
 	# Optionally, log the connection string for debugging (remove sensitive info if necessary)
-	Write-Log "Using connection string: $ConnectionString" "gray"
+	Write_Log "Using connection string: $ConnectionString" "gray"
 	
 	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
 	$supportsConnectionString = $false
@@ -3122,7 +3122,7 @@ function Execute-SQLLocallyGUI
 	}
 	catch
 	{
-		Write-Log "Invoke-Sqlcmd cmdlet not found: $_" "red"
+		Write_Log "Invoke-Sqlcmd cmdlet not found: $_" "red"
 		$supportsConnectionString = $false
 	}
 	
@@ -3136,7 +3136,7 @@ function Execute-SQLLocallyGUI
 	{
 		try
 		{
-			Write-Log "Starting execution of SQL script. Attempt $($retryCount + 1) of $MaxRetries." "blue"
+			Write_Log "Starting execution of SQL script. Attempt $($retryCount + 1) of $MaxRetries." "blue"
 			
 			# Only execute failed sections after the first attempt
 			$sectionsToExecute = if ($retryCount -eq 0) { $matches }
@@ -3156,14 +3156,14 @@ function Execute-SQLLocallyGUI
 				
 				if ([string]::IsNullOrWhiteSpace($sqlCommands))
 				{
-					Write-Log "Section '$sectionName' has no commands. Skipping..." "yellow"
+					Write_Log "Section '$sectionName' has no commands. Skipping..." "yellow"
 					continue
 				}
 				
-				Write-Log "`r`nExecuting section: '$sectionName'" "blue"
-				Write-Log "--------------------------------------------------------------------------------"
-				Write-Log "$sqlCommands" "orange"
-				Write-Log "--------------------------------------------------------------------------------"
+				Write_Log "`r`nExecuting section: '$sectionName'" "blue"
+				Write_Log "--------------------------------------------------------------------------------"
+				Write_Log "$sqlCommands" "orange"
+				Write_Log "--------------------------------------------------------------------------------"
 				
 				try
 				{
@@ -3189,10 +3189,10 @@ function Execute-SQLLocallyGUI
 							Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
 						}
 					}
-					Write-Log "Section '$sectionName' executed successfully." "green"
+					Write_Log "Section '$sectionName' executed successfully." "green"
 				}
 				catch [System.Management.Automation.ParameterBindingException] {
-					Write-Log "ParameterBindingException in section '$sectionName'. Attempting fallback." "yellow"
+					Write_Log "ParameterBindingException in section '$sectionName'. Attempting fallback." "yellow"
 					try
 					{
 						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
@@ -3207,11 +3207,11 @@ function Execute-SQLLocallyGUI
 						{
 							Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
 						}
-						Write-Log "Section '$sectionName' executed successfully with fallback." "green"
+						Write_Log "Section '$sectionName' executed successfully with fallback." "green"
 					}
 					catch
 					{
-						Write-Log "Error executing section '$sectionName' with fallback: $_" "red"
+						Write_Log "Error executing section '$sectionName' with fallback: $_" "red"
 						$failedSections += $match
 						if ($retryCount -eq $MaxRetries - 1)
 						{
@@ -3221,7 +3221,7 @@ function Execute-SQLLocallyGUI
 				}
 				catch
 				{
-					Write-Log "Error executing section '$sectionName': $_" "red"
+					Write_Log "Error executing section '$sectionName': $_" "red"
 					$failedSections += $match
 					if ($retryCount -eq $MaxRetries - 1)
 					{
@@ -3232,7 +3232,7 @@ function Execute-SQLLocallyGUI
 			
 			if ($failedSections.Count -eq 0)
 			{
-				Write-Log "`r`nAll SQL sections executed successfully." "green"
+				Write_Log "`r`nAll SQL sections executed successfully." "green"
 				$success = $true
 			}
 			else
@@ -3243,10 +3243,10 @@ function Execute-SQLLocallyGUI
 		catch
 		{
 			$retryCount++
-			Write-Log "Error during SQL script execution: $_" "red"
+			Write_Log "Error during SQL script execution: $_" "red"
 			if ($retryCount -lt $MaxRetries)
 			{
-				Write-Log "Retrying in $RetryDelaySeconds seconds..." "yellow"
+				Write_Log "Retrying in $RetryDelaySeconds seconds..." "yellow"
 				Start-Sleep -Seconds $RetryDelaySeconds
 			}
 		}
@@ -3254,29 +3254,29 @@ function Execute-SQLLocallyGUI
 	
 	if (-not $success)
 	{
-		Write-Log "Max retries reached. SQL script execution failed." "red"
+		Write_Log "Max retries reached. SQL script execution failed." "red"
 		$failedCommandsText = ($failedCommands -join "`r`n") + "`r`n"
 		try
 		{
 			[System.IO.File]::WriteAllText($FailedCommandsPath, $failedCommandsText, $ansiPcEncoding)
-			Write-Log "`r`nFailed SQL sections written to: $FailedCommandsPath" "yellow"
+			Write_Log "`r`nFailed SQL sections written to: $FailedCommandsPath" "yellow"
 			Set-ItemProperty -Path $FailedCommandsPath -Name Attributes -Value (
 				(Get-Item $FailedCommandsPath).Attributes -band (-bnot [System.IO.FileAttributes]::Archive)
 			)
 		}
 		catch
 		{
-			Write-Log "Failed to write failed commands: $_" "red"
+			Write_Log "Failed to write failed commands: $_" "red"
 		}
 	}
 	else
 	{
-		Write-Log "SQL script executed successfully on '$dbName'." "green"
+		Write_Log "SQL script executed successfully on '$dbName'." "green"
 	}
 }
 
 # ===================================================================================================
-#                              FUNCTION: Delete-Files
+#                              FUNCTION: Delete_Files
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deletes specified files within a directory, supporting wildcards and exclusions.
@@ -3288,7 +3288,7 @@ function Execute-SQLLocallyGUI
 #     - AsJob: (Optional) Runs the deletion process as a background job.
 # ===================================================================================================
 
-function Delete-Files
+function Delete_Files
 {
 	[CmdletBinding()]
 	param (
@@ -3318,7 +3318,7 @@ function Delete-Files
 			$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
 			if (-not $resolvedPath)
 			{
-				# Write-Log "The specified path '$Path' does not exist." "Red"
+				# Write_Log "The specified path '$Path' does not exist." "Red"
 				return
 			}
 			$targetPath = $resolvedPath.ProviderPath
@@ -3346,7 +3346,7 @@ function Delete-Files
 										if ($matchedItem.Name -like $exclusionPattern)
 										{
 											$exclude = $true
-											# Write-Log "Excluded: $($matchedItem.FullName)" "Yellow"
+											# Write_Log "Excluded: $($matchedItem.FullName)" "Yellow"
 											break
 										}
 									}
@@ -3365,18 +3365,18 @@ function Delete-Files
 											Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
 										}
 										$deletedCount++
-										# Write-Log "Deleted: $($matchedItem.FullName)" "Green"
+										# Write_Log "Deleted: $($matchedItem.FullName)" "Green"
 									}
 									catch
 									{
-										# Write-Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
+										# Write_Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
 									}
 								}
 							}
 						}
 						else
 						{
-							# Write-Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
+							# Write_Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
 						}
 					}
 				}
@@ -3396,7 +3396,7 @@ function Delete-Files
 								if ($item.Name -like $exclusionPattern)
 								{
 									$exclude = $true
-									# Write-Log "Excluded: $($item.FullName)" "Yellow"
+									# Write_Log "Excluded: $($item.FullName)" "Yellow"
 									break
 								}
 							}
@@ -3415,22 +3415,22 @@ function Delete-Files
 									Remove-Item -Path $item.FullName -Force -ErrorAction Stop
 								}
 								$deletedCount++
-								# Write-Log "Deleted: $($item.FullName)" "Green"
+								# Write_Log "Deleted: $($item.FullName)" "Green"
 							}
 							catch
 							{
-								# Write-Log "Failed to delete $($item.FullName). Error: $_" "Red"
+								# Write_Log "Failed to delete $($item.FullName). Error: $_" "Red"
 							}
 						}
 					}
 				}
 				
-				# Write-Log "Total items deleted: $deletedCount" "Blue"
+				# Write_Log "Total items deleted: $deletedCount" "Blue"
 				return $deletedCount
 			}
 			catch
 			{
-				# Write-Log "An error occurred during the deletion process. Error: $_" "Red"
+				# Write_Log "An error occurred during the deletion process. Error: $_" "Red"
 				return $deletedCount
 			}
 		}
@@ -3448,7 +3448,7 @@ function Delete-Files
 		$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
 		if (-not $resolvedPath)
 		{
-			Write-Log "The specified path '$Path' does not exist." "Red"
+			Write_Log "The specified path '$Path' does not exist." "Red"
 			return
 		}
 		$targetPath = $resolvedPath.ProviderPath
@@ -3476,7 +3476,7 @@ function Delete-Files
 									if ($matchedItem.Name -like $exclusionPattern)
 									{
 										$exclude = $true
-										Write-Log "Excluded: $($matchedItem.FullName)" "Yellow"
+										Write_Log "Excluded: $($matchedItem.FullName)" "Yellow"
 										break
 									}
 								}
@@ -3495,18 +3495,18 @@ function Delete-Files
 										Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
 									}
 									$deletedCount++
-									Write-Log "Deleted: $($matchedItem.FullName)" "Green"
+									Write_Log "Deleted: $($matchedItem.FullName)" "Green"
 								}
 								catch
 								{
-									Write-Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
+									Write_Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
 								}
 							}
 						}
 					}
 					else
 					{
-						Write-Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
+						Write_Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
 					}
 				}
 			}
@@ -3526,7 +3526,7 @@ function Delete-Files
 							if ($item.Name -like $exclusionPattern)
 							{
 								$exclude = $true
-								Write-Log "Excluded: $($item.FullName)" "Yellow"
+								Write_Log "Excluded: $($item.FullName)" "Yellow"
 								break
 							}
 						}
@@ -3545,22 +3545,22 @@ function Delete-Files
 								Remove-Item -Path $item.FullName -Force -ErrorAction Stop
 							}
 							$deletedCount++
-							Write-Log "Deleted: $($item.FullName)" "Green"
+							Write_Log "Deleted: $($item.FullName)" "Green"
 						}
 						catch
 						{
-							Write-Log "Failed to delete $($item.FullName). Error: $_" "Red"
+							Write_Log "Failed to delete $($item.FullName). Error: $_" "Red"
 						}
 					}
 				}
 			}
 			
-			Write-Log "Total items deleted: $deletedCount" "Blue"
+			Write_Log "Total items deleted: $deletedCount" "Blue"
 			return $deletedCount
 		}
 		catch
 		{
-			Write-Log "An error occurred during the deletion process. Error: $_" "Red"
+			Write_Log "An error occurred during the deletion process. Error: $_" "Red"
 			return $deletedCount
 		}
 	}
@@ -3573,9 +3573,9 @@ function Delete-Files
 #   Cleans the temporary folder by deleting all files and directories within it.
 # ===================================================================================================
 
-function Clean_TempFolder
+function Clean_Temp_Folder
 {
-	Write-Log "`nClearing temp folder..." "blue"
+	Write_Log "`nClearing temp folder..." "blue"
 	$FilesAndDirsDeleted = 0
 	
 	try
@@ -3589,15 +3589,15 @@ function Clean_TempFolder
 		# Remove the items
 		$itemsToDelete | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
 		
-		Write-Log "Temp folder cleared successfully." "green"
-		Write-Log "Files and directories deleted: $FilesAndDirsDeleted" "green"
+		Write_Log "Temp folder cleared successfully." "green"
+		Write_Log "Files and directories deleted: $FilesAndDirsDeleted" "green"
 		
 		# Return the count of deleted items
 		return $FilesAndDirsDeleted
 	}
 	catch
 	{
-		Write-Log "Failed to clear temp folder: $_" "red"
+		Write_Log "Failed to clear temp folder: $_" "red"
 		return $FilesAndDirsDeleted
 	}
 }
@@ -3609,15 +3609,15 @@ function Clean_TempFolder
 #   Generates a final report summarizing processed items and cleanup actions.
 # ===================================================================================================
 
-function Final-ReportGUI
+function Final_Report
 {
 	param (
 		[string]$Mode,
 		[int]$FilesAndDirsDeletedfomTEMP
 	)
-	Write-Log "`r`n******************************************************" "blue"
-	Write-Log "*                  Final Report                      *" "blue"
-	Write-Log "******************************************************" "blue"
+	Write_Log "`r`n******************************************************" "blue"
+	Write_Log "*                  Final Report                      *" "blue"
+	Write_Log "******************************************************" "blue"
 	
 	if ($Mode -eq "Host")
 	{
@@ -3629,9 +3629,9 @@ function Final-ReportGUI
 		$StoresList = if ($UniqueStoresProcessed) { $UniqueStoresProcessed -join ', ' }
 		else { 'None' }
 		
-		Write-Log "* Hosts Processed: $TotalHostsProcessed" "green"
-		Write-Log "* Stores Processed: $TotalStoresProcessed" "green"
-		Write-Log "* Stores Processed List: $StoresList" "green"
+		Write_Log "* Hosts Processed: $TotalHostsProcessed" "green"
+		Write_Log "* Stores Processed: $TotalStoresProcessed" "green"
+		Write_Log "* Stores Processed List: $StoresList" "green"
 	}
 	else
 	{
@@ -3643,14 +3643,14 @@ function Final-ReportGUI
 		$LanesList = if ($UniqueLanesProcessed) { $UniqueLanesProcessed -join ', ' }
 		else { 'None' }
 		
-		Write-Log "* Servers Processed: $TotalServersProcessed" "green"
-		Write-Log "* Lanes Processed: $TotalLanesProcessed" "green"
-		Write-Log "* Lanes Processed List: $LanesList" "green"
-		# Write-Log "* Lanes Pumped List: $ProcessedLanes" "green"
+		Write_Log "* Servers Processed: $TotalServersProcessed" "green"
+		Write_Log "* Lanes Processed: $TotalLanesProcessed" "green"
+		Write_Log "* Lanes Processed List: $LanesList" "green"
+		# Write_Log "* Lanes Pumped List: $ProcessedLanes" "green"
 	}
 	
-	Write-Log "* Files and directories deleted from Temp folder" "green"
-	Write-Log "******************************************************" "blue"
+	Write_Log "* Files and directories deleted from Temp folder" "green"
+	Write_Log "******************************************************" "blue"
 	
 	# Display a message box for final report if not in silent mode
 	if (-not $SilentMode)
@@ -3660,22 +3660,22 @@ function Final-ReportGUI
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Process-HostGUI
+#                                       FUNCTION: Process_Host
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Copies SQL files to the Host and executes the necessary SQL scripts for maintenance.
 # ===================================================================================================
 
-function Process-HostGUI
+function Process_Host
 {
 	param (
 		[string]$StoresqlFilePath
 	)
 	
-	Write-Log "`r`n=== Starting Host Database Repair ===" "blue"
+	Write_Log "`r`n=== Starting Host Database Repair ===" "blue"
 	
 	# Execute the SQL script
-	Execute-SQLLocallyGUI -SqlFilePath $StoresqlFilePath
+	Execute_SQL_Locally -SqlFilePath $StoresqlFilePath
 	
 	# Add host to processed hosts if not already added
 	if (-not ($script:ProcessedHosts -contains "localhost"))
@@ -3683,18 +3683,18 @@ function Process-HostGUI
 		$script:ProcessedHosts += "localhost"
 	}
 	
-	Write-Log "Host processing completed." "green"
+	Write_Log "Host processing completed." "green"
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Process-StoresGUI
+#                                       FUNCTION: Process_Stores
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Processes stores based on user selection obtained from Show-SelectionDialog.
+#   Processes stores based on user selection obtained from Show_Lane/Store_Selection_Form.
 #   Handles specific stores, a range of stores, or all stores.
 # ===================================================================================================
 
-function Process-StoresGUI
+function Process_Stores
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -3706,16 +3706,16 @@ function Process-StoresGUI
 	
 	if (-not (Test-Path $HostPath))
 	{
-		Write-Log "Host path not found: $HostPath" "yellow"
+		Write_Log "Host path not found: $HostPath" "yellow"
 		return
 	}
 	
 	# Get the user's selection
-	$selection = Show-SelectionDialog -Mode $Mode
+	$selection = Show_Lane/Store_Selection_Form -Mode $Mode
 	
 	if ($selection -eq $null)
 	{
-		Write-Log "Store processing canceled by user." "yellow"
+		Write_Log "Store processing canceled by user." "yellow"
 		return
 	}
 	
@@ -3725,22 +3725,22 @@ function Process-StoresGUI
 	switch ($Type)
 	{
 		'Specific' {
-			Write-Log "`nProcessing Specific Store(s)..." "blue"
+			Write_Log "`nProcessing Specific Store(s)..." "blue"
 			foreach ($StoreNumber in $Stores)
 			{
-				Process-Store -StoreNumber $StoreNumber -StoresqlFilePath $StoresqlFilePath
+				Process_Store -StoreNumber $StoreNumber -StoresqlFilePath $StoresqlFilePath
 			}
 		}
 		'Range' {
-			Write-Log "`nProcessing Range of Stores..." "blue"
+			Write_Log "`nProcessing Range of Stores..." "blue"
 			foreach ($StoreNumber in $Stores)
 			{
-				Process-Store -StoreNumber $StoreNumber -StoresqlFilePath $StoresqlFilePath
+				Process_Store -StoreNumber $StoreNumber -StoresqlFilePath $StoresqlFilePath
 				Start-Sleep -Seconds 1
 			}
 		}
 		'All' {
-			Write-Log "`nProcessing All Stores..." "blue"
+			Write_Log "`nProcessing All Stores..." "blue"
 			
 			# Get all Store folders matching the pattern, excluding XF999901
 			$StoreFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF*901" | Where-Object { $_.Name -ne "XF999901" }
@@ -3748,19 +3748,19 @@ function Process-StoresGUI
 			foreach ($folder in $StoreFolders)
 			{
 				$StoreNumber = $folder.Name.Substring(2, 3)
-				Process-Store -StoreNumber $StoreNumber -StoresqlFilePath $StoresqlFilePath
+				Process_Store -StoreNumber $StoreNumber -StoresqlFilePath $StoresqlFilePath
 			}
 		}
 		default {
-			Write-Log "Unknown selection type." "red"
+			Write_Log "Unknown selection type." "red"
 		}
 	}
 	
-	Write-Log "`nTotal Stores processed: $($script:ProcessedStores.Count)" "green"
+	Write_Log "`nTotal Stores processed: $($script:ProcessedStores.Count)" "green"
 }
 
 # Helper function to process a single store
-function Process-Store
+function Process_Store
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -3773,14 +3773,14 @@ function Process-Store
 	
 	if (Test-Path $StorePath)
 	{
-		Write-Log "Processing Store #$StoreNumber..." "blue"
-		Write-Log "Copying 'Server_Database_Maintenance.sqi' to $StorePath..." "blue"
+		Write_Log "Processing Store #$StoreNumber..." "blue"
+		Write_Log "Copying 'Server_Database_Maintenance.sqi' to $StorePath..." "blue"
 		
 		try
 		{
 			Copy-Item -Path $StoresqlFilePath -Destination "$StorePath\Server_Database_Maintenance.sqi" -Force
 			Set-ItemProperty -Path "$StorePath\Server_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			Write-Log "Copied successfully to Store #$StoreNumber." "green"
+			Write_Log "Copied successfully to Store #$StoreNumber." "green"
 			
 			# Add store to processed stores if not already added
 			if (-not ($script:ProcessedStores -contains $StoreNumber))
@@ -3790,23 +3790,23 @@ function Process-Store
 		}
 		catch
 		{
-			Write-Log "Failed to copy to Store #{$StoreNumber}: $_" "red"
+			Write_Log "Failed to copy to Store #{$StoreNumber}: $_" "red"
 		}
 	}
 	else
 	{
-		Write-Log "Store #$StoreNumber not found at path: $StorePath" "yellow"
+		Write_Log "Store #$StoreNumber not found at path: $StorePath" "yellow"
 	}
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Process-AllStoresAndHostGUI
+#                                       FUNCTION: Process_All_Stores_And_Host
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Copies SQL files to all Stores and the Host, then executes the necessary SQL scripts for maintenance.
 # ===================================================================================================
 
-function Process-AllStoresAndHostGUI
+function Process_All_Stores_And_Host
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -3814,61 +3814,61 @@ function Process-AllStoresAndHostGUI
 	)
 	
 	# Process all stores without prompting
-	Process-AllStores -StoresqlFilePath $StoresqlFilePath
+	Process_All_Stores -StoresqlFilePath $StoresqlFilePath
 	
 	# Process the host
-	Process-HostGUI -ServerSQLScript $ServerSQLScrip -StoresqlFilePath $StoresqlFilePath
+	Process_Host -ServerSQLScript $ServerSQLScrip -StoresqlFilePath $StoresqlFilePath
 }
 
-function Process-AllStores
+function Process_All_Stores
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoresqlFilePath
 	)
 	
-	Write-Log "`r`n=== Starting Process-AllStoresAndHostGUI function ===" "blue"
+	Write_Log "`r`n=== Starting Process_All_Stores_And_Host function ===" "blue"
 	
 	# Initialize the base path
 	$HostPath = "$OfficePath"
 	
 	if (-not (Test-Path $HostPath))
 	{
-		Write-Log "Host path not found: $HostPath" "yellow"
+		Write_Log "Host path not found: $HostPath" "yellow"
 		return
 	}
 	
 	# Get all Store folders matching the pattern, excluding XF999901 (the host)
 	$StoreFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF*901" | Where-Object { $_.Name -ne "XF999901" }
 	
-	Write-Log "`nProcessing All Stores..." "blue"
+	Write_Log "`nProcessing All Stores..." "blue"
 	
 	foreach ($folder in $StoreFolders)
 	{
 		$StoreNumber = $folder.Name.Substring(2, 3)
-		Process-Store -StoreNumber $StoreNumber -StoresqlFilePath $StoresqlFilePath
+		Process_Store -StoreNumber $StoreNumber -StoresqlFilePath $StoresqlFilePath
 	}
 	
-	Write-Log "`nTotal Stores processed: $($script:ProcessedStores.Count)" "green"
+	Write_Log "`nTotal Stores processed: $($script:ProcessedStores.Count)" "green"
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Process-ServerGUI
+#                                       FUNCTION: Process_Server
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Copies SQL files to the Server and executes the necessary SQL scripts for maintenance.
 # ===================================================================================================
 
-function Process-ServerGUI
+function Process_Server
 {
 	param (
 		[string]$StoresqlFilePath
 	)
 	
-	Write-Log "`r`n==================== Starting Server Database Repair ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Server Database Repair ====================`r`n" "blue"
 	
 	# Execute the SQL script
-	Execute-SQLLocallyGUI -SqlFilePath $StoresqlFilePath -PromptForSections
+	Execute_SQL_Locally -SqlFilePath $StoresqlFilePath -PromptForSections
 	
 	# Add server to processed servers if not already added
 	if (-not ($script:ProcessedServers -contains "localhost"))
@@ -3876,20 +3876,20 @@ function Process-ServerGUI
 		$script:ProcessedServers += "localhost"
 	}
 	
-	Write-Log "`r`n==================== Completed Server Database Repair ====================" "blue"
+	Write_Log "`r`n==================== Completed Server Database Repair ====================" "blue"
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Process-LanesGUI
+#                                       FUNCTION: Process_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Processes lanes based on user selection obtained from Show-SelectionDialog.
+#   Processes lanes based on user selection obtained from Show_Lane/Store_Selection_Form.
 #   Handles specific lanes, a range of lanes, or all lanes.
 #   When "All Lanes" is selected, it attempts to retrieve LaneContents.
 #   If LaneContents retrieval fails, it uses the predefined NumberOfLanes variable.
 # ===================================================================================================
 
-function Process-LanesGUI
+function Process_Lanes
 {
 	param (
 		[string]$LanesqlFilePath,
@@ -3897,20 +3897,20 @@ function Process-LanesGUI
 		[switch]$ProcessAllLanes
 	)
 	
-	Write-Log "`r`n==================== Starting Process-LanesGUI Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Process_Lanes Function ====================`r`n" "blue"
 	
 	if (-not (Test-Path $OfficePath))
 	{
-		Write-Log "XF Base Path not found: $OfficePath" "yellow"
+		Write_Log "XF Base Path not found: $OfficePath" "yellow"
 		return
 	}
 	
 	# Get the user's selection
-	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode $Mode -StoreNumber $StoreNumber
 	
 	if ($selection -eq $null)
 	{
-		Write-Log "Lane processing canceled by user." "yellow"
+		Write_Log "Lane processing canceled by user." "yellow"
 		return
 	}
 	
@@ -3929,12 +3929,12 @@ function Process-LanesGUI
 	{
 		try
 		{
-			#	Write-Log "User selected 'All Lanes'. Retrieving LaneContents..." "blue"
+			#	Write_Log "User selected 'All Lanes'. Retrieving LaneContents..." "blue"
 			$LaneContents = $script:FunctionResults['LaneContents']
 			
 			if ($LaneContents -and $LaneContents.Count -gt 0)
 			{
-				#    Write-Log "Successfully retrieved LaneContents. Processing all lanes." "green"
+				#    Write_Log "Successfully retrieved LaneContents. Processing all lanes." "green"
 				$Lanes = $LaneContents
 			}
 			else
@@ -3944,17 +3944,17 @@ function Process-LanesGUI
 		}
 		catch
 		{
-			Write-Log "Failed to retrieve LaneContents: $_. Using NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "yellow"
+			Write_Log "Failed to retrieve LaneContents: $_. Using NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "yellow"
 			# Use the predefined NumberOfLanes to generate lane numbers
 			if ($script:FunctionResults['NumberOfLanes'] -gt 0)
 			{
-				Write-Log "Determined NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "green"
+				Write_Log "Determined NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "green"
 				# Generate an array of lane numbers as zero-padded strings (e.g., '001', '002', ...)
 				$Lanes = 1 .. $script:FunctionResults['NumberOfLanes'] | ForEach-Object { $_.ToString("D3") }
 			}
 			else
 			{
-				Write-Log "NumberOfLanes is not defined or is zero. Exiting Process-LanesGUI." "red"
+				Write_Log "NumberOfLanes is not defined or is zero. Exiting Process_Lanes." "red"
 				return
 			}
 		}
@@ -3964,44 +3964,44 @@ function Process-LanesGUI
 	switch ($Type)
 	{
 		'Specific' {
-			Write-Log "`r`nProcessing Specific Lane(s)..." "blue"
+			Write_Log "`r`nProcessing Specific Lane(s)..." "blue"
 			foreach ($Number in $Lanes)
 			{
-				Process-Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
+				Process_Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
 			}
 		}
 		'Range' {
-			Write-Log "`r`nProcessing Range of Lanes..." "blue"
+			Write_Log "`r`nProcessing Range of Lanes..." "blue"
 			foreach ($Number in $Lanes)
 			{
-				Process-Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
+				Process_Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
 				Start-Sleep -Seconds 1
 			}
 		}
 		'All' {
-			Write-Log "`r`nProcessing All Lanes..." "blue"
+			Write_Log "`r`nProcessing All Lanes..." "blue"
 			
 			foreach ($Number in $Lanes)
 			{
-				Process-Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
+				Process_Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
 			}
 		}
 		default {
-			Write-Log "Unknown selection type." "red"
+			Write_Log "Unknown selection type." "red"
 		}
 	}
 	
-	Write-Log "`r`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
+	Write_Log "`r`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
 	if ($script:ProcessedLanes.Count -gt 0)
 	{
-		Write-Log "Processed Lanes: $($script:ProcessedLanes -join ', ')" "green"
+		Write_Log "Processed Lanes: $($script:ProcessedLanes -join ', ')" "green"
 	}
 	
-	Write-Log "`r`n==================== Process-LanesGUI Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 }
 
 # Helper function to process a single lane
-function Process-Lane
+function Process_Lane
 {
 	param (
 		[string]$LaneNumber,
@@ -4013,17 +4013,17 @@ function Process-Lane
 	
 	if (Test-Path $LaneLocalPath)
 	{
-		Write-Log "`r`nProcessing Lane #${LaneNumber}..." "blue"
-		Write-Log "Lane path found: $LaneLocalPath" "blue"
-		Write-Log "Copying 'Lane_Database_Maintenance.sqi' to Lane..." "blue"
+		Write_Log "`r`nProcessing Lane #${LaneNumber}..." "blue"
+		Write_Log "Lane path found: $LaneLocalPath" "blue"
+		Write_Log "Copying 'Lane_Database_Maintenance.sqi' to Lane..." "blue"
 		
 		try
 		{
 			# Copy-Item -Path $LanesqlFilePath -Destination "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Force
-			# Write-Log "Copied successfully to Lane #${LaneNumber}." "green"
+			# Write_Log "Copied successfully to Lane #${LaneNumber}." "green"
 			Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $LaneSQLScript -Encoding Ascii
 			Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			Write-Log "Created and wrote to file at Lane #${LaneNumber} successfully." "green"
+			Write_Log "Created and wrote to file at Lane #${LaneNumber} successfully." "green"
 			
 			# Add lane to processed lanes if not already added
 			if (-not ($script:ProcessedLanes -contains $LaneNumber))
@@ -4033,25 +4033,25 @@ function Process-Lane
 		}
 		catch
 		{
-			# Write-Log "Failed to copy to Lane #${LaneNumber}: $_" "red"
-			Write-Log "Failed to created and write to file at Lane #${LaneNumber} successfully." "green"
+			# Write_Log "Failed to copy to Lane #${LaneNumber}: $_" "red"
+			Write_Log "Failed to created and write to file at Lane #${LaneNumber} successfully." "green"
 		}
 	}
 	else
 	{
-		Write-Log "`r`nLane #${LaneNumber} not found at path: $LaneLocalPath" "yellow"
+		Write_Log "`r`nLane #${LaneNumber} not found at path: $LaneLocalPath" "yellow"
 	}
 }
 
 # ===================================================================================================
-#                               FUNCTION: Process-LanesAndServerGUI
+#                               FUNCTION: Process_Lanes_And_Server
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Processes all lanes and the server together.
 #   Copies SQL files to all lanes and the server, then executes necessary scripts.
 # ===================================================================================================
 
-function Process-LanesAndServerGUI
+function Process_Lanes_And_Server
 {
 	param (
 		[string]$LanesqlFilePath,
@@ -4060,24 +4060,24 @@ function Process-LanesAndServerGUI
 	)
 	
 	# Process all lanes without prompting
-	Process-AllLanes -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
+	Process_All_Lanes -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
 	
 	# Process the server
-	Process-ServerGUI -StoresqlFilePath $StoresqlFilePath
+	Process_Server -StoresqlFilePath $StoresqlFilePath
 }
 
-function Process-AllLanes
+function Process_All_Lanes
 {
 	param (
 		[string]$LanesqlFilePath,
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n=== Starting Process-LanesAndServerGUI Function ===" "blue"
+	Write_Log "`r`n=== Starting Process_Lanes_And_Server Function ===" "blue"
 	
 	if (-not (Test-Path $OfficePath))
 	{
-		Write-Log "XF Base Path not found: $OfficePath" "yellow"
+		Write_Log "XF Base Path not found: $OfficePath" "yellow"
 		return
 	}
 	
@@ -4087,33 +4087,33 @@ function Process-AllLanes
 		$_.Name.Substring($_.Name.Length - 3, 3)
 	}
 	
-	Write-Log "`nProcessing All Lanes..." "blue"
+	Write_Log "`nProcessing All Lanes..." "blue"
 	
 	foreach ($Number in $allLanes)
 	{
-		Process-Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
+		Process_Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
 	}
 	
-	Write-Log "`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
+	Write_Log "`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Repair-Windows
+#                                       FUNCTION: Repair_Windows
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Performs various system maintenance tasks to repair Windows.
 #   Updates Windows Defender signatures, runs a full scan, executes DISM commands,
 #   runs System File Checker, performs disk cleanup, optimizes all fixed drives by trimming SSDs or defragmenting HDDs,
 #   and schedules a disk check.
-#   Uses Write-Log to provide updates after each command execution.
+#   Uses Write_Log to provide updates after each command execution.
 # ===================================================================================================
 
-function Repair-Windows
+function Repair_Windows
 {
 	[CmdletBinding()]
 	param ()
 	
-	Write-Log "`r`n==================== Starting Repair-Windows Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Repair_Windows Function ====================`r`n" "blue"
 	
 	# Import necessary assemblies
 	Add-Type -AssemblyName System.Windows.Forms
@@ -4130,11 +4130,11 @@ function Repair-Windows
 	# If the user selects 'No', exit the function
 	if ($confirmationResult -ne [System.Windows.Forms.DialogResult]::Yes)
 	{
-		Write-Log "Windows repair process cancelled by the user." "yellow"
+		Write_Log "Windows repair process cancelled by the user." "yellow"
 		return
 	}
 	
-	Write-Log "Starting Windows repair process. This might take a while, please wait..." "blue"
+	Write_Log "Starting Windows repair process. This might take a while, please wait..." "blue"
 	
 	# Create a form for selecting operations
 	$repairForm = New-Object System.Windows.Forms.Form
@@ -4150,7 +4150,7 @@ function Repair-Windows
 	$operationCheckboxes = @()
 	
 	# Function to update the Run button's enabled state
-	function Update-RunButtonState
+	function Update_Run_Button_State
 	{
 		$anyChecked = $operationCheckboxes | Where-Object { $_.Checked } | Measure-Object | Select-Object -ExpandProperty Count
 		$runButton.Enabled = $anyChecked -gt 0
@@ -4226,7 +4226,7 @@ function Repair-Windows
 	# Add event handlers for each operation checkbox to update Run button state
 	foreach ($cb in $operationCheckboxes)
 	{
-		$cb.Add_CheckedChanged({ Update-RunButtonState })
+		$cb.Add_CheckedChanged({ Update_Run_Button_State })
 	}
 	
 	# Add event handler for the Run button
@@ -4252,7 +4252,7 @@ function Repair-Windows
 	# If the user closed the form without clicking Run, cancel the function
 	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
 	{
-		Write-Log "Windows repair process cancelled by the user." "yellow"
+		Write_Log "Windows repair process cancelled by the user." "yellow"
 		return
 	}
 	
@@ -4266,29 +4266,29 @@ function Repair-Windows
 		CheckDisk	   = $checkboxCheckDisk.Checked
 	}
 	
-	Write-Log "Selected operations will be executed." "blue"
+	Write_Log "Selected operations will be executed." "blue"
 	
 	# Update Windows Defender Signatures and run a full scan
 	if ($selectedParams.Defender)
 	{
 		try
 		{
-			Write-Log "Updating Windows Defender signatures..." "blue"
+			Write_Log "Updating Windows Defender signatures..." "blue"
 			& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -SignatureUpdate -ErrorAction Stop
-			Write-Log "Windows Defender signatures updated successfully." "green"
+			Write_Log "Windows Defender signatures updated successfully." "green"
 			
-			Write-Log "Running Windows Defender full scan..." "blue"
+			Write_Log "Running Windows Defender full scan..." "blue"
 			& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Scan -ScanType 2 -ErrorAction Stop
-			Write-Log "Windows Defender full scan completed." "green"
+			Write_Log "Windows Defender full scan completed." "green"
 		}
 		catch
 		{
-			Write-Log "An error occurred while updating or scanning with Windows Defender: $_" "red"
+			Write_Log "An error occurred while updating or scanning with Windows Defender: $_" "red"
 		}
 	}
 	else
 	{
-		Write-Log "Skipping Windows Defender update and scan as per user request." "yellow"
+		Write_Log "Skipping Windows Defender update and scan as per user request." "yellow"
 	}
 	
 	# Run DISM commands
@@ -4296,22 +4296,22 @@ function Repair-Windows
 	{
 		try
 		{
-			Write-Log "Running DISM StartComponentCleanup..." "blue"
+			Write_Log "Running DISM StartComponentCleanup..." "blue"
 			DISM /Online /Cleanup-Image /StartComponentCleanup /NoRestart
-			Write-Log "DISM StartComponentCleanup completed." "green"
+			Write_Log "DISM StartComponentCleanup completed." "green"
 			
-			Write-Log "Running DISM RestoreHealth..." "blue"
+			Write_Log "Running DISM RestoreHealth..." "blue"
 			DISM /Online /Cleanup-Image /RestoreHealth /NoRestart
-			Write-Log "DISM RestoreHealth completed." "green"
+			Write_Log "DISM RestoreHealth completed." "green"
 		}
 		catch
 		{
-			Write-Log "An error occurred while running DISM commands: $_" "red"
+			Write_Log "An error occurred while running DISM commands: $_" "red"
 		}
 	}
 	else
 	{
-		Write-Log "Skipping DISM operations as per user request." "yellow"
+		Write_Log "Skipping DISM operations as per user request." "yellow"
 	}
 	
 	# Run System File Checker
@@ -4319,18 +4319,18 @@ function Repair-Windows
 	{
 		try
 		{
-			Write-Log "Running System File Checker (SFC)..." "blue"
+			Write_Log "Running System File Checker (SFC)..." "blue"
 			SFC /scannow
-			Write-Log "System File Checker completed." "green"
+			Write_Log "System File Checker completed." "green"
 		}
 		catch
 		{
-			Write-Log "An error occurred while running System File Checker: $_" "red"
+			Write_Log "An error occurred while running System File Checker: $_" "red"
 		}
 	}
 	else
 	{
-		Write-Log "Skipping System File Checker as per user request." "yellow"
+		Write_Log "Skipping System File Checker as per user request." "yellow"
 	}
 	
 	# Cleanup disk space
@@ -4338,19 +4338,19 @@ function Repair-Windows
 	{
 		try
 		{
-			Write-Log "Running Disk Cleanup..." "blue"
+			Write_Log "Running Disk Cleanup..." "blue"
 			# Ensure that a cleanup profile is set. You may need to configure /sageset:1 beforehand.
 			Start-Process "cleanmgr.exe" -ArgumentList "/sagerun:1" -Wait -ErrorAction Stop
-			Write-Log "Disk Cleanup completed." "green"
+			Write_Log "Disk Cleanup completed." "green"
 		}
 		catch
 		{
-			Write-Log "An error occurred while running Disk Cleanup: $_" "red"
+			Write_Log "An error occurred while running Disk Cleanup: $_" "red"
 		}
 	}
 	else
 	{
-		Write-Log "Skipping Disk Cleanup as per user request." "yellow"
+		Write_Log "Skipping Disk Cleanup as per user request." "yellow"
 	}
 	
 	# Optimize All Fixed Drives
@@ -4358,23 +4358,23 @@ function Repair-Windows
 	{
 		try
 		{
-			Write-Log "Starting disk optimization for all fixed drives..." "blue"
+			Write_Log "Starting disk optimization for all fixed drives..." "blue"
 			
 			Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter } | ForEach-Object {
-				Write-Log "Optimizing drive: $($_.DriveLetter)" "blue"
+				Write_Log "Optimizing drive: $($_.DriveLetter)" "blue"
 				Optimize-Volume -DriveLetter $_.DriveLetter -Verbose
 			}
 			
-			Write-Log "Disk optimization for all fixed drives completed." "green"
+			Write_Log "Disk optimization for all fixed drives completed." "green"
 		}
 		catch
 		{
-			Write-Log "An error occurred while optimizing drives: $_" "red"
+			Write_Log "An error occurred while optimizing drives: $_" "red"
 		}
 	}
 	else
 	{
-		Write-Log "Skipping disk optimization as per user request." "yellow"
+		Write_Log "Skipping disk optimization as per user request." "yellow"
 	}
 	
 	# Schedule Check Disk
@@ -4382,25 +4382,25 @@ function Repair-Windows
 	{
 		try
 		{
-			Write-Log "Scheduling Check Disk on C: drive..." "blue"
+			Write_Log "Scheduling Check Disk on C: drive..." "blue"
 			# Automatically confirm the disk check and handle the need for a reboot
 			Start-Process "cmd.exe" -ArgumentList "/c echo Y|chkdsk C: /f /r" -Verb RunAs -Wait -ErrorAction Stop
-			Write-Log "Check Disk scheduled. A restart may be required to complete the process." "green"
+			Write_Log "Check Disk scheduled. A restart may be required to complete the process." "green"
 		}
 		catch
 		{
-			Write-Log "An error occurred while scheduling Check Disk: $_" "red"
+			Write_Log "An error occurred while scheduling Check Disk: $_" "red"
 		}
 	}
 	else
 	{
-		Write-Log "Skipping Check Disk scheduling as per user request." "yellow"
+		Write_Log "Skipping Check Disk scheduling as per user request." "yellow"
 	}
-	Write-Log "`r`n==================== Repair-Windows Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Repair_Windows Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
-#                                     FUNCTION: Update-LaneFiles
+#                                     FUNCTION: Update_Lane_Config
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Processes SQL load files in the \\localhost\storeman\office\Load directory.
@@ -4420,28 +4420,28 @@ function Repair-Windows
 #       - No BOM
 # ===================================================================================================
 
-function Update-LaneFiles
+function Update_Lane_Config
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Update-LaneFiles Function ====================" "blue"
+	Write_Log "`r`n==================== Starting Update_Lane_Config Function ====================" "blue"
 	
 	# Ensure $LoadPath exists
 	if (-not (Test-Path $LoadPath))
 	{
-		Write-Log "`r`nLoad Base Path not found: $LoadPath" "yellow"
+		Write_Log "`r`nLoad Base Path not found: $LoadPath" "yellow"
 		return
 	}
 	
 	# Get the user's lane selection
-	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode $Mode -StoreNumber $StoreNumber
 	
 	if ($selection -eq $null)
 	{
-		Write-Log "`r`nLane processing canceled by user." "yellow"
+		Write_Log "`r`nLane processing canceled by user." "yellow"
 		return
 	}
 	
@@ -4473,7 +4473,7 @@ function Update-LaneFiles
 		}
 		catch
 		{
-			Write-Log "Failed to retrieve LaneContents: $_. Falling back to user-selected lanes." "yellow"
+			Write_Log "Failed to retrieve LaneContents: $_. Falling back to user-selected lanes." "yellow"
 			$processAllLanes = $false
 		}
 	}
@@ -4568,35 +4568,35 @@ DROP TABLE Ter_Load;
 		
 		if (-not (Test-Path $laneFolderPath))
 		{
-			Write-Log "`r`nLane #$laneNumber not found at path: $laneFolderPath" "yellow"
+			Write_Log "`r`nLane #$laneNumber not found at path: $laneFolderPath" "yellow"
 			continue
 		}
 		
 		$laneFolder = Get-Item -Path $laneFolderPath
-		Write-Log "`r`nProcessing Lane #$laneNumber" "blue"
+		Write_Log "`r`nProcessing Lane #$laneNumber" "blue"
 		
 		$actionSummaries = @()
 		
 		# Determine Machine Name from LaneMachines
 		try
 		{
-			Write-Log "Determining machine name for Lane #$laneNumber..." "blue"
+			Write_Log "Determining machine name for Lane #$laneNumber..." "blue"
 			
 			$MachineName = $script:FunctionResults['LaneMachines'][$laneNumber]
 			
 			if ($MachineName)
 			{
-				Write-Log "Lane #${laneNumber}: Retrieved machine name '$MachineName' from LaneMachines." "green"
+				Write_Log "Lane #${laneNumber}: Retrieved machine name '$MachineName' from LaneMachines." "green"
 			}
 			else
 			{
-				Write-Log "Lane #${laneNumber}: Machine name not found in LaneMachines. Defaulting to 'POS${laneNumber}'." "yellow"
+				Write_Log "Lane #${laneNumber}: Machine name not found in LaneMachines. Defaulting to 'POS${laneNumber}'." "yellow"
 				$MachineName = "POS${laneNumber}"
 			}
 		}
 		catch
 		{
-			Write-Log "Lane #${laneNumber}: Error retrieving machine name. Error: $_. Defaulting to 'POS${laneNumber}'." "red"
+			Write_Log "Lane #${laneNumber}: Error retrieving machine name. Error: $_. Defaulting to 'POS${laneNumber}'." "red"
 			$MachineName = "POS${laneNumber}"
 		}
 		
@@ -4604,17 +4604,17 @@ DROP TABLE Ter_Load;
 		# Process each load SQL file (currently commented out; uncomment if needed)
 		foreach ($file in $loadFiles) 
 		{
-		    Write-Log "Processing file '$($file.Name)' for Lane #$laneNumber..." "blue"
+		    Write_Log "Processing file '$($file.Name)' for Lane #$laneNumber..." "blue"
 		    
 		    # Read the original file content
 		    try 
 		    {
 		        $originalContent = Get-Content -Path $file.FullName -ErrorAction Stop
-		        Write-Log "Successfully read '$($file.Name)'." "green"
+		        Write_Log "Successfully read '$($file.Name)'." "green"
 		    }
 		    catch 
 		    {
-		        Write-Log "Failed to read '$($file.Name)'. Error: $_" "red"
+		        Write_Log "Failed to read '$($file.Name)'. Error: $_" "red"
 		        $actionSummaries += "Failed to read $($file.Name)"
 		        continue
 		    }
@@ -4638,18 +4638,18 @@ DROP TABLE Ter_Load;
 		            $fileItem = Get-Item -Path $destinationPath
 		            $fileItem.Attributes = $fileItem.Attributes -bor [System.IO.FileAttributes]::Archive
 		    
-		            Write-Log "Successfully copied to '$destinationPath'." "green"
+		            Write_Log "Successfully copied to '$destinationPath'." "green"
 		            $actionSummaries += "Copied $($file.Name)"
 		        }
 		        catch 
 		        {
-		            Write-Log "Failed to copy '$($file.Name)' to '$destinationPath'. Error: $_" "red"
+		            Write_Log "Failed to copy '$($file.Name)' to '$destinationPath'. Error: $_" "red"
 		            $actionSummaries += "Failed to copy $($file.Name)"
 		        }
 		    }
 		    else 
 		    {
-		        Write-Log "No matching records found in '$($file.Name)' for Lane #$laneNumber." "yellow"
+		        Write_Log "No matching records found in '$($file.Name)' for Lane #$laneNumber." "yellow"
 		    }
 		}
 	#>
@@ -4759,7 +4759,7 @@ DROP TABLE Ter_Load;
 		
 		# Summarize
 		$summaryMessage = "Lane ${laneNumber} (Machine: ${MachineName}): " + ($actionSummaries -join "; ")
-		Write-Log $summaryMessage "green"
+		Write_Log $summaryMessage "green"
 		
 		# Mark lane as processed
 		if (-not ($script:ProcessedLanes -contains $laneNumber))
@@ -4768,14 +4768,14 @@ DROP TABLE Ter_Load;
 		}
 	}
 	
-	Write-Log "`r`n==================== Update-LaneFiles Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Update_Lane_Config Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
 #                                 FUNCTION: Deploy_Load
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Lets you pick a lane (for @TER) using Show-SelectionDialog, then writes a ready-to-execute macro
+#   Lets you pick a lane (for @TER) using Show_Lane/Store_Selection_Form, then writes a ready-to-execute macro
 #   for UD_DEPLOY_LOAD with ACTION always set to ADDRPL, all scenario and business logic blocks included.
 #   Deploys the SQI macro file directly to XF<Store>901.
 # ---------------------------------------------------------------------------------------------------
@@ -4783,9 +4783,9 @@ DROP TABLE Ter_Load;
 #   - StoreNumber: The store number to process. (Mandatory)
 # ---------------------------------------------------------------------------------------------------
 # Requirements:
-#   - Show-SelectionDialog function must exist and return lane (TER).
+#   - Show_Lane/Store_Selection_Form function must exist and return lane (TER).
 #   - $OfficePath must be defined.
-#   - Write-Log function must be available.
+#   - Write_Log function must be available.
 # ===================================================================================================
 
 function Deploy_Load
@@ -4796,14 +4796,14 @@ function Deploy_Load
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Deploy_UD_DEPLOY_LOAD ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Deploy_UD_DEPLOY_LOAD ====================`r`n" "blue"
 	
 	# ---- STEP 1: Pick lane (TER) ----
-	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode "Store" -StoreNumber $StoreNumber
 	if ($null -eq $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 	{
-		Write-Log "No lane selected or operation cancelled." "yellow"
-		Write-Log "`r`n==================== Deploy_UD_DEPLOY_LOAD Completed ====================" "blue"
+		Write_Log "No lane selected or operation cancelled." "yellow"
+		Write_Log "`r`n==================== Deploy_UD_DEPLOY_LOAD Completed ====================" "blue"
 		return
 	}
 	$TER = $selection.Lanes[0].PadLeft(3, '0')
@@ -4965,7 +4965,7 @@ LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'"));
 	$DeployPath = Join-Path -Path $OfficePath -ChildPath "XF${StoreNumber}901"
 	if (-not (Test-Path $DeployPath))
 	{
-		Write-Log "Deploy path $DeployPath not found. Aborting." "red"
+		Write_Log "Deploy path $DeployPath not found. Aborting." "red"
 		return
 	}
 	$MacroFile = Join-Path -Path $DeployPath -ChildPath "UD_DEPLOY_LOAD.sqi"
@@ -4976,17 +4976,17 @@ LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'"));
 	[System.IO.File]::WriteAllText($MacroFile, $MacroContentCRLF, $ansiPcEncoding)
 	Set-ItemProperty -Path $MacroFile -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
 	
-	Write-Log "Deployed UD_DEPLOY_LOAD macro for lane $TER in $DeployPath." "green"
-	Write-Log "`r`n==================== Deploy_UD_DEPLOY_LOAD Completed ====================" "blue"
+	Write_Log "Deployed UD_DEPLOY_LOAD macro for lane $TER in $DeployPath." "green"
+	Write_Log "`r`n==================== Deploy_UD_DEPLOY_LOAD Completed ====================" "blue"
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Pump-AllItems
+#                                       FUNCTION: Pump_All_Items
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Extracts specified tables from the SQL Server and copies them to the selected lanes as a single
 #   batch file named PUMP_ALL_ITEMS_TABLES.sql. Handles large tables efficiently while preserving
-#   compatibility. This function now relies on Get-TableAliases to retrieve the table and alias
+#   compatibility. This function now relies on Get_Table_Aliases to retrieve the table and alias
 #   information, eliminating the need to define the table list within this function.
 #
 #   This version enforces:
@@ -4994,27 +4994,27 @@ LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'"));
 #       - CRLF line endings (`\r\n`)
 # ===================================================================================================
 
-function Pump-AllItems
+function Pump_All_Items
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Pump-AllItems Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Pump_All_Items Function ====================`r`n" "blue"
 	
 	if (-not (Test-Path $OfficePath))
 	{
-		Write-Log "XF Base Path not found: $OfficePath" "yellow"
+		Write_Log "XF Base Path not found: $OfficePath" "yellow"
 		return
 	}
 	
 	# Get the user's selection
-	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode $Mode -StoreNumber $StoreNumber
 	
 	if ($selection -eq $null)
 	{
-		Write-Log "Lane processing canceled by user." "yellow"
+		Write_Log "Lane processing canceled by user." "yellow"
 		return
 	}
 	
@@ -5051,23 +5051,23 @@ function Pump-AllItems
 	}
 	
 	# --------------------------------------------------------------------------------------------
-	# Fetch the alias data that Get-TableAliases stored
+	# Fetch the alias data that Get_Table_Aliases stored
 	# --------------------------------------------------------------------------------------------
-	if ($script:FunctionResults.ContainsKey('Get-TableAliases'))
+	if ($script:FunctionResults.ContainsKey('Get_Table_Aliases'))
 	{
-		$aliasData = $script:FunctionResults['Get-TableAliases']
+		$aliasData = $script:FunctionResults['Get_Table_Aliases']
 		$aliasResults = $aliasData.Aliases
 		$aliasHash = $aliasData.AliasHash
 	}
 	else
 	{
-		Write-Log "Alias data not found. Ensure Get-TableAliases has been run." "red"
+		Write_Log "Alias data not found. Ensure Get_Table_Aliases has been run." "red"
 		return
 	}
 	
 	if ($aliasResults.Count -eq 0)
 	{
-		Write-Log "No tables found to process. Exiting Pump-AllItems." "red"
+		Write_Log "No tables found to process. Exiting Pump_All_Items." "red"
 		return
 	}
 	
@@ -5076,7 +5076,7 @@ function Pump-AllItems
 	# --------------------------------------------------------------------------------------------
 	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
 	{
-		Write-Log "Connection string not found. Cannot proceed with Pump-AllItems." "red"
+		Write_Log "Connection string not found. Cannot proceed with Pump_All_Items." "red"
 		return
 	}
 	$ConnectionString = $script:FunctionResults['ConnectionString']
@@ -5101,7 +5101,7 @@ function Pump-AllItems
 		
 		if (-not $table -or -not $tableAlias)
 		{
-			Write-Log "Invalid table or alias: $($aliasEntry | ConvertTo-Json)" "yellow"
+			Write_Log "Invalid table or alias: $($aliasEntry | ConvertTo-Json)" "yellow"
 			continue
 		}
 		
@@ -5116,7 +5116,7 @@ function Pump-AllItems
 		}
 		catch
 		{
-			Write-Log "Error checking row count for '$table': $_" "red"
+			Write_Log "Error checking row count for '$table': $_" "red"
 			continue
 		}
 		
@@ -5127,7 +5127,7 @@ function Pump-AllItems
 			continue
 		}
 		
-		Write-Log "Processing table '$table'..." "blue"
+		Write_Log "Processing table '$table'..." "blue"
 		
 		# Remove "_TAB" suffix for the base name
 		$baseTable = $table -replace '_TAB$', ''
@@ -5144,12 +5144,12 @@ function Pump-AllItems
 			$fileAge = (Get-Date) - $fileInfo.LastWriteTime
 			if ($fileAge.TotalHours -le 1)
 			{
-				Write-Log "Recent SQL file found for '$table' in %TEMP%. Using existing file." "green"
+				Write_Log "Recent SQL file found for '$table' in %TEMP%. Using existing file." "green"
 				$useExistingFile = $true
 			}
 			else
 			{
-				Write-Log "SQL file for '$table' is older than 1 hour. Regenerating." "yellow"
+				Write_Log "SQL file for '$table' is older than 1 hour. Regenerating." "yellow"
 			}
 		}
 		
@@ -5372,7 +5372,7 @@ DROP TABLE $viewName;
 			}
 			catch
 			{
-				Write-Log "Error generating SQL for table '$table': $_" "red"
+				Write_Log "Error generating SQL for table '$table': $_" "red"
 				continue
 			}
 		}
@@ -5390,17 +5390,17 @@ DROP TABLE $viewName;
 	# Summaries
 	if ($copiedTables.Count -gt 0)
 	{
-		Write-Log "Successfully generated _Load.sql files for tables: $($copiedTables -join ', ')" "green"
+		Write_Log "Successfully generated _Load.sql files for tables: $($copiedTables -join ', ')" "green"
 	}
 	if ($skippedTables.Count -gt 0)
 	{
-		Write-Log "Tables with no data (skipped): $($skippedTables -join ', ')" "yellow"
+		Write_Log "Tables with no data (skipped): $($skippedTables -join ', ')" "yellow"
 	}
 	
 	# --------------------------------------------------------------------------------------------
 	# Copy the generated .sql files to each selected lane
 	# --------------------------------------------------------------------------------------------
-	Write-Log "`r`nDetermining selected lanes...`r`n" "magenta"
+	Write_Log "`r`nDetermining selected lanes...`r`n" "magenta"
 	$ProcessedLanes = @()
 	foreach ($lane in $Lanes)
 	{
@@ -5408,7 +5408,7 @@ DROP TABLE $viewName;
 		
 		if (Test-Path $LaneLocalPath)
 		{
-			Write-Log "Copying _Load.sql files to Lane #$lane..." "blue"
+			Write_Log "Copying _Load.sql files to Lane #$lane..." "blue"
 			try
 			{
 				foreach ($filePath in $generatedFiles)
@@ -5418,57 +5418,57 @@ DROP TABLE $viewName;
 					
 					Copy-Item -Path $filePath -Destination $destinationPath -Force -ErrorAction Stop
 				}
-				Write-Log "Successfully copied all generated _Load.sql files to Lane #$lane." "green"
+				Write_Log "Successfully copied all generated _Load.sql files to Lane #$lane." "green"
 				$ProcessedLanes += $lane
 			}
 			catch
 			{
-				Write-Log "Error copying files to Lane #${lane}: $_" "red"
+				Write_Log "Error copying files to Lane #${lane}: $_" "red"
 			}
 		}
 		else
 		{
-			Write-Log "Lane #$lane not found at path: $LaneLocalPath" "yellow"
+			Write_Log "Lane #$lane not found at path: $LaneLocalPath" "yellow"
 		}
 	}
 	
-	Write-Log "`r`nTotal Lane folders processed: $($ProcessedLanes.Count)" "green"
+	Write_Log "`r`nTotal Lane folders processed: $($ProcessedLanes.Count)" "green"
 	if ($ProcessedLanes.Count -gt 0)
 	{
-		Write-Log "Processed Lanes: $($ProcessedLanes -join ', ')" "green"
-		Write-Log "`r`n==================== Pump-AllItems Function Completed ====================" "blue"
+		Write_Log "Processed Lanes: $($ProcessedLanes -join ', ')" "green"
+		Write_Log "`r`n==================== Pump_All_Items Function Completed ====================" "blue"
 	}
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Pump-Tables
+#                                       FUNCTION: Pump_Tables
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Allows a user to select a subset of tables (from Get-TableAliases) to extract from SQL Server
-#   and copy to the specified lanes or hosts. Similar to Pump-AllItems but restricted to a user-chosen
+#   Allows a user to select a subset of tables (from Get_Table_Aliases) to extract from SQL Server
+#   and copy to the specified lanes or hosts. Similar to Pump_All_Items but restricted to a user-chosen
 #   list of tables.
 # ===================================================================================================
 
-function Pump-Tables
+function Pump_Tables
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Pump-Tables Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Pump_Tables Function ====================`r`n" "blue"
 	
 	if (-not (Test-Path $OfficePath))
 	{
-		Write-Log "XF Base Path not found: $OfficePath" "yellow"
+		Write_Log "XF Base Path not found: $OfficePath" "yellow"
 		return
 	}
 	
 	# Prompt for lane selection
-	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode $Mode -StoreNumber $StoreNumber
 	if ($selection -eq $null)
 	{
-		Write-Log "Lane processing canceled by user." "yellow"
+		Write_Log "Lane processing canceled by user." "yellow"
 		return
 	}
 	$Type = $selection.Type
@@ -5504,31 +5504,31 @@ function Pump-Tables
 	}
 	
 	# --------------------------------------------------------------------------------------------
-	# Fetch the alias data that Get-TableAliases stored
+	# Fetch the alias data that Get_Table_Aliases stored
 	# --------------------------------------------------------------------------------------------
-	if ($script:FunctionResults.ContainsKey('Get-TableAliases'))
+	if ($script:FunctionResults.ContainsKey('Get_Table_Aliases'))
 	{
-		$aliasData = $script:FunctionResults['Get-TableAliases']
+		$aliasData = $script:FunctionResults['Get_Table_Aliases']
 		$aliasResults = $aliasData.Aliases
 		$aliasHash = $aliasData.AliasHash
 	}
 	else
 	{
-		Write-Log "Alias data not found. Ensure Get-TableAliases has been run." "red"
+		Write_Log "Alias data not found. Ensure Get_Table_Aliases has been run." "red"
 		return
 	}
 	
 	if ($aliasResults.Count -eq 0)
 	{
-		Write-Log "No tables found to process. Exiting Pump-Tables." "red"
+		Write_Log "No tables found to process. Exiting Pump_Tables." "red"
 		return
 	}
 	
 	# Prompt user to select which tables to pump
-	$selectedTables = Show-TableSelectionDialog -AliasResults $aliasResults
+	$selectedTables = Show_Table_Selection_Form -AliasResults $aliasResults
 	if (-not $selectedTables -or $selectedTables.Count -eq 0)
 	{
-		Write-Log "No tables were selected. Exiting Pump-Tables." "yellow"
+		Write_Log "No tables were selected. Exiting Pump_Tables." "yellow"
 		return
 	}
 	
@@ -5537,7 +5537,7 @@ function Pump-Tables
 	# --------------------------------------------------------------------------------------------
 	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
 	{
-		Write-Log "Connection string not found. Cannot proceed with Pump-Tables." "red"
+		Write_Log "Connection string not found. Cannot proceed with Pump_Tables." "red"
 		return
 	}
 	$ConnectionString = $script:FunctionResults['ConnectionString']
@@ -5567,7 +5567,7 @@ function Pump-Tables
 		
 		if (-not $table -or -not $tableAlias)
 		{
-			Write-Log "Invalid table or alias: $($aliasEntry | ConvertTo-Json)" "yellow"
+			Write_Log "Invalid table or alias: $($aliasEntry | ConvertTo-Json)" "yellow"
 			continue
 		}
 		
@@ -5582,7 +5582,7 @@ function Pump-Tables
 		}
 		catch
 		{
-			Write-Log "Error checking row count for '$table': $_" "red"
+			Write_Log "Error checking row count for '$table': $_" "red"
 			continue
 		}
 		
@@ -5593,7 +5593,7 @@ function Pump-Tables
 			continue
 		}
 		
-		Write-Log "Processing table '$table'..." "blue"
+		Write_Log "Processing table '$table'..." "blue"
 		
 		# Remove "_TAB" suffix for the base name
 		$baseTable = $table -replace '_TAB$', ''
@@ -5610,12 +5610,12 @@ function Pump-Tables
 			$fileAge = (Get-Date) - $fileInfo.LastWriteTime
 			if ($fileAge.TotalHours -le 1)
 			{
-				Write-Log "Recent SQL file found for '$table' in %TEMP%. Using existing file." "green"
+				Write_Log "Recent SQL file found for '$table' in %TEMP%. Using existing file." "green"
 				$useExistingFile = $true
 			}
 			else
 			{
-				Write-Log "SQL file for '$table' is older than 1 hour. Regenerating." "yellow"
+				Write_Log "SQL file for '$table' is older than 1 hour. Regenerating." "yellow"
 			}
 		}
 		
@@ -5817,7 +5817,7 @@ DROP TABLE $viewName;
 			}
 			catch
 			{
-				Write-Log "Error generating SQL for table '$table': $_" "red"
+				Write_Log "Error generating SQL for table '$table': $_" "red"
 				continue
 			}
 		}
@@ -5834,17 +5834,17 @@ DROP TABLE $viewName;
 	# Summaries
 	if ($copiedTables.Count -gt 0)
 	{
-		Write-Log "Successfully generated _Load.sql files for tables: $($copiedTables -join ', ')" "green"
+		Write_Log "Successfully generated _Load.sql files for tables: $($copiedTables -join ', ')" "green"
 	}
 	if ($skippedTables.Count -gt 0)
 	{
-		Write-Log "Tables with no data (skipped): $($skippedTables -join ', ')" "yellow"
+		Write_Log "Tables with no data (skipped): $($skippedTables -join ', ')" "yellow"
 	}
 	
 	# --------------------------------------------------------------------------------------------
 	# Copy the generated .sql files to each selected lane
 	# --------------------------------------------------------------------------------------------
-	Write-Log "`r`nDetermining selected lanes...`r`n" "magenta"
+	Write_Log "`r`nDetermining selected lanes...`r`n" "magenta"
 	$ProcessedLanes = @()
 	foreach ($lane in $Lanes)
 	{
@@ -5852,7 +5852,7 @@ DROP TABLE $viewName;
 		
 		if (Test-Path $LaneLocalPath)
 		{
-			Write-Log "Copying _Load.sql files to Lane #$lane..." "blue"
+			Write_Log "Copying _Load.sql files to Lane #$lane..." "blue"
 			try
 			{
 				foreach ($filePath in $generatedFiles)
@@ -5868,34 +5868,34 @@ DROP TABLE $viewName;
 					if ($fileItem.Attributes -band [System.IO.FileAttributes]::Archive)
 					{
 						$fileItem.Attributes -= [System.IO.FileAttributes]::Archive
-						Write-Log "Cleared Archive attribute for '$fileName' in Lane #$lane." "green"
+						Write_Log "Cleared Archive attribute for '$fileName' in Lane #$lane." "green"
 					}
 					
 				}
-				Write-Log "Successfully copied all generated _Load.sql files to Lane #$lane." "green"
+				Write_Log "Successfully copied all generated _Load.sql files to Lane #$lane." "green"
 				$ProcessedLanes += $lane
 			}
 			catch
 			{
-				Write-Log "Error copying files to Lane #${lane}: $_" "red"
+				Write_Log "Error copying files to Lane #${lane}: $_" "red"
 			}
 		}
 		else
 		{
-			Write-Log "Lane #$lane not found at path: $LaneLocalPath" "yellow"
+			Write_Log "Lane #$lane not found at path: $LaneLocalPath" "yellow"
 		}
 	}
 	
-	Write-Log "`r`nTotal Lane folders processed: $($ProcessedLanes.Count)" "green"
+	Write_Log "`r`nTotal Lane folders processed: $($ProcessedLanes.Count)" "green"
 	if ($ProcessedLanes.Count -gt 0)
 	{
-		Write-Log "Processed Lanes: $($ProcessedLanes -join ', ')" "green"
-		Write-Log "`r`n==================== Pump-Tables Function Completed ====================" "blue"
+		Write_Log "Processed Lanes: $($ProcessedLanes -join ', ')" "green"
+		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 	}
 }
 
 # ===================================================================================================
-#                                     FUNCTION: Reboot-Lanes
+#                                     FUNCTION: Reboot_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Reboots one, a range, or all lane machines based on the user's selection.
@@ -5905,7 +5905,7 @@ DROP TABLE $viewName;
 #   back to using Restart-Computer.
 # ===================================================================================================
 
-function Reboot-Lanes
+function Reboot_Lanes
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -5916,7 +5916,7 @@ function Reboot-Lanes
 	$LaneMachines = $script:FunctionResults['LaneMachines']
 	if (-not $LaneMachines -or $LaneMachines.Count -eq 0)
 	{
-		Write-Log "LaneMachines not available in FunctionResults. Cannot proceed with lane reboot." "red"
+		Write_Log "LaneMachines not available in FunctionResults. Cannot proceed with lane reboot." "red"
 		return
 	}
 	
@@ -6003,27 +6003,27 @@ function Reboot-Lanes
 				{
 					$laneNumber = $item.LaneNumber
 					$machineName = $item.MachineName
-					Write-Log "Attempting to reboot Lane $laneNumber on machine: $machineName" "Yellow"
+					Write_Log "Attempting to reboot Lane $laneNumber on machine: $machineName" "Yellow"
 					try
 					{
 						# First, attempt to reboot using the shutdown command
 						$shutdownCommand = "shutdown /r /m \\$machineName /t 0 /f"
-						Write-Log "Executing: $shutdownCommand" "Yellow"
+						Write_Log "Executing: $shutdownCommand" "Yellow"
 						$shutdownResult = & cmd.exe /c $shutdownCommand 2>&1
 						if ($LASTEXITCODE -eq 0)
 						{
-							Write-Log "Shutdown command executed successfully for $machineName." "Green"
+							Write_Log "Shutdown command executed successfully for $machineName." "Green"
 						}
 						else
 						{
-							Write-Log "Shutdown command failed for $machineName with exit code $LASTEXITCODE. Trying Restart-Computer..." "Red"
+							Write_Log "Shutdown command failed for $machineName with exit code $LASTEXITCODE. Trying Restart-Computer..." "Red"
 							Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop
-							Write-Log "Restart-Computer command executed successfully for $machineName." "Green"
+							Write_Log "Restart-Computer command executed successfully for $machineName." "Green"
 						}
 					}
 					catch
 					{
-						Write-Log "Failed to reboot machine $machineName for Lane $laneNumber. Error: $_" "Red"
+						Write_Log "Failed to reboot machine $machineName for Lane $laneNumber. Error: $_" "Red"
 					}
 				}
 				[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected lanes.", "Reboot",
@@ -6053,28 +6053,28 @@ function Reboot-Lanes
 }
 
 # ===================================================================================================
-#                                       FUNCTION: CloseOpenTransactions
+#                                       FUNCTION: Close_Open_Transactions
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   This function monitors the specified XE folder for error files, extracts relevant data, and closes
 #   open transactions on specified lanes for a given store. Logs are written to both a log file and
-#   through the Write-Log function for the main script.
+#   through the Write_Log function for the main script.
 # ===================================================================================================
 
-function CloseOpenTransactions
+function Close_Open_Transactions
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting CloseOpenTransactions ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Close_Open_Transactions ====================`r`n" "blue"
 	
 	# Define the path to monitor
 	$XEFolderPath = "$OfficePath\XE${StoreNumber}901"
 	if (-not (Test-Path $XEFolderPath))
 	{
-		Write-Log -Message "XE folder not found: $XEFolderPath" "red"
+		Write_Log -Message "XE folder not found: $XEFolderPath" "red"
 		return
 	}
 	
@@ -6087,11 +6087,11 @@ function CloseOpenTransactions
 		try
 		{
 			New-Item -Path $LogFolderPath -ItemType Directory -Force | Out-Null
-			Write-Log -Message "Created log directory: $LogFolderPath" "green"
+			Write_Log -Message "Created log directory: $LogFolderPath" "green"
 		}
 		catch
 		{
-			Write-Log -Message "Failed to create log directory '$LogFolderPath'. Error: $_" "red"
+			Write_Log -Message "Failed to create log directory '$LogFolderPath'. Error: $_" "red"
 			return
 		}
 	}
@@ -6133,12 +6133,12 @@ function CloseOpenTransactions
 					Add-Content -Path $LogFilePath -Value $logMsg
 					
 					Remove-Item -Path $file.FullName -Force
-					Write-Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
+					Write_Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
 					$MatchedTransactions = $true
 					
 					# Restart lane programs
 					Start-Sleep -Seconds 3
-					if ($nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber)
+					if ($nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber)
 					{
 						if ($machine = $nodes.LaneMachines[$LaneNumber])
 						{
@@ -6146,41 +6146,41 @@ function CloseOpenTransactions
 							$cmdMsg = "@exec(RESTART_ALL=PROGRAMS)."
 							if ([MailslotSender]::SendMailslotCommand($addr, $cmdMsg))
 							{
-								Write-Log -Message "Restart command sent to $machine (lane $LaneNumber)" "green"
+								Write_Log -Message "Restart command sent to $machine (lane $LaneNumber)" "green"
 							}
 							else
 							{
-								Write-Log -Message "Failed to send restart command to $machine (lane $LaneNumber)" "red"
+								Write_Log -Message "Failed to send restart command to $machine (lane $LaneNumber)" "red"
 							}
 						}
 						else
 						{
-							Write-Log -Message "No machine found for lane $LaneNumber. Restart not sent." "yellow"
+							Write_Log -Message "No machine found for lane $LaneNumber. Restart not sent." "yellow"
 						}
 					}
 				}
 				else
 				{
-					Write-Log -Message "Lane directory not found: $LaneDirectory" "yellow"
+					Write_Log -Message "Lane directory not found: $LaneDirectory" "yellow"
 				}
 			}
 		}
 	}
 	catch
 	{
-		Write-Log -Message "Error during scan: $_" "red"
+		Write_Log -Message "Error during scan: $_" "red"
 	}
 	
 	# --- Replaced WinForms fallback ---
 	if (-not $MatchedTransactions)
 	{
-		Write-Log "No matching error files found. Prompting for lane selection..." "yellow"
+		Write_Log "No matching error files found. Prompting for lane selection..." "yellow"
 		
-		$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+		$selection = Show_Lane/Store_Selection_Form -Mode "Store" -StoreNumber $StoreNumber
 		if ($null -eq $selection)
 		{
-			Write-Log "Selection cancelled by user." "yellow"
-			Write-Log "`r`n==================== CloseOpenTransactions Completed ====================" "blue"
+			Write_Log "Selection cancelled by user." "yellow"
+			Write_Log "`r`n==================== Close_Open_Transactions Completed ====================" "blue"
 			return
 		}
 		
@@ -6189,7 +6189,7 @@ function CloseOpenTransactions
 			$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 			if (-not (Test-Path $LaneDirectory))
 			{
-				Write-Log "Skipped missing lane dir: $LaneDirectory" "yellow"
+				Write_Log "Skipped missing lane dir: $LaneDirectory" "yellow"
 				continue
 			}
 			
@@ -6198,7 +6198,7 @@ function CloseOpenTransactions
 			Set-Content -Path $sqiPath -Value $CloseTransactionContent -Encoding ASCII
 			Set-ItemProperty -Path $sqiPath -Name Attributes -Value ([IO.FileAttributes]::Normal)
 			Add-Content -Path $LogFilePath -Value "$(Get-Date -f 'yyyy-MM-dd HH:mm:ss') - Deployed Close_Transaction to lane $LaneNumber"
-			Write-Log -Message "Deployed Close_Transaction.sqi to lane $LaneNumber" "green"
+			Write_Log -Message "Deployed Close_Transaction.sqi to lane $LaneNumber" "green"
 			
 			# Clear XE errors (keep FATAL)
 			Get-ChildItem -Path $XEFolderPath -File |
@@ -6207,7 +6207,7 @@ function CloseOpenTransactions
 			
 			# Restart lane programs
 			Start-Sleep 3
-			if ($nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber)
+			if ($nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber)
 			{
 				if ($machine = $nodes.LaneMachines[$LaneNumber])
 				{
@@ -6215,52 +6215,52 @@ function CloseOpenTransactions
 					$cmdMsg = "@exec(RESTART_ALL=PROGRAMS)."
 					if ([MailslotSender]::SendMailslotCommand($addr, $cmdMsg))
 					{
-						Write-Log -Message "Restart command sent to $machine (lane $LaneNumber)" "green"
+						Write_Log -Message "Restart command sent to $machine (lane $LaneNumber)" "green"
 					}
 					else
 					{
-						Write-Log -Message "Failed to send restart command to $machine (lane $LaneNumber)" "red"
+						Write_Log -Message "Failed to send restart command to $machine (lane $LaneNumber)" "red"
 					}
 				}
 				else
 				{
-					Write-Log -Message "No machine mapping for lane $LaneNumber" "yellow"
+					Write_Log -Message "No machine mapping for lane $LaneNumber" "yellow"
 				}
 			}
 		}
 	}
 	
-	Write-Log "No further matching files were found after processing." "yellow"
-	Write-Log "`r`n==================== CloseOpenTransactions Function Completed ====================" "blue"
+	Write_Log "No further matching files were found after processing." "yellow"
+	Write_Log "`r`n==================== Close_Open_Transactions Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
-#                                         FUNCTION: Ping-Lanes
+#                                         FUNCTION: Ping_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Allows users to select specific, multiple, or all lanes within a specified store. 
 #   For each selected lane, the function retrieves the associated machine name and performs a ping 
-#   to determine its reachability. Results are logged using the existing Write-Log function, providing
+#   to determine its reachability. Results are logged using the existing Write_Log function, providing
 #   a summary of successful and failed pings. This function leverages pre-stored lane information 
-#   from the Retrieve-Nodes function to identify machines associated with each lane.
+#   from the Retrieve_Nodes function to identify machines associated with each lane.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   -Mode (Mandatory)
-#       Specifies the operational mode. For Ping-Lanes, this should be set to "Store".
+#       Specifies the operational mode. For Ping_Lanes, this should be set to "Store".
 #
 #   -StoreNumber (Mandatory)
 #       The store number for which lanes are to be pinged. This must correspond to a valid store in the system.
 # ---------------------------------------------------------------------------------------------------
 # Usage Example:
-#   Ping-Lanes -Mode "Store" -StoreNumber "123"
+#   Ping_Lanes -Mode "Store" -StoreNumber "123"
 #
 # Prerequisites:
-#   - Ensure that the Retrieve-Nodes function has been executed prior to running Ping-Lanes.
-#   - Verify that the Show-SelectionDialog and Write-Log functions are available in the session.
+#   - Ensure that the Retrieve_Nodes function has been executed prior to running Ping_Lanes.
+#   - Verify that the Show_Lane/Store_Selection_Form and Write_Log functions are available in the session.
 #   - Confirm network accessibility to the machines associated with the lanes.
 # ===================================================================================================
 
-function Ping-Lanes
+function Ping_Lanes
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -6270,10 +6270,10 @@ function Ping-Lanes
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Ping-Lanes Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Ping_Lanes Function ====================`r`n" "blue"
 	
 	# Ensure necessary functions are available
-	foreach ($func in @('Show-SelectionDialog', 'Write-Log'))
+	foreach ($func in @('Show_Lane/Store_Selection_Form', 'Write_Log'))
 	{
 		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
 		{
@@ -6285,7 +6285,7 @@ function Ping-Lanes
 	# Validate Mode
 	if ($Mode -ne "Store")
 	{
-		Write-Log "Ping-Lanes is only applicable in 'Store' mode." "Red"
+		Write_Log "Ping_Lanes is only applicable in 'Store' mode." "Red"
 		return
 	}
 	
@@ -6293,7 +6293,7 @@ function Ping-Lanes
 	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
 		-not $script:FunctionResults.ContainsKey('LaneMachines'))
 	{
-		Write-Log "Lane information is not available. Please run Retrieve-Nodes first." "Red"
+		Write_Log "Lane information is not available. Please run Retrieve_Nodes first." "Red"
 		return
 	}
 	
@@ -6303,17 +6303,17 @@ function Ping-Lanes
 	
 	if ($LaneContents.Count -eq 0)
 	{
-		Write-Log "No lanes found for Store Number: $StoreNumber." "Yellow"
+		Write_Log "No lanes found for Store Number: $StoreNumber." "Yellow"
 		return
 	}
 	
 	# Show the selection dialog to choose lanes
-	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode $Mode -StoreNumber $StoreNumber
 	
 	if (-not $selection)
 	{
 		# User canceled the dialog
-		Write-Log "User canceled the lane selection." "Yellow"
+		Write_Log "User canceled the lane selection." "Yellow"
 		return
 	}
 	
@@ -6330,14 +6330,14 @@ function Ping-Lanes
 			$selectedLanes = $LaneContents
 		}
 		default {
-			Write-Log "Invalid selection type." "Red"
+			Write_Log "Invalid selection type." "Red"
 			return
 		}
 	}
 	
 	if ($selectedLanes.Count -eq 0)
 	{
-		Write-Log "No lanes selected for pinging." "Yellow"
+		Write_Log "No lanes selected for pinging." "Yellow"
 		return
 	}
 	
@@ -6374,11 +6374,11 @@ function Ping-Lanes
 	
 	if ($machinesToPing.Count -eq 0)
 	{
-		Write-Log "No valid machines found to ping." "Yellow"
+		Write_Log "No valid machines found to ping." "Yellow"
 		return
 	}
 	
-	Write-Log "Starting to ping machines for Store Number: $StoreNumber." "Green"
+	Write_Log "Starting to ping machines for Store Number: $StoreNumber." "Green"
 	
 	# Initialize counters
 	$successCount = 0
@@ -6392,7 +6392,7 @@ function Ping-Lanes
 		
 		if ($machineName -in @("Unknown", "Not Found"))
 		{
-			Write-Log "Lane #${lane}: Machine Name - $machineName. Status: Skipped." "Yellow"
+			Write_Log "Lane #${lane}: Machine Name - $machineName. Status: Skipped." "Yellow"
 			continue
 		}
 		
@@ -6401,32 +6401,32 @@ function Ping-Lanes
 			$pingResult = Test-Connection -ComputerName $machineName -Count 1 -Quiet -ErrorAction Stop
 			if ($pingResult)
 			{
-				Write-Log "Lane #${lane}: Machine '$machineName' is reachable. Status: Success." "Green"
+				Write_Log "Lane #${lane}: Machine '$machineName' is reachable. Status: Success." "Green"
 				$successCount++
 			}
 			else
 			{
-				Write-Log "Lane #${lane}: Machine '$machineName' is not reachable. Status: Failed." "Red"
+				Write_Log "Lane #${lane}: Machine '$machineName' is not reachable. Status: Failed." "Red"
 				$failureCount++
 			}
 		}
 		catch
 		{
-			Write-Log "Lane #${lane}: Failed to ping Machine '$machineName'. Error: $_. Exception: $($_.Exception.Message)" "Red"
+			Write_Log "Lane #${lane}: Failed to ping Machine '$machineName'. Error: $_. Exception: $($_.Exception.Message)" "Red"
 			$failureCount++
 		}
 	}
 	
 	# Summary of ping results
-	Write-Log "Ping Summary for Store Number: $StoreNumber - Success: $successCount, Failed: $failureCount." "Blue"
-	Write-Log "`r`n==================== Ping-Lanes Function Completed ====================" "blue"
+	Write_Log "Ping Summary for Store Number: $StoreNumber - Success: $successCount, Failed: $failureCount." "Blue"
+	Write_Log "`r`n==================== Ping_Lanes Function Completed ====================" "blue"
 }
 
 #----------------------------------------------------------------------------------------------------
 # Alternatibely we can use this one to ping all without user input
 #----------------------------------------------------------------------------------------------------
 
-function Ping-AllLanes
+function Ping_All_Lanes
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -6436,10 +6436,10 @@ function Ping-AllLanes
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Ping-AllLanes Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Ping_All_Lanes Function ====================`r`n" "blue"
 	
 	# Ensure necessary functions are available
-	foreach ($func in @('Write-Log'))
+	foreach ($func in @('Write_Log'))
 	{
 		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
 		{
@@ -6451,7 +6451,7 @@ function Ping-AllLanes
 	# Validate Mode
 	if ($Mode -ne "Store")
 	{
-		Write-Log "Ping-AllLanes is only applicable in 'Store' mode." "Red"
+		Write_Log "Ping_All_Lanes is only applicable in 'Store' mode." "Red"
 		return
 	}
 	
@@ -6459,7 +6459,7 @@ function Ping-AllLanes
 	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
 		-not $script:FunctionResults.ContainsKey('LaneMachines'))
 	{
-		Write-Log "Lane information is not available. Please run Retrieve-Nodes first." "Red"
+		Write_Log "Lane information is not available. Please run Retrieve_Nodes first." "Red"
 		return
 	}
 	
@@ -6469,14 +6469,14 @@ function Ping-AllLanes
 	
 	if ($LaneContents.Count -eq 0)
 	{
-		Write-Log "No lanes found for Store Number: $StoreNumber." "Yellow"
+		Write_Log "No lanes found for Store Number: $StoreNumber." "Yellow"
 		return
 	}
 	
 	# Assume all lanes are selected
 	$selectedLanes = $LaneContents
 	
-	Write-Log "All lanes will be pinged for Store Number: $StoreNumber." "Green"
+	Write_Log "All lanes will be pinged for Store Number: $StoreNumber." "Green"
 	
 	# Prepare list of machines to ping
 	$machinesToPing = @()
@@ -6511,11 +6511,11 @@ function Ping-AllLanes
 	
 	if ($machinesToPing.Count -eq 0)
 	{
-		Write-Log "No valid machines found to ping." "Yellow"
+		Write_Log "No valid machines found to ping." "Yellow"
 		return
 	}
 	
-	#	Write-Log "Starting to ping machines for Store Number: $StoreNumber." "Green"
+	#	Write_Log "Starting to ping machines for Store Number: $StoreNumber." "Green"
 	
 	# Initialize counters
 	$successCount = 0
@@ -6529,7 +6529,7 @@ function Ping-AllLanes
 		
 		if ($machineName -in @("Unknown", "Not Found"))
 		{
-			Write-Log "Lane #${lane}: Machine Name - $machineName. Status: Skipped." "Yellow"
+			Write_Log "Lane #${lane}: Machine Name - $machineName. Status: Skipped." "Yellow"
 			continue
 		}
 		
@@ -6538,55 +6538,55 @@ function Ping-AllLanes
 			$pingResult = Test-Connection -ComputerName $machineName -Count 1 -Quiet -ErrorAction Stop
 			if ($pingResult)
 			{
-				Write-Log "Lane #${lane}: Machine '$machineName' is reachable. Status: Success." "Green"
+				Write_Log "Lane #${lane}: Machine '$machineName' is reachable. Status: Success." "Green"
 				$successCount++
 			}
 			else
 			{
-				Write-Log "Lane #${lane}: Machine '$machineName' is not reachable. Status: Failed." "Red"
+				Write_Log "Lane #${lane}: Machine '$machineName' is not reachable. Status: Failed." "Red"
 				$failureCount++
 			}
 		}
 		catch
 		{
-			Write-Log "Lane #${lane}: Failed to ping Machine '$machineName'. Error: $($_.Exception.Message)" "Red"
+			Write_Log "Lane #${lane}: Failed to ping Machine '$machineName'. Error: $($_.Exception.Message)" "Red"
 			$failureCount++
 		}
 	}
 	
 	# Summary of ping results
-	Write-Log "Ping Summary for Store Number: $StoreNumber - Success: $successCount, Failed: $failureCount." "Blue"
-	Write-Log "`r`n==================== Ping-AllLanes Function Completed ====================" "blue"
+	Write_Log "Ping Summary for Store Number: $StoreNumber - Success: $successCount, Failed: $failureCount." "Blue"
+	Write_Log "`r`n==================== Ping_All_Lanes Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
-#                                           FUNCTION: Delete-DBS
+#                                           FUNCTION: Delete_DBS
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Enables users to delete specific file types (.txt and .dwr) from selected lanes within a specified
 #   store. Additionally, users are prompted to include or exclude .sus files from the deletion process.
-#   The function leverages pre-stored lane information from the Retrieve-Nodes function to identify 
-#   machine paths associated with each lane. File deletions are handled by the Delete-Files helper function,
-#   and all actions and results are logged using the existing Write-Log function.
+#   The function leverages pre-stored lane information from the Retrieve_Nodes function to identify 
+#   machine paths associated with each lane. File deletions are handled by the Delete_Files helper function,
+#   and all actions and results are logged using the existing Write_Log function.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   -Mode (Mandatory)
-#       Specifies the operational mode. For Delete-DBS, this should be set to "Store".
+#       Specifies the operational mode. For Delete_DBS, this should be set to "Store".
 #
 #   -StoreNumber (Mandatory)
 #       The store number for which lanes are to be processed. This must correspond to a valid store in the system.
 # ---------------------------------------------------------------------------------------------------
 # Usage Example:
-#   Delete-DBS -Mode "Store" -StoreNumber "123"
+#   Delete_DBS -Mode "Store" -StoreNumber "123"
 #
 # Prerequisites:
-#   - Ensure that the Retrieve-Nodes function has been executed prior to running Delete-DBS.
-#   - Verify that the Show-SelectionDialog, Delete-Files, and Write-Log functions are available in the session.
+#   - Ensure that the Retrieve_Nodes function has been executed prior to running Delete_DBS.
+#   - Verify that the Show_Lane/Store_Selection_Form, Delete_Files, and Write_Log functions are available in the session.
 #   - Confirm network accessibility to the machines associated with the lanes.
 #   - The user must have the necessary permissions to delete files in the target directories.
 # ===================================================================================================
 
-function Delete-DBS
+function Delete_DBS
 {
 	[CmdletBinding()]
 	param (
@@ -6597,10 +6597,10 @@ function Delete-DBS
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Delete-DBS Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Delete_DBS Function ====================`r`n" "blue"
 	
 	# Ensure necessary functions are available
-	foreach ($func in @('Show-SelectionDialog', 'Delete-Files', 'Write-Log'))
+	foreach ($func in @('Show_Lane/Store_Selection_Form', 'Delete_Files', 'Write_Log'))
 	{
 		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
 		{
@@ -6612,7 +6612,7 @@ function Delete-DBS
 	# Validate Mode
 	if ($Mode -ne "Store")
 	{
-		Write-Log "Delete-DBS is only applicable in 'Store' mode." "Red"
+		Write_Log "Delete_DBS is only applicable in 'Store' mode." "Red"
 		return
 	}
 	
@@ -6620,7 +6620,7 @@ function Delete-DBS
 	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
 		-not $script:FunctionResults.ContainsKey('LaneMachines'))
 	{
-		Write-Log "Lane information is not available. Please run Retrieve-Nodes first." "Red"
+		Write_Log "Lane information is not available. Please run Retrieve_Nodes first." "Red"
 		return
 	}
 	
@@ -6630,7 +6630,7 @@ function Delete-DBS
 	
 	if ($LaneContents.Count -eq 0)
 	{
-		Write-Log "No lanes found for Store Number: $StoreNumber." "Yellow"
+		Write_Log "No lanes found for Store Number: $StoreNumber." "Yellow"
 		return
 	}
 	
@@ -6639,7 +6639,7 @@ function Delete-DBS
 	Add-Type -AssemblyName System.Drawing
 	
 	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Delete-DBS Confirmation"
+	$form.Text = "Delete_DBS Confirmation"
 	$form.Size = New-Object System.Drawing.Size(400, 200)
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -6679,7 +6679,7 @@ function Delete-DBS
 	
 	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
 	{
-		Write-Log "User canceled the deletion process." "Yellow"
+		Write_Log "User canceled the deletion process." "Yellow"
 		return
 	}
 	
@@ -6692,15 +6692,15 @@ function Delete-DBS
 		$fileExtensions += "*.sus"
 	}
 	
-	Write-Log "Starting deletion of file types: $($fileExtensions -join ', ') for Store Number: $StoreNumber." "Green"
+	Write_Log "Starting deletion of file types: $($fileExtensions -join ', ') for Store Number: $StoreNumber." "Green"
 	
 	# Show the selection dialog to choose lanes
-	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode $Mode -StoreNumber $StoreNumber
 	
 	if (-not $selection)
 	{
 		# User canceled the dialog
-		Write-Log "User canceled the lane selection." "Yellow"
+		Write_Log "User canceled the lane selection." "Yellow"
 		return
 	}
 	
@@ -6717,14 +6717,14 @@ function Delete-DBS
 			$selectedLanes = $LaneContents
 		}
 		default {
-			Write-Log "Invalid selection type." "Red"
+			Write_Log "Invalid selection type." "Red"
 			return
 		}
 	}
 	
 	if ($selectedLanes.Count -eq 0)
 	{
-		Write-Log "No lanes selected for processing." "Yellow"
+		Write_Log "No lanes selected for processing." "Yellow"
 		return
 	}
 	
@@ -6740,7 +6740,7 @@ function Delete-DBS
 			
 			if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
 			{
-				Write-Log "Lane #{$lane}: Machine name is invalid or unknown. Skipping deletion." "Yellow"
+				Write_Log "Lane #{$lane}: Machine name is invalid or unknown. Skipping deletion." "Yellow"
 				continue
 			}
 			
@@ -6749,71 +6749,71 @@ function Delete-DBS
 			
 			if (-not (Test-Path -Path $targetPath))
 			{
-				Write-Log "Lane #${lane}: Target path '$targetPath' does not exist. Skipping." "Yellow"
+				Write_Log "Lane #${lane}: Target path '$targetPath' does not exist. Skipping." "Yellow"
 				continue
 			}
 			
-			Write-Log "Processing Lane #$lane at '$targetPath', please wait..." "Blue"
+			Write_Log "Processing Lane #$lane at '$targetPath', please wait..." "Blue"
 			
-			# Call Delete-Files helper function
+			# Call Delete_Files helper function
 			try
 			{
-				# Delete-Files function is now expected to return an integer count
-				$deletionCount = Delete-Files -Path $targetPath -SpecifiedFiles $fileExtensions -Exclusions @() -AsJob:$false
+				# Delete_Files function is now expected to return an integer count
+				$deletionCount = Delete_Files -Path $targetPath -SpecifiedFiles $fileExtensions -Exclusions @() -AsJob:$false
 				
 				if ($deletionCount -is [int])
 				{
-					#	Write-Log "Lane #${lane}: Deleted $deletionCount file(s) from '$targetPath'." "Green"
+					#	Write_Log "Lane #${lane}: Deleted $deletionCount file(s) from '$targetPath'." "Green"
 					$totalDeleted += $deletionCount
 				}
 				else
 				{
-					Write-Log "Lane #${lane}: Unexpected response from Delete-Files." "Red"
+					Write_Log "Lane #${lane}: Unexpected response from Delete_Files." "Red"
 					$totalFailed++
 				}
 			}
 			catch
 			{
-				Write-Log "Lane #${lane}: An error occurred while deleting files. Error: $_" "Red"
+				Write_Log "Lane #${lane}: An error occurred while deleting files. Error: $_" "Red"
 				$totalFailed++
 			}
 		}
 		else
 		{
-			Write-Log "Lane #${lane}: Machine information not found. Skipping." "Yellow"
+			Write_Log "Lane #${lane}: Machine information not found. Skipping." "Yellow"
 			continue
 		}
 	}
 	
 	# Summary of deletion results
-	Write-Log "Deletion Summary for Store Number: $StoreNumber - Total Files Deleted: $totalDeleted, Total Failures: $totalFailed." "Blue"
-	Write-Log "`r`n==================== Delete-DBS Function Completed ====================" "blue"
+	Write_Log "Deletion Summary for Store Number: $StoreNumber - Total Files Deleted: $totalDeleted, Total Failures: $totalFailed." "Blue"
+	Write_Log "`r`n==================== Delete_DBS Function Completed ====================" "blue"
 	
 }
 
 # ===================================================================================================
-#                                         FUNCTION: Invoke-SecureScript
+#                                         FUNCTION: Invoke_Secure_Script
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Prompts the user for a password via a Windows Form before executing a primary script from a specified
 #   URL. If the primary script fails to execute, the function automatically attempts to run an alternative
 #   script from a backup URL. The password is securely stored in the script using encryption to ensure 
 #   that only authorized users can execute the scripts. All actions, including successes and failures, 
-#   are logged using the existing Write-Log function.
+#   are logged using the existing Write_Log function.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   None
 # ---------------------------------------------------------------------------------------------------
 # Usage Example:
-#   Invoke-SecureScript
+#   Invoke_Secure_Script
 #
 # Prerequisites:
-#   - Ensure that the Write-Log function is available in the session.
+#   - Ensure that the Write_Log function is available in the session.
 #   - The user must have the necessary permissions to execute scripts from the specified URLs.
 #   - Internet connectivity is required to access the script URLs.
 # ===================================================================================================
 
-function Invoke-SecureScript
+function Invoke_Secure_Script
 {
 	[CmdletBinding()]
 	param (
@@ -6831,7 +6831,7 @@ function Invoke-SecureScript
 	# ======================== Function Logic ======================
 	
 	# Function to display the password prompt
-	function Get-PasswordFromUser
+	function Get_Password_From_User
 	{
 		Add-Type -AssemblyName System.Windows.Forms
 		Add-Type -AssemblyName System.Drawing
@@ -6884,7 +6884,7 @@ function Invoke-SecureScript
 	}
 	
 	# Function to verify the password
-	function Verify-Password
+	function Verify_Password
 	{
 		param (
 			[string]$InputPassword
@@ -6901,55 +6901,55 @@ function Invoke-SecureScript
 	}
 	
 	# Log the start of the function
-	Write-Log "`r`n==================== Starting Invoke-SecureScript Function ====================`r`n" "Blue"
+	Write_Log "`r`n==================== Starting Invoke_Secure_Script Function ====================`r`n" "Blue"
 	
 	# Prompt user for password
-	$password = Get-PasswordFromUser
+	$password = Get_Password_From_User
 	
 	if (-not $password)
 	{
-		Write-Log "User canceled the authentication prompt." "Yellow"
-		Write-Log "`r`n==================== Invoke-SecureScript Function Completed ====================" "Blue"
+		Write_Log "User canceled the authentication prompt." "Yellow"
+		Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "Blue"
 		return
 	}
 	
 	# Verify password
-	if (-not (Verify-Password -InputPassword $password))
+	if (-not (Verify_Password -InputPassword $password))
 	{
-		Write-Log "Authentication failed. Incorrect password." "Red"
-		Write-Log "`r`n==================== Invoke-SecureScript Function Completed ====================" "Blue"
+		Write_Log "Authentication failed. Incorrect password." "Red"
+		Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "Blue"
 		return
 	}
 	
-	Write-Log "Authentication successful. Proceeding with script execution." "Green"
+	Write_Log "Authentication successful. Proceeding with script execution." "Green"
 	
 	# Attempt to execute the primary script
 	try
 	{
-		Write-Log "Executing primary script from $primaryScriptURL." "Blue"
+		Write_Log "Executing primary script from $primaryScriptURL." "Blue"
 		Invoke-Expression (irm $primaryScriptURL)
-		Write-Log "Primary script executed successfully." "Green"
+		Write_Log "Primary script executed successfully." "Green"
 	}
 	catch
 	{
-		Write-Log "Primary script execution failed. Attempting to execute fallback script." "Red"
+		Write_Log "Primary script execution failed. Attempting to execute fallback script." "Red"
 		try
 		{
 			Invoke-Expression (irm $fallbackScriptURL)
-			Write-Log "Fallback script executed successfully." "Green"
+			Write_Log "Fallback script executed successfully." "Green"
 		}
 		catch
 		{
-			Write-Log "Fallback script execution also failed. Please check the URLs and your network connection." "Red"
+			Write_Log "Fallback script execution also failed. Please check the URLs and your network connection." "Red"
 		}
 	}
 	
 	# Log the completion of the function
-	Write-Log "`r`n==================== Invoke-SecureScript Function Completed ====================" "Blue"
+	Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "Blue"
 }
 
 # ===================================================================================================
-#                                     FUNCTION: Configure-SystemSettings
+#                                     FUNCTION: Configure_System_Settings
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Configures various system settings to optimize performance and organization. This function performs
@@ -6978,18 +6978,18 @@ function Invoke-SecureScript
 # ---------------------------------------------------------------------------------------------------
 # Usage Example:
 #   # Use default folder name
-#   Configure-SystemSettings
+#   Configure_System_Settings
 #
 #   # Specify a custom folder name for unorganized Desktop items
-#   Configure-SystemSettings -UnorganizedFolderName "MyCustomFolder"
+#   Configure_System_Settings -UnorganizedFolderName "MyCustomFolder"
 #
 # ---------------------------------------------------------------------------------------------------
 # Prerequisites:
 #   - **Administrator Privileges**:
 #     The script must be run with elevated privileges. If not, it will prompt the user to restart PowerShell as an Administrator.
 #
-#   - **Write-Log Function**:
-#     Ensure that the `Write-Log` function is available in the session for logging actions and statuses.
+#   - **Write_Log Function**:
+#     Ensure that the `Write_Log` function is available in the session for logging actions and statuses.
 #
 #   - **Permissions**:
 #     The user must have the necessary permissions to create folders, modify power settings, and configure services.
@@ -7002,7 +7002,7 @@ function Invoke-SecureScript
 #
 # ===================================================================================================
 
-function Configure-SystemSettings
+function Configure_System_Settings
 {
 	[CmdletBinding()]
 	param (
@@ -7010,12 +7010,12 @@ function Configure-SystemSettings
 		[string]$UnorganizedFolderName = "My Unorganized Items"
 	)
 	
-	Write-Log "`r`n==================== Starting Configure-SystemSettings Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Configure_System_Settings Function ====================`r`n" "blue"
 	
 	# Ensure the function is run as Administrator
 	if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator))
 	{
-		Write-Log "This script must be run as an Administrator. Please restart PowerShell with elevated privileges." "Red"
+		Write_Log "This script must be run as an Administrator. Please restart PowerShell with elevated privileges." "Red"
 		return
 	}
 	
@@ -7024,7 +7024,7 @@ function Configure-SystemSettings
 		# ===========================================
 		# 1. Organize Desktop
 		# ===========================================
-		Write-Log "`r`nOrganizing Desktop..." "Blue"
+		Write_Log "`r`nOrganizing Desktop..." "Blue"
 		
 		$DesktopPath = [Environment]::GetFolderPath("Desktop")
 		$UnorganizedFolder = Join-Path -Path $DesktopPath -ChildPath $UnorganizedFolderName
@@ -7040,11 +7040,11 @@ function Configure-SystemSettings
 			if (-not (Test-Path -Path $folderPath))
 			{
 				New-Item -Path $folderPath -ItemType Directory | Out-Null
-				Write-Log "Created excluded folder: $folderPath" "green"
+				Write_Log "Created excluded folder: $folderPath" "green"
 			}
 			else
 			{
-				Write-Log "Excluded folder already exists: $folderPath" "Cyan"
+				Write_Log "Excluded folder already exists: $folderPath" "Cyan"
 			}
 		}
 		
@@ -7070,36 +7070,36 @@ function Configure-SystemSettings
 				try
 				{
 					Move-Item -Path $item.FullName -Destination $UnorganizedFolder -Force
-					Write-Log "Moved item: $($item.Name)" "Green"
+					Write_Log "Moved item: $($item.Name)" "Green"
 				}
 				catch
 				{
-					Write-Log "Failed to move item: $($item.Name). Error: $_" "Red"
+					Write_Log "Failed to move item: $($item.Name). Error: $_" "Red"
 				}
 			}
 			else
 			{
-				#	Write-Log "Excluded from moving: $($item.Name)" "Cyan"
+				#	Write_Log "Excluded from moving: $($item.Name)" "Cyan"
 			}
 		}
 		
-		Write-Log "Desktop organization complete." "Green"
+		Write_Log "Desktop organization complete." "Green"
 		
 		# ===========================================
 		# 2. Configure Power Settings
 		# ===========================================
-		Write-Log "`r`nConfiguring power plan and performance settings..." "Blue"
+		Write_Log "`r`nConfiguring power plan and performance settings..." "Blue"
 		
 		# Set the power plan to High Performance
 		$highPerfGUID = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
 		try
 		{
 			powercfg /s $highPerfGUID
-			Write-Log "Power plan set to High Performance." "Green"
+			Write_Log "Power plan set to High Performance." "Green"
 		}
 		catch
 		{
-			Write-Log "Failed to set power plan to High Performance. Error: $_" "Red"
+			Write_Log "Failed to set power plan to High Performance. Error: $_" "Red"
 		}
 		
 		# Set system to never sleep
@@ -7107,11 +7107,11 @@ function Configure-SystemSettings
 		{
 			powercfg /change standby-timeout-ac 0
 			powercfg /change standby-timeout-dc 0
-			Write-Log "System sleep disabled." "Green"
+			Write_Log "System sleep disabled." "Green"
 		}
 		catch
 		{
-			Write-Log "Failed to disable system sleep. Error: $_" "Red"
+			Write_Log "Failed to disable system sleep. Error: $_" "Red"
 		}
 		
 		# Set minimum processor performance to 100%
@@ -7120,30 +7120,30 @@ function Configure-SystemSettings
 			powercfg /setacvalueindex $highPerfGUID "54533251-82be-4824-96c1-47b60b740d00" "893dee8e-2bef-41e0-89c6-b55d0929964c" 100
 			powercfg /setdcvalueindex $highPerfGUID "54533251-82be-4824-96c1-47b60b740d00" "893dee8e-2bef-41e0-89c6-b55d0929964c" 100
 			powercfg /setactive $highPerfGUID
-			Write-Log "Minimum processor performance set to 100%." "Green"
+			Write_Log "Minimum processor performance set to 100%." "Green"
 		}
 		catch
 		{
-			Write-Log "Failed to set processor performance. Error: $_" "Red"
+			Write_Log "Failed to set processor performance. Error: $_" "Red"
 		}
 		
 		# Turn off screen after 15 minutes
 		try
 		{
 			powercfg /change monitor-timeout-ac 15
-			Write-Log "Monitor timeout set to 15 minutes." "Green"
+			Write_Log "Monitor timeout set to 15 minutes." "Green"
 		}
 		catch
 		{
-			Write-Log "Failed to set monitor timeout. Error: $_" "Red"
+			Write_Log "Failed to set monitor timeout. Error: $_" "Red"
 		}
 		
-		Write-Log "Power plan and performance settings configuration complete. Some changes may require a reboot to take effect." "Green"
+		Write_Log "Power plan and performance settings configuration complete. Some changes may require a reboot to take effect." "Green"
 		
 		# ===========================================
 		# 3. Configure Services
 		# ===========================================
-		Write-Log "`r`nConfiguring services to start automatically..." "Blue"
+		Write_Log "`r`nConfiguring services to start automatically..." "Blue"
 		
 		$servicesToConfigure = @("fdPHost", "FDResPub", "SSDPSRV", "upnphost")
 		
@@ -7153,39 +7153,39 @@ function Configure-SystemSettings
 			{
 				# Set service to start automatically
 				Set-Service -Name $service -StartupType Automatic -ErrorAction Stop
-				Write-Log "Set service '$service' to Automatic." "Green"
+				Write_Log "Set service '$service' to Automatic." "Green"
 				
 				# Start the service if not running
 				$svc = Get-Service -Name $service -ErrorAction Stop
 				if ($svc.Status -ne 'Running')
 				{
 					Start-Service -Name $service -ErrorAction Stop
-					Write-Log "Started service '$service'." "Green"
+					Write_Log "Started service '$service'." "Green"
 				}
 				else
 				{
-					Write-Log "Service '$service' is already running." "Cyan"
+					Write_Log "Service '$service' is already running." "Cyan"
 				}
 			}
 			catch
 			{
-				Write-Log "Failed to configure service '$service'. Error: $_" "Red"
+				Write_Log "Failed to configure service '$service'. Error: $_" "Red"
 			}
 		}
 		
-		Write-Log "Service configuration complete." "Green"
+		Write_Log "Service configuration complete." "Green"
 		
-		Write-Log "All system configurations have been applied successfully." "Green"
-		Write-Log "`r`n==================== Configure-SystemSettings Function Completed ====================`r`n" "blue"
+		Write_Log "All system configurations have been applied successfully." "Green"
+		Write_Log "`r`n==================== Configure_System_Settings Function Completed ====================`r`n" "blue"
 	}
 	catch
 	{
-		Write-Log "An unexpected error occurred: $_" "Red"
+		Write_Log "An unexpected error occurred: $_" "Red"
 	}
 }
 
 # ===================================================================================================
-#                                           FUNCTION: Refresh-Files
+#                                           FUNCTION: Refresh_PIN_Pad_Files
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Refreshes specific configuration files (.ini) within selected lanes of a specified store. The function
@@ -7196,7 +7196,7 @@ function Configure-SystemSettings
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   -Mode (Mandatory)
-#       Specifies the operational mode. For Refresh-Files, this should be set to "Store".
+#       Specifies the operational mode. For Refresh_PIN_Pad_Files, this should be set to "Store".
 #
 #   -StoreNumber (Mandatory)
 #       The store number for which lanes are to be processed. This must correspond to a valid store in the system.
@@ -7205,17 +7205,17 @@ function Configure-SystemSettings
 #       Runs the function in silent mode without interactive prompts.
 # ---------------------------------------------------------------------------------------------------
 # Usage Example:
-#   Refresh-Files -Mode "Store" -StoreNumber "123"
-#   Refresh-Files -Mode "Store" -StoreNumber "123" -Silent
+#   Refresh_PIN_Pad_Files -Mode "Store" -StoreNumber "123"
+#   Refresh_PIN_Pad_Files -Mode "Store" -StoreNumber "123" -Silent
 #
 # Prerequisites:
-#   - Ensure that the Retrieve-Nodes function has been executed prior to running Refresh-Files.
-#   - Verify that the Show-SelectionDialog and Write-Log functions are available in the session.
+#   - Ensure that the Retrieve_Nodes function has been executed prior to running Refresh_PIN_Pad_Files.
+#   - Verify that the Show_Lane/Store_Selection_Form and Write_Log functions are available in the session.
 #   - Confirm network accessibility to the machines associated with the lanes.
 #   - The user must have the necessary permissions to modify files in the target directories.
 # ===================================================================================================
 
-function Refresh-Files
+function Refresh_PIN_Pad_Files
 {
 	[CmdletBinding()]
 	param (
@@ -7228,17 +7228,17 @@ function Refresh-Files
 		[switch]$Silent
 	)
 	
-	Write-Log "`r`n==================== Starting Refresh-Files Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Refresh_PIN_Pad_Files Function ====================`r`n" "blue"
 	
 	# Validate the target path (e.g., $OfficePath)
 	if (-not (Test-Path $OfficePath))
 	{
-		Write-Log "XF Base Path not found: $OfficePath" "yellow"
+		Write_Log "XF Base Path not found: $OfficePath" "yellow"
 		return
 	}
 	
 	# Ensure necessary functions are available
-	foreach ($func in @('Show-SelectionDialog', 'Write-Log', 'Retrieve-Nodes'))
+	foreach ($func in @('Show_Lane/Store_Selection_Form', 'Write_Log', 'Retrieve_Nodes'))
 	{
 		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
 		{
@@ -7250,14 +7250,14 @@ function Refresh-Files
 	# Validate Mode
 	if ($Mode -ne "Store")
 	{
-		Write-Log "Refresh-Files is only applicable in 'Store' mode." "Red"
+		Write_Log "Refresh_PIN_Pad_Files is only applicable in 'Store' mode." "Red"
 		return
 	}
 	
 	# Ensure lane information is available
 	if (-not ($script:FunctionResults.ContainsKey('LaneContents') -and $script:FunctionResults.ContainsKey('LaneMachines')))
 	{
-		Write-Log "No lane information found. Please ensure Retrieve-Nodes has been executed." "Red"
+		Write_Log "No lane information found. Please ensure Retrieve_Nodes has been executed." "Red"
 		return
 	}
 	
@@ -7266,11 +7266,11 @@ function Refresh-Files
 	$NumberOfLanes = $script:FunctionResults['NumberOfLanes']
 	
 	# Get the user's selection
-	$selection = Show-SelectionDialog -Mode $Mode -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode $Mode -StoreNumber $StoreNumber
 	
 	if ($selection -eq $null)
 	{
-		Write-Log "Operation canceled by user." "yellow"
+		Write_Log "Operation canceled by user." "yellow"
 		return
 	}
 	
@@ -7293,17 +7293,17 @@ function Refresh-Files
 		}
 		catch
 		{
-			Write-Log "Failed to retrieve LaneContents: $_. Using NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "yellow"
+			Write_Log "Failed to retrieve LaneContents: $_. Using NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "yellow"
 			# Use the predefined NumberOfLanes to generate lane numbers
 			if ($script:FunctionResults['NumberOfLanes'] -gt 0)
 			{
-				Write-Log "Determined NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "green"
+				Write_Log "Determined NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "green"
 				# Generate an array of lane numbers as zero-padded strings (e.g., '001', '002', ...)
 				$Lanes = 1 .. $script:FunctionResults['NumberOfLanes'] | ForEach-Object { $_.ToString("D3") }
 			}
 			else
 			{
-				Write-Log "NumberOfLanes is not defined or is zero. Exiting Refresh-Files." "red"
+				Write_Log "NumberOfLanes is not defined or is zero. Exiting Refresh_PIN_Pad_Files." "red"
 				return
 			}
 		}
@@ -7311,7 +7311,7 @@ function Refresh-Files
 	
 	if ($Lanes.Count -eq 0)
 	{
-		Write-Log "No lanes selected for processing." "Yellow"
+		Write_Log "No lanes selected for processing." "Yellow"
 		return
 	}
 	
@@ -7320,7 +7320,7 @@ function Refresh-Files
 	
 	if (-not $Silent.IsPresent)
 	{
-		Write-Log "Starting refresh of file types: $($fileExtensions -join ', ') for Store Number: $StoreNumber." "Green"
+		Write_Log "Starting refresh of file types: $($fileExtensions -join ', ') for Store Number: $StoreNumber." "Green"
 	}
 	
 	# Initialize counters
@@ -7335,7 +7335,7 @@ function Refresh-Files
 			
 			if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
 			{
-				Write-Log "Lane #${lane}: Machine name is invalid or unknown. Skipping refresh." "Yellow"
+				Write_Log "Lane #${lane}: Machine name is invalid or unknown. Skipping refresh." "Yellow"
 				continue
 			}
 			
@@ -7344,11 +7344,11 @@ function Refresh-Files
 			
 			if (-not (Test-Path -Path $targetPath))
 			{
-				Write-Log "Lane #${lane}: Target path '$targetPath' does not exist. Skipping." "Yellow"
+				Write_Log "Lane #${lane}: Target path '$targetPath' does not exist. Skipping." "Yellow"
 				continue
 			}
 			
-			Write-Log "Processing Lane #$lane at '$targetPath'." "Blue"
+			Write_Log "Processing Lane #$lane at '$targetPath'." "Blue"
 			
 			foreach ($file in $fileExtensions)
 			{
@@ -7360,40 +7360,40 @@ function Refresh-Files
 					{
 						# Update the LastWriteTime to current date and time
 						(Get-Item -Path $filePath).LastWriteTime = Get-Date
-						Write-Log "Lane #${lane}: Refreshed file '$filePath'." "Green"
+						Write_Log "Lane #${lane}: Refreshed file '$filePath'." "Green"
 						$totalRefreshed++
 					}
 					catch
 					{
-						Write-Log "Lane #${lane}: Failed to refresh file '$filePath'. Error: $_" "Red"
+						Write_Log "Lane #${lane}: Failed to refresh file '$filePath'. Error: $_" "Red"
 						$totalFailed++
 					}
 				}
 				else
 				{
-					Write-Log "Lane #${lane}: File '$filePath' does not exist. Skipping." "Yellow"
+					Write_Log "Lane #${lane}: File '$filePath' does not exist. Skipping." "Yellow"
 				}
 			}
 		}
 		else
 		{
-			Write-Log "Lane #${lane}: Machine information not found. Skipping." "Yellow"
+			Write_Log "Lane #${lane}: Machine information not found. Skipping." "Yellow"
 			continue
 		}
 	}
 	
 	# Summary of refresh results
-	Write-Log "Refresh Summary for Store Number: $StoreNumber - Total Files Refreshed: $totalRefreshed, Total Failures: $totalFailed." "Green"
+	Write_Log "Refresh Summary for Store Number: $StoreNumber - Total Files Refreshed: $totalRefreshed, Total Failures: $totalFailed." "Green"
 	
 	# If not in silent mode, display completion banner
 	if (-not $Silent.IsPresent)
 	{
-		Write-Log "`r`n==================== Refresh-Files Function Completed ====================" "Blue"
+		Write_Log "`r`n==================== Refresh_PIN_Pad_Files Function Completed ====================" "Blue"
 	}
 }
 
 # ===================================================================================================
-#                                       FUNCTION: InstallIntoSMS
+#                                       FUNCTION: Install_ONE_FUNCTION_Into_SMS
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Generates and deploys specific SQL and SQM files required for SMS installation.
@@ -7401,7 +7401,7 @@ function Refresh-Files
 #   with CRLF line endings and no BOM.
 # ===================================================================================================
 
-function InstallIntoSMS
+function Install_ONE_FUNCTION_Into_SMS
 {
 	param (
 		[Parameter(Mandatory = $false)]
@@ -7410,7 +7410,7 @@ function InstallIntoSMS
 		[string]$OfficePath
 	)
 	
-	Write-Log "`r`n==================== Starting InstallIntoSMS Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Install_ONE_FUNCTION_Into_SMS Function ====================`r`n" "blue"
 	
 	# --------------------------------------------------------------------------------------------
 	# Define Destination Paths
@@ -7585,12 +7585,12 @@ ORDER BY F1000,F1063;
 		if (-not (Test-Path $PumpAllItemsTablesDestinationFolder))
 		{
 			New-Item -Path $PumpAllItemsTablesDestinationFolder -ItemType Directory -Force | Out-Null
-			Write-Log "Created directory '$PumpAllItemsTablesDestinationFolder'." "yellow"
+			Write_Log "Created directory '$PumpAllItemsTablesDestinationFolder'." "yellow"
 		}
 	}
 	catch
 	{
-		Write-Log "Failed to create directory '$PumpAllItemsTablesDestinationFolder'. Error: $_" "red"
+		Write_Log "Failed to create directory '$PumpAllItemsTablesDestinationFolder'. Error: $_" "red"
 		return
 	}
 	
@@ -7602,11 +7602,11 @@ ORDER BY F1000,F1063;
 		# Write Pump_all_items_tables.sql
 		[System.IO.File]::WriteAllText($PumpAllItemsTablesFilePath, $PumpAllItemsTablesContent, $ansiEncoding)
 		Set-ItemProperty -Path $PumpAllItemsTablesFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write-Log "Successfully wrote 'Pump_all_items_tables.sql' to '$PumpAllItemsTablesDestinationFolder'." "green"
+		Write_Log "Successfully wrote 'Pump_all_items_tables.sql' to '$PumpAllItemsTablesDestinationFolder'." "green"
 	}
 	catch
 	{
-		Write-Log "Failed to write 'Pump_all_items_tables.sql'. Error: $_" "red"
+		Write_Log "Failed to write 'Pump_all_items_tables.sql'. Error: $_" "red"
 	}
 	
 	try
@@ -7614,11 +7614,11 @@ ORDER BY F1000,F1063;
 		# Write DEPLOY_SYS.sql
 		[System.IO.File]::WriteAllText($DeploySysDestinationPath, $DeploySysContent, $ansiEncoding)
 		Set-ItemProperty -Path $DeploySysDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write-Log "Successfully wrote 'DEPLOY_SYS.sql' to '$OfficePath'." "green"
+		Write_Log "Successfully wrote 'DEPLOY_SYS.sql' to '$OfficePath'." "green"
 	}
 	catch
 	{
-		Write-Log "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
+		Write_Log "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
 	}
 	
 	try
@@ -7626,11 +7626,11 @@ ORDER BY F1000,F1063;
 		# Write DEPLOY_ONE_FCT.sqm
 		[System.IO.File]::WriteAllText($DeployOneFctDestinationPath, $DeployOneFctContent, $ansiEncoding)
 		Set-ItemProperty -Path $DeployOneFctDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write-Log "Successfully wrote 'DEPLOY_ONE_FCT.sqm' to '$OfficePath'." "green"
+		Write_Log "Successfully wrote 'DEPLOY_ONE_FCT.sqm' to '$OfficePath'." "green"
 	}
 	catch
 	{
-		Write-Log "Failed to write 'DEPLOY_ONE_FCT.sqm'. Error: $_" "red"
+		Write_Log "Failed to write 'DEPLOY_ONE_FCT.sqm'. Error: $_" "red"
 	}
 	
 	# --------------------------------------------------------------------------------------------
@@ -7644,28 +7644,28 @@ ORDER BY F1000,F1063;
 			if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
 			{
 				$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
-				Write-Log "Removed the archive bit from '$PumpAllItemsTablesFilePath'." "green"
+				Write_Log "Removed the archive bit from '$PumpAllItemsTablesFilePath'." "green"
 			}
 			else
 			{
-				#	Write-Log "Archive bit was not set for '$PumpAllItemsTablesFilePath'." "yellow"
+				#	Write_Log "Archive bit was not set for '$PumpAllItemsTablesFilePath'." "yellow"
 			}
 		}
 		else
 		{
-			Write-Log "File '$PumpAllItemsTablesFilePath' does not exist. Cannot remove archive bit." "red"
+			Write_Log "File '$PumpAllItemsTablesFilePath' does not exist. Cannot remove archive bit." "red"
 		}
 	}
 	catch
 	{
-		Write-Log "Failed to remove the archive bit from '$PumpAllItemsTablesFilePath'. Error: $_" "red"
+		Write_Log "Failed to remove the archive bit from '$PumpAllItemsTablesFilePath'. Error: $_" "red"
 	}
 	
-	Write-Log "`r`n==================== InstallIntoSMS Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Install_ONE_FUNCTION_Into_SMS Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
-#                                 FUNCTION: Organize-TBS_SCL_ver520
+#                                 FUNCTION: Organize_TBS_SCL_ver520
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Organizes the [TBS_SCL_ver520] table by updating ScaleName, BufferTime, and ScaleCode for
@@ -7681,7 +7681,7 @@ ORDER BY F1000,F1063;
 #     is only displayed in the console.
 # ===================================================================================================
 
-function Organize-TBS_SCL_ver520
+function Organize_TBS_SCL_ver520
 {
 	[CmdletBinding()]
 	param (
@@ -7690,7 +7690,7 @@ function Organize-TBS_SCL_ver520
 		[string]$OutputCsvPath
 	)
 	
-	Write-Log "`r`n==================== Starting Organize-TBS_SCL_ver520 Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Organize_TBS_SCL_ver520 Function ====================`r`n" "blue"
 	
 	# Access the connection string from the script-scoped variable
 	# Ensure that you have set $script:FunctionResults['ConnectionString'] before calling this function
@@ -7698,7 +7698,7 @@ function Organize-TBS_SCL_ver520
 	
 	if (-not $connectionString)
 	{
-		Write-Log "Connection string not found in `$script:FunctionResults['ConnectionString']`." "red"
+		Write_Log "Connection string not found in `$script:FunctionResults['ConnectionString']`." "red"
 		return
 	}
 	
@@ -7711,7 +7711,7 @@ function Organize-TBS_SCL_ver520
 	}
 	catch
 	{
-		Write-Log "Invoke-Sqlcmd cmdlet not found: $_" "red"
+		Write_Log "Invoke-Sqlcmd cmdlet not found: $_" "red"
 		$supportsConnectionString = $false
 	}
 	
@@ -7855,10 +7855,10 @@ ORDER BY
 	{
 		try
 		{
-			Write-Log "Starting execution of Organize-TBS_SCL_ver520. Attempt $($retryCount + 1) of $MaxRetries." "blue"
+			Write_Log "Starting execution of Organize_TBS_SCL_ver520. Attempt $($retryCount + 1) of $MaxRetries." "blue"
 			
 			# Execute the update queries
-			Write-Log "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." "blue"
+			Write_Log "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." "blue"
 			try
 			{
 				if ($supportsConnectionString)
@@ -7873,17 +7873,17 @@ ORDER BY
 					
 					if (-not $server -or -not $database)
 					{
-						Write-Log "Invalid ConnectionString. Missing Server or Database information." "red"
+						Write_Log "Invalid ConnectionString. Missing Server or Database information." "red"
 						throw "Invalid ConnectionString. Cannot parse Server or Database."
 					}
 					
 					Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $updateQueries -ErrorAction Stop
 				}
-				Write-Log "Update queries executed successfully." "green"
+				Write_Log "Update queries executed successfully." "green"
 			}
 			catch [System.Management.Automation.ParameterBindingException]
 			{
-				Write-Log "ParameterBindingException encountered while executing update queries. Attempting fallback." "yellow"
+				Write_Log "ParameterBindingException encountered while executing update queries. Attempting fallback." "yellow"
 				
 				# Attempt to execute using ServerInstance and Database
 				try
@@ -7894,27 +7894,27 @@ ORDER BY
 					
 					if (-not $server -or -not $database)
 					{
-						Write-Log "Invalid ConnectionString for fallback. Missing Server or Database information." "red"
+						Write_Log "Invalid ConnectionString for fallback. Missing Server or Database information." "red"
 						throw "Invalid ConnectionString. Cannot parse Server or Database."
 					}
 					
 					Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $updateQueries -ErrorAction Stop
-					Write-Log "Update queries executed successfully using fallback parameters." "green"
+					Write_Log "Update queries executed successfully using fallback parameters." "green"
 				}
 				catch
 				{
-					Write-Log "Error executing update queries with fallback parameters: $_" "red"
+					Write_Log "Error executing update queries with fallback parameters: $_" "red"
 					throw $_
 				}
 			}
 			catch
 			{
-				Write-Log "An error occurred while executing update queries: $_" "red"
+				Write_Log "An error occurred while executing update queries: $_" "red"
 				throw $_
 			}
 			
 			# Execute the select query to retrieve organized data
-			Write-Log "Retrieving organized data..." "blue"
+			Write_Log "Retrieving organized data..." "blue"
 			try
 			{
 				if ($supportsConnectionString)
@@ -7929,17 +7929,17 @@ ORDER BY
 					
 					if (-not $server -or -not $database)
 					{
-						Write-Log "Invalid ConnectionString. Missing Server or Database information." "red"
+						Write_Log "Invalid ConnectionString. Missing Server or Database information." "red"
 						throw "Invalid ConnectionString. Cannot parse Server or Database."
 					}
 					
 					$data = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
 				}
-				Write-Log "Data retrieval successful." "green"
+				Write_Log "Data retrieval successful." "green"
 			}
 			catch [System.Management.Automation.ParameterBindingException]
 			{
-				Write-Log "ParameterBindingException encountered while retrieving data. Attempting fallback." "yellow"
+				Write_Log "ParameterBindingException encountered while retrieving data. Attempting fallback." "yellow"
 				
 				# Attempt to execute using ServerInstance and Database
 				try
@@ -7950,70 +7950,70 @@ ORDER BY
 					
 					if (-not $server -or -not $database)
 					{
-						Write-Log "Invalid ConnectionString for fallback. Missing Server or Database information." "red"
+						Write_Log "Invalid ConnectionString for fallback. Missing Server or Database information." "red"
 						throw "Invalid ConnectionString. Cannot parse Server or Database."
 					}
 					
 					$data = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
-					Write-Log "Data retrieval successful using fallback parameters." "green"
+					Write_Log "Data retrieval successful using fallback parameters." "green"
 				}
 				catch
 				{
-					Write-Log "Error retrieving data with fallback parameters: $_" "red"
+					Write_Log "Error retrieving data with fallback parameters: $_" "red"
 					throw $_
 				}
 			}
 			catch
 			{
-				Write-Log "An error occurred while retrieving data: $_" "red"
+				Write_Log "An error occurred while retrieving data: $_" "red"
 				throw $_
 			}
 			
 			# Check if data was retrieved
 			if (-not $data)
 			{
-				Write-Log "No data retrieved from the table 'TBS_SCL_ver520'." "red"
+				Write_Log "No data retrieved from the table 'TBS_SCL_ver520'." "red"
 				throw "No data retrieved from the table 'TBS_SCL_ver520'."
 			}
 			
 			# Export the data if an output path is provided
 			if ($PSBoundParameters.ContainsKey('OutputCsvPath'))
 			{
-				Write-Log "Exporting organized data to '$OutputCsvPath'..." "blue"
+				Write_Log "Exporting organized data to '$OutputCsvPath'..." "blue"
 				try
 				{
 					$data | Export-Csv -Path $OutputCsvPath -NoTypeInformation -Encoding UTF8
-					Write-Log "Data exported successfully to '$OutputCsvPath'." "green"
+					Write_Log "Data exported successfully to '$OutputCsvPath'." "green"
 				}
 				catch
 				{
-					Write-Log "Failed to export data to CSV: $_" "red"
+					Write_Log "Failed to export data to CSV: $_" "red"
 				}
 			}
 			
 			# Display the organized data
-			Write-Log "Displaying organized data:" "yellow"
+			Write_Log "Displaying organized data:" "yellow"
 			try
 			{
 				$formattedData = $data | Format-Table -AutoSize | Out-String
-				Write-Log $formattedData "Blue"
+				Write_Log $formattedData "Blue"
 			}
 			catch
 			{
-				Write-Log "Failed to format and display data: $_" "red"
+				Write_Log "Failed to format and display data: $_" "red"
 			}
 			
-			Write-Log "==================== Organize-TBS_SCL_ver520 Function Completed ====================" "blue"
+			Write_Log "==================== Organize_TBS_SCL_ver520 Function Completed ====================" "blue"
 			$success = $true
 		}
 		catch
 		{
 			$retryCount++
-			Write-Log "Error during Organize-TBS_SCL_ver520 execution: $_" "red"
+			Write_Log "Error during Organize_TBS_SCL_ver520 execution: $_" "red"
 			
 			if ($retryCount -lt $MaxRetries)
 			{
-				Write-Log "Retrying execution in $RetryDelaySeconds seconds..." "yellow"
+				Write_Log "Retrying execution in $RetryDelaySeconds seconds..." "yellow"
 				Start-Sleep -Seconds $RetryDelaySeconds
 			}
 		}
@@ -8021,13 +8021,13 @@ ORDER BY
 	
 	if (-not $success)
 	{
-		Write-Log "Maximum retry attempts reached. Organize-TBS_SCL_ver520 function failed." "red"
+		Write_Log "Maximum retry attempts reached. Organize_TBS_SCL_ver520 function failed." "red"
 		# Optionally, you can handle further actions like sending notifications or logging to a file
 	}
 }
 
 # ===================================================================================================
-#                                 FUNCTION: Repair-BMS
+#                                 FUNCTION: Repair_BMS
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Repairs the "BMS" service by performing the following steps:
@@ -8041,7 +8041,7 @@ ORDER BY
 #   - BMSSrvPath (Optional): Full path to BMSSrv.exe. Defaults to "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe".
 # ===================================================================================================
 
-function Repair-BMS
+function Repair_BMS
 {
 	[CmdletBinding()]
 	param (
@@ -8050,25 +8050,25 @@ function Repair-BMS
 		[string]$BMSSrvPath = "$env:SystemDrive\Bizerba\RetailConnect\BMS\BMSSrv.exe"
 	)
 	
-	Write-Log "`r`n==================== Starting Repair-BMS Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Repair_BMS Function ====================`r`n" "blue"
 	
 	# Ensure the script is running as Administrator
 	$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 	if (-not $isAdmin)
 	{
-		Write-Log "Insufficient permissions. Please run this script as an Administrator." "red"
+		Write_Log "Insufficient permissions. Please run this script as an Administrator." "red"
 		return
 	}
 	
 	# Check if BMSSrv.exe exists
 	if (-not (Test-Path $BMSSrvPath))
 	{
-		Write-Log "BMSSrv.exe not found at path: $BMSSrvPath" "red"
+		Write_Log "BMSSrv.exe not found at path: $BMSSrvPath" "red"
 		return
 	}
 	
 	# Function to check if service exists
-	function Test-ServiceExists
+	function Test_Service_Exists
 	{
 		param (
 			[string]$ServiceName
@@ -8086,37 +8086,37 @@ function Repair-BMS
 	
 	# Stop the BMS service if it exists and is running
 	$serviceName = "BMS"
-	if (Test-ServiceExists -ServiceName $serviceName)
+	if (Test_Service_Exists -ServiceName $serviceName)
 	{
-		Write-Log "Attempting to stop the '$serviceName' service..." "blue"
+		Write_Log "Attempting to stop the '$serviceName' service..." "blue"
 		try
 		{
 			Stop-Service -Name $serviceName -Force -ErrorAction Stop
-			Write-Log "'$serviceName' service stopped successfully." "green"
+			Write_Log "'$serviceName' service stopped successfully." "green"
 		}
 		catch
 		{
-			Write-Log "Failed to stop '$serviceName' service: $_" "red"
+			Write_Log "Failed to stop '$serviceName' service: $_" "red"
 			return
 		}
 	}
 	else
 	{
-		Write-Log "'$serviceName' service does not exist or is already stopped." "yellow"
+		Write_Log "'$serviceName' service does not exist or is already stopped." "yellow"
 	}
 	
 	# Delete the BMS service if it exists
-	if (Test-ServiceExists -ServiceName $serviceName)
+	if (Test_Service_Exists -ServiceName $serviceName)
 	{
-		Write-Log "Attempting to delete the '$serviceName' service..." "blue"
+		Write_Log "Attempting to delete the '$serviceName' service..." "blue"
 		try
 		{
 			sc.exe delete $serviceName | Out-Null
-			Write-Log "'$serviceName' service deleted successfully." "green"
+			Write_Log "'$serviceName' service deleted successfully." "green"
 		}
 		catch
 		{
-			Write-Log "Failed to delete '$serviceName' service: $_" "red"
+			Write_Log "Failed to delete '$serviceName' service: $_" "red"
 			return
 		}
 		# Wait for a few seconds to ensure the service is fully deleted
@@ -8124,11 +8124,11 @@ function Repair-BMS
 	}
 	else
 	{
-		Write-Log "'$serviceName' service does not exist. Skipping deletion." "yellow"
+		Write_Log "'$serviceName' service does not exist. Skipping deletion." "yellow"
 	}
 	
 	# Register BMSSrv.exe to recreate the BMS service
-	Write-Log "Registering BMSSrv.exe to recreate the '$serviceName' service..." "blue"
+	Write_Log "Registering BMSSrv.exe to recreate the '$serviceName' service..." "blue"
 	try
 	{
 		# Execute BMSSrv.exe with -reg parameter
@@ -8136,37 +8136,37 @@ function Repair-BMS
 		
 		if ($process.ExitCode -eq 0)
 		{
-			Write-Log "BMSSrv.exe registered successfully." "green"
+			Write_Log "BMSSrv.exe registered successfully." "green"
 		}
 		else
 		{
-			Write-Log "BMSSrv.exe registration failed with exit code $($process.ExitCode)." "red"
+			Write_Log "BMSSrv.exe registration failed with exit code $($process.ExitCode)." "red"
 			return
 		}
 	}
 	catch
 	{
-		Write-Log "An error occurred while registering BMSSrv.exe: $_" "red"
+		Write_Log "An error occurred while registering BMSSrv.exe: $_" "red"
 		return
 	}
 	
 	# Start the BMS service
-	Write-Log "Attempting to start the '$serviceName' service..." "blue"
+	Write_Log "Attempting to start the '$serviceName' service..." "blue"
 	try
 	{
 		Start-Service -Name $serviceName -ErrorAction Stop
-		Write-Log "'$serviceName' service started successfully." "green"
+		Write_Log "'$serviceName' service started successfully." "green"
 	}
 	catch
 	{
-		Write-Log "Failed to start '$serviceName' service: $_" "red"
+		Write_Log "Failed to start '$serviceName' service: $_" "red"
 		return
 	}
-	Write-Log "`r`n==================== Repair-BMS Function Completed ====================`r`n" "blue"
+	Write_Log "`r`n==================== Repair_BMS Function Completed ====================`r`n" "blue"
 }
 
 # ===================================================================================================
-#                                         FUNCTION: Write-SQLScriptsToDesktop
+#                                         FUNCTION: Write_SQL_Scripts_To_Desktop
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Writes the provided LaneSQL and ServerSQL scripts to the user's Desktop with specified filenames.
@@ -8187,14 +8187,14 @@ function Repair-BMS
 #       The filename for the ServerSQL script. Defaults to "Server_Database_Maintenance.sqi".
 # ---------------------------------------------------------------------------------------------------
 # Usage Example:
-#   Write-SQLScriptsToDesktop -LaneSQL $LaneSQLNoDbExecAndTimeout -ServerSQL $script:ServerSQLScript
+#   Write_SQL_Scripts_To_Desktop -LaneSQL $LaneSQLNoDbExecAndTimeout -ServerSQL $script:ServerSQLScript
 #
 # Prerequisites:
 #   - Ensure that the SQL script contents are correctly generated and stored in the provided variables.
 #   - Verify that the user has write permissions to the Desktop directory.
 # ===================================================================================================
 
-function Write-SQLScriptsToDesktop
+function Write_SQL_Scripts_To_Desktop
 {
 	[CmdletBinding()]
 	param (
@@ -8208,7 +8208,7 @@ function Write-SQLScriptsToDesktop
 		[string]$ServerFilename = "Server_Database_Maintenance.sqi"
 	)
 	
-	Write-Log "`r`n==================== Starting Write-SQLScriptsToDesktop Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Write_SQL_Scripts_To_Desktop Function ====================`r`n" "blue"
 	
 	try
 	{
@@ -8221,33 +8221,33 @@ function Write-SQLScriptsToDesktop
 		
 		# Write the LaneSQL script to the Desktop
 		[System.IO.File]::WriteAllText($laneFilePath, $LaneSQL, [System.Text.Encoding]::UTF8)
-		Write-Log "Lane SQL script successfully written to:`n$laneFilePath" "Green"
+		Write_Log "Lane SQL script successfully written to:`n$laneFilePath" "Green"
 	}
 	catch
 	{
-		Write-Log "Error writing Lane SQL script to Desktop:`n$_" "Red"
+		Write_Log "Error writing Lane SQL script to Desktop:`n$_" "Red"
 	}
 	
 	try
 	{
 		# Write the ServerSQL script to the Desktop
 		[System.IO.File]::WriteAllText($serverFilePath, $ServerSQL, [System.Text.Encoding]::UTF8)
-		Write-Log "Server SQL script successfully written to:`n$serverFilePath" "Green"
+		Write_Log "Server SQL script successfully written to:`n$serverFilePath" "Green"
 	}
 	catch
 	{
-		Write-Log "Error writing Server SQL script to Desktop:`n$_" "Red"
+		Write_Log "Error writing Server SQL script to Desktop:`n$_" "Red"
 	}
-	Write-Log "`r`n==================== Write-SQLScriptsToDesktop Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Write_SQL_Scripts_To_Desktop Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
-#                               FUNCTION: Send-RestartAllPrograms
+#                               FUNCTION: Send_Restart_All_Programs
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   The `Send-RestartAllPrograms` function automates sending a restart command to selected lanes
-#   within a specified store. It retrieves lane-to-machine mappings using the `Retrieve-Nodes` 
-#   function, prompts the user to select lanes via the `Show-SelectionDialog` function, and
+#   The `Send_Restart_All_Programs` function automates sending a restart command to selected lanes
+#   within a specified store. It retrieves lane-to-machine mappings using the `Retrieve_Nodes` 
+#   function, prompts the user to select lanes via the `Show_Lane/Store_Selection_Form` function, and
 #   then constructs and sends a mailslot command to each selected lane using the correct 
 #   machine address.
 #
@@ -8257,9 +8257,9 @@ function Write-SQLScriptsToDesktop
 #         to retrieve node details, select lanes, and construct mailslot addresses.
 #
 # Workflow:
-#   1. Retrieve node information for the specified store using `Retrieve-Nodes`, which
+#   1. Retrieve node information for the specified store using `Retrieve_Nodes`, which
 #      provides a mapping between lanes and their corresponding machine names.
-#   2. Launch `Show-SelectionDialog` in 'Store' mode to allow the user to select one
+#   2. Launch `Show_Lane/Store_Selection_Form` in 'Store' mode to allow the user to select one
 #      or more lanes (TTT).
 #   3. For each selected lane:
 #         - Look up the machine name from the lane-to-machine mapping.
@@ -8271,36 +8271,36 @@ function Write-SQLScriptsToDesktop
 #   None. Outputs success or failure messages to the console for each lane processed.
 #
 # Example Usage:
-#   Send-RestartAllPrograms -StoreNumber "123"
+#   Send_Restart_All_Programs -StoreNumber "123"
 #
 # Notes:
-#   - Ensure that the helper functions (`Retrieve-Nodes`, `Show-SelectionDialog`) and the 
+#   - Ensure that the helper functions (`Retrieve_Nodes`, `Show_Lane/Store_Selection_Form`) and the 
 #     `[MailslotSender]::SendMailslotCommand` method are defined and accessible in the 
 #     session before invoking this function.
 # ===================================================================================================
 
-function Send-RestartAllPrograms
+function Send_Restart_All_Programs
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber # Expecting a 3-digit store number (SSS)
 	)
 	
-	Write-Log "`r`n==================== Starting Send-RestartAllPrograms Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Send_Restart_All_Programs Function ====================`r`n" "blue"
 	
 	# Retrieve node information for the specified store to obtain lane-machine mapping.
-	$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
+	$nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber
 	if (-not $nodes)
 	{
-		Write-Log "Failed to retrieve node information for store $StoreNumber." "red"
+		Write_Log "Failed to retrieve node information for store $StoreNumber." "red"
 		return
 	}
 	
 	# Use lane selection dialog to get lanes (TTT) for the specified store.
-	$selection = Show-SelectionDialog -Mode Store -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode Store -StoreNumber $StoreNumber
 	if (-not $selection)
 	{
-		Write-Log "No lanes selected or selection cancelled. Exiting." "yellow"
+		Write_Log "No lanes selected or selection cancelled. Exiting." "yellow"
 		return
 	}
 	
@@ -8308,7 +8308,7 @@ function Send-RestartAllPrograms
 	$lanes = $selection.Lanes
 	if (-not $lanes -or $lanes.Count -eq 0)
 	{
-		Write-Log "No valid lanes found. Exiting." "yellow"
+		Write_Log "No valid lanes found. Exiting." "yellow"
 		return
 	}
 	
@@ -8319,7 +8319,7 @@ function Send-RestartAllPrograms
 		$machineName = $nodes.LaneMachines[$lane]
 		if (-not $machineName)
 		{
-			Write-Log "No machine found for lane $lane. Skipping." "yellow"
+			Write_Log "No machine found for lane $lane. Skipping." "yellow"
 			continue
 		}
 		
@@ -8332,24 +8332,24 @@ function Send-RestartAllPrograms
 		
 		if ($result)
 		{
-			Write-Log "Command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
+			Write_Log "Command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
 		}
 		else
 		{
-			Write-Log "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
+			Write_Log "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
 		}
 	}
-	Write-Log "`r`n==================== Send-RestartAllPrograms Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Send_Restart_All_Programs Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
-#                               FUNCTION: Set-LaneTimeFromLocal
+#                               FUNCTION: Send_SERVER_time_to_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   The `Set-LaneTimeFromLocal` function automates sending a time synchronization command to 
+#   The `Send_SERVER_time_to_Lanes` function automates sending a time synchronization command to 
 #   selected lanes within a specified store using the server's local date and time. It retrieves 
-#   lane-to-machine mappings using the `Retrieve-Nodes` function, prompts the user to select lanes 
-#   via the `Show-SelectionDialog` function, and then constructs and sends a mailslot command to each 
+#   lane-to-machine mappings using the `Retrieve_Nodes` function, prompts the user to select lanes 
+#   via the `Show_Lane/Store_Selection_Form` function, and then constructs and sends a mailslot command to each 
 #   selected lane with the server's current date and time in the appropriate format.
 #
 # Parameters:
@@ -8358,9 +8358,9 @@ function Send-RestartAllPrograms
 #         retrieve node details, select lanes, and construct mailslot addresses.
 #
 # Workflow:
-#   1. Retrieve node information for the specified store using `Retrieve-Nodes`, which provides a 
+#   1. Retrieve node information for the specified store using `Retrieve_Nodes`, which provides a 
 #      mapping between lanes and their corresponding machine names.
-#   2. Launch `Show-SelectionDialog` in 'Store' mode to allow the user to select one or more lanes (TTT).
+#   2. Launch `Show_Lane/Store_Selection_Form` in 'Store' mode to allow the user to select one or more lanes (TTT).
 #   3. Retrieve the server's local date and time using PowerShell's Get-Date, formatting the date as 
 #      "MM/dd/yyyy" and the time as "HHmmss".
 #   4. Construct a command string in the format:
@@ -8375,43 +8375,43 @@ function Send-RestartAllPrograms
 #   None. Outputs success or failure messages to the console for each lane processed.
 #
 # Example Usage:
-#   Set-LaneTimeFromLocal -StoreNumber "123"
+#   Send_SERVER_time_to_Lanes -StoreNumber "123"
 #
 # Notes:
-#   - Ensure that the helper functions (`Retrieve-Nodes`, `Show-SelectionDialog`) and the 
+#   - Ensure that the helper functions (`Retrieve_Nodes`, `Show_Lane/Store_Selection_Form`) and the 
 #     `[MailslotSender]::SendMailslotCommand` method are defined and accessible in the session 
 #     before invoking this function.
 # ===================================================================================================
 
-function Set-LaneTimeFromLocal
+function Send_SERVER_time_to_Lanes
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Set-LaneTimeFromLocal Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Send_SERVER_time_to_Lanes Function ====================`r`n" "blue"
 	
 	# Retrieve node information for the specified store.
-	$nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
+	$nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber
 	if (-not $nodes)
 	{
-		Write-Log "Failed to retrieve node information for store $StoreNumber." "red"
+		Write_Log "Failed to retrieve node information for store $StoreNumber." "red"
 		return
 	}
 	
 	# Allow user to select lanes for the specified store.
-	$selection = Show-SelectionDialog -Mode Store -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode Store -StoreNumber $StoreNumber
 	if (-not $selection)
 	{
-		Write-Log "No lanes selected or selection cancelled. Exiting." "yellow"
+		Write_Log "No lanes selected or selection cancelled. Exiting." "yellow"
 		return
 	}
 	
 	$lanes = $selection.Lanes
 	if (-not $lanes -or $lanes.Count -eq 0)
 	{
-		Write-Log "No valid lanes found. Exiting." "yellow"
+		Write_Log "No valid lanes found. Exiting." "yellow"
 		return
 	}
 	
@@ -8428,7 +8428,7 @@ function Set-LaneTimeFromLocal
 		$machineName = $nodes.LaneMachines[$lane]
 		if (-not $machineName)
 		{
-			Write-Log "No machine found for lane $lane. Skipping." "yellow"
+			Write_Log "No machine found for lane $lane. Skipping." "yellow"
 			continue
 		}
 		
@@ -8439,14 +8439,14 @@ function Set-LaneTimeFromLocal
 		
 		if ($result)
 		{
-			Write-Log "Time sync command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
+			Write_Log "Time sync command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
 		}
 		else
 		{
-			Write-Log "Failed to send time sync command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
+			Write_Log "Failed to send time sync command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
 		}
 	}
-	Write-Log "`r`n==================== Set-LaneTimeFromLocal Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Send_SERVER_time_to_Lanes Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -8455,7 +8455,7 @@ function Set-LaneTimeFromLocal
 # Description:
 #   Deploys a drawer control SQI command to selected lanes for a specified store.
 #   The function first presents a GUI for the user to select the desired drawer state 
-#   (Enable = 1, Disable = 0) and then uses the Show-SelectionDialog GUI (in "Store" mode) to 
+#   (Enable = 1, Disable = 0) and then uses the Show_Lane/Store_Selection_Form GUI (in "Store" mode) to 
 #   allow selection of one or more lanes. For each selected lane, the function writes an SQI file 
 #   (in ANSI PC format with CRLF line endings) with the embedded drawer state and sends a restart 
 #   command to the corresponding machine.
@@ -8464,9 +8464,9 @@ function Set-LaneTimeFromLocal
 #   - StoreNumber: The store number to process. (Mandatory)
 # ---------------------------------------------------------------------------------------------------
 # Requirements:
-#   - The Show-SelectionDialog function must be available.
+#   - The Show_Lane/Store_Selection_Form function must be available.
 #   - Variables such as $OfficePath must be defined.
-#   - Helper functions like Write-Log, Retrieve-Nodes, and the class [MailslotSender] must be available.
+#   - Helper functions like Write_Log, Retrieve_Nodes, and the class [MailslotSender] must be available.
 # ===================================================================================================
 
 function Drawer_Control
@@ -8477,7 +8477,7 @@ function Drawer_Control
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Drawer_Control ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Drawer_Control ====================`r`n" "blue"
 	
 	# --------------------------------------------------
 	# STEP 1: Prompt for Drawer State using Enable/Disable radio buttons
@@ -8546,21 +8546,21 @@ function Drawer_Control
 	$resultState = $stateForm.ShowDialog()
 	if ($stateForm.Tag -eq "Cancelled" -or $resultState -eq [System.Windows.Forms.DialogResult]::Cancel)
 	{
-		Write-Log "User cancelled the operation at drawer state selection." "yellow"
-		Write-Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
+		Write_Log "User cancelled the operation at drawer state selection." "yellow"
+		Write_Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 		return
 	}
 	$DrawerState = $stateForm.Tag
-	Write-Log "Drawer state selected: $DrawerState" "green"
+	Write_Log "Drawer state selected: $DrawerState" "green"
 	
 	# --------------------------------------------------
-	# STEP 2: Use Show-SelectionDialog to select lanes (Store mode)
+	# STEP 2: Use Show_Lane/Store_Selection_Form to select lanes (Store mode)
 	# --------------------------------------------------
-	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode "Store" -StoreNumber $StoreNumber
 	if ($null -eq $selection)
 	{
-		Write-Log "No lanes selected or selection cancelled." "yellow"
-		Write-Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
+		Write_Log "No lanes selected or selection cancelled." "yellow"
+		Write_Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 		return
 	}
 	
@@ -8572,7 +8572,7 @@ function Drawer_Control
 	}
 	else
 	{
-		Write-Log "Unexpected selection type returned." "red"
+		Write_Log "Unexpected selection type returned." "red"
 		return
 	}
 	
@@ -8585,7 +8585,7 @@ function Drawer_Control
 		$LaneDirectory = "$OfficePath\XF${StoreNumber}${lane}"
 		if (-not (Test-Path $LaneDirectory))
 		{
-			Write-Log "Lane directory $LaneDirectory not found. Skipping lane $lane." "yellow"
+			Write_Log "Lane directory $LaneDirectory not found. Skipping lane $lane." "yellow"
 			continue
 		}
 		
@@ -8617,9 +8617,9 @@ DROP TABLE Fct_Load;
 		
 		# Remove the Archive attribute (set file attributes to Normal)
 		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write-Log "Deployed Drawer_Control.sqi command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
+		Write_Log "Deployed Drawer_Control.sqi command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
 	}
-	Write-Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -8627,7 +8627,7 @@ DROP TABLE Fct_Load;
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deploys a database refresh SQI command to selected registers for a specified store.
-#   The function uses the Show-SelectionDialog GUI (in "Store" mode) to allow selection of one or 
+#   The function uses the Show_Lane/Store_Selection_Form GUI (in "Store" mode) to allow selection of one or 
 #   more registers. For each selected register, it writes an SQI file (in ANSI PC format with CRLF 
 #   line endings) containing:
 #
@@ -8640,9 +8640,9 @@ DROP TABLE Fct_Load;
 #   - StoreNumber: The store number to process. (Mandatory)
 # ---------------------------------------------------------------------------------------------------
 # Requirements:
-#   - The Show-SelectionDialog function must be available.
+#   - The Show_Lane/Store_Selection_Form function must be available.
 #   - Variables such as $OfficePath must be defined.
-#   - Helper functions like Write-Log, Retrieve-Nodes, and the class [MailslotSender] must be available.
+#   - Helper functions like Write_Log, Retrieve_Nodes, and the class [MailslotSender] must be available.
 # ===================================================================================================
 
 function Refresh_Database
@@ -8653,17 +8653,17 @@ function Refresh_Database
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Refresh_Database ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Refresh_Database ====================`r`n" "blue"
 	
 	# --------------------------------------------------
-	# STEP 1: Use Show-SelectionDialog to select registers
+	# STEP 1: Use Show_Lane/Store_Selection_Form to select registers
 	# --------------------------------------------------
-	# The Show-SelectionDialog function is assumed to be available and operating in "Store" mode.
-	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+	# The Show_Lane/Store_Selection_Form function is assumed to be available and operating in "Store" mode.
+	$selection = Show_Lane/Store_Selection_Form -Mode "Store" -StoreNumber $StoreNumber
 	if ($null -eq $selection)
 	{
-		Write-Log "No registers selected or selection cancelled." "yellow"
-		Write-Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
+		Write_Log "No registers selected or selection cancelled." "yellow"
+		Write_Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
 		return
 	}
 	
@@ -8675,7 +8675,7 @@ function Refresh_Database
 	}
 	else
 	{
-		Write-Log "Unexpected selection type returned." "red"
+		Write_Log "Unexpected selection type returned." "red"
 		return
 	}
 	
@@ -8698,7 +8698,7 @@ function Refresh_Database
 		$RegisterDirectory = "$OfficePath\XF${StoreNumber}${register}"
 		if (-not (Test-Path $RegisterDirectory))
 		{
-			Write-Log "Register directory $RegisterDirectory not found. Skipping register $register." "yellow"
+			Write_Log "Register directory $RegisterDirectory not found. Skipping register $register." "yellow"
 			continue
 		}
 		
@@ -8710,9 +8710,9 @@ function Refresh_Database
 		
 		# Remove the Archive attribute (set file attributes to Normal)
 		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write-Log "Deployed Refresh_Database.sqi command to register $register in directory $RegisterDirectory." "green"
+		Write_Log "Deployed Refresh_Database.sqi command to register $register in directory $RegisterDirectory." "green"
 	}
-	Write-Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -8727,9 +8727,9 @@ function Refresh_Database
 #   - StoreNumber: The store number to process. (Mandatory)
 # ---------------------------------------------------------------------------------------------------
 # Requirements:
-#   - The Show-SelectionDialog function must be available.
+#   - The Show_Lane/Store_Selection_Form function must be available.
 #   - Variables such as $OfficePath must be defined.
-#   - Helper functions like Write-Log, Retrieve-Nodes, and the class [MailslotSender] must be available.
+#   - Helper functions like Write_Log, Retrieve_Nodes, and the class [MailslotSender] must be available.
 # ===================================================================================================
 
 function Retrive_Transactions
@@ -8740,7 +8740,7 @@ function Retrive_Transactions
 		[string]$StoreNumber
 	)
 	
-	Write-Log "`r`n==================== Starting Retrive_Transactions ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Retrive_Transactions ====================`r`n" "blue"
 	
 	# --------------------------------------------------
 	# STEP 1: Prompt for Start and Stop Dates using DateTimePickers
@@ -8812,25 +8812,25 @@ function Retrive_Transactions
 	$resultDate = $dateForm.ShowDialog()
 	if ($dateForm.Tag -eq "Cancelled" -or $resultDate -eq [System.Windows.Forms.DialogResult]::Cancel)
 	{
-		Write-Log "User cancelled the date selection." "yellow"
-		Write-Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
+		Write_Log "User cancelled the date selection." "yellow"
+		Write_Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
 		return
 	}
 	
 	# Format the dates as ddMMyyyy
 	$startDateFormatted = $dateForm.Tag.StartDate.ToString("MM/dd/yyyy")
 	$stopDateFormatted = $dateForm.Tag.StopDate.ToString("MM/dd/yyyy")
-	Write-Log "Start Date selected: $startDateFormatted" "green"
-	Write-Log "Stop Date selected: $stopDateFormatted" "green"
+	Write_Log "Start Date selected: $startDateFormatted" "green"
+	Write_Log "Stop Date selected: $stopDateFormatted" "green"
 	
 	# --------------------------------------------------
-	# STEP 2: Use Show-SelectionDialog to select registers (lanes)
+	# STEP 2: Use Show_Lane/Store_Selection_Form to select registers (lanes)
 	# --------------------------------------------------
-	$selection = Show-SelectionDialog -Mode "Store" -StoreNumber $StoreNumber
+	$selection = Show_Lane/Store_Selection_Form -Mode "Store" -StoreNumber $StoreNumber
 	if ($null -eq $selection)
 	{
-		Write-Log "No registers selected or selection cancelled." "yellow"
-		Write-Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
+		Write_Log "No registers selected or selection cancelled." "yellow"
+		Write_Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
 		return
 	}
 	
@@ -8842,7 +8842,7 @@ function Retrive_Transactions
 	}
 	else
 	{
-		Write-Log "Unexpected selection type returned." "red"
+		Write_Log "Unexpected selection type returned." "red"
 		return
 	}
 	
@@ -8874,7 +8874,7 @@ F1032>=0 and F1032<=99999999;
 		$RegisterDirectory = "$OfficePath\XF${StoreNumber}${reg}"
 		if (-not (Test-Path $RegisterDirectory))
 		{
-			Write-Log "Register directory $RegisterDirectory not found. Skipping register $reg." "yellow"
+			Write_Log "Register directory $RegisterDirectory not found. Skipping register $reg." "yellow"
 			continue
 		}
 		
@@ -8886,9 +8886,9 @@ F1032>=0 and F1032<=99999999;
 		
 		# Remove the Archive attribute (set file attributes to Normal)
 		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write-Log "Deployed Retrive_Transactions.sqi command to register $reg in directory $RegisterDirectory." "green"
+		Write_Log "Deployed Retrive_Transactions.sqi command to register $reg in directory $RegisterDirectory." "green"
 	}
-	Write-Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
 }
 
 <#function Retrive_Transactions (Mailslot)
@@ -8899,7 +8899,7 @@ F1032>=0 and F1032<=99999999;
         [string]$StoreNumber
     )
 
-    Write-Log "`r`n==================== Starting Retrive_Transactions Function ====================`r`n" "blue"
+    Write_Log "`r`n==================== Starting Retrive_Transactions Function ====================`r`n" "blue"
 
     # STEP 1: Date Range Picker
     Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -8959,8 +8959,8 @@ F1032>=0 and F1032<=99999999;
     $form.CancelButton = $btnCancel
 
     if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK -or $form.Tag -eq 'Cancelled') {
-        Write-Log "User cancelled date selection." "yellow"
-        Write-Log "===== Retrive_Transactions aborted =====`r`n" "blue"
+        Write_Log "User cancelled date selection." "yellow"
+        Write_Log "===== Retrive_Transactions aborted =====`r`n" "blue"
         return
     }
 
@@ -8972,31 +8972,31 @@ F1032>=0 and F1032<=99999999;
     $sdFile    = $startDate.ToString('yyyyMMdd')
     $edFile    = $stopDate.ToString('yyyyMMdd')
 
-    Write-Log "Date range: $sdSql → $edSql" "green"
+    Write_Log "Date range: $sdSql → $edSql" "green"
 
     # STEP 2: Get nodes & select lanes
-    $nodes = Retrieve-Nodes -Mode Store -StoreNumber $StoreNumber
+    $nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber
     if (-not $nodes) {
-        Write-Log "Failed to retrieve node info for store $StoreNumber." "red"
+        Write_Log "Failed to retrieve node info for store $StoreNumber." "red"
         return
     }
-    $selection = Show-SelectionDialog -Mode Store -StoreNumber $StoreNumber
+    $selection = Show_Lane/Store_Selection_Form -Mode Store -StoreNumber $StoreNumber
     if (-not $selection) {
-        Write-Log "No lanes selected or cancelled." "yellow"
+        Write_Log "No lanes selected or cancelled." "yellow"
         return
     }
     $lanes = $selection.Lanes
-    Write-Log "Lanes to process: $($lanes -join ', ')" "green"
+    Write_Log "Lanes to process: $($lanes -join ', ')" "green"
 
     # STEP 3: Pull each day's dump from each lane's console
     foreach ($lane in $lanes) {
         $machine = $nodes.LaneMachines[$lane]
         if (-not $machine) {
-            Write-Log "No machine for lane $lane; skipping." "yellow"
+            Write_Log "No machine for lane $lane; skipping." "yellow"
             continue
         }
 
-        Write-Log "`r`n-- Processing lane $lane on $machine --" "cyan"
+        Write_Log "`r`n-- Processing lane $lane on $machine --" "cyan"
         for ($d = $startDate; $d -le $stopDate; $d = $d.AddDays(1)) {
             $dateSql = $d.ToString('MM/dd/yyyy')
             $tag     = $d.ToString('yyyyMMdd')
@@ -9006,9 +9006,9 @@ F1032>=0 and F1032<=99999999;
 
             $ok = [MailslotSender]::SendMailslotCommand($slot, $message)
             if ($ok) {
-                Write-Log "Requested $dateSql from $machine → $outFile" "green"
+                Write_Log "Requested $dateSql from $machine → $outFile" "green"
             } else {
-                Write-Log "Failed to send to $slot for $dateSql" "red"
+                Write_Log "Failed to send to $slot for $dateSql" "red"
             }
 
             Start-Sleep -Seconds 1
@@ -9016,7 +9016,7 @@ F1032>=0 and F1032<=99999999;
     }
 
     # STEP 4: Filter & combine
-    Write-Log "`r`nFiltering transactions per lane..." "cyan"
+    Write_Log "`r`nFiltering transactions per lane..." "cyan"
     $dumps = Get-ChildItem "$GasInboxPath\GAS_TRS_*.txt" | Sort-Object Name | Select-Object -ExpandProperty FullName
 
     foreach ($lane in $lanes) {
@@ -9031,13 +9031,13 @@ F1032>=0 and F1032<=99999999;
             $outName = "GAS_TRS_Lane${code}_${sdFile}_${edFile}.txt"
             $outPath = Join-Path $GasInboxPath $outName
             $matched | Out-File $outPath -Encoding ASCII
-            Write-Log "Wrote lane $code file → $outName" "green"
+            Write_Log "Wrote lane $code file → $outName" "green"
         } else {
-            Write-Log "No data for lane $code in that range." "yellow"
+            Write_Log "No data for lane $code in that range." "yellow"
         }
     }
 
-    Write-Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
+    Write_Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
 }
 #>
 
@@ -9190,7 +9190,7 @@ function Reboot_Scales
 				foreach ($item in $selectedItems)
 				{
 					$machineName = $item.IP # Using the full IP address
-					Write-Log "Attempting to reboot scale: $($item.DisplayName) at $machineName" "Yellow"
+					Write_Log "Attempting to reboot scale: $($item.DisplayName) at $machineName" "Yellow"
 					try
 					{
 						# First, attempt to reboot using the shutdown command
@@ -9200,19 +9200,19 @@ function Reboot_Scales
 						{
 							throw "Shutdown command exited with code $($process.ExitCode)"
 						}
-						Write-Log "Shutdown command executed successfully for $machineName." "Green"
+						Write_Log "Shutdown command executed successfully for $machineName." "Green"
 					}
 					catch
 					{
-						Write-Log "Shutdown command failed for $machineName. Falling back to Restart-Computer." "Red"
+						Write_Log "Shutdown command failed for $machineName. Falling back to Restart-Computer." "Red"
 						try
 						{
 							Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop
-							Write-Log "Restart-Computer command executed successfully for $machineName." "Green"
+							Write_Log "Restart-Computer command executed successfully for $machineName." "Green"
 						}
 						catch
 						{
-							Write-Log "Failed to reboot scale $machineName using both methods: $_" "Red"
+							Write_Log "Failed to reboot scale $machineName using both methods: $_" "Red"
 						}
 					}
 				}
@@ -9243,7 +9243,7 @@ function Reboot_Scales
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Show-SelectionDialog
+#                                       FUNCTION: Show_Lane/Store_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Presents a GUI dialog for the user to select specific items (Hosts or Stores), a range of items,
@@ -9255,7 +9255,7 @@ function Reboot_Scales
 #   - StoreNumber (Optional): Required when Mode is "Store" to fetch all available lanes.
 # ===================================================================================================
 
-function Show-SelectionDialog
+function Show_Lane/Store_Selection_Form
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -9564,21 +9564,21 @@ function Show-SelectionDialog
 }
 
 # ===================================================================================================
-#                                FUNCTION: Show-TableSelectionDialog
+#                                FUNCTION: Show_Table_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Displays a GUI dialog listing all discovered tables from Get-TableAliases in a checked list box,
+#   Displays a GUI dialog listing all discovered tables from Get_Table_Aliases in a checked list box,
 #   with buttons to Select All or Deselect All. Returns the list of checked table names (with _TAB).
 # ===================================================================================================
 
-function Show-TableSelectionDialog
+function Show_Table_Selection_Form
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[System.Collections.ArrayList]$AliasResults
 	)
 	
-	# We assume $AliasResults is the .Aliases property from Get-TableAliases
+	# We assume $AliasResults is the .Aliases property from Get_Table_Aliases
 	# that contains objects with .Table and .Alias, e.g. "XYZ_TAB" and "XYZ".
 	
 	# Load necessary assemblies
@@ -9686,14 +9686,14 @@ function Show-TableSelectionDialog
 }
 
 # ===================================================================================================
-#                                FUNCTION: Show-SectionSelectionForm
+#                                FUNCTION: Show_Section_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Helper function that creates a form with checkboxes for each section. Returns an array of the 
 #   selected section names or $null if canceled.#   
 # ===================================================================================================
 
-function Show-SectionSelectionForm
+function Show_Section_Selection_Form
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -9876,10 +9876,10 @@ if (-not $SilentMode)
 				else
 				{
 					# Proceed with form closing and perform actions
-					Write-Log "Form is closing. Performing cleanup." "green"
+					Write_Log "Form is closing. Performing cleanup." "green"
 					
 					# Clean Temp Folder
-					Delete-Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql" #"Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
+					Delete_Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql" #"Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1"
 				}
 			})
 		
@@ -9890,7 +9890,7 @@ if (-not $SilentMode)
 		$clearLogButton.Size = New-Object System.Drawing.Size(39, 34)
 		$clearLogButton.add_Click({
 				$logBox.Clear()
-				Write-Log "Log Cleared"
+				Write_Log "Log Cleared"
 			})
 		$form.Controls.Add($clearLogButton)
 		# Set ToolTip
@@ -10023,7 +10023,7 @@ if (-not $SilentMode)
 		$activateItem = New-Object System.Windows.Forms.ToolStripMenuItem("Alex_C.T")
 		$activateItem.ToolTipText = "Activate Windows using Alex_C.T's method."
 		$activateItem.Add_Click({
-				Invoke-SecureScript # your existing function call
+				Invoke_Secure_Script # your existing function call
 			})
 		[void]$contextMenuGeneral.Items.Add($activateItem)
 		
@@ -10041,7 +10041,7 @@ if (-not $SilentMode)
 				if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
 				{
 					Restart-Computer -Force
-					Delete-Files -Path "$TempDir" -SpecifiedFiles `
+					Delete_Files -Path "$TempDir" -SpecifiedFiles `
 								 "Server_Database_Maintenance.sqi", `
 								 "Lane_Database_Maintenance.sqi", `
 								 "TBS_Maintenance_Script.ps1"
@@ -10052,12 +10052,12 @@ if (-not $SilentMode)
 		############################################################################
 		# 3) Install Function in SMS
 		############################################################################
-		$installIntoSMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install Function in SMS")
-		$installIntoSMSItem.ToolTipText = "Installs 'Deploy_ONE_FCT' & 'Pump_All_Items_Tables' into the SMS system."
-		$installIntoSMSItem.Add_Click({
-				InstallIntoSMS -StoreNumber $StoreNumber -OfficePath $OfficePath
+		$Install_ONE_FUNCTION_Into_SMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install Function in SMS")
+		$Install_ONE_FUNCTION_Into_SMSItem.ToolTipText = "Installs 'Deploy_ONE_FCT' & 'Pump_All_Items_Tables' into the SMS system."
+		$Install_ONE_FUNCTION_Into_SMSItem.Add_Click({
+				Install_ONE_FUNCTION_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 			})
-		[void]$contextMenuGeneral.Items.Add($installIntoSMSItem)
+		[void]$contextMenuGeneral.Items.Add($Install_ONE_FUNCTION_Into_SMSItem)
 		
 		############################################################################
 		# 4) Repair BMS Service
@@ -10065,7 +10065,7 @@ if (-not $SilentMode)
 		$repairBMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair BMS Service")
 		$repairBMSItem.ToolTipText = "Repairs the BMS service for scale deployment."
 		$repairBMSItem.Add_Click({
-				Repair-BMS
+				Repair_BMS
 			})
 		[void]$contextMenuGeneral.Items.Add($repairBMSItem)
 		
@@ -10075,7 +10075,7 @@ if (-not $SilentMode)
 		$manualRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manual Repair")
 		$manualRepairItem.ToolTipText = "Writes SQL repair scripts to the desktop."
 		$manualRepairItem.Add_Click({
-				Write-SQLScriptsToDesktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
+				Write_SQL_Scripts_To_Desktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
 			})
 		[void]$contextMenuGeneral.Items.Add($manualRepairItem)
 		
@@ -10085,7 +10085,7 @@ if (-not $SilentMode)
 		$fixJournalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Journal")
 		$fixJournalItem.ToolTipText = "Fix journal entries for the specified date."
 		$fixJournalItem.Add_Click({
-				Fix-Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
+				Fix_Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
 			})
 		[void]$contextMenuGeneral.Items.Add($fixJournalItem)
 		
@@ -10156,7 +10156,7 @@ if (-not $SilentMode)
 			$HostDBRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Host DB Repair")
 			$HostDBRepairItem.ToolTipText = "Repair the Host database."
 			$HostDBRepairItem.Add_Click({
-					Process-HostGUI -StoresqlFilePath $StoresqlFilePath
+					Process_Host -StoresqlFilePath $StoresqlFilePath
 				})
 			[void]$ContextMenuHost.Items.Add($HostDBRepairItem)
 			
@@ -10166,7 +10166,7 @@ if (-not $SilentMode)
 			$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
 			$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
 			$RepairWindowsItem.Add_Click({
-					Repair-Windows
+					Repair_Windows
 				})
 			[void]$ContextMenuHost.Items.Add($RepairWindowsItem)
 			
@@ -10187,7 +10187,7 @@ if (-not $SilentMode)
 					# If the user clicks Yes, proceed with the configuration
 					if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes)
 					{
-						Configure-SystemSettings
+						Configure_System_Settings
 					}
 					else
 					{
@@ -10225,7 +10225,7 @@ if (-not $SilentMode)
 			$hostButton2.Location = New-Object System.Drawing.Point(284, 515)
 			$hostButton2.Size = New-Object System.Drawing.Size(200, 40)
 			$hostButton2.Add_Click({
-					Process-StoresGUI -StoresqlFilePath $StoresqlFilePath
+					Process_Stores -StoresqlFilePath $StoresqlFilePath
 				})
 			$form.Controls.Add($hostButton2)
 			# Set ToolTip
@@ -10237,7 +10237,7 @@ if (-not $SilentMode)
 			$hostButton5.Location = New-Object System.Drawing.Point(50, 560)
 			$hostButton5.Size = New-Object System.Drawing.Size(200, 40)
 			$hostButton5.Add_Click({
-					Create-ScheduledTaskGUI -ScriptPath $scriptPath
+					Create_Scheduled_Task -ScriptPath $scriptPath
 				})
 			$form.Controls.Add($hostButton5)
 			# Set ToolTip
@@ -10281,7 +10281,7 @@ if (-not $SilentMode)
 					)
 					if ($confirmation -eq [System.Windows.Forms.DialogResult]::Yes)
 					{
-						Process-ServerGUI -StoresqlFilePath $StoresqlFilePath
+						Process_Server -StoresqlFilePath $StoresqlFilePath
 					}
 					else
 					{
@@ -10298,12 +10298,12 @@ if (-not $SilentMode)
 			[void]$ContextMenuServer.Items.Add($ServerDBRepairItem)
 			
 			############################################################################
-			# 2) Organize-TBS_SCL_ver520 Menu Item
+			# 2) Organize_TBS_SCL_ver520 Menu Item
 			############################################################################
-			$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize-TBS_SCL_ver520")
+			$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize_TBS_SCL_ver520")
 			$OrganizeScaleTableItem.ToolTipText = "Organize the Scale SQL table (TBS_SCL_ver520)."
 			$OrganizeScaleTableItem.Add_Click({
-					Organize-TBS_SCL_ver520
+					Organize_TBS_SCL_ver520
 				})
 			[void]$ContextMenuServer.Items.Add($OrganizeScaleTableItem)
 			
@@ -10313,7 +10313,7 @@ if (-not $SilentMode)
 			$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
 			$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
 			$RepairWindowsItem.Add_Click({
-					Repair-Windows
+					Repair_Windows
 				})
 			[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
 			
@@ -10334,7 +10334,7 @@ if (-not $SilentMode)
 					# If the user clicks Yes, proceed with the configuration
 					if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes)
 					{
-						Configure-SystemSettings
+						Configure_System_Settings
 					}
 					else
 					{
@@ -10394,7 +10394,7 @@ if (-not $SilentMode)
 			$LaneDBRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Lane DB Repair")
 			$LaneDBRepairItem.ToolTipText = "Repair the Lane databases for the selected lane(s)."
 			$LaneDBRepairItem.Add_Click({
-					Process-LanesGUI -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
+					Process_Lanes -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
 				})
 			[void]$ContextMenuLane.Items.Add($LaneDBRepairItem)
 			
@@ -10404,7 +10404,7 @@ if (-not $SilentMode)
 			$PumpTableToLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Pump Table to Lane")
 			$PumpTableToLaneItem.ToolTipText = "Pump the selected tables to the lane/s databases."
 			$PumpTableToLaneItem.Add_Click({
-					Pump-Tables -StoreNumber $StoreNumber
+					Pump_Tables -StoreNumber $StoreNumber
 				})
 			[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
 			
@@ -10424,7 +10424,7 @@ if (-not $SilentMode)
 			$UpdateLaneConfigItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Lane Configuration")
 			$UpdateLaneConfigItem.ToolTipText = "Update the configuration files for the lanes. Fixes connectivity errors and mistakes made during lane ghosting."
 			$UpdateLaneConfigItem.Add_Click({
-					Update-LaneFiles -StoreNumber $StoreNumber
+					Update_Lane_Config -StoreNumber $StoreNumber
 				})
 			[void]$ContextMenuLane.Items.Add($UpdateLaneConfigItem)
 			
@@ -10434,7 +10434,7 @@ if (-not $SilentMode)
 			$CloseOpenTransItem = New-Object System.Windows.Forms.ToolStripMenuItem("Close Open Transactions")
 			$CloseOpenTransItem.ToolTipText = "Close any open transactions at the lane/s."
 			$CloseOpenTransItem.Add_Click({
-					CloseOpenTransactions -StoreNumber $StoreNumber
+					Close_Open_Transactions -StoreNumber $StoreNumber
 				})
 			[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
 			
@@ -10454,7 +10454,7 @@ if (-not $SilentMode)
 			$PingLanesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Lanes")
 			$PingLanesItem.ToolTipText = "Ping all lane devices to check connectivity."
 			$PingLanesItem.Add_Click({
-					Ping-AllLanes -Mode "Store" -StoreNumber "$StoreNumber"
+					Ping_All_Lanes -Mode "Store" -StoreNumber "$StoreNumber"
 				})
 			[void]$ContextMenuLane.Items.Add($PingLanesItem)
 			
@@ -10464,7 +10464,7 @@ if (-not $SilentMode)
 			$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
 			$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
 			$DeleteDBSItem.Add_Click({
-					Delete-DBS -Mode "Store" -StoreNumber "$StoreNumber"
+					Delete_DBS -Mode "Store" -StoreNumber "$StoreNumber"
 				})
 			[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
 			
@@ -10474,7 +10474,7 @@ if (-not $SilentMode)
 			$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
 			$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
 			$RefreshPinPadFilesItem.Add_Click({
-					Refresh-Files -Mode $Mode -StoreNumber "$StoreNumber"
+					Refresh_PIN_Pad_Files -Mode $Mode -StoreNumber "$StoreNumber"
 				})
 			[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 			
@@ -10514,7 +10514,7 @@ if (-not $SilentMode)
 			$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 			$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
 			$SendRestartCommandItem.Add_Click({
-					Send-RestartAllPrograms -StoreNumber "$StoreNumber"
+					Send_Restart_All_Programs -StoreNumber "$StoreNumber"
 				})
 			[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 			
@@ -10524,7 +10524,7 @@ if (-not $SilentMode)
 			$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set the time on lanes")
 			$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize the time for the selected lanes."
 			$SetLaneTimeFromLocalItem.Add_Click({
-					Set-LaneTimeFromLocal -StoreNumber "$StoreNumber"
+					Send_SERVER_time_to_Lanes -StoreNumber "$StoreNumber"
 				})
 			[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 			
@@ -10534,7 +10534,7 @@ if (-not $SilentMode)
 			$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 			$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
 			$RebootLaneItem.Add_Click({
-					Reboot-Lanes -StoreNumber $StoreNumber
+					Reboot_Lanes -StoreNumber $StoreNumber
 				})
 			[void]$ContextMenuLane.Items.Add($RebootLaneItem)
 			
@@ -10566,14 +10566,14 @@ if (-not $SilentMode)
 	# ===================================================================================================
 	
 	# Call the function to ensure admin privileges
-	# Ensure-Administrator
+	# Ensure_Administrator
 	
 	<#
 	# Only call the function if the script has not been relaunched
 	if (-not $IsRelaunched)
 	{
-		Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
-		Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
+		Write-Host "First launch detected. Calling Download_and_Relaunch."
+		Download_and_Relaunch -ScriptUrl "https://bit.ly/TBS_Maintenace_Script"
 	}
 	else
 	{
@@ -10582,47 +10582,47 @@ if (-not $SilentMode)
 	#>
 	
 	# Show the running version of PowerShell
-	# Write-Log "Powershell version installed: $major.$minor | Build-$build | Revision-$revision" "blue"
+	# Write_Log "Powershell version installed: $major.$minor | Build-$build | Revision-$revision" "blue"
 	
 	# Initialize a counter for the number of jobs started
 	$jobCount = 0
 	
 	# Initialize variables
-	# $Memory25PercentMB = Get-MemoryInfo
+	# $Memory25PercentMB = Get_Memory_Capacity_Info
 	
 	# Get SQL Connection String
-	Get-DatabaseConnectionString
+	Get_Database_Connection_String
 	
 	# Get the Store Number
-	Get-StoreNumber
+	Get_Store_Number
 	$StoreNumber = $script:FunctionResults['StoreNumber']
 	
 	# Get the Store Name
-	Get-StoreName
+	Get_Store_Name
 	$StoreName = $script:FunctionResults['StoreName']
 	
 	# Determine the Mode
-	$Mode = Determine-Mode -StoreNumber $StoreNumber
+	$Mode = Determine_Mode -StoreNumber $StoreNumber
 	$Mode = $script:FunctionResults['Mode']
 	
 	# Count Nodes based on mode
-	$Nodes = Retrieve-Nodes -Mode $Mode -StoreNumber $StoreNumber
+	$Nodes = Retrieve_Nodes -Mode $Mode -StoreNumber $StoreNumber
 	$Nodes = $script:FunctionResults['Nodes']
 	
 	# Populate the hash table with results from various functions
-	Get-TableAliases
+	Get_Table_Aliases
 	
 	# Generate SQL scripts
-	Generate-SQLScripts -StoreNumber $StoreNumber -Memory25PercentMB $Memory25PercentMB -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
+	Generate_SQL_Scripts -StoreNumber $StoreNumber -Memory25PercentMB $Memory25PercentMB -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
 	
 	# Clearing XE (Urgent Messages) folder.
-	$ClearXEJob = Clear-XEFolder
+	$ClearXEJob = Clear_XE_Folder
 	# Increment the job counter
 	$jobCount++
 	
 	# Clear %Temp% foder on start
-	$ClearTempAtLaunch = Delete-Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
-	$ClearWinTempAtLaunch = Delete-Files -Path "$env:SystemRoot\Temp" -AsJob
+	$ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
+	$ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob
 	# Increment the job counter
 	$jobCount++
 	
@@ -10635,7 +10635,7 @@ if (-not $SilentMode)
 	<#
 	# Define the list of user profiles to process
 	$userProfiles = @('Administrator', 'Operator')
-	# Iterate over each machine and each user profile, then invoke Delete-Files as a background job
+	# Iterate over each machine and each user profile, then invoke Delete_Files as a background job
 	foreach ($machine in $LaneMachines.Values)
 	{
     	foreach ($user in $userProfiles)
@@ -10646,32 +10646,32 @@ if (-not $SilentMode)
 	
         	try
         	{
-            	# Invoke the Delete-Files function with the -AsJob parameter
-            	$DeleteJob1 = Delete-Files -Path $tempPath -AsJob
+            	# Invoke the Delete_Files function with the -AsJob parameter
+            	$DeleteJob1 = Delete_Files -Path $tempPath -AsJob
             	# Increment the job counter
             	$jobCount++
                         	
-				# Invoke the Delete-Files function with the -AsJob parameter
-	            $DeleteJob2 = Delete-Files -Path $wintempPath -AsJob
+				# Invoke the Delete_Files function with the -AsJob parameter
+	            $DeleteJob2 = Delete_Files -Path $wintempPath -AsJob
 	            # Increment the job counter
             	$jobCount++
 
             	# Log that the deletion job has been started
-            	# Write-Log "Started deletion job for %Temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
-				# Write-Log "Started deletion job for %Temp% folder in user '$user' on machine '$machine' at path '$wintempPath'." "green"
+            	# Write_Log "Started deletion job for %Temp% folder in user '$user' on machine '$machine' at path '$tempPath'." "green"
+				# Write_Log "Started deletion job for %Temp% folder in user '$user' on machine '$machine' at path '$wintempPath'." "green"
         	}
         	catch
         	{
             	# Log any errors that occur while starting the deletion job
-           	 	Write-Log "An error occurred while starting the deletion job for user '$user' on machine '$machine'. Error: $_" "red"
+           	 	Write_Log "An error occurred while starting the deletion job for user '$user' on machine '$machine'. Error: $_" "red"
         	}
     	}
 	}
 	#>
 	
 	# Log the summary of jobs started
-	# Write-Log "Total deletion jobs started: $jobCount" "blue"
-	# Write-Log "All deletion jobs started" "blue"
+	# Write_Log "Total deletion jobs started: $jobCount" "blue"
+	# Write_Log "All deletion jobs started" "blue"
 	
 	# Indicate the script has started
 	Write-Host "Script started" -ForegroundColor Green
@@ -10688,21 +10688,21 @@ if (-not $SilentMode)
 else
 {
 	# Silent mode: automatically run option 5 of the detected mode
-	Write-Log "Running in silent mode. Automatically executing option 5 of mode '$Mode'." "blue"
+	Write_Log "Running in silent mode. Automatically executing option 5 of mode '$Mode'." "blue"
 	
 	if ($Mode -eq "Host")
 	{
 		# Process all Stores and Host
-		Process-AllStoresAndHostGUI -StoresqlFilePath $StoresqlFilePath -StoreNumber $StoreNumber
+		Process_All_Stores_And_Host -StoresqlFilePath $StoresqlFilePath -StoreNumber $StoreNumber
 	}
 	else
 	{
 		# Process all Lanes and Server
-		Process-LanesAndServerGUI -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber -StoresqlFilePathServer $StoresqlFilePath
+		Process_Lanes_And_Server -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber -StoresqlFilePathServer $StoresqlFilePath
 	}
 	
 	# Clean Temp Folder
-	Delete-Files -Path "$TempDir"
+	Delete_Files -Path "$TempDir"
 	
 	# Exit script
 	exit
