@@ -5976,15 +5976,6 @@ function Reboot_Lanes
 			Write_Log "All reboot methods failed for $machine (Lane $lane)" "Red"
 		}
 	}
-	
-	# Notify user when complete
-	Add-Type -AssemblyName System.Windows.Forms
-	[System.Windows.Forms.MessageBox]::Show(
-		'Reboot attempts completed for selected lanes.',
-		'Reboot Lanes',
-		[System.Windows.Forms.MessageBoxButtons]::OK,
-		[System.Windows.Forms.MessageBoxIcon]::Information
-	)
 	Write_Log "`r`n==================== Reboot_Lanes Function Completed ====================" "blue"
 }
 
