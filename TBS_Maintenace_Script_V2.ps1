@@ -15,7 +15,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
  
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.2.0"
+$VersionNumber = "2.2.1"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -5907,147 +5907,149 @@ DROP TABLE $viewName;
 
 function Reboot_Lanes
 {
+	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
 	
-	# Ensure LaneMachines is available in the global FunctionResults
+	# Grab the lane→machine map
 	$LaneMachines = $script:FunctionResults['LaneMachines']
 	if (-not $LaneMachines -or $LaneMachines.Count -eq 0)
 	{
-		Write_Log "LaneMachines not available in FunctionResults. Cannot proceed with lane reboot." "red"
+		Write_Log "LaneMachines not available in FunctionResults. Cannot proceed with lane reboot." "Red"
 		return
 	}
 	
-	# Load Windows Forms assemblies
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
+	# Load WinForms
+	Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 	
-	# Create the form
-	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Select Lanes to Reboot"
-	$form.Size = New-Object System.Drawing.Size(400, 500)
-	$form.StartPosition = "CenterScreen"
+	# Build form...
+	$form = New-Object System.Windows.Forms.Form -Property @{
+		Text		  = "Select Lanes to Reboot"
+		Size		  = New-Object System.Drawing.Size(400, 500)
+		StartPosition = 'CenterScreen'
+	}
 	
-	# Create a CheckedListBox to list lanes
-	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
-	$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
-	$checkedListBox.Size = New-Object System.Drawing.Size(360, 350)
-	$checkedListBox.CheckOnClick = $true
+	$clb = New-Object System.Windows.Forms.CheckedListBox -Property @{
+		Location	 = New-Object System.Drawing.Point(10, 10)
+		Size		 = New-Object System.Drawing.Size(360, 350)
+		CheckOnClick = $true
+	}
 	
-	# Accumulate lane items in an array
-	$laneItems = @()
-	foreach ($lane in $LaneMachines.Keys)
+	# Populate
+	$items = foreach ($lane in $LaneMachines.Keys | Sort-Object { [int]$_ })
 	{
-		$machineName = $LaneMachines[$lane]
-		# Build a friendly display name, e.g., "Lane 5 (MachineName)"
-		$displayName = "Lane $lane ($machineName)"
-		$item = New-Object PSObject -Property @{
+		$machine = $LaneMachines[$lane]
+		$obj = [PSCustomObject]@{
 			LaneNumber  = $lane
-			MachineName = $machineName
-			DisplayName = $displayName
+			MachineName = $machine
+			DisplayName = "Lane $lane ($machine)"
 		}
-		$item | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
-		$laneItems += $item
+		# So it shows nice in the list
+		$obj | Add-Member ScriptMethod ToString { $this.DisplayName } -Force
+		$obj
 	}
+	$items | % { $clb.Items.Add($_) | Out-Null }
 	
-	# Sort lane items in ascending order by LaneNumber (numerically)
-	$sortedLaneItems = $laneItems | Sort-Object -Property { [int]$_.LaneNumber }
-	
-	# Add sorted lane items to the CheckedListBox
-	foreach ($item in $sortedLaneItems)
-	{
-		$checkedListBox.Items.Add($item) | Out-Null
+	# Buttons: Select All, Deselect, Reboot, Close
+	$btnSelectAll = New-Object System.Windows.Forms.Button -Property @{
+		Text	 = 'Select All'
+		Location = New-Object System.Drawing.Point(10, 370)
+		Size	 = New-Object System.Drawing.Size(100, 30)
 	}
+	$btnSelectAll.Add_Click({ 0 .. ($clb.Items.Count - 1) | % { $clb.SetItemChecked($_, $true) } })
 	
-	# "Select All" button
-	$btnSelectAll = New-Object System.Windows.Forms.Button
-	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 370)
-	$btnSelectAll.Size = New-Object System.Drawing.Size(100, 30)
-	$btnSelectAll.Text = "Select All"
-	$btnSelectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $true)
-			}
-		})
+	$btnDeselectAll = New-Object System.Windows.Forms.Button -Property @{
+		Text	 = 'Deselect All'
+		Location = New-Object System.Drawing.Point(120, 370)
+		Size	 = New-Object System.Drawing.Size(100, 30)
+	}
+	$btnDeselectAll.Add_Click({ 0 .. ($clb.Items.Count - 1) | % { $clb.SetItemChecked($_, $false) } })
 	
-	# "Deselect All" button
-	$btnDeselectAll = New-Object System.Windows.Forms.Button
-	$btnDeselectAll.Location = New-Object System.Drawing.Point(120, 370)
-	$btnDeselectAll.Size = New-Object System.Drawing.Size(100, 30)
-	$btnDeselectAll.Text = "Deselect All"
-	$btnDeselectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $false)
-			}
-		})
-	
-	# "Reboot Selected" button
-	$btnReboot = New-Object System.Windows.Forms.Button
-	$btnReboot.Location = New-Object System.Drawing.Point(230, 370)
-	$btnReboot.Size = New-Object System.Drawing.Size(140, 30)
-	$btnReboot.Text = "Reboot Selected"
+	$btnReboot = New-Object System.Windows.Forms.Button -Property @{
+		Text	 = 'Reboot Selected'
+		Location = New-Object System.Drawing.Point(230, 370)
+		Size	 = New-Object System.Drawing.Size(140, 30)
+	}
 	$btnReboot.Add_Click({
-			$selectedItems = $checkedListBox.CheckedItems
-			if ($selectedItems.Count -eq 0)
+			$sel = $clb.CheckedItems
+			if ($sel.Count -eq 0)
 			{
-				[System.Windows.Forms.MessageBox]::Show("No lanes selected.", "Information",
-					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+				[Windows.Forms.MessageBox]::Show('No lanes selected.', 'Info', [Windows.Forms.MessageBoxButtons]::OK, [Windows.Forms.MessageBoxIcon]::Information)
+				return
 			}
-			else
+			foreach ($item in $sel)
 			{
-				foreach ($item in $selectedItems)
+				$lane = $item.LaneNumber
+				$machine = $item.MachineName
+				Write_Log "→ Lane $[lane]: attempting mailslot reboot on $machine" "Yellow"
+				
+				# 1) Mailslot reboot
+				$slot = "\\$machine\mailslot\SMSStart_${StoreNumber}${lane}"
+				$cmd = '@exec(REBOOT=1).'
+				try
 				{
-					$laneNumber = $item.LaneNumber
-					$machineName = $item.MachineName
-					Write_Log "Attempting to reboot Lane $laneNumber on machine: $machineName" "Yellow"
-					try
+					$ok = [MailslotSender]::SendMailslotCommand($slot, $cmd)
+					if ($ok)
 					{
-						# First, attempt to reboot using the shutdown command
-						$shutdownCommand = "shutdown /r /m \\$machineName /t 0 /f"
-						Write_Log "Executing: $shutdownCommand" "Yellow"
-						$shutdownResult = & cmd.exe /c $shutdownCommand 2>&1
-						if ($LASTEXITCODE -eq 0)
-						{
-							Write_Log "Shutdown command executed successfully for $machineName." "Green"
-						}
-						else
-						{
-							Write_Log "Shutdown command failed for $machineName with exit code $LASTEXITCODE. Trying Restart-Computer..." "Red"
-							Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop
-							Write_Log "Restart-Computer command executed successfully for $machineName." "Green"
-						}
+						Write_Log "✓ Mailslot reboot sent to $machine (Lane $lane)" "Green"
+						continue
 					}
-					catch
+					else
 					{
-						Write_Log "Failed to reboot machine $machineName for Lane $laneNumber. Error: $_" "Red"
+						throw "SendMailslotCommand returned false"
 					}
 				}
-				[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected lanes.", "Reboot",
-					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+				catch
+				{
+					Write_Log "⚠ Mailslot reboot failed for $machine (Lane $lane): $_. Falling back..." "Yellow"
+				}
+				
+				# 2) Fallback: shutdown.exe
+				try
+				{
+					$shutdownCmd = "shutdown /r /m \\$machine /t 0 /f"
+					Write_Log "→ Fallback: $shutdownCmd" "Yellow"
+					& cmd.exe /c $shutdownCmd | Out-Null
+					if ($LASTEXITCODE -eq 0)
+					{
+						Write_Log "✓ shutdown.exe succeeded for $machine" "Green"
+						continue
+					}
+					else
+					{
+						Write_Log "✗ shutdown.exe exit code $LASTEXITCODE. Trying Restart-Computer..." "Yellow"
+					}
+				}
+				catch
+				{
+					Write_Log "✗ shutdown.exe threw error: $_. Trying Restart-Computer..." "Red"
+				}
+				
+				# 3) Final fallback: Restart-Computer
+				try
+				{
+					Restart-Computer -ComputerName $machine -Force -ErrorAction Stop
+					Write_Log "✓ Restart-Computer succeeded for $machine" "Green"
+				}
+				catch
+				{
+					Write_Log "✗ All reboot methods failed for $machine (Lane $lane): $_" "Red"
+				}
 			}
+			[Windows.Forms.MessageBox]::Show('Reboot attempts completed.', 'Reboot', [Windows.Forms.MessageBoxButtons]::OK, [Windows.Forms.MessageBoxIcon]::Information)
 		})
 	
-	# "Close" button
-	$btnCancel = New-Object System.Windows.Forms.Button
-	$btnCancel.Location = New-Object System.Drawing.Point(10, 410)
-	$btnCancel.Size = New-Object System.Drawing.Size(360, 30)
-	$btnCancel.Text = "Close"
-	$btnCancel.Add_Click({
-			$form.Close()
-		})
+	$btnClose = New-Object System.Windows.Forms.Button -Property @{
+		Text	 = 'Close'
+		Location = New-Object System.Drawing.Point(10, 410)
+		Size	 = New-Object System.Drawing.Size(360, 30)
+	}
+	$btnClose.Add_Click({ $form.Close() })
 	
-	# Add controls to the form
-	$form.Controls.Add($checkedListBox)
-	$form.Controls.Add($btnSelectAll)
-	$form.Controls.Add($btnDeselectAll)
-	$form.Controls.Add($btnReboot)
-	$form.Controls.Add($btnCancel)
-	
-	# Show the form
+	# Add controls & show
+	$form.Controls.AddRange(@($clb, $btnSelectAll, $btnDeselectAll, $btnReboot, $btnClose))
 	$form.Add_Shown({ $form.Activate() })
 	[void]$form.ShowDialog()
 }
