@@ -5943,7 +5943,7 @@ function Reboot_Lanes
 		}
 		
 		$machine = $LaneMachines[$lane]
-		Write_Log "Lane $lane on $[machine]: attempting mailslot reboot" "Yellow"
+		Write_Log "Lane $lane on [$machine]: attempting mailslot reboot" "Yellow"
 		
 		# 1) SMSStart mailslot reboot
 		$mailslot = "\\$machine\mailslot\SMSStart_${StoreNumber}${lane}"
