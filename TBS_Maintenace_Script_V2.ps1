@@ -8784,14 +8784,13 @@ function Retrive_Transactions
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber
+		[string]$StoreNumber,
+		[Parameter(Mandatory = $false)]
+		[string]$OutputCsv
 	)
 	
 	Write_Log "`r`n==================== Starting Retrive_Transactions ====================`r`n" "blue"
 	
-	# --------------------------------------------------
-	# STEP 1: Prompt for Start and Stop Dates using DateTimePickers
-	# --------------------------------------------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
@@ -8870,72 +8869,96 @@ function Retrive_Transactions
 	Write_Log "Start Date selected: $startDateFormatted" "green"
 	Write_Log "Stop Date selected: $stopDateFormatted" "green"
 	
-	# --------------------------------------------------
-	# STEP 2: Use Show_Lane/Store_Selection_Form to select registers (lanes)
-	# --------------------------------------------------
+	# --- STEP 2: Ask which lanes ---
 	$selection = Show_Lane/Store_Selection_Form -Mode "Store" -StoreNumber $StoreNumber
-	if ($null -eq $selection)
+	if (-not $selection)
 	{
-		Write_Log "No registers selected or selection cancelled." "yellow"
-		Write_Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
+		Write-Warning "Lane selection cancelled."
 		return
 	}
+	$lanes = $selection.Lanes
 	
-	# Get the list of registers (lanes) to process.
-	$registersToProcess = @()
-	if ($selection.Type -eq "Specific" -or $selection.Type -eq "Range" -or $selection.Type -eq "All")
+	# --- STEP 3: Query each lane over named pipes, fallback to TCP ---
+	$allResults = @()
+	foreach ($lane in $lanes)
 	{
-		$registersToProcess = $selection.Lanes
-	}
-	else
-	{
-		Write_Log "Unexpected selection type returned." "red"
-		return
-	}
-	
-	# --------------------------------------------------
-	# STEP 3: Build the SQI content using the selected dates
-	# --------------------------------------------------
-	$SQIContent = @"
-@WIZSET(DETAIL=D);
-@WIZINIT;
-@WIZDATES(START=$startDateFormatted,STOP=$stopDateFormatted);
-
-@WIZRPL(TRANS_LIST=SAL_HDR_SUS@TER);
-@CREATE(@WIZGET(TRANS_LIST),HDRSAL);
-
-INSERT INTO @WIZGET(TRANS_LIST) SELECT @DBFLD(@WIZGET(TRANS_LIST)) FROM SAL_HDR@WIZGET(TRANS_LOCAL)
-WHERE F1067='CLOSE' and F254>='@WIZGET(START)' and F254<='@WIZGET(STOP)' AND
-F1032>=0 and F1032<=99999999;
-"@
-	
-	# Ensure the SQI content uses CRLF line endings (ANSI PC format)
-	$SQIContent = $SQIContent -replace "`n", "`r`n"
-	
-	# --------------------------------------------------
-	# STEP 4: For each selected register, deploy the SQI file
-	# --------------------------------------------------
-	foreach ($reg in $registersToProcess)
-	{
-		# Construct the register (lane) directory path (assumes naming: XF<StoreNumber><Register>)
-		$RegisterDirectory = "$OfficePath\XF${StoreNumber}${reg}"
-		if (-not (Test-Path $RegisterDirectory))
+		$machine = $script:FunctionResults['LaneMachines'][$lane]
+		if (-not $machine)
 		{
-			Write_Log "Register directory $RegisterDirectory not found. Skipping register $reg." "yellow"
+			Write-Warning "No machine mapped for lane $lane"
 			continue
 		}
 		
-		# Define the full path to the SQI file (named "Retrive_Transactions.sqi")
-		$SQIFilePath = Join-Path -Path $RegisterDirectory -ChildPath "trs_clt_reprocess.sqi"
+		$instance = 'SQLEXPRESS'
+		$npServer = "np:\\$machine\pipe\MSSQL$instance\sql\query"
+		$tcpServer = "$machine\$instance"
 		
-		# Write the SQI file using ASCII encoding (ANSI PC)
-		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
+		$query = @"
+SELECT
+    F1032 AS TransactionNumber,
+    F254  AS TransactionDate,
+    F1067 AS Status,
+    *
+FROM SAL_HDR
+WHERE F1067 = 'CLOSE'
+  AND F254 >= '$startDateFormatted'
+  AND F254 <= '$stopDateFormatted'
+ORDER BY F254, F1032;
+"@
 		
-		# Remove the Archive attribute (set file attributes to Normal)
-		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Deployed Retrive_Transactions.sqi command to register $reg in directory $RegisterDirectory." "green"
+		try
+		{
+			$res = Invoke-Sqlcmd -ServerInstance $npServer `
+								 -Database "MyLaneDb" `
+								 -Query $query `
+								 -ErrorAction Stop
+		}
+		catch
+		{
+			Write-Warning "Named-pipe connect to $machine failed, trying TCP..."
+			try
+			{
+				$res = Invoke-Sqlcmd -ServerInstance $tcpServer `
+									 -Database "MyLaneDb" `
+									 -Query $query `
+									 -ErrorAction Stop
+			}
+			catch
+			{
+				Write-Error "Cannot connect to $machine via TCP: $_"
+				continue
+			}
+		}
+		
+		if ($res)
+		{
+			# tag each row with its lane
+			$res | ForEach-Object {
+				$_ | Add-Member -NotePropertyName Lane -NotePropertyValue $lane -PassThru
+			} | ForEach-Object {
+				$allResults += $_
+			}
+		}
+		else
+		{
+			Write-Warning "No closed transactions found on lane $lane"
+		}
 	}
-	Write_Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
+	
+	# --- STEP 4: Output & optional CSV ---
+	if (-not $allResults)
+	{
+		Write-Warning "No transactions found in any selected lane."
+		return
+	}
+	
+	$allResults | Format-Table -AutoSize
+	
+	if ($OutputCsv)
+	{
+		$allResults | Export-Csv -Path $OutputCsv -NoTypeInformation -Encoding UTF8
+		Write-Host "Results exported to $OutputCsv" -ForegroundColor Green
+	}
 }
 
 <#function Retrive_Transactions (Mailslot)
