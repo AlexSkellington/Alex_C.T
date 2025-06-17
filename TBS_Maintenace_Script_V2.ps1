@@ -5980,16 +5980,7 @@ function Reboot_Lanes
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Close_Open_Transactions
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   This function monitors the specified XE folder for error files, extracts relevant data, and closes
-#   open transactions on specified lanes for a given store. Logs are written to both a log file and
-#   through the Write_Log function for the main script.
-# ===================================================================================================
-
-# ===================================================================================================
-#                                       FUNCTION: Close_Open_Transactions
+#                                       FUNCTION: CloseOpenTransactions
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   This function monitors the specified XE folder for error files, extracts relevant data, and closes
@@ -6004,20 +5995,26 @@ function Close_Open_Transactions
 		[string]$StoreNumber
 	)
 	
-	Write_Log "`r`n==================== Starting Close_Open_Transactions ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting CloseOpenTransactions ====================`r`n" "blue"
 	
 	# Define the path to monitor
 	$XEFolderPath = "$OfficePath\XE${StoreNumber}901"
+	
+	# Ensure the XE folder exists
 	if (-not (Test-Path $XEFolderPath))
 	{
 		Write_Log -Message "XE folder not found: $XEFolderPath" "red"
 		return
 	}
 	
-	# Prepare content & log paths
-	$CloseTransactionContent = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE')"
+	# Path to the manual Close_Transaction.sqi content
+	$CloseTransactionManual = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE')"
+	
+	# Path to the log file
 	$LogFolderPath = "$BasePath\Scripts_by_Alex_C.T"
-	$LogFilePath = Join-Path $LogFolderPath "Closed_Transactions_LOG.txt"
+	$LogFilePath = Join-Path -Path $LogFolderPath -ChildPath "Closed_Transactions_LOG.txt"
+	
+	# Ensure the log directory exists
 	if (-not (Test-Path $LogFolderPath))
 	{
 		try
@@ -6036,139 +6033,252 @@ function Close_Open_Transactions
 	
 	try
 	{
-		# Scan for recent error files
-		$now = Get-Date
-		$files = Get-ChildItem -Path $XEFolderPath -Filter "S*.???" |
-		Where-Object { ($now - $_.LastWriteTime).TotalDays -le 30 }
+		# Get the current time
+		$currentTime = Get-Date
 		
-		foreach ($file in $files)
+		# Get the list of files matching the pattern in the XE folder that are not older than 30 days
+		$files = Get-ChildItem -Path $XEFolderPath -Filter "S*.???" | Where-Object {
+			($currentTime - $_.LastWriteTime).TotalDays -le 30
+		}
+		
+		if ($files -and $files.Count -gt 0)
 		{
-			if ($file.Name -notmatch '^S.*\.(\d{3})$') { continue }
-			$LaneNumber = $Matches[1]
-			
-			$content = Get-Content $file.FullName
-			if ($content -notmatch 'From:\s*(\d{3})(\d{3})') { continue }
-			$fileStore, $fileLane = $Matches[1], $Matches[2]
-			if ($fileStore -ne $StoreNumber -or $fileLane -ne $LaneNumber) { continue }
-			
-			if ($content -match 'Subject:\s*Health' -and
-				$content -match 'MSG:\s*This application is not running\.' -and
-				$content -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
+			# We have files, attempt to process them
+			foreach ($file in $files)
 			{
+				try
+				{
+					# Extract lane number from filename based on the pattern S*."???"
+					if ($file.Name -match '^S.*\.(\d{3})$')
+					{
+						$LaneNumber = $Matches[1]
+					}
+					else
+					{
+						continue # Skip to the next file if pattern doesn't match
+					}
+					
+					# Read the content of the file
+					$content = Get-Content -Path $file.FullName
+					
+					# Parse the content
+					$fromLine = $content | Where-Object { $_ -like 'From:*' }
+					$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
+					$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
+					$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
+					
+					# Extract store number and lane number from the From line
+					if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
+					{
+						$fileStoreNumber = $Matches[1]
+						$fileLaneNumber = $Matches[2]
+						
+						# Check if the store number matches
+						if ($fileStoreNumber -eq $StoreNumber -and $fileLaneNumber -eq $LaneNumber)
+						{
+							# Check the Subject line
+							if ($subjectLine -match 'Subject:\s*(.*)')
+							{
+								$subject = $Matches[1].Trim()
+								if ($subject -eq 'Health')
+								{
+									# Check the MSG line
+									if ($msgLine -match 'MSG:\s*(.*)')
+									{
+										$message = $Matches[1].Trim()
+										if ($message -eq 'This application is not running.')
+										{
+											# Extract the transaction number from the Last recorded status line
+											if ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
+											{
+												$transactionNumber = $Matches[1]
+												
+												# Path to the automatic Close_Transaction.sqi content
+												$CloseTransactionAuto = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber)"
+												
+												# Define the path to the lane directory
+												$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
+												
+												if (Test-Path $LaneDirectory)
+												{
+													# Define the path to the Close_Transaction.sqi file in the lane directory
+													$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
+													
+													# Write the content to the file
+													Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionAuto -Encoding ASCII
+													
+													# Remove the Archive attribute from the file
+													Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+													
+													# Log the event
+													$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Closed transaction $transactionNumber on lane $LaneNumber"
+													Add-Content -Path $LogFilePath -Value $logMessage
+													
+													# Delete the error file from the XE folder
+													Remove-Item -Path $file.FullName -Force
+													
+													Write_Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
+													$MatchedTransactions = $true
+													
+													# Send restart command 3 seconds after deployment
+													Start-Sleep -Seconds 3
+													
+													# Retrieve updated node information to get machine mapping
+													$nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber
+													if ($nodes)
+													{
+														$machineName = $nodes.LaneMachines[$LaneNumber]
+														if ($machineName)
+														{
+															$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
+															$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+															$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+															if ($result)
+															{
+																Write_Log -Message "Restart command sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after deployment." "green"
+															}
+															else
+															{
+																Write_Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
+															}
+														}
+														else
+														{
+															Write_Log -Message "No machine found for lane $LaneNumber. Restart command not sent." "yellow"
+														}
+													}
+													else
+													{
+														Write_Log -Message "Could not retrieve node information for store $StoreNumber. Restart command not sent." "red"
+													}
+												}
+												else
+												{
+													Write_Log -Message "Lane directory $LaneDirectory not found" "yellow"
+												}
+											}
+											else
+											{
+												Write_Log -Message "Could not extract transaction number from Last recorded status line in file $($file.Name)" "red"
+											}
+										}
+										# else MSG did not match the condition - no action needed
+									}
+									# else no MSG line found - no action needed
+								}
+								# else subject not health - no action needed
+							}
+							# else no Subject line found - no action needed
+						}
+						else
+						{
+							Write_Log -Message "Store or Lane number mismatch in file $($file.Name). File Store/Lane: $fileStoreNumber/$fileLaneNumber vs Expected Store/Lane: $StoreNumber/$LaneNumber" "yellow"
+						}
+					}
+					# else From line not matched - no action needed
+				}
+				catch
+				{
+					Write_Log -Message "Error processing file $($file.Name): $_" "red"
+				}
+			}
+		}
+		
+		# After processing all files, if no matched transactions were found, prompt once for lane number
+		if (-not $MatchedTransactions)
+		{
+			Write_Log -Message "No files or no matching transactions found. Prompting for lane number." "yellow"
+			
+			# Show your lane-selection form
+			$selection = Show_Lane/Store_Selection_Form -Mode Store -StoreNumber $StoreNumber
+			if (-not $selection)
+			{
+				Write_Log -Message "Lane selection cancelled or returned no selection." "yellow"
+				Write_Log "`r`n==================== CloseOpenTransactions Function Completed ====================" "blue"
+				return
+			}
+			
+			# Loop through each selected lane
+			foreach ($LaneNumber in $selection.Lanes)
+			{
+				# Pad to three digits
+				$LaneNumber = $LaneNumber.PadLeft(3, '0')
 				
-				$transactionNumber = $Matches[1]
+				if (-not $LaneNumber)
+				{
+					Write_Log -Message "No lane number provided by the user." "red"
+					return
+				}
+				
+				# Define the path to the lane directory
 				$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
-				$CloseTransactionContentAuto = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032=$transactionNumber)"
 				
 				if (Test-Path $LaneDirectory)
 				{
-					$sqiPath = Join-Path $LaneDirectory "Close_Transaction.sqi"
-					Set-Content -Path $sqiPath -Value $CloseTransactionContentAuto -Encoding ASCII
-					Set-ItemProperty -Path $sqiPath -Name Attributes -Value ([IO.FileAttributes]::Normal)
+					# Define the path to the Close_Transaction.sqi file in the lane directory
+					$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
 					
-					$logMsg = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Closed transaction $transactionNumber on lane $LaneNumber"
-					Add-Content -Path $LogFilePath -Value $logMsg
+					# Write the content to the file
+					Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionManual -Encoding ASCII
 					
-					Remove-Item -Path $file.FullName -Force
-					Write_Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
-					$MatchedTransactions = $true
+					# Remove the Archive attribute from the file
+					Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
 					
-					# Restart lane programs
-					Start-Sleep -Seconds 3
-					if ($nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber)
+					# Log the event
+					$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - User deployed Close_Transaction.sqi to lane $LaneNumber"
+					Add-Content -Path $LogFilePath -Value $logMessage
+					
+					Write_Log -Message "Deployed Close_Transaction.sqi to lane $LaneNumber" "green"
+					
+					# After user deploys the file, clear the folder except for files with "FATAL" in the name
+					Get-ChildItem -Path $XEFolderPath -File | Where-Object { $_.Name -notlike "*FATAL*" } | Remove-Item -Force
+					
+					# Send restart command 3 seconds after deployment by the user
+					# Start-Sleep -Seconds 3
+					$nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber
+					if ($nodes)
 					{
-						if ($machine = $nodes.LaneMachines[$LaneNumber])
+						$machineName = $nodes.LaneMachines[$LaneNumber]
+						if ($machineName)
 						{
-							$addr = "\\$machine\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
-							$cmdMsg = "@exec(RESTART_ALL=PROGRAMS)."
-							if ([MailslotSender]::SendMailslotCommand($addr, $cmdMsg))
+							$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
+							$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+							$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+							if ($result)
 							{
-								Write_Log -Message "Restart command sent to $machine (lane $LaneNumber)" "green"
+								Write_Log -Message "Restart All Programs sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after user deployment." "green"
 							}
 							else
 							{
-								Write_Log -Message "Failed to send restart command to $machine (lane $LaneNumber)" "red"
+								Write_Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
 							}
 						}
 						else
 						{
-							Write_Log -Message "No machine found for lane $LaneNumber. Restart not sent." "yellow"
+							Write_Log -Message "No machine found for lane $LaneNumber. Restart command not sent." "yellow"
 						}
+					}
+					else
+					{
+						Write_Log -Message "Could not retrieve node information for store $StoreNumber. Restart command not sent." "red"
 					}
 				}
 				else
 				{
-					Write_Log -Message "Lane directory not found: $LaneDirectory" "yellow"
+					Write_Log -Message "Lane directory $LaneDirectory not found" "yellow"
 				}
+				
+				Write_Log "Prompt deployment process completed." "yellow"
 			}
 		}
 	}
 	catch
 	{
-		Write_Log -Message "Error during scan: $_" "red"
-	}
-	
-	# --- Replaced WinForms fallback ---
-	if (-not $MatchedTransactions)
-	{
-		Write_Log "No matching error files found. Prompting for lane selection..." "yellow"
-		
-		$selection = Show_Lane/Store_Selection_Form -Mode "Store" -StoreNumber $StoreNumber
-		if ($null -eq $selection)
-		{
-			Write_Log "Selection cancelled by user." "yellow"
-			Write_Log "`r`n==================== Close_Open_Transactions Completed ====================" "blue"
-			return
-		}
-		
-		foreach ($LaneNumber in $selection.Lanes)
-		{
-			$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
-			if (-not (Test-Path $LaneDirectory))
-			{
-				Write_Log "Skipped missing lane dir: $LaneDirectory" "yellow"
-				continue
-			}
-			
-			# Deploy the SQI
-			$sqiPath = Join-Path $LaneDirectory "Close_Transaction.sqi"
-			Set-Content -Path $sqiPath -Value $CloseTransactionContent -Encoding ASCII
-			Set-ItemProperty -Path $sqiPath -Name Attributes -Value ([IO.FileAttributes]::Normal)
-			Add-Content -Path $LogFilePath -Value "$(Get-Date -f 'yyyy-MM-dd HH:mm:ss') - Deployed Close_Transaction to lane $LaneNumber"
-			Write_Log -Message "Deployed Close_Transaction.sqi to lane $LaneNumber" "green"
-			
-			# Clear XE errors (keep FATAL)
-			Get-ChildItem -Path $XEFolderPath -File |
-			Where-Object Name -notlike '*FATAL*' |
-			Remove-Item -Force
-			
-			# Restart lane programs
-			Start-Sleep 3
-			if ($nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber)
-			{
-				if ($machine = $nodes.LaneMachines[$LaneNumber])
-				{
-					$addr = "\\$machine\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
-					$cmdMsg = "@exec(RESTART_ALL=PROGRAMS)."
-					if ([MailslotSender]::SendMailslotCommand($addr, $cmdMsg))
-					{
-						Write_Log -Message "Restart command sent to $machine (lane $LaneNumber)" "green"
-					}
-					else
-					{
-						Write_Log -Message "Failed to send restart command to $machine (lane $LaneNumber)" "red"
-					}
-				}
-				else
-				{
-					Write_Log -Message "No machine mapping for lane $LaneNumber" "yellow"
-				}
-			}
-		}
+		Write_Log -Message "An error occurred during monitoring: $_" "red"
 	}
 	
 	Write_Log "No further matching files were found after processing." "yellow"
-	Write_Log "`r`n==================== Close_Open_Transactions Function Completed ====================" "blue"
+		Write_Log "`r`n==================== CloseOpenTransactions Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
