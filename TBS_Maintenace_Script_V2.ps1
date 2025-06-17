@@ -5913,15 +5913,17 @@ function Reboot_Lanes
 		[string]$StoreNumber
 	)
 	
-	# Ensure we have the lane→machine map
+	Write_Log "`r`n==================== Starting Reboot_Lanes Function ====================`r`n" "blue"
+	
+	# Grab the lane→machine map
 	$LaneMachines = $script:FunctionResults['LaneMachines']
 	if (-not $LaneMachines -or $LaneMachines.Count -eq 0)
 	{
-		Write_Log "LaneMachines not available in FunctionResults. Cannot proceed with lane reboot." "Red"
+		Write_Log "LaneMachines not available. Cannot reboot lanes." "Red"
 		return
 	}
 	
-	# Ask user which lanes to reboot
+	# Let user pick lanes
 	$selection = Show_Lane/Store_Selection_Form -Mode Store -StoreNumber $StoreNumber
 	if (-not $selection -or -not $selection.Lanes)
 	{
@@ -5930,8 +5932,10 @@ function Reboot_Lanes
 	}
 	$lanes = $selection.Lanes
 	
+	# Loop through each lane and attempt reboots
 	foreach ($lane in $lanes)
 	{
+		
 		if (-not $LaneMachines.ContainsKey($lane))
 		{
 			Write_Log "Unknown lane '$lane'. Skipping." "Yellow"
@@ -5939,66 +5943,41 @@ function Reboot_Lanes
 		}
 		
 		$machine = $LaneMachines[$lane]
-		Write_Log "→ Lane $lane: attempting mailslot reboot on $machine" "Yellow"
+		Write_Log "Lane $lane on $[machine]: attempting mailslot reboot" "Yellow"
 		
-		# 1) Mailslot reboot
-		$slot = "\\$machine\mailslot\SMSStart_${StoreNumber}${lane}"
-		$cmd = '@exec(REBOOT=1).'
-		$didReboot = $false
+		# 1) SMSStart mailslot reboot
+		$mailslot = "\\$machine\mailslot\SMSStart_${StoreNumber}${lane}"
+		$msResult = [MailslotSender]::SendMailslotCommand($mailslot, '@exec(REBOOT=1).')
+		if ($msResult)
+		{
+			Write_Log "Mailslot reboot sent to $machine (Lane $lane)" "Green"
+			continue
+		}
+		Write_Log "Mailslot reboot failed for $machine. Falling back to shutdown.exe" "Yellow"
 		
-		try
+		# 2) Fallback: shutdown.exe
+		Write_Log "Running shutdown.exe /r /m \\$machine /t 0 /f" "Yellow"
+		cmd.exe /c "shutdown /r /m \\$machine /t 0 /f" | Out-Null
+		if ($LASTEXITCODE -eq 0)
 		{
-			if ([MailslotSender]::SendMailslotCommand($slot, $cmd))
-			{
-				Write_Log "✓ Mailslot reboot sent to $machine (Lane $lane)" "Green"
-				$didReboot = $true
-			}
-			else
-			{
-				throw "SendMailslotCommand returned false"
-			}
+			Write_Log "shutdown.exe reboot succeeded for $machine" "Green"
+			continue
 		}
-		catch
-		{
-			Write_Log "⚠ Mailslot reboot failed for $machine (Lane $lane): $_. Falling back..." "Yellow"
-		}
-		
-		if ($didReboot) { continue }
-		
-		# 2) Fallback: shutdown.exe remote reboot
-		try
-		{
-			$shutdownCmd = "shutdown /r /m \\$machine /t 0 /f"
-			Write_Log "→ Fallback: $shutdownCmd" "Yellow"
-			cmd.exe /c $shutdownCmd | Out-Null
-			
-			if ($LASTEXITCODE -eq 0)
-			{
-				Write_Log "✓ shutdown.exe succeeded for $machine" "Green"
-				continue
-			}
-			else
-			{
-				Write_Log "✗ shutdown.exe exit code $LASTEXITCODE. Trying Restart-Computer..." "Yellow"
-			}
-		}
-		catch
-		{
-			Write_Log "✗ shutdown.exe threw error: $_. Trying Restart-Computer..." "Red"
-		}
+		Write_Log "shutdown.exe exit code $LASTEXITCODE. Now trying Restart-Computer" "Yellow"
 		
 		# 3) Final fallback: Restart-Computer
-		try
+		Restart-Computer -ComputerName $machine -Force -ErrorAction SilentlyContinue
+		if ($?)
 		{
-			Restart-Computer -ComputerName $machine -Force -ErrorAction Stop
-			Write_Log "✓ Restart-Computer succeeded for $machine" "Green"
+			Write_Log "Restart-Computer succeeded for $machine" "Green"
 		}
-		catch
+		else
 		{
-			Write_Log "✗ All reboot methods failed for $machine (Lane $lane): $_" "Red"
+			Write_Log "All reboot methods failed for $machine (Lane $lane)" "Red"
 		}
 	}
 	
+	# Notify user when complete
 	Add-Type -AssemblyName System.Windows.Forms
 	[System.Windows.Forms.MessageBox]::Show(
 		'Reboot attempts completed for selected lanes.',
@@ -6006,6 +5985,7 @@ function Reboot_Lanes
 		[System.Windows.Forms.MessageBoxButtons]::OK,
 		[System.Windows.Forms.MessageBoxIcon]::Information
 	)
+	Write_Log "`r`n==================== Reboot_Lanes Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
