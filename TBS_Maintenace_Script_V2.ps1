@@ -8909,7 +8909,7 @@ ORDER BY F254, F1032;
 		try
 		{
 			$res = Invoke-Sqlcmd -ServerInstance $npServer `
-								 -Database "MyLaneDb" `
+								 -Database "LANESQL" `
 								 -Query $query `
 								 -ErrorAction Stop
 		}
@@ -8919,7 +8919,7 @@ ORDER BY F254, F1032;
 			try
 			{
 				$res = Invoke-Sqlcmd -ServerInstance $tcpServer `
-									 -Database "MyLaneDb" `
+									 -Database "LANESQL" `
 									 -Query $query `
 									 -ErrorAction Stop
 			}
