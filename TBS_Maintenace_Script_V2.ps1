@@ -1,4 +1,14 @@
-# Write-Host "Script started. IsRelaunched: $IsRelaunched"
+#######################################################################################################
+#                                                                                                     #
+#                                     TBS MAINTENANCE SCRIPT                                          #
+#                                                                                                     #
+#                                        Author: Alex_C.T                                             #
+#                                                                                                     #
+#  > Edit only in consultation with Alex_C.T                                                          #
+#  > This script performs advanced maintenance and diagnostics on TBS systems                         #
+#                                                                                                     #
+#######################################################################################################
+
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # ===================================================================================================
@@ -7,9 +17,9 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # Description:
 #   Defines the script parameters, allowing users to run the script in silent mode.
 # ===================================================================================================
- 
+
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.2.5"
+$VersionNumber = "2.2.6"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -579,16 +589,16 @@ function Get_SMS_Version_Info
 			$fullVersion = $versionLine -replace '^Version=', ''
 			$fullVersion = $fullVersion.Trim()
 			$script:FunctionResults['SMSVersionFull'] = $fullVersion
-		#	Write_Log "Found SMS Version: $fullVersion" "green"
+			#	Write_Log "Found SMS Version: $fullVersion" "green"
 		}
 		else
 		{
-		#	Write_Log "Version line not found in VERSION.INI." "yellow"
+			#	Write_Log "Version line not found in VERSION.INI." "yellow"
 		}
 	}
 	else
 	{
-	#	Write_Log "VERSION.INI file not found at $VersionIniPath" "yellow"
+		#	Write_Log "VERSION.INI file not found at $VersionIniPath" "yellow"
 	}
 	
 	# Update GUI label if present
@@ -804,6 +814,7 @@ function Retrieve_Nodes
 	$NumberOfLanes = 0
 	$NumberOfServers = 0
 	$NumberOfScales = 0
+	$NumberOfBackoffices = 0 # <-- Added
 	
 	$LaneContents = @()
 	$LaneMachines = @{ }
@@ -956,6 +967,27 @@ WHERE F1056 = '$StoreNumber'
 			
 			$NumberOfServers = if ($serverResult.ServerCount -gt 0) { 1 }
 			else { 0 }
+			
+			#--------------------------------------------------------------------------------
+			# 5) Count backoffices (F1057 = '902', '903', etc)
+			#--------------------------------------------------------------------------------
+			$queryBackoffices = @"
+SELECT COUNT(*) AS BackofficeCount
+FROM TER_TAB
+WHERE F1056 = '$StoreNumber'
+  AND F1057 >= '902'
+  AND F1057 <= '998'
+"@
+			try
+			{
+				$backofficesResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryBackoffices -ErrorAction Stop
+			}
+			catch [System.Management.Automation.ParameterBindingException] {
+				$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+				$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+				$backofficesResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryBackoffices -ErrorAction Stop
+			}
+			$NumberOfBackoffices = [int]$backofficesResult.BackofficeCount
 		}
 		catch
 		{
@@ -991,18 +1023,27 @@ WHERE F1056 = '$StoreNumber'
 		
 		$NumberOfServers = if (Test-Path "$HostPath\XF${StoreNumber}901") { 1 }
 		else { 0 }
+		
+		# Count backoffice folders: XF${StoreNumber}902 - XF${StoreNumber}998
+		if (Test-Path $HostPath)
+		{
+			$BackofficeFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}9??" |
+			Where-Object { $_.Name -match "^XF${StoreNumber}9(0[2-9]|[1-9][0-9])$" -and $_.Name -ne "XF${StoreNumber}999" }
+			$NumberOfBackoffices = $BackofficeFolders.Count
+		}
 	}
 	
 	#--------------------------------------------------------------------------------
 	# Final: Create a custom object with the counts
 	#--------------------------------------------------------------------------------
 	$Nodes = [PSCustomObject]@{
-		NumberOfLanes   = $NumberOfLanes
-		NumberOfServers = $NumberOfServers
-		NumberOfScales  = $NumberOfScales
-		LaneContents    = $LaneContents
-		LaneMachines    = $LaneMachines
-		ScaleIPNetworks = $ScaleIPNetworks
+		NumberOfLanes	    = $NumberOfLanes
+		NumberOfServers	    = $NumberOfServers
+		NumberOfBackoffices = $NumberOfBackoffices
+		NumberOfScales	    = $NumberOfScales
+		LaneContents	    = $LaneContents
+		LaneMachines	    = $LaneMachines
+		ScaleIPNetworks	    = $ScaleIPNetworks
 	}
 	
 	#--------------------------------------------------------------------------------
@@ -1010,6 +1051,7 @@ WHERE F1056 = '$StoreNumber'
 	#--------------------------------------------------------------------------------
 	$script:FunctionResults['NumberOfLanes'] = $NumberOfLanes
 	$script:FunctionResults['NumberOfServers'] = $NumberOfServers
+	$script:FunctionResults['NumberOfBackoffices'] = $NumberOfBackoffices
 	$script:FunctionResults['NumberOfScales'] = $NumberOfScales
 	$script:FunctionResults['LaneContents'] = $LaneContents
 	$script:FunctionResults['LaneMachines'] = $LaneMachines
@@ -1019,18 +1061,14 @@ WHERE F1056 = '$StoreNumber'
 	#--------------------------------------------------------------------------------
 	# Update the GUI labels
 	#--------------------------------------------------------------------------------
-	if ($NodesHost -ne $null -and $NodesStore -ne $null)
-	{
-		$NodesHost.Text = "Number of Servers: $NumberOfServers"
-		$NodesStore.Text = "Number of Lanes:   $NumberOfLanes"
-		$scalesLabel.Text = "Number of Scales: $NumberOfScales"
-		
-		if ($NodesScales -ne $null)
-		{
-			$NodesScales.Text = "Number of Scales: $NumberOfScales"
-		}
-		$form.Refresh()
-	}
+	#--------------------------------------------------------------------------------
+	# Update the GUI labels (if labels exist)
+	#--------------------------------------------------------------------------------
+	if ($NodesHost -ne $null) { $NodesHost.Text = "Number of Servers: $NumberOfServers" }
+	if ($NodesBackoffices -ne $null) { $NodesBackoffices.Text = "Number of Backoffices: $NumberOfBackoffices" }
+	if ($NodesStore -ne $null) { $NodesStore.Text = "Number of Lanes: $NumberOfLanes" }
+	if ($scalesLabel -ne $null) { $scalesLabel.Text = "Number of Scales: $NumberOfScales" }
+	$form.Refresh()
 	
 	# Return counts as a custom object
 	return $Nodes
@@ -7028,10 +7066,10 @@ ORDER BY F254, F1032;
 		# …then later you need to close your foreach and function:
 	}
 	#
-		# - X-FILE (.xml) -
-		#
-		$fileX = Join-Path $outDir "X$tn$st.$ln.xml"
-		$tran.XmlPayload | Out-File $fileX -Encoding ASCII
+	# - X-FILE (.xml) -
+	#
+	$fileX = Join-Path $outDir "X$tn$st.$ln.xml"
+	$tran.XmlPayload | Out-File $fileX -Encoding ASCII
 	
 	
 	Write_Log "✅ A/T/X files written to $outDir" "green"
@@ -7901,14 +7939,23 @@ if (-not $form)
 	$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($storeNumberLabel)
 	
-	# Nodes Host Label (Number of Servers)
+	<# Nodes Host Label (Number of Servers)
 	$script:NodesHost = New-Object System.Windows.Forms.Label
 	$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
 	$NodesHost.Location = New-Object System.Drawing.Point(50, 50)
 	$NodesHost.Size = New-Object System.Drawing.Size(200, 20)
 	$NodesHost.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$NodesHost.AutoSize = $false
-	$form.Controls.Add($NodesHost)
+	$form.Controls.Add($NodesHost)#>
+	
+	# Nodes Backoffice Label (Number of Backoffices)
+	$NodesBackoffices = New-Object System.Windows.Forms.Label
+	$NodesBackoffices.Text = "Number of Backoffices: N/A"
+	$NodesBackoffices.Location = New-Object System.Drawing.Point(50, 50)
+	$NodesBackoffices.Size = New-Object System.Drawing.Size(200, 20)
+	$NodesBackoffices.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+	$NodesBackoffices.AutoSize = $false
+	$form.Controls.Add($NodesBackoffices)
 	
 	# Nodes Store Label (Number of Lanes)
 	$script:NodesStore = New-Object System.Windows.Forms.Label
@@ -7926,11 +7973,6 @@ if (-not $form)
 	$scalesLabel.Size = New-Object System.Drawing.Size(200, 20)
 	$scalesLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($scalesLabel)
-	
-	# No Host logic! All counts always reflect Store/Server/Lane
-	$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
-	$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
-	$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
 	
 	# Create a RichTextBox for log output
 	$logBox = New-Object System.Windows.Forms.RichTextBox
