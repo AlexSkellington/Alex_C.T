@@ -2838,7 +2838,7 @@ function Process_Server
 #                                       FUNCTION: Process_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Processes lanes based on user selection obtained from Show_Lane/Store_Selection_Form.
+#   Processes lanes based on user selection obtained from Show_Lane_Selection_Form.
 #   Handles specific lanes, a range of lanes, or all lanes.
 #   When "All Lanes" is selected, it attempts to retrieve LaneContents.
 #   If LaneContents retrieval fails, it uses the predefined NumberOfLanes variable.
@@ -2861,7 +2861,7 @@ function Process_Lanes
 	}
 	
 	# Get the user's selection
-	$selection = Show_Lane/Store_Selection_Form -Mode $Mode -StoreNumber $StoreNumber
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	
 	if ($selection -eq $null)
 	{
@@ -3338,7 +3338,7 @@ function Update_Lane_Config
 	}
 	
 	# Get the user's lane selection
-	$selection = Show_Lane/Store_Selection_Form -Mode $Mode -StoreNumber $StoreNumber
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	
 	if ($selection -eq $null)
 	{
@@ -3697,7 +3697,7 @@ function Pump_Tables
 	}
 	
 	# Prompt for lane selection
-	$selection = Show_Lane/Store_Selection_Form -Mode $Mode -StoreNumber $StoreNumber
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	if ($selection -eq $null)
 	{
 		Write_Log "Lane processing canceled by user." "yellow"
@@ -4156,7 +4156,7 @@ function Reboot_Lanes
 	}
 	
 	# Let user pick lanes
-	$selection = Show_Lane/Store_Selection_Form -Mode Store -StoreNumber $StoreNumber
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	if (-not $selection -or -not $selection.Lanes)
 	{
 		Write_Log "No lanes selected or selection cancelled. Exiting." "Yellow"
@@ -4422,7 +4422,7 @@ function Close_Open_Transactions
 			Write_Log -Message "No files or no matching transactions found. Prompting for lane number." "yellow"
 			
 			# Show your lane-selection form
-			$selection = Show_Lane/Store_Selection_Form -Mode Store -StoreNumber $StoreNumber
+			$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 			if (-not $selection)
 			{
 				Write_Log -Message "Lane selection cancelled or returned no selection." "yellow"
@@ -4659,7 +4659,7 @@ function Ping_All_Lanes
 #
 # Prerequisites:
 #   - Ensure that the Retrieve_Nodes function has been executed prior to running Delete_DBS.
-#   - Verify that the Show_Lane/Store_Selection_Form, Delete_Files, and Write_Log functions are available in the session.
+#   - Verify that the Show_Lane_Selection_Form, Delete_Files, and Write_Log functions are available in the session.
 #   - Confirm network accessibility to the machines associated with the lanes.
 #   - The user must have the necessary permissions to delete files in the target directories.
 # ===================================================================================================
@@ -6221,7 +6221,7 @@ function Write_SQL_Scripts_To_Desktop
 # Description:
 #   The `Send_Restart_All_Programs` function automates sending a restart command to selected lanes
 #   within a specified store. It retrieves lane-to-machine mappings using the `Retrieve_Nodes` 
-#   function, prompts the user to select lanes via the `Show_Lane/Store_Selection_Form` function, and
+#   function, prompts the user to select lanes via the `Show_Lane_Selection_Form` function, and
 #   then constructs and sends a mailslot command to each selected lane using the correct 
 #   machine address.
 #
@@ -6233,7 +6233,7 @@ function Write_SQL_Scripts_To_Desktop
 # Workflow:
 #   1. Retrieve node information for the specified store using `Retrieve_Nodes`, which
 #      provides a mapping between lanes and their corresponding machine names.
-#   2. Launch `Show_Lane/Store_Selection_Form` in 'Store' mode to allow the user to select one
+#   2. Launch `Show_Lane_Selection_Form` in 'Store' mode to allow the user to select one
 #      or more lanes (TTT).
 #   3. For each selected lane:
 #         - Look up the machine name from the lane-to-machine mapping.
@@ -6248,7 +6248,7 @@ function Write_SQL_Scripts_To_Desktop
 #   Send_Restart_All_Programs -StoreNumber "123"
 #
 # Notes:
-#   - Ensure that the helper functions (`Retrieve_Nodes`, `Show_Lane/Store_Selection_Form`) and the 
+#   - Ensure that the helper functions (`Retrieve_Nodes`, `Show_Lane_Selection_Form`) and the 
 #     `[MailslotSender]::SendMailslotCommand` method are defined and accessible in the 
 #     session before invoking this function.
 # ===================================================================================================
@@ -6271,7 +6271,7 @@ function Send_Restart_All_Programs
 	}
 	
 	# Use lane selection dialog to get lanes (TTT) for the specified store.
-	$selection = Show_Lane/Store_Selection_Form -Mode Store -StoreNumber $StoreNumber
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	if (-not $selection)
 	{
 		Write_Log "No lanes selected or selection cancelled. Exiting." "yellow"
@@ -6323,7 +6323,7 @@ function Send_Restart_All_Programs
 #   The `Send_SERVER_time_to_Lanes` function automates sending a time synchronization command to 
 #   selected lanes within a specified store using the server's local date and time. It retrieves 
 #   lane-to-machine mappings using the `Retrieve_Nodes` function, prompts the user to select lanes 
-#   via the `Show_Lane/Store_Selection_Form` function, and then constructs and sends a mailslot command to each 
+#   via the `Show_Lane_Selection_Form` function, and then constructs and sends a mailslot command to each 
 #   selected lane with the server's current date and time in the appropriate format.
 #
 # Parameters:
@@ -6334,7 +6334,7 @@ function Send_Restart_All_Programs
 # Workflow:
 #   1. Retrieve node information for the specified store using `Retrieve_Nodes`, which provides a 
 #      mapping between lanes and their corresponding machine names.
-#   2. Launch `Show_Lane/Store_Selection_Form` in 'Store' mode to allow the user to select one or more lanes (TTT).
+#   2. Launch `Show_Lane_Selection_Form` in 'Store' mode to allow the user to select one or more lanes (TTT).
 #   3. Retrieve the server's local date and time using PowerShell's Get-Date, formatting the date as 
 #      "MM/dd/yyyy" and the time as "HHmmss".
 #   4. Construct a command string in the format:
@@ -6352,7 +6352,7 @@ function Send_Restart_All_Programs
 #   Send_SERVER_time_to_Lanes -StoreNumber "123"
 #
 # Notes:
-#   - Ensure that the helper functions (`Retrieve_Nodes`, `Show_Lane/Store_Selection_Form`) and the 
+#   - Ensure that the helper functions (`Retrieve_Nodes`, `Show_Lane_Selection_Form`) and the 
 #     `[MailslotSender]::SendMailslotCommand` method are defined and accessible in the session 
 #     before invoking this function.
 # ===================================================================================================
@@ -6372,7 +6372,7 @@ function Send_SERVER_time_to_Lanes
 		return
 	}
 	
-	$selection = Show_Lane/Store_Selection_Form -Mode Store -StoreNumber $StoreNumber
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	if (-not $selection)
 	{
 		Write_Log "No lanes selected or selection cancelled. Exiting." "yellow"
@@ -6426,7 +6426,7 @@ function Send_SERVER_time_to_Lanes
 # Description:
 #   Deploys a drawer control SQI command to selected lanes for a specified store.
 #   The function first presents a GUI for the user to select the desired drawer state 
-#   (Enable = 1, Disable = 0) and then uses the Show_Lane/Store_Selection_Form GUI (in "Store" mode) to 
+#   (Enable = 1, Disable = 0) and then uses the Show_Lane_Selection_Form GUI (in "Store" mode) to 
 #   allow selection of one or more lanes. For each selected lane, the function writes an SQI file 
 #   (in ANSI PC format with CRLF line endings) with the embedded drawer state and sends a restart 
 #   command to the corresponding machine.
@@ -6435,7 +6435,7 @@ function Send_SERVER_time_to_Lanes
 #   - StoreNumber: The store number to process. (Mandatory)
 # ---------------------------------------------------------------------------------------------------
 # Requirements:
-#   - The Show_Lane/Store_Selection_Form function must be available.
+#   - The Show_Lane_Selection_Form function must be available.
 #   - Variables such as $OfficePath must be defined.
 #   - Helper functions like Write_Log, Retrieve_Nodes, and the class [MailslotSender] must be available.
 # ===================================================================================================
@@ -6525,9 +6525,9 @@ function Drawer_Control
 	Write_Log "Drawer state selected: $DrawerState" "green"
 	
 	# --------------------------------------------------
-	# STEP 2: Use Show_Lane/Store_Selection_Form to select lanes (Store mode)
+	# STEP 2: Use Show_Lane_Selection_Form to select lanes (Store mode)
 	# --------------------------------------------------
-	$selection = Show_Lane/Store_Selection_Form -Mode "Store" -StoreNumber $StoreNumber
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	if ($null -eq $selection)
 	{
 		Write_Log "No lanes selected or selection cancelled." "yellow"
@@ -6598,7 +6598,7 @@ DROP TABLE Fct_Load;
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deploys a database refresh SQI command to selected registers for a specified store.
-#   The function uses the Show_Lane/Store_Selection_Form GUI (in "Store" mode) to allow selection of one or 
+#   The function uses the Show_Lane_Selection_Form GUI (in "Store" mode) to allow selection of one or 
 #   more registers. For each selected register, it writes an SQI file (in ANSI PC format with CRLF 
 #   line endings) containing:
 #
@@ -6611,7 +6611,7 @@ DROP TABLE Fct_Load;
 #   - StoreNumber: The store number to process. (Mandatory)
 # ---------------------------------------------------------------------------------------------------
 # Requirements:
-#   - The Show_Lane/Store_Selection_Form function must be available.
+#   - The Show_Lane_Selection_Form function must be available.
 #   - Variables such as $OfficePath must be defined.
 #   - Helper functions like Write_Log, Retrieve_Nodes, and the class [MailslotSender] must be available.
 # ===================================================================================================
@@ -6627,10 +6627,10 @@ function Refresh_Database
 	Write_Log "`r`n==================== Starting Refresh_Database ====================`r`n" "blue"
 	
 	# --------------------------------------------------
-	# STEP 1: Use Show_Lane/Store_Selection_Form to select registers
+	# STEP 1: Use Show_Lane_Selection_Form to select registers
 	# --------------------------------------------------
-	# The Show_Lane/Store_Selection_Form function is assumed to be available and operating in "Store" mode.
-	$selection = Show_Lane/Store_Selection_Form -Mode "Store" -StoreNumber $StoreNumber
+	# The Show_Lane_Selection_Form function is assumed to be available and operating in "Store" mode.
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	if ($null -eq $selection)
 	{
 		Write_Log "No registers selected or selection cancelled." "yellow"
@@ -6698,7 +6698,7 @@ function Refresh_Database
 #   - StoreNumber: The store number to process. (Mandatory)
 # ---------------------------------------------------------------------------------------------------
 # Requirements:
-#   - The Show_Lane/Store_Selection_Form function must be available.
+#   - The Show_Lane_Selection_Form function must be available.
 #   - Variables such as $OfficePath must be defined.
 #   - Helper functions like Write_Log, Retrieve_Nodes, and the class [MailslotSender] must be available.
 # ===================================================================================================
@@ -6794,7 +6794,7 @@ function Retrive_Transactions
 	Write_Log "Stop Date selected: $stopDateFormatted" "green"
 	
 	# --- STEP 2: Ask which lanes ---
-	$selection = Show_Lane/Store_Selection_Form -Mode "Store" -StoreNumber $StoreNumber
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	if (-not $selection)
 	{
 		Write-Warning "Lane selection cancelled."
@@ -7110,7 +7110,7 @@ ORDER BY F254, F1032;
         Write_Log "Failed to retrieve node info for store $StoreNumber." "red"
         return
     }
-    $selection = Show_Lane/Store_Selection_Form -Mode Store -StoreNumber $StoreNumber
+    $selection = Show_Lane_Selection_Form -Mode Store -StoreNumber $StoreNumber
     if (-not $selection) {
         Write_Log "No lanes selected or cancelled." "yellow"
         return
