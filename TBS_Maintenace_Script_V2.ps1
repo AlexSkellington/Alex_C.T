@@ -8341,6 +8341,9 @@ $StoreNumber = $script:FunctionResults['StoreNumber']
 Get_Store_Name
 $StoreName = $script:FunctionResults['StoreName']
 
+# Get the SMS Version number and date
+Get_SMS_Version_Info
+
 # Count Nodes based on mode
 $Nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 $Nodes = $script:FunctionResults['Nodes']
