@@ -20,6 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.2.6"
+$VersionDate = "2025-06-19"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -61,9 +62,9 @@ $script:ProcessedHosts = @()
 
 # Initialize counts
 $NumberOfLanes = 0
-$NumberOfStores = 0
 $NumberOfServers = 0
-$NumberOfHosts = 0
+$NumberOfScales = 0
+$NumberOfBackoffices = 0
 
 # "ANSI" on Western Windows systems
 $ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
@@ -811,11 +812,6 @@ function Retrieve_Nodes
 	)
 	
 	$HostPath = "$OfficePath"
-	$NumberOfLanes = 0
-	$NumberOfServers = 0
-	$NumberOfScales = 0
-	$NumberOfBackoffices = 0 # <-- Added
-	
 	$LaneContents = @()
 	$LaneMachines = @{ }
 	$ScaleIPNetworks = @{ }
@@ -7859,7 +7855,7 @@ if (-not $form)
 	
 	# Create the main form
 	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Created by Alex_C.T - Version $VersionNumber"
+	$form.Text = "Created by: Alex_C.T   |   Version: $VersionNumber   |   Revised: $VersionDate"
 	$form.Size = New-Object System.Drawing.Size(1006, 570)
 	$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 	
