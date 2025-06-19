@@ -557,6 +557,50 @@ function Get_Store_Name
 }
 
 # ===================================================================================================
+#                                 FUNCTION: Get_SMS_Version_Info
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Retrieves the SMS version and date as a single line from storeman\Install\VERSION.INI.
+#   Stores the full result in $script:FunctionResults['SMSVersionFull'].
+#   Updates $smsVersionLabel in the GUI if available.
+# ===================================================================================================
+
+function Get_SMS_Version_Info
+{
+	$VersionIniPath = Join-Path $BasePath "Install\VERSION.INI"
+	$script:FunctionResults['SMSVersionFull'] = "N/A"
+	
+	if (Test-Path $VersionIniPath)
+	{
+		$content = Get-Content -Path $VersionIniPath
+		$versionLine = $content | Where-Object { $_ -match '^Version=' }
+		if ($versionLine)
+		{
+			$fullVersion = $versionLine -replace '^Version=', ''
+			$fullVersion = $fullVersion.Trim()
+			$script:FunctionResults['SMSVersionFull'] = $fullVersion
+			Write_Log "Found SMS Version: $fullVersion" "green"
+		}
+		else
+		{
+			Write_Log "Version line not found in VERSION.INI." "yellow"
+		}
+	}
+	else
+	{
+		Write_Log "VERSION.INI file not found at $VersionIniPath" "yellow"
+	}
+	
+	# Update GUI label if present
+	if ($smsVersionLabel -ne $null)
+	{
+		$smsVersionLabel.Text = "SMS Version: $($script:FunctionResults['SMSVersionFull'])"
+		$form.Refresh()
+		[System.Windows.Forms.Application]::DoEvents()
+	}
+}
+
+# ===================================================================================================
 #                                FUNCTION: Get_All_Lanes_Database_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -6274,7 +6318,7 @@ function Send_Restart_All_Programs
 			Write_Log "No machine found for lane $lane. Skipping." "yellow"
 			continue
 		}
-		$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${lane}"
+		$mailslotAddress = "\\$machineName\Mailslot\SMSStart_${StoreNumber}${lane}"
 		$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
 		$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
 		if ($result)
@@ -7822,13 +7866,13 @@ if (-not $form)
 	
 	################################################## Labels #######################################################
 	
-	# Mode Label (will always be Store/Server/Lane mode)
-	$script:modeLabel = New-Object System.Windows.Forms.Label
-	$modeLabel.Text = "Processing Mode: Store"
-	$modeLabel.Location = New-Object System.Drawing.Point(50, 30)
-	$modeLabel.Size = New-Object System.Drawing.Size(200, 20)
-	$modeLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$form.Controls.Add($modeLabel)
+	# SMS Version Level
+	$smsVersionLabel = New-Object System.Windows.Forms.Label
+	$smsVersionLabel.Text = "SMS Version: N/A"
+	$smsVersionLabel.Location = New-Object System.Drawing.Point(50, 30)
+	$smsVersionLabel.Size = New-Object System.Drawing.Size(250, 20) # Made wider for longer version strings
+	$smsVersionLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+	$form.Controls.Add($smsVersionLabel)
 	
 	# Store Name label (centered)
 	$storeNameLabel = New-Object System.Windows.Forms.Label
