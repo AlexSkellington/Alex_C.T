@@ -579,16 +579,16 @@ function Get_SMS_Version_Info
 			$fullVersion = $versionLine -replace '^Version=', ''
 			$fullVersion = $fullVersion.Trim()
 			$script:FunctionResults['SMSVersionFull'] = $fullVersion
-			Write_Log "Found SMS Version: $fullVersion" "green"
+		#	Write_Log "Found SMS Version: $fullVersion" "green"
 		}
 		else
 		{
-			Write_Log "Version line not found in VERSION.INI." "yellow"
+		#	Write_Log "Version line not found in VERSION.INI." "yellow"
 		}
 	}
 	else
 	{
-		Write_Log "VERSION.INI file not found at $VersionIniPath" "yellow"
+	#	Write_Log "VERSION.INI file not found at $VersionIniPath" "yellow"
 	}
 	
 	# Update GUI label if present
