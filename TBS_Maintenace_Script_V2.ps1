@@ -1788,6 +1788,22 @@ RECONFIGURE;
 	# Store the filtered LaneSQL script in the script scope for later use
 	$script:LaneSQLFiltered = $LaneSQLFiltered
 	
+	# --- New: prepare mailslot-friendly script ---
+	$lines = $script:LaneSQLScript -split "`r?`n"
+	$macroPattern = '^\s*(@|/|\*)'
+	$fixedLines = foreach ($line in $lines)
+	{
+		if ($line -match $macroPattern -or [string]::IsNullOrWhiteSpace($line))
+		{
+			$line
+		}
+		else
+		{
+			"@EXEC($line)"
+		}
+	}
+	$script:LaneSQLScript_Mailslot = ($fixedLines -join "`r`n")
+	
 	<#
 	# Optionally write to file as fallback
 	if ($LanesqlFilePath)
@@ -2768,42 +2784,6 @@ function Delete_Files
 			Write_Log "An error occurred during the deletion process. Error: $_" "Red"
 			return $deletedCount
 		}
-	}
-}
-
-# ===================================================================================================
-#                                       SECTION: Clean Temp Folder
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Cleans the temporary folder by deleting all files and directories within it.
-# ===================================================================================================
-
-function Clean_Temp_Folder
-{
-	Write_Log "`nClearing temp folder..." "blue"
-	$FilesAndDirsDeleted = 0
-	
-	try
-	{
-		# Get all items to delete
-		$itemsToDelete = Get-ChildItem -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-		
-		# Count the items
-		$FilesAndDirsDeleted = $itemsToDelete.Count
-		
-		# Remove the items
-		$itemsToDelete | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
-		
-		Write_Log "Temp folder cleared successfully." "green"
-		Write_Log "Files and directories deleted: $FilesAndDirsDeleted" "green"
-		
-		# Return the count of deleted items
-		return $FilesAndDirsDeleted
-	}
-	catch
-	{
-		Write_Log "Failed to clear temp folder: $_" "red"
-		return $FilesAndDirsDeleted
 	}
 }
 
@@ -4510,7 +4490,7 @@ function Close_Open_Transactions
 	}
 	
 	Write_Log "No further matching files were found after processing." "yellow"
-		Write_Log "`r`n==================== CloseOpenTransactions Function Completed ====================" "blue"
+	Write_Log "`r`n==================== CloseOpenTransactions Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -6257,12 +6237,12 @@ function Send_Restart_All_Programs
 {
 	param (
 		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber # Expecting a 3-digit store number (SSS)
+		[string]$StoreNumber,
+		[array]$LaneNumbers # Optional. If supplied, skips prompts and sends to these lanes.
 	)
 	
 	Write_Log "`r`n==================== Starting Send_Restart_All_Programs Function ====================`r`n" "blue"
 	
-	# Retrieve node information for the specified store to obtain lane-machine mapping.
 	$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 	if (-not $nodes)
 	{
@@ -6270,40 +6250,33 @@ function Send_Restart_All_Programs
 		return
 	}
 	
-	# Use lane selection dialog to get lanes (TTT) for the specified store.
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
-	if (-not $selection)
+	# Use supplied lanes or prompt for selection
+	if ($LaneNumbers -and $LaneNumbers.Count -gt 0)
 	{
-		Write_Log "No lanes selected or selection cancelled. Exiting." "yellow"
-		return
+		$lanes = $LaneNumbers | ForEach-Object { $_.ToString().PadLeft(3, '0') }
+	}
+	else
+	{
+		$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+		if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
+		{
+			Write_Log "No lanes selected or selection cancelled. Exiting." "yellow"
+			return
+		}
+		$lanes = $selection.Lanes | ForEach-Object { $_.ToString().PadLeft(3, '0') }
 	}
 	
-	# Extract lanes from selection.
-	$lanes = $selection.Lanes
-	if (-not $lanes -or $lanes.Count -eq 0)
-	{
-		Write_Log "No valid lanes found. Exiting." "yellow"
-		return
-	}
-	
-	# Loop through each selected lane to send the restart command.
 	foreach ($lane in $lanes)
 	{
-		# Look up machine name for given lane using the LaneMachines mapping.
 		$machineName = $nodes.LaneMachines[$lane]
 		if (-not $machineName)
 		{
 			Write_Log "No machine found for lane $lane. Skipping." "yellow"
 			continue
 		}
-		
-		# Construct the mailslot address using the correct machine name, store, and lane numbers.
 		$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${lane}"
 		$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
-		
-		# Attempt to send the command
 		$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
-		
 		if ($result)
 		{
 			Write_Log "Command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
