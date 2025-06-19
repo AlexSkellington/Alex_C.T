@@ -4356,7 +4356,7 @@ function Close_Open_Transactions
 													Start-Sleep -Seconds 3
 													
 													# Retrieve updated node information to get machine mapping
-													$nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber
+													$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 													if ($nodes)
 													{
 														$machineName = $nodes.LaneMachines[$LaneNumber]
@@ -4467,7 +4467,7 @@ function Close_Open_Transactions
 					
 					# Send restart command 3 seconds after deployment by the user
 					# Start-Sleep -Seconds 3
-					$nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber
+					$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 					if ($nodes)
 					{
 						$machineName = $nodes.LaneMachines[$LaneNumber]
@@ -6263,7 +6263,7 @@ function Send_Restart_All_Programs
 	Write_Log "`r`n==================== Starting Send_Restart_All_Programs Function ====================`r`n" "blue"
 	
 	# Retrieve node information for the specified store to obtain lane-machine mapping.
-	$nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber
+	$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 	if (-not $nodes)
 	{
 		Write_Log "Failed to retrieve node information for store $StoreNumber." "red"
@@ -6365,7 +6365,7 @@ function Send_SERVER_time_to_Lanes
 	)
 	Write_Log "`r`n==================== Starting Send_SERVER_time_to_Lanes Function ====================`r`n" "blue"
 	
-	$nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber
+	$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 	if (-not $nodes)
 	{
 		Write_Log "Failed to retrieve node information for store $StoreNumber." "red"
@@ -7105,12 +7105,12 @@ ORDER BY F254, F1032;
     Write_Log "Date range: $sdSql → $edSql" "green"
 
     # STEP 2: Get nodes & select lanes
-    $nodes = Retrieve_Nodes -Mode Store -StoreNumber $StoreNumber
+    $nodes = Retrieve_Nodes -StoreNumber $StoreNumber
     if (-not $nodes) {
         Write_Log "Failed to retrieve node info for store $StoreNumber." "red"
         return
     }
-    $selection = Show_Lane_Selection_Form -Mode Store -StoreNumber $StoreNumber
+    $selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
     if (-not $selection) {
         Write_Log "No lanes selected or cancelled." "yellow"
         return
@@ -8219,7 +8219,7 @@ if (-not $form)
 	$PingLanesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Lanes")
 	$PingLanesItem.ToolTipText = "Ping all lane devices to check connectivity."
 	$PingLanesItem.Add_Click({
-			Ping_All_Lanes -Mode "Store" -StoreNumber "$StoreNumber"
+			Ping_All_Lanes -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($PingLanesItem)
 	
@@ -8229,7 +8229,7 @@ if (-not $form)
 	$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
 	$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
 	$DeleteDBSItem.Add_Click({
-			Delete_DBS -Mode "Store" -StoreNumber "$StoreNumber"
+			Delete_DBS -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
 	
@@ -8239,7 +8239,7 @@ if (-not $form)
 	$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
 	$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
 	$RefreshPinPadFilesItem.Add_Click({
-			Refresh_PIN_Pad_Files -Mode $Mode -StoreNumber "$StoreNumber"
+			Refresh_PIN_Pad_Files -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 	
