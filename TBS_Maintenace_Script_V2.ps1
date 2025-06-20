@@ -3003,7 +3003,7 @@ function Process_Lane
 		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
 		if ($SectionsToSend -contains $sectionName)
 		{
-			$mailslotPath = "\\\\POS$LaneNumber\\MailSlot\\WIN$LaneNumber"
+			$mailslotPath = "\\POS$LaneNumber\\MailSlot\\WIN$LaneNumber"
 			$dbExecCmd = "dbEXEC($sqlCommands)"
 			
 			try
