@@ -5876,15 +5876,17 @@ function Schedule_Lane_DB_Maintenance
 		$WeeklyDays = $RepeatDays
 		$Months = 0
 		$Minutes = 0
-		$LastRanDate = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd 00:00:00.000")
+		$LastRanDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
+		$NextRunDate = (Get-Date).AddDays($RepeatDays).ToString("yyyy-MM-dd HH:mm:ss.fff")
+		
 		
 		$SchedulerMacroContent = @"
  /* First delete the scheduled maintenance if it exists */
  DELETE FROM RUN_TAB WHERE F1103 = '$CommandToRun' AND F1000 = '$HostTarget';
 
  /* Insert the scheduled weekly maintenance */
- INSERT INTO RUN_TAB (F1102, F1000, F1103, F1104, F1105, F1108, F1109, F1111, F1114, F1115, F1117)
- VALUES ($TaskNumber, '$HostTarget', '$CommandToRun', '$ExecTarget', '$LastRanDate', $ManualAllowed, '$TaskName', $CatchupMissed, $WeeklyDays, $Months, $Minutes);
+ INSERT INTO RUN_TAB (F1102, F1000, F1103, F1104, F1105, F1107, F1108, F1109, F1111, F1114, F1115, F1117)
+ VALUES ($TaskNumber, '$HostTarget', '$CommandToRun', '$ExecTarget', '$LastRanDate', '$NextRunDate', $ManualAllowed, '$TaskName', $CatchupMissed, $WeeklyDays, $Months, $Minutes);
 
  /* Activate the new task right away */
  @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
@@ -6059,15 +6061,16 @@ function Schedule_Server_DB_Maintenance
 	$WeeklyDays = $RepeatDays
 	$Months = 0
 	$Minutes = 0
-	$LastRanDate = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd 00:00:00.000")
+	$LastRanDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
+	$NextRunDate = (Get-Date).AddDays($RepeatDays).ToString("yyyy-MM-dd HH:mm:ss.fff")
 	
 	$SchedulerMacroContent = @"
  /* First delete the scheduled maintenance if it exists */
  DELETE FROM RUN_TAB WHERE F1103 = '$CommandToRun' AND F1000 = '$HostTarget';
 
  /* Insert the scheduled weekly maintenance */
- INSERT INTO RUN_TAB (F1102, F1000, F1103, F1104, F1105, F1108, F1109, F1111, F1114, F1115, F1117)
- VALUES ($TaskNumber, '$HostTarget', '$CommandToRun', '$ExecTarget', '$LastRanDate', $ManualAllowed, '$TaskName', $CatchupMissed, $WeeklyDays, $Months, $Minutes);
+ INSERT INTO RUN_TAB (F1102, F1000, F1103, F1104, F1105, F1107, F1108, F1109, F1111, F1114, F1115, F1117)
+ VALUES ($TaskNumber, '$HostTarget', '$CommandToRun', '$ExecTarget', '$LastRanDate', '$NextRunDate', $ManualAllowed, '$TaskName', $CatchupMissed, $WeeklyDays, $Months, $Minutes);
 
  /* Activate the new task right away */
  @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
