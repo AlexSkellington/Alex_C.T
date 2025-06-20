@@ -5900,6 +5900,167 @@ function Schedule_Lane_DB_Repair
 }
 
 # ===================================================================================================
+#                                   FUNCTION: Schedule_Server_DB_Repair
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Schedules a DB repair task on the server by writing the repair SQL/SQI script and scheduler macro
+#   to the local server XF folder.
+#   Files are written in ANSI (Windows-1252) encoding with CRLF line endings and no BOM.
+#   XF folder must already exist; if not, the operation is skipped and logged.
+# ===================================================================================================
+
+function Schedule_Server_DB_Repair
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[string]$ServerNumber = "901"
+	)
+	Write_Log "`r`n==================== Starting Schedule_Server_DB_Repair ====================`r`n" "blue"
+	
+	if (-not $ServerSQLScript)
+	{
+		Write_Log "Server SQL script content variable (`\$ServerSQLScript`) is empty or not defined." "red"
+		return
+	}
+	
+	# Prompt user for the repeat interval in days (once)
+	Add-Type -AssemblyName System.Windows.Forms
+	$daysPromptForm = New-Object System.Windows.Forms.Form
+	$daysPromptForm.Text = "Server DB Repair - Schedule Interval"
+	$daysPromptForm.Width = 350
+	$daysPromptForm.Height = 160
+	$daysPromptForm.StartPosition = "CenterScreen"
+	
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "How many days between each run (minimum 1):"
+	$label.AutoSize = $true
+	$label.Location = New-Object System.Drawing.Point(15, 20)
+	$daysPromptForm.Controls.Add($label)
+	
+	$textBox = New-Object System.Windows.Forms.TextBox
+	$textBox.Location = New-Object System.Drawing.Point(20, 50)
+	$textBox.Width = 60
+	$textBox.Text = "7"
+	$daysPromptForm.Controls.Add($textBox)
+	
+	$okButton = New-Object System.Windows.Forms.Button
+	$okButton.Text = "OK"
+	$okButton.Location = New-Object System.Drawing.Point(90, 90)
+	$okButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::OK })
+	$daysPromptForm.Controls.Add($okButton)
+	
+	$cancelButton = New-Object System.Windows.Forms.Button
+	$cancelButton.Text = "Cancel"
+	$cancelButton.Location = New-Object System.Drawing.Point(170, 90)
+	$cancelButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
+	$daysPromptForm.Controls.Add($cancelButton)
+	
+	$daysPromptForm.AcceptButton = $okButton
+	$daysPromptForm.CancelButton = $cancelButton
+	
+	if ($daysPromptForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write_Log "Operation cancelled by user in interval prompt." "yellow"
+		return
+	}
+	
+	[int]$UserDays = 0
+	if ([int]::TryParse($textBox.Text, [ref]$UserDays) -and $UserDays -ge 1)
+	{
+		$RepeatDays = $UserDays
+	}
+	else
+	{
+		Write_Log "Invalid or no interval provided, using 7 days." "yellow"
+		$RepeatDays = 7
+	}
+	
+	$LocalXFPath = Join-Path $OfficePath "XF[$StoreNumber]901"
+	$DestScriptPath = Join-Path $LocalXFPath "SERVER_DB_REPAIR.SQI"
+	$SchedulerMacroPath = Join-Path $LocalXFPath "Add_ServerDBRepair_to_RUN_TAB.sqi"
+	
+	if (-not (Test-Path $LocalXFPath))
+	{
+		Write_Log "Local XF folder not found: $LocalXFPath (repair script and scheduler not dropped)." "red"
+		return
+	}
+	
+	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
+	$ServerSQLScriptContent = $ServerSQLScript -replace "`n", "`r`n"
+	
+	$TaskNumber = 750
+	$HostTarget = "{0:D3}" -f [int]$ServerNumber
+	$CommandToRun = 'sql=SERVER_DB_REPAIR'
+	$ExecTarget = $HostTarget
+	$TaskName = 'Server DB Repair'
+	$ManualAllowed = 1
+	$CatchupMissed = 1
+	$WeeklyDays = $RepeatDays
+	$Months = 0
+	$Minutes = 0
+	$LastRanDate = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd 00:00:00.000")
+	
+	$SchedulerMacroContent = @"
+ /* First delete the scheduled repair if it exists */
+ DELETE FROM RUN_TAB WHERE F1103 = '$CommandToRun' AND F1000 = '$HostTarget';
+
+ /* Insert the scheduled weekly repair */
+ INSERT INTO RUN_TAB (F1102, F1000, F1103, F1104, F1105, F1108, F1109, F1111, F1114, F1115, F1117)
+ VALUES ($TaskNumber, '$HostTarget', '$CommandToRun', '$ExecTarget', '$LastRanDate', $ManualAllowed, '$TaskName', $CatchupMissed, $WeeklyDays, $Months, $Minutes);
+
+ /* Activate the new task right away */
+ @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
+"@ -replace "`n", "`r`n"
+	
+	# Write the server repair script
+	try
+	{
+		[System.IO.File]::WriteAllText($DestScriptPath, $ServerSQLScriptContent, $ansiEncoding)
+		Set-ItemProperty -Path $DestScriptPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write_Log "Wrote server DB repair script to $DestScriptPath" "green"
+	}
+	catch
+	{
+		Write_Log "Failed to write server script: $_" "red"
+		return
+	}
+	
+	# Write the scheduler macro
+	try
+	{
+		[System.IO.File]::WriteAllText($SchedulerMacroPath, $SchedulerMacroContent, $ansiEncoding)
+		Set-ItemProperty -Path $SchedulerMacroPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write_Log "Scheduler SQL macro created at $SchedulerMacroPath" "green"
+	}
+	catch
+	{
+		Write_Log "Failed to write scheduler macro: $_" "red"
+		return
+	}
+	
+	# Remove archive bit if set (optional)
+	try
+	{
+		if (Test-Path $DestScriptPath)
+		{
+			$file = Get-Item -Path $DestScriptPath
+			if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
+			{
+				$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
+				Write_Log "Removed the archive bit from '$DestScriptPath'." "green"
+			}
+		}
+	}
+	catch
+	{
+		Write_Log "Failed to remove the archive bit from '$DestScriptPath'. Error: $_" "red"
+	}
+	
+	Write_Log "`r`n==================== Schedule_Server_DB_Repair Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                                 FUNCTION: Organize_TBS_SCL_ver520
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -8337,9 +8498,18 @@ if (-not $form)
 		})
 	[void]$ContextMenuServer.Items.Add($ServerDBRepairItem)
 	
+	############################################################################
+	# 2) Schedule the DB repair at the lanes
+	############################################################################
+	$ServerScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Server DB Repair.")
+	$ServerScheduleRepairItem.ToolTipText = "Schedule a task to repair the server database."
+	$ServerScheduleRepairItem.Add_Click({
+			Schedule_Server_DB_Repair -StoreNumber $StoreNumber
+		})
+	[void]$ContextMenuServer.Items.Add($ServerScheduleRepairItem)
 	
 	############################################################################
-	# 2) Organize_TBS_SCL_ver520 Menu Item
+	# 3) Organize_TBS_SCL_ver520 Menu Item
 	############################################################################
 	$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize_TBS_SCL_ver520")
 	$OrganizeScaleTableItem.ToolTipText = "Organize the Scale SQL table (TBS_SCL_ver520)."
@@ -8349,7 +8519,7 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($OrganizeScaleTableItem)
 	
 	############################################################################
-	# 3) Repair Windows Menu Item
+	# 4) Repair Windows Menu Item
 	############################################################################
 	$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
 	$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
@@ -8359,7 +8529,7 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
 	
 	############################################################################
-	# 4) Configure System Settings Menu Item
+	# 5) Configure System Settings Menu Item
 	############################################################################
 	$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
 	$ConfigureSystemSettingsItem.ToolTipText = "Organize the desktop, set power plan to maximize performance and make sure necessary services are running."
