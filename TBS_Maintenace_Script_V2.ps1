@@ -5686,7 +5686,7 @@ ORDER BY F1000,F1063;
 }
 
 # ===================================================================================================
-#                                   FUNCTION: Schedule_Lane_DB_Repair
+#                                   FUNCTION: Schedule_Lane_DB_Maintenance
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deploys a lane DB repair SQL/SQI script to the selected lane's Office folder,
@@ -5695,13 +5695,13 @@ ORDER BY F1000,F1063;
 #   Ensures destination directories exist and removes the archive bit after writing.
 # ===================================================================================================
 
-function Schedule_Lane_DB_Repair
+function Schedule_Lane_DB_Maintenance
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
-	Write_Log "`r`n==================== Starting Schedule_Lane_DB_Repair ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Schedule_Lane_DB_Maintenance ====================`r`n" "blue"
 	
 	if (-not $LaneSQLScript)
 	{
@@ -5733,7 +5733,7 @@ function Schedule_Lane_DB_Repair
 	# Prompt user for the repeat interval in days
 	Add-Type -AssemblyName System.Windows.Forms
 	$daysPromptForm = New-Object System.Windows.Forms.Form
-	$daysPromptForm.Text = "Lane DB Repair - Schedule Interval"
+	$daysPromptForm.Text = "Lane DB Maintenance - Schedule Interval"
 	$daysPromptForm.Width = 350
 	$daysPromptForm.Height = 160
 	$daysPromptForm.StartPosition = "CenterScreen"
@@ -5792,16 +5792,16 @@ function Schedule_Lane_DB_Repair
 			continue
 		}
 		$LaneOfficeFolder = "\\$LaneMachineName\storeman\office"
-		$DestScriptPath = Join-Path $LaneOfficeFolder "LANE_DB_REPAIR.SQI"
+		$DestScriptPath = Join-Path $LaneOfficeFolder "LANE_DB_MAINTENANCE.SQI"
 		$LocalXFPath = Join-Path $OfficePath "XF$StoreNumber$LaneNumber"
-		$SchedulerMacroPath = Join-Path $LocalXFPath "Add_LaneDBRepair_to_RUN_TAB.sqi"
+		$SchedulerMacroPath = Join-Path $LocalXFPath "Add_LaneDBMaintenance_to_RUN_TAB.sqi"
 				
 		# Prepare scheduler macro content (unique task number per lane if needed)
 		$TaskNumber = 750
 		$HostTarget = "{0:D3}" -f [int]$LaneNumber
-		$CommandToRun = 'sqi=LANE_DB_REPAIR'
+		$CommandToRun = 'sqi=LANE_DB_MAINTENANCE'
 		$ExecTarget = $HostTarget
-		$TaskName = 'Lane DB Repair'
+		$TaskName = 'Lane DB Maintenance'
 		$ManualAllowed = 1
 		$CatchupMissed = 1
 		$WeeklyDays = $RepeatDays
@@ -5810,10 +5810,10 @@ function Schedule_Lane_DB_Repair
 		$LastRanDate = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd 00:00:00.000")
 		
 		$SchedulerMacroContent = @"
- /* First delete the scheduled repair if it exists */
+ /* First delete the scheduled maintenance if it exists */
  DELETE FROM RUN_TAB WHERE F1103 = '$CommandToRun' AND F1000 = '$HostTarget';
 
- /* Insert the scheduled weekly repair */
+ /* Insert the scheduled weekly maintenance */
  INSERT INTO RUN_TAB (F1102, F1000, F1103, F1104, F1105, F1108, F1109, F1111, F1114, F1115, F1117)
  VALUES ($TaskNumber, '$HostTarget', '$CommandToRun', '$ExecTarget', '$LastRanDate', $ManualAllowed, '$TaskName', $CatchupMissed, $WeeklyDays, $Months, $Minutes);
 
@@ -5845,7 +5845,7 @@ function Schedule_Lane_DB_Repair
 		{
 			[System.IO.File]::WriteAllText($DestScriptPath, $LaneSQLScriptContent, $ansiEncoding)
 			Set-ItemProperty -Path $DestScriptPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			Write_Log "Wrote lane DB repair script to $DestScriptPath" "green"
+			Write_Log "Wrote lane DB maintenance script to $DestScriptPath" "green"
 		}
 		catch
 		{
@@ -5885,11 +5885,11 @@ function Schedule_Lane_DB_Repair
 		}
 	}
 	
-	Write_Log "`r`n==================== Schedule_Lane_DB_Repair Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Schedule_Lane_DB_Maintenance Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
-#                                   FUNCTION: Schedule_Server_DB_Repair
+#                                   FUNCTION: Schedule_Server_DB_Maintenance
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Schedules a DB repair task on the server by writing the repair SQL/SQI script and scheduler macro
@@ -5898,14 +5898,14 @@ function Schedule_Lane_DB_Repair
 #   XF folder must already exist; if not, the operation is skipped and logged.
 # ===================================================================================================
 
-function Schedule_Server_DB_Repair
+function Schedule_Server_DB_Maintenance
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber,
 		[string]$ServerNumber = "901"
 	)
-	Write_Log "`r`n==================== Starting Schedule_Server_DB_Repair ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Schedule_Server_DB_Maintenance ====================`r`n" "blue"
 	
 	if (-not $ServerSQLScript)
 	{
@@ -5916,7 +5916,7 @@ function Schedule_Server_DB_Repair
 	# Prompt user for the repeat interval in days (once)
 	Add-Type -AssemblyName System.Windows.Forms
 	$daysPromptForm = New-Object System.Windows.Forms.Form
-	$daysPromptForm.Text = "Server DB Repair - Schedule Interval"
+	$daysPromptForm.Text = "Server DB Maintenance - Schedule Interval"
 	$daysPromptForm.Width = 350
 	$daysPromptForm.Height = 160
 	$daysPromptForm.StartPosition = "CenterScreen"
@@ -5967,9 +5967,9 @@ function Schedule_Server_DB_Repair
 	
 	# Paths: Office for the script, XF for the scheduler macro
 	$OfficeFolder = $OfficePath
-	$DestScriptPath = Join-Path $OfficeFolder "SERVER_DB_REPAIR.SQI"
+	$DestScriptPath = Join-Path $OfficeFolder "SERVER_DB_MAINTENANCE.SQI"
 	$LocalXFPath = Join-Path $OfficePath "XF$StoreNumber$ServerNumber"
-	$SchedulerMacroPath = Join-Path $LocalXFPath "Add_ServerDBRepair_to_RUN_TAB.sqi"
+	$SchedulerMacroPath = Join-Path $LocalXFPath "Add_ServerDBMaintenance_to_RUN_TAB.sqi"
 	
 	if (-not (Test-Path $LocalXFPath))
 	{
@@ -5982,9 +5982,9 @@ function Schedule_Server_DB_Repair
 	
 	$TaskNumber = 750
 	$HostTarget = "{0:D3}" -f [int]$ServerNumber
-	$CommandToRun = 'sqi=SERVER_DB_REPAIR'
+	$CommandToRun = 'sqi=SERVER_DB_MAINTENANCE'
 	$ExecTarget = $HostTarget
-	$TaskName = 'Server DB Repair'
+	$TaskName = 'Server DB Maintenance'
 	$ManualAllowed = 1
 	$CatchupMissed = 1
 	$WeeklyDays = $RepeatDays
@@ -5993,10 +5993,10 @@ function Schedule_Server_DB_Repair
 	$LastRanDate = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd 00:00:00.000")
 	
 	$SchedulerMacroContent = @"
- /* First delete the scheduled repair if it exists */
+ /* First delete the scheduled maintenance if it exists */
  DELETE FROM RUN_TAB WHERE F1103 = '$CommandToRun' AND F1000 = '$HostTarget';
 
- /* Insert the scheduled weekly repair */
+ /* Insert the scheduled weekly maintenance */
  INSERT INTO RUN_TAB (F1102, F1000, F1103, F1104, F1105, F1108, F1109, F1111, F1114, F1115, F1117)
  VALUES ($TaskNumber, '$HostTarget', '$CommandToRun', '$ExecTarget', '$LastRanDate', $ManualAllowed, '$TaskName', $CatchupMissed, $WeeklyDays, $Months, $Minutes);
 
@@ -6048,7 +6048,7 @@ function Schedule_Server_DB_Repair
 		Write_Log "Failed to remove the archive bit from '$DestScriptPath'. Error: $_" "red"
 	}
 	
-	Write_Log "`r`n==================== Schedule_Server_DB_Repair Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Schedule_Server_DB_Maintenance Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -8495,7 +8495,7 @@ if (-not $form)
 	$ServerScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Server DB Repair")
 	$ServerScheduleRepairItem.ToolTipText = "Schedule a task to repair the server database."
 	$ServerScheduleRepairItem.Add_Click({
-			Schedule_Server_DB_Repair -StoreNumber $StoreNumber
+			Schedule_Server_DB_Maintenance -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuServer.Items.Add($ServerScheduleRepairItem)
 	
@@ -8698,7 +8698,7 @@ if (-not $form)
 	$LaneScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane DB Repair")
 	$LaneScheduleRepairItem.ToolTipText = "Schedule a task to repair the lane/s database."
 	$LaneScheduleRepairItem.Add_Click({
-			Schedule_Lane_DB_Repair -StoreNumber "$StoreNumber"
+			Schedule_Lane_DB_Maintenance -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($LaneScheduleRepairItem)
 	
