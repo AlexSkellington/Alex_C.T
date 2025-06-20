@@ -2094,6 +2094,22 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 	# Store the ServerSQLScript in the script scope
 	$script:ServerSQLScript = $ServerSQLScript
 	
+	# --- Prepare mailslot‑compatible server script ---
+	$serverLines = $script:ServerSQLScript -split "`r?`n"
+	$macroPattern = '^\s*(@|/|\*)'
+	$serverFixedLines = foreach ($line in $serverLines)
+	{
+		if ($line -match $macroPattern -or [string]::IsNullOrWhiteSpace($line))
+		{
+			$line
+		}
+		else
+		{
+			"@EXEC($line)"
+		}
+	}
+	$script:ServerSQLScript_Mailslot = ($serverFixedLines -join "`r`n")
+	
 	<#
 	# Optionally write to file as fallback
 	if ($StoresqlFilePath)
@@ -2359,25 +2375,28 @@ function Execute_SQL_Locally
 	# ------------------------------------------------------------------
 	if ($PromptForSections)
 	{
-		# Collect all section names
-		$allSectionNames = $matches | ForEach-Object {
-			$_.Groups['SectionName'].Value.Trim()
-		}
-		
-		# Show the GUI form with checkboxes
-		$SectionsToRun = Show_Section_Selection_Form -SectionNames $allSectionNames
-		if (-not $SectionsToRun -or $SectionsToRun.Count -eq 0)
+		$selectedSectionObjs = Show_Section_Selection_Form -SqlScript $sqlScript
+		if (-not $selectedSectionObjs -or $selectedSectionObjs.Count -eq 0)
 		{
 			Write_Log "No sections selected or form was canceled. Aborting execution." "yellow"
 			return
 		}
-	}
-	
-	# If user did NOT specify sections or prompt, run all by default
-	$useSpecificSections = $false
-	if ($SectionsToRun -and $SectionsToRun.Count -gt 0)
-	{
+		# Only run these sections
+		$sectionsToRun = $selectedSectionObjs
 		$useSpecificSections = $true
+	}
+	else
+	{
+		# Default: run all sections
+		$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
+		$matches = [regex]::Matches($sqlScript, $sectionPattern)
+		$sectionsToRun = $matches | ForEach-Object {
+			[PSCustomObject]@{
+				SectionName = $_.Groups['SectionName'].Value.Trim()
+				SQLCommands = $_.Groups['SQLCommands'].Value.Trim()
+			}
+		}
+		$useSpecificSections = $false
 	}
 	
 	# Retrieve the connection string
@@ -8076,14 +8095,27 @@ function Show_Section_Selection_Form
 {
 	param (
 		[Parameter(Mandatory = $true)]
-		[string[]]$SectionNames
+		[string]$SqlScript
 	)
 	
-	# Make sure .NET WinForms is loaded
+	# Split into sections using regex
+	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
+	$matches = [regex]::Matches($SqlScript, $sectionPattern)
+	
+	if ($matches.Count -eq 0) { return @() }
+	
+	# Prepare objects: @{ SectionName="...", SQLCommands="..." }
+	$sections = $matches | ForEach-Object {
+		[PSCustomObject]@{
+			SectionName = $_.Groups['SectionName'].Value.Trim()
+			SQLCommands = $_.Groups['SQLCommands'].Value.Trim()
+		}
+	}
+	
+	# UI
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
-	# Create the form
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select SQL Sections"
 	$form.StartPosition = "CenterScreen"
@@ -8092,7 +8124,6 @@ function Show_Section_Selection_Form
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
 	
-	# Label: brief instructions
 	$label = New-Object System.Windows.Forms.Label
 	$label.Text = "Check the sections you want to run, then click OK."
 	$label.AutoSize = $true
@@ -8100,7 +8131,6 @@ function Show_Section_Selection_Form
 	$label.Top = 10
 	$form.Controls.Add($label)
 	
-	# CheckedListBox
 	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
 	$checkedListBox.Width = 500
 	$checkedListBox.Height = 280
@@ -8109,13 +8139,12 @@ function Show_Section_Selection_Form
 	$checkedListBox.CheckOnClick = $true
 	$form.Controls.Add($checkedListBox)
 	
-	# Populate with section names
-	foreach ($name in $SectionNames)
+	# Fill list with section names
+	foreach ($section in $sections)
 	{
-		[void]$checkedListBox.Items.Add($name, $false)
+		[void]$checkedListBox.Items.Add($section.SectionName, $false)
 	}
 	
-	# "Select All" button
 	$selectAllButton = New-Object System.Windows.Forms.Button
 	$selectAllButton.Text = "Select All"
 	$selectAllButton.Width = 90
@@ -8123,15 +8152,8 @@ function Show_Section_Selection_Form
 	$selectAllButton.Left = 20
 	$selectAllButton.Top = 330
 	$form.Controls.Add($selectAllButton)
+	$selectAllButton.Add_Click({ for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++) { $checkedListBox.SetItemChecked($i, $true) } })
 	
-	$selectAllButton.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $true)
-			}
-		})
-	
-	# "Deselect All" button
 	$deselectAllButton = New-Object System.Windows.Forms.Button
 	$deselectAllButton.Text = "Deselect All"
 	$deselectAllButton.Width = 90
@@ -8139,26 +8161,17 @@ function Show_Section_Selection_Form
 	$deselectAllButton.Left = 120
 	$deselectAllButton.Top = 330
 	$form.Controls.Add($deselectAllButton)
+	$deselectAllButton.Add_Click({ for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++) { $checkedListBox.SetItemChecked($i, $false) } })
 	
-	$deselectAllButton.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $false)
-			}
-		})
-	
-	# OK button
 	$okButton = New-Object System.Windows.Forms.Button
 	$okButton.Text = "OK"
 	$okButton.Width = 80
 	$okButton.Height = 30
 	$okButton.Left = 240
 	$okButton.Top = 330
-	# Crucial: set DialogResult, not a manual event
 	$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
 	$form.Controls.Add($okButton)
 	
-	# Cancel button
 	$cancelButton = New-Object System.Windows.Forms.Button
 	$cancelButton.Text = "Cancel"
 	$cancelButton.Width = 80
@@ -8168,22 +8181,19 @@ function Show_Section_Selection_Form
 	$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 	$form.Controls.Add($cancelButton)
 	
-	# Set AcceptButton and CancelButton so Enter/Esc work
 	$form.AcceptButton = $okButton
 	$form.CancelButton = $cancelButton
 	
-	# Show the dialog
 	$dialogResult = $form.ShowDialog()
 	
 	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
 	{
-		# Gather checked items AFTER the form closes
+		# Build array of selected section objects (not just names)
 		$selectedSections = @()
 		foreach ($item in $checkedListBox.CheckedItems)
 		{
-			$selectedSections += $item
+			$selectedSections += $sections | Where-Object { $_.SectionName -eq $item }
 		}
-		
 		return $selectedSections
 	}
 	else
