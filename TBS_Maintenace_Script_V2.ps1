@@ -5810,7 +5810,7 @@ function Schedule_Lane_DB_Repair
 		# Prepare scheduler macro content (unique task number per lane if needed)
 		$TaskNumber = 750
 		$HostTarget = "{0:D3}" -f [int]$LaneNumber
-		$CommandToRun = 'sql=LANE_DB_REPAIR'
+		$CommandToRun = 'sqi=LANE_DB_REPAIR'
 		$ExecTarget = $HostTarget
 		$TaskName = 'Lane DB Repair'
 		$ManualAllowed = 1
@@ -5993,7 +5993,7 @@ function Schedule_Server_DB_Repair
 	
 	$TaskNumber = 750
 	$HostTarget = "{0:D3}" -f [int]$ServerNumber
-	$CommandToRun = 'sql=SERVER_DB_REPAIR'
+	$CommandToRun = 'sqi=SERVER_DB_REPAIR'
 	$ExecTarget = $HostTarget
 	$TaskName = 'Server DB Repair'
 	$ManualAllowed = 1
