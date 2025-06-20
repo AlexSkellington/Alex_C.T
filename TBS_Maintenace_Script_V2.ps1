@@ -2318,16 +2318,16 @@ function Execute_SQL_Locally
 		[switch]$PromptForSections
 	)
 	
-	# Make sure .NET WinForms assemblies are loaded
-	[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
-	[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
+	# Load .NET WinForms assemblies if needed
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
 	
 	# Configuration for retry mechanism
 	$MaxRetries = 2
 	$RetryDelaySeconds = 5
 	$FailedCommandsPath = "$OfficePath\XF${StoreNumber}901\Failed_ServerSQLScript_Sections.sql"
 	
-	# Attempt to retrieve the SQL script
+	# Retrieve the SQL script
 	$sqlScript = $script:ServerSQLScript
 	$dbName = $script:FunctionResults['DBNAME']
 	
@@ -2337,7 +2337,6 @@ function Execute_SQL_Locally
 	}
 	elseif ($SqlFilePath)
 	{
-		# If the script variable is empty, try reading from file
 		if (-not (Test-Path $SqlFilePath))
 		{
 			Write_Log "SQL file not found: $SqlFilePath" "red"
@@ -2360,7 +2359,7 @@ function Execute_SQL_Locally
 		return
 	}
 	
-	# Regex to capture sections: /* SectionName */ ...commands...
+	# SECTION SPLITTING: Use object format for both GUI and non-GUI
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	$matches = [regex]::Matches($sqlScript, $sectionPattern)
 	
@@ -2370,43 +2369,42 @@ function Execute_SQL_Locally
 		return
 	}
 	
-	# ------------------------------------------------------------------
-	# If the user wants a GUI prompt for sections, show the form now.
-	# ------------------------------------------------------------------
+	# Build all sections as objects
+	$allSections = $matches | ForEach-Object {
+		[PSCustomObject]@{
+			SectionName = $_.Groups['SectionName'].Value.Trim()
+			SQLCommands = $_.Groups['SQLCommands'].Value.Trim()
+		}
+	}
+	
+	# Section selection (GUI prompt or all)
 	if ($PromptForSections)
 	{
-		$selectedSectionObjs = Show_Section_Selection_Form -SqlScript $sqlScript
-		if (-not $selectedSectionObjs -or $selectedSectionObjs.Count -eq 0)
+		$sectionsToRun = Show_Section_Selection_Form -SqlScript $sqlScript
+		if (-not $sectionsToRun -or $sectionsToRun.Count -eq 0)
 		{
 			Write_Log "No sections selected or form was canceled. Aborting execution." "yellow"
 			return
 		}
-		# Only run these sections
-		$sectionsToRun = $selectedSectionObjs
-		$useSpecificSections = $true
+	}
+	elseif ($SectionsToRun -and $SectionsToRun.Count -gt 0)
+	{
+		# Filter to only named sections
+		$sectionsToRun = $allSections | Where-Object { $SectionsToRun -contains $_.SectionName }
+		if ($sectionsToRun.Count -eq 0)
+		{
+			Write_Log "Specified section names were not found in the script." "yellow"
+			return
+		}
 	}
 	else
 	{
-		# Default: run all sections
-		$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-		$matches = [regex]::Matches($sqlScript, $sectionPattern)
-		$sectionsToRun = $matches | ForEach-Object {
-			[PSCustomObject]@{
-				SectionName = $_.Groups['SectionName'].Value.Trim()
-				SQLCommands = $_.Groups['SQLCommands'].Value.Trim()
-			}
-		}
-		$useSpecificSections = $false
+		$sectionsToRun = $allSections
 	}
 	
 	# Retrieve the connection string
-	if (-not $script:FunctionResults)
-	{
-		$script:FunctionResults = @{ }
-	}
+	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 	$ConnectionString = $script:FunctionResults['ConnectionString']
-	
-	# If connection string is not available, attempt to get it
 	if (-not $ConnectionString)
 	{
 		Write_Log "Connection string not found. Attempting to generate it..." "yellow"
@@ -2417,21 +2415,12 @@ function Execute_SQL_Locally
 			return
 		}
 	}
-	
-	# Ensure the connection string contains Encrypt=True and TrustServerCertificate=True.
-	if ($ConnectionString -notmatch '(?i)Encrypt\s*=')
-	{
-		$ConnectionString += ";Encrypt=True"
-	}
-	if ($ConnectionString -notmatch '(?i)TrustServerCertificate\s*=')
-	{
-		$ConnectionString += ";TrustServerCertificate=True"
-	}
-	
-	# Optionally, log the connection string for debugging (remove sensitive info if necessary)
+	# Ensure connection string includes encryption/trust flags
+	if ($ConnectionString -notmatch '(?i)Encrypt\s*=') { $ConnectionString += ";Encrypt=True" }
+	if ($ConnectionString -notmatch '(?i)TrustServerCertificate\s*=') { $ConnectionString += ";TrustServerCertificate=True" }
 	Write_Log "Using connection string: $ConnectionString" "gray"
 	
-	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
+	# Check Invoke-Sqlcmd for -ConnectionString param
 	$supportsConnectionString = $false
 	try
 	{
@@ -2455,22 +2444,15 @@ function Execute_SQL_Locally
 		try
 		{
 			Write_Log "Starting execution of SQL script. Attempt $($retryCount + 1) of $MaxRetries." "blue"
-			
-			# Only execute failed sections after the first attempt
-			$sectionsToExecute = if ($retryCount -eq 0) { $matches }
+			# Only execute failed sections after first attempt
+			$currentSections = if ($retryCount -eq 0) { $sectionsToRun }
 			else { $failedSections }
 			$failedSections = @() # reset for this iteration
 			
-			foreach ($match in $sectionsToExecute)
+			foreach ($section in $currentSections)
 			{
-				$sectionName = $match.Groups['SectionName'].Value.Trim()
-				$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
-				
-				# If user specifically chose sections, skip any not in that selection
-				if ($useSpecificSections -and ($SectionsToRun -notcontains $sectionName))
-				{
-					continue
-				}
+				$sectionName = $section.SectionName
+				$sqlCommands = $section.SQLCommands
 				
 				if ([string]::IsNullOrWhiteSpace($sqlCommands))
 				{
@@ -2478,6 +2460,7 @@ function Execute_SQL_Locally
 					continue
 				}
 				
+				# Always show currently executing section
 				Write_Log "`r`nExecuting section: '$sectionName'" "blue"
 				Write_Log "--------------------------------------------------------------------------------"
 				Write_Log "$sqlCommands" "orange"
@@ -2487,16 +2470,12 @@ function Execute_SQL_Locally
 				{
 					if ($supportsConnectionString)
 					{
-						# Using the connection string that now includes Encrypt and TrustServerCertificate
 						Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
 					}
 					else
 					{
-						# Parse ServerInstance and Database from ConnectionString
 						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
 						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
-						
-						# Check if Invoke-Sqlcmd supports the -TrustServerCertificate parameter
 						$cmdParams = (Get-Command Invoke-Sqlcmd).Parameters.Keys
 						if ($cmdParams -contains 'TrustServerCertificate')
 						{
@@ -2515,7 +2494,6 @@ function Execute_SQL_Locally
 					{
 						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
 						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
-						# Try to use the TrustServerCertificate flag if available
 						$cmdParams = (Get-Command Invoke-Sqlcmd).Parameters.Keys
 						if ($cmdParams -contains 'TrustServerCertificate')
 						{
@@ -2530,7 +2508,7 @@ function Execute_SQL_Locally
 					catch
 					{
 						Write_Log "Error executing section '$sectionName' with fallback: $_" "red"
-						$failedSections += $match
+						$failedSections += $section
 						if ($retryCount -eq $MaxRetries - 1)
 						{
 							$failedCommands += "/* $sectionName */`r`n$sqlCommands`r`n"
@@ -2540,7 +2518,7 @@ function Execute_SQL_Locally
 				catch
 				{
 					Write_Log "Error executing section '$sectionName': $_" "red"
-					$failedSections += $match
+					$failedSections += $section
 					if ($retryCount -eq $MaxRetries - 1)
 					{
 						$failedCommands += "/* $sectionName */`r`n$sqlCommands`r`n"
