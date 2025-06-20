@@ -2971,61 +2971,91 @@ function Process_Lane
 	param (
 		[string]$LaneNumber,
 		[string]$LanesqlFilePath,
-		[string]$StoreNumber,
-		[string[]]$SectionsToWrite
+		[string]$StoreNumber
 	)
 	
 	$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 	
-	if (!(Test-Path $LaneLocalPath))
-	{
-		Write_Log "`r`nLane #${LaneNumber} not found at path: $LaneLocalPath" "yellow"
-		return
-	}
-	Write_Log "`r`nProcessing Lane #${LaneNumber}..." "blue"
-	
-	# Parse $LaneSQLScript using your section regex
+	# --- 1. Parse the sections from LaneSQLScript ---
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
 	
-	$sectionsToWrite = $SectionsToWrite
-	# If no sections selected, default to all
-	if (-not $sectionsToWrite -or $sectionsToWrite.Count -eq 0)
+	if ($matches.Count -eq 0)
 	{
-		$sectionsToWrite = $matches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() }
-	}
-	
-	# Compose just the selected sections
-	$finalScript = ""
-	foreach ($match in $matches)
-	{
-		$sectionName = $match.Groups['SectionName'].Value.Trim()
-		$sqlCommands = $match.Value # preserves the whole block with header/comment
-		
-		if ($sectionsToWrite -contains $sectionName)
-		{
-			$finalScript += $sqlCommands + "`r`n"
-		}
-	}
-	if ([string]::IsNullOrWhiteSpace($finalScript))
-	{
-		Write_Log "No script content to write for Lane #${LaneNumber}." "yellow"
+		Write_Log "No sections found in Lane SQL script." "red"
 		return
 	}
 	
-	try
+	# --- 2. Prompt for sections to send ---
+	$allSectionNames = $matches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() }
+	$SectionsToSend = Show_Section_Selection_Form -SectionNames $allSectionNames
+	if (-not $SectionsToSend -or $SectionsToSend.Count -eq 0)
 	{
-		Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
-		Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Wrote selected sections to Lane #${LaneNumber} successfully." "green"
+		Write_Log "No sections selected for Lane #$LaneNumber." "yellow"
+		return
+	}
+	
+	# --- 3. Send each section via mailslot ---
+	$mailslotSucceeded = $true
+	foreach ($match in $matches)
+	{
+		$sectionName = $match.Groups['SectionName'].Value.Trim()
+		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
+		if ($SectionsToSend -contains $sectionName)
+		{
+			$mailslotPath = "\\\\POS$LaneNumber\\MailSlot\\WIN$LaneNumber"
+			$dbExecCmd = "dbEXEC($sqlCommands)"
+			
+			try
+			{
+				Write_Log "Sending section '$sectionName' to $mailslotPath..." "blue"
+				$success = [MailslotSender]::SendMailslotCommand($mailslotPath, $dbExecCmd)
+				if (-not $success) { throw "Mailslot send failed." }
+			}
+			catch
+			{
+				Write_Log "Mailslot send failed for Lane #$LaneNumber section '$sectionName': $_" "yellow"
+				$mailslotSucceeded = $false
+				break # Stop on first failure, fallback to file write
+			}
+		}
+	}
+	
+	if ($mailslotSucceeded)
+	{
+		Write_Log "All selected sections sent to Lane #$LaneNumber via mailslot." "green"
 		if (-not ($script:ProcessedLanes -contains $LaneNumber))
 		{
 			$script:ProcessedLanes += $LaneNumber
 		}
+		return
 	}
-	catch
+	
+	# --- 4. Fallback: Write selected sections to Lane_Database_Maintenance.sqi ---
+	if (Test-Path $LaneLocalPath)
 	{
-		Write_Log "Failed to write to Lane #${LaneNumber}: $_" "red"
+		Write_Log "Falling back to writing Lane_Database_Maintenance.sqi for Lane #$LaneNumber..." "yellow"
+		try
+		{
+			$selectedScript = ($matches | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() }) |
+			ForEach-Object { "/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())" } |
+			Out-String
+			Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $selectedScript -Encoding Ascii
+			Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+			Write_Log "Created and wrote to file at Lane #${LaneNumber} successfully." "green"
+			if (-not ($script:ProcessedLanes -contains $LaneNumber))
+			{
+				$script:ProcessedLanes += $LaneNumber
+			}
+		}
+		catch
+		{
+			Write_Log "Failed to write to Lane #[$LaneNumber]: $_" "red"
+		}
+	}
+	else
+	{
+		Write_Log "Lane #$LaneNumber not found at path: $LaneLocalPath" "yellow"
 	}
 }
 
