@@ -2934,7 +2934,7 @@ function Process_Lanes
 		return
 	}
 	
-	# Lane selection
+	# Get the user's lane selection
 	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	if ($selection -eq $null)
 	{
@@ -2944,22 +2944,38 @@ function Process_Lanes
 	$Type = $selection.Type
 	$Lanes = $selection.Lanes
 	
-	# ---- Section selection ----
+	# --- Prompt for section selection ONCE ---
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
-	$sectionNames = $matches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() }
-	if ($sectionNames.Count -eq 0) { $sectionNames = @('Entire Script') }
-	$selectedSections = Show_Section_Selection_Form -SectionNames $sectionNames
-	if (-not $selectedSections -or $selectedSections.Count -eq 0)
+	if ($matches.Count -eq 0)
 	{
-		Write_Log "No sections selected. Aborting lane processing." "yellow"
+		Write_Log "No sections found in Lane SQL script." "red"
 		return
 	}
 	
-	# Process lanes
+	# Exclude the two fixed sections from the user selection
+	$fixedSections = @(
+		"Set a long timeout so the entire script runs",
+		"Clear the long database timeout"
+	)
+	$allSectionNames = $matches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() } | Where-Object { $fixedSections -notcontains $_ }
+	$SectionsToSend = Show_Section_Selection_Form -SectionNames $allSectionNames
+	if (-not $SectionsToSend -or $SectionsToSend.Count -eq 0)
+	{
+		Write_Log "No sections selected for lanes." "yellow"
+		return
+	}
+	
+	# Process lanes based on the type of selection
 	foreach ($Number in $Lanes)
 	{
-		Process_Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber -SectionsToWrite $selectedSections
+		Process_Lane -LaneNumber $Number -StoreNumber $StoreNumber -SectionsToSend $SectionsToSend -SectionMatches $matches
+	}
+	
+	Write_Log "`r`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
+	if ($script:ProcessedLanes.Count -gt 0)
+	{
+		Write_Log "Processed Lanes: $($script:ProcessedLanes -join ', ')" "green"
 	}
 	
 	Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
@@ -2970,79 +2986,49 @@ function Process_Lane
 {
 	param (
 		[string]$LaneNumber,
-		[string]$LanesqlFilePath,
-		[string]$StoreNumber
+		[string]$StoreNumber,
+		[string[]]$SectionsToSend,
+		$SectionMatches
 	)
+	
+	# Get the correct machine name for this lane
+	$machineName = $LaneNumber # fallback
+	if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'].ContainsKey($LaneNumber))
+	{
+		$machineName = $script:FunctionResults['LaneMachines'][$LaneNumber]
+	}
 	
 	$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 	
-	# --- 1. Parse the sections from LaneSQLScript ---
-	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
-	
-	if ($matches.Count -eq 0)
-	{
-		Write_Log "No sections found in Lane SQL script." "red"
-		return
-	}
-	
-	# --- 2. Prompt for sections to send ---
-	$allSectionNames = $matches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() }
-	$SectionsToSend = Show_Section_Selection_Form -SectionNames $allSectionNames
-	if (-not $SectionsToSend -or $SectionsToSend.Count -eq 0)
-	{
-		Write_Log "No sections selected for Lane #$LaneNumber." "yellow"
-		return
-	}
-	
-	# --- 3. Send each section via mailslot ---
-	$mailslotSucceeded = $true
-	foreach ($match in $matches)
-	{
-		$sectionName = $match.Groups['SectionName'].Value.Trim()
-		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
-		if ($SectionsToSend -contains $sectionName)
-		{
-			$mailslotPath = "\\POS$LaneNumber\\MailSlot\\WIN$LaneNumber"
-			$dbExecCmd = "dbEXEC($sqlCommands)"
-			
-			try
-			{
-				Write_Log "Sending section '$sectionName' to $mailslotPath..." "blue"
-				$success = [MailslotSender]::SendMailslotCommand($mailslotPath, $dbExecCmd)
-				if (-not $success) { throw "Mailslot send failed." }
-			}
-			catch
-			{
-				Write_Log "Mailslot send failed for Lane #$LaneNumber section '$sectionName': $_" "yellow"
-				$mailslotSucceeded = $false
-				break # Stop on first failure, fallback to file write
-			}
-		}
-	}
-	
-	if ($mailslotSucceeded)
-	{
-		Write_Log "All selected sections sent to Lane #$LaneNumber via mailslot." "green"
-		if (-not ($script:ProcessedLanes -contains $LaneNumber))
-		{
-			$script:ProcessedLanes += $LaneNumber
-		}
-		return
-	}
-	
-	# --- 4. Fallback: Write selected sections to Lane_Database_Maintenance.sqi ---
 	if (Test-Path $LaneLocalPath)
 	{
-		Write_Log "Falling back to writing Lane_Database_Maintenance.sqi for Lane #$LaneNumber..." "yellow"
+		Write_Log "`r`nProcessing $machineName..." "blue"
+		Write_Log "Lane path found: $LaneLocalPath" "blue"
+		Write_Log "Writing Lane_Database_Maintenance.sqi to Lane..." "blue"
+		
 		try
 		{
-			$selectedScript = ($matches | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() }) |
-			ForEach-Object { "/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())" } |
-			Out-String
-			Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $selectedScript -Encoding Ascii
+			# Always embed the fixed top section
+			$topBlock = "/* Set a long timeout so the entire script runs */`r`n@WIZRPL(DBASE_TIMEOUT=E);`r`n" +
+			"--------------------------------------------------------------------------------`r`n"
+			# Always embed the fixed bottom section
+			$bottomBlock = "--------------------------------------------------------------------------------`r`n" +
+			"/* Clear the long database timeout */`r`n@WIZCLR(DBASE_TIMEOUT);"
+			
+			# User-selected middle sections (with section headers)
+			$middleBlock = ($SectionMatches | Where-Object {
+					$SectionsToSend -contains $_.Groups['SectionName'].Value.Trim()
+				}) | ForEach-Object {
+				"/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())"
+			} | Out-String
+			
+			# Compose the final script
+			$finalScript = $topBlock + $middleBlock + $bottomBlock
+			
+			Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
 			Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			Write_Log "Created and wrote to file at Lane #${LaneNumber} successfully." "green"
+			Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully." "green"
+			
 			if (-not ($script:ProcessedLanes -contains $LaneNumber))
 			{
 				$script:ProcessedLanes += $LaneNumber
@@ -3050,7 +3036,7 @@ function Process_Lane
 		}
 		catch
 		{
-			Write_Log "Failed to write to Lane #[$LaneNumber]: $_" "red"
+			Write_Log "Failed to write to [$machineName]: $_" "red"
 		}
 	}
 	else
