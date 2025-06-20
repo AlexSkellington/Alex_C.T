@@ -5976,7 +5976,7 @@ function Schedule_Server_DB_Repair
 		$RepeatDays = 7
 	}
 	
-	$LocalXFPath = Join-Path $OfficePath "XF[$StoreNumber]901"
+	$LocalXFPath = Join-Path $OfficePath "XF$StoreNumber$ServerNumber"
 	$DestScriptPath = Join-Path $LocalXFPath "SERVER_DB_REPAIR.SQI"
 	$SchedulerMacroPath = Join-Path $LocalXFPath "Add_ServerDBRepair_to_RUN_TAB.sqi"
 	
@@ -8501,7 +8501,7 @@ if (-not $form)
 	############################################################################
 	# 2) Schedule the DB repair at the lanes
 	############################################################################
-	$ServerScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Server DB Repair.")
+	$ServerScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Server DB Repair")
 	$ServerScheduleRepairItem.ToolTipText = "Schedule a task to repair the server database."
 	$ServerScheduleRepairItem.Add_Click({
 			Schedule_Server_DB_Repair -StoreNumber $StoreNumber
