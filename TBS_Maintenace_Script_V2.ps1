@@ -2378,6 +2378,8 @@ function Execute_SQL_Locally
 	}
 	
 	# Section selection (GUI prompt or all)
+	# -- Section splitting & selection (now handled by form) --
+	
 	if ($PromptForSections)
 	{
 		$sectionsToRun = Show_Section_Selection_Form -SqlScript $sqlScript
@@ -2387,19 +2389,22 @@ function Execute_SQL_Locally
 			return
 		}
 	}
-	elseif ($SectionsToRun -and $SectionsToRun.Count -gt 0)
-	{
-		# Filter to only named sections
-		$sectionsToRun = $allSections | Where-Object { $SectionsToRun -contains $_.SectionName }
-		if ($sectionsToRun.Count -eq 0)
-		{
-			Write_Log "Specified section names were not found in the script." "yellow"
-			return
-		}
-	}
 	else
 	{
-		$sectionsToRun = $allSections
+		# No prompt: split into all sections
+		$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
+		$matches = [regex]::Matches($sqlScript, $sectionPattern)
+		if ($matches.Count -eq 0)
+		{
+			Write_Log "No SQL sections found to execute." "red"
+			return
+		}
+		$sectionsToRun = $matches | ForEach-Object {
+			[PSCustomObject]@{
+				SectionName = $_.Groups['SectionName'].Value.Trim()
+				SQLCommands = $_.Groups['SQLCommands'].Value.Trim()
+			}
+		}
 	}
 	
 	# Retrieve the connection string
@@ -2449,7 +2454,7 @@ function Execute_SQL_Locally
 			else { $failedSections }
 			$failedSections = @() # reset for this iteration
 			
-			foreach ($section in $currentSections)
+			foreach ($section in $sectionsToRun)
 			{
 				$sectionName = $section.SectionName
 				$sqlCommands = $section.SQLCommands
@@ -8076,13 +8081,12 @@ function Show_Section_Selection_Form
 		[string]$SqlScript
 	)
 	
-	# Split into sections using regex
+	# Regex split to sections/commands
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	$matches = [regex]::Matches($SqlScript, $sectionPattern)
 	
 	if ($matches.Count -eq 0) { return @() }
 	
-	# Prepare objects: @{ SectionName="...", SQLCommands="..." }
 	$sections = $matches | ForEach-Object {
 		[PSCustomObject]@{
 			SectionName = $_.Groups['SectionName'].Value.Trim()
@@ -8090,10 +8094,9 @@ function Show_Section_Selection_Form
 		}
 	}
 	
-	# UI
+	# Build form
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select SQL Sections"
 	$form.StartPosition = "CenterScreen"
@@ -8117,7 +8120,6 @@ function Show_Section_Selection_Form
 	$checkedListBox.CheckOnClick = $true
 	$form.Controls.Add($checkedListBox)
 	
-	# Fill list with section names
 	foreach ($section in $sections)
 	{
 		[void]$checkedListBox.Items.Add($section.SectionName, $false)
@@ -8166,7 +8168,7 @@ function Show_Section_Selection_Form
 	
 	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
 	{
-		# Build array of selected section objects (not just names)
+		# Return selected full objects (not just names)
 		$selectedSections = @()
 		foreach ($item in $checkedListBox.CheckedItems)
 		{
