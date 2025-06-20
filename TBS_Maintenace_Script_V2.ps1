@@ -5976,8 +5976,10 @@ function Schedule_Server_DB_Repair
 		$RepeatDays = 7
 	}
 	
+	# Paths: Office for the script, XF for the scheduler macro
+	$OfficeFolder = $OfficePath
+	$DestScriptPath = Join-Path $OfficeFolder "SERVER_DB_REPAIR.SQI"
 	$LocalXFPath = Join-Path $OfficePath "XF$StoreNumber$ServerNumber"
-	$DestScriptPath = $OfficePath
 	$SchedulerMacroPath = Join-Path $LocalXFPath "Add_ServerDBRepair_to_RUN_TAB.sqi"
 	
 	if (-not (Test-Path $LocalXFPath))
