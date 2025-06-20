@@ -2318,16 +2318,16 @@ function Execute_SQL_Locally
 		[switch]$PromptForSections
 	)
 	
-	# Load .NET WinForms assemblies if needed
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
+	# Make sure .NET WinForms assemblies are loaded
+	[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
+	[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
 	
 	# Configuration for retry mechanism
 	$MaxRetries = 2
 	$RetryDelaySeconds = 5
 	$FailedCommandsPath = "$OfficePath\XF${StoreNumber}901\Failed_ServerSQLScript_Sections.sql"
 	
-	# Retrieve the SQL script
+	# Attempt to retrieve the SQL script
 	$sqlScript = $script:ServerSQLScript
 	$dbName = $script:FunctionResults['DBNAME']
 	
@@ -2337,6 +2337,7 @@ function Execute_SQL_Locally
 	}
 	elseif ($SqlFilePath)
 	{
+		# If the script variable is empty, try reading from file
 		if (-not (Test-Path $SqlFilePath))
 		{
 			Write_Log "SQL file not found: $SqlFilePath" "red"
@@ -2359,7 +2360,7 @@ function Execute_SQL_Locally
 		return
 	}
 	
-	# SECTION SPLITTING: Use object format for both GUI and non-GUI
+	# Regex to capture sections: /* SectionName */ ...commands...
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	$matches = [regex]::Matches($sqlScript, $sectionPattern)
 	
@@ -2369,47 +2370,40 @@ function Execute_SQL_Locally
 		return
 	}
 	
-	# Build all sections as objects
-	$allSections = $matches | ForEach-Object {
-		[PSCustomObject]@{
-			SectionName = $_.Groups['SectionName'].Value.Trim()
-			SQLCommands = $_.Groups['SQLCommands'].Value.Trim()
-		}
-	}
-	
-	# Section selection (GUI prompt or all)
-	# -- Section splitting & selection (now handled by form) --
-	
+	# ------------------------------------------------------------------
+	# If the user wants a GUI prompt for sections, show the form now.
+	# ------------------------------------------------------------------
 	if ($PromptForSections)
 	{
-		$sectionsToRun = Show_Section_Selection_Form -SqlScript $sqlScript
-		if (-not $sectionsToRun -or $sectionsToRun.Count -eq 0)
+		# Collect all section names
+		$allSectionNames = $matches | ForEach-Object {
+			$_.Groups['SectionName'].Value.Trim()
+		}
+		
+		# Show the GUI form with checkboxes
+		$SectionsToRun = Show_Section_Selection_Form -SectionNames $allSectionNames
+		if (-not $SectionsToRun -or $SectionsToRun.Count -eq 0)
 		{
 			Write_Log "No sections selected or form was canceled. Aborting execution." "yellow"
 			return
 		}
 	}
-	else
+	
+	# If user did NOT specify sections or prompt, run all by default
+	$useSpecificSections = $false
+	if ($SectionsToRun -and $SectionsToRun.Count -gt 0)
 	{
-		# No prompt: split into all sections
-		$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-		$matches = [regex]::Matches($sqlScript, $sectionPattern)
-		if ($matches.Count -eq 0)
-		{
-			Write_Log "No SQL sections found to execute." "red"
-			return
-		}
-		$sectionsToRun = $matches | ForEach-Object {
-			[PSCustomObject]@{
-				SectionName = $_.Groups['SectionName'].Value.Trim()
-				SQLCommands = $_.Groups['SQLCommands'].Value.Trim()
-			}
-		}
+		$useSpecificSections = $true
 	}
 	
 	# Retrieve the connection string
-	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
+	if (-not $script:FunctionResults)
+	{
+		$script:FunctionResults = @{ }
+	}
 	$ConnectionString = $script:FunctionResults['ConnectionString']
+	
+	# If connection string is not available, attempt to get it
 	if (-not $ConnectionString)
 	{
 		Write_Log "Connection string not found. Attempting to generate it..." "yellow"
@@ -2420,12 +2414,21 @@ function Execute_SQL_Locally
 			return
 		}
 	}
-	# Ensure connection string includes encryption/trust flags
-	if ($ConnectionString -notmatch '(?i)Encrypt\s*=') { $ConnectionString += ";Encrypt=True" }
-	if ($ConnectionString -notmatch '(?i)TrustServerCertificate\s*=') { $ConnectionString += ";TrustServerCertificate=True" }
+	
+	# Ensure the connection string contains Encrypt=True and TrustServerCertificate=True.
+	if ($ConnectionString -notmatch '(?i)Encrypt\s*=')
+	{
+		$ConnectionString += ";Encrypt=True"
+	}
+	if ($ConnectionString -notmatch '(?i)TrustServerCertificate\s*=')
+	{
+		$ConnectionString += ";TrustServerCertificate=True"
+	}
+	
+	# Optionally, log the connection string for debugging (remove sensitive info if necessary)
 	Write_Log "Using connection string: $ConnectionString" "gray"
 	
-	# Check Invoke-Sqlcmd for -ConnectionString param
+	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
 	$supportsConnectionString = $false
 	try
 	{
@@ -2449,15 +2452,22 @@ function Execute_SQL_Locally
 		try
 		{
 			Write_Log "Starting execution of SQL script. Attempt $($retryCount + 1) of $MaxRetries." "blue"
-			# Only execute failed sections after first attempt
-			$currentSections = if ($retryCount -eq 0) { $sectionsToRun }
+			
+			# Only execute failed sections after the first attempt
+			$sectionsToExecute = if ($retryCount -eq 0) { $matches }
 			else { $failedSections }
 			$failedSections = @() # reset for this iteration
 			
-			foreach ($section in $sectionsToRun)
+			foreach ($match in $sectionsToExecute)
 			{
-				$sectionName = $section.SectionName
-				$sqlCommands = $section.SQLCommands
+				$sectionName = $match.Groups['SectionName'].Value.Trim()
+				$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
+				
+				# If user specifically chose sections, skip any not in that selection
+				if ($useSpecificSections -and ($SectionsToRun -notcontains $sectionName))
+				{
+					continue
+				}
 				
 				if ([string]::IsNullOrWhiteSpace($sqlCommands))
 				{
@@ -2465,7 +2475,6 @@ function Execute_SQL_Locally
 					continue
 				}
 				
-				# Always show currently executing section
 				Write_Log "`r`nExecuting section: '$sectionName'" "blue"
 				Write_Log "--------------------------------------------------------------------------------"
 				Write_Log "$sqlCommands" "orange"
@@ -2475,12 +2484,16 @@ function Execute_SQL_Locally
 				{
 					if ($supportsConnectionString)
 					{
+						# Using the connection string that now includes Encrypt and TrustServerCertificate
 						Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
 					}
 					else
 					{
+						# Parse ServerInstance and Database from ConnectionString
 						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
 						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+						
+						# Check if Invoke-Sqlcmd supports the -TrustServerCertificate parameter
 						$cmdParams = (Get-Command Invoke-Sqlcmd).Parameters.Keys
 						if ($cmdParams -contains 'TrustServerCertificate')
 						{
@@ -2499,6 +2512,7 @@ function Execute_SQL_Locally
 					{
 						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
 						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+						# Try to use the TrustServerCertificate flag if available
 						$cmdParams = (Get-Command Invoke-Sqlcmd).Parameters.Keys
 						if ($cmdParams -contains 'TrustServerCertificate')
 						{
@@ -2513,7 +2527,7 @@ function Execute_SQL_Locally
 					catch
 					{
 						Write_Log "Error executing section '$sectionName' with fallback: $_" "red"
-						$failedSections += $section
+						$failedSections += $match
 						if ($retryCount -eq $MaxRetries - 1)
 						{
 							$failedCommands += "/* $sectionName */`r`n$sqlCommands`r`n"
@@ -2523,7 +2537,7 @@ function Execute_SQL_Locally
 				catch
 				{
 					Write_Log "Error executing section '$sectionName': $_" "red"
-					$failedSections += $section
+					$failedSections += $match
 					if ($retryCount -eq $MaxRetries - 1)
 					{
 						$failedCommands += "/* $sectionName */`r`n$sqlCommands`r`n"
@@ -2920,96 +2934,32 @@ function Process_Lanes
 		return
 	}
 	
-	# Get the user's selection
+	# Lane selection
 	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
-	
 	if ($selection -eq $null)
 	{
 		Write_Log "Lane processing canceled by user." "yellow"
 		return
 	}
-	
 	$Type = $selection.Type
 	$Lanes = $selection.Lanes
 	
-	# Determine if "All Lanes" is selected
-	$processAllLanes = $false
-	if ($Type -eq "All")
+	# ---- Section selection ----
+	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
+	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
+	$sectionNames = $matches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() }
+	if ($sectionNames.Count -eq 0) { $sectionNames = @('Entire Script') }
+	$selectedSections = Show_Section_Selection_Form -SectionNames $sectionNames
+	if (-not $selectedSections -or $selectedSections.Count -eq 0)
 	{
-		$processAllLanes = $true
+		Write_Log "No sections selected. Aborting lane processing." "yellow"
+		return
 	}
 	
-	# If "All Lanes" is selected, attempt to retrieve LaneContents
-	if ($processAllLanes)
+	# Process lanes
+	foreach ($Number in $Lanes)
 	{
-		try
-		{
-			#	Write_Log "User selected 'All Lanes'. Retrieving LaneContents..." "blue"
-			$LaneContents = $script:FunctionResults['LaneContents']
-			
-			if ($LaneContents -and $LaneContents.Count -gt 0)
-			{
-				#    Write_Log "Successfully retrieved LaneContents. Processing all lanes." "green"
-				$Lanes = $LaneContents
-			}
-			else
-			{
-				throw "LaneContents is empty or not available."
-			}
-		}
-		catch
-		{
-			Write_Log "Failed to retrieve LaneContents: $_. Using NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "yellow"
-			# Use the predefined NumberOfLanes to generate lane numbers
-			if ($script:FunctionResults['NumberOfLanes'] -gt 0)
-			{
-				Write_Log "Determined NumberOfLanes: $script:FunctionResults['NumberOfLanes']." "green"
-				# Generate an array of lane numbers as zero-padded strings (e.g., '001', '002', ...)
-				$Lanes = 1 .. $script:FunctionResults['NumberOfLanes'] | ForEach-Object { $_.ToString("D3") }
-			}
-			else
-			{
-				Write_Log "NumberOfLanes is not defined or is zero. Exiting Process_Lanes." "red"
-				return
-			}
-		}
-	}
-	
-	# Process lanes based on the type of selection
-	switch ($Type)
-	{
-		'Specific' {
-			Write_Log "`r`nProcessing Specific Lane(s)..." "blue"
-			foreach ($Number in $Lanes)
-			{
-				Process_Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
-			}
-		}
-		'Range' {
-			Write_Log "`r`nProcessing Range of Lanes..." "blue"
-			foreach ($Number in $Lanes)
-			{
-				Process_Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
-				Start-Sleep -Seconds 1
-			}
-		}
-		'All' {
-			Write_Log "`r`nProcessing All Lanes..." "blue"
-			
-			foreach ($Number in $Lanes)
-			{
-				Process_Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
-			}
-		}
-		default {
-			Write_Log "Unknown selection type." "red"
-		}
-	}
-	
-	Write_Log "`r`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
-	if ($script:ProcessedLanes.Count -gt 0)
-	{
-		Write_Log "Processed Lanes: $($script:ProcessedLanes -join ', ')" "green"
+		Process_Lane -LaneNumber $Number -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber -SectionsToWrite $selectedSections
 	}
 	
 	Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
@@ -3021,40 +2971,61 @@ function Process_Lane
 	param (
 		[string]$LaneNumber,
 		[string]$LanesqlFilePath,
-		[string]$StoreNumber
+		[string]$StoreNumber,
+		[string[]]$SectionsToWrite
 	)
 	
 	$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 	
-	if (Test-Path $LaneLocalPath)
-	{
-		Write_Log "`r`nProcessing Lane #${LaneNumber}..." "blue"
-		Write_Log "Lane path found: $LaneLocalPath" "blue"
-		Write_Log "Copying 'Lane_Database_Maintenance.sqi' to Lane..." "blue"
-		
-		try
-		{
-			# Copy-Item -Path $LanesqlFilePath -Destination "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Force
-			# Write_Log "Copied successfully to Lane #${LaneNumber}." "green"
-			Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $LaneSQLScript -Encoding Ascii
-			Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			Write_Log "Created and wrote to file at Lane #${LaneNumber} successfully." "green"
-			
-			# Add lane to processed lanes if not already added
-			if (-not ($script:ProcessedLanes -contains $LaneNumber))
-			{
-				$script:ProcessedLanes += $LaneNumber
-			}
-		}
-		catch
-		{
-			# Write_Log "Failed to copy to Lane #${LaneNumber}: $_" "red"
-			Write_Log "Failed to created and write to file at Lane #${LaneNumber} successfully." "green"
-		}
-	}
-	else
+	if (!(Test-Path $LaneLocalPath))
 	{
 		Write_Log "`r`nLane #${LaneNumber} not found at path: $LaneLocalPath" "yellow"
+		return
+	}
+	Write_Log "`r`nProcessing Lane #${LaneNumber}..." "blue"
+	
+	# Parse $LaneSQLScript using your section regex
+	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
+	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
+	
+	$sectionsToWrite = $SectionsToWrite
+	# If no sections selected, default to all
+	if (-not $sectionsToWrite -or $sectionsToWrite.Count -eq 0)
+	{
+		$sectionsToWrite = $matches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() }
+	}
+	
+	# Compose just the selected sections
+	$finalScript = ""
+	foreach ($match in $matches)
+	{
+		$sectionName = $match.Groups['SectionName'].Value.Trim()
+		$sqlCommands = $match.Value # preserves the whole block with header/comment
+		
+		if ($sectionsToWrite -contains $sectionName)
+		{
+			$finalScript += $sqlCommands + "`r`n"
+		}
+	}
+	if ([string]::IsNullOrWhiteSpace($finalScript))
+	{
+		Write_Log "No script content to write for Lane #${LaneNumber}." "yellow"
+		return
+	}
+	
+	try
+	{
+		Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
+		Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write_Log "Wrote selected sections to Lane #${LaneNumber} successfully." "green"
+		if (-not ($script:ProcessedLanes -contains $LaneNumber))
+		{
+			$script:ProcessedLanes += $LaneNumber
+		}
+	}
+	catch
+	{
+		Write_Log "Failed to write to Lane #${LaneNumber}: $_" "red"
 	}
 }
 
@@ -8078,25 +8049,14 @@ function Show_Section_Selection_Form
 {
 	param (
 		[Parameter(Mandatory = $true)]
-		[string]$SqlScript
+		[string[]]$SectionNames
 	)
 	
-	# Regex split to sections/commands
-	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-	$matches = [regex]::Matches($SqlScript, $sectionPattern)
-	
-	if ($matches.Count -eq 0) { return @() }
-	
-	$sections = $matches | ForEach-Object {
-		[PSCustomObject]@{
-			SectionName = $_.Groups['SectionName'].Value.Trim()
-			SQLCommands = $_.Groups['SQLCommands'].Value.Trim()
-		}
-	}
-	
-	# Build form
+	# Make sure .NET WinForms is loaded
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
+	
+	# Create the form
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select SQL Sections"
 	$form.StartPosition = "CenterScreen"
@@ -8105,6 +8065,7 @@ function Show_Section_Selection_Form
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
 	
+	# Label: brief instructions
 	$label = New-Object System.Windows.Forms.Label
 	$label.Text = "Check the sections you want to run, then click OK."
 	$label.AutoSize = $true
@@ -8112,6 +8073,7 @@ function Show_Section_Selection_Form
 	$label.Top = 10
 	$form.Controls.Add($label)
 	
+	# CheckedListBox
 	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
 	$checkedListBox.Width = 500
 	$checkedListBox.Height = 280
@@ -8120,11 +8082,13 @@ function Show_Section_Selection_Form
 	$checkedListBox.CheckOnClick = $true
 	$form.Controls.Add($checkedListBox)
 	
-	foreach ($section in $sections)
+	# Populate with section names
+	foreach ($name in $SectionNames)
 	{
-		[void]$checkedListBox.Items.Add($section.SectionName, $false)
+		[void]$checkedListBox.Items.Add($name, $false)
 	}
 	
+	# "Select All" button
 	$selectAllButton = New-Object System.Windows.Forms.Button
 	$selectAllButton.Text = "Select All"
 	$selectAllButton.Width = 90
@@ -8132,8 +8096,15 @@ function Show_Section_Selection_Form
 	$selectAllButton.Left = 20
 	$selectAllButton.Top = 330
 	$form.Controls.Add($selectAllButton)
-	$selectAllButton.Add_Click({ for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++) { $checkedListBox.SetItemChecked($i, $true) } })
 	
+	$selectAllButton.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $true)
+			}
+		})
+	
+	# "Deselect All" button
 	$deselectAllButton = New-Object System.Windows.Forms.Button
 	$deselectAllButton.Text = "Deselect All"
 	$deselectAllButton.Width = 90
@@ -8141,17 +8112,26 @@ function Show_Section_Selection_Form
 	$deselectAllButton.Left = 120
 	$deselectAllButton.Top = 330
 	$form.Controls.Add($deselectAllButton)
-	$deselectAllButton.Add_Click({ for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++) { $checkedListBox.SetItemChecked($i, $false) } })
 	
+	$deselectAllButton.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $false)
+			}
+		})
+	
+	# OK button
 	$okButton = New-Object System.Windows.Forms.Button
 	$okButton.Text = "OK"
 	$okButton.Width = 80
 	$okButton.Height = 30
 	$okButton.Left = 240
 	$okButton.Top = 330
+	# Crucial: set DialogResult, not a manual event
 	$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
 	$form.Controls.Add($okButton)
 	
+	# Cancel button
 	$cancelButton = New-Object System.Windows.Forms.Button
 	$cancelButton.Text = "Cancel"
 	$cancelButton.Width = 80
@@ -8161,19 +8141,22 @@ function Show_Section_Selection_Form
 	$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 	$form.Controls.Add($cancelButton)
 	
+	# Set AcceptButton and CancelButton so Enter/Esc work
 	$form.AcceptButton = $okButton
 	$form.CancelButton = $cancelButton
 	
+	# Show the dialog
 	$dialogResult = $form.ShowDialog()
 	
 	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
 	{
-		# Return selected full objects (not just names)
+		# Gather checked items AFTER the form closes
 		$selectedSections = @()
 		foreach ($item in $checkedListBox.CheckedItems)
 		{
-			$selectedSections += $sections | Where-Object { $_.SectionName -eq $item }
+			$selectedSections += $item
 		}
+		
 		return $selectedSections
 	}
 	else
