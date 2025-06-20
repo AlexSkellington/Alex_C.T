@@ -19,7 +19,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.2.6"
+$VersionNumber = "2.2.7"
 $VersionDate = "2025-06-19"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -5697,6 +5697,209 @@ ORDER BY F1000,F1063;
 }
 
 # ===================================================================================================
+#                                   FUNCTION: Schedule_Lane_DB_Repair
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Deploys a lane DB repair SQL/SQI script to the selected lane's Office folder,
+#   and creates a scheduler macro in the local XF folder to run the repair weekly.
+#   All files are written in ANSI (Windows-1252) encoding with CRLF line endings and no BOM.
+#   Ensures destination directories exist and removes the archive bit after writing.
+# ===================================================================================================
+
+function Schedule_Lane_DB_Repair
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	Write_Log "`r`n==================== Starting Schedule_Lane_DB_Repair ====================`r`n" "blue"
+	
+	if (-not $LaneSQLScript)
+	{
+		Write_Log "Lane SQL script content variable (`\$LaneSQLScript`) is empty or not defined." "red"
+		return
+	}
+	
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	if (-not $selection -or -not $selection.Lanes)
+	{
+		Write_Log "No lanes selected. Cancelling operation." "yellow"
+		return
+	}
+	# --- ENSURE NODE MAPPING IS PRESENT ---
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	if (-not $LaneMachines)
+	{
+		$null = Retrieve_Nodes -StoreNumber $StoreNumber
+		$LaneMachines = $script:FunctionResults['LaneMachines']
+		if (-not $LaneMachines)
+		{
+			Write_Log "Failed to retrieve lane-to-machine mapping for store $StoreNumber." "red"
+			return
+		}
+	}
+	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
+	$LaneSQLScriptContent = $LaneSQLScript -replace "`n", "`r`n"
+	
+	foreach ($LaneNumber in $selection.Lanes)
+	{
+		# ----------- USE MAPPING ----------
+		$LaneMachineName = $LaneMachines[$LaneNumber]
+		if (-not $LaneMachineName)
+		{
+			Write_Log "Could not resolve machine name for lane $LaneNumber. Skipping." "red"
+			continue
+		}
+		$LaneOfficeFolder = "\\$LaneMachineName\storeman\office"
+		$DestScriptPath = Join-Path $LaneOfficeFolder "LANE_DB_REPAIR.SQI"
+		$LocalXFPath = Join-Path $OfficePath "XF$StoreNumber$LaneNumber"
+		$SchedulerMacroPath = Join-Path $LocalXFPath "Add_LaneDBRepair_to_RUN_TAB.sqi"
+		
+		# Prompt user for the repeat interval in days
+		Add-Type -AssemblyName System.Windows.Forms
+		$daysPromptForm = New-Object System.Windows.Forms.Form
+		$daysPromptForm.Text = "Lane DB Repair - Schedule Interval"
+		$daysPromptForm.Width = 350
+		$daysPromptForm.Height = 160
+		$daysPromptForm.StartPosition = "CenterScreen"
+		
+		$label = New-Object System.Windows.Forms.Label
+		$label.Text = "How many days between each run (minimum 1):"
+		$label.AutoSize = $true
+		$label.Location = New-Object System.Drawing.Point(15, 20)
+		$daysPromptForm.Controls.Add($label)
+		
+		$textBox = New-Object System.Windows.Forms.TextBox
+		$textBox.Location = New-Object System.Drawing.Point(20, 50)
+		$textBox.Width = 60
+		$textBox.Text = "7"
+		$daysPromptForm.Controls.Add($textBox)
+		
+		$okButton = New-Object System.Windows.Forms.Button
+		$okButton.Text = "OK"
+		$okButton.Location = New-Object System.Drawing.Point(90, 90)
+		$okButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::OK })
+		$daysPromptForm.Controls.Add($okButton)
+		
+		$cancelButton = New-Object System.Windows.Forms.Button
+		$cancelButton.Text = "Cancel"
+		$cancelButton.Location = New-Object System.Drawing.Point(170, 90)
+		$cancelButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
+		$daysPromptForm.Controls.Add($cancelButton)
+		
+		$daysPromptForm.AcceptButton = $okButton
+		$daysPromptForm.CancelButton = $cancelButton
+		
+		if ($daysPromptForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
+		{
+			Write_Log "Operation cancelled by user in interval prompt." "yellow"
+			return
+		}
+		
+		[int]$UserDays = 0
+		if ([int]::TryParse($textBox.Text, [ref]$UserDays) -and $UserDays -ge 1)
+		{
+			$RepeatDays = $UserDays
+		}
+		else
+		{
+			Write_Log "Invalid or no interval provided, using 7 days." "yellow"
+			$RepeatDays = 7
+		}
+		
+		# Prepare scheduler macro content (unique task number per lane if needed)
+		$TaskNumber = 750
+		$HostTarget = "{0:D3}" -f [int]$LaneNumber
+		$CommandToRun = 'sql=LANE_DB_REPAIR'
+		$ExecTarget = $HostTarget
+		$TaskName = 'Lane DB Repair'
+		$ManualAllowed = 1
+		$CatchupMissed = 1
+		$WeeklyDays = $RepeatDays
+		$Months = 0
+		$Minutes = 0
+		$LastRanDate = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd 00:00:00.000")
+		
+		$SchedulerMacroContent = @"
+ /* First delete the scheduled repair if it exists */
+ DELETE FROM RUN_TAB WHERE F1103 = '$CommandToRun' AND F1000 = '$HostTarget';
+
+ /* Insert the scheduled weekly repair */
+ INSERT INTO RUN_TAB (F1102, F1000, F1103, F1104, F1105, F1108, F1109, F1111, F1114, F1115, F1117)
+ VALUES ($TaskNumber, '$HostTarget', '$CommandToRun', '$ExecTarget', '$LastRanDate', $ManualAllowed, '$TaskName', $CatchupMissed, $WeeklyDays, $Months, $Minutes);
+
+ /* Activate the new task right away */
+ @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
+"@ -replace "`n", "`r`n"
+		
+		try
+		{
+			if (-not (Test-Path $LaneOfficeFolder))
+			{
+				New-Item -Path $LaneOfficeFolder -ItemType Directory -Force | Out-Null
+				Write_Log "Created directory '$LaneOfficeFolder'." "yellow"
+			}
+			if (-not (Test-Path $LocalXFPath))
+			{
+				New-Item -Path $LocalXFPath -ItemType Directory -Force | Out-Null
+				Write_Log "Created directory '$LocalXFPath'." "yellow"
+			}
+		}
+		catch
+		{
+			Write_Log "Failed to create required directories: $_" "red"
+			continue
+		}
+		
+		# Write the lane repair script
+		try
+		{
+			[System.IO.File]::WriteAllText($DestScriptPath, $LaneSQLScriptContent, $ansiEncoding)
+			Set-ItemProperty -Path $DestScriptPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+			Write_Log "Wrote lane DB repair script to $DestScriptPath" "green"
+		}
+		catch
+		{
+			Write_Log "Failed to write script: $_" "red"
+			continue
+		}
+		
+		# Write the scheduler macro
+		try
+		{
+			[System.IO.File]::WriteAllText($SchedulerMacroPath, $SchedulerMacroContent, $ansiEncoding)
+			Set-ItemProperty -Path $SchedulerMacroPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+			Write_Log "Scheduler SQL macro created at $SchedulerMacroPath" "green"
+		}
+		catch
+		{
+			Write_Log "Failed to write scheduler macro: $_" "red"
+			continue
+		}
+		
+		# Remove archive bit if set (optional)
+		try
+		{
+			if (Test-Path $DestScriptPath)
+			{
+				$file = Get-Item -Path $DestScriptPath
+				if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
+				{
+					$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
+					Write_Log "Removed the archive bit from '$DestScriptPath'." "green"
+				}
+			}
+		}
+		catch
+		{
+			Write_Log "Failed to remove the archive bit from '$DestScriptPath'. Error: $_" "red"
+		}
+	}
+	
+	Write_Log "`r`n==================== Schedule_Lane_DB_Repair Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                                 FUNCTION: Organize_TBS_SCL_ver520
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -8329,7 +8532,17 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 	
 	############################################################################
-	# 11) Set the time on the lanes
+	# 11) Schedule the repair at the lanes
+	############################################################################
+	$LaneScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane Repair")
+	$LaneScheduleRepairItem.ToolTipText = "Schedule a task to repair the lane/s database."
+	$LaneScheduleRepairItem.Add_Click({
+			Schedule_Lane_DB_Repair -StoreNumber "$StoreNumber"
+		})
+	[void]$ContextMenuLane.Items.Add($LaneScheduleRepairItem)
+	
+	############################################################################
+	# 12) Set the time on the lanes
 	############################################################################
 	$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set the time on lanes")
 	$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize the time for the selected lanes."
@@ -8339,7 +8552,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 	
 	############################################################################
-	# 12) Reboot Lane Menu Item
+	# 13) Reboot Lane Menu Item
 	############################################################################
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
