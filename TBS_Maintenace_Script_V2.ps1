@@ -2094,23 +2094,7 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 	# Store the ServerSQLScript in the script scope
 	$script:ServerSQLScript = $ServerSQLScript
 	
-	# --- Prepare mailslot‑compatible server script ---
-	$serverLines = $script:ServerSQLScript -split "`r?`n"
-	$macroPattern = '^\s*(@|/|\*)'
-	$serverFixedLines = foreach ($line in $serverLines)
-	{
-		if ($line -match $macroPattern -or [string]::IsNullOrWhiteSpace($line))
-		{
-			$line
-		}
-		else
-		{
-			"@EXEC($line)"
-		}
-	}
-	$script:ServerSQLScript_Mailslot = ($serverFixedLines -join "`r`n")
-	
-	<#
+		<#
 	# Optionally write to file as fallback
 	if ($StoresqlFilePath)
 	{
@@ -2119,6 +2103,91 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 	#>
 	
 	# Write_Log "SQL scripts generated successfully." "green"
+	
+	# Separate server script for the schedule maintenance
+	$ScheduleServerScript = @"
+/* Set a long timeout so the entire script runs */
+@WIZRPL(DBASE_TIMEOUT=E);
+
+/* Set memory configuration */
+EXEC sp_configure 'show advanced options', 1;
+RECONFIGURE;
+EXEC sp_configure 'max server memory (MB)', 8192;
+RECONFIGURE;
+EXEC sp_configure 'show advanced options', 0;
+RECONFIGURE;
+
+/* Truncate unnecessary tables */
+IF OBJECT_ID('COST_REV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('COST_REV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE COST_REV;
+IF OBJECT_ID('POS_REV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('POS_REV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE POS_REV;
+IF OBJECT_ID('OBJ_REV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('OBJ_REV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE OBJ_REV;
+IF OBJECT_ID('PRICE_REV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('PRICE_REV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE PRICE_REV;
+IF OBJECT_ID('REV_HDR', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('REV_HDR', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE REV_HDR;
+IF OBJECT_ID('SAL_REG_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_REG_SAV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE SAL_REG_SAV;
+IF OBJECT_ID('SAL_HDR_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_HDR_SAV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE SAL_HDR_SAV;
+IF OBJECT_ID('SAL_TTL_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_TTL_SAV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE SAL_TTL_SAV;
+IF OBJECT_ID('SAL_DET_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_DET_SAV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE SAL_DET_SAV;
+
+/* Drop specific tables older than 30 days */
+DECLARE @cmd varchar(4000) 
+DECLARE cmds CURSOR FOR 
+SELECT 'drop table [' + name + ']' 
+FROM sys.tables 
+WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') 
+OPEN cmds 
+WHILE 1 = 1 
+BEGIN 
+FETCH cmds INTO @cmd 
+IF @@fetch_status != 0 BREAK 
+EXEC(@cmd) 
+END 
+CLOSE cmds; 
+DEALLOCATE cmds;
+
+/* Cleaning HEADER_SAV */
+IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 'OBJECT', 'DELETE') = 1 
+    DELETE FROM HEADER_SAV 
+    WHERE (F903 = 'SVHOST' OR F903 = 'MPHOST' OR F903 = CONCAT('M', '$StoreNumber', '901')) 
+    AND (DATEDIFF(DAY, F907, GETDATE()) > 30 OR DATEDIFF(DAY, F909, GETDATE()) > 30);
+
+/* Delete bad SMS items */
+@dbEXEC(DELETE FROM OBJ_TAB WHERE F01='0020000000000') 
+@dbEXEC(DELETE FROM OBJ_TAB WHERE F01 LIKE '% %') 
+@dbEXEC(DELETE FROM OBJ_TAB WHERE LEN(F01)<>13) 
+@dbEXEC(DELETE FROM OBJ_TAB WHERE SUBSTRING(F01,1,3) = '002' AND SUBSTRING(F01,9,5) > '00000') 
+@dbEXEC(DELETE FROM OBJ_TAB WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=0 AND SUBSTRING(F01,9,5) = '00000') 
+@dbEXEC(DELETE FROM POS_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)) 
+@dbEXEC(DELETE FROM PRICE_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)) 
+@dbEXEC(DELETE FROM COST_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)) 
+@dbEXEC(DELETE FROM SCL_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)) 
+@dbEXEC(DELETE FROM SCL_TAB WHERE SUBSTRING(F01,1,3) <> '002') 
+@dbEXEC(DELETE FROM SCL_TAB WHERE SUBSTRING(F01,1,3) = '002' AND SUBSTRING(F01,9,5) > '00000') 
+@dbEXEC(UPDATE SCL_TAB SET SCL_TAB.F267 = SCL_TXT.F267 FROM SCL_TAB SCL JOIN SCL_TXT_TAB SCL_TXT ON (SCL.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000'))) 
+@dbEXEC(UPDATE SCL_TAB SET SCL_TAB.F268 = SCL_NUT.F268 FROM SCL_TAB SCL JOIN SCL_NUT_TAB SCL_NUT ON (SCL.F01=CONCAT('002',FORMAT(SCL_NUT.F268,'00000'),'00000'))) 
+@dbEXEC(DELETE FROM SCL_TXT_TAB WHERE F267 NOT IN (SELECT F267 FROM SCL_TAB)) 
+@dbEXEC(DELETE FROM SCL_NUT_TAB WHERE F268 NOT IN (SELECT F268 FROM SCL_TAB)) 
+@dbEXEC(UPDATE SCL_TAB SET F267 = NULL WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F267,'00000'),'00000') FROM SCL_TXT_TAB)) 
+@dbEXEC(UPDATE SCL_TAB SET F268 = NULL WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F268,'00000'),'00000') FROM SCL_NUT_TAB)) 
+@dbEXEC(UPDATE SCL_TXT_TAB SET SCL_TXT_TAB.F04 = POS.F04 FROM SCL_TXT_TAB SCL_TXT JOIN POS_TAB POS ON (POS.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000')) WHERE ISNUMERIC(SCL_TXT.F04)=0) 
+@dbEXEC(UPDATE SCL_TAB SET F256 = REPLACE(REPLACE(REPLACE(F256, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
+@dbEXEC(UPDATE SCL_TAB SET F1952 = REPLACE(REPLACE(REPLACE(F1952, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
+@dbEXEC(UPDATE SCL_TAB SET F2581 = REPLACE(REPLACE(REPLACE(F2581, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
+@dbEXEC(UPDATE SCL_TAB SET F2582 = REPLACE(REPLACE(REPLACE(F2582, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
+@dbEXEC(UPDATE SCL_TXT_TAB SET F297 = REPLACE(REPLACE(REPLACE(F297, CHAR(13),' '), CHAR(10),' '), CHAR(9),' '))
+
+/* Shrink database and log files */
+EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD'
+EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN'
+DBCC SHRINKFILE ($storeDbName)
+DBCC SHRINKFILE (${storeDbName}_Log)
+ALTER DATABASE $storeDbName SET RECOVERY SIMPLE
+
+/* Clear the long database timeout */
+@WIZCLR(DBASE_TIMEOUT);
+"@
+	
+	# Store in global scope for downstream consumption
+	$script:ScheduleServerScript = $ScheduleServerScript
 }
 
 # ===================================================================================================
@@ -5907,9 +5976,9 @@ function Schedule_Server_DB_Maintenance
 	)
 	Write_Log "`r`n==================== Starting Schedule_Server_DB_Maintenance ====================`r`n" "blue"
 	
-	if (-not $ServerSQLScript)
+	if (-not $script:ScheduleServerScript)
 	{
-		Write_Log "Server SQL script content variable (`\$ServerSQLScript`) is empty or not defined." "red"
+		Write_Log "Server SQL script content variable (`\$script:ScheduleServerScript`) is empty or not defined." "red"
 		return
 	}
 	
@@ -5978,7 +6047,7 @@ function Schedule_Server_DB_Maintenance
 	}
 	
 	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
-	$ServerSQLScriptContent = $ServerSQLScript -replace "`n", "`r`n"
+	$ServerSQLScriptContent = $script:ScheduleServerScript
 	
 	$TaskNumber = 750
 	$HostTarget = "{0:D3}" -f [int]$ServerNumber
