@@ -5977,7 +5977,7 @@ function Schedule_Server_DB_Repair
 	}
 	
 	$LocalXFPath = Join-Path $OfficePath "XF$StoreNumber$ServerNumber"
-	$DestScriptPath = Join-Path $LocalXFPath "SERVER_DB_REPAIR.SQI"
+	$DestScriptPath = $OfficePath
 	$SchedulerMacroPath = Join-Path $LocalXFPath "Add_ServerDBRepair_to_RUN_TAB.sqi"
 	
 	if (-not (Test-Path $LocalXFPath))
