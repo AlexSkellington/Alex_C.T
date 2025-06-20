@@ -5741,6 +5741,58 @@ function Schedule_Lane_DB_Repair
 	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
 	$LaneSQLScriptContent = $LaneSQLScript -replace "`n", "`r`n"
 	
+	# Prompt user for the repeat interval in days
+	Add-Type -AssemblyName System.Windows.Forms
+	$daysPromptForm = New-Object System.Windows.Forms.Form
+	$daysPromptForm.Text = "Lane DB Repair - Schedule Interval"
+	$daysPromptForm.Width = 350
+	$daysPromptForm.Height = 160
+	$daysPromptForm.StartPosition = "CenterScreen"
+	
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "How many days between each run (minimum 1):"
+	$label.AutoSize = $true
+	$label.Location = New-Object System.Drawing.Point(15, 20)
+	$daysPromptForm.Controls.Add($label)
+	
+	$textBox = New-Object System.Windows.Forms.TextBox
+	$textBox.Location = New-Object System.Drawing.Point(20, 50)
+	$textBox.Width = 60
+	$textBox.Text = "7"
+	$daysPromptForm.Controls.Add($textBox)
+	
+	$okButton = New-Object System.Windows.Forms.Button
+	$okButton.Text = "OK"
+	$okButton.Location = New-Object System.Drawing.Point(90, 90)
+	$okButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::OK })
+	$daysPromptForm.Controls.Add($okButton)
+	
+	$cancelButton = New-Object System.Windows.Forms.Button
+	$cancelButton.Text = "Cancel"
+	$cancelButton.Location = New-Object System.Drawing.Point(170, 90)
+	$cancelButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
+	$daysPromptForm.Controls.Add($cancelButton)
+	
+	$daysPromptForm.AcceptButton = $okButton
+	$daysPromptForm.CancelButton = $cancelButton
+	
+	if ($daysPromptForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write_Log "Operation cancelled by user in interval prompt." "yellow"
+		return
+	}
+	
+	[int]$UserDays = 0
+	if ([int]::TryParse($textBox.Text, [ref]$UserDays) -and $UserDays -ge 1)
+	{
+		$RepeatDays = $UserDays
+	}
+	else
+	{
+		Write_Log "Invalid or no interval provided, using 7 days." "yellow"
+		$RepeatDays = 7
+	}
+		
 	foreach ($LaneNumber in $selection.Lanes)
 	{
 		# ----------- USE MAPPING ----------
@@ -5754,59 +5806,7 @@ function Schedule_Lane_DB_Repair
 		$DestScriptPath = Join-Path $LaneOfficeFolder "LANE_DB_REPAIR.SQI"
 		$LocalXFPath = Join-Path $OfficePath "XF$StoreNumber$LaneNumber"
 		$SchedulerMacroPath = Join-Path $LocalXFPath "Add_LaneDBRepair_to_RUN_TAB.sqi"
-		
-		# Prompt user for the repeat interval in days
-		Add-Type -AssemblyName System.Windows.Forms
-		$daysPromptForm = New-Object System.Windows.Forms.Form
-		$daysPromptForm.Text = "Lane DB Repair - Schedule Interval"
-		$daysPromptForm.Width = 350
-		$daysPromptForm.Height = 160
-		$daysPromptForm.StartPosition = "CenterScreen"
-		
-		$label = New-Object System.Windows.Forms.Label
-		$label.Text = "How many days between each run (minimum 1):"
-		$label.AutoSize = $true
-		$label.Location = New-Object System.Drawing.Point(15, 20)
-		$daysPromptForm.Controls.Add($label)
-		
-		$textBox = New-Object System.Windows.Forms.TextBox
-		$textBox.Location = New-Object System.Drawing.Point(20, 50)
-		$textBox.Width = 60
-		$textBox.Text = "7"
-		$daysPromptForm.Controls.Add($textBox)
-		
-		$okButton = New-Object System.Windows.Forms.Button
-		$okButton.Text = "OK"
-		$okButton.Location = New-Object System.Drawing.Point(90, 90)
-		$okButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::OK })
-		$daysPromptForm.Controls.Add($okButton)
-		
-		$cancelButton = New-Object System.Windows.Forms.Button
-		$cancelButton.Text = "Cancel"
-		$cancelButton.Location = New-Object System.Drawing.Point(170, 90)
-		$cancelButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
-		$daysPromptForm.Controls.Add($cancelButton)
-		
-		$daysPromptForm.AcceptButton = $okButton
-		$daysPromptForm.CancelButton = $cancelButton
-		
-		if ($daysPromptForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
-		{
-			Write_Log "Operation cancelled by user in interval prompt." "yellow"
-			return
-		}
-		
-		[int]$UserDays = 0
-		if ([int]::TryParse($textBox.Text, [ref]$UserDays) -and $UserDays -ge 1)
-		{
-			$RepeatDays = $UserDays
-		}
-		else
-		{
-			Write_Log "Invalid or no interval provided, using 7 days." "yellow"
-			$RepeatDays = 7
-		}
-		
+				
 		# Prepare scheduler macro content (unique task number per lane if needed)
 		$TaskNumber = 750
 		$HostTarget = "{0:D3}" -f [int]$LaneNumber
@@ -8532,9 +8532,9 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 	
 	############################################################################
-	# 11) Schedule the repair at the lanes
+	# 11) Schedule the DB repair at the lanes
 	############################################################################
-	$LaneScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane Repair")
+	$LaneScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane DB Repair")
 	$LaneScheduleRepairItem.ToolTipText = "Schedule a task to repair the lane/s database."
 	$LaneScheduleRepairItem.Add_Click({
 			Schedule_Lane_DB_Repair -StoreNumber "$StoreNumber"
