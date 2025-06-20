@@ -5836,13 +5836,13 @@ function Schedule_Lane_DB_Repair
 		{
 			if (-not (Test-Path $LaneOfficeFolder))
 			{
-				New-Item -Path $LaneOfficeFolder -ItemType Directory -Force | Out-Null
-				Write_Log "Created directory '$LaneOfficeFolder'." "yellow"
+				Write_Log "Remote office folder not found: $LaneOfficeFolder (lane may be offline or not shared)." "red"
+				continue
 			}
 			if (-not (Test-Path $LocalXFPath))
 			{
-				New-Item -Path $LocalXFPath -ItemType Directory -Force | Out-Null
-				Write_Log "Created directory '$LocalXFPath'." "yellow"
+				Write_Log "Local XF folder not found: $LocalXFPath (scheduler macro not dropped for this lane)." "red"
+				continue
 			}
 		}
 		catch
