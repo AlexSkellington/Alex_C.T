@@ -8562,10 +8562,10 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($ServerDBRepairItem)
 	
 	############################################################################
-	# 2) Schedule the DB repair at the lanes
+	# 2) Schedule the DB maintenance at the lanes
 	############################################################################
-	$ServerScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Server DB Repair")
-	$ServerScheduleRepairItem.ToolTipText = "Schedule a task to repair the server database."
+	$ServerScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Server DB Maintenance")
+	$ServerScheduleRepairItem.ToolTipText = "Schedule a task to run maintenance at the server database."
 	$ServerScheduleRepairItem.Add_Click({
 			Schedule_Server_DB_Maintenance -StoreNumber $StoreNumber
 		})
@@ -8655,7 +8655,17 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($LaneDBRepairItem)
 	
 	############################################################################
-	# 2) Pump Table to Lane Menu Item
+	# 2) Schedule the DB maintenance at the lanes
+	############################################################################
+	$LaneScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane DB Maintenance")
+	$LaneScheduleRepairItem.ToolTipText = "Schedule a task to run maintenance at the lane/s database."
+	$LaneScheduleRepairItem.Add_Click({
+			Schedule_Lane_DB_Maintenance -StoreNumber "$StoreNumber"
+		})
+	[void]$ContextMenuLane.Items.Add($LaneScheduleRepairItem)
+	
+	############################################################################
+	# 3) Pump Table to Lane Menu Item
 	############################################################################
 	$PumpTableToLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Pump Table to Lane")
 	$PumpTableToLaneItem.ToolTipText = "Pump the selected tables to the lane/s databases."
@@ -8675,7 +8685,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($DeployLoadItem)#>
 	
 	############################################################################
-	# 3) Update Lane Configuration Menu Item
+	# 4) Update Lane Configuration Menu Item
 	############################################################################
 	$UpdateLaneConfigItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Lane Configuration")
 	$UpdateLaneConfigItem.ToolTipText = "Update the configuration files for the lanes. Fixes connectivity errors and mistakes made during lane ghosting."
@@ -8685,7 +8695,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($UpdateLaneConfigItem)
 	
 	############################################################################
-	# 4) Close Open Transactions Menu Item
+	# 5) Close Open Transactions Menu Item
 	############################################################################
 	$CloseOpenTransItem = New-Object System.Windows.Forms.ToolStripMenuItem("Close Open Transactions")
 	$CloseOpenTransItem.ToolTipText = "Close any open transactions at the lane/s."
@@ -8705,7 +8715,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($RetriveTransactionsItem)#>
 	
 	############################################################################
-	# 5) Ping Lanes Menu Item
+	# 6) Ping Lanes Menu Item
 	############################################################################
 	$PingLanesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Lanes")
 	$PingLanesItem.ToolTipText = "Ping all lane devices to check connectivity."
@@ -8715,7 +8725,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($PingLanesItem)
 	
 	############################################################################
-	# 6) Delete DBS Menu Item
+	# 7) Delete DBS Menu Item
 	############################################################################
 	$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
 	$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
@@ -8725,7 +8735,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
 	
 	############################################################################
-	# 7) Refresh PIN Pad Files Menu Item
+	# 8) Refresh PIN Pad Files Menu Item
 	############################################################################
 	$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
 	$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
@@ -8735,7 +8745,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 	
 	############################################################################
-	# 8) Drawer Control Item
+	# 9) Drawer Control Item
 	############################################################################
 	$DrawerControlItem = New-Object System.Windows.Forms.ToolStripMenuItem("Drawer Control")
 	$DrawerControlItem.ToolTipText = "Set the Drawer Control for a lane for testing"
@@ -8745,7 +8755,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($DrawerControlItem)
 	
 	############################################################################
-	# 9) Refresh Database
+	# 10) Refresh Database
 	############################################################################
 	$RefreshDatabaseItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh Database")
 	$RefreshDatabaseItem.ToolTipText = "Refresh the database at the lane/s"
@@ -8755,7 +8765,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 	
 	############################################################################
-	# 10) Send Restart Command Menu Item
+	# 11) Send Restart Command Menu Item
 	############################################################################
 	$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 	$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
@@ -8763,19 +8773,9 @@ if (-not $form)
 			Send_Restart_All_Programs -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
-	
+		
 	############################################################################
-	# 11) Schedule the DB repair at the lanes
-	############################################################################
-	$LaneScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane DB Repair")
-	$LaneScheduleRepairItem.ToolTipText = "Schedule a task to repair the lane/s database."
-	$LaneScheduleRepairItem.Add_Click({
-			Schedule_Lane_DB_Maintenance -StoreNumber "$StoreNumber"
-		})
-	[void]$ContextMenuLane.Items.Add($LaneScheduleRepairItem)
-	
-	############################################################################
-	# 12) Set the time on the lanes
+	# 13) Set the time on the lanes
 	############################################################################
 	$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set the time on lanes")
 	$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize the time for the selected lanes."
@@ -8785,7 +8785,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 	
 	############################################################################
-	# 13) Reboot Lane Menu Item
+	# 14) Reboot Lane Menu Item
 	############################################################################
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
