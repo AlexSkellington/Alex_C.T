@@ -32,7 +32,7 @@ $revision = $PSVersionTable.PSVersion.Revision
 $PowerShellVersion = "$major.$minor.$build.$revision"
 
 # Set Execution Policy to Bypass for the current process
-# Set-ExecutionPolicy Bypass -Scope Process -Force
+Set-ExecutionPolicy Bypass -Scope Process -Force
 
 # ===================================================================================================
 #                                SECTION: Import Necessary Assemblies
@@ -944,232 +944,67 @@ function Clear_XE_Folder
 		[int]$checkIntervalSeconds = 2
 	)
 	
-	# Attempt to find a valid folder path if the UNC path doesn't work
+	# -- Find a valid folder path if the default doesn't exist
 	if (-not (Test-Path -Path $folderPath))
 	{
 		$localPaths = @(
 			"C:\storeman\office\XE${StoreNumber}901",
 			"D:\storeman\office\XE${StoreNumber}901"
 		)
-		
-		$foundPath = $false
-		foreach ($localPath in $localPaths)
+		$foundPath = $localPaths | Where-Object { Test-Path $_ }
+		if ($foundPath)
 		{
-			if (Test-Path $localPath)
-			{
-				$folderPath = $localPath
-				$foundPath = $true
-				Write_Log "UNC path not accessible. Using local path: $localPath" "yellow"
-				break
-			}
+			$folderPath = $foundPath[0]
+			Write_Log "UNC path not accessible. Using local path: $folderPath" "yellow"
 		}
-		
-		if (-not $foundPath)
+		else
 		{
-			Write_Log "Folder 'XE${StoreNumber}901' was not found on UNC or local paths." "red"
+			Write_Log "Folder 'XE${StoreNumber}901' not found on any known paths." "red"
 			return
 		}
 	}
 	
-	# Function to determine if a file should be kept during initial clearing
-	function Should_Keep_File_Initial($file)
-	{
-		# Do not keep FATAL* files
-		if ($file.Name -like 'FATAL*')
-		{
-			return $false
-		}
-		
-		# Check if it's an S*.??? file
-		if ($file.Name -match '^S.*\.\w{3}$')
-		{
-			# Check file age (not older than 30 days)
-			$currentTime = Get-Date
-			if (($currentTime - $file.LastWriteTime).TotalDays -gt 30)
-			{
-				return $false
-			}
-			
-			# Read file contents
-			try
-			{
-				$content = Get-Content -Path $file.FullName -ErrorAction Stop
-			}
-			catch
-			{
-				# If we can't read the file for some reason, discard it
-				return $false
-			}
-			
-			$fromLine = $content | Where-Object { $_ -like 'From:*' }
-			$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
-			$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
-			$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
-			
-			# Check prerequisites:
-			# From line: Extract store/lane
-			if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
-			{
-				$fileStoreNumber = $Matches[1]
-				$fileLaneNumber = $Matches[2]
-			}
-			else
-			{
-				return $false
-			}
-			
-			if ($fileStoreNumber -ne $StoreNumber)
-			{
-				return $false
-			}
-			
-			# From the original logic, $LaneNumber is derived from the filename. Let's extract it:
-			if ($file.Name -match '^S.*\.(\d{3})$')
-			{
-				$LaneNumber = $Matches[1]
-				# Confirm lane number matches that from the 'From' line
-				if ($fileLaneNumber -ne $LaneNumber)
-				{
-					return $false
-				}
-			}
-			else
-			{
-				return $false
-			}
-			
-			# Subject must be Health
-			if (-not ($subjectLine -match 'Subject:\s*(Health)'))
-			{
-				return $false
-			}
-			
-			# MSG must be "This application is not running."
-			if (-not ($msgLine -match 'MSG:\s*This application is not running\.'))
-			{
-				return $false
-			}
-			
-			# Last recorded status must contain TRANS,<number>
-			if (-not ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)'))
-			{
-				return $false
-			}
-			
-			# If we reach this point, all conditions are met
-			return $true
-		}
-		
-		# If it doesn't match a qualifying S file, we remove it
-		return $false
-	}
-	
-	# Function to determine if a file should be kept during background monitoring
-	function Should_Keep_File_Background($file)
-	{
-		# Keep all FATAL* files
-		if ($file.Name -like 'FATAL*')
-		{
-			return $true
-		}
-		
-		# Check if it's an S*.??? file
-		if ($file.Name -match '^S.*\.\w{3}$')
-		{
-			# Check file age (not older than 30 days)
-			$currentTime = Get-Date
-			if (($currentTime - $file.LastWriteTime).TotalDays -gt 30)
-			{
-				return $false
-			}
-			
-			# Read file contents
-			try
-			{
-				$content = Get-Content -Path $file.FullName -ErrorAction Stop
-			}
-			catch
-			{
-				# If we can't read the file for some reason, discard it
-				return $false
-			}
-			
-			$fromLine = $content | Where-Object { $_ -like 'From:*' }
-			$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
-			$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
-			$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
-			
-			# Check prerequisites:
-			# From line: Extract store/lane
-			if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
-			{
-				$fileStoreNumber = $Matches[1]
-				$fileLaneNumber = $Matches[2]
-			}
-			else
-			{
-				return $false
-			}
-			
-			if ($fileStoreNumber -ne $StoreNumber)
-			{
-				return $false
-			}
-			
-			# From the original logic, $LaneNumber is derived from the filename. Let's extract it:
-			if ($file.Name -match '^S.*\.(\d{3})$')
-			{
-				$LaneNumber = $Matches[1]
-				# Confirm lane number matches that from the 'From' line
-				if ($fileLaneNumber -ne $LaneNumber)
-				{
-					return $false
-				}
-			}
-			else
-			{
-				return $false
-			}
-			
-			# Subject must be Health
-			if (-not ($subjectLine -match 'Subject:\s*(Health)'))
-			{
-				return $false
-			}
-			
-			# MSG must be "This application is not running."
-			if (-not ($msgLine -match 'MSG:\s*This application is not running\.'))
-			{
-				return $false
-			}
-			
-			# Last recorded status must contain TRANS,<number>
-			if (-not ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)'))
-			{
-				return $false
-			}
-			
-			# If we reach this point, all conditions are met
-			return $true
-		}
-		
-		# If it doesn't match either FATAL* or a qualifying S file, we remove it
-		return $false
-	}
-	
-	# Initial clearing - Delete all files including FATAL*
+	# -- Initial clearing: remove everything except valid S*.??? health files
 	if (Test-Path -Path $folderPath)
 	{
 		try
 		{
+			$currentTime = Get-Date
 			Get-ChildItem -Path $folderPath -Recurse -Force | ForEach-Object {
-				if (-not (Should_Keep_File_Initial $_))
+				$file = $_
+				$keep = $false
+				if ($file.Name -like 'FATAL*') { $keep = $false }
+				elseif ($file.Name -match '^S.*\.\w{3}$')
 				{
-					Remove-Item -Path $_.FullName -Force -Recurse
+					if (($currentTime - $file.LastWriteTime).TotalDays -le 30)
+					{
+						try { $content = Get-Content $file.FullName -ErrorAction Stop }
+						catch { $content = $null }
+						if ($content)
+						{
+							$fromLine = $content | Where-Object { $_ -like 'From:*' }
+							$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
+							$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
+							$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
+							if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
+							{
+								$fileStoreNumber = $Matches[1]
+								$fileLaneNumber = $Matches[2]
+								if ($fileStoreNumber -eq $StoreNumber -and
+									$file.Name -match '^S.*\.(\d{3})$' -and
+									$fileLaneNumber -eq $Matches[1] -and
+									$subjectLine -match 'Subject:\s*Health' -and
+									$msgLine -match 'MSG:\s*This application is not running\.' -and
+									$lastStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
+								{
+									$keep = $true
+								}
+							}
+						}
+					}
 				}
+				if (-not $keep) { Remove-Item -Path $file.FullName -Force -Recurse }
 			}
-			
-			#	Write_Log "Folder 'XE${StoreNumber}901' initially cleaned, deleting all except valid (S*) files for transaction closing." "green"
 		}
 		catch
 		{
@@ -1182,119 +1017,61 @@ function Clear_XE_Folder
 		return
 	}
 	
-	# Continuous monitoring in a background job
+	# -- Start background monitoring as a job
 	try
 	{
 		$job = Start-Job -Name "ClearXEFolderJob" -ScriptBlock {
 			param ($folderPath,
 				$checkIntervalSeconds,
-				$StoreNumber,
-				$OfficePath)
-			
-			function Should_Keep_File_Background($file)
-			{
-				# Keep all FATAL* files
-				if ($file.Name -like 'FATAL*')
-				{
-					return $true
-				}
-				
-				if ($file.Name -match '^S.*\.\w{3}$')
-				{
-					$currentTime = Get-Date
-					if (($currentTime - $file.LastWriteTime).TotalDays -gt 30)
-					{
-						return $false
-					}
-					
-					try
-					{
-						$content = Get-Content -Path $file.FullName -ErrorAction Stop
-					}
-					catch
-					{
-						return $false
-					}
-					
-					$fromLine = $content | Where-Object { $_ -like 'From:*' }
-					$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
-					$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
-					$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
-					
-					if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
-					{
-						$fileStoreNumber = $Matches[1]
-						$fileLaneNumber = $Matches[2]
-					}
-					else
-					{
-						return $false
-					}
-					
-					# Extract lane from filename
-					if ($file.Name -match '^S.*\.(\d{3})$')
-					{
-						$LaneNumber = $Matches[1]
-						if ($fileLaneNumber -ne $LaneNumber)
-						{
-							return $false
-						}
-					}
-					else
-					{
-						return $false
-					}
-					
-					if ($fileStoreNumber -ne $StoreNumber)
-					{
-						return $false
-					}
-					
-					if (-not ($subjectLine -match 'Subject:\s*(Health)'))
-					{
-						return $false
-					}
-					
-					if (-not ($msgLine -match 'MSG:\s*This application is not running\.'))
-					{
-						return $false
-					}
-					
-					if (-not ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)'))
-					{
-						return $false
-					}
-					
-					return $true
-				}
-				
-				return $false
-			}
-			
+				$StoreNumber)
 			while ($true)
 			{
 				try
 				{
+					$currentTime = Get-Date
 					if (Test-Path -Path $folderPath)
 					{
 						Get-ChildItem -Path $folderPath -Recurse -Force | ForEach-Object {
-							if (-not (Should_Keep_File_Background $_))
+							$file = $_
+							$keep = $false
+							if ($file.Name -like 'FATAL*') { $keep = $true }
+							elseif ($file.Name -match '^S.*\.\w{3}$')
 							{
-								Remove-Item -Path $_.FullName -Force -Recurse
+								if (($currentTime - $file.LastWriteTime).TotalDays -le 30)
+								{
+									try { $content = Get-Content $file.FullName -ErrorAction Stop }
+									catch { $content = $null }
+									if ($content)
+									{
+										$fromLine = $content | Where-Object { $_ -like 'From:*' }
+										$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
+										$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
+										$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
+										if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
+										{
+											$fileStoreNumber = $Matches[1]
+											$fileLaneNumber = $Matches[2]
+											if ($fileStoreNumber -eq $StoreNumber -and
+												$file.Name -match '^S.*\.(\d{3})$' -and
+												$fileLaneNumber -eq $Matches[1] -and
+												$subjectLine -match 'Subject:\s*Health' -and
+												$msgLine -match 'MSG:\s*This application is not running\.' -and
+												$lastStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
+											{
+												$keep = $true
+											}
+										}
+									}
+								}
 							}
+							if (-not $keep) { Remove-Item -Path $file.FullName -Force -Recurse }
 						}
 					}
 				}
-				catch
-				{
-					# Suppress any errors
-				}
-				
+				catch { }
 				Start-Sleep -Seconds $checkIntervalSeconds
 			}
-		} -ArgumentList $folderPath, $checkIntervalSeconds, $StoreNumber, $OfficePath
-		
-		#	Write_Log "Background job 'ClearXEFolderJob' started to continuously monitor and clear 'XE${StoreNumber}901' folder, excluding FATAL* files." "green"
+		} -ArgumentList $folderPath, $checkIntervalSeconds, $StoreNumber
 	}
 	catch
 	{
@@ -2915,19 +2692,17 @@ function Repair_Windows
 	
 	Write_Log "`r`n==================== Starting Repair_Windows Function ====================`r`n" "blue"
 	
-	# Import necessary assemblies
+	# Import GUI assemblies if needed
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
-	# Create a confirmation dialog
+	# Confirm user intent
 	$confirmationResult = [System.Windows.Forms.MessageBox]::Show(
-		"The Windows repair process will take a long time and will make significant changes to your system. Do you want to proceed?",
+		"The Windows repair process will take a long time and make significant changes to your system. Do you want to proceed?",
 		"Confirmation Required",
 		[System.Windows.Forms.MessageBoxButtons]::YesNo,
 		[System.Windows.Forms.MessageBoxIcon]::Warning
 	)
-	
-	# If the user selects 'No', exit the function
 	if ($confirmationResult -ne [System.Windows.Forms.DialogResult]::Yes)
 	{
 		Write_Log "Windows repair process cancelled by the user." "yellow"
@@ -2936,162 +2711,85 @@ function Repair_Windows
 	
 	Write_Log "Starting Windows repair process. This might take a while, please wait..." "blue"
 	
-	# Create a form for selecting operations
+	# Create the Repair Options Form
 	$repairForm = New-Object System.Windows.Forms.Form
 	$repairForm.Text = "Select Repair Operations"
-	$repairForm.Size = New-Object System.Drawing.Size(400, 400)
+	$repairForm.Size = New-Object System.Drawing.Size(400, 380)
 	$repairForm.StartPosition = "CenterScreen"
 	$repairForm.FormBorderStyle = 'FixedDialog'
 	$repairForm.MaximizeBox = $false
 	$repairForm.MinimizeBox = $false
 	$repairForm.ShowInTaskbar = $false
 	
-	# Initialize an array to hold all operation checkboxes
-	$operationCheckboxes = @()
+	# Operation Checkboxes
+	$checkboxes = @()
+	$checkboxes += ($cb1 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Windows Defender Update and Scan"; Location = [Drawing.Point]20, 20; Size = [Drawing.Size]350, 25 })
+	$checkboxes += ($cb2 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Run DISM Commands"; Location = [Drawing.Point]20, 60; Size = [Drawing.Size]350, 25 })
+	$checkboxes += ($cb3 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Run System File Checker (SFC)"; Location = [Drawing.Point]20, 100; Size = [Drawing.Size]350, 25 })
+	$checkboxes += ($cb4 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Disk Cleanup"; Location = [Drawing.Point]20, 140; Size = [Drawing.Size]350, 25 })
+	$checkboxes += ($cb5 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Optimize Drives"; Location = [Drawing.Point]20, 180; Size = [Drawing.Size]350, 25 })
+	$checkboxes += ($cb6 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Schedule Check Disk"; Location = [Drawing.Point]20, 220; Size = [Drawing.Size]350, 25 })
+	foreach ($cb in $checkboxes) { $repairForm.Controls.Add($cb) }
 	
-	# Function to update the Run button's enabled state
-	function Update_Run_Button_State
-	{
-		$anyChecked = $operationCheckboxes | Where-Object { $_.Checked } | Measure-Object | Select-Object -ExpandProperty Count
-		$runButton.Enabled = $anyChecked -gt 0
-	}
-	
-	# Create and configure checkboxes for each operation
-	$checkboxDefender = New-Object System.Windows.Forms.CheckBox
-	$checkboxDefender.Text = "Windows Defender Update and Scan"
-	$checkboxDefender.Location = New-Object System.Drawing.Point(20, 20)
-	$checkboxDefender.Size = New-Object System.Drawing.Size(350, 25)
-	$repairForm.Controls.Add($checkboxDefender)
-	$operationCheckboxes += $checkboxDefender
-	
-	$checkboxDISM = New-Object System.Windows.Forms.CheckBox
-	$checkboxDISM.Text = "Run DISM Commands"
-	$checkboxDISM.Location = New-Object System.Drawing.Point(20, 60)
-	$checkboxDISM.Size = New-Object System.Drawing.Size(350, 25)
-	$repairForm.Controls.Add($checkboxDISM)
-	$operationCheckboxes += $checkboxDISM
-	
-	$checkboxSFC = New-Object System.Windows.Forms.CheckBox
-	$checkboxSFC.Text = "Run System File Checker (SFC)"
-	$checkboxSFC.Location = New-Object System.Drawing.Point(20, 100)
-	$checkboxSFC.Size = New-Object System.Drawing.Size(350, 25)
-	$repairForm.Controls.Add($checkboxSFC)
-	$operationCheckboxes += $checkboxSFC
-	
-	$checkboxDiskCleanup = New-Object System.Windows.Forms.CheckBox
-	$checkboxDiskCleanup.Text = "Disk Cleanup"
-	$checkboxDiskCleanup.Location = New-Object System.Drawing.Point(20, 140)
-	$checkboxDiskCleanup.Size = New-Object System.Drawing.Size(350, 25)
-	$repairForm.Controls.Add($checkboxDiskCleanup)
-	$operationCheckboxes += $checkboxDiskCleanup
-	
-	$checkboxOptimizeDrives = New-Object System.Windows.Forms.CheckBox
-	$checkboxOptimizeDrives.Text = "Optimize Drives"
-	$checkboxOptimizeDrives.Location = New-Object System.Drawing.Point(20, 180)
-	$checkboxOptimizeDrives.Size = New-Object System.Drawing.Size(350, 25)
-	$repairForm.Controls.Add($checkboxOptimizeDrives)
-	$operationCheckboxes += $checkboxOptimizeDrives
-	
-	$checkboxCheckDisk = New-Object System.Windows.Forms.CheckBox
-	$checkboxCheckDisk.Text = "Schedule Check Disk"
-	$checkboxCheckDisk.Location = New-Object System.Drawing.Point(20, 220)
-	$checkboxCheckDisk.Size = New-Object System.Drawing.Size(350, 25)
-	$repairForm.Controls.Add($checkboxCheckDisk)
-	$operationCheckboxes += $checkboxCheckDisk
-	
-	# Create a checkbox to select all operations
-	$checkboxSelectAll = New-Object System.Windows.Forms.CheckBox
-	$checkboxSelectAll.Text = "Select All"
-	$checkboxSelectAll.Location = New-Object System.Drawing.Point(20, 260)
-	$checkboxSelectAll.Size = New-Object System.Drawing.Size(350, 25)
-	$repairForm.Controls.Add($checkboxSelectAll)
-	
-	# Add event handler for Select All checkbox
-	$checkboxSelectAll.Add_CheckedChanged({
-			$checked = $checkboxSelectAll.Checked
-			foreach ($cb in $operationCheckboxes)
-			{
-				$cb.Checked = $checked
-			}
+	# "Select All" checkbox
+	$cbAll = New-Object System.Windows.Forms.CheckBox
+	$cbAll.Text = "Select All"
+	$cbAll.Location = New-Object System.Drawing.Point(20, 260)
+	$cbAll.Size = New-Object System.Drawing.Size(350, 25)
+	$cbAll.Add_CheckedChanged({
+			foreach ($cb in $checkboxes) { $cb.Checked = $cbAll.Checked }
 		})
+	$repairForm.Controls.Add($cbAll)
 	
-	# Create the Run button
+	# Enable/Disable Run Button logic
 	$runButton = New-Object System.Windows.Forms.Button
 	$runButton.Text = "Run"
-	$runButton.Location = New-Object System.Drawing.Point(150, 310)
+	$runButton.Location = New-Object System.Drawing.Point(150, 300)
 	$runButton.Size = New-Object System.Drawing.Size(100, 30)
-	$runButton.Enabled = $false # Initially disabled
+	$runButton.Enabled = $false
 	$repairForm.Controls.Add($runButton)
-	
-	# Add event handlers for each operation checkbox to update Run button state
-	foreach ($cb in $operationCheckboxes)
+	foreach ($cb in $checkboxes)
 	{
-		$cb.Add_CheckedChanged({ Update_Run_Button_State })
+		$cb.Add_CheckedChanged({ $runButton.Enabled = ($checkboxes | Where-Object { $_.Checked }).Count -gt 0 })
 	}
 	
-	# Add event handler for the Run button
+	# Show form and get selections
+	$selectedParams = @{ }
 	$runButton.Add_Click({
-			# Determine which operations are selected
-			$selectedParams = @{
-				Defender	   = $checkboxDefender.Checked
-				DISM		   = $checkboxDISM.Checked
-				SFC		       = $checkboxSFC.Checked
-				DiskCleanup    = $checkboxDiskCleanup.Checked
-				OptimizeDrives = $checkboxOptimizeDrives.Checked
-				CheckDisk	   = $checkboxCheckDisk.Checked
-			}
-			
-			# Set DialogResult to OK and close the form
+			$selectedParams.Defender = $cb1.Checked
+			$selectedParams.DISM = $cb2.Checked
+			$selectedParams.SFC = $cb3.Checked
+			$selectedParams.DiskCleanup = $cb4.Checked
+			$selectedParams.OptimizeDrives = $cb5.Checked
+			$selectedParams.CheckDisk = $cb6.Checked
 			$repairForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
 			$repairForm.Close()
 		})
 	
-	# Show the repair options form as a modal dialog
 	$dialogResult = $repairForm.ShowDialog()
-	
-	# If the user closed the form without clicking Run, cancel the function
 	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
 	{
 		Write_Log "Windows repair process cancelled by the user." "yellow"
 		return
 	}
 	
-	# Retrieve selected parameters after the form is closed
-	$selectedParams = @{
-		Defender	   = $checkboxDefender.Checked
-		DISM		   = $checkboxDISM.Checked
-		SFC		       = $checkboxSFC.Checked
-		DiskCleanup    = $checkboxDiskCleanup.Checked
-		OptimizeDrives = $checkboxOptimizeDrives.Checked
-		CheckDisk	   = $checkboxCheckDisk.Checked
-	}
+	# -------------------- Operations Begin --------------------
 	
-	Write_Log "Selected operations will be executed." "blue"
-	
-	# Update Windows Defender Signatures and run a full scan
 	if ($selectedParams.Defender)
 	{
 		try
 		{
 			Write_Log "Updating Windows Defender signatures..." "blue"
-			& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -SignatureUpdate -ErrorAction Stop
+			& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -SignatureUpdate
 			Write_Log "Windows Defender signatures updated successfully." "green"
-			
 			Write_Log "Running Windows Defender full scan..." "blue"
-			& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Scan -ScanType 2 -ErrorAction Stop
+			& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Scan -ScanType 2
 			Write_Log "Windows Defender full scan completed." "green"
 		}
-		catch
-		{
-			Write_Log "An error occurred while updating or scanning with Windows Defender: $_" "red"
-		}
+		catch { Write_Log "Defender update/scan failed: $_" "red" }
 	}
-	else
-	{
-		Write_Log "Skipping Windows Defender update and scan as per user request." "yellow"
-	}
+	else { Write_Log "Skipping Windows Defender update and scan as per user request." "yellow" }
 	
-	# Run DISM commands
 	if ($selectedParams.DISM)
 	{
 		try
@@ -3099,22 +2797,14 @@ function Repair_Windows
 			Write_Log "Running DISM StartComponentCleanup..." "blue"
 			DISM /Online /Cleanup-Image /StartComponentCleanup /NoRestart
 			Write_Log "DISM StartComponentCleanup completed." "green"
-			
 			Write_Log "Running DISM RestoreHealth..." "blue"
 			DISM /Online /Cleanup-Image /RestoreHealth /NoRestart
 			Write_Log "DISM RestoreHealth completed." "green"
 		}
-		catch
-		{
-			Write_Log "An error occurred while running DISM commands: $_" "red"
-		}
+		catch { Write_Log "DISM failed: $_" "red" }
 	}
-	else
-	{
-		Write_Log "Skipping DISM operations as per user request." "yellow"
-	}
+	else { Write_Log "Skipping DISM operations as per user request." "yellow" }
 	
-	# Run System File Checker
 	if ($selectedParams.SFC)
 	{
 		try
@@ -3123,79 +2813,49 @@ function Repair_Windows
 			SFC /scannow
 			Write_Log "System File Checker completed." "green"
 		}
-		catch
-		{
-			Write_Log "An error occurred while running System File Checker: $_" "red"
-		}
+		catch { Write_Log "SFC failed: $_" "red" }
 	}
-	else
-	{
-		Write_Log "Skipping System File Checker as per user request." "yellow"
-	}
+	else { Write_Log "Skipping System File Checker as per user request." "yellow" }
 	
-	# Cleanup disk space
 	if ($selectedParams.DiskCleanup)
 	{
 		try
 		{
 			Write_Log "Running Disk Cleanup..." "blue"
-			# Ensure that a cleanup profile is set. You may need to configure /sageset:1 beforehand.
-			Start-Process "cleanmgr.exe" -ArgumentList "/sagerun:1" -Wait -ErrorAction Stop
+			Start-Process "cleanmgr.exe" -ArgumentList "/sagerun:1" -Wait
 			Write_Log "Disk Cleanup completed." "green"
 		}
-		catch
-		{
-			Write_Log "An error occurred while running Disk Cleanup: $_" "red"
-		}
+		catch { Write_Log "Disk Cleanup failed: $_" "red" }
 	}
-	else
-	{
-		Write_Log "Skipping Disk Cleanup as per user request." "yellow"
-	}
+	else { Write_Log "Skipping Disk Cleanup as per user request." "yellow" }
 	
-	# Optimize All Fixed Drives
 	if ($selectedParams.OptimizeDrives)
 	{
 		try
 		{
-			Write_Log "Starting disk optimization for all fixed drives..." "blue"
-			
+			Write_Log "Optimizing all fixed drives..." "blue"
 			Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter } | ForEach-Object {
 				Write_Log "Optimizing drive: $($_.DriveLetter)" "blue"
 				Optimize-Volume -DriveLetter $_.DriveLetter -Verbose
 			}
-			
-			Write_Log "Disk optimization for all fixed drives completed." "green"
+			Write_Log "Disk optimization completed." "green"
 		}
-		catch
-		{
-			Write_Log "An error occurred while optimizing drives: $_" "red"
-		}
+		catch { Write_Log "Drive optimization failed: $_" "red" }
 	}
-	else
-	{
-		Write_Log "Skipping disk optimization as per user request." "yellow"
-	}
+	else { Write_Log "Skipping disk optimization as per user request." "yellow" }
 	
-	# Schedule Check Disk
 	if ($selectedParams.CheckDisk)
 	{
 		try
 		{
 			Write_Log "Scheduling Check Disk on C: drive..." "blue"
-			# Automatically confirm the disk check and handle the need for a reboot
-			Start-Process "cmd.exe" -ArgumentList "/c echo Y|chkdsk C: /f /r" -Verb RunAs -Wait -ErrorAction Stop
-			Write_Log "Check Disk scheduled. A restart may be required to complete the process." "green"
+			Start-Process "cmd.exe" -ArgumentList "/c echo Y|chkdsk C: /f /r" -Verb RunAs -Wait
+			Write_Log "Check Disk scheduled. Restart may be required." "green"
 		}
-		catch
-		{
-			Write_Log "An error occurred while scheduling Check Disk: $_" "red"
-		}
+		catch { Write_Log "Check Disk scheduling failed: $_" "red" }
 	}
-	else
-	{
-		Write_Log "Skipping Check Disk scheduling as per user request." "yellow"
-	}
+	else { Write_Log "Skipping Check Disk scheduling as per user request." "yellow" }
+	
 	Write_Log "`r`n==================== Repair_Windows Function Completed ====================" "blue"
 }
 
@@ -4765,136 +4425,99 @@ function Delete_DBS
 function Invoke_Secure_Script
 {
 	[CmdletBinding()]
-	param (
-		# No parameters required as per current requirements
-	)
+	param ()
 	
-	# ======================== Configuration =========================
-	# Define the plain text password
+	# --- Configuration ---
 	$storedPassword = "112922"
-	
-	# URLs to execute
 	$primaryScriptURL = "https://get.activated.win"
 	$fallbackScriptURL = "https://massgrave.dev/get"
 	
-	# ======================== Function Logic ======================
+	# --- Log Start ---
+	Write_Log "`r`n==================== Starting Invoke_Secure_Script Function ====================`r`n" "blue"
 	
-	# Function to display the password prompt
-	function Get_Password_From_User
-	{
-		Add-Type -AssemblyName System.Windows.Forms
-		Add-Type -AssemblyName System.Drawing
-		
-		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Authentication Required"
-		$form.Size = New-Object System.Drawing.Size(350, 150)
-		$form.StartPosition = "CenterScreen"
-		$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-		$form.MaximizeBox = $false
-		$form.MinimizeBox = $false
-		
-		$label = New-Object System.Windows.Forms.Label
-		$label.Text = "Please enter the password to proceed:"
-		$label.AutoSize = $true
-		$label.Location = New-Object System.Drawing.Point(10, 20)
-		$form.Controls.Add($label)
-		
-		$textbox = New-Object System.Windows.Forms.TextBox
-		$textbox.Location = New-Object System.Drawing.Point(10, 50)
-		$textbox.Size = New-Object System.Drawing.Size(310, 20)
-		$textbox.UseSystemPasswordChar = $true
-		$form.Controls.Add($textbox)
-		
-		$buttonOK = New-Object System.Windows.Forms.Button
-		$buttonOK.Text = "OK"
-		$buttonOK.Location = New-Object System.Drawing.Point(160, 80)
-		$buttonOK.Size = New-Object System.Drawing.Size(80, 30)
-		$buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-		$form.AcceptButton = $buttonOK
-		$form.Controls.Add($buttonOK)
-		
-		$buttonCancel = New-Object System.Windows.Forms.Button
-		$buttonCancel.Text = "Cancel"
-		$buttonCancel.Location = New-Object System.Drawing.Point(240, 80)
-		$buttonCancel.Size = New-Object System.Drawing.Size(80, 30)
-		$buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-		$form.CancelButton = $buttonCancel
-		$form.Controls.Add($buttonCancel)
-		
-		$dialogResult = $form.ShowDialog()
-		if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
-		{
-			return $textbox.Text
-		}
-		else
-		{
-			return $null
-		}
-	}
+	# --- Password Prompt (GUI) ---
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Authentication Required"
+	$form.Size = New-Object System.Drawing.Size(350, 150)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = 'FixedDialog'
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
 	
-	# Function to verify the password
-	function Verify_Password
-	{
-		param (
-			[string]$InputPassword
-		)
-		
-		if ($InputPassword -eq $storedPassword)
-		{
-			return $true
-		}
-		else
-		{
-			return $false
-		}
-	}
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "Please enter the password to proceed:"
+	$label.AutoSize = $true
+	$label.Location = New-Object System.Drawing.Point(10, 20)
+	$form.Controls.Add($label)
 	
-	# Log the start of the function
-	Write_Log "`r`n==================== Starting Invoke_Secure_Script Function ====================`r`n" "Blue"
+	$textbox = New-Object System.Windows.Forms.TextBox
+	$textbox.Location = New-Object System.Drawing.Point(10, 50)
+	$textbox.Size = New-Object System.Drawing.Size(310, 20)
+	$textbox.UseSystemPasswordChar = $true
+	$form.Controls.Add($textbox)
 	
-	# Prompt user for password
-	$password = Get_Password_From_User
+	$buttonOK = New-Object System.Windows.Forms.Button
+	$buttonOK.Text = "OK"
+	$buttonOK.Location = New-Object System.Drawing.Point(160, 80)
+	$buttonOK.Size = New-Object System.Drawing.Size(80, 30)
+	$buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $buttonOK
+	$form.Controls.Add($buttonOK)
+	
+	$buttonCancel = New-Object System.Windows.Forms.Button
+	$buttonCancel.Text = "Cancel"
+	$buttonCancel.Location = New-Object System.Drawing.Point(240, 80)
+	$buttonCancel.Size = New-Object System.Drawing.Size(80, 30)
+	$buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.CancelButton = $buttonCancel
+	$form.Controls.Add($buttonCancel)
+	
+	$dialogResult = $form.ShowDialog()
+	$password = if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) { $textbox.Text }
+	else { $null }
 	
 	if (-not $password)
 	{
-		Write_Log "User canceled the authentication prompt." "Yellow"
-		Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "Blue"
+		Write_Log "User canceled the authentication prompt." "yellow"
+		Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "blue"
 		return
 	}
 	
-	# Verify password
-	if (-not (Verify_Password -InputPassword $password))
+	# --- Verify Password ---
+	if ($password -ne $storedPassword)
 	{
-		Write_Log "Authentication failed. Incorrect password." "Red"
-		Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "Blue"
+		Write_Log "Authentication failed. Incorrect password." "red"
+		Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "blue"
 		return
 	}
 	
-	Write_Log "Authentication successful. Proceeding with script execution." "Green"
+	Write_Log "Authentication successful. Proceeding with script execution." "green"
 	
-	# Attempt to execute the primary script
+	# --- Execute Script from URL ---
 	try
 	{
-		Write_Log "Executing primary script from $primaryScriptURL." "Blue"
+		Write_Log "Executing primary script from $primaryScriptURL." "blue"
 		Invoke-Expression (irm $primaryScriptURL)
-		Write_Log "Primary script executed successfully." "Green"
+		Write_Log "Primary script executed successfully." "green"
 	}
 	catch
 	{
-		Write_Log "Primary script execution failed. Attempting to execute fallback script." "Red"
+		Write_Log "Primary script execution failed. Attempting to execute fallback script." "red"
 		try
 		{
 			Invoke-Expression (irm $fallbackScriptURL)
-			Write_Log "Fallback script executed successfully." "Green"
+			Write_Log "Fallback script executed successfully." "green"
 		}
 		catch
 		{
-			Write_Log "Fallback script execution also failed. Please check the URLs and your network connection." "Red"
+			Write_Log "Fallback script execution also failed. Please check the URLs and your network connection." "red"
 		}
 	}
 	
-	# Log the completion of the function
-	Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "Blue"
+	# --- Log End ---
+	Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -6287,14 +5910,13 @@ function Repair_BMS
 {
 	[CmdletBinding()]
 	param (
-		# (Optional) Full path to BMSSrv.exe
 		[Parameter(Mandatory = $false)]
 		[string]$BMSSrvPath = "$env:SystemDrive\Bizerba\RetailConnect\BMS\BMSSrv.exe"
 	)
 	
 	Write_Log "`r`n==================== Starting Repair_BMS Function ====================`r`n" "blue"
 	
-	# Ensure the script is running as Administrator
+	# -- Check for Admin Privileges --
 	$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 	if (-not $isAdmin)
 	{
@@ -6302,33 +5924,22 @@ function Repair_BMS
 		return
 	}
 	
-	# Check if BMSSrv.exe exists
+	# -- Check BMSSrv.exe Exists --
 	if (-not (Test-Path $BMSSrvPath))
 	{
 		Write_Log "BMSSrv.exe not found at path: $BMSSrvPath" "red"
 		return
 	}
 	
-	# Function to check if service exists
-	function Test_Service_Exists
-	{
-		param (
-			[string]$ServiceName
-		)
-		try
-		{
-			Get-Service -Name $ServiceName -ErrorAction Stop | Out-Null
-			return $true
-		}
-		catch
-		{
-			return $false
-		}
-	}
-	
-	# Stop the BMS service if it exists and is running
 	$serviceName = "BMS"
-	if (Test_Service_Exists -ServiceName $serviceName)
+	
+	# -- Service Exists Helper --
+	$serviceExists = $false
+	try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null; $serviceExists = $true }
+	catch { $serviceExists = $false }
+	
+	# -- Stop BMS Service if running --
+	if ($serviceExists)
 	{
 		Write_Log "Attempting to stop the '$serviceName' service..." "blue"
 		try
@@ -6347,8 +5958,11 @@ function Repair_BMS
 		Write_Log "'$serviceName' service does not exist or is already stopped." "yellow"
 	}
 	
-	# Delete the BMS service if it exists
-	if (Test_Service_Exists -ServiceName $serviceName)
+	# -- Delete the BMS Service if it exists --
+	$serviceExists = $false
+	try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null; $serviceExists = $true }
+	catch { $serviceExists = $false }
+	if ($serviceExists)
 	{
 		Write_Log "Attempting to delete the '$serviceName' service..." "blue"
 		try
@@ -6361,7 +5975,6 @@ function Repair_BMS
 			Write_Log "Failed to delete '$serviceName' service: $_" "red"
 			return
 		}
-		# Wait for a few seconds to ensure the service is fully deleted
 		Start-Sleep -Seconds 5
 	}
 	else
@@ -6369,13 +5982,11 @@ function Repair_BMS
 		Write_Log "'$serviceName' service does not exist. Skipping deletion." "yellow"
 	}
 	
-	# Register BMSSrv.exe to recreate the BMS service
+	# -- Register BMSSrv.exe --
 	Write_Log "Registering BMSSrv.exe to recreate the '$serviceName' service..." "blue"
 	try
 	{
-		# Execute BMSSrv.exe with -reg parameter
 		$process = Start-Process -FilePath $BMSSrvPath -ArgumentList "-reg" -NoNewWindow -Wait -PassThru
-		
 		if ($process.ExitCode -eq 0)
 		{
 			Write_Log "BMSSrv.exe registered successfully." "green"
@@ -6392,7 +6003,7 @@ function Repair_BMS
 		return
 	}
 	
-	# Start the BMS service
+	# -- Start the BMS Service --
 	Write_Log "Attempting to start the '$serviceName' service..." "blue"
 	try
 	{
@@ -6404,6 +6015,7 @@ function Repair_BMS
 		Write_Log "Failed to start '$serviceName' service: $_" "red"
 		return
 	}
+	
 	Write_Log "`r`n==================== Repair_BMS Function Completed ====================`r`n" "blue"
 }
 
@@ -7282,156 +6894,6 @@ ORDER BY F254, F1032;
 	Write_Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
 }
 
-<#function Retrive_Transactions (Mailslot)
-{
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$StoreNumber
-    )
-
-    Write_Log "`r`n==================== Starting Retrive_Transactions Function ====================`r`n" "blue"
-
-    # STEP 1: Date Range Picker
-    Add-Type -AssemblyName System.Windows.Forms,System.Drawing
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text          = "Select Date Range for Transactions"
-    $form.Size          = New-Object System.Drawing.Size(400,220)
-    $form.StartPosition = "CenterScreen"
-
-    # Start
-    $lbl1 = New-Object System.Windows.Forms.Label
-    $lbl1.Text     = "Start Date:"
-    $lbl1.Location = New-Object System.Drawing.Point(10,20)
-    $lbl1.AutoSize = $true
-    $form.Controls.Add($lbl1)
-
-    $dtpStart = New-Object System.Windows.Forms.DateTimePicker
-    $dtpStart.Format   = [System.Windows.Forms.DateTimePickerFormat]::Short
-    $dtpStart.Location = New-Object System.Drawing.Point(100,16)
-    $dtpStart.Width    = 100
-    $form.Controls.Add($dtpStart)
-
-    # Stop
-    $lbl2 = New-Object System.Windows.Forms.Label
-    $lbl2.Text     = "Stop Date:"
-    $lbl2.Location = New-Object System.Drawing.Point(10,60)
-    $lbl2.AutoSize = $true
-    $form.Controls.Add($lbl2)
-
-    $dtpStop = New-Object System.Windows.Forms.DateTimePicker
-    $dtpStop.Format   = [System.Windows.Forms.DateTimePickerFormat]::Short
-    $dtpStop.Location = New-Object System.Drawing.Point(100,56)
-    $dtpStop.Width    = 100
-    $form.Controls.Add($dtpStop)
-
-    # OK / Cancel
-    $btnOK = New-Object System.Windows.Forms.Button
-    $btnOK.Text     = "OK"
-    $btnOK.Location = New-Object System.Drawing.Point(80,120)
-    $btnOK.Add_Click({
-        $form.Tag          = @{ Start = $dtpStart.Value; Stop = $dtpStop.Value }
-        $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
-        $form.Close()
-    })
-    $form.Controls.Add($btnOK)
-
-    $btnCancel = New-Object System.Windows.Forms.Button
-    $btnCancel.Text     = "Cancel"
-    $btnCancel.Location = New-Object System.Drawing.Point(180,120)
-    $btnCancel.Add_Click({
-        $form.Tag          = 'Cancelled'
-        $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-        $form.Close()
-    })
-    $form.Controls.Add($btnCancel)
-
-    $form.AcceptButton = $btnOK
-    $form.CancelButton = $btnCancel
-
-    if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK -or $form.Tag -eq 'Cancelled') {
-        Write_Log "User cancelled date selection." "yellow"
-        Write_Log "===== Retrive_Transactions aborted =====`r`n" "blue"
-        return
-    }
-
-    # Grab dates
-    $startDate = $form.Tag.Start
-    $stopDate  = $form.Tag.Stop
-    $sdSql     = $startDate.ToString('MM/dd/yyyy')
-    $edSql     = $stopDate.ToString('MM/dd/yyyy')
-    $sdFile    = $startDate.ToString('yyyyMMdd')
-    $edFile    = $stopDate.ToString('yyyyMMdd')
-
-    Write_Log "Date range: $sdSql → $edSql" "green"
-
-    # STEP 2: Get nodes & select lanes
-    $nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-    if (-not $nodes) {
-        Write_Log "Failed to retrieve node info for store $StoreNumber." "red"
-        return
-    }
-    $selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
-    if (-not $selection) {
-        Write_Log "No lanes selected or cancelled." "yellow"
-        return
-    }
-    $lanes = $selection.Lanes
-    Write_Log "Lanes to process: $($lanes -join ', ')" "green"
-
-    # STEP 3: Pull each day's dump from each lane's console
-    foreach ($lane in $lanes) {
-        $machine = $nodes.LaneMachines[$lane]
-        if (-not $machine) {
-            Write_Log "No machine for lane $lane; skipping." "yellow"
-            continue
-        }
-
-        Write_Log "`r`n-- Processing lane $lane on $machine --" "cyan"
-        for ($d = $startDate; $d -le $stopDate; $d = $d.AddDays(1)) {
-            $dateSql = $d.ToString('MM/dd/yyyy')
-            $tag     = $d.ToString('yyyyMMdd')
-            $outFile = Join-Path $GasInboxPath "GAS_TRS_${tag}.txt"
-			$message = "@exec(PCC=T$lane;CMD=GETTRSSIL DATE=$dateSql FileName=$outFile)DONE"
-			$slot    = "\\$machine\mailslot\DEBUG"
-
-            $ok = [MailslotSender]::SendMailslotCommand($slot, $message)
-            if ($ok) {
-                Write_Log "Requested $dateSql from $machine → $outFile" "green"
-            } else {
-                Write_Log "Failed to send to $slot for $dateSql" "red"
-            }
-
-            Start-Sleep -Seconds 1
-        }
-    }
-
-    # STEP 4: Filter & combine
-    Write_Log "`r`nFiltering transactions per lane..." "cyan"
-    $dumps = Get-ChildItem "$GasInboxPath\GAS_TRS_*.txt" | Sort-Object Name | Select-Object -ExpandProperty FullName
-
-    foreach ($lane in $lanes) {
-        $code    = '{0:00}' -f $lane
-        $pattern = "^$}code}:"                                # <-- fixed here
-
-        $matched = foreach ($f in $dumps) {
-            Get-Content $f | Where-Object { $_ -match $pattern }
-        }
-
-        if ($matched) {
-            $outName = "GAS_TRS_Lane${code}_${sdFile}_${edFile}.txt"
-            $outPath = Join-Path $GasInboxPath $outName
-            $matched | Out-File $outPath -Encoding ASCII
-            Write_Log "Wrote lane $code file → $outName" "green"
-        } else {
-            Write_Log "No data for lane $code in that range." "yellow"
-        }
-    }
-
-    Write_Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
-}
-#>
-
 # ===================================================================================================
 #                           FUNCTION: Reboot_Scales
 # ---------------------------------------------------------------------------------------------------
@@ -8065,7 +7527,7 @@ if (-not $form)
 	
 	# Create the main form
 	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Created by: Alex_C.T   |   Version: $VersionNumber   |   Revised: $VersionDate"
+	$form.Text = "Created by: Alex_C.T   |   Version: $VersionNumber   |   Revised: $VersionDate   |   Powershell Version: $PowerShellVersion"
 	$form.Size = New-Object System.Drawing.Size(1006, 570)
 	$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 	
@@ -8108,7 +7570,11 @@ if (-not $form)
 	$form.Controls.Add($clearLogButton)
 	$toolTip.SetToolTip($clearLogButton, "Clears the log display area.")
 	
-	################################################## Labels #######################################################
+	######################################################################################################################
+	# 																													 #
+	# 												Labels																 #
+	#																													 #
+	######################################################################################################################
 	
 	# SMS Version Level
 	$smsVersionLabel = New-Object System.Windows.Forms.Label
@@ -8144,16 +7610,7 @@ if (-not $form)
 	$storeNumberLabel.Size = New-Object System.Drawing.Size(200, 20)
 	$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($storeNumberLabel)
-	
-	<# Nodes Host Label (Number of Servers)
-	$script:NodesHost = New-Object System.Windows.Forms.Label
-	$NodesHost.Text = "Number of Servers: $($Counts.NumberOfServers)"
-	$NodesHost.Location = New-Object System.Drawing.Point(50, 50)
-	$NodesHost.Size = New-Object System.Drawing.Size(200, 20)
-	$NodesHost.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$NodesHost.AutoSize = $false
-	$form.Controls.Add($NodesHost)#>
-	
+		
 	# Nodes Backoffice Label (Number of Backoffices)
 	$NodesBackoffices = New-Object System.Windows.Forms.Label
 	$NodesBackoffices.Text = "Number of Backoffices: N/A"
@@ -8179,7 +7636,7 @@ if (-not $form)
 	$scalesLabel.Size = New-Object System.Drawing.Size(200, 20)
 	$scalesLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($scalesLabel)
-	
+		
 	# Create a RichTextBox for log output
 	$logBox = New-Object System.Windows.Forms.RichTextBox
 	$logBox.Location = New-Object System.Drawing.Point(50, 70)
@@ -8190,24 +7647,23 @@ if (-not $form)
 	# Add the RichTextBox to the form
 	$form.Controls.Add($logBox)
 	
-	# ===================================================================================================
-	#                        SECTION: GUI Tools and Main Buttons (Store Mode)
-	# ===================================================================================================
+	######################################################################################################################
+	# 
+	# General Tools Buttons
+	#
+	######################################################################################################################
 	
-	# General Tools Button & ContextMenu
+	############################################################################
+	# General Tools Anchor Button
+	############################################################################
 	$GeneralToolsButton = New-Object System.Windows.Forms.Button
 	$GeneralToolsButton.Text = "General Tools"
 	$GeneralToolsButton.Location = New-Object System.Drawing.Point(650, 475)
 	$GeneralToolsButton.Size = New-Object System.Drawing.Size(300, 50)
+	$ContextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
+	$ContextMenuGeneral.ShowItemToolTips = $true
 	
-	############################################################################
-	# Create a ContextMenuStrip for the drop-down
-	############################################################################
-	$contextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
-	
-	# (Optional) If you want tooltips to appear when hovering over menu items:
-	$contextMenuGeneral.ShowItemToolTips = $true
-	
+		
 	############################################################################
 	# 1) Activate Windows ("Alex_C.T")
 	############################################################################
@@ -8291,7 +7747,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($Reboot_ScalesItem)
 	
 	############################################################################
-	# General Tools Anchor Button
+	# Show the context menu when the General Tools button is clicked
 	############################################################################
 	$GeneralToolsButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
 	$GeneralToolsButton.Add_Click({
@@ -8307,7 +7763,7 @@ if (-not $form)
 	######################################################################################################################
 	
 	############################################################################
-	# Create a "resizable" Button that triggers the context menu
+	# Server Tools Anchor Button
 	############################################################################
 	$ServerToolsButton = New-Object System.Windows.Forms.Button
 	$ServerToolsButton.Text = "Server Tools"
@@ -8456,17 +7912,7 @@ if (-not $form)
 			Pump_Tables -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
-	
-	<############################################################################
-	# Pump all tables
-	############################################################################
-	$DeployLoadItem = New-Object System.Windows.Forms.ToolStripMenuItem("Pump Lane/s")
-	$DeployLoadItem.ToolTipText = "Pump all tables to the lane/s."
-	$DeployLoadItem.Add_Click({
-		Deploy_Load -StoreNumber $StoreNumber
-	})
-	[void]$ContextMenuLane.Items.Add($DeployLoadItem)#>
-	
+		
 	############################################################################
 	# 4) Update Lane Configuration Menu Item
 	############################################################################
@@ -8594,9 +8040,6 @@ if (-not $form)
 #   Orchestrates the execution flow of the script, initializing variables, processing items, and handling user interactions.
 # ===================================================================================================
 
-# Initialize a counter for the number of jobs started
-$jobCount = 0
-
 # Get SQL Connection String
 Get_Database_Connection_String
 
@@ -8613,16 +8056,14 @@ $Nodes = $script:FunctionResults['Nodes']
 Get_Table_Aliases
 
 # Generate SQL scripts
-Generate_SQL_Scripts -StoreNumber $StoreNumber -Memory25PercentMB $Memory25PercentMB -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
+Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
 
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
-$jobCount++
 
 # Clear %Temp% folder on start
 $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
 $ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob
-$jobCount++
 
 # Retrieve the list of machine names from the FunctionResults dictionary
 $LaneMachines = $script:FunctionResults['LaneMachines']
