@@ -7561,12 +7561,10 @@ endlocal
 		if ($LASTEXITCODE -eq 0)
 		{
 			Write_Log "Scheduled task created successfully for Update_Scales_Specials_Task." "green"
-			[System.Windows.Forms.MessageBox]::Show("Scheduled task created successfully.", "Success")
 		}
 		else
 		{
 			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task." "red"
-			[System.Windows.Forms.MessageBox]::Show("Failed to create scheduled task. Check permissions.", "Error")
 		}
 		Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
 		return
@@ -7599,12 +7597,10 @@ endlocal
 		Start-Process "C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe"
 		
 		Write_Log "Update Scales Specials completed." "green"
-		[System.Windows.Forms.MessageBox]::Show("Update Scales Specials completed.", "Done")
 	}
 	catch
 	{
 		Write_Log "ERROR during Update Scales Specials: $_" "red"
-		[System.Windows.Forms.MessageBox]::Show("ERROR during Update Scales Specials. Check log.", "Error")
 	}
 	
 	Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
