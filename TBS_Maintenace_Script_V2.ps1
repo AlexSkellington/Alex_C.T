@@ -2683,6 +2683,7 @@ function Process_Lanes
 #   runs System File Checker, performs disk cleanup, optimizes all fixed drives by trimming SSDs or defragmenting HDDs,
 #   and schedules a disk check.
 #   Uses Write_Log to provide updates after each command execution.
+#   Author: Alex_C.T
 # ===================================================================================================
 
 function Repair_Windows
@@ -2721,21 +2722,52 @@ function Repair_Windows
 	$repairForm.MinimizeBox = $false
 	$repairForm.ShowInTaskbar = $false
 	
-	# Operation Checkboxes
+	# Operation Checkboxes (with correct .Location and .Size types)
 	$checkboxes = @()
-	$checkboxes += ($cb1 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Windows Defender Update and Scan"; Location = [Drawing.Point]20, 20; Size = [Drawing.Size]350, 25 })
-	$checkboxes += ($cb2 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Run DISM Commands"; Location = [Drawing.Point]20, 60; Size = [Drawing.Size]350, 25 })
-	$checkboxes += ($cb3 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Run System File Checker (SFC)"; Location = [Drawing.Point]20, 100; Size = [Drawing.Size]350, 25 })
-	$checkboxes += ($cb4 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Disk Cleanup"; Location = [Drawing.Point]20, 140; Size = [Drawing.Size]350, 25 })
-	$checkboxes += ($cb5 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Optimize Drives"; Location = [Drawing.Point]20, 180; Size = [Drawing.Size]350, 25 })
-	$checkboxes += ($cb6 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = "Schedule Check Disk"; Location = [Drawing.Point]20, 220; Size = [Drawing.Size]350, 25 })
+	
+	$cb1 = New-Object System.Windows.Forms.CheckBox
+	$cb1.Text = "Windows Defender Update and Scan"
+	$cb1.Location = [System.Drawing.Point]::new(20, 20)
+	$cb1.Size = [System.Drawing.Size]::new(350, 25)
+	$checkboxes += $cb1
+	
+	$cb2 = New-Object System.Windows.Forms.CheckBox
+	$cb2.Text = "Run DISM Commands"
+	$cb2.Location = [System.Drawing.Point]::new(20, 60)
+	$cb2.Size = [System.Drawing.Size]::new(350, 25)
+	$checkboxes += $cb2
+	
+	$cb3 = New-Object System.Windows.Forms.CheckBox
+	$cb3.Text = "Run System File Checker (SFC)"
+	$cb3.Location = [System.Drawing.Point]::new(20, 100)
+	$cb3.Size = [System.Drawing.Size]::new(350, 25)
+	$checkboxes += $cb3
+	
+	$cb4 = New-Object System.Windows.Forms.CheckBox
+	$cb4.Text = "Disk Cleanup"
+	$cb4.Location = [System.Drawing.Point]::new(20, 140)
+	$cb4.Size = [System.Drawing.Size]::new(350, 25)
+	$checkboxes += $cb4
+	
+	$cb5 = New-Object System.Windows.Forms.CheckBox
+	$cb5.Text = "Optimize Drives"
+	$cb5.Location = [System.Drawing.Point]::new(20, 180)
+	$cb5.Size = [System.Drawing.Size]::new(350, 25)
+	$checkboxes += $cb5
+	
+	$cb6 = New-Object System.Windows.Forms.CheckBox
+	$cb6.Text = "Schedule Check Disk"
+	$cb6.Location = [System.Drawing.Point]::new(20, 220)
+	$cb6.Size = [System.Drawing.Size]::new(350, 25)
+	$checkboxes += $cb6
+	
 	foreach ($cb in $checkboxes) { $repairForm.Controls.Add($cb) }
 	
 	# "Select All" checkbox
 	$cbAll = New-Object System.Windows.Forms.CheckBox
 	$cbAll.Text = "Select All"
-	$cbAll.Location = New-Object System.Drawing.Point(20, 260)
-	$cbAll.Size = New-Object System.Drawing.Size(350, 25)
+	$cbAll.Location = [System.Drawing.Point]::new(20, 260)
+	$cbAll.Size = [System.Drawing.Size]::new(350, 25)
 	$cbAll.Add_CheckedChanged({
 			foreach ($cb in $checkboxes) { $cb.Checked = $cbAll.Checked }
 		})
@@ -2744,8 +2776,8 @@ function Repair_Windows
 	# Enable/Disable Run Button logic
 	$runButton = New-Object System.Windows.Forms.Button
 	$runButton.Text = "Run"
-	$runButton.Location = New-Object System.Drawing.Point(150, 300)
-	$runButton.Size = New-Object System.Drawing.Size(100, 30)
+	$runButton.Location = [System.Drawing.Point]::new(150, 300)
+	$runButton.Size = [System.Drawing.Size]::new(100, 30)
 	$runButton.Enabled = $false
 	$repairForm.Controls.Add($runButton)
 	foreach ($cb in $checkboxes)
@@ -7591,17 +7623,13 @@ if (-not $form)
 	$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$form.Controls.Add($storeNameLabel)
-	function Center_Label
-	{
-		# Calculate the centered horizontal position based on current form width
-		$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
-		# Set the vertical position to 30
-		$storeNameLabel.Top = 30
-	}
-	# Center the label initially
-	Center_Label
-	# Recenter the label on every form resize
-	$form.add_Resize({ Center_Label })
+	# Center label initially and on resize
+	$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
+	$storeNameLabel.Top = 30
+	$form.add_Resize({
+			$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
+			$storeNameLabel.Top = 30
+		})
 	
 	# Store Number Label
 	$script:storeNumberLabel = New-Object System.Windows.Forms.Label
@@ -7932,17 +7960,7 @@ if (-not $form)
 			Close_Open_Transactions -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
-	
-	<############################################################################
-	# Retrive Transactions
-	############################################################################
-	$RetriveTransactionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions")
-	$RetriveTransactionsItem.ToolTipText = "Retrive Transactions from lane/s."
-	$RetriveTransactionsItem.Add_Click({
-		Retrive_Transactions -StoreNumber "$StoreNumber"
-	})
-	[void]$ContextMenuLane.Items.Add($RetriveTransactionsItem)#>
-	
+		
 	############################################################################
 	# 6) Ping Lanes Menu Item
 	############################################################################
@@ -8022,6 +8040,16 @@ if (-not $form)
 			Reboot_Lanes -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($RebootLaneItem)
+	
+	<############################################################################
+	# Retrive Transactions
+	############################################################################
+	$RetriveTransactionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions")
+	$RetriveTransactionsItem.ToolTipText = "Retrive Transactions from lane/s."
+	$RetriveTransactionsItem.Add_Click({
+		Retrive_Transactions -StoreNumber "$StoreNumber"
+	})
+	[void]$ContextMenuLane.Items.Add($RetriveTransactionsItem)#>
 	
 	############################################################################
 	# Show the context menu when the Server Tools button is clicked
