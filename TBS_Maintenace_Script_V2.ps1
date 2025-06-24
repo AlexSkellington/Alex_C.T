@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.2.7"
-$VersionDate = "2025-06-20"
+$VersionNumber = "2.2.8"
+$VersionDate = "2025-06-24"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -75,79 +75,84 @@ $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 # Initialize BasePath variable
 $BasePath = $null
 
-# 1) Look for local storeman* directories containing Startup.ini
-$storemanDirs = Get-ChildItem -Path "$env:SystemDrive\" -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue |
-Where-Object { Test-Path -Path (Join-Path $_.FullName 'Startup.ini') }
+# 1) Look for any *storeman* directory on all fixed drives containing Office\Dbs\INFO_???901_WIN.INI
+$targetSubPathPattern = 'Office\Dbs\INFO_*901_WIN.INI'
+$storemanDirs = @()
+$fixedDrives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 -and $_.Root -match '^[A-Z]:\\$' }
 
-if ($storemanDirs)
+foreach ($drive in $fixedDrives)
 {
-	if ($storemanDirs.Count -gt 1)
-	{
-		# Prefer one that is actually shared
-		$shares = Get-SmbShare -ErrorAction SilentlyContinue
-		foreach ($dir in $storemanDirs)
-		{
-			if ($shares.Path -contains $dir.FullName)
-			{
-				$BasePath = $dir.FullName
-				break
-			}
-		}
-		# If still none, pick the first
-		if (-not $BasePath)
-		{
-			$BasePath = $storemanDirs[0].FullName
-		}
+	$dirs = Get-ChildItem -Path "$($drive.Root)" -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue | ForEach-Object {
+		$candidatePath = Join-Path $_.FullName 'Office\Dbs'
+		# Look for any INFO_???901_WIN.INI inside Office\Dbs
+		$files = Get-ChildItem -Path $candidatePath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue
+		if ($files) { $_ }
 	}
-	else
-	{
-		# Only one candidate
-		$BasePath = $storemanDirs[0].FullName
-	}
+	if ($dirs) { $storemanDirs += $dirs }
 }
 
-# 2) If no local match, try UNC paths that contain Startup.ini
-if (-not $BasePath)
+$BasePath = $null
+
+if ($storemanDirs.Count -gt 1)
 {
-	$uncCandidates = @(
-		"\\localhost\storeman",
-		"\\$env:COMPUTERNAME\storeman"
-	)
-	foreach ($path in $uncCandidates)
+	# Prefer one that is actually shared
+	$shares = Get-SmbShare -ErrorAction SilentlyContinue
+	foreach ($dir in $storemanDirs)
 	{
-		if (Test-Path -Path (Join-Path $path 'Startup.ini') -PathType Leaf)
+		if ($shares.Path -contains $dir.FullName)
 		{
-			$BasePath = $path
+			$BasePath = $dir.FullName
 			break
 		}
 	}
+	# If still none, pick the first
+	if (-not $BasePath)
+	{
+		$BasePath = $storemanDirs[0].FullName
+	}
+}
+elseif ($storemanDirs.Count -eq 1)
+{
+	# Only one candidate
+	$BasePath = $storemanDirs[0].FullName
 }
 
-# 3) Final fallback: C:\storeman 
+# 2) Final fallback: C:\storeman
 if (-not $BasePath)
 {
-	$fallback = "$env:SystemDrive\storeman"
-	if (Test-Path -Path (Join-Path $fallback 'Startup.ini') -PathType Leaf)
+	$fallback = "C:\storeman"
+	$candidatePath = Join-Path $fallback 'Office\Dbs'
+	$files = Get-ChildItem -Path $candidatePath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue
+	if ($files)
 	{
 		$BasePath = $fallback
 	}
 	else
 	{
-		# Warn & continue in limited mode
-		Write-Warning "Could not locate any storeman folder containing Startup.ini. `nRunning with limited functionality."
-		# Still set BasePath so the rest of the script can run
+		Write-Warning "Could not locate any storeman folder containing Office\Dbs\INFO_*901_WIN.INI.`nRunning with limited functionality."
 		$BasePath = $fallback
 	}
 }
 
 Write-Host "Selected (storeman) folder: '$BasePath'" -ForegroundColor Magenta
 
-# Now define the rest of your paths
-$OfficePath = Join-Path $BasePath "office"
+# Define the rest of your paths
+$OfficePath = Join-Path $BasePath "Office"
 $LoadPath = Join-Path $OfficePath "Load"
 $StartupIniPath = Join-Path $BasePath "Startup.ini"
 $SystemIniPath = Join-Path $OfficePath "system.ini"
-$GasInboxPath = "$OfficePath\XchGAS\INBOX"
+$GasInboxPath = Join-Path $OfficePath "XchGAS\INBOX"
+
+# Dynamically find the INFO_*901_WIN.INI file in Office\Dbs
+$DbsPath = Join-Path $OfficePath "Dbs"
+$InfoIniPath = $null
+$InfoIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
+
+if ($InfoIniMatch)
+{
+	$InfoIniPath = $InfoIniMatch.FullName
+}
+# $InfoIniPath will be $null if not found, or the full path if found.
 
 # Temp Directory
 $TempDir = [System.IO.Path]::GetTempPath()
@@ -368,246 +373,96 @@ function Get_Database_Connection_String
 	# Write_Log "Variables ($ConnectionString) stored." "green"
 }
 
-# ===================================================================================================
-#                                      FUNCTION: Get_Store_Number
-# ---------------------------------------------------------------------------------------------------
+# ==========================================================================================
+#                               FUNCTION: Get_Store_Info_From_InfoIni
+# ------------------------------------------------------------------------------------------
 # Description:
-#   Retrieves the store number via GUI prompts or configuration files.
-#   Stores the result in $script:FunctionResults['StoreNumber'].
-# ===================================================================================================
+#   Extracts Store Number, Store Name, Company Name, Terminal, Address, Version, etc.
+#   directly from INFO_*901_WIN.INI and stores results in $script:FunctionResults.
+#   Updates GUI labels if present.
+# ==========================================================================================
 
-function Get_Store_Number
+function Get_Store_Info_From_InfoIni
 {
 	param (
-		[string]$IniFilePath = "$StartupIniPath",
-		[string]$BasePath = "$OfficePath"
+		[string]$InfoIniPath
 	)
 	
-	# Initialize StoreNumber
+	# Default all results to N/A
 	$script:FunctionResults['StoreNumber'] = "N/A"
-	
-	# Try to retrieve StoreNumber from the startup.ini file
-	if (Test-Path $IniFilePath)
-	{
-		$storeNumber = Select-String -Path $IniFilePath -Pattern "^STORE=" | ForEach-Object {
-			$_.Line.Split('=')[1].Trim()
-		}
-		if ($storeNumber)
-		{
-			$script:FunctionResults['StoreNumber'] = $storeNumber
-			#   Write_Log "Store number found in startup.ini: $storeNumber" "green"
-		}
-		else
-		{
-			Write_Log "Store number not found in startup.ini." "yellow"
-		}
-	}
-	else
-	{
-		Write_Log "INI file not found: $IniFilePath" "yellow"
-	}
-	
-	# **Only proceed to check XF directories if StoreNumber was not found in INI**
-	if ($script:FunctionResults['StoreNumber'] -eq "N/A")
-	{
-		if (Test-Path $BasePath)
-		{
-			$XFDirs = Get-ChildItem -Path $BasePath -Directory -Filter "XF*"
-			foreach ($dir in $XFDirs)
-			{
-				if ($dir.Name -match "^XF(\d{3})")
-				{
-					$storeNumber = $Matches[1]
-					if ($storeNumber -ne "999")
-					{
-						$script:FunctionResults['StoreNumber'] = $storeNumber
-						Write_Log "Store number found from XF directory: $storeNumber" "green"
-						break # Exit loop after finding the store number
-					}
-				}
-			}
-			if ($script:FunctionResults['StoreNumber'] -eq "N/A")
-			{
-				Write_Log "No valid XF directories found in $BasePath" "yellow"
-			}
-		}
-		else
-		{
-			Write_Log "Base path not found: $BasePath" "yellow"
-		}
-	}
-	
-	# Update the storeNumberLabel in the GUI if store number was found without manual input
-	if ($script:FunctionResults['StoreNumber'] -ne "")
-	{
-		if ($storeNumberLabel -ne $null)
-		{
-			$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
-			$form.Refresh()
-			[System.Windows.Forms.Application]::DoEvents()
-		}
-		return # Exit function after successful retrieval and GUI update
-	}
-	
-	# Prompt for manual input via GUI
-	while (-not $script:FunctionResults['StoreNumber'])
-	{
-		$inputBox = New-Object System.Windows.Forms.Form
-		$inputBox.Text = "Enter Store Number"
-		$inputBox.Size = New-Object System.Drawing.Size(300, 150)
-		$inputBox.StartPosition = "CenterParent"
-		$inputBox.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-		$inputBox.MaximizeBox = $false
-		$inputBox.MinimizeBox = $false
-		$inputBox.TopMost = $true
-		
-		$label = New-Object System.Windows.Forms.Label
-		$label.Text = "Please enter the store number (e.g., 1, 12, 123):"
-		$label.AutoSize = $true
-		$label.Location = New-Object System.Drawing.Point(10, 20)
-		$inputBox.Controls.Add($label)
-		
-		$textBox = New-Object System.Windows.Forms.TextBox
-		$textBox.Location = New-Object System.Drawing.Point(10, 50)
-		$textBox.Width = 260
-		$inputBox.Controls.Add($textBox)
-		
-		$okButton = New-Object System.Windows.Forms.Button
-		$okButton.Text = "OK"
-		$okButton.Location = New-Object System.Drawing.Point(100, 80)
-		$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-		$inputBox.AcceptButton = $okButton
-		$inputBox.Controls.Add($okButton)
-		
-		$cancelButton = New-Object System.Windows.Forms.Button
-		$cancelButton.Text = "Cancel"
-		$cancelButton.Location = New-Object System.Drawing.Point(180, 80)
-		$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-		$inputBox.CancelButton = $cancelButton
-		$inputBox.Controls.Add($cancelButton)
-		
-		$result = $inputBox.ShowDialog()
-		
-		if ($result -eq [System.Windows.Forms.DialogResult]::OK)
-		{
-			$input = $textBox.Text.Trim()
-			if ($input -match "^\d{1,3}$" -and $input -ne "000")
-			{
-				# Pad the input with leading zeros to ensure it is 3 digits
-				$paddedInput = $input.PadLeft(3, '0')
-				$script:FunctionResults['StoreNumber'] = $paddedInput
-				Write_Log "Store number entered by user: $paddedInput" "green"
-				
-				# Update the storeNumberLabel in the GUI
-				if ($storeNumberLabel -ne $null)
-				{
-					$storeNumberLabel.Text = "Store Number: $input"
-					$form.Refresh()
-					[System.Windows.Forms.Application]::DoEvents()
-				}
-				
-				break
-			}
-			else
-			{
-				[System.Windows.Forms.MessageBox]::Show("Store number must be 1 to 3 digits, numeric, and not '000'.", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-			}
-		}
-		else
-		{
-			Write_Log "Store number input canceled by user." "red"
-			exit 1
-		}
-	}
-}
-
-# ===================================================================================================
-#                                        FUNCTION: Get_Store_Name
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Retrieves the store name from the system.ini file.
-#   Stores the result in $script:FunctionResults['StoreName'].
-# ===================================================================================================
-
-function Get_Store_Name
-{
-	param (
-		[string]$INIPath = "$SystemIniPath"
-	)
-	
-	# Initialize StoreName
 	$script:FunctionResults['StoreName'] = "N/A"
+	$script:FunctionResults['CompanyName'] = "N/A"
+	$script:FunctionResults['Terminal'] = "N/A"
+	$script:FunctionResults['Address'] = "N/A"
+	$script:FunctionResults['City'] = "N/A"
+	$script:FunctionResults['State'] = "N/A"
+	$script:FunctionResults['SMSVersionFull'] = "N/A"
+	$script:FunctionResults['StampDate'] = "N/A"
+	$script:FunctionResults['StampTime'] = "N/A"
+	$script:FunctionResults['KeyNumber'] = "N/A"
 	
-	if (Test-Path $INIPath)
+	# Guard: If path is empty or file doesn't exist, just exit, results remain N/A
+	if ([string]::IsNullOrWhiteSpace($InfoIniPath) -or -not (Test-Path $InfoIniPath))
 	{
-		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | ForEach-Object {
-			$_.Line.Split('=')[1].Trim()
-		}
-		if ($storeName)
-		{
-			$script:FunctionResults['StoreName'] = $storeName
-			# Write_Log "Store name found in system.ini: $storeName" "green"
-		}
-		else
-		{
-			Write_Log "Store name not found in system.ini." "yellow"
-		}
-	}
-	else
-	{
-		Write_Log "INI file not found: $INIPath" "yellow"
+		return
 	}
 	
-	# Update the storeNameLabel in the GUI
+	$currentSection = ""
+	foreach ($line in Get-Content $InfoIniPath)
+	{
+		$trimmed = $line.Trim()
+		if ($trimmed -match '^\[(.+)\]$')
+		{
+			$currentSection = $Matches[1]
+			continue
+		}
+		if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
+		
+		$parts = $trimmed -split "=", 2
+		$key = $parts[0].Trim()
+		$value = $parts[1].Trim()
+		
+		switch ($currentSection)
+		{
+			"ORIGIN" {
+				if ($key -ieq "StampDate") { $script:FunctionResults['StampDate'] = $value }
+				if ($key -ieq "StampTime") { $script:FunctionResults['StampTime'] = $value }
+			}
+			"SYSTEM" {
+				if ($key -ieq "CompanyName") { $script:FunctionResults['CompanyName'] = $value }
+				if ($key -ieq "Store") { $script:FunctionResults['StoreNumber'] = $value.PadLeft(3, "0") }
+				if ($key -ieq "Terminal") { $script:FunctionResults['Terminal'] = $value }
+			}
+			"STOREDETAIL" {
+				if ($key -ieq "Name") { $script:FunctionResults['StoreName'] = $value }
+				if ($key -ieq "Address") { $script:FunctionResults['Address'] = $value }
+				if ($key -ieq "City") { $script:FunctionResults['City'] = $value }
+				if ($key -ieq "State") { $script:FunctionResults['State'] = $value }
+			}
+			"KEY" {
+				if ($key -ieq "KeyNumber") { $script:FunctionResults['KeyNumber'] = $value }
+			}
+			"Versions" {
+				if ($key -ieq "VersionIni") { $script:FunctionResults['SMSVersionFull'] = $value }
+			}
+		}
+	}
+	
+	# GUI label updates (optional; can be removed if not needed)
+	if ($storeNumberLabel -ne $null)
+	{
+		$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
+		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+	}
 	if ($storeNameLabel -ne $null)
 	{
 		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
-		$form.Refresh()
-		[System.Windows.Forms.Application]::DoEvents()
+		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
 	}
-}
-
-# ===================================================================================================
-#                                 FUNCTION: Get_SMS_Version_Info
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Retrieves the SMS version and date as a single line from storeman\Install\VERSION.INI.
-#   Stores the full result in $script:FunctionResults['SMSVersionFull'].
-#   Updates $smsVersionLabel in the GUI if available.
-# ===================================================================================================
-
-function Get_SMS_Version_Info
-{
-	$VersionIniPath = Join-Path $BasePath "Install\VERSION.INI"
-	$script:FunctionResults['SMSVersionFull'] = "N/A"
-	
-	if (Test-Path $VersionIniPath)
-	{
-		$content = Get-Content -Path $VersionIniPath
-		$versionLine = $content | Where-Object { $_ -match '^Version=' }
-		if ($versionLine)
-		{
-			$fullVersion = $versionLine -replace '^Version=', ''
-			$fullVersion = $fullVersion.Trim()
-			$script:FunctionResults['SMSVersionFull'] = $fullVersion
-			#	Write_Log "Found SMS Version: $fullVersion" "green"
-		}
-		else
-		{
-			#	Write_Log "Version line not found in VERSION.INI." "yellow"
-		}
-	}
-	else
-	{
-		#	Write_Log "VERSION.INI file not found at $VersionIniPath" "yellow"
-	}
-	
-	# Update GUI label if present
 	if ($smsVersionLabel -ne $null)
 	{
 		$smsVersionLabel.Text = "SMS Version: $($script:FunctionResults['SMSVersionFull'])"
-		$form.Refresh()
-		[System.Windows.Forms.Application]::DoEvents()
+		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
 	}
 }
 
@@ -1450,221 +1305,6 @@ function Clear_XE_Folder
 }
 
 # ===================================================================================================
-#                                  SECTION: Fix_Journal
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Processes EJ files within a ZX folder to correct specific lines based on a user-provided date.
-#   - Prompts the user to select a date using a Windows Form.
-#   - Constructs the ZX folder path.
-#   - Identifies related EJ files based on the date/store data.
-#   - Repairs lines in matching EJ files.
-# ===================================================================================================
-
-function Fix_Journal
-{
-	[CmdletBinding()]
-	param (
-		# The base "OfficePath", e.g. "C:\storeman\office"
-		[Parameter(Mandatory = $true)]
-		[string]$OfficePath,
-		# The store number (e.g., "001")
-		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber
-	)
-	
-	Write_Log "`r`n==================== Starting Fix_Journal Function ====================`r`n" "blue"
-	
-	# ---------------------------------------------------------------------------------------------
-	# 1) Load Windows Forms assembly
-	# ---------------------------------------------------------------------------------------------
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
-	
-	# ---------------------------------------------------------------------------------------------
-	# 2) Create and configure the Windows Form
-	# ---------------------------------------------------------------------------------------------
-	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Select Date"
-	$form.Size = New-Object System.Drawing.Size(300, 200)
-	$form.StartPosition = "CenterScreen"
-	$form.FormBorderStyle = "FixedDialog"
-	$form.MaximizeBox = $false
-	$form.MinimizeBox = $false
-	
-	# Create Label
-	$label = New-Object System.Windows.Forms.Label
-	$label.Text = "Please select the date:"
-	$label.AutoSize = $true
-	$label.Location = New-Object System.Drawing.Point(10, 20)
-	$form.Controls.Add($label)
-	
-	# Create DateTimePicker
-	$dateTimePicker = New-Object System.Windows.Forms.DateTimePicker
-	$dateTimePicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
-	$dateTimePicker.Location = New-Object System.Drawing.Point(10, 50)
-	$dateTimePicker.Width = 260
-	$form.Controls.Add($dateTimePicker)
-	
-	# Create OK Button
-	$okButton = New-Object System.Windows.Forms.Button
-	$okButton.Text = "OK"
-	$okButton.Location = New-Object System.Drawing.Point(110, 100)
-	$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$form.AcceptButton = $okButton
-	$form.Controls.Add($okButton)
-	
-	# Show the form and capture the result
-	$dialogResult = $form.ShowDialog()
-	
-	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
-	{
-		Write_Log -Message "Date selection canceled by user. Exiting function." "yellow"
-		return
-	}
-	
-	# ---------------------------------------------------------------------------------------------
-	# 3) Retrieve and format the selected date
-	# ---------------------------------------------------------------------------------------------
-	$snippetDate = $dateTimePicker.Value
-	$formattedDate = $snippetDate.ToString('MMddyyyy') # MMDDYYYY format
-	
-	Write_Log -Message "Selected date: $formattedDate" "magenta"
-	
-	# ---------------------------------------------------------------------------------------------
-	# 4) Construct ZX folder path from $OfficePath + $StoreNumber
-	#    ZX folder: $OfficePath\ZX${StoreNumber}901
-	# ---------------------------------------------------------------------------------------------
-	$zxFolderPath = Join-Path $OfficePath "ZX${StoreNumber}901"
-	
-	# ---------------------------------------------------------------------------------------------
-	# 5) Confirm the ZX folder exists
-	# ---------------------------------------------------------------------------------------------
-	if (-not (Test-Path -Path $zxFolderPath))
-	{
-		Write_Log -Message "ZX folder not found: $zxFolderPath." "red"
-		return
-	}
-	
-	# ---------------------------------------------------------------------------------------------
-	# 6) Build the file prefix: YMMDDSSS (ignoring lane)
-	#     Y = last digit of year
-	#     MM = 2-digit month
-	#     DD = 2-digit day
-	#     SSS = store number (3 digits, e.g., "001")
-	# ---------------------------------------------------------------------------------------------
-	$yearLastDigit = ($snippetDate.Year % 10)
-	$mm = $snippetDate.ToString('MM')
-	$dd = $snippetDate.ToString('dd')
-	$filePrefix = "$yearLastDigit$mm$dd$StoreNumber" # e.g., 41227001
-	
-	Write_Log -Message "Looking for files named '$filePrefix.*' in $zxFolderPath..." "blue"
-	
-	# ---------------------------------------------------------------------------------------------
-	# 7) Find matching EJ files in ZX folder: e.g., 41227001.*
-	# ---------------------------------------------------------------------------------------------
-	$searchPattern = "$filePrefix.*"
-	$matchingFiles = Get-ChildItem -Path $zxFolderPath -Filter $searchPattern -File -ErrorAction SilentlyContinue
-	
-	if (-not $matchingFiles)
-	{
-		Write_Log -Message "No files matching '$searchPattern' found in $zxFolderPath." "yellow"
-		return
-	}
-	
-	Write_Log -Message "Found $($matchingFiles.Count) file(s) to fix." "green"
-	
-	# ---------------------------------------------------------------------------------------------
-	# 8) For each matching EJ file, remove lines from <trs F10... up to <trs F1068...
-	# ---------------------------------------------------------------------------------------------
-	foreach ($file in $matchingFiles)
-	{
-		# [Optional] Skip files that have ".bak" anywhere in their name 
-		# to avoid infinite backup loops:
-		if ($file.Extension -eq ".bak")
-		{
-			Write_Log -Message "Skipping backup file: $($file.Name)" "yellow"
-			continue
-		}
-		
-		Write_Log -Message "Fixing lines in: $($file.FullName)" "yellow"
-		
-		# Read the file lines
-		try
-		{
-			$originalLines = Get-Content -Path $file.FullName -ErrorAction Stop
-		}
-		catch
-		{
-			Write_Log -Message "Failed to read EJ file: $($file.FullName). Skipping." "red"
-			continue
-		}
-		
-		# Prepare a list for the fixed lines
-		$fixedLines = New-Object System.Collections.Generic.List[string]
-		
-		$skip = $false
-		
-		foreach ($line in $originalLines)
-		{
-			# 1) Start skipping at '<trs F10'
-			if ($line -match '^\s*<trs\s+F10\b')
-			{
-				$skip = $true
-				continue
-			}
-			
-			# 2) Stop skipping at '<trs F1068'
-			if ($skip -and ($line -match '^\s*<trs\s+F1068\b'))
-			{
-				$skip = $false
-				# We *do* want to keep this line
-				$fixedLines.Add($line)
-				continue
-			}
-			
-			# Keep the line if we're not skipping
-			if (-not $skip)
-			{
-				$fixedLines.Add($line)
-			}
-		}
-		
-		<# -----------------------------------------------------------------------------------------
-		# 10) Make a backup of the original file
-		# * Commented out for now
-		# -----------------------------------------------------------------------------------------
-		$backupPath = "$($file.FullName).bak"
-		try
-		{
-			Copy-Item -Path $file.FullName -Destination $backupPath -Force -ErrorAction Stop
-			Write_Log -Message "Backup created: $backupPath" "green"
-		}
-		catch
-		{
-			Write_Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." "red"
-			continue
-		}
-		#>
-		
-		# -----------------------------------------------------------------------------------------
-		# 11) Overwrite the original file with the fixed lines in ANSI encoding
-		# -----------------------------------------------------------------------------------------
-		try
-		{
-			$fixedLines | Set-Content -Path $file.FullName -Encoding Default -ErrorAction Stop
-			#	Write_Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
-			Write_Log -Message "Successfully edited: $($file.FullName)" "green"
-		}
-		catch
-		{
-			Write_Log -Message "Failed to write fixed content to: $($file.FullName)." "red"
-			continue
-		}
-	}
-	Write_Log "`r`n==================== Fix_Journal Function Completed ====================" "blue"
-}
-
-# ===================================================================================================
 #                                       SECTION: Generate SQL Scripts
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -2365,31 +2005,247 @@ function Get_Table_Aliases
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Execute_SQL_Locally
+#                                  SECTION: Fix_Journal
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Executes SQL scripts either from a script content variable or from a SQL file.
-#   If the script content variable is present and not empty, it takes precedence.
-#   Otherwise, it executes the SQL script from the specified file path.
-#   Incorporates enhanced exception handling for ParameterBindingException.
+#   Processes EJ files within a ZX folder to correct specific lines based on a user-provided date.
+#   - Prompts the user to select a date using a Windows Form.
+#   - Constructs the ZX folder path.
+#   - Identifies related EJ files based on the date/store data.
+#   - Repairs lines in matching EJ files.
 # ===================================================================================================
 
-function Execute_SQL_Locally
+function Fix_Journal
+{
+	[CmdletBinding()]
+	param (
+		# The base "OfficePath", e.g. "C:\storeman\office"
+		[Parameter(Mandatory = $true)]
+		[string]$OfficePath,
+		# The store number (e.g., "001")
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	Write_Log "`r`n==================== Starting Fix_Journal Function ====================`r`n" "blue"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 1) Load Windows Forms assembly
+	# ---------------------------------------------------------------------------------------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	# ---------------------------------------------------------------------------------------------
+	# 2) Create and configure the Windows Form
+	# ---------------------------------------------------------------------------------------------
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Select Date"
+	$form.Size = New-Object System.Drawing.Size(300, 200)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = "FixedDialog"
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	# Create Label
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "Please select the date:"
+	$label.AutoSize = $true
+	$label.Location = New-Object System.Drawing.Point(10, 20)
+	$form.Controls.Add($label)
+	
+	# Create DateTimePicker
+	$dateTimePicker = New-Object System.Windows.Forms.DateTimePicker
+	$dateTimePicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
+	$dateTimePicker.Location = New-Object System.Drawing.Point(10, 50)
+	$dateTimePicker.Width = 260
+	$form.Controls.Add($dateTimePicker)
+	
+	# Create OK Button
+	$okButton = New-Object System.Windows.Forms.Button
+	$okButton.Text = "OK"
+	$okButton.Location = New-Object System.Drawing.Point(110, 100)
+	$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $okButton
+	$form.Controls.Add($okButton)
+	
+	# Show the form and capture the result
+	$dialogResult = $form.ShowDialog()
+	
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write_Log -Message "Date selection canceled by user. Exiting function." "yellow"
+		return
+	}
+	
+	# ---------------------------------------------------------------------------------------------
+	# 3) Retrieve and format the selected date
+	# ---------------------------------------------------------------------------------------------
+	$snippetDate = $dateTimePicker.Value
+	$formattedDate = $snippetDate.ToString('MMddyyyy') # MMDDYYYY format
+	
+	Write_Log -Message "Selected date: $formattedDate" "magenta"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 4) Construct ZX folder path from $OfficePath + $StoreNumber
+	#    ZX folder: $OfficePath\ZX${StoreNumber}901
+	# ---------------------------------------------------------------------------------------------
+	$zxFolderPath = Join-Path $OfficePath "ZX${StoreNumber}901"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 5) Confirm the ZX folder exists
+	# ---------------------------------------------------------------------------------------------
+	if (-not (Test-Path -Path $zxFolderPath))
+	{
+		Write_Log -Message "ZX folder not found: $zxFolderPath." "red"
+		return
+	}
+	
+	# ---------------------------------------------------------------------------------------------
+	# 6) Build the file prefix: YMMDDSSS (ignoring lane)
+	#     Y = last digit of year
+	#     MM = 2-digit month
+	#     DD = 2-digit day
+	#     SSS = store number (3 digits, e.g., "001")
+	# ---------------------------------------------------------------------------------------------
+	$yearLastDigit = ($snippetDate.Year % 10)
+	$mm = $snippetDate.ToString('MM')
+	$dd = $snippetDate.ToString('dd')
+	$filePrefix = "$yearLastDigit$mm$dd$StoreNumber" # e.g., 41227001
+	
+	Write_Log -Message "Looking for files named '$filePrefix.*' in $zxFolderPath..." "blue"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 7) Find matching EJ files in ZX folder: e.g., 41227001.*
+	# ---------------------------------------------------------------------------------------------
+	$searchPattern = "$filePrefix.*"
+	$matchingFiles = Get-ChildItem -Path $zxFolderPath -Filter $searchPattern -File -ErrorAction SilentlyContinue
+	
+	if (-not $matchingFiles)
+	{
+		Write_Log -Message "No files matching '$searchPattern' found in $zxFolderPath." "yellow"
+		return
+	}
+	
+	Write_Log -Message "Found $($matchingFiles.Count) file(s) to fix." "green"
+	
+	# ---------------------------------------------------------------------------------------------
+	# 8) For each matching EJ file, remove lines from <trs F10... up to <trs F1068...
+	# ---------------------------------------------------------------------------------------------
+	foreach ($file in $matchingFiles)
+	{
+		# [Optional] Skip files that have ".bak" anywhere in their name 
+		# to avoid infinite backup loops:
+		if ($file.Extension -eq ".bak")
+		{
+			Write_Log -Message "Skipping backup file: $($file.Name)" "yellow"
+			continue
+		}
+		
+		Write_Log -Message "Fixing lines in: $($file.FullName)" "yellow"
+		
+		# Read the file lines
+		try
+		{
+			$originalLines = Get-Content -Path $file.FullName -ErrorAction Stop
+		}
+		catch
+		{
+			Write_Log -Message "Failed to read EJ file: $($file.FullName). Skipping." "red"
+			continue
+		}
+		
+		# Prepare a list for the fixed lines
+		$fixedLines = New-Object System.Collections.Generic.List[string]
+		
+		$skip = $false
+		
+		foreach ($line in $originalLines)
+		{
+			# 1) Start skipping at '<trs F10'
+			if ($line -match '^\s*<trs\s+F10\b')
+			{
+				$skip = $true
+				continue
+			}
+			
+			# 2) Stop skipping at '<trs F1068'
+			if ($skip -and ($line -match '^\s*<trs\s+F1068\b'))
+			{
+				$skip = $false
+				# We *do* want to keep this line
+				$fixedLines.Add($line)
+				continue
+			}
+			
+			# Keep the line if we're not skipping
+			if (-not $skip)
+			{
+				$fixedLines.Add($line)
+			}
+		}
+		
+		<# -----------------------------------------------------------------------------------------
+		# 10) Make a backup of the original file
+		# * Commented out for now
+		# -----------------------------------------------------------------------------------------
+		$backupPath = "$($file.FullName).bak"
+		try
+		{
+			Copy-Item -Path $file.FullName -Destination $backupPath -Force -ErrorAction Stop
+			Write_Log -Message "Backup created: $backupPath" "green"
+		}
+		catch
+		{
+			Write_Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." "red"
+			continue
+		}
+		#>
+		
+		# -----------------------------------------------------------------------------------------
+		# 11) Overwrite the original file with the fixed lines in ANSI encoding
+		# -----------------------------------------------------------------------------------------
+		try
+		{
+			$fixedLines | Set-Content -Path $file.FullName -Encoding Default -ErrorAction Stop
+			#	Write_Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
+			Write_Log -Message "Successfully edited: $($file.FullName)" "green"
+		}
+		catch
+		{
+			Write_Log -Message "Failed to write fixed content to: $($file.FullName)." "red"
+			continue
+		}
+	}
+	Write_Log "`r`n==================== Fix_Journal Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                                       FUNCTION: Process_Server
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Executes the full Server SQL maintenance routine. Reads and parses the specified SQL script
+#   file or variable, prompts for section selection if desired, executes each section with retries,
+#   and logs results to the console and file. Fails gracefully and outputs summary banners at start/end.
+# ===================================================================================================
+
+function Process_Server
 {
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $false)]
-		[string]$SqlFilePath,
-		[Parameter(Mandatory = $false)]
-		[string[]]$SectionsToRun,
-		# Switch: if used, show a form with checkboxes for each section
+		[string]$StoresqlFilePath,
 		[Parameter(Mandatory = $false)]
 		[switch]$PromptForSections
 	)
 	
-	# Make sure .NET WinForms assemblies are loaded
-	[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
-	[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
+	Write_Log "`r`n==================== Starting Server Database Maintenance ====================`r`n" "blue"
+	
+	# Make sure .NET WinForms assemblies are loaded if using PromptForSections
+	if ($PromptForSections)
+	{
+		[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
+		[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
+	}
 	
 	# Configuration for retry mechanism
 	$MaxRetries = 2
@@ -2404,18 +2260,17 @@ function Execute_SQL_Locally
 	{
 		Write_Log "Executing SQL script from variable..." "blue"
 	}
-	elseif ($SqlFilePath)
+	elseif ($StoresqlFilePath)
 	{
-		# If the script variable is empty, try reading from file
-		if (-not (Test-Path $SqlFilePath))
+		if (-not (Test-Path $StoresqlFilePath))
 		{
-			Write_Log "SQL file not found: $SqlFilePath" "red"
+			Write_Log "SQL file not found: $StoresqlFilePath" "red"
 			return
 		}
-		Write_Log "Executing SQL file: $SqlFilePath" "blue"
+		Write_Log "Executing SQL file: $StoresqlFilePath" "blue"
 		try
 		{
-			$sqlScript = Get-Content -Path $SqlFilePath -Raw -ErrorAction Stop
+			$sqlScript = Get-Content -Path $StoresqlFilePath -Raw -ErrorAction Stop
 		}
 		catch
 		{
@@ -2439,17 +2294,13 @@ function Execute_SQL_Locally
 		return
 	}
 	
-	# ------------------------------------------------------------------
 	# If the user wants a GUI prompt for sections, show the form now.
-	# ------------------------------------------------------------------
+	$SectionsToRun = $null
 	if ($PromptForSections)
 	{
-		# Collect all section names
 		$allSectionNames = $matches | ForEach-Object {
 			$_.Groups['SectionName'].Value.Trim()
 		}
-		
-		# Show the GUI form with checkboxes
 		$SectionsToRun = Show_Section_Selection_Form -SectionNames $allSectionNames
 		if (-not $SectionsToRun -or $SectionsToRun.Count -eq 0)
 		{
@@ -2458,21 +2309,11 @@ function Execute_SQL_Locally
 		}
 	}
 	
-	# If user did NOT specify sections or prompt, run all by default
-	$useSpecificSections = $false
-	if ($SectionsToRun -and $SectionsToRun.Count -gt 0)
-	{
-		$useSpecificSections = $true
-	}
+	$useSpecificSections = $SectionsToRun -and $SectionsToRun.Count -gt 0
 	
 	# Retrieve the connection string
-	if (-not $script:FunctionResults)
-	{
-		$script:FunctionResults = @{ }
-	}
+	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 	$ConnectionString = $script:FunctionResults['ConnectionString']
-	
-	# If connection string is not available, attempt to get it
 	if (-not $ConnectionString)
 	{
 		Write_Log "Connection string not found. Attempting to generate it..." "yellow"
@@ -2483,8 +2324,6 @@ function Execute_SQL_Locally
 			return
 		}
 	}
-	
-	# Ensure the connection string contains Encrypt=True and TrustServerCertificate=True.
 	if ($ConnectionString -notmatch '(?i)Encrypt\s*=')
 	{
 		$ConnectionString += ";Encrypt=True"
@@ -2493,8 +2332,6 @@ function Execute_SQL_Locally
 	{
 		$ConnectionString += ";TrustServerCertificate=True"
 	}
-	
-	# Optionally, log the connection string for debugging (remove sensitive info if necessary)
 	Write_Log "Using connection string: $ConnectionString" "gray"
 	
 	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
@@ -2510,7 +2347,6 @@ function Execute_SQL_Locally
 		$supportsConnectionString = $false
 	}
 	
-	# Initialize variables for retries
 	$retryCount = 0
 	$success = $false
 	$failedSections = @()
@@ -2522,22 +2358,16 @@ function Execute_SQL_Locally
 		{
 			Write_Log "Starting execution of SQL script. Attempt $($retryCount + 1) of $MaxRetries." "blue"
 			
-			# Only execute failed sections after the first attempt
 			$sectionsToExecute = if ($retryCount -eq 0) { $matches }
 			else { $failedSections }
-			$failedSections = @() # reset for this iteration
+			$failedSections = @()
 			
 			foreach ($match in $sectionsToExecute)
 			{
 				$sectionName = $match.Groups['SectionName'].Value.Trim()
 				$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
 				
-				# If user specifically chose sections, skip any not in that selection
-				if ($useSpecificSections -and ($SectionsToRun -notcontains $sectionName))
-				{
-					continue
-				}
-				
+				if ($useSpecificSections -and ($SectionsToRun -notcontains $sectionName)) { continue }
 				if ([string]::IsNullOrWhiteSpace($sqlCommands))
 				{
 					Write_Log "Section '$sectionName' has no commands. Skipping..." "yellow"
@@ -2553,16 +2383,12 @@ function Execute_SQL_Locally
 				{
 					if ($supportsConnectionString)
 					{
-						# Using the connection string that now includes Encrypt and TrustServerCertificate
 						Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
 					}
 					else
 					{
-						# Parse ServerInstance and Database from ConnectionString
 						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
 						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
-						
-						# Check if Invoke-Sqlcmd supports the -TrustServerCertificate parameter
 						$cmdParams = (Get-Command Invoke-Sqlcmd).Parameters.Keys
 						if ($cmdParams -contains 'TrustServerCertificate')
 						{
@@ -2581,7 +2407,6 @@ function Execute_SQL_Locally
 					{
 						$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
 						$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
-						# Try to use the TrustServerCertificate flag if available
 						$cmdParams = (Get-Command Invoke-Sqlcmd).Parameters.Keys
 						if ($cmdParams -contains 'TrustServerCertificate')
 						{
@@ -2657,6 +2482,8 @@ function Execute_SQL_Locally
 	{
 		Write_Log "SQL script executed successfully on '$dbName'." "green"
 	}
+	
+	Write_Log "`r`n==================== Completed Server Database Maintenance ====================" "blue"
 }
 
 # ===================================================================================================
@@ -2951,40 +2778,11 @@ function Delete_Files
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Process_Server
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Copies SQL files to the Server and executes the necessary SQL scripts for maintenance.
-# ===================================================================================================
-
-function Process_Server
-{
-	param (
-		[string]$StoresqlFilePath
-	)
-	
-	Write_Log "`r`n==================== Starting Server Database Repair ====================`r`n" "blue"
-	
-	# Execute the SQL script
-	Execute_SQL_Locally -SqlFilePath $StoresqlFilePath -PromptForSections
-	
-	# Add server to processed servers if not already added
-	if (-not ($script:ProcessedServers -contains "localhost"))
-	{
-		$script:ProcessedServers += "localhost"
-	}
-	
-	Write_Log "`r`n==================== Completed Server Database Repair ====================" "blue"
-}
-
-# ===================================================================================================
 #                                       FUNCTION: Process_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Processes lanes based on user selection obtained from Show_Lane_Selection_Form.
-#   Handles specific lanes, a range of lanes, or all lanes.
-#   When "All Lanes" is selected, it attempts to retrieve LaneContents.
-#   If LaneContents retrieval fails, it uses the predefined NumberOfLanes variable.
+#   Processes one or more lanes based on user selection, parses and writes the lane SQL script
+#   (with embedded fixed header/footer), and logs all progress and errors. Handles all-in-one.
 # ===================================================================================================
 
 function Process_Lanes
@@ -3013,7 +2811,7 @@ function Process_Lanes
 	$Type = $selection.Type
 	$Lanes = $selection.Lanes
 	
-	# --- Prompt for section selection ONCE ---
+	# Prompt for section selection ONCE
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
 	if ($matches.Count -eq 0)
@@ -3022,7 +2820,6 @@ function Process_Lanes
 		return
 	}
 	
-	# Exclude the two fixed sections from the user selection
 	$fixedSections = @(
 		"Set a long timeout so the entire script runs",
 		"Clear the long database timeout"
@@ -3035,10 +2832,60 @@ function Process_Lanes
 		return
 	}
 	
-	# Process lanes based on the type of selection
-	foreach ($Number in $Lanes)
+	foreach ($LaneNumber in $Lanes)
 	{
-		Process_Lane -LaneNumber $Number -StoreNumber $StoreNumber -SectionsToSend $SectionsToSend -SectionMatches $matches
+		# Get the correct machine name for this lane
+		$machineName = $LaneNumber
+		if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'].ContainsKey($LaneNumber))
+		{
+			$machineName = $script:FunctionResults['LaneMachines'][$LaneNumber]
+		}
+		
+		$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
+		
+		if (Test-Path $LaneLocalPath)
+		{
+			Write_Log "`r`nProcessing $machineName..." "blue"
+			Write_Log "Lane path found: $LaneLocalPath" "blue"
+			Write_Log "Writing Lane_Database_Maintenance.sqi to Lane..." "blue"
+			
+			try
+			{
+				# Always embed the fixed top section
+				$topBlock = "/* Set a long timeout so the entire script runs */`r`n@WIZRPL(DBASE_TIMEOUT=E);`r`n" +
+				"--------------------------------------------------------------------------------`r`n"
+				# Always embed the fixed bottom section
+				$bottomBlock = "--------------------------------------------------------------------------------`r`n" +
+				"/* Clear the long database timeout */`r`n@WIZCLR(DBASE_TIMEOUT);"
+				
+				# User-selected middle sections (with section headers)
+				$middleBlock = ($matches | Where-Object {
+						$SectionsToSend -contains $_.Groups['SectionName'].Value.Trim()
+					}) | ForEach-Object {
+					"/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())"
+				} | Out-String
+				
+				# Compose the final script
+				$finalScript = $topBlock + $middleBlock + $bottomBlock
+				
+				Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
+				Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+				Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully." "green"
+				
+				if (-not ($script:ProcessedLanes -contains $LaneNumber))
+				{
+					$script:ProcessedLanes += $LaneNumber
+				}
+			}
+			catch
+			{
+				Write_Log "Failed to write to [$machineName]: $_" "red"
+			}
+		}
+		else
+		{
+			Write_Log "Lane #$LaneNumber not found at path: $LaneLocalPath" "yellow"
+		}
 	}
 	
 	Write_Log "`r`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
@@ -3048,70 +2895,6 @@ function Process_Lanes
 	}
 	
 	Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
-}
-
-# Helper function to process a single lane
-function Process_Lane
-{
-	param (
-		[string]$LaneNumber,
-		[string]$StoreNumber,
-		[string[]]$SectionsToSend,
-		$SectionMatches
-	)
-	
-	# Get the correct machine name for this lane
-	$machineName = $LaneNumber # fallback
-	if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'].ContainsKey($LaneNumber))
-	{
-		$machineName = $script:FunctionResults['LaneMachines'][$LaneNumber]
-	}
-	
-	$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
-	
-	if (Test-Path $LaneLocalPath)
-	{
-		Write_Log "`r`nProcessing $machineName..." "blue"
-		Write_Log "Lane path found: $LaneLocalPath" "blue"
-		Write_Log "Writing Lane_Database_Maintenance.sqi to Lane..." "blue"
-		
-		try
-		{
-			# Always embed the fixed top section
-			$topBlock = "/* Set a long timeout so the entire script runs */`r`n@WIZRPL(DBASE_TIMEOUT=E);`r`n" +
-			"--------------------------------------------------------------------------------`r`n"
-			# Always embed the fixed bottom section
-			$bottomBlock = "--------------------------------------------------------------------------------`r`n" +
-			"/* Clear the long database timeout */`r`n@WIZCLR(DBASE_TIMEOUT);"
-			
-			# User-selected middle sections (with section headers)
-			$middleBlock = ($SectionMatches | Where-Object {
-					$SectionsToSend -contains $_.Groups['SectionName'].Value.Trim()
-				}) | ForEach-Object {
-				"/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())"
-			} | Out-String
-			
-			# Compose the final script
-			$finalScript = $topBlock + $middleBlock + $bottomBlock
-			
-			Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
-			Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully." "green"
-			
-			if (-not ($script:ProcessedLanes -contains $LaneNumber))
-			{
-				$script:ProcessedLanes += $LaneNumber
-			}
-		}
-		catch
-		{
-			Write_Log "Failed to write to [$machineName]: $_" "red"
-		}
-	}
-	else
-	{
-		Write_Log "Lane #$LaneNumber not found at path: $LaneLocalPath" "yellow"
-	}
 }
 
 # ===================================================================================================
@@ -8534,20 +8317,20 @@ if (-not $form)
 	$ContextMenuServer.ShowItemToolTips = $true
 	
 	############################################################################
-	# 1) Server DB Repair 
+	# 1) Server DB Maintenance 
 	############################################################################
-	$ServerDBRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Server DB Repair")
-	$ServerDBRepairItem.ToolTipText = "Repairs the store server database."
-	$ServerDBRepairItem.Add_Click({
+	$ServerDBMaintenanceItem = New-Object System.Windows.Forms.ToolStripMenuItem("Server DB Maintenance")
+	$ServerDBMaintenanceItem.ToolTipText = "Runs maintenance on the store server database."
+	$ServerDBMaintenanceItem.Add_Click({
 			$confirmation = [System.Windows.Forms.MessageBox]::Show(
-				"Do you want to proceed with the server database repair?",
+				"Do you want to proceed with the server database maintenance?",
 				"Confirmation",
 				[System.Windows.Forms.MessageBoxButtons]::YesNo,
 				[System.Windows.Forms.MessageBoxIcon]::Question
 			)
 			if ($confirmation -eq [System.Windows.Forms.DialogResult]::Yes)
 			{
-				Process_Server -StoresqlFilePath $StoresqlFilePath
+				Process_Server -StoresqlFilePath $StoresqlFilePath -PromptForSections
 			}
 			else
 			{
@@ -8559,7 +8342,7 @@ if (-not $form)
 				)
 			}
 		})
-	[void]$ContextMenuServer.Items.Add($ServerDBRepairItem)
+	[void]$ContextMenuServer.Items.Add($ServerDBMaintenanceItem)
 	
 	############################################################################
 	# 2) Schedule the DB maintenance at the lanes
@@ -8645,24 +8428,24 @@ if (-not $form)
 	$ContextMenuLane.ShowItemToolTips = $true
 	
 	############################################################################
-	# 1) Lane DB Repair Button
+	# 1) Lane DB Maintenance Button
 	############################################################################
-	$LaneDBRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Lane DB Repair")
-	$LaneDBRepairItem.ToolTipText = "Repair the Lane databases for the selected lane(s)."
-	$LaneDBRepairItem.Add_Click({
+	$LaneDBMaintenanceItem = New-Object System.Windows.Forms.ToolStripMenuItem("Lane DB Maintenance")
+	$LaneDBMaintenanceItem.ToolTipText = "Runs maintenance at the lane(s) databases for the selected lane(s)."
+	$LaneDBMaintenanceItem.Add_Click({
 			Process_Lanes -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
 		})
-	[void]$ContextMenuLane.Items.Add($LaneDBRepairItem)
+	[void]$ContextMenuLane.Items.Add($LaneDBMaintenanceItem)
 	
 	############################################################################
 	# 2) Schedule the DB maintenance at the lanes
 	############################################################################
-	$LaneScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane DB Maintenance")
-	$LaneScheduleRepairItem.ToolTipText = "Schedule a task to run maintenance at the lane/s database."
-	$LaneScheduleRepairItem.Add_Click({
+	$LaneScheduleMaintenanceItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane DB Maintenance")
+	$LaneScheduleMaintenanceItem.ToolTipText = "Schedule a task to run maintenance at the lane/s database."
+	$LaneScheduleMaintenanceItem.Add_Click({
 			Schedule_Lane_DB_Maintenance -StoreNumber "$StoreNumber"
 		})
-	[void]$ContextMenuLane.Items.Add($LaneScheduleRepairItem)
+	[void]$ContextMenuLane.Items.Add($LaneScheduleMaintenanceItem)
 	
 	############################################################################
 	# 3) Pump Table to Lane Menu Item
@@ -8817,16 +8600,10 @@ $jobCount = 0
 # Get SQL Connection String
 Get_Database_Connection_String
 
-# Get the Store Number
-Get_Store_Number
+# Get the Store Number, Name and SMS Version
+Get_Store_Info_From_InfoIni -InfoIniPath $InfoIniPath
 $StoreNumber = $script:FunctionResults['StoreNumber']
-
-# Get the Store Name
-Get_Store_Name
 $StoreName = $script:FunctionResults['StoreName']
-
-# Get the SMS Version number and date
-Get_SMS_Version_Info
 
 # Count Nodes based on mode
 $Nodes = Retrieve_Nodes -StoreNumber $StoreNumber
