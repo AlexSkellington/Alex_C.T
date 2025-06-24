@@ -19,7 +19,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.2.8"
+$VersionNumber = "2.2.9"
 $VersionDate = "2025-06-24"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -7128,6 +7128,489 @@ function Reboot_Scales
 }
 
 # ===================================================================================================
+#                         FUNCTION: Remove_ArchiveBit_Interactive
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Prompts the user to either run the Remove Archive Bit action immediately or schedule it as a task.
+#   If scheduled, writes a batch file with current script variables (StoreNumber, paths, etc.) and
+#   creates a Windows scheduled task. If run immediately, performs the action using current values.
+#   Uses Write_Log for progress and error reporting.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   (none - uses variables from main script context)
+# ===================================================================================================
+
+function Remove_ArchiveBit_Interactive
+{
+	[CmdletBinding()]
+	param ()
+	
+	Write_Log "`r`n==================== Starting Remove_ArchiveBit_Interactive Function ====================`r`n" "blue"
+	
+	# --- Main context variables
+	$iniFile = $StartupIniPath
+	$storeNumber = $script:FunctionResults['StoreNumber']
+	$terFile = Join-Path $OfficePath "Load\Ter_Load.sql"
+	$scriptFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
+	$batchName = "Remove_Archive_Bit.bat"
+	$batchPath = Join-Path $scriptFolder $batchName
+	
+	# --------------------- Show Choice Form ---------------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Remove Archive Bit"
+	$form.Size = New-Object System.Drawing.Size(430, 210)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "Do you want to run Remove Archive Bit now, or schedule it as a repeating background task?"
+	$label.Location = New-Object System.Drawing.Point(20, 20)
+	$label.Size = New-Object System.Drawing.Size(390, 40)
+	$label.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$form.Controls.Add($label)
+	
+	$btnRunNow = New-Object System.Windows.Forms.Button
+	$btnRunNow.Text = "Run Now"
+	$btnRunNow.Location = New-Object System.Drawing.Point(35, 90)
+	$btnRunNow.Size = New-Object System.Drawing.Size(100, 40)
+	$form.Controls.Add($btnRunNow)
+	
+	$btnSchedule = New-Object System.Windows.Forms.Button
+	$btnSchedule.Text = "Schedule Task"
+	$btnSchedule.Location = New-Object System.Drawing.Point(160, 90)
+	$btnSchedule.Size = New-Object System.Drawing.Size(120, 40)
+	$form.Controls.Add($btnSchedule)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(305, 90)
+	$btnCancel.Size = New-Object System.Drawing.Size(80, 40)
+	$form.Controls.Add($btnCancel)
+	
+	# Option tracking
+	$selectedAction = $null
+	$btnRunNow.Add_Click({
+			$script:selectedAction = "run"
+			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+			$form.Close()
+		})
+	$btnSchedule.Add_Click({
+			$script:selectedAction = "schedule"
+			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+			$form.Close()
+		})
+	$btnCancel.Add_Click({
+			$script:selectedAction = "cancel"
+			$form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+			$form.Close()
+		})
+	
+	$form.AcceptButton = $btnRunNow
+	$form.CancelButton = $btnCancel
+	
+	$form.ShowDialog() | Out-Null
+	if ($script:selectedAction -eq "cancel" -or -not $script:selectedAction)
+	{
+		Write_Log "User cancelled Remove_ArchiveBit_Interactive." "yellow"
+		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		return
+	}
+	
+	# --------------------- Schedule Task Path ---------------------
+	if ($script:selectedAction -eq "schedule")
+	{
+		# Use a WinForms interval prompt
+		$intervalForm = New-Object System.Windows.Forms.Form
+		$intervalForm.Text = "Schedule Interval"
+		$intervalForm.Size = New-Object System.Drawing.Size(300, 160)
+		$intervalForm.StartPosition = "CenterScreen"
+		$intervalForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+		$intervalForm.MaximizeBox = $false
+		$intervalForm.MinimizeBox = $false
+		
+		$intervalLabel = New-Object System.Windows.Forms.Label
+		$intervalLabel.Text = "Enter the interval in minutes (default 30):"
+		$intervalLabel.Location = New-Object System.Drawing.Point(10, 20)
+		$intervalLabel.Size = New-Object System.Drawing.Size(260, 20)
+		$intervalForm.Controls.Add($intervalLabel)
+		
+		$intervalBox = New-Object System.Windows.Forms.TextBox
+		$intervalBox.Text = "30"
+		$intervalBox.Location = New-Object System.Drawing.Point(10, 50)
+		$intervalBox.Size = New-Object System.Drawing.Size(260, 20)
+		$intervalForm.Controls.Add($intervalBox)
+		
+		$okBtn = New-Object System.Windows.Forms.Button
+		$okBtn.Text = "OK"
+		$okBtn.Location = New-Object System.Drawing.Point(40, 90)
+		$okBtn.Size = New-Object System.Drawing.Size(80, 30)
+		$okBtn.Add_Click({ $intervalForm.DialogResult = [System.Windows.Forms.DialogResult]::OK; $intervalForm.Close() })
+		$intervalForm.Controls.Add($okBtn)
+		
+		$cancelBtn = New-Object System.Windows.Forms.Button
+		$cancelBtn.Text = "Cancel"
+		$cancelBtn.Location = New-Object System.Drawing.Point(160, 90)
+		$cancelBtn.Size = New-Object System.Drawing.Size(80, 30)
+		$cancelBtn.Add_Click({ $intervalForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $intervalForm.Close() })
+		$intervalForm.Controls.Add($cancelBtn)
+		
+		$intervalForm.AcceptButton = $okBtn
+		$intervalForm.CancelButton = $cancelBtn
+		
+		$intervalResult = $intervalForm.ShowDialog()
+		if ($intervalResult -ne [System.Windows.Forms.DialogResult]::OK)
+		{
+			Write_Log "User cancelled interval prompt for scheduled Remove_ArchiveBit_Interactive." "yellow"
+			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			return
+		}
+		
+		$interval = $intervalBox.Text.Trim()
+		if (-not $interval -or $interval -notmatch "^\d+$" -or [int]$interval -le 0)
+		{
+			Write_Log "Invalid interval value for scheduled Remove_ArchiveBit_Interactive." "red"
+			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			return
+		}
+		
+		if (-not (Test-Path $scriptFolder)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
+		
+		$batchContent = @"
+@echo off
+setlocal
+
+REM - check for admin & elevate if needed -
+net session >nul 2>&1
+if errorlevel 1 (
+    powershell -Command "Start-Process cmd -ArgumentList '/c %~s0 %*' -Verb RunAs" >nul
+    exit /b
+)
+
+echo *****************************************************
+echo *                Remove Archive Bit                 *
+echo *               Created by: Alex_C.T                *
+echo *      What it does: Removes archived bits from     *
+echo *            Lane directories and Server            *
+echo *****************************************************
+
+set "StoreNumber=$storeNumber"
+set "TerFile=$terFile"
+if not defined StoreNumber (
+    echo ERROR: Store number could not be extracted.
+    echo Press any key to exit...
+    timeout /t 5 >nul
+    exit /b
+)
+echo Debug: Store Number is %StoreNumber%
+echo.
+if not defined TerFile (
+    echo ERROR: Ter_Load.sql could not be located.
+    echo Press any key to exit...
+    timeout /t 5 >nul
+    exit /b
+)
+echo Debug: Found Ter_Load.sql
+echo Processing lane paths from Ter_Load.sql
+
+REM -- Remove archived bit in lanes --
+for /f "tokens=4,5 delims=,()'" %%A in ('
+    type "%TerFile%" ^
+    ^| findstr /b "(" ^
+    ^| findstr /i /c:"Terminal 0"
+') do (
+    echo Refreshing attributes in %%A...
+    attrib -a -r "%%A\*.*" >nul 2>&1
+    if errorlevel 1 echo ERROR: Failed to refresh attributes for %%A
+    if "%%B" NEQ "" (
+        echo Refreshing attributes in %%B...
+        attrib -a -r "%%B\*.*" >nul 2>&1
+        if errorlevel 1 echo ERROR: Failed to refresh attributes for %%B
+    )
+)
+REM -- Remove archived bit in server paths --
+echo(
+echo Processing server paths
+for %%S in (900 901) do (
+    if exist "$OfficePath\XF%StoreNumber%%%S" (
+        echo Refreshing attributes in "$OfficePath\XF%StoreNumber%%%S"
+        attrib -a -r "$OfficePath\XF%StoreNumber%%%S\*.*" >nul 2>&1
+        if errorlevel 1 echo ERROR: Failed to refresh attributes for $OfficePath\XF%StoreNumber%%%S
+    ) else (
+        echo Server path not found: $OfficePath\XF%StoreNumber%%%S
+    )
+)
+endlocal
+echo Press any key to exit...
+timeout /t 5 >nul
+exit /b
+"@
+		
+		Set-Content -Path $batchPath -Value $batchContent -Encoding ASCII
+		
+		$taskName = "Remove_Archive_Bit"
+		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath`" /sc MINUTE /mo $interval /st 01:00 /rl HIGHEST /f"
+		$result = Invoke-Expression $schtasks
+		if ($LASTEXITCODE -eq 0)
+		{
+			Write_Log "Scheduled task created successfully for Remove_Archive_Bit." "green"
+		}
+		else
+		{
+			Write_Log "Failed to create scheduled task for Remove_Archive_Bit." "red"
+		}
+		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		return
+	}
+	
+	# --------------------- Run Now Path ---------------------
+	if (-not (Test-Path $iniFile))
+	{
+		Write_Log "ERROR: INI file not found - $iniFile" "red"
+		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		return
+	}
+	if (-not $storeNumber)
+	{
+		Write_Log "ERROR: Store number not present in context." "red"
+		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		return
+	}
+	if (-not (Test-Path $terFile))
+	{
+		Write_Log "ERROR: Ter_Load.sql could not be located." "red"
+		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		return
+	}
+	
+	# --- Use lane paths from Retrieve_Nodes ---
+	if (-not $script:FunctionResults.ContainsKey('LaneMachines') -or -not $script:FunctionResults['LaneMachines'])
+	{
+		Write_Log "No lane machine paths found. Did you run Retrieve_Nodes?" "red"
+	}
+	else
+	{
+		foreach ($laneNum in $script:FunctionResults['LaneMachines'].Keys | Sort-Object { [int]$_ })
+		{
+			$machine = $script:FunctionResults['LaneMachines'][$laneNum]
+			if ($machine -and $machine -notlike '@SMSSERVER' -and $machine -ne '')
+			{
+				$path = "\\$machine\storeman\Office\XF${storeNumber}${laneNum}"
+				Write_Log "Refreshing attributes in $path..." "green"
+				try
+				{
+					attrib -a -r "$path\*.*" 2>&1 | Out-Null
+				}
+				catch
+				{
+					Write_Log "ERROR: Failed to refresh attributes for $path" "red"
+				}
+			}
+		}
+	}
+	foreach ($suffix in 900, 901)
+	{
+		$serverPath = "\\localhost\storeman\office\XF${storeNumber}${suffix}"
+		if (Test-Path $serverPath)
+		{
+			Write_Log "Refreshing attributes in $serverPath" "green"
+			try
+			{
+				attrib -a -r "$serverPath\*.*" 2>&1 | Out-Null
+			}
+			catch
+			{
+				Write_Log "ERROR: Failed to refresh attributes for $serverPath" "red"
+			}
+		}
+		else
+		{
+			Write_Log "Server path not found: $serverPath" "yellow"
+		}
+	}
+	Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                         FUNCTION: Update_Scales_Specials_Interactive
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Prompts the user to either run the "Update Scales Specials" action now or schedule it as a daily task.
+#   If scheduled, writes a batch file to disk and creates a Windows scheduled task.
+#   If run immediately, performs the action directly from PowerShell.
+#   Uses Write_Log for progress and error reporting.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   (none - uses script context)
+# ===================================================================================================
+
+function Update_Scales_Specials_Interactive
+{
+	[CmdletBinding()]
+	param ()
+	
+	Write_Log "`r`n==================== Starting Update_Scales_Specials_Interactive Function ====================`r`n" "blue"
+	
+	$scriptFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
+	$batchName = "Update_Scales_Specials.bat"
+	$batchPath = Join-Path $scriptFolder $batchName
+	
+	# --- Interactive form ---
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Update Scales Specials"
+	$form.Size = New-Object System.Drawing.Size(430, 210)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "Do you want to run Update Scales Specials now, or schedule it as a daily task at 5 AM?"
+	$label.Location = New-Object System.Drawing.Point(20, 20)
+	$label.Size = New-Object System.Drawing.Size(390, 40)
+	$label.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$form.Controls.Add($label)
+	
+	$btnRunNow = New-Object System.Windows.Forms.Button
+	$btnRunNow.Text = "Run Now"
+	$btnRunNow.Location = New-Object System.Drawing.Point(35, 90)
+	$btnRunNow.Size = New-Object System.Drawing.Size(100, 40)
+	$form.Controls.Add($btnRunNow)
+	
+	$btnSchedule = New-Object System.Windows.Forms.Button
+	$btnSchedule.Text = "Schedule Task"
+	$btnSchedule.Location = New-Object System.Drawing.Point(160, 90)
+	$btnSchedule.Size = New-Object System.Drawing.Size(120, 40)
+	$form.Controls.Add($btnSchedule)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(305, 90)
+	$btnCancel.Size = New-Object System.Drawing.Size(80, 40)
+	$form.Controls.Add($btnCancel)
+	
+	$selectedAction = $null
+	$btnRunNow.Add_Click({
+			$script:selectedAction = "run"
+			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+			$form.Close()
+		})
+	$btnSchedule.Add_Click({
+			$script:selectedAction = "schedule"
+			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+			$form.Close()
+		})
+	$btnCancel.Add_Click({
+			$script:selectedAction = "cancel"
+			$form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+			$form.Close()
+		})
+	$form.AcceptButton = $btnRunNow
+	$form.CancelButton = $btnCancel
+	
+	$form.ShowDialog() | Out-Null
+	if ($script:selectedAction -eq "cancel" -or -not $script:selectedAction)
+	{
+		Write_Log "User cancelled Update_Scales_Specials_Interactive." "yellow"
+		Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
+		return
+	}
+	
+	# ---------------------- Schedule Path ----------------------
+	if ($script:selectedAction -eq "schedule")
+	{
+		if (-not (Test-Path $scriptFolder)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
+		
+		$batchContent = @"
+@echo off
+setlocal enabledelayedexpansion
+
+REM Check for administrative privileges without any output
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    powershell -Command "Start-Process cmd -ArgumentList '/c %~s0 %*' -Verb RunAs" >nul 2>&1
+    exit /b
+)
+
+REM Run main actions in silent mode
+taskkill /IM ScaleManagementApp.exe /F
+taskkill /IM BMSSrv.exe /F
+taskkill /IM BMS.exe /F
+sc.exe delete "BMS"
+del /s /q C:\Bizerba\RetailConnect\BMS\toBizerba\*.*
+rmdir /s /q C:\Bizerba\RetailConnect\BMS\terminals\
+cd /d C:\Bizerba\RetailConnect\BMS
+"BMSSrv.exe" -reg
+sc.exe start BMS
+start C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe
+endlocal
+"@
+		
+		Set-Content -Path $batchPath -Value $batchContent -Encoding ASCII
+		
+		$taskName = "Update_Scales_Specials_Task"
+		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath`" /sc DAILY /st 05:00 /rl HIGHEST /f"
+		$result = Invoke-Expression $schtasks
+		if ($LASTEXITCODE -eq 0)
+		{
+			Write_Log "Scheduled task created successfully for Update_Scales_Specials_Task." "green"
+			[System.Windows.Forms.MessageBox]::Show("Scheduled task created successfully.", "Success")
+		}
+		else
+		{
+			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task." "red"
+			[System.Windows.Forms.MessageBox]::Show("Failed to create scheduled task. Check permissions.", "Error")
+		}
+		Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
+		return
+	}
+	
+	# ---------------------- Run Now Path ----------------------
+	try
+	{
+		Write_Log "Killing ScaleManagementApp.exe, BMSSrv.exe, BMS.exe..." "blue"
+		Stop-Process -Name "ScaleManagementApp" -Force -ErrorAction SilentlyContinue
+		Stop-Process -Name "BMSSrv" -Force -ErrorAction SilentlyContinue
+		Stop-Process -Name "BMS" -Force -ErrorAction SilentlyContinue
+		
+		Write_Log "Deleting BMS service..." "blue"
+		sc.exe delete "BMS" | Out-Null
+		
+		Write_Log "Deleting all files in toBizerba folder..." "blue"
+		Remove-Item -Path "C:\Bizerba\RetailConnect\BMS\toBizerba\*.*" -Force -Recurse -ErrorAction SilentlyContinue
+		
+		Write_Log "Removing BMS terminals directory..." "blue"
+		Remove-Item -Path "C:\Bizerba\RetailConnect\BMS\terminals\" -Force -Recurse -ErrorAction SilentlyContinue
+		
+		Write_Log "Re-registering BMS service..." "blue"
+		Push-Location "C:\Bizerba\RetailConnect\BMS"
+		& "BMSSrv.exe" -reg
+		sc.exe start BMS | Out-Null
+		Pop-Location
+		
+		Write_Log "Starting ScaleManagementAppUpdateSpecials.exe..." "blue"
+		Start-Process "C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe"
+		
+		Write_Log "Update Scales Specials completed." "green"
+		[System.Windows.Forms.MessageBox]::Show("Update Scales Specials completed.", "Done")
+	}
+	catch
+	{
+		Write_Log "ERROR during Update Scales Specials: $_" "red"
+		[System.Windows.Forms.MessageBox]::Show("ERROR during Update Scales Specials. Check log.", "Error")
+	}
+	
+	Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                                FUNCTION: Show_Lane_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -7773,6 +8256,26 @@ if (-not $form)
 			Reboot_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
 		})
 	[void]$contextMenuGeneral.Items.Add($Reboot_ScalesItem)
+	
+	############################################################################
+	# 8) Remove Archive Bit
+	############################################################################
+	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
+	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
+	$RemoveArchiveBitItem.Add_Click({
+			Remove_ArchiveBit_Interactive
+		})
+	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
+	
+	############################################################################
+	# 9) Update Scales Specials
+	############################################################################
+	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
+	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
+	$UpdateScalesSpecialsItem.Add_Click({
+			Update_Scales_Specials_Interactive
+		})
+	[void]$contextMenuGeneral.Items.Add($UpdateScalesSpecialsItem)
 	
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
