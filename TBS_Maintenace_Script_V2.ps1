@@ -75,14 +75,15 @@ $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
 # Initialize BasePath variable
 $BasePath = $null
 
-# 1) Look for any *storeman* directory on all fixed drives containing Office\Dbs\INFO_???901_WIN.INI
+# 1) Look for any *storeman* directory (any capitalization) on all fixed drives containing Office\Dbs\INFO_???901_WIN.INI
 $targetSubPathPattern = 'Office\Dbs\INFO_*901_WIN.INI'
 $storemanDirs = @()
 $fixedDrives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 -and $_.Root -match '^[A-Z]:\\$' }
 
 foreach ($drive in $fixedDrives)
 {
-	$dirs = Get-ChildItem -Path "$($drive.Root)" -Directory -Filter "*storeman*" -ErrorAction SilentlyContinue | ForEach-Object {
+	# Case-insensitive match for 'storeman' in folder name
+	$dirs = Get-ChildItem -Path "$($drive.Root)" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -imatch 'storeman' } | ForEach-Object {
 		$candidatePath = Join-Path $_.FullName 'Office\Dbs'
 		# Look for any INFO_???901_WIN.INI inside Office\Dbs
 		$files = Get-ChildItem -Path $candidatePath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue
@@ -90,8 +91,6 @@ foreach ($drive in $fixedDrives)
 	}
 	if ($dirs) { $storemanDirs += $dirs }
 }
-
-$BasePath = $null
 
 if ($storemanDirs.Count -gt 1)
 {
@@ -280,26 +279,6 @@ function Write_Log
 
 function Get_Database_Connection_String
 {
-	# Ensure that the FunctionResults hashtable exists at the script level
-	if (-not $script:FunctionResults)
-	{
-		$script:FunctionResults = @{ }
-		Write_Log "Initialized script:FunctionResults hashtable." "green"
-	}
-	
-	if ($StartupIniPath -ne $null)
-	{
-		#	Write_Log "Found Startup.ini at: $startupIniPath" "green"
-	}
-	
-	if (-not $StartupIniPath)
-	{
-		Write_Log "Startup.ini file not found in any of the expected locations." "red"
-		return
-	}
-	
-	# Write_Log "Generating connection string..." "blue"
-	
 	# Read the Startup.ini file
 	try
 	{
@@ -313,17 +292,11 @@ function Get_Database_Connection_String
 			$dbServer = $dbServer.Trim()
 			if (-not $dbServer)
 			{
-				Write_Log "DBSERVER entry in Startup.ini is empty. Using 'localhost'." "yellow"
 				$dbServer = "localhost"
-			}
-			else
-			{
-				#	Write_Log "Found DBSERVER in Startup.ini: $dbServer" "green"
 			}
 		}
 		else
 		{
-			Write_Log "DBSERVER entry not found in Startup.ini. Using 'localhost'." "yellow"
 			$dbServer = "localhost"
 		}
 		
@@ -338,10 +311,6 @@ function Get_Database_Connection_String
 				Write_Log "DBNAME entry in Startup.ini is empty." "red"
 				return
 			}
-			else
-			{
-				#	Write_Log "Found DBNAME in Startup.ini: $dbName" "green"
-			}
 		}
 		else
 		{
@@ -355,22 +324,11 @@ function Get_Database_Connection_String
 		return
 	}
 	
-	# Store DBSERVER and DBNAME in the FunctionResults hashtable
+	# Store in hashtable and build connection string
 	$script:FunctionResults['DBSERVER'] = $dbServer
-	# Write_Log "Stored DBSERVER in FunctionResults: $dbServer" "green"
-	
 	$script:FunctionResults['DBNAME'] = $dbName
-	# Write_Log "Stored DBNAME in FunctionResults: $dbName" "green"
-	
-	# Build the connection string
-	$ConnectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
-	# Optionally, log the constructed connection string (be cautious with sensitive information)
-	# Write_Log "Constructed connection string: $ConnectionString" "green"
-	
-	# Store the connection string in the FunctionResults hashtable
+	$ConnectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;TrustServerCertificate=True;"
 	$script:FunctionResults['ConnectionString'] = $ConnectionString
-	
-	# Write_Log "Variables ($ConnectionString) stored." "green"
 }
 
 # ==========================================================================================
@@ -944,26 +902,6 @@ function Clear_XE_Folder
 		[int]$checkIntervalSeconds = 2
 	)
 	
-	# -- Find a valid folder path if the default doesn't exist
-	if (-not (Test-Path -Path $folderPath))
-	{
-		$localPaths = @(
-			"C:\storeman\office\XE${StoreNumber}901",
-			"D:\storeman\office\XE${StoreNumber}901"
-		)
-		$foundPath = $localPaths | Where-Object { Test-Path $_ }
-		if ($foundPath)
-		{
-			$folderPath = $foundPath[0]
-			Write_Log "UNC path not accessible. Using local path: $folderPath" "yellow"
-		}
-		else
-		{
-			Write_Log "Folder 'XE${StoreNumber}901' not found on any known paths." "red"
-			return
-		}
-	}
-	
 	# -- Initial clearing: remove everything except valid S*.??? health files
 	if (Test-Path -Path $folderPath)
 	{
@@ -1096,15 +1034,7 @@ function Generate_SQL_Scripts
 		[string]$StoresqlFilePath
 	)
 	
-	# Ensure StoreNumber is properly formatted (e.g., '005')
-	# $StoreNumber = $StoreNumber.PadLeft(3, '0')
-	
-	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
-	{
-		Write_Log "Failed to retrieve the connection string." "red"
-		return
-	}
-	
+	# Retrive the connection string for the server
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	
 	# Initialize default database names
@@ -1114,22 +1044,25 @@ function Generate_SQL_Scripts
 	# Retrive the DB name
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
-		$dbName = $script:FunctionResults['DBNAME']
-		#	Write_Log "Using DBNAME from FunctionResults: $dbName" "blue"
-		$storeDbName = $dbName
+		$storeDbName = $script:FunctionResults['DBNAME']
 	}
 	else
 	{
-		Write_Log "No 'Database' in $script:FunctionResults. Defaulting to '$defaultStoreDbName'." "yellow"
 		$storeDbName = $defaultStoreDbName
 	}
 	
-	# Define replacements for SQL scripts
-	# $storeDbName is now either the retrieved DBNAME or the default 'STORESQL'
-	# $laneDbName remains as 'LANESQL' unless you wish to make it dynamic as well
-	$laneDbName = $defaultLaneDbName # If LANESQL is also dynamic, you can retrieve it similarly
+	# Retrive the connection string for the lanes
+	$script:FunctionResults['LaneDatabaseInfo']
 	
-	# Write_Log "Generating SQL scripts using Store DB: '$storeDbName' and Lane DB: '$laneDbName'..." "blue"
+	# Retrive the DB name
+	if ($script:FunctionResults.ContainsKey('DBName') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBName']))
+	{
+		$laneDbName = $script:FunctionResults['DBName']
+	}
+	else
+	{
+		$laneDbName = $defaultLaneDbName
+	}
 	
 	# Generate Lanesql script
 	$LaneSQLScript = @"
@@ -1176,6 +1109,9 @@ IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 
     DELETE FROM HEADER_SAV 
     WHERE (F903 = 'SVHOST' OR F903 = 'MPHOST' OR F903 = CONCAT('M', '$StoreNumber', '901')) 
     AND (DATEDIFF(DAY, F907, GETDATE()) > 30 OR DATEDIFF(DAY, F909, GETDATE()) > 30);
+
+/* Truncate PRICE_EVENT table for records older than 7 days */
+IF OBJECT_ID('PRICE_EVENT','U') IS NOT NULL AND HAS_PERMS_BY_NAME('PRICE_EVENT','OBJECT','DELETE') = 1 DELETE FROM PRICE_EVENT WHERE F254 < DATEADD(DAY,-7,GETDATE());
 
 /* Delete bad SMS items */
 @dbEXEC(DELETE FROM OBJ_TAB WHERE F01='0020000000000') 
@@ -1438,8 +1374,8 @@ IF OBJECT_ID('SAL_HDR_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_HDR_SAV'
 IF OBJECT_ID('SAL_TTL_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_TTL_SAV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE SAL_TTL_SAV;
 IF OBJECT_ID('SAL_DET_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_DET_SAV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE SAL_DET_SAV;
 
-/* Truncate PRICE_EVENT table for records older than 30 days */
-IF OBJECT_ID('PRICE_EVENT','U') IS NOT NULL AND HAS_PERMS_BY_NAME('PRICE_EVENT','OBJECT','DELETE') = 1 DELETE FROM PRICE_EVENT WHERE F254 < DATEADD(DAY,-30,GETDATE());
+/* Truncate PRICE_EVENT table for records older than 7 days */
+IF OBJECT_ID('PRICE_EVENT','U') IS NOT NULL AND HAS_PERMS_BY_NAME('PRICE_EVENT','OBJECT','DELETE') = 1 DELETE FROM PRICE_EVENT WHERE F254 < DATEADD(DAY,-7,GETDATE());
 
 /* Drop specific tables older than 30 days */
 DECLARE @cmd varchar(4000);
@@ -1566,6 +1502,9 @@ IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 
     DELETE FROM HEADER_SAV 
     WHERE (F903 = 'SVHOST' OR F903 = 'MPHOST' OR F903 = CONCAT('M', '$StoreNumber', '901')) 
     AND (DATEDIFF(DAY, F907, GETDATE()) > 30 OR DATEDIFF(DAY, F909, GETDATE()) > 30);
+
+/* Truncate PRICE_EVENT table for records older than 7 days */
+IF OBJECT_ID('PRICE_EVENT','U') IS NOT NULL AND HAS_PERMS_BY_NAME('PRICE_EVENT','OBJECT','DELETE') = 1 DELETE FROM PRICE_EVENT WHERE F254 < DATEADD(DAY,-7,GETDATE());
 
 /* Delete bad SMS items */
 @dbEXEC(DELETE FROM OBJ_TAB WHERE F01='0020000000000') 
@@ -8559,6 +8498,31 @@ if (-not $form)
 	$toolTip.SetToolTip($LaneToolsButton, "Click to see Lane-related tools.")
 	$form.Controls.Add($LaneToolsButton)
 }
+	######################################################################################################################
+	# 
+	# Anchor all controls for resize
+	#
+	######################################################################################################################
+	$smsVersionLabel.Anchor = 'Top,Left'
+	$storeNumberLabel.Anchor = 'Top,Right'
+	$NodesBackoffices.Anchor = 'Top,Left'
+	$NodesStore.Anchor = 'Top'
+	$scalesLabel.Anchor = 'Top,Right'
+	$logBox.Anchor = 'Top,Left,Right,Bottom'
+	$clearLogButton.Anchor = 'Top,Right'
+	$GeneralToolsButton.Anchor = 'Bottom,Right'
+	$ServerToolsButton.Anchor = 'Bottom,Left'
+	$LaneToolsButton.Anchor = 'Bottom'
+
+	$form.add_Resize({
+			$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
+			$logBox.Width = $form.ClientSize.Width - 100
+			$logBox.Height = $form.ClientSize.Height - 170
+			$clearLogButton.Left = $form.ClientSize.Width - 55
+			$GeneralToolsButton.Left = $form.ClientSize.Width - 350
+			$ServerToolsButton.Top = $LaneToolsButton.Top = $GeneralToolsButton.Top = $form.ClientSize.Height - 85
+			$LaneToolsButton.Left = [math]::Max(350, ($form.ClientSize.Width - 950) / 2 + 300)
+})
 
 # ===================================================================================================
 #                                       SECTION: Main Script Execution
