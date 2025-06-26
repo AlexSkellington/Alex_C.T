@@ -654,48 +654,30 @@ function Retrieve_Nodes
 		[string]$StoreNumber
 	)
 	
+	# -------------------- Init --------------------
 	$HostPath = "$OfficePath"
 	$LaneContents = @()
 	$LaneMachines = @{ }
-	$ScaleIPNetworks = @{ }
-	
-	# Retrieve the connection string from script variables
+	$ScaleIPNetworks = @{ }	
+	$TerLoadSqlPath = Join-Path $LoadPath 'Ter_Load.sql'
 	$ConnectionString = $script:FunctionResults['ConnectionString']
+	$NodesFromDatabase = $false
 	
-	# If connection string is not available, attempt to get it
-	if (-not $ConnectionString)
-	{
-		Write_Log "Connection string not found. Attempting to generate it..." "yellow"
-		Get_Database_Connection_String
-		$ConnectionString = $script:FunctionResults['ConnectionString']
-		if (-not $ConnectionString)
-		{
-			Write_Log "Unable to generate connection string. Proceeding with fallback mechanism." "red"
-			$NodesFromDatabase = $false
-		}
-		else
-		{
-			$NodesFromDatabase = $true
-		}
-	}
-	else
+	# -------------------- 1. Database --------------------
+	if ($ConnectionString)
 	{
 		$NodesFromDatabase = $true
-	}
-	
-	if ($NodesFromDatabase)
-	{
 		try
 		{
 			#--------------------------------------------------------------------------------
 			# 1) Retrieve Lanes from TER_TAB
 			#--------------------------------------------------------------------------------
 			$queryLaneContents = @"
-SELECT F1057, F1125 
-FROM TER_TAB 
-WHERE F1056 = '$StoreNumber' 
-  AND F1057 LIKE '0%' 
-  AND F1057 NOT LIKE '8%' 
+SELECT F1057, F1125
+FROM TER_TAB
+WHERE F1056 = '$StoreNumber'
+  AND F1057 LIKE '0%'
+  AND F1057 NOT LIKE '8%'
   AND F1057 NOT LIKE '9%'
 "@
 			try
@@ -720,10 +702,6 @@ WHERE F1056 = '$StoreNumber'
 					$machineName = $matches[1]
 					$LaneMachines[$laneNumber] = $machineName
 				}
-				else
-				{
-					Write_Log "Lane #${laneNumber}: Invalid machine path '$machinePath'. Skipping machine name capture." "yellow"
-				}
 			}
 			
 			#--------------------------------------------------------------------------------
@@ -734,7 +712,7 @@ SELECT F1057, F1125
 FROM TER_TAB
 WHERE F1056 = '$StoreNumber'
   AND F1057 LIKE '8%'
-  AND F1057 NOT LIKE '0%' 
+  AND F1057 NOT LIKE '0%'
   AND F1057 NOT LIKE '9%'
 "@
 			try
@@ -836,11 +814,70 @@ WHERE F1056 = '$StoreNumber'
 	}
 	
 	#--------------------------------------------------------------------------------
+	# Fallback: If counts from database failed, use Ter_Load.sql fallback
+	#--------------------------------------------------------------------------------
+	$TerLoadUsed = $false
+	if ((-not $NodesFromDatabase) -and (Test-Path $TerLoadSqlPath))
+	{
+		Write_Log "Using Ter_Load.sql as backup for TER_TAB information." "yellow"
+		$TerLoadUsed = $true
+		$insertLines = Select-String -Path $TerLoadSqlPath -Pattern "INSERT INTO Ter_Load VALUES" -Context 0, 100 |
+		Select-Object -First 1 | ForEach-Object { $_.Context.PostContext }
+		
+		$rows = @()
+		$current = ""
+		foreach ($line in $insertLines)
+		{
+			if ($line.Trim() -eq "") { continue }
+			$current += $line.Trim()
+			if ($current -match "\),$|\);$")
+			{
+				$rows += $current.TrimEnd(',', ';')
+				$current = ""
+			}
+		}
+		$parsed = $rows | ForEach-Object {
+			if ($_ -match "\((.*)\)")
+			{
+				$fields = $matches[1] -split "',\s*'"
+				[PSCustomObject]@{
+					Store    = $fields[0].Trim("'")
+					Terminal = $fields[1].Trim("'")
+					Label    = $fields[2].Trim("'")
+					LanePath = $fields[3].Trim("'")
+					HostPath = $fields[4].Trim("'")
+				}
+			}
+		} | Where-Object { $_.Store -eq $StoreNumber }
+		
+		# Lanes: terminals starting with 0
+		$laneObjs = $parsed | Where-Object { $_.Terminal -match '^0\d\d$' }
+		$NumberOfLanes = $laneObjs.Count
+		$LaneContents = $laneObjs | Select-Object -ExpandProperty Terminal
+		foreach ($obj in $laneObjs)
+		{
+			if ($obj.LanePath -match '\\\\([^\\]+)\\')
+			{
+				$LaneMachines[$obj.Terminal] = $matches[1]
+			}
+		}
+		# Scales: terminals starting with 8
+		$scaleObjs = $parsed | Where-Object { $_.Terminal -match '^8\d\d$' }
+		$NumberOfScales = $scaleObjs.Count
+		
+		# Servers: terminal 901
+		$NumberOfServers = ($parsed | Where-Object { $_.Terminal -eq '901' }).Count
+		
+		# Backoffices: 902-998
+		$NumberOfBackoffices = ($parsed | Where-Object { $_.Terminal -match '^9(0[2-9]|[1-8][0-9])$' }).Count
+	}
+	
+	#--------------------------------------------------------------------------------
 	# Fallback: If counts from database failed, use directory-based logic
 	#--------------------------------------------------------------------------------
-	if (-not $NodesFromDatabase)
+	if ((-not $NodesFromDatabase) -and (-not $TerLoadUsed))
 	{
-		Write_Log "Using fallback mechanism to count items." "yellow"
+		Write_Log "Using file system directories as backup for node counts." "yellow"
 		
 		if (-not $StoreNumber)
 		{
@@ -852,6 +889,7 @@ WHERE F1056 = '$StoreNumber'
 		{
 			$LaneFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}0??"
 			$NumberOfLanes = $LaneFolders.Count
+			$LaneContents = $LaneFolders | ForEach-Object { $_.Name.Substring($_.Name.Length - 3, 3) }
 		}
 		
 		if (Test-Path $HostPath)
@@ -863,11 +901,11 @@ WHERE F1056 = '$StoreNumber'
 		$NumberOfServers = if (Test-Path "$HostPath\XF${StoreNumber}901") { 1 }
 		else { 0 }
 		
-		# Count backoffice folders: XF${StoreNumber}902 - XF${StoreNumber}998
+		# Backoffice folders: XF${StoreNumber}902 - XF${StoreNumber}998
 		if (Test-Path $HostPath)
 		{
 			$BackofficeFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}9??" |
-			Where-Object { $_.Name -match "^XF${StoreNumber}9(0[2-9]|[1-9][0-9])$" -and $_.Name -ne "XF${StoreNumber}999" }
+			Where-Object { $_.Name -match "^XF${StoreNumber}9(0[2-9]|[1-8][0-9])$" -and $_.Name -ne "XF${StoreNumber}999" }
 			$NumberOfBackoffices = $BackofficeFolders.Count
 		}
 	}
@@ -898,18 +936,14 @@ WHERE F1056 = '$StoreNumber'
 	$script:FunctionResults['Nodes'] = $Nodes
 	
 	#--------------------------------------------------------------------------------
-	# Update the GUI labels
-	#--------------------------------------------------------------------------------
-	#--------------------------------------------------------------------------------
 	# Update the GUI labels (if labels exist)
 	#--------------------------------------------------------------------------------
 	if ($NodesHost -ne $null) { $NodesHost.Text = "Number of Servers: $NumberOfServers" }
 	if ($NodesBackoffices -ne $null) { $NodesBackoffices.Text = "Number of Backoffices: $NumberOfBackoffices" }
 	if ($NodesStore -ne $null) { $NodesStore.Text = "Number of Lanes: $NumberOfLanes" }
 	if ($scalesLabel -ne $null) { $scalesLabel.Text = "Number of Scales: $NumberOfScales" }
-	$form.Refresh()
+	if ($form -ne $null) { $form.Refresh() }
 	
-	# Return counts as a custom object
 	return $Nodes
 }
 
