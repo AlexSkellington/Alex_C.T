@@ -327,7 +327,7 @@ function Get_Database_Connection_String
 	# Store in hashtable and build connection string
 	$script:FunctionResults['DBSERVER'] = $dbServer
 	$script:FunctionResults['DBNAME'] = $dbName
-	$ConnectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;TrustServerCertificate=True;"
+	$ConnectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
 	$script:FunctionResults['ConnectionString'] = $ConnectionString
 }
 
@@ -1034,7 +1034,15 @@ function Generate_SQL_Scripts
 		[string]$StoresqlFilePath
 	)
 	
-	# Retrive the connection string for the server
+	# Ensure StoreNumber is properly formatted (e.g., '005')
+	# $StoreNumber = $StoreNumber.PadLeft(3, '0')
+	
+	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
+	{
+		Write_Log "Failed to retrieve the connection string." "red"
+		return
+	}
+	
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	
 	# Initialize default database names
@@ -1044,25 +1052,22 @@ function Generate_SQL_Scripts
 	# Retrive the DB name
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
-		$storeDbName = $script:FunctionResults['DBNAME']
+		$dbName = $script:FunctionResults['DBNAME']
+		#	Write_Log "Using DBNAME from FunctionResults: $dbName" "blue"
+		$storeDbName = $dbName
 	}
 	else
 	{
+		Write_Log "No 'Database' in $script:FunctionResults. Defaulting to '$defaultStoreDbName'." "yellow"
 		$storeDbName = $defaultStoreDbName
 	}
 	
-	# Retrive the connection string for the lanes
-	$script:FunctionResults['LaneDatabaseInfo']
+	# Define replacements for SQL scripts
+	# $storeDbName is now either the retrieved DBNAME or the default 'STORESQL'
+	# $laneDbName remains as 'LANESQL' unless you wish to make it dynamic as well
+	$laneDbName = $defaultLaneDbName # If LANESQL is also dynamic, you can retrieve it similarly
 	
-	# Retrive the DB name
-	if ($script:FunctionResults.ContainsKey('DBName') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBName']))
-	{
-		$laneDbName = $script:FunctionResults['DBName']
-	}
-	else
-	{
-		$laneDbName = $defaultLaneDbName
-	}
+	# Write_Log "Generating SQL scripts using Store DB: '$storeDbName' and Lane DB: '$laneDbName'..." "blue"
 	
 	# Generate Lanesql script
 	$LaneSQLScript = @"
@@ -1088,6 +1093,9 @@ IF OBJECT_ID('SAL_HDR_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_HDR_SAV'
 IF OBJECT_ID('SAL_TTL_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_TTL_SAV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE SAL_TTL_SAV;
 IF OBJECT_ID('SAL_DET_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('SAL_DET_SAV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE SAL_DET_SAV;
 
+/* Truncate PRICE_EVENT table for records older than 7 days */
+IF OBJECT_ID('PRICE_EVENT','U') IS NOT NULL AND HAS_PERMS_BY_NAME('PRICE_EVENT','OBJECT','DELETE') = 1 DELETE FROM PRICE_EVENT WHERE F254 < DATEADD(DAY,-7,GETDATE());
+
 /* Drop specific tables older than 30 days */
 DECLARE @cmd varchar(4000) 
 DECLARE cmds CURSOR FOR 
@@ -1109,9 +1117,6 @@ IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 
     DELETE FROM HEADER_SAV 
     WHERE (F903 = 'SVHOST' OR F903 = 'MPHOST' OR F903 = CONCAT('M', '$StoreNumber', '901')) 
     AND (DATEDIFF(DAY, F907, GETDATE()) > 30 OR DATEDIFF(DAY, F909, GETDATE()) > 30);
-
-/* Truncate PRICE_EVENT table for records older than 7 days */
-IF OBJECT_ID('PRICE_EVENT','U') IS NOT NULL AND HAS_PERMS_BY_NAME('PRICE_EVENT','OBJECT','DELETE') = 1 DELETE FROM PRICE_EVENT WHERE F254 < DATEADD(DAY,-7,GETDATE());
 
 /* Delete bad SMS items */
 @dbEXEC(DELETE FROM OBJ_TAB WHERE F01='0020000000000') 
@@ -1144,11 +1149,17 @@ DELETE FROM Header_dct WHERE F909 < DATEADD(day, -7, GETDATE());
 DELETE FROM Header_old WHERE F909 < DATEADD(day, -7, GETDATE());
 DELETE FROM Header_sav WHERE F909 < DATEADD(day, -7, GETDATE());
 
-/* Shrink database and log files */
+/* Rebuild indexes and update database statistics */
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD'
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN'
+
+/* Shrink the main database file */
 DBCC SHRINKFILE ($laneDbName)
+
+/* Shrink the database log file */
 DBCC SHRINKFILE (${laneDbName}_Log)
+
+/* Restrict the indefinite log file growth */
 ALTER DATABASE $laneDbName SET RECOVERY SIMPLE
 
 /* Clear the long database timeout */
@@ -1502,9 +1513,6 @@ IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 
     DELETE FROM HEADER_SAV 
     WHERE (F903 = 'SVHOST' OR F903 = 'MPHOST' OR F903 = CONCAT('M', '$StoreNumber', '901')) 
     AND (DATEDIFF(DAY, F907, GETDATE()) > 30 OR DATEDIFF(DAY, F909, GETDATE()) > 30);
-
-/* Truncate PRICE_EVENT table for records older than 7 days */
-IF OBJECT_ID('PRICE_EVENT','U') IS NOT NULL AND HAS_PERMS_BY_NAME('PRICE_EVENT','OBJECT','DELETE') = 1 DELETE FROM PRICE_EVENT WHERE F254 < DATEADD(DAY,-7,GETDATE());
 
 /* Delete bad SMS items */
 @dbEXEC(DELETE FROM OBJ_TAB WHERE F01='0020000000000') 
@@ -1956,19 +1964,16 @@ function Process_Server
 	
 	Write_Log "`r`n==================== Starting Server Database Maintenance ====================`r`n" "blue"
 	
-	# Make sure .NET WinForms assemblies are loaded if using PromptForSections
 	if ($PromptForSections)
 	{
 		[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
 		[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
 	}
 	
-	# Configuration for retry mechanism
 	$MaxRetries = 2
 	$RetryDelaySeconds = 5
 	$FailedCommandsPath = "$OfficePath\XF${StoreNumber}901\Failed_ServerSQLScript_Sections.sql"
 	
-	# Attempt to retrieve the SQL script
 	$sqlScript = $script:ServerSQLScript
 	$dbName = $script:FunctionResults['DBNAME']
 	
@@ -2000,7 +2005,6 @@ function Process_Server
 		return
 	}
 	
-	# Regex to capture sections: /* SectionName */ ...commands...
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	$matches = [regex]::Matches($sqlScript, $sectionPattern)
 	
@@ -2010,7 +2014,6 @@ function Process_Server
 		return
 	}
 	
-	# If the user wants a GUI prompt for sections, show the form now.
 	$SectionsToRun = $null
 	if ($PromptForSections)
 	{
@@ -2027,7 +2030,6 @@ function Process_Server
 	
 	$useSpecificSections = $SectionsToRun -and $SectionsToRun.Count -gt 0
 	
-	# Retrieve the connection string
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	if (-not $ConnectionString)
@@ -2040,17 +2042,8 @@ function Process_Server
 			return
 		}
 	}
-	if ($ConnectionString -notmatch '(?i)Encrypt\s*=')
-	{
-		$ConnectionString += ";Encrypt=True"
-	}
-	if ($ConnectionString -notmatch '(?i)TrustServerCertificate\s*=')
-	{
-		$ConnectionString += ";TrustServerCertificate=True"
-	}
 	Write_Log "Using connection string: $ConnectionString" "gray"
 	
-	# Determine if Invoke-Sqlcmd supports the -ConnectionString parameter
 	$supportsConnectionString = $false
 	try
 	{
@@ -2181,7 +2174,7 @@ function Process_Server
 	{
 		Write_Log "Max retries reached. SQL script execution failed." "red"
 		$failedCommandsText = ($failedCommands -join "`r`n") + "`r`n"
-		try
+		<#try
 		{
 			[System.IO.File]::WriteAllText($FailedCommandsPath, $failedCommandsText, $ansiPcEncoding)
 			Write_Log "`r`nFailed SQL sections written to: $FailedCommandsPath" "yellow"
@@ -2192,7 +2185,7 @@ function Process_Server
 		catch
 		{
 			Write_Log "Failed to write failed commands: $_" "red"
-		}
+		}#>
 	}
 	else
 	{
