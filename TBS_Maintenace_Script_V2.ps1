@@ -434,6 +434,22 @@ function Get_Store_And_Database_Info
 		$script:FunctionResults['ConnectionString'] = "Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
 	}
 	# $script:FunctionResults now fully populated for downstream use.
+	# GUI label updates (optional; can be removed if not needed)
+	if ($storeNumberLabel -ne $null)
+	{
+		$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
+		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+	}
+	if ($storeNameLabel -ne $null)
+	{
+		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
+		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+	}
+	if ($smsVersionLabel -ne $null)
+	{
+		$smsVersionLabel.Text = "SMS Version: $($script:FunctionResults['SMSVersionFull'])"
+		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+	}
 }
 
 # ===================================================================================================
