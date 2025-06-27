@@ -7459,14 +7459,10 @@ function Update_Scales_Specials_Interactive
 	
 	# Assume $OfficePath is already defined and points to the correct Office folder
 	$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
-	
-	# --- Interactive form ---
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
-	
+		
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Update Scales Specials"
-	$form.Size = New-Object System.Drawing.Size(470, 215)
+	$form.Size = New-Object System.Drawing.Size(490, 215)
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
@@ -7493,7 +7489,7 @@ function Update_Scales_Specials_Interactive
 	
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = New-Object System.Drawing.Point(180, 140)
+	$btnCancel.Location = New-Object System.Drawing.Point(180, 150)
 	$btnCancel.Size = New-Object System.Drawing.Size(80, 30)
 	$form.Controls.Add($btnCancel)
 	
@@ -7506,7 +7502,6 @@ function Update_Scales_Specials_Interactive
 			$form.Close()
 		})
 	$btnScheduleMinutes.Add_Click({
-			# Prompt for minutes value
 			$inputForm = New-Object System.Windows.Forms.Form
 			$inputForm.Text = "Set Minute Interval"
 			$inputForm.Size = New-Object System.Drawing.Size(320, 140)
@@ -7532,7 +7527,6 @@ function Update_Scales_Specials_Interactive
 					$inputForm.Close()
 				})
 			$inputForm.Controls.Add($okBtn)
-			
 			$inputForm.AcceptButton = $okBtn
 			
 			if ($inputForm.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)
@@ -7573,30 +7567,28 @@ function Update_Scales_Specials_Interactive
 	if ($script:selectedAction -eq "schedule")
 	{
 		$batchContent = @"
-@echo off
-setlocal enabledelayedexpansion
-REM No popup, runs as SYSTEM
-
-taskkill /IM ScaleManagementApp.exe /F >nul 2>&1
-taskkill /IM BMSSrv.exe /F >nul 2>&1
-taskkill /IM BMS.exe /F >nul 2>&1
-sc.exe delete "BMS" >nul 2>&1
-del /s /q C:\Bizerba\RetailConnect\BMS\toBizerba\*.* >nul 2>&1
+if "%1" == "" start "" /min "%~f0" MY_FLAG && exit
+taskkill /IM ScaleManagementApp.exe /F
+taskkill /IM BMSSrv.exe /F
+taskkill /IM BMS.exe /F
+del /s /q C:\Bizerba\RetailConnect\BMS\toBizerba\*.*
 rmdir /s /q C:\Bizerba\RetailConnect\BMS\terminals\ >nul 2>&1
-cd /d C:\Bizerba\RetailConnect\BMS
-BMSSrv.exe -reg
-sc.exe start BMS >nul 2>&1
-C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe
-endlocal
+net start BMS /Y
+start C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe
+exit
 "@
 		Set-Content -Path $batchPath_Daily -Value $batchContent -Encoding ASCII
 		
 		$taskName = "Update_Scales_Specials_Task"
-		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath_Daily`" /sc DAILY /st 05:00 /rl HIGHEST /f /ru SYSTEM"
-		$result = Invoke-Expression $schtasks
+		
+		# SYSTEM: no popup, no password
+		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath_Daily`" /sc DAILY /st 05:00 /rl HIGHEST /f /ru $env:COMPUTERNAME\Administrator"
+		
+		Invoke-Expression $schtasks
+		
 		if ($LASTEXITCODE -eq 0)
 		{
-			Write_Log "Scheduled task created successfully for Update_Scales_Specials_Task (daily at 5 AM, SYSTEM, no popups)." "green"
+			Write_Log "Scheduled task created successfully for Update_Scales_Specials_Task (daily at 5 AM)." "green"
 		}
 		else
 		{
@@ -7637,31 +7629,29 @@ endlocal
 		}
 		
 		$batchContent = @"
-@echo off
-setlocal enabledelayedexpansion
-REM No popup, runs as SYSTEM
-
-taskkill /IM ScaleManagementApp.exe /F >nul 2>&1
-taskkill /IM BMSSrv.exe /F >nul 2>&1
-taskkill /IM BMS.exe /F >nul 2>&1
-sc.exe delete "BMS" >nul 2>&1
-del /s /q C:\Bizerba\RetailConnect\BMS\toBizerba\*.* >nul 2>&1
+if "%1" == "" start "" /min "%~f0" MY_FLAG && exit
+taskkill /IM ScaleManagementApp.exe /F
+taskkill /IM BMSSrv.exe /F
+taskkill /IM BMS.exe /F
+del /s /q C:\Bizerba\RetailConnect\BMS\toBizerba\*.*
 rmdir /s /q C:\Bizerba\RetailConnect\BMS\terminals\ >nul 2>&1
-cd /d C:\Bizerba\RetailConnect\BMS
-BMSSrv.exe -reg
-sc.exe start BMS >nul 2>&1
-C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe
-endlocal
+net start BMS /Y
+start C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe
+exit
 "@
 		Set-Content -Path $batchPath_Minutes -Value $batchContent -Encoding ASCII
 		
 		$taskName = "Update_Scales_Specials_Task_Minutes"
 		$interval = [int]$script:minutesValue
-		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath_Minutes`" /sc MINUTE /mo $interval /rl HIGHEST /f /ru SYSTEM"
-		$result = Invoke-Expression $schtasks
+		
+		# SYSTEM: no popup, no password
+		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath_Minutes`" /sc MINUTE /mo $interval /rl HIGHEST /f /ru $env:COMPUTERNAME\Administrator"
+		
+		Invoke-Expression $schtasks
+		
 		if ($LASTEXITCODE -eq 0)
 		{
-			Write_Log "Scheduled task created successfully for Update_Scales_Specials_Task_Minutes (every $interval minutes, SYSTEM, no popups)." "green"
+			Write_Log "Scheduled task created successfully for Update_Scales_Specials_Task_Minutes (every $interval minutes)." "green"
 		}
 		else
 		{
