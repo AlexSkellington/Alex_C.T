@@ -7610,7 +7610,7 @@ exit
 				$newContent = ($content -split "`r?`n") | Where-Object { $_ -notmatch '(?i)ScaleManagementApp\.exe|ScaleManagementApp_FastDEPLOY\.exe' }
 				if ($newContent.Count -lt (($content -split "`r?`n").Count))
 				{
-					$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding $ansiPcEncoding
+					$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding [System.Text.Encoding]::GetEncoding(1252)
 					Write_Log "Removed lines from $deployChgFile containing ScaleManagementApp.exe or ScaleManagementApp_FastDEPLOY.exe" "green"
 				}
 				else
