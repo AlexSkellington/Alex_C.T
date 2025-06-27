@@ -658,7 +658,7 @@ function Retrieve_Nodes
 	$HostPath = "$OfficePath"
 	$LaneContents = @()
 	$LaneMachines = @{ }
-	$ScaleIPNetworks = @{ }	
+	$ScaleIPNetworks = @{ }
 	$TerLoadSqlPath = Join-Path $LoadPath 'Ter_Load.sql'
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$NodesFromDatabase = $false
@@ -5284,7 +5284,7 @@ function Schedule_Lane_DB_Maintenance
 		Write_Log "Invalid or no interval provided, using 7 days." "yellow"
 		$RepeatDays = 7
 	}
-		
+	
 	foreach ($LaneNumber in $selection.Lanes)
 	{
 		# ----------- USE MAPPING ----------
@@ -5298,7 +5298,7 @@ function Schedule_Lane_DB_Maintenance
 		$DestScriptPath = Join-Path $LaneOfficeFolder "LANE_DB_MAINTENANCE.SQI"
 		$LocalXFPath = Join-Path $OfficePath "XF$StoreNumber$LaneNumber"
 		$SchedulerMacroPath = Join-Path $LocalXFPath "Add_LaneDBMaintenance_to_RUN_TAB.sqi"
-				
+		
 		# Prepare scheduler macro content (unique task number per lane if needed)
 		$TaskNumber = 750
 		$HostTarget = "{0:D3}" -f [int]$LaneNumber
@@ -7452,8 +7452,13 @@ function Update_Scales_Specials_Interactive
 	Write_Log "`r`n==================== Starting Update_Scales_Specials_Interactive Function ====================`r`n" "blue"
 	
 	$scriptFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
-	$batchName = "Update_Scales_Specials.bat"
-	$batchPath = Join-Path $scriptFolder $batchName
+	$batchName_Daily = "Update_Scales_Specials.bat"
+	$batchPath_Daily = Join-Path $scriptFolder $batchName_Daily
+	$batchName_Minutes = "Update_Scales_Specials_Minutes.bat"
+	$batchPath_Minutes = Join-Path $scriptFolder $batchName_Minutes
+	
+	# Assume $OfficePath is already defined and points to the correct Office folder
+	$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
 	
 	# --- Interactive form ---
 	Add-Type -AssemblyName System.Windows.Forms
@@ -7461,54 +7466,97 @@ function Update_Scales_Specials_Interactive
 	
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Update Scales Specials"
-	$form.Size = New-Object System.Drawing.Size(430, 210)
+	$form.Size = New-Object System.Drawing.Size(470, 215)
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
 	
 	$label = New-Object System.Windows.Forms.Label
-	$label.Text = "Do you want to run Update Scales Specials now, or schedule it as a daily task at 5 AM?"
+	$label.Text = "Schedule Update Scales Specials as a daily (5 AM) or repeating task (in minutes)."
 	$label.Location = New-Object System.Drawing.Point(20, 20)
-	$label.Size = New-Object System.Drawing.Size(390, 40)
+	$label.Size = New-Object System.Drawing.Size(430, 40)
 	$label.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$form.Controls.Add($label)
 	
-	$btnRunNow = New-Object System.Windows.Forms.Button
-	$btnRunNow.Text = "Run Now"
-	$btnRunNow.Location = New-Object System.Drawing.Point(35, 90)
-	$btnRunNow.Size = New-Object System.Drawing.Size(100, 40)
-	$form.Controls.Add($btnRunNow)
-	
 	$btnSchedule = New-Object System.Windows.Forms.Button
-	$btnSchedule.Text = "Schedule Task"
-	$btnSchedule.Location = New-Object System.Drawing.Point(160, 90)
-	$btnSchedule.Size = New-Object System.Drawing.Size(120, 40)
+	$btnSchedule.Text = "Schedule Daily (5 AM)"
+	$btnSchedule.Location = New-Object System.Drawing.Point(60, 90)
+	$btnSchedule.Size = New-Object System.Drawing.Size(140, 40)
 	$form.Controls.Add($btnSchedule)
+	
+	$btnScheduleMinutes = New-Object System.Windows.Forms.Button
+	$btnScheduleMinutes.Text = "Schedule Task (Minutes)"
+	$btnScheduleMinutes.Location = New-Object System.Drawing.Point(220, 90)
+	$btnScheduleMinutes.Size = New-Object System.Drawing.Size(180, 40)
+	$form.Controls.Add($btnScheduleMinutes)
 	
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = New-Object System.Drawing.Point(305, 90)
-	$btnCancel.Size = New-Object System.Drawing.Size(80, 40)
+	$btnCancel.Location = New-Object System.Drawing.Point(180, 140)
+	$btnCancel.Size = New-Object System.Drawing.Size(80, 30)
 	$form.Controls.Add($btnCancel)
 	
 	$selectedAction = $null
-	$btnRunNow.Add_Click({
-			$script:selectedAction = "run"
-			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
-			$form.Close()
-		})
+	$minutesValue = $null
+	
 	$btnSchedule.Add_Click({
 			$script:selectedAction = "schedule"
 			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
 			$form.Close()
+		})
+	$btnScheduleMinutes.Add_Click({
+			# Prompt for minutes value
+			$inputForm = New-Object System.Windows.Forms.Form
+			$inputForm.Text = "Set Minute Interval"
+			$inputForm.Size = New-Object System.Drawing.Size(320, 140)
+			$inputForm.StartPosition = "CenterParent"
+			
+			$lblInput = New-Object System.Windows.Forms.Label
+			$lblInput.Text = "How many minutes between runs? (1-1439):"
+			$lblInput.Location = New-Object System.Drawing.Point(10, 15)
+			$lblInput.Size = New-Object System.Drawing.Size(280, 25)
+			$inputForm.Controls.Add($lblInput)
+			
+			$txtInput = New-Object System.Windows.Forms.TextBox
+			$txtInput.Location = New-Object System.Drawing.Point(10, 45)
+			$txtInput.Size = New-Object System.Drawing.Size(120, 25)
+			$inputForm.Controls.Add($txtInput)
+			
+			$okBtn = New-Object System.Windows.Forms.Button
+			$okBtn.Text = "OK"
+			$okBtn.Location = New-Object System.Drawing.Point(150, 42)
+			$okBtn.Size = New-Object System.Drawing.Size(60, 25)
+			$okBtn.Add_Click({
+					$inputForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+					$inputForm.Close()
+				})
+			$inputForm.Controls.Add($okBtn)
+			
+			$inputForm.AcceptButton = $okBtn
+			
+			if ($inputForm.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)
+			{
+				$num = $txtInput.Text
+				if ($num -match '^\d+$' -and [int]$num -ge 1 -and [int]$num -le 1439)
+				{
+					$script:selectedAction = "schedule_minutes"
+					$script:minutesValue = [int]$num
+					$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+					$form.Close()
+				}
+				else
+				{
+					[System.Windows.Forms.MessageBox]::Show("Please enter a valid number between 1 and 1439.", "Invalid Interval", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				}
+			}
 		})
 	$btnCancel.Add_Click({
 			$script:selectedAction = "cancel"
 			$form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 			$form.Close()
 		})
-	$form.AcceptButton = $btnRunNow
+	$form.AcceptButton = $btnSchedule
 	$form.CancelButton = $btnCancel
 	
 	$form.ShowDialog() | Out-Null
@@ -7519,44 +7567,36 @@ function Update_Scales_Specials_Interactive
 		return
 	}
 	
-	# ---------------------- Schedule Path ----------------------
+	if (-not (Test-Path $scriptFolder)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
+	
+	# --- Batch for daily (UpdateSpecials) ---
 	if ($script:selectedAction -eq "schedule")
 	{
-		if (-not (Test-Path $scriptFolder)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
-		
 		$batchContent = @"
 @echo off
 setlocal enabledelayedexpansion
+REM No popup, runs as SYSTEM
 
-REM Check for administrative privileges without any output
-net session >nul 2>&1
-if %errorLevel% neq 0 (
-    powershell -Command "Start-Process cmd -ArgumentList '/c %~s0 %*' -Verb RunAs" >nul 2>&1
-    exit /b
-)
-
-REM Run main actions in silent mode
-taskkill /IM ScaleManagementApp.exe /F
-taskkill /IM BMSSrv.exe /F
-taskkill /IM BMS.exe /F
-sc.exe delete "BMS"
-del /s /q C:\Bizerba\RetailConnect\BMS\toBizerba\*.*
-rmdir /s /q C:\Bizerba\RetailConnect\BMS\terminals\
+taskkill /IM ScaleManagementApp.exe /F >nul 2>&1
+taskkill /IM BMSSrv.exe /F >nul 2>&1
+taskkill /IM BMS.exe /F >nul 2>&1
+sc.exe delete "BMS" >nul 2>&1
+del /s /q C:\Bizerba\RetailConnect\BMS\toBizerba\*.* >nul 2>&1
+rmdir /s /q C:\Bizerba\RetailConnect\BMS\terminals\ >nul 2>&1
 cd /d C:\Bizerba\RetailConnect\BMS
-"BMSSrv.exe" -reg
-sc.exe start BMS
-start C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe
+BMSSrv.exe -reg
+sc.exe start BMS >nul 2>&1
+C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe
 endlocal
 "@
-		
-		Set-Content -Path $batchPath -Value $batchContent -Encoding ASCII
+		Set-Content -Path $batchPath_Daily -Value $batchContent -Encoding ASCII
 		
 		$taskName = "Update_Scales_Specials_Task"
-		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath`" /sc DAILY /st 05:00 /rl HIGHEST /f"
+		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath_Daily`" /sc DAILY /st 05:00 /rl HIGHEST /f /ru SYSTEM"
 		$result = Invoke-Expression $schtasks
 		if ($LASTEXITCODE -eq 0)
 		{
-			Write_Log "Scheduled task created successfully for Update_Scales_Specials_Task." "green"
+			Write_Log "Scheduled task created successfully for Update_Scales_Specials_Task (daily at 5 AM, SYSTEM, no popups)." "green"
 		}
 		else
 		{
@@ -7566,40 +7606,70 @@ endlocal
 		return
 	}
 	
-	# ---------------------- Run Now Path ----------------------
-	try
+	# --- Batch for minutes (FastDEPLOY) ---
+	if ($script:selectedAction -eq "schedule_minutes" -and $script:minutesValue)
 	{
-		Write_Log "Killing ScaleManagementApp.exe, BMSSrv.exe, BMS.exe..." "blue"
-		Stop-Process -Name "ScaleManagementApp" -Force -ErrorAction SilentlyContinue
-		Stop-Process -Name "BMSSrv" -Force -ErrorAction SilentlyContinue
-		Stop-Process -Name "BMS" -Force -ErrorAction SilentlyContinue
+		# --- REMOVE LINES FROM $deployChgFile ---
+		if (Test-Path $deployChgFile)
+		{
+			try
+			{
+				$content = Get-Content $deployChgFile -Raw
+				$newContent = ($content -split "`r?`n") | Where-Object { $_ -notmatch '(?i)ScaleManagementApp\.exe|ScaleManagementApp_FastDEPLOY\.exe' }
+				if ($newContent.Count -lt (($content -split "`r?`n").Count))
+				{
+					$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding UTF8
+					Write_Log "Removed lines from $deployChgFile containing ScaleManagementApp.exe or ScaleManagementApp_FastDEPLOY.exe" "green"
+				}
+				else
+				{
+					Write_Log "No matching lines found in DEPLOY_CHG.sql for removal." "yellow"
+				}
+			}
+			catch
+			{
+				Write_Log "Failed to update [$deployChgFile]: $_" "red"
+			}
+		}
+		else
+		{
+			Write_Log "DEPLOY_CHG.sql not found in $OfficePath" "yellow"
+		}
 		
-		Write_Log "Deleting BMS service..." "blue"
-		sc.exe delete "BMS" | Out-Null
+		$batchContent = @"
+@echo off
+setlocal enabledelayedexpansion
+REM No popup, runs as SYSTEM
+
+taskkill /IM ScaleManagementApp.exe /F >nul 2>&1
+taskkill /IM BMSSrv.exe /F >nul 2>&1
+taskkill /IM BMS.exe /F >nul 2>&1
+sc.exe delete "BMS" >nul 2>&1
+del /s /q C:\Bizerba\RetailConnect\BMS\toBizerba\*.* >nul 2>&1
+rmdir /s /q C:\Bizerba\RetailConnect\BMS\terminals\ >nul 2>&1
+cd /d C:\Bizerba\RetailConnect\BMS
+BMSSrv.exe -reg
+sc.exe start BMS >nul 2>&1
+C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe
+endlocal
+"@
+		Set-Content -Path $batchPath_Minutes -Value $batchContent -Encoding ASCII
 		
-		Write_Log "Deleting all files in toBizerba folder..." "blue"
-		Remove-Item -Path "C:\Bizerba\RetailConnect\BMS\toBizerba\*.*" -Force -Recurse -ErrorAction SilentlyContinue
-		
-		Write_Log "Removing BMS terminals directory..." "blue"
-		Remove-Item -Path "C:\Bizerba\RetailConnect\BMS\terminals\" -Force -Recurse -ErrorAction SilentlyContinue
-		
-		Write_Log "Re-registering BMS service..." "blue"
-		Push-Location "C:\Bizerba\RetailConnect\BMS"
-		& "BMSSrv.exe" -reg
-		sc.exe start BMS | Out-Null
-		Pop-Location
-		
-		Write_Log "Starting ScaleManagementAppUpdateSpecials.exe..." "blue"
-		Start-Process "C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe"
-		
-		Write_Log "Update Scales Specials completed." "green"
+		$taskName = "Update_Scales_Specials_Task_Minutes"
+		$interval = [int]$script:minutesValue
+		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath_Minutes`" /sc MINUTE /mo $interval /rl HIGHEST /f /ru SYSTEM"
+		$result = Invoke-Expression $schtasks
+		if ($LASTEXITCODE -eq 0)
+		{
+			Write_Log "Scheduled task created successfully for Update_Scales_Specials_Task_Minutes (every $interval minutes, SYSTEM, no popups)." "green"
+		}
+		else
+		{
+			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task_Minutes." "red"
+		}
+		Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
+		return
 	}
-	catch
-	{
-		Write_Log "ERROR during Update Scales Specials: $_" "red"
-	}
-	
-	Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -8113,7 +8183,7 @@ if (-not $form)
 	$storeNumberLabel.Size = New-Object System.Drawing.Size(200, 20)
 	$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($storeNumberLabel)
-		
+	
 	# Nodes Backoffice Label (Number of Backoffices)
 	$NodesBackoffices = New-Object System.Windows.Forms.Label
 	$NodesBackoffices.Text = "Number of Backoffices: N/A"
@@ -8139,7 +8209,7 @@ if (-not $form)
 	$scalesLabel.Size = New-Object System.Drawing.Size(200, 20)
 	$scalesLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($scalesLabel)
-		
+	
 	# Create a RichTextBox for log output
 	$logBox = New-Object System.Windows.Forms.RichTextBox
 	$logBox.Location = New-Object System.Drawing.Point(50, 70)
@@ -8166,7 +8236,7 @@ if (-not $form)
 	$ContextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuGeneral.ShowItemToolTips = $true
 	
-		
+	
 	############################################################################
 	# 1) Activate Windows ("Alex_C.T")
 	############################################################################
@@ -8435,7 +8505,7 @@ if (-not $form)
 			Pump_Tables -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
-		
+	
 	############################################################################
 	# 4) Update Lane Configuration Menu Item
 	############################################################################
@@ -8455,7 +8525,7 @@ if (-not $form)
 			Close_Open_Transactions -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
-		
+	
 	############################################################################
 	# 6) Ping Lanes Menu Item
 	############################################################################
@@ -8515,7 +8585,7 @@ if (-not $form)
 			Send_Restart_All_Programs -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
-		
+	
 	############################################################################
 	# 13) Set the time on the lanes
 	############################################################################
@@ -8555,31 +8625,31 @@ if (-not $form)
 	$toolTip.SetToolTip($LaneToolsButton, "Click to see Lane-related tools.")
 	$form.Controls.Add($LaneToolsButton)
 }
-	######################################################################################################################
-	# 
-	# Anchor all controls for resize
-	#
-	######################################################################################################################
-	$smsVersionLabel.Anchor = 'Top,Left'
-	$storeNumberLabel.Anchor = 'Top,Right'
-	$NodesBackoffices.Anchor = 'Top,Left'
-	$NodesStore.Anchor = 'Top'
-	$scalesLabel.Anchor = 'Top,Right'
-	$logBox.Anchor = 'Top,Left,Right,Bottom'
-	$clearLogButton.Anchor = 'Top,Right'
-	$GeneralToolsButton.Anchor = 'Bottom,Right'
-	$ServerToolsButton.Anchor = 'Bottom,Left'
-	$LaneToolsButton.Anchor = 'Bottom'
+######################################################################################################################
+# 
+# Anchor all controls for resize
+#
+######################################################################################################################
+$smsVersionLabel.Anchor = 'Top,Left'
+$storeNumberLabel.Anchor = 'Top,Right'
+$NodesBackoffices.Anchor = 'Top,Left'
+$NodesStore.Anchor = 'Top'
+$scalesLabel.Anchor = 'Top,Right'
+$logBox.Anchor = 'Top,Left,Right,Bottom'
+$clearLogButton.Anchor = 'Top,Right'
+$GeneralToolsButton.Anchor = 'Bottom,Right'
+$ServerToolsButton.Anchor = 'Bottom,Left'
+$LaneToolsButton.Anchor = 'Bottom'
 
-	$form.add_Resize({
-			$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
-			$logBox.Width = $form.ClientSize.Width - 100
-			$logBox.Height = $form.ClientSize.Height - 170
-			$clearLogButton.Left = $form.ClientSize.Width - 55
-			$GeneralToolsButton.Left = $form.ClientSize.Width - 350
-			$ServerToolsButton.Top = $LaneToolsButton.Top = $GeneralToolsButton.Top = $form.ClientSize.Height - 85
-			$LaneToolsButton.Left = [math]::Max(350, ($form.ClientSize.Width - 950) / 2 + 300)
-})
+$form.add_Resize({
+		$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
+		$logBox.Width = $form.ClientSize.Width - 100
+		$logBox.Height = $form.ClientSize.Height - 170
+		$clearLogButton.Left = $form.ClientSize.Width - 55
+		$GeneralToolsButton.Left = $form.ClientSize.Width - 350
+		$ServerToolsButton.Top = $LaneToolsButton.Top = $GeneralToolsButton.Top = $form.ClientSize.Height - 85
+		$LaneToolsButton.Left = [math]::Max(350, ($form.ClientSize.Width - 950) / 2 + 300)
+	})
 
 # ===================================================================================================
 #                                       SECTION: Main Script Execution
