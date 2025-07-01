@@ -7509,6 +7509,118 @@ function Open_Selected_Lane/s_C_Path
 }
 
 # ===================================================================================================
+#                           FUNCTION: Open-SelectedScalesCPath
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Prompts the user with a GUI dialog to select one or more scales and attempts to open the C$
+#   administrative share for each selected scale in Windows Explorer. It tries to connect as
+#   user 'bizuser' with password 'bizerba' first, then 'biyerba' if needed. Temporary network
+#   mappings are cleaned up after opening.
+# ---------------------------------------------------------------------------------------------------
+# Requirements:
+#   - The scale hostnames/IPs must resolve and allow SMB access.
+#   - Show_Scale_Selection_Form and Retrieve_Nodes must be run first to populate FunctionResults.
+# ---------------------------------------------------------------------------------------------------
+# Usage Example:
+#   Retrieve_Nodes -StoreNumber '001'
+#   Open-SelectedScalesCPath -StoreNumber '001'
+# ===================================================================================================
+
+function Open-Selected_Scale/s_C_Path
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	# Get selection from GUI
+	$selection = Show_Scale_Selection_Form -StoreNumber $StoreNumber
+	if (-not $selection -or -not $selection.Scales -or $selection.Scales.Count -eq 0)
+	{
+		Write-Host "No scales selected. Exiting." -ForegroundColor Yellow
+		return
+	}
+	
+	$scaleIPTable = $script:FunctionResults['ScaleIPNetworks']
+	if (-not $scaleIPTable)
+	{
+		Write-Host "No scale IP mapping available. Please run Retrieve_Nodes first." -ForegroundColor Yellow
+		return
+	}
+	
+	$user = "bizuser"
+	$passwords = @("bizerba", "biyerba")
+	$netDriveLetterBase = "Z" # We'll try Z, then Y, then X if needed
+	
+	foreach ($scaleCode in $selection.Scales)
+	{
+		$scaleObj = $scaleIPTable[$scaleCode]
+		if (-not $scaleObj)
+		{
+			Write-Host "No scale object found for $scaleCode." -ForegroundColor Red
+			continue
+		}
+		
+		# Prefer FullIP, fallback to IPNetwork+IPDevice, fallback to ScaleName
+		$host = $null
+		if ($scaleObj.FullIP -and $scaleObj.FullIP -ne "")
+		{
+			$host = $scaleObj.FullIP
+		}
+		elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice)
+		{
+			$host = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
+		}
+		elseif ($scaleObj.ScaleName)
+		{
+			$host = $scaleObj.ScaleName
+		}
+		if (-not $host)
+		{
+			Write-Host "Could not determine host for $scaleCode." -ForegroundColor Red
+			continue
+		}
+		
+		$sharePath = "\\$host\c$"
+		$mapped = $false
+		$driveLetter = $netDriveLetterBase
+		foreach ($pw in $passwords)
+		{
+			try
+			{
+				# Remove PSDrive if it already exists
+				if (Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue)
+				{
+					Remove-PSDrive -Name $driveLetter -Force -ErrorAction SilentlyContinue
+				}
+				# Attempt mapping
+				New-PSDrive -Name $driveLetter -PSProvider FileSystem -Root $sharePath -Credential (New-Object System.Management.Automation.PSCredential($user, (ConvertTo-SecureString $pw -AsPlainText -Force))) -ErrorAction Stop | Out-Null
+				# If mapping successful, open in Explorer
+				Start-Process "explorer.exe" "$driveLetter`:\"
+				Write-Host "Opened $sharePath as $user using password '$pw'." -ForegroundColor Green
+				$mapped = $true
+				break
+			}
+			catch
+			{
+				# Try next password
+				continue
+			}
+		}
+		if (-not $mapped)
+		{
+			Write-Host "Could not open $sharePath with user $user and available passwords." -ForegroundColor Red
+		}
+		else
+		{
+			# Clean up the mapping after a short delay
+			Start-Sleep -Seconds 2
+			Remove-PSDrive -Name $driveLetter -Force -ErrorAction SilentlyContinue
+		}
+	}
+}
+
+# ===================================================================================================
 #                         FUNCTION: Update_Scales_Specials_Interactive
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -7736,6 +7848,144 @@ exit
 		}
 		Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
 		return
+	}
+}
+
+# ===================================================================================================
+#                             FUNCTION: Show_Scale_Selection_Form
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Presents a GUI dialog for the user to select scales to process within a store.
+#   Returns a hashtable with the selection type and the list of selected scale codes.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - StoreNumber: The 3-digit store number to filter scales (optional, set to "" for all).
+# ===================================================================================================
+
+function Show_Scale_Selection_Form
+{
+	param (
+		[Parameter(Mandatory = $false)]
+		[string]$StoreNumber = ""
+	)
+	
+	# Load assemblies
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	# Prepare form
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Select Scales to Process"
+	$form.Size = New-Object System.Drawing.Size(370, 400)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	# CheckedListBox for scales
+	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
+	$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
+	$checkedListBox.Size = New-Object System.Drawing.Size(330, 250)
+	$checkedListBox.CheckOnClick = $true
+	$form.Controls.Add($checkedListBox)
+	
+	# Retrieve scale list from FunctionResults
+	$allScales = @()
+	if ($script:FunctionResults.ContainsKey('ScaleIPNetworks') -and $script:FunctionResults['ScaleIPNetworks'].Count -gt 0)
+	{
+		$allScales = $script:FunctionResults['ScaleIPNetworks'].Values
+		# Optionally filter by StoreNumber if ScaleCode contains store info (adapt if needed)
+		if ($StoreNumber -and $StoreNumber -ne "")
+		{
+			$allScales = $allScales | Where-Object { $_.ScaleCode -like "$StoreNumber*" }
+		}
+	}
+	
+	# Populate CheckedListBox
+	$sortedScales = $allScales | Sort-Object ScaleCode
+	foreach ($scale in $sortedScales)
+	{
+		$ip = if ($scale.FullIP) { $scale.FullIP }
+		else { "$($scale.IPNetwork)$($scale.IPDevice)" }
+		$displayName = "$($scale.ScaleCode): $($scale.ScaleName) [$ip]"
+		$scaleObj = New-Object PSObject -Property @{
+			DisplayName = $displayName
+			ScaleCode   = $scale.ScaleCode
+			ScaleName   = $scale.ScaleName
+			FullIP	    = $ip
+		}
+		$scaleObj | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
+		$checkedListBox.Items.Add($scaleObj) | Out-Null
+	}
+	
+	# Select All
+	$btnSelectAll = New-Object System.Windows.Forms.Button
+	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 270)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(150, 30)
+	$btnSelectAll.Text = "Select All"
+	$btnSelectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $true)
+			}
+		})
+	$form.Controls.Add($btnSelectAll)
+	
+	# Deselect All
+	$btnDeselectAll = New-Object System.Windows.Forms.Button
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(170, 270)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(150, 30)
+	$btnDeselectAll.Text = "Deselect All"
+	$btnDeselectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $false)
+			}
+		})
+	$form.Controls.Add($btnDeselectAll)
+	
+	# OK/Cancel
+	$buttonOK = New-Object System.Windows.Forms.Button
+	$buttonOK.Text = "OK"
+	$buttonOK.Location = New-Object System.Drawing.Point(30, 320)
+	$buttonOK.Size = New-Object System.Drawing.Size(100, 30)
+	$buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.Controls.Add($buttonOK)
+	
+	$buttonCancel = New-Object System.Windows.Forms.Button
+	$buttonCancel.Text = "Cancel"
+	$buttonCancel.Location = New-Object System.Drawing.Point(210, 320)
+	$buttonCancel.Size = New-Object System.Drawing.Size(100, 30)
+	$buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.Controls.Add($buttonCancel)
+	
+	$form.AcceptButton = $buttonOK
+	$form.CancelButton = $buttonCancel
+	
+	$dialogResult = $form.ShowDialog()
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		return $null
+	}
+	
+	# Gather selected scales
+	$selectedScales = @()
+	for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+	{
+		if ($checkedListBox.GetItemChecked($i))
+		{
+			$selectedScales += $checkedListBox.Items[$i].ScaleCode
+		}
+	}
+	if ($selectedScales.Count -eq 0)
+	{
+		[System.Windows.Forms.MessageBox]::Show("No scales selected.", "Information",
+			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+		return $null
+	}
+	return @{
+		Type   = 'Specific'
+		Scales = $selectedScales
 	}
 }
 
@@ -8397,7 +8647,17 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($OpenLaneCShareItem)
 	
 	############################################################################
-	# 9) Remove Archive Bit
+	# 9) Open Scale C$ Share(s)
+	############################################################################
+	$OpenScaleCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Scale C$ Share(s)")
+	$OpenScaleCShareItem.ToolTipText = "Select scales and open their C$ administrative shares as 'bizuser' (bizerba/biyerba)."
+	$OpenScaleCShareItem.Add_Click({
+			Open_Selected_Lane/s_C_Path -StoreNumber $selectedStore
+		})
+	[void]$contextMenuGeneral.Items.Add($OpenScaleCShareItem)
+	
+	############################################################################
+	# 10) Remove Archive Bit
 	############################################################################
 	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
 	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
@@ -8407,7 +8667,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
 	
 	############################################################################
-	# 10) Update Scales Specials
+	# 11) Update Scales Specials
 	############################################################################
 	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
 	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
@@ -8415,17 +8675,7 @@ if (-not $form)
 			Update_Scales_Specials_Interactive
 		})
 	[void]$contextMenuGeneral.Items.Add($UpdateScalesSpecialsItem)
-	
-	############################################################################
-	# 10) Open Lane C$ Share(s)
-	############################################################################
-	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
-	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
-	$OpenLaneCShareItem.Add_Click({
-			Open_Selected_Lane/s_C_Path -StoreNumber $storeNumber
-		})
-	[void]$contextMenuGeneral.Items.Add($OpenLaneCShareItem)
-	
+		
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
 	############################################################################
