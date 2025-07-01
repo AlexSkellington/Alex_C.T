@@ -8871,7 +8871,7 @@ if (-not $form)
 	$ExportVNCFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export All VNC Files")
 	$ExportVNCFilesItem.ToolTipText = "Generate UltraVNC (.vnc) connection files for all lanes, scales, and backoffices."
 	$ExportVNCFilesItem.Add_Click({
-			Export_VNCFiles_ForAllNodes `
+			Export_VNC_Files_For_All_Nodes `
 										-LaneMachines $script:FunctionResults['LaneMachines'] `
 										-ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks'] `
 										-BackofficeMachines $script:FunctionResults['BackofficeMachines']
