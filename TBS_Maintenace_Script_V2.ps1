@@ -7898,26 +7898,16 @@ function Export_VNC_Files_For_All_Nodes
 	)
 	
 	Write_Log "`r`n==================== Starting Export_VNCFiles_ForAllNodes ====================`r`n" "blue"
-	
 	$VNCPassword = "4330df922eb03b6e"
-	
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
 	$scalesDir = Join-Path $desktop "Scales"
 	$backofficesDir = Join-Path $desktop "BackOffices"
 	
-	# ---- Lanes ----
-	$laneCount = 0
-	foreach ($lane in $LaneMachines.GetEnumerator())
-	{
-		$laneNumber = $lane.Key
-		$machineName = $lane.Value
-		$fileName = "Lane_${laneNumber}.vnc"
-		$filePath = Join-Path $lanesDir $fileName
-		
-		$content = @"
+	# --- Shared VNC file content with token ---
+	$vncTemplate = @"
 [connection]
-host=$machineName
+host=%%HOST%%
 port=5900
 proxyhost=
 proxyport=0
@@ -8019,8 +8009,18 @@ AutoAcceptNoDSM=0
 RequireEncryption=0
 PreemptiveUpdates=0
 "@
+	
+	# ---- Lanes ----
+	$laneCount = 0
+	foreach ($lane in $LaneMachines.GetEnumerator())
+	{
+		$laneNumber = $lane.Key
+		$machineName = $lane.Value
+		$fileName = "Lane_${laneNumber}.vnc"
+		$filePath = Join-Path $lanesDir $fileName
 		$parent = Split-Path $filePath -Parent
 		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
+		$content = $vncTemplate.Replace('%%HOST%%', $machineName)
 		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 		Write_Log "Created: $filePath" "green"
 		$laneCount++
@@ -8043,7 +8043,8 @@ PreemptiveUpdates=0
 			$filePath = Join-Path $scalesDir $fileName
 			$parent = Split-Path $filePath -Parent
 			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-			[System.IO.File]::WriteAllText($filePath, $content.Replace("host=$machineName", "host=$ip"), $script:ansiPcEncoding)
+			$content = $vncTemplate.Replace('%%HOST%%', $ip)
+			[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 			Write_Log "Created: $filePath" "green"
 			$scaleCount++
 		}
@@ -8064,7 +8065,8 @@ PreemptiveUpdates=0
 		$filePath = Join-Path $backofficesDir $fileName
 		$parent = Split-Path $filePath -Parent
 		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-		[System.IO.File]::WriteAllText($filePath, $content.Replace("host=$machineName", "host=$boName"), $script:ansiPcEncoding)
+		$content = $vncTemplate.Replace('%%HOST%%', $boName)
+		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 		Write_Log "Created: $filePath" "green"
 		$boCount++
 	}
