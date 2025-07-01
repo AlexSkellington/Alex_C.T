@@ -822,16 +822,16 @@ WHERE F1056 = '$StoreNumber'
 				foreach ($row in $backofficesList)
 				{
 					$terminal = $row.F1057
-					$machinePath = $row.F1125
-					if ($machinePath -match '\\\\([^\\]+)\\')
+					$backofficeName = $row.F1125
+					if ($backofficeName)
 					{
-						$machineName = $matches[1]
-						$BackofficeMachines[$terminal] = $machineName
+						$cleanName = $backofficeName -replace '^@', ''
+						$BackofficeMachines[$terminal] = $cleanName
 					}
 				}
 			}
 			$NumberOfBackoffices = $BackofficeMachines.Count
-		}
+			}
 		catch
 		{
 			Write_Log "Failed to retrieve counts from the database: $_" "yellow"
