@@ -8652,7 +8652,7 @@ if (-not $form)
 	$OpenScaleCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Scale C$ Share(s)")
 	$OpenScaleCShareItem.ToolTipText = "Select scales and open their C$ administrative shares as 'bizuser' (bizerba/biyerba)."
 	$OpenScaleCShareItem.Add_Click({
-			Open_Selected_Lane/s_C_Path -StoreNumber $selectedStore
+			Open_Selected_Lane/s_C_Path -StoreNumber $storeNumber
 		})
 	[void]$contextMenuGeneral.Items.Add($OpenScaleCShareItem)
 	
