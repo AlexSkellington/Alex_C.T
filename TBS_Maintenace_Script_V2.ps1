@@ -19,7 +19,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.2.9"
+$VersionNumber = "2.3.0"
 $VersionDate = "2025-07-01"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -7458,6 +7458,57 @@ exit /b
 }
 
 # ===================================================================================================
+#                           FUNCTION: Open-SelectedLanesCPath
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Prompts the user with a GUI dialog to select one or more lanes (registers) within a store
+#   and opens the administrative C$ share of each selected lane in Windows Explorer.
+#   Uses lane-to-machine mapping from the most recent Retrieve_Nodes execution.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - StoreNumber (string, required): The 3-digit store number for lane selection.
+#   - LaneType (string, optional): Lane type to display (e.g., "POS" or "SCO"). Default is "POS".
+# ---------------------------------------------------------------------------------------------------
+
+function Open_Selected_Lane/s_C_Path
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[Parameter(Mandatory = $false)]
+		[string]$LaneType = "POS"
+	)
+	
+	Write_Log "`r`n==================== Starting Open_Selected_Lane/s_C_Path Function ====================`r`n" "blue"
+	
+	# Get selection from GUI
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber -LaneType $LaneType
+	if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
+	{
+		Write_Log "No lanes selected. Exiting." "Yellow"
+		Write_Log "`r`n==================== Open_Selected_Lane/s_C_Path Function Completed ====================" "blue"
+		return
+	}
+	
+	$laneMachines = $script:FunctionResults['LaneMachines']
+	foreach ($lane in $selection.Lanes)
+	{
+		if ($laneMachines.ContainsKey($lane))
+		{
+			$machine = $laneMachines[$lane]
+			$sharePath = "\\$machine\c$"
+			Write_Log "Opening $sharePath ..." "Blue"
+			Start-Process "explorer.exe" $sharePath
+		}
+		else
+		{
+			Write_Log "Machine not found for lane '$lane'." "Red"
+			Write_Log "`r`n==================== Open_Selected_Lane/s_C_Path Function Completed ====================" "blue"
+		}
+	}
+}
+
+# ===================================================================================================
 #                         FUNCTION: Update_Scales_Specials_Interactive
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -8336,7 +8387,17 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($Reboot_ScalesItem)
 	
 	############################################################################
-	# 8) Remove Archive Bit
+	# 8) Open Lane C$ Share(s)
+	############################################################################
+	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
+	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
+	$OpenLaneCShareItem.Add_Click({
+			Open_Selected_Lane/s_C_Path -StoreNumber $storeNumber
+		})
+	[void]$contextMenuGeneral.Items.Add($OpenLaneCShareItem)
+	
+	############################################################################
+	# 9) Remove Archive Bit
 	############################################################################
 	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
 	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
@@ -8346,7 +8407,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
 	
 	############################################################################
-	# 9) Update Scales Specials
+	# 10) Update Scales Specials
 	############################################################################
 	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
 	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
@@ -8354,6 +8415,16 @@ if (-not $form)
 			Update_Scales_Specials_Interactive
 		})
 	[void]$contextMenuGeneral.Items.Add($UpdateScalesSpecialsItem)
+	
+	############################################################################
+	# 10) Open Lane C$ Share(s)
+	############################################################################
+	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
+	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
+	$OpenLaneCShareItem.Add_Click({
+			Open_Selected_Lane/s_C_Path -StoreNumber $storeNumber
+		})
+	[void]$contextMenuGeneral.Items.Add($OpenLaneCShareItem)
 	
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
