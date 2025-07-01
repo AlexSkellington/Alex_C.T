@@ -734,7 +734,7 @@ WHERE F1056 = '$StoreNumber'
 			# 3) Retrieve additional scales from TBS_SCL_ver520 (with IPNetwork)
 			#--------------------------------------------------------------------------------
 			$queryTbsSclScales = @"
-SELECT ScaleCode, ScaleName, IPNetwork, IPDevice
+SELECT ScaleCode, ScaleName, ScaleLocation, IPNetwork, IPDevice, Active, ScaleBrand, ScaleModel
 FROM TBS_SCL_ver520
 WHERE Active = 'Y'
 "@
@@ -761,11 +761,15 @@ WHERE Active = 'Y'
 				{
 					$fullIP = "$($row.IPNetwork)$($row.IPDevice)"
 					$scaleObj = [PSCustomObject]@{
-						ScaleCode = $row.ScaleCode
-						ScaleName = $row.ScaleName
-						FullIP    = $fullIP
-						IPNetwork = $row.IPNetwork
-						IPDevice  = $row.IPDevice
+						ScaleCode	  = $row.ScaleCode
+						ScaleName	  = $row.ScaleName
+						ScaleLocation = $row.ScaleLocation
+						IPNetwork	  = $row.IPNetwork
+						IPDevice	  = $row.IPDevice
+						FullIP	      = $fullIP
+						Active	      = $row.Active
+						ScaleBrand    = $row.ScaleBrand
+						ScaleModel    = $row.ScaleModel
 					}
 					$ScaleIPNetworks[$row.ScaleCode] = $scaleObj
 				}
@@ -7468,7 +7472,7 @@ exit /b
 # Parameters:
 #   - StoreNumber (string, required): The 3-digit store number for lane selection.
 #   - LaneType (string, optional): Lane type to display (e.g., "POS" or "SCO"). Default is "POS".
-# ---------------------------------------------------------------------------------------------------
+# ===================================================================================================
 
 function Open_Selected_Lane/s_C_Path
 {
@@ -7497,7 +7501,7 @@ function Open_Selected_Lane/s_C_Path
 		{
 			$machine = $laneMachines[$lane]
 			$sharePath = "\\$machine\c$"
-			Write_Log "Opening $sharePath ..." "Blue"
+			Write_Log "Opened $sharePath ..." "Green"
 			Start-Process "explorer.exe" $sharePath
 		}
 		else
@@ -7509,7 +7513,7 @@ function Open_Selected_Lane/s_C_Path
 }
 
 # ===================================================================================================
-#                           FUNCTION: Open-SelectedScalesCPath
+#                           FUNCTION: Open_Selected_Scale/s_C_Path
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Prompts the user with a GUI dialog to select one or more scales and attempts to open the C$
@@ -7520,10 +7524,6 @@ function Open_Selected_Lane/s_C_Path
 # Requirements:
 #   - The scale hostnames/IPs must resolve and allow SMB access.
 #   - Show_Scale_Selection_Form and Retrieve_Nodes must be run first to populate FunctionResults.
-# ---------------------------------------------------------------------------------------------------
-# Usage Example:
-#   Retrieve_Nodes -StoreNumber '001'
-#   Open-SelectedScalesCPath -StoreNumber '001'
 # ===================================================================================================
 
 function Open_Selected_Scale/s_C_Path
@@ -7533,90 +7533,83 @@ function Open_Selected_Scale/s_C_Path
 		[string]$StoreNumber
 	)
 	
-	# Get selection from GUI
-	$selection = Show_Scale_Selection_Form -StoreNumber $StoreNumber
-	if (-not $selection -or -not $selection.Scales -or $selection.Scales.Count -eq 0)
-	{
-		Write-Host "No scales selected. Exiting." -ForegroundColor Yellow
-		return
-	}
+	Write_Log "`r`n==================== Starting Open_Selected_Scale/s_C_Path Function ====================`r`n" "blue"
 	
+	# --- Get scale selection, only BIZERBA ---
 	$scaleIPTable = $script:FunctionResults['ScaleIPNetworks']
 	if (-not $scaleIPTable)
 	{
-		Write-Host "No scale IP mapping available. Please run Retrieve_Nodes first." -ForegroundColor Yellow
+		Write_Log "No scale IP mapping available. Please run Retrieve_Nodes first." "Yellow"
+		return
+	}
+	# Filter for only BIZERBA
+	$bizerbaScales = $scaleIPTable.Values | Where-Object { $_.ScaleBrand -eq "BIZERBA" }
+	if (-not $bizerbaScales -or $bizerbaScales.Count -eq 0)
+	{
+		Write_Log "No BIZERBA scales found for this store." "Yellow"
+		Write_Log "`r`n==================== Open_Selected_Scale/s_C_Path Function Completed ====================" "blue"
+		return
+	}
+	# Custom picker: just show BIZERBA scales
+	$scaleSelection = Show_Scale_Selection_Form -BizerbaScales $bizerbaScales
+	if (-not $scaleSelection -or -not $scaleSelection.Scales -or $scaleSelection.Scales.Count -eq 0)
+	{
+		Write_Log "No BIZERBA scales selected. Exiting." "Yellow"
+		Write_Log "`r`n==================== Open_Selected_Scale/s_C_Path Function Completed ====================" "blue"
 		return
 	}
 	
-	$user = "bizuser"
-	$passwords = @("bizerba", "biyerba")
-	$netDriveLetterBase = "Z" # We'll try Z, then Y, then X if needed
-	
-	foreach ($scaleCode in $selection.Scales)
+	foreach ($scaleObj in $scaleSelection.Scales)
 	{
-		$scaleObj = $scaleIPTable[$scaleCode]
-		if (-not $scaleObj)
+		# Get the best host name or IP
+		$scaleHost = if ($scaleObj.FullIP -and $scaleObj.FullIP -ne "")
 		{
-			Write-Host "No scale object found for $scaleCode." -ForegroundColor Red
-			continue
-		}
-		
-		# Prefer FullIP, fallback to IPNetwork+IPDevice, fallback to ScaleName
-		$host = $null
-		if ($scaleObj.FullIP -and $scaleObj.FullIP -ne "")
-		{
-			$host = $scaleObj.FullIP
+			$scaleObj.FullIP
 		}
 		elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice)
 		{
-			$host = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
+			"$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
 		}
 		elseif ($scaleObj.ScaleName)
 		{
-			$host = $scaleObj.ScaleName
+			$scaleObj.ScaleName
 		}
-		if (-not $host)
-		{
-			Write-Host "Could not determine host for $scaleCode." -ForegroundColor Red
-			continue
-		}
+		if (-not $scaleHost) { Write_Log "Could not determine host for $($scaleObj.ScaleCode)." "Red"; continue }
 		
-		$sharePath = "\\$host\c$"
-		$mapped = $false
-		$driveLetter = $netDriveLetterBase
-		foreach ($pw in $passwords)
+		$sharePath = "\\$scaleHost\c$"
+		$opened = $false
+		
+		# Try bizerba password first
+		cmdkey /add:$scaleHost /user:bizuser /pass:bizerba | Out-Null
+		Start-Process "explorer.exe" $sharePath
+		Start-Sleep -Seconds 2 # Give Explorer a moment to attempt connection
+		
+		# Test if the path is accessible
+		if (Test-Path $sharePath)
 		{
-			try
-			{
-				# Remove PSDrive if it already exists
-				if (Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue)
-				{
-					Remove-PSDrive -Name $driveLetter -Force -ErrorAction SilentlyContinue
-				}
-				# Attempt mapping
-				New-PSDrive -Name $driveLetter -PSProvider FileSystem -Root $sharePath -Credential (New-Object System.Management.Automation.PSCredential($user, (ConvertTo-SecureString $pw -AsPlainText -Force))) -ErrorAction Stop | Out-Null
-				# If mapping successful, open in Explorer
-				Start-Process "explorer.exe" "$driveLetter`:\"
-				Write-Host "Opened $sharePath as $user using password '$pw'." -ForegroundColor Green
-				$mapped = $true
-				break
-			}
-			catch
-			{
-				# Try next password
-				continue
-			}
-		}
-		if (-not $mapped)
-		{
-			Write-Host "Could not open $sharePath with user $user and available passwords." -ForegroundColor Red
+			Write_Log "Opened $sharePath as bizuser using password 'bizerba'." "Green"
+			$opened = $true
 		}
 		else
 		{
-			# Clean up the mapping after a short delay
+			# Remove previous credential and try 'biyerba'
+			cmdkey /delete:$scaleHost | Out-Null
+			cmdkey /add:$scaleHost /user:bizuser /pass:biyerba | Out-Null
+			Start-Process "explorer.exe" $sharePath
 			Start-Sleep -Seconds 2
-			Remove-PSDrive -Name $driveLetter -Force -ErrorAction SilentlyContinue
+			if (Test-Path $sharePath)
+			{
+				Write_Log "Opened $sharePath as bizuser using password 'biyerba'." "Green"
+				$opened = $true
+			}
+			else
+			{
+				Write_Log "Could not open $sharePath as bizuser with either password." "Red"
+				Write_Log "`r`n==================== Open_Selected_Scale/s_C_Path Function Completed ====================" "blue"
+			}
 		}
+		# Optional: Clean up after (remove credential)
+		# cmdkey /delete:$scaleHost | Out-Null
 	}
 }
 
@@ -7852,144 +7845,6 @@ exit
 }
 
 # ===================================================================================================
-#                             FUNCTION: Show_Scale_Selection_Form
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Presents a GUI dialog for the user to select scales to process within a store.
-#   Returns a hashtable with the selection type and the list of selected scale codes.
-# ---------------------------------------------------------------------------------------------------
-# Parameters:
-#   - StoreNumber: The 3-digit store number to filter scales (optional, set to "" for all).
-# ===================================================================================================
-
-function Show_Scale_Selection_Form
-{
-	param (
-		[Parameter(Mandatory = $false)]
-		[string]$StoreNumber = ""
-	)
-	
-	# Load assemblies
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
-	
-	# Prepare form
-	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Select Scales to Process"
-	$form.Size = New-Object System.Drawing.Size(370, 400)
-	$form.StartPosition = "CenterScreen"
-	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-	$form.MaximizeBox = $false
-	$form.MinimizeBox = $false
-	
-	# CheckedListBox for scales
-	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
-	$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
-	$checkedListBox.Size = New-Object System.Drawing.Size(330, 250)
-	$checkedListBox.CheckOnClick = $true
-	$form.Controls.Add($checkedListBox)
-	
-	# Retrieve scale list from FunctionResults
-	$allScales = @()
-	if ($script:FunctionResults.ContainsKey('ScaleIPNetworks') -and $script:FunctionResults['ScaleIPNetworks'].Count -gt 0)
-	{
-		$allScales = $script:FunctionResults['ScaleIPNetworks'].Values
-		# Optionally filter by StoreNumber if ScaleCode contains store info (adapt if needed)
-		if ($StoreNumber -and $StoreNumber -ne "")
-		{
-			$allScales = $allScales | Where-Object { $_.ScaleCode -like "$StoreNumber*" }
-		}
-	}
-	
-	# Populate CheckedListBox
-	$sortedScales = $allScales | Sort-Object ScaleCode
-	foreach ($scale in $sortedScales)
-	{
-		$ip = if ($scale.FullIP) { $scale.FullIP }
-		else { "$($scale.IPNetwork)$($scale.IPDevice)" }
-		$displayName = "$($scale.ScaleCode): $($scale.ScaleName) [$ip]"
-		$scaleObj = New-Object PSObject -Property @{
-			DisplayName = $displayName
-			ScaleCode   = $scale.ScaleCode
-			ScaleName   = $scale.ScaleName
-			FullIP	    = $ip
-		}
-		$scaleObj | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
-		$checkedListBox.Items.Add($scaleObj) | Out-Null
-	}
-	
-	# Select All
-	$btnSelectAll = New-Object System.Windows.Forms.Button
-	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 270)
-	$btnSelectAll.Size = New-Object System.Drawing.Size(150, 30)
-	$btnSelectAll.Text = "Select All"
-	$btnSelectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $true)
-			}
-		})
-	$form.Controls.Add($btnSelectAll)
-	
-	# Deselect All
-	$btnDeselectAll = New-Object System.Windows.Forms.Button
-	$btnDeselectAll.Location = New-Object System.Drawing.Point(170, 270)
-	$btnDeselectAll.Size = New-Object System.Drawing.Size(150, 30)
-	$btnDeselectAll.Text = "Deselect All"
-	$btnDeselectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $false)
-			}
-		})
-	$form.Controls.Add($btnDeselectAll)
-	
-	# OK/Cancel
-	$buttonOK = New-Object System.Windows.Forms.Button
-	$buttonOK.Text = "OK"
-	$buttonOK.Location = New-Object System.Drawing.Point(30, 320)
-	$buttonOK.Size = New-Object System.Drawing.Size(100, 30)
-	$buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$form.Controls.Add($buttonOK)
-	
-	$buttonCancel = New-Object System.Windows.Forms.Button
-	$buttonCancel.Text = "Cancel"
-	$buttonCancel.Location = New-Object System.Drawing.Point(210, 320)
-	$buttonCancel.Size = New-Object System.Drawing.Size(100, 30)
-	$buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$form.Controls.Add($buttonCancel)
-	
-	$form.AcceptButton = $buttonOK
-	$form.CancelButton = $buttonCancel
-	
-	$dialogResult = $form.ShowDialog()
-	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
-	{
-		return $null
-	}
-	
-	# Gather selected scales
-	$selectedScales = @()
-	for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-	{
-		if ($checkedListBox.GetItemChecked($i))
-		{
-			$selectedScales += $checkedListBox.Items[$i].ScaleCode
-		}
-	}
-	if ($selectedScales.Count -eq 0)
-	{
-		[System.Windows.Forms.MessageBox]::Show("No scales selected.", "Information",
-			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-		return $null
-	}
-	return @{
-		Type   = 'Specific'
-		Scales = $selectedScales
-	}
-}
-
-# ===================================================================================================
 #                                FUNCTION: Show_Lane_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -8025,7 +7880,7 @@ function Show_Lane_Selection_Form
 	# Lane selection list
 	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
 	$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
-	$checkedListBox.Size = New-Object System.Drawing.Size(300, 200)
+	$checkedListBox.Size = New-Object System.Drawing.Size(295, 200)
 	$checkedListBox.CheckOnClick = $true
 	$form.Controls.Add($checkedListBox)
 	
@@ -8139,6 +7994,130 @@ function Show_Lane_Selection_Form
 	return @{
 		Type  = 'Specific'
 		Lanes = $selectedLanes
+	}
+}
+
+# ===================================================================================================
+#                             FUNCTION: Show_Scale_Selection_Form
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Presents a GUI dialog for the user to select scales to process within a store.
+#   Returns a hashtable with the selection type and the list of selected scale codes.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - StoreNumber: The 3-digit store number to filter scales (optional, set to "" for all).
+# ===================================================================================================
+
+function Show_Scale_Selection_Form
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[array]$BizerbaScales
+	)
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Select BIZERBA Scales to Process"
+	$form.Size = New-Object System.Drawing.Size(330, 350)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
+	$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
+	$checkedListBox.Size = New-Object System.Drawing.Size(295, 200)
+	$checkedListBox.CheckOnClick = $true
+	$form.Controls.Add($checkedListBox)
+	
+	$sortedScales = $BizerbaScales | Sort-Object { [int]($_.ScaleCode) }
+	foreach ($scale in $sortedScales)
+	{
+		$ip = if ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
+		else { "" }
+		$displayName = "$($scale.ScaleName) [$ip]"
+		$scaleObj = New-Object PSObject -Property @{
+			DisplayName = $displayName
+			ScaleCode   = $scale.ScaleCode
+			ScaleName   = $scale.ScaleName
+			IPAddress   = $ip
+			Vendor	    = $scale.Vendor
+			FullIP	    = $scale.FullIP
+			IPNetwork   = $scale.IPNetwork
+			IPDevice    = $scale.IPDevice
+		}
+		$scaleObj | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
+		$checkedListBox.Items.Add($scaleObj) | Out-Null
+	}
+	
+	# Select All
+	$btnSelectAll = New-Object System.Windows.Forms.Button
+	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 220)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(150, 30)
+	$btnSelectAll.Text = "Select All"
+	$btnSelectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $true)
+			}
+		})
+	$form.Controls.Add($btnSelectAll)
+	
+	# Deselect All
+	$btnDeselectAll = New-Object System.Windows.Forms.Button
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(160, 220)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(150, 30)
+	$btnDeselectAll.Text = "Deselect All"
+	$btnDeselectAll.Add_Click({
+			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			{
+				$checkedListBox.SetItemChecked($i, $false)
+			}
+		})
+	$form.Controls.Add($btnDeselectAll)
+	
+	# OK/Cancel
+	$buttonOK = New-Object System.Windows.Forms.Button
+	$buttonOK.Text = "OK"
+	$buttonOK.Location = New-Object System.Drawing.Point(20, 270)
+	$buttonOK.Size = New-Object System.Drawing.Size(100, 30)
+	$buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.Controls.Add($buttonOK)
+	
+	$buttonCancel = New-Object System.Windows.Forms.Button
+	$buttonCancel.Text = "Cancel"
+	$buttonCancel.Location = New-Object System.Drawing.Point(200, 270)
+	$buttonCancel.Size = New-Object System.Drawing.Size(100, 30)
+	$buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.Controls.Add($buttonCancel)
+	
+	$form.AcceptButton = $buttonOK
+	$form.CancelButton = $buttonCancel
+	
+	$dialogResult = $form.ShowDialog()
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		return $null
+	}
+	
+	$selectedScales = @()
+	for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+	{
+		if ($checkedListBox.GetItemChecked($i))
+		{
+			$selectedScales += $checkedListBox.Items[$i]
+		}
+	}
+	if ($selectedScales.Count -eq 0)
+	{
+		[System.Windows.Forms.MessageBox]::Show("No BIZERBA scales selected.", "Information",
+			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+		return $null
+	}
+	return @{
+		Type   = 'Specific'
+		Scales = $selectedScales
 	}
 }
 
