@@ -845,13 +845,16 @@ WHERE F1056 = '$StoreNumber'
 			$parsed = $rows | ForEach-Object {
 				if ($_ -match "\((.*)\)")
 				{
-					$fields = $matches[1] -split "',\s*'"
-					[PSCustomObject]@{
-						Store    = $fields[0].Trim("'")
-						Terminal = $fields[1].Trim("'")
-						Label    = $fields[2].Trim("'")
-						LanePath = $fields[3].Trim("'")
-						HostPath = $fields[4].Trim("'")
+					$split = $matches[1] -split "',\s*'"
+					if ($split.Count -ge 5)
+					{
+						[PSCustomObject]@{
+							Store    = $split[0].Trim("'")
+							Terminal = $split[1].Trim("'")
+							Label    = $split[2].Trim("'")
+							LanePath = $split[3].Trim("'")
+							HostPath = $split[4].Trim("'")
+						}
 					}
 				}
 			} | Where-Object { $_.Store -eq $StoreNumber }
