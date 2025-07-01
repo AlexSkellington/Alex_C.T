@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.2.9"
-$VersionDate = "2025-06-27"
+$VersionDate = "2025-07-01"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -838,22 +838,41 @@ WHERE F1056 = '$StoreNumber'
 				$current = ""
 			}
 		}
-		$parsed = $rows | ForEach-Object {
-			if ($_ -match "\((.*)\)")
-			{
-				$fields = $matches[1] -split "',\s*'"
-				[PSCustomObject]@{
-					Store    = $fields[0].Trim("'")
-					Terminal = $fields[1].Trim("'")
-					Label    = $fields[2].Trim("'")
-					LanePath = $fields[3].Trim("'")
-					HostPath = $fields[4].Trim("'")
+		
+		$parsed = @()
+		if ($rows -and $rows.Count -gt 0)
+		{
+			$parsed = $rows | ForEach-Object {
+				if ($_ -match "\((.*)\)")
+				{
+					$fields = $matches[1] -split "',\s*'"
+					[PSCustomObject]@{
+						Store    = $fields[0].Trim("'")
+						Terminal = $fields[1].Trim("'")
+						Label    = $fields[2].Trim("'")
+						LanePath = $fields[3].Trim("'")
+						HostPath = $fields[4].Trim("'")
+					}
 				}
-			}
-		} | Where-Object { $_.Store -eq $StoreNumber }
+			} | Where-Object { $_.Store -eq $StoreNumber }
+		}
+		
+		if (-not $parsed -or $parsed.Count -eq 0)
+		{
+			Write_Log "No entries parsed from Ter_Load.sql for Store $StoreNumber. Fallback will result in zero nodes." "yellow"
+			$parsed = @()
+		}
+		else
+		{
+			Write_Log "Parsed $($parsed.Count) entries from Ter_Load.sql for Store $StoreNumber." "blue"
+		}
 		
 		# Lanes: terminals starting with 0
-		$laneObjs = $parsed | Where-Object { $_.Terminal -match '^0\d\d$' }
+		$laneObjs = @()
+		if ($parsed.Count -gt 0)
+		{
+			$laneObjs = $parsed | Where-Object { $_.Terminal -match '^0\d\d$' }
+		}
 		$NumberOfLanes = $laneObjs.Count
 		$LaneContents = $laneObjs | Select-Object -ExpandProperty Terminal
 		foreach ($obj in $laneObjs)
@@ -864,14 +883,26 @@ WHERE F1056 = '$StoreNumber'
 			}
 		}
 		# Scales: terminals starting with 8
-		$scaleObjs = $parsed | Where-Object { $_.Terminal -match '^8\d\d$' }
+		$scaleObjs = @()
+		if ($parsed.Count -gt 0)
+		{
+			$scaleObjs = $parsed | Where-Object { $_.Terminal -match '^8\d\d$' }
+		}
 		$NumberOfScales = $scaleObjs.Count
 		
 		# Servers: terminal 901
-		$NumberOfServers = ($parsed | Where-Object { $_.Terminal -eq '901' }).Count
+		$NumberOfServers = 0
+		if ($parsed.Count -gt 0)
+		{
+			$NumberOfServers = ($parsed | Where-Object { $_.Terminal -eq '901' }).Count
+		}
 		
 		# Backoffices: 902-998
-		$NumberOfBackoffices = ($parsed | Where-Object { $_.Terminal -match '^9(0[2-9]|[1-8][0-9])$' }).Count
+		$NumberOfBackoffices = 0
+		if ($parsed.Count -gt 0)
+		{
+			$NumberOfBackoffices = ($parsed | Where-Object { $_.Terminal -match '^9(0[2-9]|[1-8][0-9])$' }).Count
+		}
 	}
 	
 	#--------------------------------------------------------------------------------
