@@ -742,10 +742,16 @@ WHERE Active = 'Y'
 			{
 				$tbsSclScalesResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryTbsSclScales -ErrorAction Stop
 			}
-			catch [System.Management.Automation.ParameterBindingException] {
-				$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
-				$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
-				$tbsSclScalesResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryTbsSclScales -ErrorAction Stop
+			catch
+			{
+				if ($_.Exception.Message -match "Invalid object name 'TBS_SCL_ver520'")
+				{
+					$tbsSclScalesResult = $null
+				}
+				else
+				{
+					throw # rethrow for other errors, which will trigger fallback
+				}
 			}
 			
 			if ($tbsSclScalesResult)
@@ -859,17 +865,7 @@ WHERE F1056 = '$StoreNumber'
 				}
 			} | Where-Object { $_.Store -eq $StoreNumber }
 		}
-		
-		if (-not $parsed -or $parsed.Count -eq 0)
-		{
-			Write_Log "No entries parsed from Ter_Load.sql for Store $StoreNumber. Fallback will result in zero nodes." "yellow"
-			$parsed = @()
-		}
-		else
-		{
-			Write_Log "Parsed $($parsed.Count) entries from Ter_Load.sql for Store $StoreNumber." "blue"
-		}
-		
+			
 		# Lanes: terminals starting with 0
 		$laneObjs = @()
 		if ($parsed.Count -gt 0)
@@ -914,13 +910,7 @@ WHERE F1056 = '$StoreNumber'
 	if ((-not $NodesFromDatabase) -and (-not $TerLoadUsed))
 	{
 		Write_Log "Using file system directories as backup for node counts." "yellow"
-		
-		if (-not $StoreNumber)
-		{
-			Write_Log "Store number is required." "red"
-			return
-		}
-		
+				
 		if (Test-Path $HostPath)
 		{
 			$LaneFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}0??"
