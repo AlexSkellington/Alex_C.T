@@ -798,10 +798,10 @@ WHERE F1056 = '$StoreNumber'
 			else { 0 }
 			
 			#--------------------------------------------------------------------------------
-			# 5) Count backoffices (F1057 = '902', '903', etc)
+			# 5) Retrieve backoffices (F1057 = '902', '903', etc): COUNT and MAP at once
 			#--------------------------------------------------------------------------------
 			$queryBackoffices = @"
-SELECT COUNT(*) AS BackofficeCount
+SELECT F1057, F1125
 FROM TER_TAB
 WHERE F1056 = '$StoreNumber'
   AND F1057 >= '902'
@@ -809,14 +809,28 @@ WHERE F1056 = '$StoreNumber'
 "@
 			try
 			{
-				$backofficesResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryBackoffices -ErrorAction Stop
+				$backofficesList = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryBackoffices -ErrorAction Stop
 			}
 			catch [System.Management.Automation.ParameterBindingException] {
 				$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
 				$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
-				$backofficesResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryBackoffices -ErrorAction Stop
+				$backofficesList = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryBackoffices -ErrorAction Stop
 			}
-			$NumberOfBackoffices = [int]$backofficesResult.BackofficeCount
+			$BackofficeMachines = @{ }
+			if ($backofficesList)
+			{
+				foreach ($row in $backofficesList)
+				{
+					$terminal = $row.F1057
+					$machinePath = $row.F1125
+					if ($machinePath -match '\\\\([^\\]+)\\')
+					{
+						$machineName = $matches[1]
+						$BackofficeMachines[$terminal] = $machineName
+					}
+				}
+			}
+			$NumberOfBackoffices = $BackofficeMachines.Count
 		}
 		catch
 		{
@@ -963,6 +977,7 @@ WHERE F1056 = '$StoreNumber'
 	$script:FunctionResults['LaneContents'] = $LaneContents
 	$script:FunctionResults['LaneMachines'] = $LaneMachines
 	$script:FunctionResults['ScaleIPNetworks'] = $ScaleIPNetworks
+	$script:FunctionResults['BackofficeMachines'] = $BackofficeMachines
 	$script:FunctionResults['Nodes'] = $Nodes
 	
 	#--------------------------------------------------------------------------------
@@ -7845,6 +7860,224 @@ exit
 }
 
 # ===================================================================================================
+#                        FUNCTION: Export-VNCFiles-ForAllNodes
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Generates UltraVNC (.vnc) connection files for all lanes, scales, and backoffices discovered in
+#   the current store environment. Each node receives its own preconfigured .vnc file (with fixed password)
+#   and is saved to Desktop\Lanes, Desktop\Scales, or Desktop\Backoffices accordingly.
+#   Designed for rapid remote support and streamlined access.
+#
+# Parameters:
+#   - LaneMachines      [hashtable]: LaneNumber => MachineName mapping.
+#   - ScaleIPNetworks   [hashtable]: ScaleCode => Scale Object (includes IP).
+#   - BackofficeMachines[hashtable]: BackofficeTerminal => MachineName mapping.
+#
+# Details:
+#   - Password is set to: 4330df922eb03b6e (UltraVNC encrypted format).
+#   - Files are written with clear, descriptive names.
+#   - Uses Write_Log for all status and progress messages.
+#   - Ensures all required folders exist.
+#   - Skips scales with missing IP/network info and logs them.
+#
+# Usage:
+#   Export-VNCFiles-ForAllNodes -LaneMachines $... -ScaleIPNetworks $... -BackofficeMachines $...
+#
+# Author: Alex_C.T
+# ===================================================================================================
+
+function Export_VNCFiles_ForAllNodes
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[hashtable]$LaneMachines,
+		[Parameter(Mandatory = $true)]
+		[hashtable]$ScaleIPNetworks,
+		[Parameter(Mandatory = $true)]
+		[hashtable]$BackofficeMachines
+	)
+	
+	Write_Log "`r`n==================== Starting Export_VNCFiles_ForAllNodes ====================`r`n" "blue"
+	
+	$VNCPassword = "4330df922eb03b6e"
+	
+	$desktop = [Environment]::GetFolderPath("Desktop")
+	$lanesDir = Join-Path $desktop "Lanes"
+	$scalesDir = Join-Path $desktop "Scales"
+	$backofficesDir = Join-Path $desktop "BackOffices"
+	
+	# Helper to write ANSI .vnc file, now just a script block
+	$ansi = [System.Text.Encoding]::GetEncoding(1252)
+	
+	# ---- Lanes ----
+	$laneCount = 0
+	foreach ($lane in $LaneMachines.GetEnumerator())
+	{
+		$laneNumber = $lane.Key
+		$machineName = $lane.Value
+		$fileName = "Lane_${laneNumber}.vnc"
+		$filePath = Join-Path $lanesDir $fileName
+		
+		$content = @"
+[connection]
+host=$machineName
+port=5900
+proxyhost=
+proxyport=0
+password=$VNCPassword
+[options]
+use_encoding_0=1
+use_encoding_1=1
+use_encoding_2=1
+use_encoding_3=0
+use_encoding_4=1
+use_encoding_5=1
+use_encoding_6=1
+use_encoding_7=1
+use_encoding_8=1
+use_encoding_9=1
+use_encoding_10=1
+use_encoding_11=0
+use_encoding_12=0
+use_encoding_13=0
+use_encoding_14=0
+use_encoding_15=0
+use_encoding_16=1
+use_encoding_17=1
+use_encoding_18=1
+use_encoding_19=1
+use_encoding_20=0
+use_encoding_21=0
+use_encoding_22=0
+use_encoding_23=0
+use_encoding_24=0
+use_encoding_25=1
+use_encoding_26=1
+use_encoding_27=1
+use_encoding_28=0
+use_encoding_29=1
+preferred_encoding=10
+restricted=0
+AllowUntrustedServers=0
+viewonly=0
+nostatus=0
+nohotkeys=0
+showtoolbar=1
+fullscreen=0
+SavePos=0
+SaveSize=0
+GNOME=0
+directx=0
+autoDetect=0
+8bit=0
+shared=1
+swapmouse=0
+belldeiconify=0
+BlockSameMouse=0
+emulate3=1
+JapKeyboard=0
+emulate3timeout=100
+emulate3fuzz=4
+disableclipboard=0
+localcursor=1
+Scaling=0
+AutoScaling=0
+AutoScalingEven=0
+AutoScalingLimit=0
+scale_num=1
+scale_den=1
+cursorshape=1
+noremotecursor=0
+compresslevel=6
+quality=8
+ServerScale=1
+Reconnect=3
+EnableCache=0
+EnableZstd=1
+QuickOption=1
+UseDSMPlugin=0
+UseProxy=0
+sponsor=0
+allowMonitorSpanning=0
+ChangeServerRes=0
+extendDisplay=0
+showExtend=0
+use_virt=0
+useAllMonitors=0
+requestedWidth=0
+requestedHeight=0
+DSMPlugin=NoPlugin
+folder=C:\Users\Administrator\Documents\UltraVNC
+prefix=vnc_
+imageFormat=.jpeg
+InfoMsg=
+AutoReconnect=3
+ExitCheck=0
+FileTransferTimeout=30
+ListenPort=5500
+KeepAliveInterval=5
+ThrottleMouse=0
+AutoAcceptIncoming=0
+AutoAcceptNoDSM=0
+RequireEncryption=0
+PreemptiveUpdates=0
+"@
+		$parent = Split-Path $filePath -Parent
+		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
+		[System.IO.File]::WriteAllText($filePath, $content, $ansi)
+		Write_Log "Created: $filePath" "green"
+		$laneCount++
+	}
+	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
+	
+	# ---- Scales ----
+	$scaleCount = 0
+	foreach ($scale in $ScaleIPNetworks.GetEnumerator())
+	{
+		$scaleCode = $scale.Key
+		$scaleObj = $scale.Value
+		$ip = if ($scaleObj.FullIP) { $scaleObj.FullIP }
+		elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice) { "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)" }
+		else { $null }
+		if ($ip)
+		{
+			$lastOctet = $scaleObj.IPDevice
+			$fileName = "Scale_${lastOctet}.vnc"
+			$filePath = Join-Path $scalesDir $fileName
+			$parent = Split-Path $filePath -Parent
+			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
+			[System.IO.File]::WriteAllText($filePath, $content.Replace("host=$machineName", "host=$ip"), $ansi)
+			Write_Log "Created: $filePath" "green"
+			$scaleCount++
+		}
+		else
+		{
+			Write_Log "Skipped scale $scaleCode (missing IP)" "yellow"
+		}
+	}
+	Write_Log "$scaleCount scale VNC files written to $scalesDir`r`n" "blue"
+	
+	# ---- Backoffices ----
+	$boCount = 0
+	foreach ($bo in $BackofficeMachines.GetEnumerator())
+	{
+		$terminal = $bo.Key
+		$boName = $bo.Value
+		$fileName = "Backoffice_${terminal}.vnc"
+		$filePath = Join-Path $backofficesDir $fileName
+		$parent = Split-Path $filePath -Parent
+		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
+		[System.IO.File]::WriteAllText($filePath, $content.Replace("host=$machineName", "host=$boName"), $ansi)
+		Write_Log "Created: $filePath" "green"
+		$boCount++
+	}
+	Write_Log "$boCount backoffice VNC files written to $backofficesDir`r`n" "blue"
+	
+	Write_Log "VNC file export complete!" "green"
+	Write_Log "`r`n==================== Export_VNCFiles_ForAllNodes Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                                FUNCTION: Show_Lane_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -8636,7 +8869,20 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($OpenScaleCShareItem)
 	
 	############################################################################
-	# 10) Remove Archive Bit
+	# 10) Export All VNC Files
+	############################################################################
+	$ExportVNCFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export All VNC Files")
+	$ExportVNCFilesItem.ToolTipText = "Generate UltraVNC (.vnc) connection files for all lanes, scales, and backoffices."
+	$ExportVNCFilesItem.Add_Click({
+			Export_VNCFiles_ForAllNodes `
+										-LaneMachines $script:FunctionResults['LaneMachines'] `
+										-ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks'] `
+										-BackofficeMachines $script:FunctionResults['BackofficeMachines']
+		})
+	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
+	
+	############################################################################
+	# 11) Remove Archive Bit
 	############################################################################
 	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
 	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
@@ -8646,7 +8892,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
 	
 	############################################################################
-	# 11) Update Scales Specials
+	# 12) Update Scales Specials
 	############################################################################
 	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
 	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
