@@ -7886,7 +7886,7 @@ exit
 # Author: Alex_C.T
 # ===================================================================================================
 
-function Export_VNCFiles_ForAllNodes
+function Export_VNC_Files_For_All_Nodes
 {
 	param (
 		[Parameter(Mandatory = $true)]
@@ -7905,9 +7905,6 @@ function Export_VNCFiles_ForAllNodes
 	$lanesDir = Join-Path $desktop "Lanes"
 	$scalesDir = Join-Path $desktop "Scales"
 	$backofficesDir = Join-Path $desktop "BackOffices"
-	
-	# Helper to write ANSI .vnc file, now just a script block
-	$ansi = [System.Text.Encoding]::GetEncoding(1252)
 	
 	# ---- Lanes ----
 	$laneCount = 0
@@ -8024,7 +8021,7 @@ PreemptiveUpdates=0
 "@
 		$parent = Split-Path $filePath -Parent
 		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-		[System.IO.File]::WriteAllText($filePath, $content, $ansi)
+		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 		Write_Log "Created: $filePath" "green"
 		$laneCount++
 	}
@@ -8046,7 +8043,7 @@ PreemptiveUpdates=0
 			$filePath = Join-Path $scalesDir $fileName
 			$parent = Split-Path $filePath -Parent
 			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-			[System.IO.File]::WriteAllText($filePath, $content.Replace("host=$machineName", "host=$ip"), $ansi)
+			[System.IO.File]::WriteAllText($filePath, $content.Replace("host=$machineName", "host=$ip"), $script:ansiPcEncoding)
 			Write_Log "Created: $filePath" "green"
 			$scaleCount++
 		}
@@ -8067,7 +8064,7 @@ PreemptiveUpdates=0
 		$filePath = Join-Path $backofficesDir $fileName
 		$parent = Split-Path $filePath -Parent
 		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-		[System.IO.File]::WriteAllText($filePath, $content.Replace("host=$machineName", "host=$boName"), $ansi)
+		[System.IO.File]::WriteAllText($filePath, $content.Replace("host=$machineName", "host=$boName"), $script:ansiPcEncoding)
 		Write_Log "Created: $filePath" "green"
 		$boCount++
 	}
