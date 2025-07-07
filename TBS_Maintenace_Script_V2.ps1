@@ -2138,6 +2138,7 @@ function Get_Remote_Machine_Info
 			Success		       = $false
 			SystemManufacturer = $null
 			SystemProductName  = $null
+			CPU			       = $null
 			Error			   = $null
 		}
 		
@@ -2160,6 +2161,9 @@ function Get_Remote_Machine_Info
 			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
 			$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
 			if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
+			$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+			$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+			if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
 			if ($info.SystemManufacturer -and $info.SystemProductName)
 			{
 				$info.Success = $true
@@ -2175,7 +2179,7 @@ function Get_Remote_Machine_Info
 		$line = "Machine Name: $remote"
 		if ($info.Success)
 		{
-			$line += "  Manufacturer: $($info.SystemManufacturer)  Model: $($info.SystemProductName)"
+			$line += "  Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 		}
 		elseif ($info.Error)
 		{
@@ -2203,6 +2207,7 @@ function Get_Remote_Machine_Info
 			Success		       = $false
 			SystemManufacturer = $null
 			SystemProductName  = $null
+			CPU			       = $null
 			Error			   = $null
 		}
 		
@@ -2225,6 +2230,9 @@ function Get_Remote_Machine_Info
 			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
 			$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
 			if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
+			$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+			$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+			if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
 			if ($info.SystemManufacturer -and $info.SystemProductName)
 			{
 				$info.Success = $true
@@ -2240,7 +2248,7 @@ function Get_Remote_Machine_Info
 		$line = "Machine Name: $remote"
 		if ($info.Success)
 		{
-			$line += "  Manufacturer: $($info.SystemManufacturer)  Model: $($info.SystemProductName)"
+			$line += "  Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 		}
 		elseif ($info.Error)
 		{
@@ -2268,6 +2276,7 @@ function Get_Remote_Machine_Info
 			Success		       = $false
 			SystemManufacturer = $null
 			SystemProductName  = $null
+			CPU			       = $null
 			Error			   = $null
 		}
 		
@@ -2290,6 +2299,9 @@ function Get_Remote_Machine_Info
 			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
 			$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
 			if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
+			$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+			$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+			if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
 			if ($info.SystemManufacturer -and $info.SystemProductName)
 			{
 				$info.Success = $true
@@ -2305,7 +2317,7 @@ function Get_Remote_Machine_Info
 		$line = "Machine Name: $remote"
 		if ($info.Success)
 		{
-			$line += "  Manufacturer: $($info.SystemManufacturer)  Model: $($info.SystemProductName)"
+			$line += "  Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 		}
 		elseif ($info.Error)
 		{
