@@ -9585,6 +9585,7 @@ Write-Host "Script started" -ForegroundColor Green
 
 [void]$form.ShowDialog()
 
+
 # Indicate the script is closing
 Write-Host "Script closing..." -ForegroundColor Yellow
 
