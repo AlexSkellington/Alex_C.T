@@ -9451,18 +9451,18 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
 	
 	############################################################################
-	# 11) Export Lane Hardware Info
+	# 11) Export Machines Hardware Info
 	############################################################################
-	$ExportLaneHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Lane Hardware Info")
-	$ExportLaneHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all lanes to Desktop\Lanes\Lanes_Info.txt"
-	$ExportLaneHardwareInfoItem.Add_Click({
+	$ExportHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Machines Hardware Info")
+	$ExportHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all machines"
+	$ExportHardwareInfoItem.Add_Click({
 			$didExport = Get_Remote_Machine_Info
 			if ($didExport)
 			{
-				[System.Windows.Forms.MessageBox]::Show("Lane hardware info exported to Desktop\Lanes\Lanes_Info.txt", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+				[System.Windows.Forms.MessageBox]::Show("Machine hardware info exported", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			}
 		})
-	[void]$ContextMenuLane.Items.Add($ExportLaneHardwareInfoItem)
+	[void]$ContextMenuLane.Items.Add($ExportHardwareInfoItem)
 	
 	############################################################################
 	# 12) Remove Archive Bit
