@@ -8295,6 +8295,18 @@ PreemptiveUpdates=0
 			$model = $hw.SystemProductName
 			$succ = $hw.Success
 			$err = $hw.Error
+			if ($succ)
+			{
+				$laneInfoLines += "Machine Name: $machineName  Manufacturer: $manuf  Model: $model"
+			}
+			else
+			{
+				$laneInfoLines += "Machine Name: $machineName  [Hardware info unavailable]  Error: $err"
+			}
+		}
+		else
+		{
+			$laneInfoLines += "Machine Name: $machineName  [No hardware info found]"
 		}
 	}
 	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
