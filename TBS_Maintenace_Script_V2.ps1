@@ -2140,6 +2140,16 @@ function Get_Remote_Machine_Info
 			SystemProductName  = $null
 			Error			   = $null
 		}
+		
+		# FAST offline check
+		if (-not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
+		{
+			$info.Error = "No hardware info could be retrieved (offline or unreachable)."
+			$LaneResults[$remote] = $info
+			$LaneInfoLines += "Machine Name: $remote  [Hardware info unavailable]  Error: $($info.Error)"
+			continue
+		}
+		
 		try
 		{
 			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
@@ -2195,6 +2205,16 @@ function Get_Remote_Machine_Info
 			SystemProductName  = $null
 			Error			   = $null
 		}
+		
+		# FAST offline check
+		if (-not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
+		{
+			$info.Error = "No hardware info could be retrieved (offline or unreachable)."
+			$ScaleResults[$remote] = $info
+			$ScaleInfoLines += "Machine Name: $remote  [Hardware info unavailable]  Error: $($info.Error)"
+			continue
+		}
+		
 		try
 		{
 			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
@@ -2250,6 +2270,16 @@ function Get_Remote_Machine_Info
 			SystemProductName  = $null
 			Error			   = $null
 		}
+		
+		# FAST offline check
+		if (-not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
+		{
+			$info.Error = "No hardware info could be retrieved (offline or unreachable)."
+			$BOResults[$remote] = $info
+			$BOInfoLines += "Machine Name: $remote  [Hardware info unavailable]  Error: $($info.Error)"
+			continue
+		}
+		
 		try
 		{
 			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
