@@ -1988,36 +1988,153 @@ function Get_All_Lanes_VNC_Passwords
 #                              FUNCTION: Get_Remote_Machine_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   For each specified remote machine (lane), enables and starts the Remote Registry service,
-#   then queries and retrieves the System Manufacturer and System Product Name via the registry.
-#   Results are stored in a hashtable keyed by machine name, and in $script:LaneHardwareInfo.
-#   Also writes a Lanes_Info.txt file to Desktop\Lanes.
+#   Windows Form prompts for Lanes, Scales, Backoffices (any or all).
+#   For each selected group, enables and starts Remote Registry, queries manufacturer/model,
+#   and writes Info.txt files to Desktop\Lanes, Desktop\Scales, Desktop\BackOffices.
+#   Also stores info in $script:LaneHardwareInfo, $script:ScaleHardwareInfo, $script:BackofficeHardwareInfo.
+#   (Uses variables populated by Retrieve_Nodes.)
 #
 # Author: Alex_C.T
 # ===================================================================================================
 
 function Get_Remote_Machine_Info
 {
-	param (
-		[Parameter(Mandatory)]
-		[string[]]$LaneMachines
-	)
+	# Build lists from FunctionResults (populate these with Retrieve_Nodes first!)
+	$laneNames = $script:FunctionResults['LaneMachines'].Values | Where-Object { $_ } | Select-Object -Unique
+	$scaleNames = $script:FunctionResults['ScaleIPNetworks'].Values | ForEach-Object { $_.FullIP } | Where-Object { $_ } | Select-Object -Unique
+	$boNames = $script:FunctionResults['BackofficeMachines'].Values | Where-Object { $_ } | Select-Object -Unique
 	
-	$results = @{ }
-	$infoLines = @()
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
 	
-	$desktop = [Environment]::GetFolderPath("Desktop")
-	$lanesDir = Join-Path $desktop "Lanes"
+	# ---------------- GUI: Selection Tabs -----------------
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Select Nodes to Pull Hardware Info"
+	$form.Size = New-Object System.Drawing.Size(440, 470)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
 	
-	# Ensure the folder exists
-	if (-not (Test-Path $lanesDir))
+	$tabs = New-Object System.Windows.Forms.TabControl
+	$tabs.Location = New-Object System.Drawing.Point(10, 10)
+	$tabs.Size = New-Object System.Drawing.Size(400, 340)
+	$form.Controls.Add($tabs)
+	
+	# ----- Lanes Tab -----
+	$tabLanes = New-Object System.Windows.Forms.TabPage
+	$tabLanes.Text = "Lanes"
+	$clbLanes = New-Object System.Windows.Forms.CheckedListBox
+	$clbLanes.Location = New-Object System.Drawing.Point(10, 10)
+	$clbLanes.Size = New-Object System.Drawing.Size(370, 300)
+	$clbLanes.CheckOnClick = $true
+	$tabLanes.Controls.Add($clbLanes)
+	foreach ($lane in $laneNames | Sort-Object) { $clbLanes.Items.Add($lane) | Out-Null }
+	$tabs.TabPages.Add($tabLanes)
+	
+	# ----- Scales Tab -----
+	$tabScales = New-Object System.Windows.Forms.TabPage
+	$tabScales.Text = "Scales"
+	$clbScales = New-Object System.Windows.Forms.CheckedListBox
+	$clbScales.Location = New-Object System.Drawing.Point(10, 10)
+	$clbScales.Size = New-Object System.Drawing.Size(370, 300)
+	$clbScales.CheckOnClick = $true
+	$tabScales.Controls.Add($clbScales)
+	foreach ($scale in $scaleNames | Sort-Object) { $clbScales.Items.Add($scale) | Out-Null }
+	$tabs.TabPages.Add($tabScales)
+	
+	# ----- Backoffices Tab -----
+	$tabBO = New-Object System.Windows.Forms.TabPage
+	$tabBO.Text = "Backoffices"
+	$clbBO = New-Object System.Windows.Forms.CheckedListBox
+	$clbBO.Location = New-Object System.Drawing.Point(10, 10)
+	$clbBO.Size = New-Object System.Drawing.Size(370, 300)
+	$clbBO.CheckOnClick = $true
+	$tabBO.Controls.Add($clbBO)
+	foreach ($bo in $boNames | Sort-Object) { $clbBO.Items.Add($bo) | Out-Null }
+	$tabs.TabPages.Add($tabBO)
+	
+	# ----- Select/Deselect All Buttons -----
+	$btnSelectAll = New-Object System.Windows.Forms.Button
+	$btnSelectAll.Location = New-Object System.Drawing.Point(20, 360)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
+	$btnSelectAll.Text = "Select All"
+	$btnSelectAll.Add_Click({
+			foreach ($clb in @($clbLanes, $clbScales, $clbBO))
+			{
+				for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $true) }
+			}
+		})
+	$form.Controls.Add($btnSelectAll)
+	
+	$btnDeselectAll = New-Object System.Windows.Forms.Button
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(220, 360)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(180, 32)
+	$btnDeselectAll.Text = "Deselect All"
+	$btnDeselectAll.Add_Click({
+			foreach ($clb in @($clbLanes, $clbScales, $clbBO))
+			{
+				for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $false) }
+			}
+		})
+	$form.Controls.Add($btnDeselectAll)
+	
+	# ----- OK/Cancel -----
+	$btnOK = New-Object System.Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Location = New-Object System.Drawing.Point(50, 400)
+	$btnOK.Size = New-Object System.Drawing.Size(150, 32)
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $btnOK
+	$form.Controls.Add($btnOK)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(220, 400)
+	$btnCancel.Size = New-Object System.Drawing.Size(150, 32)
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.CancelButton = $btnCancel
+	$form.Controls.Add($btnCancel)
+	
+	$dialogResult = $form.ShowDialog()
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK) { return }
+	
+	# Gather selections
+	$selectedLanes = @()
+	for ($i = 0; $i -lt $clbLanes.Items.Count; $i++)
 	{
-		New-Item -Path $lanesDir -ItemType Directory | Out-Null
+		if ($clbLanes.GetItemChecked($i)) { $selectedLanes += $clbLanes.Items[$i] }
+	}
+	$selectedScales = @()
+	for ($i = 0; $i -lt $clbScales.Items.Count; $i++)
+	{
+		if ($clbScales.GetItemChecked($i)) { $selectedScales += $clbScales.Items[$i] }
+	}
+	$selectedBOs = @()
+	for ($i = 0; $i -lt $clbBO.Items.Count; $i++)
+	{
+		if ($clbBO.GetItemChecked($i)) { $selectedBOs += $clbBO.Items[$i] }
 	}
 	
-	foreach ($remote in $LaneMachines)
+	# --- Run Hardware Info export for each selected set ---
+	$desktop = [Environment]::GetFolderPath("Desktop")
+	$lanesDir = Join-Path $desktop "Lanes"
+	$scalesDir = Join-Path $desktop "Scales"
+	$backofficesDir = Join-Path $desktop "BackOffices"
+	foreach ($dir in @($lanesDir, $scalesDir, $backofficesDir))
 	{
-		$laneInfo = @{
+		if (-not (Test-Path $dir))
+		{
+			New-Item -Path $dir -ItemType Directory | Out-Null
+		}
+	}
+	
+	# ---- Lanes ----
+	$LaneResults = @{ }
+	$LaneInfoLines = @()
+	foreach ($remote in ($selectedLanes | Sort-Object))
+	{
+		$info = @{
 			Success		       = $false
 			SystemManufacturer = $null
 			SystemProductName  = $null
@@ -2027,69 +2144,164 @@ function Get_Remote_Machine_Info
 		{
 			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
 			sc.exe \\$remote start RemoteRegistry | Out-Null
-			
 			$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
 			$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
-			if ($manufMatch.Success)
-			{
-				$laneInfo.SystemManufacturer = $manufMatch.Groups[1].Value.Trim()
-			}
-			else
-			{
-				$laneInfo.SystemManufacturer = $null
-			}
-			
+			if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
 			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
 			$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
-			if ($prodMatch.Success)
+			if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
+			if ($info.SystemManufacturer -and $info.SystemProductName)
 			{
-				$laneInfo.SystemProductName = $prodMatch.Groups[1].Value.Trim()
+				$info.Success = $true
 			}
 			else
 			{
-				$laneInfo.SystemProductName = $null
-			}
-			
-			if ($laneInfo.SystemManufacturer -and $laneInfo.SystemProductName)
-			{
-				$laneInfo.Success = $true
-			}
-			else
-			{
-				$laneInfo.Error = "SystemManufacturer or SystemProductName not found in registry output."
+				$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
 			}
 		}
-		catch
-		{
-			$laneInfo.Error = $_.Exception.Message
-		}
-		$results[$remote] = $laneInfo
+		catch { $info.Error = $_.Exception.Message }
+		$LaneResults[$remote] = $info
 		
-		# Collect info for export
 		$line = "Machine Name: $remote"
-		if ($laneInfo.Success)
+		if ($info.Success)
 		{
-			$line += "  Manufacturer: $($laneInfo.SystemManufacturer)  Model: $($laneInfo.SystemProductName)"
+			$line += "  Manufacturer: $($info.SystemManufacturer)  Model: $($info.SystemProductName)"
 		}
-		elseif ($laneInfo.Error)
+		elseif ($info.Error)
 		{
-			$line += "  [Hardware info unavailable]  Error: $($laneInfo.Error)"
+			$line += "  [Hardware info unavailable]  Error: $($info.Error)"
 		}
 		else
 		{
 			$line += "  [No hardware info found]"
 		}
-		$infoLines += $line
+		$LaneInfoLines += $line
+	}
+	$script:LaneHardwareInfo = $LaneResults
+	if ($LaneInfoLines.Count)
+	{
+		$filePathLanes = Join-Path $lanesDir 'Lanes_Info.txt'
+		$LaneInfoLines -join "`r`n" | Set-Content -Path $filePathLanes -Encoding Default
 	}
 	
-	$script:LaneHardwareInfo = $results
+	# ---- Scales ----
+	$ScaleResults = @{ }
+	$ScaleInfoLines = @()
+	foreach ($remote in ($selectedScales | Sort-Object))
+	{
+		$info = @{
+			Success		       = $false
+			SystemManufacturer = $null
+			SystemProductName  = $null
+			Error			   = $null
+		}
+		try
+		{
+			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
+			sc.exe \\$remote start RemoteRegistry | Out-Null
+			$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+			$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+			if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
+			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+			$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+			if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
+			if ($info.SystemManufacturer -and $info.SystemProductName)
+			{
+				$info.Success = $true
+			}
+			else
+			{
+				$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+			}
+		}
+		catch { $info.Error = $_.Exception.Message }
+		$ScaleResults[$remote] = $info
+		
+		$line = "Machine Name: $remote"
+		if ($info.Success)
+		{
+			$line += "  Manufacturer: $($info.SystemManufacturer)  Model: $($info.SystemProductName)"
+		}
+		elseif ($info.Error)
+		{
+			$line += "  [Hardware info unavailable]  Error: $($info.Error)"
+		}
+		else
+		{
+			$line += "  [No hardware info found]"
+		}
+		$ScaleInfoLines += $line
+	}
+	$script:ScaleHardwareInfo = $ScaleResults
+	if ($ScaleInfoLines.Count)
+	{
+		$filePathScales = Join-Path $scalesDir 'Scales_Info.txt'
+		$ScaleInfoLines -join "`r`n" | Set-Content -Path $filePathScales -Encoding Default
+	}
 	
-	# Write to Desktop\Lanes\Lanes_Info.txt
-	$filePath = Join-Path $lanesDir 'Lanes_Info.txt'
-	$infoLines -join "`r`n" | Set-Content -Path $filePath -Encoding Default
-	# Write-Host "Wrote: $filePath"
-	
-	return $results
+	# ---- Backoffices ----
+	$BOResults = @{ }
+	$BOInfoLines = @()
+	foreach ($remote in ($selectedBOs | Sort-Object))
+	{
+		$info = @{
+			Success		       = $false
+			SystemManufacturer = $null
+			SystemProductName  = $null
+			Error			   = $null
+		}
+		try
+		{
+			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
+			sc.exe \\$remote start RemoteRegistry | Out-Null
+			$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+			$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+			if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
+			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+			$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+			if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
+			if ($info.SystemManufacturer -and $info.SystemProductName)
+			{
+				$info.Success = $true
+			}
+			else
+			{
+				$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+			}
+		}
+		catch { $info.Error = $_.Exception.Message }
+		$BOResults[$remote] = $info
+		
+		$line = "Machine Name: $remote"
+		if ($info.Success)
+		{
+			$line += "  Manufacturer: $($info.SystemManufacturer)  Model: $($info.SystemProductName)"
+		}
+		elseif ($info.Error)
+		{
+			$line += "  [Hardware info unavailable]  Error: $($info.Error)"
+		}
+		else
+		{
+			$line += "  [No hardware info found]"
+		}
+		$BOInfoLines += $line
+	}
+	$script:BackofficeHardwareInfo = $BOResults
+	if ($BOInfoLines.Count)
+	{
+		$filePathBO = Join-Path $backofficesDir 'Backoffices_Info.txt'
+		$BOInfoLines -join "`r`n" | Set-Content -Path $filePathBO -Encoding Default
+	}
+	# Trigger for the button message
+	if (($LaneInfoLines.Count -gt 0) -or ($ScaleInfoLines.Count -gt 0) -or ($BOInfoLines.Count -gt 0))
+	{
+		return $true
+	}
+	else
+	{
+		return $false
+	}
 }
 
 # ===================================================================================================
@@ -9479,10 +9691,11 @@ if (-not $form)
 	$ExportLaneHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Lane Hardware Info")
 	$ExportLaneHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all lanes to Desktop\Lanes\Lanes_Info.txt"
 	$ExportLaneHardwareInfoItem.Add_Click({
-			# Assume $LaneMachines is a hashtable: LaneNumber => MachineName
-			$laneList = $LaneMachines.Values | Where-Object { $_ } | Select-Object -Unique
-			Get_Remote_Machine_Info -LaneMachines $laneList
-			[System.Windows.Forms.MessageBox]::Show("Lane hardware info exported to Desktop\Lanes\Lanes_Info.txt", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+			$didExport = Get_Remote_Machine_Info
+			if ($didExport)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Lane hardware info exported to Desktop\Lanes\Lanes_Info.txt", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+			}
 		})
 	[void]$ContextMenuLane.Items.Add($ExportLaneHardwareInfoItem)
 	
