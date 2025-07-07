@@ -2179,15 +2179,15 @@ function Get_Remote_Machine_Info
 		$line = "Machine Name: $remote |"
 		if ($info.Success)
 		{
-			$line += "  Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
+			$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 		}
 		elseif ($info.Error)
 		{
-			$line += "  [Hardware info unavailable]  Error: $($info.Error)"
+			$line += " [Hardware info unavailable]  Error: $($info.Error)"
 		}
 		else
 		{
-			$line += "  [No hardware info found]"
+			$line += " [No hardware info found]"
 		}
 		$LaneInfoLines += $line
 	}
@@ -2248,15 +2248,15 @@ function Get_Remote_Machine_Info
 		$line = "Machine Name: $remote |"
 		if ($info.Success)
 		{
-			$line += "  Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
+			$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 		}
 		elseif ($info.Error)
 		{
-			$line += "  [Hardware info unavailable]  Error: $($info.Error)"
+			$line += " [Hardware info unavailable]  Error: $($info.Error)"
 		}
 		else
 		{
-			$line += "  [No hardware info found]"
+			$line += " [No hardware info found]"
 		}
 		$ScaleInfoLines += $line
 	}
@@ -2317,15 +2317,15 @@ function Get_Remote_Machine_Info
 		$line = "Machine Name: $remote |"
 		if ($info.Success)
 		{
-			$line += "  Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
+			$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 		}
 		elseif ($info.Error)
 		{
-			$line += "  [Hardware info unavailable]  Error: $($info.Error)"
+			$line += " [Hardware info unavailable]  Error: $($info.Error)"
 		}
 		else
 		{
-			$line += "  [No hardware info found]"
+			$line += " [No hardware info found]"
 		}
 		$BOInfoLines += $line
 	}
