@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.3.0"
-$VersionDate = "2025-07-08"
+$VersionDate = "2025-07-07"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1999,7 +1999,7 @@ function Get_Remote_Machine_Info
 {
 	param (
 		[Parameter(Mandatory)]
-		[string[]]$LaneMachines # List of remote machine names (ex: "POS001", "POS002")
+		[string[]]$LaneMachines
 	)
 	
 	$results = @{ }
@@ -2014,26 +2014,25 @@ function Get_Remote_Machine_Info
 		}
 		try
 		{
-			# 1. Set RemoteRegistry to auto and start it
 			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
 			sc.exe \\$remote start RemoteRegistry | Out-Null
 			
-			# 2. Query SystemManufacturer
 			$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-			if ($manuf -match 'SystemManufacturer\s+REG_SZ\s+(.+)$' -and $matches[1])
+			$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+			if ($manufMatch.Success)
 			{
-				$laneInfo.SystemManufacturer = $matches[1].Trim()
+				$laneInfo.SystemManufacturer = $manufMatch.Groups[1].Value.Trim()
 			}
 			else
 			{
 				$laneInfo.SystemManufacturer = $null
 			}
 			
-			# 3. Query SystemProductName
 			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-			if ($prod -match 'SystemProductName\s+REG_SZ\s+(.+)$' -and $matches[1])
+			$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+			if ($prodMatch.Success)
 			{
-				$laneInfo.SystemProductName = $matches[1].Trim()
+				$laneInfo.SystemProductName = $prodMatch.Groups[1].Value.Trim()
 			}
 			else
 			{
@@ -2056,7 +2055,6 @@ function Get_Remote_Machine_Info
 		$results[$remote] = $laneInfo
 	}
 	
-	# Store globally for use in other functions
 	$script:LaneHardwareInfo = $results
 	
 	return $results
