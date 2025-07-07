@@ -2176,7 +2176,7 @@ function Get_Remote_Machine_Info
 		catch { $info.Error = $_.Exception.Message }
 		$LaneResults[$remote] = $info
 		
-		$line = "Machine Name: $remote"
+		$line = "Machine Name: $remote |"
 		if ($info.Success)
 		{
 			$line += "  Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
@@ -2245,7 +2245,7 @@ function Get_Remote_Machine_Info
 		catch { $info.Error = $_.Exception.Message }
 		$ScaleResults[$remote] = $info
 		
-		$line = "Machine Name: $remote"
+		$line = "Machine Name: $remote |"
 		if ($info.Success)
 		{
 			$line += "  Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
@@ -2314,7 +2314,7 @@ function Get_Remote_Machine_Info
 		catch { $info.Error = $_.Exception.Message }
 		$BOResults[$remote] = $info
 		
-		$line = "Machine Name: $remote"
+		$line = "Machine Name: $remote |"
 		if ($info.Success)
 		{
 			$line += "  Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
