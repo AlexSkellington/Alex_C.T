@@ -8200,20 +8200,30 @@ PreemptiveUpdates=0
 		$ip = if ($scaleObj.FullIP) { $scaleObj.FullIP }
 		elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice) { "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)" }
 		else { $null }
-		$scaleName = if ($scaleObj.Name) { $scaleObj.Name }
-		else { $scaleCode }
+		
 		if ($ip)
 		{
 			$octets = $ip -split '\.'
 			$lastOctet = $octets[-1]
-			if ($scaleName -match 'ishida')
+			
+			# Normalize Brand/Model
+			$brand = ($scaleObj.ScaleBrand -as [string]).Trim()
+			$model = ($scaleObj.ScaleModel -as [string]).Trim()
+			
+			# Naming decision
+			if ($brand -and $model)
 			{
-				$fileName = "Ishida_Wrapper_${lastOctet}.vnc"
+				$fileName = "$brand($model)_${lastOctet}.vnc"
+			}
+			elseif ($brand)
+			{
+				$fileName = "$brand(Unknown)_${lastOctet}.vnc"
 			}
 			else
 			{
 				$fileName = "Scale_${lastOctet}.vnc"
 			}
+			
 			$filePath = Join-Path $scalesDir $fileName
 			$parent = Split-Path $filePath -Parent
 			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
