@@ -1990,7 +1990,7 @@ function Get_All_Lanes_VNC_Passwords
 # Description:
 #   For each specified remote machine (lane), enables and starts the Remote Registry service,
 #   then queries and retrieves the System Manufacturer and System Product Name via the registry.
-#   Results are stored in a hashtable keyed by machine name.
+#   Results are stored in a hashtable keyed by machine name, and in $script:LaneHardwareInfo.
 #
 # Parameters:
 #   - LaneMachines   [string[]]: List of remote machine names to query.
@@ -2000,9 +2000,11 @@ function Get_All_Lanes_VNC_Passwords
 #   - Queries both 'SystemManufacturer' and 'SystemProductName' from the BIOS registry section.
 #   - Stores results as a hashtable: MachineName => [Success, Manufacturer, Product Name, Error]
 #   - Handles and records any errors during service or registry queries.
+#   - Results are available globally as $script:LaneHardwareInfo.
 #
 # Usage:
-#   $results = Get-RemoteMachineInfo -LaneMachines @("POS001", "POS002")
+#   $results = Get_Remote_Machine_Info -LaneMachines @("POS001", "POS002")
+#   # or access later: $script:LaneHardwareInfo["POS001"]
 #
 # Author: Alex_C.T
 # ===================================================================================================
@@ -2059,6 +2061,9 @@ function Get_Remote_Machine_Info
 		}
 		$results[$remote] = $laneInfo
 	}
+	
+	# Store globally for use in other functions
+	$script:LaneHardwareInfo = $results
 	
 	return $results
 }
@@ -8249,6 +8254,8 @@ PreemptiveUpdates=0
 	
 	# ---- Lanes ---- #
 	$laneCount = 0
+	$laneInfoLines = @() # <-- Reset or init at the start of the lanes block
+	
 	foreach ($lane in $LaneMachines.GetEnumerator())
 	{
 		$laneNumber = $lane.Key
@@ -8279,25 +8286,24 @@ PreemptiveUpdates=0
 		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 		Write_Log "Created: $filePath" "green"
 		$laneCount++
+		
+		# --- Add hardware info for this lane ---
+		if ($script:LaneHardwareInfo -and $script:LaneHardwareInfo.ContainsKey($machineName))
+		{
+			$hw = $script:LaneHardwareInfo[$machineName]
+			$manuf = $hw.SystemManufacturer
+			$model = $hw.SystemProductName
+			$succ = $hw.Success
+			$err = $hw.Error
+		}
 	}
 	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
 	
-	# Add lane hardware info to list
-	if ($LaneHardwareInfo.ContainsKey($machineName))
-	{
-		$hw = $LaneHardwareInfo[$machineName]
-		$manuf = $hw.SystemManufacturer
-		$model = $hw.SystemProductName
-		$succ = $hw.Success
-		$err = $hw.Error
-	}
-	
-	# Write Lanes_Info.txt
+	# ---- Write Lanes_Info.txt (once, after loop) ----
 	$laneInfoPath = Join-Path $lanesDir 'Lanes_Info.txt'
 	$laneInfoLines -join "`r`n" | Set-Content -Path $laneInfoPath -Encoding $script:ansiPcEncoding
 	Write_Log "Wrote: $laneInfoPath" "green"
-	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
-		
+	
 	# ---- Scales ---- #
 	$scaleCount = 0
 	foreach ($scale in $ScaleIPNetworks.GetEnumerator())
@@ -9546,7 +9552,7 @@ $ClearXEJob = Clear_XE_Folder
 $LaneVNCPasswords = Get_All_Lanes_VNC_Passwords -LaneMachines $LaneMachines
 
 #Retrive the lanes system info 
-$Get_Remote_Machine_Info = Get_Remote_Machine_Info -LaneMachines $LaneMachines
+$results = Get_Remote_Machine_Info -LaneMachines $LaneMachines
 
 # Clear %Temp% folder on start
 $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
