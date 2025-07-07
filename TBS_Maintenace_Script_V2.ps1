@@ -1991,6 +1991,7 @@ function Get_All_Lanes_VNC_Passwords
 #   For each specified remote machine (lane), enables and starts the Remote Registry service,
 #   then queries and retrieves the System Manufacturer and System Product Name via the registry.
 #   Results are stored in a hashtable keyed by machine name, and in $script:LaneHardwareInfo.
+#   Also writes a Lanes_Info.txt file to Desktop\Lanes.
 #
 # Author: Alex_C.T
 # ===================================================================================================
@@ -2003,6 +2004,16 @@ function Get_Remote_Machine_Info
 	)
 	
 	$results = @{ }
+	$infoLines = @()
+	
+	$desktop = [Environment]::GetFolderPath("Desktop")
+	$lanesDir = Join-Path $desktop "Lanes"
+	
+	# Ensure the folder exists
+	if (-not (Test-Path $lanesDir))
+	{
+		New-Item -Path $lanesDir -ItemType Directory | Out-Null
+	}
 	
 	foreach ($remote in $LaneMachines)
 	{
@@ -2053,9 +2064,30 @@ function Get_Remote_Machine_Info
 			$laneInfo.Error = $_.Exception.Message
 		}
 		$results[$remote] = $laneInfo
+		
+		# Collect info for export
+		$line = "Machine Name: $remote"
+		if ($laneInfo.Success)
+		{
+			$line += "  Manufacturer: $($laneInfo.SystemManufacturer)  Model: $($laneInfo.SystemProductName)"
+		}
+		elseif ($laneInfo.Error)
+		{
+			$line += "  [Hardware info unavailable]  Error: $($laneInfo.Error)"
+		}
+		else
+		{
+			$line += "  [No hardware info found]"
+		}
+		$infoLines += $line
 	}
 	
 	$script:LaneHardwareInfo = $results
+	
+	# Write to Desktop\Lanes\Lanes_Info.txt
+	$filePath = Join-Path $lanesDir 'Lanes_Info.txt'
+	$infoLines -join "`r`n" | Set-Content -Path $filePath -Encoding Default
+	Write-Host "Wrote: $filePath"
 	
 	return $results
 }
@@ -8277,36 +8309,7 @@ PreemptiveUpdates=0
 		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 		Write_Log "Created: $filePath" "green"
 		$laneCount++
-		
-		# --- Add hardware info for this lane ---
-		$line = "Machine Name: $machineName"
-		if ($script:LaneHardwareInfo -and $script:LaneHardwareInfo.ContainsKey($machineName))
-		{
-			$hw = $script:LaneHardwareInfo[$machineName]
-			$manuf = $hw.SystemManufacturer
-			$model = $hw.SystemProductName
-			$succ = $hw.Success
-			$err = $hw.Error
-			if ($succ)
-			{
-				$line += "  Manufacturer: $manuf  Model: $model"
-			}
-			else
-			{
-				$line += "  [Hardware info unavailable]  Error: $err"
-			}
-		}
-		else
-		{
-			$line += "  [No hardware info found]"
-		}
-		$laneInfoLines += $line
 	}
-		
-	# ---- Write Lanes_Info.txt (once, after loop) ----
-	$laneInfoPath = Join-Path $lanesDir 'Lanes_Info.txt'
-	$laneInfoLines -join "`r`n" | Set-Content -Path $laneInfoPath -Encoding Default
-	Write_Log "Wrote: $laneInfoPath" "yellow"
 	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
 	
 	# ---- Scales ---- #
@@ -9471,7 +9474,20 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 	
 	############################################################################
-	# 14) Reboot Lane Menu Item
+	# 14) Export Lane Hardware Info
+	############################################################################
+	$ExportLaneHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Lane Hardware Info")
+	$ExportLaneHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all lanes to Desktop\Lanes\Lanes_Info.txt"
+	$ExportLaneHardwareInfoItem.Add_Click({
+			# Assume $LaneMachines is a hashtable: LaneNumber => MachineName
+			$laneList = $LaneMachines.Values | Where-Object { $_ } | Select-Object -Unique
+			Get_Remote_Machine_Info -LaneMachines $laneList
+			[System.Windows.Forms.MessageBox]::Show("Lane hardware info exported to Desktop\Lanes\Lanes_Info.txt", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+		})
+	[void]$ContextMenuLane.Items.Add($ExportLaneHardwareInfoItem)
+	
+	############################################################################
+	# 15) Reboot Lane Menu Item
 	############################################################################
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
@@ -9552,10 +9568,6 @@ Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath
 
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
-
-# Gather all unique machine names from LaneMachines for hardware info lookup
-$uniqueMachines = $LaneMachines.Values | Where-Object { $_ } | Select-Object -Unique
-$null = Get_Remote_Machine_Info -LaneMachines $uniqueMachines # Populates $script:LaneHardwareInfo
 
 # Clear %Temp% folder on start
 $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
