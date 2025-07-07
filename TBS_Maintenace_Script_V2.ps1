@@ -8309,12 +8309,12 @@ PreemptiveUpdates=0
 			$laneInfoLines += "Machine Name: $machineName  [No hardware info found]"
 		}
 	}
-	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
 	
 	# ---- Write Lanes_Info.txt (once, after loop) ----
 	$laneInfoPath = Join-Path $lanesDir 'Lanes_Info.txt'
 	$laneInfoLines -join "`r`n" | Set-Content -Path $laneInfoPath -Encoding Default
-	Write_Log "Wrote: $laneInfoPath" "green"
+	Write_Log "Wrote: $laneInfoPath" "yellow"
+	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
 	
 	# ---- Scales ---- #
 	$scaleCount = 0
