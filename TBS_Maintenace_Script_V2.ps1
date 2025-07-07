@@ -8207,7 +8207,7 @@ PreemptiveUpdates=0
 			$lastOctet = $octets[-1]
 			
 			# Normalize Brand/Model
-			$brand = ($scaleObj.ScaleBrand -as [string]).Trim()
+			$brandRaw = ($scaleObj.ScaleBrand -as [string]).Trim()
 			$model = ($scaleObj.ScaleModel -as [string]).Trim()
 			
 			# Capitalize every word in the brand
