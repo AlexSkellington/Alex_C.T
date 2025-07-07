@@ -1985,6 +1985,85 @@ function Get_All_Lanes_VNC_Passwords
 }
 
 # ===================================================================================================
+#                              FUNCTION: Get_Remote_Machine_Info
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   For each specified remote machine (lane), enables and starts the Remote Registry service,
+#   then queries and retrieves the System Manufacturer and System Product Name via the registry.
+#   Results are stored in a hashtable keyed by machine name.
+#
+# Parameters:
+#   - LaneMachines   [string[]]: List of remote machine names to query.
+#
+# Details:
+#   - Enables (sets to auto) and starts the RemoteRegistry service remotely.
+#   - Queries both 'SystemManufacturer' and 'SystemProductName' from the BIOS registry section.
+#   - Stores results as a hashtable: MachineName => [Success, Manufacturer, Product Name, Error]
+#   - Handles and records any errors during service or registry queries.
+#
+# Usage:
+#   $results = Get-RemoteMachineInfo -LaneMachines @("POS001", "POS002")
+#
+# Author: Alex_C.T
+# ===================================================================================================
+
+function Get_Remote_Machine_Info
+{
+	param (
+		[Parameter(Mandatory)]
+		[string[]]$LaneMachines # List of remote machine names (ex: "POS001", "POS002")
+	)
+	
+	$results = @{ }
+	
+	foreach ($remote in $LaneMachines)
+	{
+		$laneInfo = @{
+			Success		       = $false
+			SystemManufacturer = $null
+			SystemProductName  = $null
+			Error			   = $null
+		}
+		try
+		{
+			# 1. Set RemoteRegistry to auto and start it
+			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
+			sc.exe \\$remote start RemoteRegistry | Out-Null
+			
+			# 2. Query SystemManufacturer
+			$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+			if ($manuf -match 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+			{
+				$laneInfo.SystemManufacturer = $matches[1].Trim()
+			}
+			
+			# 3. Query SystemProductName
+			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+			if ($prod -match 'SystemProductName\s+REG_SZ\s+(.+)$')
+			{
+				$laneInfo.SystemProductName = $matches[1].Trim()
+			}
+			
+			if ($laneInfo.SystemManufacturer -and $laneInfo.SystemProductName)
+			{
+				$laneInfo.Success = $true
+			}
+			else
+			{
+				$laneInfo.Error = "Failed to parse manufacturer or product name."
+			}
+		}
+		catch
+		{
+			$laneInfo.Error = $_.Exception.Message
+		}
+		$results[$remote] = $laneInfo
+	}
+	
+	return $results
+}
+
+# ===================================================================================================
 #                                  SECTION: Fix_Journal
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -9449,6 +9528,9 @@ $ClearXEJob = Clear_XE_Folder
 
 # Retrivve the VNC Password of the lanes
 $LaneVNCPasswords = Get_All_Lanes_VNC_Passwords -LaneMachines $LaneMachines
+
+#Retrive the lanes system info 
+$Get_Remote_Machine_Info = Get_Remote_Machine_Info -LaneMachines $LaneMachines
 
 # Clear %Temp% folder on start
 $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
