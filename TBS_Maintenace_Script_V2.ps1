@@ -9451,7 +9451,21 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
 	
 	############################################################################
-	# 11) Remove Archive Bit
+	# 11) Export Lane Hardware Info
+	############################################################################
+	$ExportLaneHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Lane Hardware Info")
+	$ExportLaneHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all lanes to Desktop\Lanes\Lanes_Info.txt"
+	$ExportLaneHardwareInfoItem.Add_Click({
+			$didExport = Get_Remote_Machine_Info
+			if ($didExport)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Lane hardware info exported to Desktop\Lanes\Lanes_Info.txt", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+			}
+		})
+	[void]$ContextMenuLane.Items.Add($ExportLaneHardwareInfoItem)
+	
+	############################################################################
+	# 12) Remove Archive Bit
 	############################################################################
 	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
 	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
@@ -9461,7 +9475,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
 	
 	############################################################################
-	# 12) Update Scales Specials
+	# 13) Update Scales Specials
 	############################################################################
 	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
 	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
@@ -9726,23 +9740,9 @@ if (-not $form)
 			Send_SERVER_time_to_Lanes -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
-	
+		
 	############################################################################
-	# 14) Export Lane Hardware Info
-	############################################################################
-	$ExportLaneHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Lane Hardware Info")
-	$ExportLaneHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all lanes to Desktop\Lanes\Lanes_Info.txt"
-	$ExportLaneHardwareInfoItem.Add_Click({
-			$didExport = Get_Remote_Machine_Info
-			if ($didExport)
-			{
-				[System.Windows.Forms.MessageBox]::Show("Lane hardware info exported to Desktop\Lanes\Lanes_Info.txt", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-			}
-		})
-	[void]$ContextMenuLane.Items.Add($ExportLaneHardwareInfoItem)
-	
-	############################################################################
-	# 15) Reboot Lane Menu Item
+	# 14) Reboot Lane Menu Item
 	############################################################################
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
