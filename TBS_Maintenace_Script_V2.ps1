@@ -8168,16 +8168,28 @@ RequireEncryption=0
 PreemptiveUpdates=0
 "@
 	
-	# ---- Lanes ----
+	# ---- Lanes ---- #
 	$laneCount = 0
 	foreach ($lane in $LaneMachines.GetEnumerator())
 	{
 		$laneNumber = $lane.Key
 		$machineName = $lane.Value
-		$fileName = "Lane_${laneNumber}.vnc"
+		
+		# File name logic:
+		# Use POS### or SCO### (all capitals), else Lane_###
+		if ($machineName -and $machineName.ToUpper() -match '^(POS|SCO)\d+$')
+		{
+			$fileName = "$($machineName.ToUpper()).vnc"
+		}
+		else
+		{
+			$fileName = "Lane_${laneNumber}.vnc"
+		}
+		
 		$filePath = Join-Path $lanesDir $fileName
 		$parent = Split-Path $filePath -Parent
 		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
+		
 		# Use custom password if available, else default
 		$VNCPassword = $DefaultVNCPassword
 		if ($LaneVNCPasswords -and $LaneVNCPasswords.ContainsKey($machineName) -and $LaneVNCPasswords[$machineName])
@@ -8191,7 +8203,7 @@ PreemptiveUpdates=0
 	}
 	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
 	
-	# ---- Scales ----
+	# ---- Scales ---- #
 	$scaleCount = 0
 	foreach ($scale in $ScaleIPNetworks.GetEnumerator())
 	{
@@ -8249,7 +8261,7 @@ PreemptiveUpdates=0
 	}
 	Write_Log "$scaleCount scale VNC files written to $scalesDir`r`n" "blue"
 	
-	# ---- Backoffices ----
+	# ---- Backoffices ---- #
 	$boCount = 0
 	foreach ($bo in $BackofficeMachines.GetEnumerator())
 	{
