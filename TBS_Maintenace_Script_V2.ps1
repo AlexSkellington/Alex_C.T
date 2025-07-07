@@ -8210,6 +8210,16 @@ PreemptiveUpdates=0
 			$brand = ($scaleObj.ScaleBrand -as [string]).Trim()
 			$model = ($scaleObj.ScaleModel -as [string]).Trim()
 			
+			# Capitalize every word in the brand
+			$brand = if ($brandRaw)
+			{
+				($brandRaw -split ' ' | ForEach-Object {
+						if ($_.Length -gt 0) { $_.Substring(0, 1).ToUpper() + $_.Substring(1).ToLower() }
+						else { $_ }
+					}) -join ' '
+			}
+			else { "" }
+			
 			# Naming decision
 			if ($brand -and $model)
 			{
