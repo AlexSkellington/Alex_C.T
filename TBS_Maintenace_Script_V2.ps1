@@ -8301,7 +8301,7 @@ PreemptiveUpdates=0
 	
 	# ---- Write Lanes_Info.txt (once, after loop) ----
 	$laneInfoPath = Join-Path $lanesDir 'Lanes_Info.txt'
-	$laneInfoLines -join "`r`n" | Set-Content -Path $laneInfoPath -Encoding $script:ansiPcEncoding
+	$laneInfoLines -join "`r`n" | Set-Content -Path $laneInfoPath -Encoding Default
 	Write_Log "Wrote: $laneInfoPath" "green"
 	
 	# ---- Scales ---- #
