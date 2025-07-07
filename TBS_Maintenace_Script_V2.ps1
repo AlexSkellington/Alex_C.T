@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.3.0"
-$VersionDate = "2025-07-01"
+$VersionDate = "2025-07-07"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -831,7 +831,7 @@ WHERE F1056 = '$StoreNumber'
 				}
 			}
 			$NumberOfBackoffices = $BackofficeMachines.Count
-			}
+		}
 		catch
 		{
 			Write_Log "Failed to retrieve counts from the database: $_" "yellow"
@@ -883,7 +883,7 @@ WHERE F1056 = '$StoreNumber'
 				}
 			} | Where-Object { $_.Store -eq $StoreNumber }
 		}
-			
+		
 		# Lanes: terminals starting with 0
 		$laneObjs = @()
 		if ($parsed.Count -gt 0)
@@ -928,7 +928,7 @@ WHERE F1056 = '$StoreNumber'
 	if ((-not $NodesFromDatabase) -and (-not $TerLoadUsed))
 	{
 		Write_Log "Using file system directories as backup for node counts." "yellow"
-				
+		
 		if (Test-Path $HostPath)
 		{
 			$LaneFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}0??"
@@ -1835,6 +1835,109 @@ function Get_Table_Aliases
 		Aliases   = $sortedResults
 		AliasHash = $tableAliasHash
 	}
+}
+
+# ===================================================================================================
+#                            FUNCTION: Get_All_Lanes_VNC_Passwords
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Scans all specified lanes for the UltraVNC configuration file (UltraVNC.ini, any case) in the
+#   default install locations (Program Files and Program Files (x86)). Extracts the encrypted VNC
+#   password and stores results in a hashtable keyed by machine name. Handles all filename case 
+#   variations. Designed for remote auditing of VNC password status across all lanes.
+#
+# Parameters:
+#   - LaneMachines   [hashtable]: LaneNumber => MachineName mapping.
+#
+# Details:
+#   - Searches for UltraVNC.ini with any capitalization in both standard install folders.
+#   - Uses PowerShell remoting (Invoke-Command) to access remote lane files.
+#   - Finds the "passwd=" entry in the INI (case-insensitive, first match).
+#   - Returns a hashtable: MachineName => Password (or $null if not found).
+#   - Uses Write_Log for status, progress, and error messages.
+#
+# Usage:
+#   $LanePasswords = Get-AllLaneVNCPasswords -LaneMachines $LaneMachines
+#
+# Author: Alex_C.T
+# ===================================================================================================
+
+function Get_All_Lanes_VNC_Passwords
+{
+	param (
+		[Parameter(Mandatory)]
+		[hashtable]$LaneMachines # LaneNumber => MachineName
+	)
+	
+	$uvncFolders = @(
+		"C:\Program Files\uvnc bvba\UltraVNC",
+		"C:\Program Files (x86)\uvnc bvba\UltraVNC"
+	)
+	
+	$LaneVNCPasswords = @{ }
+	
+	foreach ($lane in $LaneMachines.GetEnumerator())
+	{
+		$laneNum = $lane.Key
+		$laneMachine = $lane.Value
+		$password = $null
+		$foundPath = $null
+		
+		foreach ($folder in $uvncFolders)
+		{
+			try
+			{
+				$iniFiles = Invoke-Command -ComputerName $laneMachine -ScriptBlock {
+					param ($dir)
+					if (Test-Path $dir)
+					{
+						Get-ChildItem -Path $dir -Filter "*.ini" -File | Where-Object {
+							$_.Name.ToLower() -eq "ultravnc.ini"
+						} | Select-Object -ExpandProperty FullName
+					}
+				} -ArgumentList $folder -ErrorAction Stop
+				
+				foreach ($iniFile in $iniFiles)
+				{
+					$content = Invoke-Command -ComputerName $laneMachine -ScriptBlock {
+						param ($path)
+						if (Test-Path $path)
+						{
+							Get-Content $path -ErrorAction Stop
+						}
+					} -ArgumentList $iniFile -ErrorAction Stop
+					
+					foreach ($line in $content)
+					{
+						if ($line -match '^\s*passwd\s*=\s*([0-9A-Fa-f]+)')
+						{
+							$password = $matches[1]
+							$foundPath = $iniFile
+							break
+						}
+					}
+					if ($password) { break }
+				}
+			}
+			catch
+			{
+				continue
+			}
+			if ($password) { break }
+		}
+		
+		$LaneVNCPasswords[$laneMachine] = $password
+		if ($password)
+		{
+			Write_Log "Lane [$laneNum/$laneMachine]: VNC password found in [$foundPath]: $password" "green"
+		}
+		else
+		{
+			Write_Log "Lane [$laneNum/$laneMachine]: VNC password not found in any UltraVNC.ini (case-insensitive) in the default folders." "yellow"
+		}
+	}
+	
+	return $LaneVNCPasswords
 }
 
 # ===================================================================================================
@@ -7656,7 +7759,7 @@ function Update_Scales_Specials_Interactive
 	
 	# Assume $OfficePath is already defined and points to the correct Office folder
 	$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
-		
+	
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Update Scales Specials"
 	$form.Size = New-Object System.Drawing.Size(490, 215)
@@ -7864,24 +7967,27 @@ exit
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Generates UltraVNC (.vnc) connection files for all lanes, scales, and backoffices discovered in
-#   the current store environment. Each node receives its own preconfigured .vnc file (with fixed password)
-#   and is saved to Desktop\Lanes, Desktop\Scales, or Desktop\Backoffices accordingly.
+#   the current store environment. Each node receives its own preconfigured .vnc file (with fixed password
+#   or lane-specific password) and is saved to Desktop\Lanes, Desktop\Scales, or Desktop\Backoffices accordingly.
 #   Designed for rapid remote support and streamlined access.
 #
 # Parameters:
 #   - LaneMachines      [hashtable]: LaneNumber => MachineName mapping.
 #   - ScaleIPNetworks   [hashtable]: ScaleCode => Scale Object (includes IP).
 #   - BackofficeMachines[hashtable]: BackofficeTerminal => MachineName mapping.
+#   - LaneVNCPasswords  [hashtable] (optional): MachineName => Password mapping.
 #
 # Details:
-#   - Password is set to: 4330df922eb03b6e (UltraVNC encrypted format).
+#   - Password is set to: 4330df922eb03b6e (UltraVNC encrypted format) by default.
+#   - Per-lane password is used if available in LaneVNCPasswords.
 #   - Files are written with clear, descriptive names.
 #   - Uses Write_Log for all status and progress messages.
 #   - Ensures all required folders exist.
 #   - Skips scales with missing IP/network info and logs them.
+#   - Creates Ishida_Wrapper_#.vnc for each Ishida scale found.
 #
 # Usage:
-#   Export-VNCFiles-ForAllNodes -LaneMachines $... -ScaleIPNetworks $... -BackofficeMachines $...
+#   Export-VNCFiles-ForAllNodes -LaneMachines $... -ScaleIPNetworks $... -BackofficeMachines $... [-LaneVNCPasswords $...]
 #
 # Author: Alex_C.T
 # ===================================================================================================
@@ -7894,15 +8000,23 @@ function Export_VNC_Files_For_All_Nodes
 		[Parameter(Mandatory = $true)]
 		[hashtable]$ScaleIPNetworks,
 		[Parameter(Mandatory = $true)]
-		[hashtable]$BackofficeMachines
+		[hashtable]$BackofficeMachines,
+		[Parameter(Mandatory = $false)]
+		[hashtable]$LaneVNCPasswords
 	)
 	
 	Write_Log "`r`n==================== Starting Export_VNCFiles_ForAllNodes ====================`r`n" "blue"
-	$VNCPassword = "4330df922eb03b6e"
+	$DefaultVNCPassword = "4330df922eb03b6e"
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
 	$scalesDir = Join-Path $desktop "Scales"
 	$backofficesDir = Join-Path $desktop "BackOffices"
+	
+	# ---- If passwords not provided, scan them ----
+	if (-not $LaneVNCPasswords -or $LaneVNCPasswords.Count -eq 0)
+	{
+		$LaneVNCPasswords = Get_All_Lanes_VNC_Passwords -LaneMachines $LaneMachines
+	}
 	
 	# --- Shared VNC file content with token ---
 	$vncTemplate = @"
@@ -7911,7 +8025,7 @@ host=%%HOST%%
 port=5900
 proxyhost=
 proxyport=0
-password=$VNCPassword
+password=%%PASSWORD%%
 [options]
 use_encoding_0=1
 use_encoding_1=1
@@ -8020,7 +8134,13 @@ PreemptiveUpdates=0
 		$filePath = Join-Path $lanesDir $fileName
 		$parent = Split-Path $filePath -Parent
 		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-		$content = $vncTemplate.Replace('%%HOST%%', $machineName)
+		# Use custom password if available, else default
+		$VNCPassword = $DefaultVNCPassword
+		if ($LaneVNCPasswords -and $LaneVNCPasswords.ContainsKey($machineName) -and $LaneVNCPasswords[$machineName])
+		{
+			$VNCPassword = $LaneVNCPasswords[$machineName]
+		}
+		$content = $vncTemplate.Replace('%%HOST%%', $machineName).Replace('%%PASSWORD%%', $VNCPassword)
 		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 		Write_Log "Created: $filePath" "green"
 		$laneCount++
@@ -8036,14 +8156,24 @@ PreemptiveUpdates=0
 		$ip = if ($scaleObj.FullIP) { $scaleObj.FullIP }
 		elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice) { "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)" }
 		else { $null }
+		$scaleName = if ($scaleObj.Name) { $scaleObj.Name }
+		else { $scaleCode }
 		if ($ip)
 		{
-			$lastOctet = $scaleObj.IPDevice
-			$fileName = "Scale_${lastOctet}.vnc"
+			$octets = $ip -split '\.'
+			$lastOctet = $octets[-1]
+			if ($scaleName -match 'ishida')
+			{
+				$fileName = "Ishida_Wrapper_${lastOctet}.vnc"
+			}
+			else
+			{
+				$fileName = "Scale_${lastOctet}.vnc"
+			}
 			$filePath = Join-Path $scalesDir $fileName
 			$parent = Split-Path $filePath -Parent
 			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-			$content = $vncTemplate.Replace('%%HOST%%', $ip)
+			$content = $vncTemplate.Replace('%%HOST%%', $ip).Replace('%%PASSWORD%%', $DefaultVNCPassword)
 			[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 			Write_Log "Created: $filePath" "green"
 			$scaleCount++
@@ -8065,7 +8195,7 @@ PreemptiveUpdates=0
 		$filePath = Join-Path $backofficesDir $fileName
 		$parent = Split-Path $filePath -Parent
 		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-		$content = $vncTemplate.Replace('%%HOST%%', $boName)
+		$content = $vncTemplate.Replace('%%HOST%%', $boName).Replace('%%PASSWORD%%', $DefaultVNCPassword)
 		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 		Write_Log "Created: $filePath" "green"
 		$boCount++
@@ -8874,9 +9004,9 @@ if (-not $form)
 	$ExportVNCFilesItem.ToolTipText = "Generate UltraVNC (.vnc) connection files for all lanes, scales, and backoffices."
 	$ExportVNCFilesItem.Add_Click({
 			Export_VNC_Files_For_All_Nodes `
-										-LaneMachines $script:FunctionResults['LaneMachines'] `
-										-ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks'] `
-										-BackofficeMachines $script:FunctionResults['BackofficeMachines']
+										   -LaneMachines $script:FunctionResults['LaneMachines'] `
+										   -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks'] `
+										   -BackofficeMachines $script:FunctionResults['BackofficeMachines']
 		})
 	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
 	
@@ -8899,7 +9029,7 @@ if (-not $form)
 			Update_Scales_Specials_Interactive
 		})
 	[void]$contextMenuGeneral.Items.Add($UpdateScalesSpecialsItem)
-		
+	
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
 	############################################################################
