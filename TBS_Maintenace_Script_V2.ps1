@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.3.0"
-$VersionDate = "2025-07-08"
+$VersionDate = "2025-07-07"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -9558,9 +9558,6 @@ $ClearXEJob = Clear_XE_Folder
 # Gather all unique machine names from LaneMachines for hardware info lookup
 $uniqueMachines = $LaneMachines.Values | Where-Object { $_ } | Select-Object -Unique
 $null = Get_Remote_Machine_Info -LaneMachines $uniqueMachines # Populates $script:LaneHardwareInfo
-
-#Retrive the lanes system info 
-$results = Get_Remote_Machine_Info -LaneMachines ($LaneMachines.Values | Select-Object -Unique)
 
 # Clear %Temp% folder on start
 $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
