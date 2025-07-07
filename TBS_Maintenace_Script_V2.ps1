@@ -2087,7 +2087,7 @@ function Get_Remote_Machine_Info
 	# Write to Desktop\Lanes\Lanes_Info.txt
 	$filePath = Join-Path $lanesDir 'Lanes_Info.txt'
 	$infoLines -join "`r`n" | Set-Content -Path $filePath -Encoding Default
-	Write-Host "Wrote: $filePath"
+	# Write-Host "Wrote: $filePath"
 	
 	return $results
 }
@@ -9570,8 +9570,8 @@ Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath
 $ClearXEJob = Clear_XE_Folder
 
 # Clear %Temp% folder on start
-$ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
-$ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob
+# $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
+# $ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob
 
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
