@@ -1882,23 +1882,30 @@ function Get_All_Lanes_VNC_Passwords
 		$laneMachine = $lane.Value
 		$password = $null
 		$foundPath = $null
+		$fileFound = $false
+		$success = $false
 		
 		foreach ($folder in $uvncFolders)
 		{
+			# --- Try with Invoke-Command first ---
 			try
 			{
 				$iniFiles = Invoke-Command -ComputerName $laneMachine -ScriptBlock {
 					param ($dir)
 					if (Test-Path $dir)
 					{
-						Get-ChildItem -Path $dir -Filter "*.ini" -File | Where-Object {
-							$_.Name.ToLower() -eq "ultravnc.ini"
-						} | Select-Object -ExpandProperty FullName
+						Get-ChildItem -Path $dir -Filter "*.ini" -File | ForEach-Object {
+							if ($_.Name.ToLower() -eq "ultravnc.ini")
+							{
+								$_.FullName
+							}
+						}
 					}
-				} -ArgumentList $folder -ErrorAction Stop
+				} -ArgumentList ("C:\" + $folder.Substring(3)) -ErrorAction Stop
 				
 				foreach ($iniFile in $iniFiles)
 				{
+					$fileFound = $true
 					$content = Invoke-Command -ComputerName $laneMachine -ScriptBlock {
 						param ($path)
 						if (Test-Path $path)
@@ -1913,6 +1920,7 @@ function Get_All_Lanes_VNC_Passwords
 						{
 							$password = $matches[1]
 							$foundPath = $iniFile
+							$success = $true
 							break
 						}
 					}
@@ -1921,7 +1929,38 @@ function Get_All_Lanes_VNC_Passwords
 			}
 			catch
 			{
-				continue
+				# ---- Fallback to UNC/network path if remoting fails ----
+				try
+				{
+					$remotePath = "\\$laneMachine\$folder"
+					if (Test-Path $remotePath)
+					{
+						$iniFiles = Get-ChildItem -Path $remotePath -Filter "*.ini" -File | Where-Object {
+							$_.Name.ToLower() -eq "ultravnc.ini"
+						}
+						foreach ($iniFile in $iniFiles)
+						{
+							$fileFound = $true
+							$content = Get-Content $iniFile.FullName -ErrorAction Stop
+							foreach ($line in $content)
+							{
+								if ($line -match '^\s*passwd\s*=\s*([0-9A-Fa-f]+)')
+								{
+									$password = $matches[1]
+									$foundPath = $iniFile.FullName
+									$success = $true
+									break
+								}
+							}
+							if ($password) { break }
+						}
+					}
+				}
+				catch
+				{
+					# Ignore network path errors and continue to next folder
+					continue
+				}
 			}
 			if ($password) { break }
 		}
@@ -1929,11 +1968,16 @@ function Get_All_Lanes_VNC_Passwords
 		$LaneVNCPasswords[$laneMachine] = $password
 		if ($password)
 		{
-			Write_Log "Lane [$laneNum/$laneMachine]: VNC password found in [$foundPath]: $password" "green"
+			$method = $success ? "Remoting" : "Network path"
+			Write_Log "Lane [$laneNum/$laneMachine]: VNC password found in [$foundPath] via $method: $password" "green"
+		}
+		elseif ($fileFound)
+		{
+			Write_Log "Lane [$laneNum/$laneMachine]: UltraVNC.ini found but no password found inside [$foundPath]." "yellow"
 		}
 		else
 		{
-			Write_Log "Lane [$laneNum/$laneMachine]: VNC password not found in any UltraVNC.ini (case-insensitive) in the default folders." "yellow"
+			Write_Log "Lane [$laneNum/$laneMachine]: UltraVNC.ini not found in any standard folder." "yellow"
 		}
 	}
 	
