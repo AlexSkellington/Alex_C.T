@@ -1992,20 +1992,6 @@ function Get_All_Lanes_VNC_Passwords
 #   then queries and retrieves the System Manufacturer and System Product Name via the registry.
 #   Results are stored in a hashtable keyed by machine name, and in $script:LaneHardwareInfo.
 #
-# Parameters:
-#   - LaneMachines   [string[]]: List of remote machine names to query.
-#
-# Details:
-#   - Enables (sets to auto) and starts the RemoteRegistry service remotely.
-#   - Queries both 'SystemManufacturer' and 'SystemProductName' from the BIOS registry section.
-#   - Stores results as a hashtable: MachineName => [Success, Manufacturer, Product Name, Error]
-#   - Handles and records any errors during service or registry queries.
-#   - Results are available globally as $script:LaneHardwareInfo.
-#
-# Usage:
-#   $results = Get_Remote_Machine_Info -LaneMachines @("POS001", "POS002")
-#   # or access later: $script:LaneHardwareInfo["POS001"]
-#
 # Author: Alex_C.T
 # ===================================================================================================
 
@@ -2034,16 +2020,24 @@ function Get_Remote_Machine_Info
 			
 			# 2. Query SystemManufacturer
 			$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-			if ($manuf -match 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+			if ($manuf -match 'SystemManufacturer\s+REG_SZ\s+(.+)$' -and $matches[1])
 			{
 				$laneInfo.SystemManufacturer = $matches[1].Trim()
+			}
+			else
+			{
+				$laneInfo.SystemManufacturer = $null
 			}
 			
 			# 3. Query SystemProductName
 			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-			if ($prod -match 'SystemProductName\s+REG_SZ\s+(.+)$')
+			if ($prod -match 'SystemProductName\s+REG_SZ\s+(.+)$' -and $matches[1])
 			{
 				$laneInfo.SystemProductName = $matches[1].Trim()
+			}
+			else
+			{
+				$laneInfo.SystemProductName = $null
 			}
 			
 			if ($laneInfo.SystemManufacturer -and $laneInfo.SystemProductName)
@@ -2052,7 +2046,7 @@ function Get_Remote_Machine_Info
 			}
 			else
 			{
-				$laneInfo.Error = "Failed to parse manufacturer or product name."
+				$laneInfo.Error = "SystemManufacturer or SystemProductName not found in registry output."
 			}
 		}
 		catch
@@ -8254,15 +8248,14 @@ PreemptiveUpdates=0
 	
 	# ---- Lanes ---- #
 	$laneCount = 0
-	$laneInfoLines = @() # <-- Reset or init at the start of the lanes block
+	$laneInfoLines = @()
 	
 	foreach ($lane in $LaneMachines.GetEnumerator())
 	{
 		$laneNumber = $lane.Key
 		$machineName = $lane.Value
 		
-		# File name logic:
-		# Use POS### or SCO### (all capitals), else Lane_###
+		# File name logic
 		if ($machineName -and $machineName.ToUpper() -match '^(POS|SCO)\d+$')
 		{
 			$fileName = "$($machineName.ToUpper()).vnc"
@@ -8288,6 +8281,7 @@ PreemptiveUpdates=0
 		$laneCount++
 		
 		# --- Add hardware info for this lane ---
+		$line = "Machine Name: $machineName"
 		if ($script:LaneHardwareInfo -and $script:LaneHardwareInfo.ContainsKey($machineName))
 		{
 			$hw = $script:LaneHardwareInfo[$machineName]
@@ -8297,19 +8291,20 @@ PreemptiveUpdates=0
 			$err = $hw.Error
 			if ($succ)
 			{
-				$laneInfoLines += "Machine Name: $machineName  Manufacturer: $manuf  Model: $model"
+				$line += "  Manufacturer: $manuf  Model: $model"
 			}
 			else
 			{
-				$laneInfoLines += "Machine Name: $machineName  [Hardware info unavailable]  Error: $err"
+				$line += "  [Hardware info unavailable]  Error: $err"
 			}
 		}
 		else
 		{
-			$laneInfoLines += "Machine Name: $machineName  [No hardware info found]"
+			$line += "  [No hardware info found]"
 		}
+		$laneInfoLines += $line
 	}
-	
+		
 	# ---- Write Lanes_Info.txt (once, after loop) ----
 	$laneInfoPath = Join-Path $lanesDir 'Lanes_Info.txt'
 	$laneInfoLines -join "`r`n" | Set-Content -Path $laneInfoPath -Encoding Default
@@ -9560,8 +9555,9 @@ Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
 
-# Retrivve the VNC Password of the lanes
-$LaneVNCPasswords = Get_All_Lanes_VNC_Passwords -LaneMachines $LaneMachines
+# Gather all unique machine names from LaneMachines for hardware info lookup
+$uniqueMachines = $LaneMachines.Values | Where-Object { $_ } | Select-Object -Unique
+$null = Get_Remote_Machine_Info -LaneMachines $uniqueMachines # Populates $script:LaneHardwareInfo
 
 #Retrive the lanes system info 
 $results = Get_Remote_Machine_Info -LaneMachines ($LaneMachines.Values | Select-Object -Unique)
