@@ -1969,18 +1969,18 @@ function Get_All_Lanes_VNC_Passwords
 		if ($password)
 		{
 			$method = if ($success) { "Remoting" } else { "Network path" }
-			Write_Log "Lane [$laneNum/$laneMachine]: VNC password found in [$foundPath] via [$method]: $password" "green"
+		#	Write_Log "Lane [$laneNum/$laneMachine]: VNC password found in [$foundPath] via [$method]: $password" "green"
 		}
 		elseif ($fileFound)
 		{
-			Write_Log "Lane [$laneNum/$laneMachine]: UltraVNC.ini found but no password found inside [$foundPath]." "yellow"
+		#	Write_Log "Lane [$laneNum/$laneMachine]: UltraVNC.ini found but no password found inside [$foundPath]." "yellow"
 		}
 		else
 		{
-			Write_Log "Lane [$laneNum/$laneMachine]: UltraVNC.ini not found in any standard folder." "yellow"
+		#	Write_Log "Lane [$laneNum/$laneMachine]: UltraVNC.ini not found in any standard folder." "yellow"
 		}
 	}
-	
+	$script:FunctionResults['LaneVNCPasswords'] = $LaneVNCPasswords
 	return $LaneVNCPasswords
 }
 
@@ -9050,7 +9050,8 @@ if (-not $form)
 			Export_VNC_Files_For_All_Nodes `
 										   -LaneMachines $script:FunctionResults['LaneMachines'] `
 										   -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks'] `
-										   -BackofficeMachines $script:FunctionResults['BackofficeMachines']
+										   -BackofficeMachines $script:FunctionResults['BackofficeMachines']`
+										   -LaneVNCPasswords $script:FunctionResults['LaneVNCPasswords']
 		})
 	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
 	
@@ -9402,6 +9403,9 @@ $StoreName = $script:FunctionResults['StoreName']
 $Nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 $Nodes = $script:FunctionResults['Nodes']
 
+# Retrieve the list of machine names from the FunctionResults dictionary
+$LaneMachines = $script:FunctionResults['LaneMachines']
+
 # Populate the hash table with results from various functions
 Get_Table_Aliases
 
@@ -9411,12 +9415,12 @@ Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
 
+# Retrivve the VNC Password of the lanes
+$LaneVNCPasswords = Get_All_Lanes_VNC_Passwords -LaneMachines $LaneMachines
+
 # Clear %Temp% folder on start
 $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
 $ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob
-
-# Retrieve the list of machine names from the FunctionResults dictionary
-$LaneMachines = $script:FunctionResults['LaneMachines']
 
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
