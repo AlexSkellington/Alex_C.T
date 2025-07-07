@@ -7777,9 +7777,9 @@ function Open_Selected_Lane/s_C_Path
 		else
 		{
 			Write_Log "Machine not found for lane '$lane'." "Red"
-			Write_Log "`r`n==================== Open_Selected_Lane/s_C_Path Function Completed ====================" "blue"
 		}
 	}
+	Write_Log "`r`n==================== Open_Selected_Lane/s_C_Path Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -7875,12 +7875,12 @@ function Open_Selected_Scale/s_C_Path
 			else
 			{
 				Write_Log "Could not open $sharePath as bizuser with either password." "Red"
-				Write_Log "`r`n==================== Open_Selected_Scale/s_C_Path Function Completed ====================" "blue"
 			}
 		}
 		# Optional: Clean up after (remove credential)
 		# cmdkey /delete:$scaleHost | Out-Null
 	}
+	Write_Log "`r`n==================== Open_Selected_Scale/s_C_Path Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
