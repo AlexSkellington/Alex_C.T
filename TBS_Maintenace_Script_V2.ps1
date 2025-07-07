@@ -8282,6 +8282,22 @@ PreemptiveUpdates=0
 	}
 	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
 	
+	# Add lane hardware info to list
+	if ($LaneHardwareInfo.ContainsKey($machineName))
+	{
+		$hw = $LaneHardwareInfo[$machineName]
+		$manuf = $hw.SystemManufacturer
+		$model = $hw.SystemProductName
+		$succ = $hw.Success
+		$err = $hw.Error
+	}
+	
+	# Write Lanes_Info.txt
+	$laneInfoPath = Join-Path $lanesDir 'Lanes_Info.txt'
+	$laneInfoLines -join "`r`n" | Set-Content -Path $laneInfoPath -Encoding $script:ansiPcEncoding
+	Write_Log "Wrote: $laneInfoPath" "green"
+	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
+		
 	# ---- Scales ---- #
 	$scaleCount = 0
 	foreach ($scale in $ScaleIPNetworks.GetEnumerator())
