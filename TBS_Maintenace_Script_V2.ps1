@@ -1968,8 +1968,8 @@ function Get_All_Lanes_VNC_Passwords
 		$LaneVNCPasswords[$laneMachine] = $password
 		if ($password)
 		{
-			$method = $success ? "Remoting" : "Network path"
-			Write_Log "Lane [$laneNum/$laneMachine]: VNC password found in [$foundPath] via $method: $password" "green"
+			$method = if ($success) { "Remoting" } else { "Network path" }
+			Write_Log "Lane [$laneNum/$laneMachine]: VNC password found in [$foundPath] via [$method]: $password" "green"
 		}
 		elseif ($fileFound)
 		{
