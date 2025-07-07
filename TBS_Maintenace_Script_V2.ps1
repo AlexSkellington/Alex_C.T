@@ -1870,8 +1870,8 @@ function Get_All_Lanes_VNC_Passwords
 	)
 	
 	$uvncFolders = @(
-		"C:\Program Files\uvnc bvba\UltraVNC",
-		"C:\Program Files (x86)\uvnc bvba\UltraVNC"
+		"C$\Program Files\uvnc bvba\UltraVNC",
+		"C$\Program Files (x86)\uvnc bvba\UltraVNC"
 	)
 	
 	$LaneVNCPasswords = @{ }
