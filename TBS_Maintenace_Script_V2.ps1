@@ -9453,16 +9453,16 @@ if (-not $form)
 	############################################################################
 	# 11) Export Machines Hardware Info
 	############################################################################
-	$ExportHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Machines Hardware Info")
-	$ExportHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all machines"
-	$ExportHardwareInfoItem.Add_Click({
+	$ExportMachineHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Machines Hardware Info")
+	$ExportMachineHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all machines"
+	$ExportMachineHardwareInfoItem.Add_Click({
 			$didExport = Get_Remote_Machine_Info
 			if ($didExport)
 			{
 				[System.Windows.Forms.MessageBox]::Show("Machine hardware info exported", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			}
 		})
-	[void]$ContextMenuLane.Items.Add($ExportHardwareInfoItem)
+	[void]$contextMenuGeneral.Items.Add($ExportMachineHardwareInfoItem)
 	
 	############################################################################
 	# 12) Remove Archive Bit
