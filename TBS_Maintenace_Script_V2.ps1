@@ -9564,7 +9564,7 @@ $ClearXEJob = Clear_XE_Folder
 $LaneVNCPasswords = Get_All_Lanes_VNC_Passwords -LaneMachines $LaneMachines
 
 #Retrive the lanes system info 
-$results = Get_Remote_Machine_Info -LaneMachines $LaneMachines
+$results = Get_Remote_Machine_Info -LaneMachines ($LaneMachines.Values | Select-Object -Unique)
 
 # Clear %Temp% folder on start
 $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
