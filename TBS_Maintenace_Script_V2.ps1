@@ -1862,24 +1862,73 @@ function Get_Table_Aliases
 # Author: Alex_C.T
 # ===================================================================================================
 
-function Get_All_Lanes_VNC_Passwords
+function Get_All_VNC_Passwords
 {
 	param (
-		[Parameter(Mandatory)]
-		[hashtable]$LaneMachines # LaneNumber => MachineName
+		[Parameter(Mandatory = $true)]
+		[hashtable]$LaneMachines,
+		[Parameter(Mandatory = $true)]
+		[hashtable]$ScaleIPNetworks,
+		# This is a mapping: ScaleCode => ScaleObject (with IPNetwork, IPDevice, FullIP)
+		[Parameter(Mandatory = $true)]
+		[hashtable]$BackofficeMachines
 	)
 	
 	$uvncFolders = @(
 		"C$\Program Files\uvnc bvba\UltraVNC",
 		"C$\Program Files (x86)\uvnc bvba\UltraVNC"
 	)
+	$AllVNCPasswords = @{ }
 	
-	$LaneVNCPasswords = @{ }
-	
-	foreach ($lane in $LaneMachines.GetEnumerator())
+	# Lanes: MachineName only
+	foreach ($kv in $LaneMachines.GetEnumerator())
 	{
-		$laneNum = $lane.Key
-		$laneMachine = $lane.Value
+		$machine = $kv.Value
+		if ($machine -and -not $AllVNCPasswords.ContainsKey($machine))
+		{
+			$AllVNCPasswords[$machine] = $null
+		}
+	}
+	
+	# Scales: Only use FullIP (or build it if not present)
+	foreach ($kv in $ScaleIPNetworks.GetEnumerator())
+	{
+		$scaleObj = $kv.Value
+		$ip = $null
+		if ($scaleObj -is [string])
+		{
+			$ip = $scaleObj
+		}
+		elseif ($null -ne $scaleObj)
+		{
+			if ($scaleObj.PSObject.Properties.Name -contains "FullIP" -and $scaleObj.FullIP)
+			{
+				$ip = $scaleObj.FullIP
+			}
+			elseif (($scaleObj.PSObject.Properties.Name -contains "IPNetwork") -and ($scaleObj.PSObject.Properties.Name -contains "IPDevice") -and $scaleObj.IPNetwork -and $scaleObj.IPDevice)
+			{
+				$ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
+			}
+		}
+		if ($ip -and -not $AllVNCPasswords.ContainsKey($ip))
+		{
+			$AllVNCPasswords[$ip] = $null
+		}
+	}
+	
+	# Backoffices: MachineName only
+	foreach ($kv in $BackofficeMachines.GetEnumerator())
+	{
+		$machine = $kv.Value
+		if ($machine -and -not $AllVNCPasswords.ContainsKey($machine))
+		{
+			$AllVNCPasswords[$machine] = $null
+		}
+	}
+	
+	# -- Scan for each node in the list --
+	foreach ($machineName in $AllVNCPasswords.Keys | Sort-Object -Unique)
+	{
 		$password = $null
 		$foundPath = $null
 		$fileFound = $false
@@ -1887,10 +1936,10 @@ function Get_All_Lanes_VNC_Passwords
 		
 		foreach ($folder in $uvncFolders)
 		{
-			# --- Try with Invoke-Command first ---
+			# Try with Invoke-Command first (hostname or IP)
 			try
 			{
-				$iniFiles = Invoke-Command -ComputerName $laneMachine -ScriptBlock {
+				$iniFiles = Invoke-Command -ComputerName $machineName -ScriptBlock {
 					param ($dir)
 					if (Test-Path $dir)
 					{
@@ -1906,7 +1955,7 @@ function Get_All_Lanes_VNC_Passwords
 				foreach ($iniFile in $iniFiles)
 				{
 					$fileFound = $true
-					$content = Invoke-Command -ComputerName $laneMachine -ScriptBlock {
+					$content = Invoke-Command -ComputerName $machineName -ScriptBlock {
 						param ($path)
 						if (Test-Path $path)
 						{
@@ -1929,10 +1978,10 @@ function Get_All_Lanes_VNC_Passwords
 			}
 			catch
 			{
-				# ---- Fallback to UNC/network path if remoting fails ----
+				# Fallback to UNC/network path if remoting fails
 				try
 				{
-					$remotePath = "\\$laneMachine\$folder"
+					$remotePath = "\\$machineName\$folder"
 					if (Test-Path $remotePath)
 					{
 						$iniFiles = Get-ChildItem -Path $remotePath -Filter "*.ini" -File | Where-Object {
@@ -1956,32 +2005,15 @@ function Get_All_Lanes_VNC_Passwords
 						}
 					}
 				}
-				catch
-				{
-					# Ignore network path errors and continue to next folder
-					continue
-				}
+				catch { continue }
 			}
 			if ($password) { break }
 		}
 		
-		$LaneVNCPasswords[$laneMachine] = $password
-		if ($password)
-		{
-			$method = if ($success) { "Remoting" } else { "Network path" }
-		#	Write_Log "Lane [$laneNum/$laneMachine]: VNC password found in [$foundPath] via [$method]: $password" "green"
-		}
-		elseif ($fileFound)
-		{
-		#	Write_Log "Lane [$laneNum/$laneMachine]: UltraVNC.ini found but no password found inside [$foundPath]." "yellow"
-		}
-		else
-		{
-		#	Write_Log "Lane [$laneNum/$laneMachine]: UltraVNC.ini not found in any standard folder." "yellow"
-		}
+		$AllVNCPasswords[$machineName] = $password
 	}
-	$script:FunctionResults['LaneVNCPasswords'] = $LaneVNCPasswords
-	return $LaneVNCPasswords
+	$script:FunctionResults['AllVNCPasswords'] = $AllVNCPasswords
+	return $AllVNCPasswords
 }
 
 # ===================================================================================================
@@ -1999,7 +2031,17 @@ function Get_All_Lanes_VNC_Passwords
 
 function Get_Remote_Machine_Info
 {
-	# Build lists from FunctionResults (populate these with Retrieve_Nodes first!)
+	Write_Log "`r`n==================== Starting Get_Remote_Machine_Info ====================`r`n" "blue"
+	
+	$maxConcurrentJobs = 10
+	$wmiTimeoutSeconds = 10 # WMI should be very fast if working
+	$regTimeoutSeconds = 20 # REG.exe fallback is slower
+	
+	$script:LaneHardwareInfo = $null
+	$script:ScaleHardwareInfo = $null
+	$script:BackofficeHardwareInfo = $null
+	
+	# Build lists from FunctionResults (populate with Retrieve_Nodes first!)
 	$laneNames = $script:FunctionResults['LaneMachines'].Values | Where-Object { $_ } | Select-Object -Unique
 	$scaleNames = $script:FunctionResults['ScaleIPNetworks'].Values | ForEach-Object { $_.FullIP } | Where-Object { $_ } | Select-Object -Unique
 	$boNames = $script:FunctionResults['BackofficeMachines'].Values | Where-Object { $_ } | Select-Object -Unique
@@ -2007,7 +2049,7 @@ function Get_Remote_Machine_Info
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
-	# ---------------- GUI: Selection Tabs -----------------
+	# ----- GUI -----
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select Nodes to Pull Hardware Info"
 	$form.Size = New-Object System.Drawing.Size(440, 470)
@@ -2021,7 +2063,7 @@ function Get_Remote_Machine_Info
 	$tabs.Size = New-Object System.Drawing.Size(400, 340)
 	$form.Controls.Add($tabs)
 	
-	# ----- Lanes Tab -----
+	# Lanes Tab
 	$tabLanes = New-Object System.Windows.Forms.TabPage
 	$tabLanes.Text = "Lanes"
 	$clbLanes = New-Object System.Windows.Forms.CheckedListBox
@@ -2032,7 +2074,7 @@ function Get_Remote_Machine_Info
 	foreach ($lane in $laneNames | Sort-Object) { $clbLanes.Items.Add($lane) | Out-Null }
 	$tabs.TabPages.Add($tabLanes)
 	
-	# ----- Scales Tab -----
+	# Scales Tab
 	$tabScales = New-Object System.Windows.Forms.TabPage
 	$tabScales.Text = "Scales"
 	$clbScales = New-Object System.Windows.Forms.CheckedListBox
@@ -2043,7 +2085,7 @@ function Get_Remote_Machine_Info
 	foreach ($scale in $scaleNames | Sort-Object) { $clbScales.Items.Add($scale) | Out-Null }
 	$tabs.TabPages.Add($tabScales)
 	
-	# ----- Backoffices Tab -----
+	# Backoffices Tab
 	$tabBO = New-Object System.Windows.Forms.TabPage
 	$tabBO.Text = "Backoffices"
 	$clbBO = New-Object System.Windows.Forms.CheckedListBox
@@ -2054,7 +2096,7 @@ function Get_Remote_Machine_Info
 	foreach ($bo in $boNames | Sort-Object) { $clbBO.Items.Add($bo) | Out-Null }
 	$tabs.TabPages.Add($tabBO)
 	
-	# ----- Select/Deselect All Buttons -----
+	# Select/Deselect All Buttons
 	$btnSelectAll = New-Object System.Windows.Forms.Button
 	$btnSelectAll.Location = New-Object System.Drawing.Point(20, 360)
 	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
@@ -2079,7 +2121,6 @@ function Get_Remote_Machine_Info
 		})
 	$form.Controls.Add($btnDeselectAll)
 	
-	# ----- OK/Cancel -----
 	$btnOK = New-Object System.Windows.Forms.Button
 	$btnOK.Text = "OK"
 	$btnOK.Location = New-Object System.Drawing.Point(50, 400)
@@ -2097,7 +2138,11 @@ function Get_Remote_Machine_Info
 	$form.Controls.Add($btnCancel)
 	
 	$dialogResult = $form.ShowDialog()
-	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK) { return }
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write_Log "Get_Remote_Machine_Info cancelled by user." "yellow"
+		return
+	}
 	
 	# Gather selections
 	$selectedLanes = @()
@@ -2116,313 +2161,299 @@ function Get_Remote_Machine_Info
 		if ($clbBO.GetItemChecked($i)) { $selectedBOs += $clbBO.Items[$i] }
 	}
 	
-	# --- Run Hardware Info export for each selected set ---
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
 	$scalesDir = Join-Path $desktop "Scales"
 	$backofficesDir = Join-Path $desktop "BackOffices"
 	foreach ($dir in @($lanesDir, $scalesDir, $backofficesDir))
 	{
-		if (-not (Test-Path $dir))
-		{
-			New-Item -Path $dir -ItemType Directory | Out-Null
-		}
+		if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory | Out-Null }
 	}
 	
-	# ---- Lanes ----
-	$LaneResults = @{ }
-	$LaneInfoLines = @()
-	foreach ($remote in ($selectedLanes | Sort-Object))
+	foreach ($section in @(
+			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt' },
+			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt' },
+			@{ Name = 'BackOffices'; Selected = $selectedBOs; Dir = $backofficesDir; ScriptVar = 'BackofficeHardwareInfo'; InfoLinesVar = 'BOInfoLines'; ResultsVar = 'BOResults'; FileName = 'Backoffices_Info.txt' }
+		))
 	{
-		$info = @{
-			Success		       = $false
-			SystemManufacturer = $null
-			SystemProductName  = $null
-			CPU			       = $null
-			Error			   = $null
-		}
-		
-		# FAST offline check
-		if (-not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
+		Write_Log "Processing $($section.Name) nodes..." "yellow"
+		Set-Variable -Name $($section.ResultsVar) -Value @{ }
+		Set-Variable -Name $($section.InfoLinesVar) -Value @()
+		$jobs = @()
+		$pending = @{ }
+		foreach ($remote in ($section.Selected | Sort-Object))
 		{
-			$info.Error = "No hardware info could be retrieved (offline or unreachable)."
-			$LaneResults[$remote] = $info
-			$LaneInfoLines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
-			continue
-		}
-		
-		try
-		{
-			# Try CIM/WMI first
-			$wmiBios = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $remote -ErrorAction Stop
-			$wmiBaseBoard = Get-WmiObject -Class Win32_BaseBoard -ComputerName $remote -ErrorAction Stop
-			$wmiCPU = Get-WmiObject -Class Win32_Processor -ComputerName $remote -ErrorAction Stop
-			
-			$info.SystemManufacturer = $wmiBios.Manufacturer
-			$info.SystemProductName = $wmiBios.Model
-			$info.CPU = $wmiCPU.Name
-			
-			if ($info.SystemManufacturer -and $info.SystemProductName)
+			if (-not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
 			{
-				$info.Success = $true
+				$info = @{
+					Success		       = $false
+					SystemManufacturer = $null
+					SystemProductName  = $null
+					CPU			       = $null
+					RAM			       = $null
+					Error			   = "No hardware info could be retrieved (offline or unreachable)."
+				}
+				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
+				$results[$remote] = $info
+				Set-Variable -Name $($section.ResultsVar) -Value $results
+				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
+				$infolines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
+				Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
+				continue
 			}
-			else
-			{
-				throw "WMI did not return required fields."
-			}
-		}
-		catch
-		{
-			# WMI/CIM failed, fallback to Registry method
-			try
-			{
-				sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
-				sc.exe \\$remote start RemoteRegistry | Out-Null
-				$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-				$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
-				if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
-				$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-				$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
-				if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
-				$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
-				$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-				if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
-				if ($info.SystemManufacturer -and $info.SystemProductName)
+			
+			$job = Start-Job -ScriptBlock {
+				param ($remote,
+					$wmiTimeoutSeconds,
+					$regTimeoutSeconds)
+				$info = @{
+					Success		       = $false
+					SystemManufacturer = $null
+					SystemProductName  = $null
+					CPU			       = $null
+					RAM			       = $null
+					Error			   = $null
+				}
+				
+				function Invoke-WithTimeout
 				{
+					param ([ScriptBlock]$code,
+						[int]$seconds)
+					$j = Start-Job -ScriptBlock $code
+					if (Wait-Job $j -Timeout $seconds)
+					{
+						$r = Receive-Job $j
+						Remove-Job $j -Force -ErrorAction SilentlyContinue
+						return $r
+					}
+					else
+					{
+						Stop-Job $j -ErrorAction SilentlyContinue
+						Remove-Job $j -Force -ErrorAction SilentlyContinue
+						return $null
+					}
+				}
+				
+				# 1. WMI
+				$wmiResult = Invoke-WithTimeout -seconds $wmiTimeoutSeconds -code {
+					try
+					{
+						$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $using:remote -ErrorAction Stop
+						$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $using:remote -ErrorAction Stop
+						@{
+							SystemManufacturer = $sys.Manufacturer
+							SystemProductName  = $sys.Model
+							CPU			       = $cpu.Name
+							RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
+						}
+					}
+					catch { $null }
+				}
+				if ($wmiResult -and $wmiResult.SystemManufacturer -and $wmiResult.SystemProductName)
+				{
+					$info.SystemManufacturer = $wmiResult.SystemManufacturer
+					$info.SystemProductName = $wmiResult.SystemProductName
+					$info.CPU = $wmiResult.CPU
+					$info.RAM = $wmiResult.RAM
 					$info.Success = $true
 				}
 				else
 				{
-					$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+					# 2. reg.exe fallback (RAM always $null)
+					$regResult = Invoke-WithTimeout -seconds $regTimeoutSeconds -code {
+						try
+						{
+							sc.exe \\$using:remote config RemoteRegistry start= auto | Out-Null
+							sc.exe \\$using:remote start RemoteRegistry | Out-Null
+							$manuf = reg.exe query "\\$using:remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+							$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+							$prod = reg.exe query "\\$using:remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+							$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+							$cpu = reg.exe query "\\$using:remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+							$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+							$SystemManufacturer = $null
+							if ($manufMatch.Success) { $SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
+							$SystemProductName = $null
+							if ($prodMatch.Success) { $SystemProductName = $prodMatch.Groups[1].Value.Trim() }
+							$CPU = $null
+							if ($cpuMatch.Success) { $CPU = $cpuMatch.Groups[1].Value.Trim() }
+							@{
+								SystemManufacturer = $SystemManufacturer
+								SystemProductName  = $SystemProductName
+								CPU			       = $CPU
+								RAM			       = $null
+							}
+						}
+						catch { $null }
+					}
+					if ($regResult -and $regResult.SystemManufacturer -and $regResult.SystemProductName)
+					{
+						$info.SystemManufacturer = $regResult.SystemManufacturer
+						$info.SystemProductName = $regResult.SystemProductName
+						$info.CPU = $regResult.CPU
+						$info.RAM = $null
+						$info.Success = $true
+					}
+					else
+					{
+						$info.Error = "All methods failed or timed out."
+					}
 				}
-			}
-			catch
-			{
-				$info.Error = $_.Exception.Message
-			}
-		}
-		$LaneResults[$remote] = $info
-		
-		$line = "Machine Name: $remote |"
-		if ($info.Success)
-		{
-			$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
-		}
-		elseif ($info.Error)
-		{
-			$line += " [Hardware info unavailable]  Error: $($info.Error)"
-		}
-		else
-		{
-			$line += " [No hardware info found]"
-		}
-		$LaneInfoLines += $line
-	}
-	$script:LaneHardwareInfo = $LaneResults
-	if ($LaneInfoLines.Count)
-	{
-		$filePathLanes = Join-Path $lanesDir 'Lanes_Info.txt'
-		$LaneInfoLines -join "`r`n" | Set-Content -Path $filePathLanes -Encoding Default
-	}
-	
-	# ---- Scales ----
-	$ScaleResults = @{ }
-	$ScaleInfoLines = @()
-	foreach ($remote in ($selectedScales | Sort-Object))
-	{
-		$info = @{
-			Success		       = $false
-			SystemManufacturer = $null
-			SystemProductName  = $null
-			CPU			       = $null
-			Error			   = $null
-		}
-		
-		# FAST offline check
-		if (-not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
-		{
-			$info.Error = "No hardware info could be retrieved (offline or unreachable)."
-			$ScaleResults[$remote] = $info
-			$ScaleInfoLines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
-			continue
-		}
-		
-		try
-		{
-			# Try CIM/WMI first
-			$wmiBios = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $remote -ErrorAction Stop
-			$wmiBaseBoard = Get-WmiObject -Class Win32_BaseBoard -ComputerName $remote -ErrorAction Stop
-			$wmiCPU = Get-WmiObject -Class Win32_Processor -ComputerName $remote -ErrorAction Stop
+				return @{ Machine = $remote; Info = $info }
+			} -ArgumentList $remote, $wmiTimeoutSeconds, $regTimeoutSeconds
 			
-			$info.SystemManufacturer = $wmiBios.Manufacturer
-			$info.SystemProductName = $wmiBios.Model
-			$info.CPU = $wmiCPU.Name
+			$jobs += $job
+			$pending[$job.Id] = $remote
 			
-			if ($info.SystemManufacturer -and $info.SystemProductName)
+			# Throttle
+			while ($jobs.Count -ge $maxConcurrentJobs)
 			{
-				$info.Success = $true
-			}
-			else
-			{
-				throw "WMI did not return required fields."
-			}
-		}
-		catch
-		{
-			# WMI/CIM failed, fallback to Registry method
-			try
-			{
-				sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
-				sc.exe \\$remote start RemoteRegistry | Out-Null
-				$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-				$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
-				if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
-				$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-				$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
-				if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
-				$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
-				$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-				if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
-				if ($info.SystemManufacturer -and $info.SystemProductName)
+				$done = Wait-Job -Job $jobs -Any -Timeout 60
+				if ($done)
 				{
-					$info.Success = $true
+					foreach ($j in $done)
+					{
+						$result = Receive-Job $j
+						$remoteName = $result.Machine
+						$info = $result.Info
+						$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
+						$results[$remoteName] = $info
+						Set-Variable -Name $($section.ResultsVar) -Value $results
+						$line = "Machine Name: $remoteName |"
+						if ($info.Success)
+						{
+							$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
+							if ($info.RAM -ne $null)
+							{
+								$line += " | RAM: $($info.RAM) GB"
+							}
+						}
+						elseif ($info.Error)
+						{
+							$line += " [Hardware info unavailable]  Error: $($info.Error)"
+						}
+						else
+						{
+							$line += " [No hardware info found]"
+						}
+						$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
+						$infolines += $line
+						Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
+						Stop-Job $j -ErrorAction SilentlyContinue
+						Remove-Job $j -Force -ErrorAction SilentlyContinue
+						$jobs = $jobs | Where-Object { $_.Id -ne $j.Id }
+						$pending.Remove($j.Id)
+					}
 				}
 				else
 				{
-					$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+					# Timed out, kill oldest
+					$oldest = $jobs[0]
+					$remoteName = $pending[$oldest.Id]
+					$info = @{
+						Success		       = $false
+						SystemManufacturer = $null
+						SystemProductName  = $null
+						CPU			       = $null
+						RAM			       = $null
+						Error			   = "Timed out"
+					}
+					$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
+					$results[$remoteName] = $info
+					Set-Variable -Name $($section.ResultsVar) -Value $results
+					$line = "Machine Name: $remoteName | [Hardware info unavailable]  Error: Timed out"
+					$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
+					$infolines += $line
+					Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
+					Stop-Job $oldest -ErrorAction SilentlyContinue
+					Remove-Job $oldest -Force -ErrorAction SilentlyContinue
+					$jobs = $jobs | Where-Object { $_.Id -ne $oldest.Id }
+					$pending.Remove($oldest.Id)
 				}
 			}
-			catch
-			{
-				$info.Error = $_.Exception.Message
-			}
-		}
-		$ScaleResults[$remote] = $info
-		
-		$line = "Machine Name: $remote |"
-		if ($info.Success)
-		{
-			$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
-		}
-		elseif ($info.Error)
-		{
-			$line += " [Hardware info unavailable]  Error: $($info.Error)"
-		}
-		else
-		{
-			$line += " [No hardware info found]"
-		}
-		$ScaleInfoLines += $line
-	}
-	$script:ScaleHardwareInfo = $ScaleResults
-	if ($ScaleInfoLines.Count)
-	{
-		$filePathScales = Join-Path $scalesDir 'Scales_Info.txt'
-		$ScaleInfoLines -join "`r`n" | Set-Content -Path $filePathScales -Encoding Default
-	}
-	
-	# ---- Backoffices ----
-	$BOResults = @{ }
-	$BOInfoLines = @()
-	foreach ($remote in ($selectedBOs | Sort-Object))
-	{
-		$info = @{
-			Success		       = $false
-			SystemManufacturer = $null
-			SystemProductName  = $null
-			CPU			       = $null
-			Error			   = $null
 		}
 		
-		# FAST offline check
-		if (-not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
+		# Clean up remaining jobs
+		if ($jobs.Count -gt 0)
 		{
-			$info.Error = "No hardware info could be retrieved (offline or unreachable)."
-			$BOResults[$remote] = $info
-			$BOInfoLines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
-			continue
-		}
-		
-		try
-		{
-			# Try CIM/WMI first
-			$wmiBios = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $remote -ErrorAction Stop
-			$wmiBaseBoard = Get-WmiObject -Class Win32_BaseBoard -ComputerName $remote -ErrorAction Stop
-			$wmiCPU = Get-WmiObject -Class Win32_Processor -ComputerName $remote -ErrorAction Stop
-			
-			$info.SystemManufacturer = $wmiBios.Manufacturer
-			$info.SystemProductName = $wmiBios.Model
-			$info.CPU = $wmiCPU.Name
-			
-			if ($info.SystemManufacturer -and $info.SystemProductName)
+			Wait-Job -Job $jobs -Timeout 60 | Out-Null
+			foreach ($j in $jobs)
 			{
-				$info.Success = $true
-			}
-			else
-			{
-				throw "WMI did not return required fields."
-			}
-		}
-		catch
-		{
-			# WMI/CIM failed, fallback to Registry method
-			try
-			{
-				sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
-				sc.exe \\$remote start RemoteRegistry | Out-Null
-				$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-				$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
-				if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
-				$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-				$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
-				if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
-				$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
-				$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-				if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
-				if ($info.SystemManufacturer -and $info.SystemProductName)
+				$remoteName = $pending[$j.Id]
+				if ($j.State -eq 'Running')
 				{
-					$info.Success = $true
+					Stop-Job $j -ErrorAction SilentlyContinue
+					Remove-Job $j -Force -ErrorAction SilentlyContinue
+					$info = @{
+						Success		       = $false
+						SystemManufacturer = $null
+						SystemProductName  = $null
+						CPU			       = $null
+						RAM			       = $null
+						Error			   = "Timed out"
+					}
 				}
 				else
 				{
-					$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+					$result = Receive-Job $j
+					$info = $result.Info
+					$remoteName = $result.Machine
 				}
-			}
-			catch
-			{
-				$info.Error = $_.Exception.Message
+				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
+				$results[$remoteName] = $info
+				Set-Variable -Name $($section.ResultsVar) -Value $results
+				$line = "Machine Name: $remoteName |"
+				if ($info.Success)
+				{
+					$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
+					if ($info.RAM -ne $null)
+					{
+						$line += " | RAM: $($info.RAM) GB"
+					}
+				}
+				elseif ($info.Error)
+				{
+					$line += " [Hardware info unavailable]  Error: $($info.Error)"
+				}
+				else
+				{
+					$line += " [No hardware info found]"
+				}
+				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
+				$infolines += $line
+				Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
+				Stop-Job $j -ErrorAction SilentlyContinue
+				Remove-Job $j -Force -ErrorAction SilentlyContinue
 			}
 		}
-		$BOResults[$remote] = $info
 		
-		$line = "Machine Name: $remote |"
-		if ($info.Success)
+		Set-Variable -Name ("script:" + $section.ScriptVar) -Value (Get-Variable -Name $($section.ResultsVar) -ValueOnly) -Scope Script
+		$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
+		# === Write output lines in descending order ===
+		if ($infolines.Count)
 		{
-			$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
+			$sortedLines = $infolines | Sort-Object {
+				if ($_ -match "^Machine Name: ([^|]+)") { $matches[1] }
+				else { $_ }
+			}
+			$filePath = Join-Path $section.Dir $section.FileName
+			$sortedLines -join "`r`n" | Set-Content -Path $filePath -Encoding Default
 		}
-		elseif ($info.Error)
-		{
-			$line += " [Hardware info unavailable]  Error: $($info.Error)"
-		}
-		else
-		{
-			$line += " [No hardware info found]"
-		}
-		$BOInfoLines += $line
+		Write_Log "Completed processing $($section.Name).`r`n" "green"
 	}
-	$script:BackofficeHardwareInfo = $BOResults
-	if ($BOInfoLines.Count)
+	
+	# Final result for caller
+	$laneLines = Get-Variable -Name LaneInfoLines -ValueOnly
+	$scaleLines = Get-Variable -Name ScaleInfoLines -ValueOnly
+	$boLines = Get-Variable -Name BOInfoLines -ValueOnly
+	if (($laneLines.Count -gt 0) -or ($scaleLines.Count -gt 0) -or ($boLines.Count -gt 0))
 	{
-		$filePathBO = Join-Path $backofficesDir 'Backoffices_Info.txt'
-		$BOInfoLines -join "`r`n" | Set-Content -Path $filePathBO -Encoding Default
-	}
-	# Trigger for the button message
-	if (($LaneInfoLines.Count -gt 0) -or ($ScaleInfoLines.Count -gt 0) -or ($BOInfoLines.Count -gt 0))
-	{
+		Write_Log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
 		return $true
 	}
 	else
 	{
+		Write_Log "`r`n==================== Get_Remote_Machine_Info Completed (No Data) ====================" "blue"
 		return $false
 	}
 }
@@ -8489,7 +8520,7 @@ function Export_VNC_Files_For_All_Nodes
 		[Parameter(Mandatory = $true)]
 		[hashtable]$BackofficeMachines,
 		[Parameter(Mandatory = $false)]
-		[hashtable]$LaneVNCPasswords
+		[hashtable]$AllVNCPasswords
 	)
 	
 	Write_Log "`r`n==================== Starting Export_VNCFiles_ForAllNodes ====================`r`n" "blue"
@@ -8500,9 +8531,10 @@ function Export_VNC_Files_For_All_Nodes
 	$backofficesDir = Join-Path $desktop "BackOffices"
 	
 	# ---- If passwords not provided, scan them ----
-	if (-not $LaneVNCPasswords -or $LaneVNCPasswords.Count -eq 0)
+	if (-not $AllVNCPasswords -or $AllVNCPasswords.Count -eq 0)
 	{
-		$LaneVNCPasswords = Get_All_Lanes_VNC_Passwords -LaneMachines $LaneMachines
+		Write_Log "Gathering VNC passwords for all machines`r`n" "magenta"
+		$AllVNCPasswords = Get_All_VNC_Passwords -LaneMachines $LaneMachines -ScaleIPNetworks $ScaleIPNetworks -BackofficeMachines $BackofficeMachines
 	}
 	
 	# --- Shared VNC file content with token ---
@@ -8612,6 +8644,7 @@ PreemptiveUpdates=0
 "@
 	
 	# ---- Lanes ---- #
+	Write_Log "-------------------- Exporting Lane VNC Files --------------------" "blue"
 	$laneCount = 0
 	$laneInfoLines = @()
 	
@@ -8636,9 +8669,9 @@ PreemptiveUpdates=0
 		
 		# Use custom password if available, else default
 		$VNCPassword = $DefaultVNCPassword
-		if ($LaneVNCPasswords -and $LaneVNCPasswords.ContainsKey($machineName) -and $LaneVNCPasswords[$machineName])
+		if ($AllVNCPasswords -and $AllVNCPasswords.ContainsKey($machineName) -and $AllVNCPasswords[$machineName])
 		{
-			$VNCPassword = $LaneVNCPasswords[$machineName]
+			$VNCPassword = $AllVNCPasswords[$machineName]
 		}
 		$content = $vncTemplate.Replace('%%HOST%%', $machineName).Replace('%%PASSWORD%%', $VNCPassword)
 		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
@@ -8648,6 +8681,7 @@ PreemptiveUpdates=0
 	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
 	
 	# ---- Scales ---- #
+	Write_Log "-------------------- Exporting Scale VNC Files --------------------" "blue"
 	$scaleCount = 0
 	foreach ($scale in $ScaleIPNetworks.GetEnumerator())
 	{
@@ -8706,6 +8740,7 @@ PreemptiveUpdates=0
 	Write_Log "$scaleCount scale VNC files written to $scalesDir`r`n" "blue"
 	
 	# ---- Backoffices ---- #
+	Write_Log "-------------------- Exporting Backoffice VNC Files --------------------" "blue"
 	$boCount = 0
 	foreach ($bo in $BackofficeMachines.GetEnumerator())
 	{
@@ -9527,7 +9562,7 @@ if (-not $form)
 										   -LaneMachines $script:FunctionResults['LaneMachines'] `
 										   -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks'] `
 										   -BackofficeMachines $script:FunctionResults['BackofficeMachines']`
-										   -LaneVNCPasswords $script:FunctionResults['LaneVNCPasswords']
+										   -AllVNCPasswords $script:FunctionResults['AllVNCPasswords']
 		})
 	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
 	
