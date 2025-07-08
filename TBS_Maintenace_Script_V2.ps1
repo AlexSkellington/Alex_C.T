@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.3.0"
-$VersionDate = "2025-07-07"
+$VersionNumber = "2.3.1"
+$VersionDate = "2025-07-08"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -2147,33 +2147,60 @@ function Get_Remote_Machine_Info
 		{
 			$info.Error = "No hardware info could be retrieved (offline or unreachable)."
 			$LaneResults[$remote] = $info
-			$LaneInfoLines += "Machine Name: $remote  [Hardware info unavailable]  Error: $($info.Error)"
+			$LaneInfoLines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
 			continue
 		}
 		
 		try
 		{
-			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
-			sc.exe \\$remote start RemoteRegistry | Out-Null
-			$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-			$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
-			if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
-			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-			$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
-			if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
-			$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
-			$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-			if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
+			# Try CIM/WMI first
+			$wmiBios = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $remote -ErrorAction Stop
+			$wmiBaseBoard = Get-WmiObject -Class Win32_BaseBoard -ComputerName $remote -ErrorAction Stop
+			$wmiCPU = Get-WmiObject -Class Win32_Processor -ComputerName $remote -ErrorAction Stop
+			
+			$info.SystemManufacturer = $wmiBios.Manufacturer
+			$info.SystemProductName = $wmiBios.Model
+			$info.CPU = $wmiCPU.Name
+			
 			if ($info.SystemManufacturer -and $info.SystemProductName)
 			{
 				$info.Success = $true
 			}
 			else
 			{
-				$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+				throw "WMI did not return required fields."
 			}
 		}
-		catch { $info.Error = $_.Exception.Message }
+		catch
+		{
+			# WMI/CIM failed, fallback to Registry method
+			try
+			{
+				sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
+				sc.exe \\$remote start RemoteRegistry | Out-Null
+				$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+				$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+				if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
+				$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+				$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+				if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
+				$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+				$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+				if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
+				if ($info.SystemManufacturer -and $info.SystemProductName)
+				{
+					$info.Success = $true
+				}
+				else
+				{
+					$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+				}
+			}
+			catch
+			{
+				$info.Error = $_.Exception.Message
+			}
+		}
 		$LaneResults[$remote] = $info
 		
 		$line = "Machine Name: $remote |"
@@ -2216,33 +2243,60 @@ function Get_Remote_Machine_Info
 		{
 			$info.Error = "No hardware info could be retrieved (offline or unreachable)."
 			$ScaleResults[$remote] = $info
-			$ScaleInfoLines += "Machine Name: $remote  [Hardware info unavailable]  Error: $($info.Error)"
+			$ScaleInfoLines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
 			continue
 		}
 		
 		try
 		{
-			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
-			sc.exe \\$remote start RemoteRegistry | Out-Null
-			$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-			$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
-			if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
-			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-			$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
-			if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
-			$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
-			$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-			if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
+			# Try CIM/WMI first
+			$wmiBios = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $remote -ErrorAction Stop
+			$wmiBaseBoard = Get-WmiObject -Class Win32_BaseBoard -ComputerName $remote -ErrorAction Stop
+			$wmiCPU = Get-WmiObject -Class Win32_Processor -ComputerName $remote -ErrorAction Stop
+			
+			$info.SystemManufacturer = $wmiBios.Manufacturer
+			$info.SystemProductName = $wmiBios.Model
+			$info.CPU = $wmiCPU.Name
+			
 			if ($info.SystemManufacturer -and $info.SystemProductName)
 			{
 				$info.Success = $true
 			}
 			else
 			{
-				$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+				throw "WMI did not return required fields."
 			}
 		}
-		catch { $info.Error = $_.Exception.Message }
+		catch
+		{
+			# WMI/CIM failed, fallback to Registry method
+			try
+			{
+				sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
+				sc.exe \\$remote start RemoteRegistry | Out-Null
+				$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+				$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+				if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
+				$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+				$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+				if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
+				$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+				$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+				if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
+				if ($info.SystemManufacturer -and $info.SystemProductName)
+				{
+					$info.Success = $true
+				}
+				else
+				{
+					$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+				}
+			}
+			catch
+			{
+				$info.Error = $_.Exception.Message
+			}
+		}
 		$ScaleResults[$remote] = $info
 		
 		$line = "Machine Name: $remote |"
@@ -2285,33 +2339,60 @@ function Get_Remote_Machine_Info
 		{
 			$info.Error = "No hardware info could be retrieved (offline or unreachable)."
 			$BOResults[$remote] = $info
-			$BOInfoLines += "Machine Name: $remote  [Hardware info unavailable]  Error: $($info.Error)"
+			$BOInfoLines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
 			continue
 		}
 		
 		try
 		{
-			sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
-			sc.exe \\$remote start RemoteRegistry | Out-Null
-			$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-			$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
-			if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
-			$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-			$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
-			if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
-			$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
-			$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-			if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
+			# Try CIM/WMI first
+			$wmiBios = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $remote -ErrorAction Stop
+			$wmiBaseBoard = Get-WmiObject -Class Win32_BaseBoard -ComputerName $remote -ErrorAction Stop
+			$wmiCPU = Get-WmiObject -Class Win32_Processor -ComputerName $remote -ErrorAction Stop
+			
+			$info.SystemManufacturer = $wmiBios.Manufacturer
+			$info.SystemProductName = $wmiBios.Model
+			$info.CPU = $wmiCPU.Name
+			
 			if ($info.SystemManufacturer -and $info.SystemProductName)
 			{
 				$info.Success = $true
 			}
 			else
 			{
-				$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+				throw "WMI did not return required fields."
 			}
 		}
-		catch { $info.Error = $_.Exception.Message }
+		catch
+		{
+			# WMI/CIM failed, fallback to Registry method
+			try
+			{
+				sc.exe \\$remote config RemoteRegistry start= auto | Out-Null
+				sc.exe \\$remote start RemoteRegistry | Out-Null
+				$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+				$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+				if ($manufMatch.Success) { $info.SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
+				$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+				$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+				if ($prodMatch.Success) { $info.SystemProductName = $prodMatch.Groups[1].Value.Trim() }
+				$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+				$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+				if ($cpuMatch.Success) { $info.CPU = $cpuMatch.Groups[1].Value.Trim() }
+				if ($info.SystemManufacturer -and $info.SystemProductName)
+				{
+					$info.Success = $true
+				}
+				else
+				{
+					$info.Error = "SystemManufacturer or SystemProductName not found in registry output."
+				}
+			}
+			catch
+			{
+				$info.Error = $_.Exception.Message
+			}
+		}
 		$BOResults[$remote] = $info
 		
 		$line = "Machine Name: $remote |"
