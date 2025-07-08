@@ -1865,12 +1865,11 @@ function Get_Table_Aliases
 function Get_All_VNC_Passwords
 {
 	param (
-		[Parameter(Mandatory = $true)]
+		[Parameter(Mandatory = $false)]
 		[hashtable]$LaneMachines,
-		[Parameter(Mandatory = $true)]
+		[Parameter(Mandatory = $false)]
 		[hashtable]$ScaleIPNetworks,
-		# This is a mapping: ScaleCode => ScaleObject (with IPNetwork, IPDevice, FullIP)
-		[Parameter(Mandatory = $true)]
+		[Parameter(Mandatory = $false)]
 		[hashtable]$BackofficeMachines
 	)
 	
@@ -1880,138 +1879,144 @@ function Get_All_VNC_Passwords
 	)
 	$AllVNCPasswords = @{ }
 	
-	# Lanes: MachineName only
-	foreach ($kv in $LaneMachines.GetEnumerator())
+	# Assemble node list
+	$NodeList = @()
+	if ($LaneMachines) { $NodeList += $LaneMachines.Values | Where-Object { $_ } }
+	if ($ScaleIPNetworks)
 	{
-		$machine = $kv.Value
-		if ($machine -and -not $AllVNCPasswords.ContainsKey($machine))
+		foreach ($kv in $ScaleIPNetworks.GetEnumerator())
 		{
-			$AllVNCPasswords[$machine] = $null
-		}
-	}
-	
-	# Scales: Only use FullIP (or build it if not present)
-	foreach ($kv in $ScaleIPNetworks.GetEnumerator())
-	{
-		$scaleObj = $kv.Value
-		$ip = $null
-		if ($scaleObj -is [string])
-		{
-			$ip = $scaleObj
-		}
-		elseif ($null -ne $scaleObj)
-		{
-			if ($scaleObj.PSObject.Properties.Name -contains "FullIP" -and $scaleObj.FullIP)
+			$scaleObj = $kv.Value
+			$ip = $null
+			$isIshida = $false
+			if ($scaleObj -is [string]) { $ip = $scaleObj }
+			elseif ($null -ne $scaleObj)
 			{
-				$ip = $scaleObj.FullIP
-			}
-			elseif (($scaleObj.PSObject.Properties.Name -contains "IPNetwork") -and ($scaleObj.PSObject.Properties.Name -contains "IPDevice") -and $scaleObj.IPNetwork -and $scaleObj.IPDevice)
-			{
-				$ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
-			}
-		}
-		if ($ip -and -not $AllVNCPasswords.ContainsKey($ip))
-		{
-			$AllVNCPasswords[$ip] = $null
-		}
-	}
-	
-	# Backoffices: MachineName only
-	foreach ($kv in $BackofficeMachines.GetEnumerator())
-	{
-		$machine = $kv.Value
-		if ($machine -and -not $AllVNCPasswords.ContainsKey($machine))
-		{
-			$AllVNCPasswords[$machine] = $null
-		}
-	}
-	
-	# -- Scan for each node in the list --
-	foreach ($machineName in $AllVNCPasswords.Keys | Sort-Object -Unique)
-	{
-		$password = $null
-		$foundPath = $null
-		$fileFound = $false
-		$success = $false
-		
-		foreach ($folder in $uvncFolders)
-		{
-			# Try with Invoke-Command first (hostname or IP)
-			try
-			{
-				$iniFiles = Invoke-Command -ComputerName $machineName -ScriptBlock {
-					param ($dir)
-					if (Test-Path $dir)
-					{
-						Get-ChildItem -Path $dir -Filter "*.ini" -File | ForEach-Object {
-							if ($_.Name.ToLower() -eq "ultravnc.ini")
-							{
-								$_.FullName
-							}
-						}
-					}
-				} -ArgumentList ("C:\" + $folder.Substring(3)) -ErrorAction Stop
-				
-				foreach ($iniFile in $iniFiles)
+				# Check brand/model for "Ishida" (case-insensitive)
+				if (
+					($scaleObj.PSObject.Properties.Name -contains "ScaleBrand" -and $scaleObj.ScaleBrand -match "Ishida") -or
+					($scaleObj.PSObject.Properties.Name -contains "ScaleModel" -and $scaleObj.ScaleModel -match "Ishida")
+				)
 				{
-					$fileFound = $true
-					$content = Invoke-Command -ComputerName $machineName -ScriptBlock {
-						param ($path)
-						if (Test-Path $path)
-						{
-							Get-Content $path -ErrorAction Stop
-						}
-					} -ArgumentList $iniFile -ErrorAction Stop
-					
-					foreach ($line in $content)
-					{
-						if ($line -match '^\s*passwd\s*=\s*([0-9A-Fa-f]+)')
-						{
-							$password = $matches[1]
-							$foundPath = $iniFile
-							$success = $true
-							break
-						}
-					}
-					if ($password) { break }
+					$isIshida = $true
+				}
+				if ($scaleObj.PSObject.Properties.Name -contains "FullIP" -and $scaleObj.FullIP)
+				{
+					$ip = $scaleObj.FullIP
+				}
+				elseif (($scaleObj.PSObject.Properties.Name -contains "IPNetwork") -and ($scaleObj.PSObject.Properties.Name -contains "IPDevice") -and $scaleObj.IPNetwork -and $scaleObj.IPDevice)
+				{
+					$ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
 				}
 			}
-			catch
+			if ($ip -and -not $isIshida) { $NodeList += $ip }
+			# If Ishida, skip adding to $NodeList!
+		}
+	}
+	if ($BackofficeMachines) { $NodeList += $BackofficeMachines.Values | Where-Object { $_ } }
+	$NodeList = $NodeList | Sort-Object -Unique
+	
+	if ($NodeList.Count -eq 0) { throw "No machines provided for password extraction." }
+	
+	$jobs = @()
+	$MaxConcurrentJobs = 12
+	
+	foreach ($machineName in $NodeList)
+	{
+		# Throttle jobs
+		while ($jobs.Count -ge $MaxConcurrentJobs)
+		{
+			$done = Wait-Job -Job $jobs -Any -Timeout 10
+			foreach ($j in $done) { Remove-Job $j -Force }
+			$jobs = $jobs | Where-Object { $_.State -eq "Running" }
+		}
+		
+		$jobs += Start-Job -ArgumentList $machineName, $uvncFolders -ScriptBlock {
+			param ($machineName,
+				$uvncFolders)
+			$password = $null
+			foreach ($folder in $uvncFolders)
 			{
-				# Fallback to UNC/network path if remoting fails
 				try
 				{
-					$remotePath = "\\$machineName\$folder"
-					if (Test-Path $remotePath)
-					{
-						$iniFiles = Get-ChildItem -Path $remotePath -Filter "*.ini" -File | Where-Object {
-							$_.Name.ToLower() -eq "ultravnc.ini"
-						}
-						foreach ($iniFile in $iniFiles)
+					$iniFiles = Invoke-Command -ComputerName $machineName -ScriptBlock {
+						param ($dir)
+						if (Test-Path $dir)
 						{
-							$fileFound = $true
-							$content = Get-Content $iniFile.FullName -ErrorAction Stop
-							foreach ($line in $content)
-							{
-								if ($line -match '^\s*passwd\s*=\s*([0-9A-Fa-f]+)')
+							Get-ChildItem -Path $dir -Filter "*.ini" -File | ForEach-Object {
+								if ($_.Name.ToLower() -eq "ultravnc.ini")
 								{
-									$password = $matches[1]
-									$foundPath = $iniFile.FullName
-									$success = $true
-									break
+									$_.FullName
 								}
 							}
-							if ($password) { break }
 						}
+					} -ArgumentList ("C:\" + $folder.Substring(3)) -ErrorAction Stop
+					foreach ($iniFile in $iniFiles)
+					{
+						$content = Invoke-Command -ComputerName $machineName -ScriptBlock {
+							param ($path)
+							if (Test-Path $path)
+							{
+								Get-Content $path -ErrorAction Stop
+							}
+						} -ArgumentList $iniFile -ErrorAction Stop
+						foreach ($line in $content)
+						{
+							if ($line -match '^\s*passwd\s*=\s*([0-9A-Fa-f]+)')
+							{
+								$password = $matches[1]
+								break
+							}
+						}
+						if ($password) { break }
 					}
 				}
-				catch { continue }
+				catch
+				{
+					try
+					{
+						$remotePath = "\\$machineName\$folder"
+						if (Test-Path $remotePath -ErrorAction SilentlyContinue)
+						{
+							$iniFiles = Get-ChildItem -Path $remotePath -Filter "*.ini" -File -ErrorAction SilentlyContinue | Where-Object {
+								$_.Name.ToLower() -eq "ultravnc.ini"
+							}
+							foreach ($iniFile in $iniFiles)
+							{
+								$content = Get-Content $iniFile.FullName -ErrorAction Stop
+								foreach ($line in $content)
+								{
+									if ($line -match '^\s*passwd\s*=\s*([0-9A-Fa-f]+)')
+									{
+										$password = $matches[1]
+										break
+									}
+								}
+								if ($password) { break }
+							}
+						}
+					}
+					catch { continue }
+				}
+				if ($password) { break }
 			}
-			if ($password) { break }
+			return @{ Machine = $machineName; Password = $password }
 		}
-		
-		$AllVNCPasswords[$machineName] = $password
 	}
+	
+	# Wait for all jobs to finish
+	Wait-Job -Job $jobs | Out-Null
+	
+	foreach ($j in $jobs)
+	{
+		$result = Receive-Job $j
+		if ($result -and $result.Machine)
+		{
+			$AllVNCPasswords[$result.Machine] = $result.Password
+		}
+		Remove-Job $j -Force
+	}
+	
 	$script:FunctionResults['AllVNCPasswords'] = $AllVNCPasswords
 	return $AllVNCPasswords
 }
@@ -8727,7 +8732,16 @@ PreemptiveUpdates=0
 			$filePath = Join-Path $scalesDir $fileName
 			$parent = Split-Path $filePath -Parent
 			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-			$content = $vncTemplate.Replace('%%HOST%%', $ip).Replace('%%PASSWORD%%', $DefaultVNCPassword)
+			# Set AllowUntrustedServers=1 for Ishida, else use template as-is
+			if ($brand -like '*Ishida*')
+			{
+				$content = $vncTemplate.Replace('%%HOST%%', $ip).Replace('%%PASSWORD%%', $DefaultVNCPassword)
+				$content = $content -replace 'AllowUntrustedServers=0', 'AllowUntrustedServers=1'
+			}
+			else
+			{
+				$content = $vncTemplate.Replace('%%HOST%%', $ip).Replace('%%PASSWORD%%', $DefaultVNCPassword)
+			}
 			[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 			Write_Log "Created: $filePath" "green"
 			$scaleCount++
