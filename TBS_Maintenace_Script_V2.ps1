@@ -1879,8 +1879,9 @@ function Get_All_VNC_Passwords
 	)
 	$AllVNCPasswords = @{ }
 	
-	# Assemble node list
+	# 1. Build main node list and tag brands for scales
 	$NodeList = @()
+	$BizerbaScales = @()
 	if ($LaneMachines) { $NodeList += $LaneMachines.Values | Where-Object { $_ } }
 	if ($ScaleIPNetworks)
 	{
@@ -1889,16 +1890,17 @@ function Get_All_VNC_Passwords
 			$scaleObj = $kv.Value
 			$ip = $null
 			$isIshida = $false
+			$isBizerba = $false
 			if ($scaleObj -is [string]) { $ip = $scaleObj }
 			elseif ($null -ne $scaleObj)
 			{
-				# Check brand/model for "Ishida" (case-insensitive)
-				if (
-					($scaleObj.PSObject.Properties.Name -contains "ScaleBrand" -and $scaleObj.ScaleBrand -match "Ishida") -or
-					($scaleObj.PSObject.Properties.Name -contains "ScaleModel" -and $scaleObj.ScaleModel -match "Ishida")
-				)
+				if (($scaleObj.PSObject.Properties.Name -contains "ScaleBrand") -and ($scaleObj.ScaleBrand -match "Ishida"))
 				{
 					$isIshida = $true
+				}
+				if (($scaleObj.PSObject.Properties.Name -contains "ScaleBrand") -and ($scaleObj.ScaleBrand -match "BIZERBA"))
+				{
+					$isBizerba = $true
 				}
 				if ($scaleObj.PSObject.Properties.Name -contains "FullIP" -and $scaleObj.FullIP)
 				{
@@ -1909,28 +1911,45 @@ function Get_All_VNC_Passwords
 					$ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
 				}
 			}
-			if ($ip -and -not $isIshida) { $NodeList += $ip }
-			# If Ishida, skip adding to $NodeList!
+			if ($ip)
+			{
+				if ($isIshida) { continue }
+				if ($isBizerba) { $BizerbaScales += @{ Host = $ip; Obj = $scaleObj }; continue }
+				$NodeList += $ip
+			}
 		}
 	}
 	if ($BackofficeMachines) { $NodeList += $BackofficeMachines.Values | Where-Object { $_ } }
 	$NodeList = $NodeList | Sort-Object -Unique
 	
-	if ($NodeList.Count -eq 0) { throw "No machines provided for password extraction." }
+	if (($NodeList.Count -eq 0) -and ($BizerbaScales.Count -eq 0)) { throw "No machines provided for password extraction." }
 	
+	# 2. Ping regular nodes first
+	$OnlineNodes = @()
+	foreach ($node in $NodeList)
+	{
+		if (Test-Connection -ComputerName $node -Count 1 -Quiet -ErrorAction SilentlyContinue)
+		{
+			$OnlineNodes += $node
+		}
+		else
+		{
+			$AllVNCPasswords[$node] = $null
+		}
+	}
+	
+	# 3. Start jobs for online regular nodes
 	$jobs = @()
 	$MaxConcurrentJobs = 12
 	
-	foreach ($machineName in $NodeList)
+	foreach ($machineName in $OnlineNodes)
 	{
-		# Throttle jobs
 		while ($jobs.Count -ge $MaxConcurrentJobs)
 		{
 			$done = Wait-Job -Job $jobs -Any -Timeout 10
 			foreach ($j in $done) { Remove-Job $j -Force }
 			$jobs = $jobs | Where-Object { $_.State -eq "Running" }
 		}
-		
 		$jobs += Start-Job -ArgumentList $machineName, $uvncFolders -ScriptBlock {
 			param ($machineName,
 				$uvncFolders)
@@ -2004,7 +2023,6 @@ function Get_All_VNC_Passwords
 		}
 	}
 	
-	# Wait for all jobs to finish
 	Wait-Job -Job $jobs | Out-Null
 	
 	foreach ($j in $jobs)
@@ -2015,6 +2033,60 @@ function Get_All_VNC_Passwords
 			$AllVNCPasswords[$result.Machine] = $result.Password
 		}
 		Remove-Job $j -Force
+	}
+	
+	# 4. Handle Bizerba scales (using cmdkey/bizuser logic, serially)
+	foreach ($b in $BizerbaScales)
+	{
+		$host = $b.Host
+		$uvncIniRelativePaths = @(
+			"Program Files\uvnc bvba\UltraVNC\ultravnc.ini",
+			"Program Files (x86)\uvnc bvba\UltraVNC\ultravnc.ini"
+		)
+		$passwords = @("bizerba", "biyerba")
+		$username = "bizuser"
+		$password = $null
+		$fullIniPath = $null
+		
+		# Ping check first
+		if (-not (Test-Connection -ComputerName $host -Count 1 -Quiet -ErrorAction SilentlyContinue))
+		{
+			$AllVNCPasswords[$host] = $null
+			continue
+		}
+		
+		foreach ($uvncIniRel in $uvncIniRelativePaths)
+		{
+			foreach ($pw in $passwords)
+			{
+				# Remove any previous credential
+				cmdkey /delete:$host | Out-Null
+				cmdkey /add:$host /user:$username /pass:$pw | Out-Null
+				$shareIniPath = "\\$host\c$\$uvncIniRel"
+				if (Test-Path $shareIniPath -ErrorAction SilentlyContinue)
+				{
+					try
+					{
+						$content = Get-Content $shareIniPath -ErrorAction Stop
+						foreach ($line in $content)
+						{
+							if ($line -match '^\s*passwd\s*=\s*([0-9A-Fa-f]+)')
+							{
+								$password = $matches[1]
+								$fullIniPath = $shareIniPath
+								break
+							}
+						}
+					}
+					catch { }
+				}
+				# Remove credential after attempt
+				cmdkey /delete:$host | Out-Null
+				if ($password) { break }
+			}
+			if ($password) { break }
+		}
+		$AllVNCPasswords[$host] = $password
 	}
 	
 	$script:FunctionResults['AllVNCPasswords'] = $AllVNCPasswords
@@ -8539,7 +8611,7 @@ function Export_VNC_Files_For_All_Nodes
 	if (-not $AllVNCPasswords -or $AllVNCPasswords.Count -eq 0)
 	{
 		Write_Log "Gathering VNC passwords for all machines`r`n" "magenta"
-		$AllVNCPasswords = Get_All_VNC_Passwords -LaneMachines $LaneMachines -ScaleIPNetworks $ScaleIPNetworks -BackofficeMachines $BackofficeMachines
+		$AllVNCPasswords = Get_All_VNC_Passwords -LaneMachines $LaneMachines -BackofficeMachines $BackofficeMachines
 	}
 	
 	# --- Shared VNC file content with token ---
@@ -9870,7 +9942,7 @@ if (-not $form)
 			Send_SERVER_time_to_Lanes -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
-		
+	
 	############################################################################
 	# 14) Reboot Lane Menu Item
 	############################################################################
