@@ -8392,7 +8392,6 @@ while (`$true) {
     Start-Sleep -Seconds `$IntervalSeconds
 }
 "@
-	
 	Set-Content -Path $psScriptPath -Value $psScriptContent -Encoding UTF8
 	
 	# --- Build the GUI ---
@@ -8519,6 +8518,16 @@ powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "$ps
 		if ($LASTEXITCODE -eq 0)
 		{
 			Write_Log "Scheduled task created successfully for Duplicate File Monitor (runs as SYSTEM, every $($intervalSeconds.Value) seconds)." "Green"
+			# --- Start the task immediately after scheduling ---
+			try
+			{
+				Start-Process -FilePath $batchPath -WindowStyle Hidden
+				Write_Log "Duplicate monitor started immediately after scheduling." "Green"
+			}
+			catch
+			{
+				Write_Log "Failed to start Duplicate File Monitor immediately after scheduling." "Yellow"
+			}
 		}
 		else
 		{
