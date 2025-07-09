@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.3.1"
-$VersionDate = "2025-07-08"
+$VersionDate = "2025-07-09"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -8328,6 +8328,211 @@ function Open_Selected_Scale/s_C_Path
 }
 
 # ===================================================================================================
+#                      FUNCTION: Schedule_Remove_Duplicates_Monitor
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Prompts the user to either run the Duplicate File Monitor now (as a background job) or
+#   schedule it as a Windows scheduled task (runs at logon, hidden, always-on).
+#   Monitors the folder 'C:\Bizerba\RetailConnect\BMS\toBizerba' for duplicate files by content
+#   (using hash), and deletes all but the oldest file (by CreationTime).
+#   Writes batch/PowerShell scripts to disk and manages the Windows scheduled task.
+#   Author: Alex_C.T
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   (none - uses script context)
+# ===================================================================================================
+
+function Schedule_Remove_Duplicates_Monitor
+{
+	[CmdletBinding()]
+	param ()
+	
+	Write_Log "`r`n==================== Starting Schedule_Remove_Duplicates_Monitor Function ====================`r`n" "blue"
+	
+	$scriptFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
+	$psScriptName = "Remove_Duplicates_Monitor.ps1"
+	$psScriptPath = Join-Path $scriptFolder $psScriptName
+	$batchName = "Remove_Duplicates_Monitor.bat"
+	$batchPath = Join-Path $scriptFolder $batchName
+	$TargetPath = "C:\Bizerba\RetailConnect\BMS\toBizerba"
+	
+	if (-not (Test-Path $scriptFolder)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
+	
+	# Write the PowerShell watcher script (no backslash-escaped variables!)
+	$psScriptContent = @"
+`$Path = '$TargetPath'
+`$IntervalSeconds = `$env:MON_INTERVAL_SECONDS
+if (-not `$IntervalSeconds) { `$IntervalSeconds = 2 }
+function Remove-DuplicateFilesByContent {
+    param([string]`$Path)
+    `$files = Get-ChildItem -Path `$Path -File -ErrorAction SilentlyContinue
+    `$hashTable = @{}
+    foreach (`$file in `$files) {
+        try { `$hash = (Get-FileHash -Path `$file.FullName -Algorithm SHA256).Hash }
+        catch { continue }
+        if (-not `$hashTable.ContainsKey(`$hash)) { `$hashTable[`$hash] = @() }
+        `$hashTable[`$hash] += `$file
+    }
+    foreach (`$entry in `$hashTable.GetEnumerator()) {
+        `$fileList = `$entry.Value
+        if (`$fileList.Count -gt 1) {
+            `$fileList = `$fileList | Sort-Object CreationTime
+            `$original = `$fileList[0]
+            `$duplicates = `$fileList[1..(`$fileList.Count - 1)]
+            foreach (`$dup in `$duplicates) {
+                try {
+                    Remove-Item `$dup.FullName -Force
+                } catch {}
+            }
+        }
+    }
+}
+while (`$true) {
+    Remove-DuplicateFilesByContent -Path `$Path
+    Start-Sleep -Seconds `$IntervalSeconds
+}
+"@
+	
+	Set-Content -Path $psScriptPath -Value $psScriptContent -Encoding UTF8
+	
+	# --- Build the GUI ---
+	Add-Type -AssemblyName System.Windows.Forms
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Duplicate File Monitor"
+	$form.Size = New-Object System.Drawing.Size(430, 180)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = 'FixedDialog'
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = "How do you want to run the Duplicate File Monitor for:`r`n$TargetPath"
+	$label.Location = New-Object System.Drawing.Point(16, 15)
+	$label.Size = New-Object System.Drawing.Size(380, 40)
+	$label.TextAlign = 'MiddleCenter'
+	$form.Controls.Add($label)
+	
+	$btnNow = New-Object System.Windows.Forms.Button
+	$btnNow.Text = "Run Now (as Job)"
+	$btnNow.Location = New-Object System.Drawing.Point(30, 70)
+	$btnNow.Size = New-Object System.Drawing.Size(110, 35)
+	$form.Controls.Add($btnNow)
+	
+	$btnSchedule = New-Object System.Windows.Forms.Button
+	$btnSchedule.Text = "Schedule (background)"
+	$btnSchedule.Location = New-Object System.Drawing.Point(150, 70)
+	$btnSchedule.Size = New-Object System.Drawing.Size(140, 35)
+	$form.Controls.Add($btnSchedule)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(300, 70)
+	$btnCancel.Size = New-Object System.Drawing.Size(75, 35)
+	$form.Controls.Add($btnCancel)
+	
+	$lblSec = New-Object System.Windows.Forms.Label
+	$lblSec.Text = "Interval (seconds):"
+	$lblSec.Location = New-Object System.Drawing.Point(40, 120)
+	$lblSec.Size = New-Object System.Drawing.Size(110, 22)
+	$form.Controls.Add($lblSec)
+	
+	$txtSec = New-Object System.Windows.Forms.TextBox
+	$txtSec.Text = "2"
+	$txtSec.Location = New-Object System.Drawing.Point(155, 118)
+	$txtSec.Size = New-Object System.Drawing.Size(50, 24)
+	$form.Controls.Add($txtSec)
+	
+	$selectedAction = [ref] ""
+	$intervalSeconds = [ref] 2
+	
+	$btnNow.Add_Click({
+			if ($txtSec.Text -match '^\d+$' -and [int]$txtSec.Text -ge 1)
+			{
+				$selectedAction.Value = "now"
+				$intervalSeconds.Value = [int]$txtSec.Text
+				$form.DialogResult = 'OK'; $form.Close()
+			}
+			else
+			{
+				[System.Windows.Forms.MessageBox]::Show("Enter a valid integer interval (1+ seconds).")
+			}
+		})
+	$btnSchedule.Add_Click({
+			if ($txtSec.Text -match '^\d+$' -and [int]$txtSec.Text -ge 1)
+			{
+				$selectedAction.Value = "schedule"
+				$intervalSeconds.Value = [int]$txtSec.Text
+				$form.DialogResult = 'OK'; $form.Close()
+			}
+			else
+			{
+				[System.Windows.Forms.MessageBox]::Show("Enter a valid integer interval (1+ seconds).")
+			}
+		})
+	$btnCancel.Add_Click({
+			$selectedAction.Value = "cancel"
+			$form.DialogResult = 'Cancel'; $form.Close()
+		})
+	
+	$form.AcceptButton = $btnNow
+	$form.CancelButton = $btnCancel
+	
+	$form.ShowDialog() | Out-Null
+	
+	if ($selectedAction.Value -eq "cancel" -or -not $selectedAction.Value)
+	{
+		Write_Log "User cancelled Duplicate Monitor scheduling." "Yellow"
+		Write_Log "`r`n==================== Schedule_Remove_Duplicates_Monitor Function Completed ====================" "blue"
+		return
+	}
+	
+	# --- If Run Now ---
+	if ($selectedAction.Value -eq "now")
+	{
+		$job = Start-Job -ScriptBlock {
+			param ($psScript,
+				$interval)
+			$env:MON_INTERVAL_SECONDS = $interval
+			& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $psScript
+		} -ArgumentList $psScriptPath, $intervalSeconds.Value
+		Write_Log "Duplicate monitor running as job." "Green"
+		Write_Log "`r`n==================== Schedule_Remove_Duplicates_Monitor Function Completed ====================" "blue"
+		return
+	}
+	
+	# --- If Schedule Task ---
+	if ($selectedAction.Value -eq "schedule")
+	{
+		$batchContent = @"
+@echo off
+set MON_INTERVAL_SECONDS=$($intervalSeconds.Value)
+powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "$psScriptPath"
+"@
+		Set-Content -Path $batchPath -Value $batchContent -Encoding ASCII
+		
+		$taskName = "Remove_Duplicates_Monitor_Task"
+		schtasks /Delete /TN "$taskName" /F >$null 2>&1
+		
+		$schtasks = "schtasks /Create /TN `"$taskName`" /TR `"$batchPath`" /SC ONSTART /RL HIGHEST /RU SYSTEM /F"
+		Invoke-Expression $schtasks
+		
+		if ($LASTEXITCODE -eq 0)
+		{
+			Write_Log "Scheduled task created successfully for Duplicate File Monitor (runs as SYSTEM, every $($intervalSeconds.Value) seconds)." "Green"
+		}
+		else
+		{
+			Write_Log "Failed to create scheduled task for Duplicate File Monitor." "Red"
+		}
+		Write_Log "`r`n==================== Schedule_Remove_Duplicates_Monitor Function Completed ====================" "blue"
+		return
+	}
+	
+	# In case something slips through, final function complete:
+	Write_Log "`r`n==================== Schedule_Remove_Duplicates_Monitor Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                         FUNCTION: Update_Scales_Specials_Interactive
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -9686,6 +9891,16 @@ if (-not $form)
 			Update_Scales_Specials_Interactive
 		})
 	[void]$contextMenuGeneral.Items.Add($UpdateScalesSpecialsItem)
+	
+	############################################################################
+	# 14) Schedule Duplicate File Monitor
+	############################################################################
+	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Duplicate File Monitor")
+	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in toBizerba. Run now or schedule as SYSTEM."
+	$ScheduleRemoveDupesItem.Add_Click({
+			Schedule_Remove_Duplicates_Monitor
+		})
+	[void]$contextMenuGeneral.Items.Add($ScheduleRemoveDupesItem)
 	
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
