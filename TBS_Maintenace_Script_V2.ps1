@@ -8612,7 +8612,7 @@ function Export_VNC_Files_For_All_Nodes
 	if (-not $AllVNCPasswords -or $AllVNCPasswords.Count -eq 0)
 	{
 		Write_Log "Gathering VNC passwords for all machines`r`n" "magenta"
-		$AllVNCPasswords = Get_All_VNC_Passwords -LaneMachines $LaneMachines -BackofficeMachines $BackofficeMachines
+		$AllVNCPasswords = Get_All_VNC_Passwords -LaneMachines $LaneMachines
 	}
 	
 	# --- Shared VNC file content with token ---
