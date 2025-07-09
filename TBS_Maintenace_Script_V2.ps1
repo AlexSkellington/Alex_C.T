@@ -1914,6 +1914,7 @@ function Get_All_VNC_Passwords
 			if ($ip)
 			{
 				if ($isIshida) { continue }
+				Write_Log "Skipping Ishida scale [$ip] for VNC password scan (password is fixed).`r`n" "yellow"
 				if ($isBizerba) { $BizerbaScales += @{ Host = $ip; Obj = $scaleObj }; continue }
 				$NodeList += $ip
 			}
