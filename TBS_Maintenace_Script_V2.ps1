@@ -8695,7 +8695,6 @@ function Update_Scales_Specials_Interactive
 	$btnCancel.Size = New-Object System.Drawing.Size(100, 30)
 	$form.Controls.Add($btnCancel)
 	
-	
 	# Enable restore button only if the deploy line is missing
 	$deployLineExists = $false
 	if (Test-Path $deployChgFile)
@@ -8721,6 +8720,8 @@ function Update_Scales_Specials_Interactive
 			else
 			{
 				[System.Windows.Forms.MessageBox]::Show("Neither FastDEPLOY nor regular ScaleManagementApp.exe found in C:\ScaleCommApp!", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				Write_Log "Neither FastDEPLOY nor regular ScaleManagementApp.exe found in C:\ScaleCommApp!" "red"
+				Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
 				return
 			}
 			
@@ -8747,6 +8748,8 @@ function Update_Scales_Specials_Interactive
 				Write_Log "DEPLOY_CHG.sql not found for restore." "yellow"
 				[System.Windows.Forms.MessageBox]::Show("DEPLOY_CHG.sql not found!", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 			}
+			Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
+			return
 		})
 	
 	$selectedAction = $null
