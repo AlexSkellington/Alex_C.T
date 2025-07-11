@@ -1,44 +1,66 @@
-<#
-Param (
-	[switch]$IsRelaunched
-)
-#>
+#######################################################################################################
+#                                                                                                     #
+#                                        MiniGhost SCRIPT                                             #
+#                                                                                                     #
+#                                        Author: Alex_C.T                                             #
+#                                                                                                     #
+#  > Edit only in consultation with Alex_C.T                                                          #
+#  > This script performs advanced maintenance and diagnostics on TBS systems                         #
+#                                                                                                     #
+#######################################################################################################
 
-# Write-Host "Script started. IsRelaunched: $IsRelaunched"
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # ===================================================================================================
-#                                       SECTION: Import Modules
+#                                       SECTION: Parameters
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Imports necessary PowerShell modules required for the script's operation.
+#   Defines the script parameters, allowing users to run the script in silent mode.
+# ===================================================================================================
+
+# Script build version (cunsult with Alex_C.T before changing this)
+$VersionNumber = "1.2.5"
+$VersionDate = "2025-07-09"
+
+# Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
+$major = $PSVersionTable.PSVersion.Major
+$minor = $PSVersionTable.PSVersion.Minor
+$build = $PSVersionTable.PSVersion.Build
+$revision = $PSVersionTable.PSVersion.Revision
+
+# Combine them into a single version string
+$PowerShellVersion = "$major.$minor.$build.$revision"
+
+# Set Execution Policy to Bypass for the current process
+Set-ExecutionPolicy Bypass -Scope Process -Force
+
+# ===================================================================================================
+#                           SECTION: Import Necessary Assemblies and Modules
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Imports required .NET assemblies for creating and managing Windows Forms and graphical components
+#   and imports necessary PowerShell modules required for the script's operation.
 # ===================================================================================================
 
 # Import necessary modules
 Import-Module -Name Microsoft.PowerShell.Utility
-
-# ===================================================================================================
-#                                       SECTION: Import Necessary Assemblies
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Imports required .NET assemblies for creating and managing Windows Forms and graphical components.
-# ===================================================================================================
 
 # Add necessary assemblies for GUI
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # ===================================================================================================
-#                                       SECTION: Script Variables
+#                                   SECTION: Initialize Variables
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Initializes all necessary variables required for the script's operation.
+#   Initializes all necessary variables and paths required for the script's operation, including
+#   dynamic detection of the main Storeman folder, Office subpaths, INI files, encoding settings,
+#   counters, and interop types for MailSlot messaging.
 # ===================================================================================================
 
-# Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.2.4"
-
-# Declare the script hash table to store results from functions
+# ---------------------------------------------------------------------------------------------------
+# Script-Scoped Result and Process Tracking Structures
+# ---------------------------------------------------------------------------------------------------
 $script:FunctionResults = @{ }
 
 # Get the current machine name
@@ -48,12 +70,89 @@ $currentMachineName = $env:COMPUTERNAME
 $script:newStoreNumber = $null
 $script:newMachineName = $null
 
-# Define paths
-$startupIniPath = "\\localhost\storeman\startup.ini"
-$baseDirectory = "\\localhost\storeman\office" # Set the base directory for folder retrieval
+# ---------------------------------------------------------------------------------------------------
+# Encoding Settings
+# ---------------------------------------------------------------------------------------------------
+$script:ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252) # Windows-1252 legacy files
+$script:utf8NoBOM = New-Object System.Text.UTF8Encoding($false) # UTF-8 no BOM (for output)
+$script:utf8NoBOM = $utf8NoBOM
+$script:ansiPcEncoding = $ansiPcEncoding
 
-# Temp Directory
+# ---------------------------------------------------------------------------------------------------
+# Locate Base Path: Storeman Folder Detection (case-insensitive)
+# ---------------------------------------------------------------------------------------------------
+$BasePath = $null
+$targetSubPathPattern = 'Office\Dbs\INFO_*901_WIN.INI'
+$storemanDirs = @()
+$fixedDrives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 -and $_.Root -match '^[A-Z]:\\$' }
+
+foreach ($drive in $fixedDrives)
+{
+	# Case-insensitive match for any *storeman* variation in directory name
+	$dirs = Get-ChildItem -Path "$($drive.Root)" -Directory -ErrorAction SilentlyContinue |
+	Where-Object { $_.Name -imatch 'storeman' } |
+	ForEach-Object {
+		$candidatePath = Join-Path $_.FullName 'Office\Dbs'
+		$files = Get-ChildItem -Path $candidatePath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue
+		if ($files) { $_ }
+	}
+	if ($dirs) { $storemanDirs += $dirs }
+}
+
+if ($storemanDirs.Count -gt 1)
+{
+	# Prefer a path that is actually shared as a Windows share
+	$shares = Get-SmbShare -ErrorAction SilentlyContinue
+	foreach ($dir in $storemanDirs)
+	{
+		if ($shares.Path -contains $dir.FullName)
+		{
+			$BasePath = $dir.FullName
+			break
+		}
+	}
+	if (-not $BasePath) { $BasePath = $storemanDirs[0].FullName }
+}
+elseif ($storemanDirs.Count -eq 1)
+{
+	$BasePath = $storemanDirs[0].FullName
+}
+
+# Final fallback: Default to C:\storeman if none found
+if (-not $BasePath)
+{
+	$fallback = "C:\storeman"
+	$candidatePath = Join-Path $fallback 'Office\Dbs'
+	$files = Get-ChildItem -Path $candidatePath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue
+	if ($files) { $BasePath = $fallback }
+	else
+	{
+		Write-Warning "Could not locate any storeman folder containing Office\Dbs\INFO_*901_WIN.INI.`nRunning with limited functionality."
+		$BasePath = $fallback
+	}
+}
+
+Write-Host "Selected (storeman) folder: '$BasePath'" -ForegroundColor Magenta
+
+# ---------------------------------------------------------------------------------------------------
+# Build All Core Paths and File Locations
+# ---------------------------------------------------------------------------------------------------
+$OfficePath = Join-Path $BasePath "Office"
+$LoadPath = Join-Path $OfficePath "Load"
+$StartupIniPath = Join-Path $BasePath "Startup.ini"
+$SystemIniPath = Join-Path $OfficePath "system.ini"
+$GasInboxPath = Join-Path $OfficePath "XchGAS\INBOX"
+$DbsPath = Join-Path $OfficePath "Dbs"
 $TempDir = [System.IO.Path]::GetTempPath()
+
+# Find first INFO_*901_WIN.INI and INFO_*901_SMSStart.ini in Office\Dbs
+$WinIniPath = $null
+$SmsStartIniPath = $null
+
+$WinIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($WinIniMatch) { $WinIniPath = $WinIniMatch.FullName }
+$SmsStartIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_SMSStart.ini' -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($SmsStartIniMatch) { $SmsStartIniPath = $SmsStartIniMatch.FullName }
 
 # Initialize a hashtable to track the status of each operation
 $operationStatus = @{
@@ -72,425 +171,217 @@ $operationStatus = @{
 }
 
 # ===================================================================================================
-#                              FUNCTION: Ensure Administrator Privileges
+#                               FUNCTION: Get-Store-And-Db-Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Ensures that the script is running with administrative privileges. If not, it attempts to restart the script with elevated rights.
+#   Uses provided paths to INFO_*901_WIN.INI, INFO_*901_SMSStart.ini, Startup.ini, and optionally
+#   system.ini, to extract:
+#     - Store metadata (store number, name, terminal, address, version, etc.) from WIN.INI
+#     - SQL Server/Database name using any key containing 'ServerName*' or 'DatabaseName*' from SMSStart.ini
+#     - Falls back to Startup.ini for DBSERVER/DBNAME if not found in SMSStart.ini
+#     - Falls back to system.ini [SMS] Name=... for store name if not found in WIN.INI
+#   Builds a SQL Server connection string using trusted authentication and TrustServerCertificate.
+#   Populates all results in $script:FunctionResults for downstream use.
 # ===================================================================================================
 
-function Ensure-Administrator
+function Get_Store_And_Database_Info
 {
-	# Retrieve the current Windows identity
-	$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-	# Create a WindowsPrincipal object with the current identity
-	$principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
-	
-	# Check if the user is not in the Administrator role
-	if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
-	{
-		try
-		{
-			# Build the argument list
-			$arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`""
-			if ($Silent)
-			{
-				$arguments += " -Silent"
-			}
-			
-			# Create a ProcessStartInfo object
-			$psi = New-Object System.Diagnostics.ProcessStartInfo
-			$psi.FileName = (Get-Process -Id $PID).Path # Use the same PowerShell executable
-			$psi.Arguments = $arguments
-			$psi.Verb = 'runas' # Run as administrator
-			$psi.UseShellExecute = $true
-			$psi.WindowStyle = 'Normal' # Allow the console window to show (temporarily)
-			
-			# Start the new elevated process
-			$process = [System.Diagnostics.Process]::Start($psi)
-			exit # Exit the current process after starting the elevated one
-		}
-		catch
-		{
-			[System.Windows.Forms.MessageBox]::Show("Failed to elevate to administrator.`r`nError: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-			exit 1
-		}
-	}
-	else
-	{
-		# Elevated, continue execution
-		# Optional: Display a message box if needed
-		# [System.Windows.Forms.MessageBox]::Show("Running as Administrator.", "Info")
-	}
-}
-
-# ===================================================================================================
-#                                   FUNCTION: Download-AndRelaunchSelf
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   This function downloads a specified PowerShell script from a given URL, saves it to a designated
-#   directory (defaulting to the system's temporary folder) with ANSI encoding, and relaunches the
-#   downloaded script with elevated (Administrator) privileges in a hidden window. It includes
-#   error handling to log any issues encountered during the download or relaunch processes. To
-#   prevent infinite loops, an explicit relaunch indicator is used. If the download fails, the
-#   function logs the error and allows the main script to continue executing without performing
-#   further actions within the function.
-# ===================================================================================================
-
-function Download-AndRelaunchSelf
-{
-	[CmdletBinding()]
 	param (
-		[Parameter(Mandatory = $true)]
-		[string]$ScriptUrl,
-		[Parameter(Mandatory = $false)]
-		[string]$DestinationDirectory = "$env:TEMP",
-		[Parameter(Mandatory = $false)]
-		[string]$ScriptName = "MiniGhost.ps1",
-		[switch]$IsRelaunched
+		[string]$WinIniPath,
+		[string]$SmsStartIniPath,
+		[string]$StartupIniPath,
+		[string]$SystemIniPath
 	)
 	
-	Write-Host "Entering Download-AndRelaunchSelf. IsRelaunched: $IsRelaunched"
+	# ------------------------------------------------------------------------------------------------
+	# Initialize results with N/A for every expected property
+	# ------------------------------------------------------------------------------------------------
+	$fields = @(
+		'StoreNumber', 'StoreName', 'CompanyName', 'Terminal', 'Address', 'City', 'State',
+		'SMSVersionFull', 'StampDate', 'StampTime', 'KeyNumber',
+		'DBSERVER', 'DBNAME', 'ConnectionString'
+	)
+	foreach ($f in $fields) { $script:FunctionResults[$f] = 'N/A' }
 	
-	# If the script has already been relaunched, do not proceed
-	if ($IsRelaunched)
+	# ------------------------------------------------------------------------------------------------
+	# Extract Store Info from WIN.INI (required for store metadata)
+	# ------------------------------------------------------------------------------------------------
+	if ($WinIniPath -and (Test-Path $WinIniPath))
 	{
-		Write-Host "Script has already been relaunched. Exiting function."
-		return
-	}
-	
-	# Construct the full path to save the script
-	$DestinationPath = Join-Path -Path $DestinationDirectory -ChildPath $ScriptName
-	
-	# Prevent infinite loop by checking if the script is already running from the destination path
-	if ($MyInvocation.MyCommand.Path -ne $null)
-	{
-		try
+		$currentSection = ""
+		foreach ($line in Get-Content $WinIniPath)
 		{
-			$currentPath = (Resolve-Path $MyInvocation.MyCommand.Path).Path
-			$targetPath = (Resolve-Path $DestinationPath).Path
-			if ($currentPath -eq $targetPath)
+			$trimmed = $line.Trim()
+			if ($trimmed -match '^\[(.+)\]$') { $currentSection = $Matches[1]; continue }
+			if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
+			$parts = $trimmed -split "=", 2
+			$key = $parts[0].Trim()
+			$value = $parts[1].Trim()
+			switch ($currentSection)
 			{
-				# Script is already running from the destination path; do not proceed
-				Write-Host "Script is already running from $DestinationPath. Exiting function."
-				return
+				"ORIGIN" {
+					if ($key -ieq "StampDate") { $script:FunctionResults['StampDate'] = $value }
+					if ($key -ieq "StampTime") { $script:FunctionResults['StampTime'] = $value }
+				}
+				"SYSTEM" {
+					if ($key -ieq "CompanyName") { $script:FunctionResults['CompanyName'] = $value }
+					if ($key -ieq "Store") { $script:FunctionResults['StoreNumber'] = $value.PadLeft(3, "0") }
+					if ($key -ieq "Terminal") { $script:FunctionResults['Terminal'] = $value }
+				}
+				"STOREDETAIL" {
+					if ($key -ieq "Name") { $script:FunctionResults['StoreName'] = $value }
+					if ($key -ieq "Address") { $script:FunctionResults['Address'] = $value }
+					if ($key -ieq "City") { $script:FunctionResults['City'] = $value }
+					if ($key -ieq "State") { $script:FunctionResults['State'] = $value }
+				}
+				"KEY" {
+					if ($key -ieq "KeyNumber") { $script:FunctionResults['KeyNumber'] = $value }
+				}
+				"Versions" {
+					if ($key -ieq "VersionIni") { $script:FunctionResults['SMSVersionFull'] = $value }
+				}
 			}
 		}
-		catch
-		{
-			# If Resolve-Path fails, proceed to download
-			Write-Warning "Resolve-Path failed. Proceeding to download."
-		}
-	}
-	
-	try
-	{
-		Write-Host "Attempting to download the script from $ScriptUrl"
-		
-		# Attempt to download the script content as a string
-		$scriptContent = Invoke-RestMethod -Uri $ScriptUrl -UseBasicParsing
-		
-		# Save the script content with ANSI encoding
-		Set-Content -Path $DestinationPath -Value $scriptContent -Encoding Default
-		
-		# Verify that the script was downloaded and saved successfully
-		if (Test-Path $DestinationPath)
-		{
-			Write-Host "Script downloaded successfully to $DestinationPath with ANSI encoding."
-		}
-		else
-		{
-			Write-Error "Script was not downloaded successfully."
-			return
-		}
-	}
-	catch
-	{
-		# Log the error and exit the function without performing further actions
-		Write-Error "Failed to download the script from $ScriptUrl. Error: $_"
-		return
-	}
-	
-	try
-	{
-		# Relaunch the downloaded script as Administrator in a hidden window
-		
-		# Prepare the arguments for the new PowerShell process, including the relaunch indicator
-		$arguments = @(
-			"-NoProfile"
-			"-ExecutionPolicy"
-			"Bypass"
-			"-File"
-			"`"$DestinationPath`""
-			"-IsRelaunched"
-			"-WindowStyle"
-			"Hidden"
-		)
-		
-		Write-Host "Starting new process with arguments: $arguments"
-		
-		# Start the new process with elevated privileges
-		Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
-		
-		Write-Host "Process started successfully. Exiting current script."
-		
-		# Exit the current script to prevent multiple instances
-		exit
-	}
-	catch
-	{
-		# Log any errors that occur during the relaunch process
-		Write-Error "Failed to relaunch the script as Administrator. Error: $_"
-	}
-	finally
-	{
-		# Exit the current script regardless of success or failure
-		Write-Host "Exiting the original script."
-		exit
-	}
-}
-
-# Rest of your script continues here
-# Write-Host "Script is running with elevated privileges from $($MyInvocation.MyCommand.Path)"
-
-# ===================================================================================================
-#                                        FUNCTION: Get-StoreNameGUI
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Retrieves the store name from the system.ini file.
-#   Stores the result in $script:FunctionResults['StoreName'].
-# ===================================================================================================
-
-function Get-StoreNameGUI
-{
-	param (
-		[string]$INIPath = "\\localhost\storeman\office\system.ini"
-	)
-	
-	# Initialize StoreName
-	$script:FunctionResults['StoreName'] = "N/A"
-	
-	if (Test-Path $INIPath)
-	{
-		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | ForEach-Object {
-			$_.Line.Split('=')[1].Trim()
-		}
-		if ($storeName)
-		{
-			$script:FunctionResults['StoreName'] = $storeName
-			# Write-Log "Store name found in system.ini: $storeName" "green"
-		}
-		else
-		{
-			# Write-Log "Store name not found in system.ini." "yellow"
-		}
 	}
 	else
 	{
-		# Write-Log "INI file not found: $INIPath" "yellow"
+		Write-Host "No INFO_*901_WIN.INI found at $WinIniPath" -ForegroundColor Red
 	}
 	
-	# Update the storeNameLabel in the GUI
-	if (-not $SilentMode -and $storeNameLabel -ne $null)
-	{
-		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
-		$form.Refresh()
-		[System.Windows.Forms.Application]::DoEvents()
-	}
-}
-
-# ===================================================================================================
-#                                      FUNCTION: Get-StoreNumberGUI
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Retrieves the store number via GUI prompts or configuration files.
-#   Stores the result in $script:FunctionResults['StoreNumber'].
-# ===================================================================================================
-
-function Get-StoreNumberGUI
-{
-	param (
-		[string]$IniFilePath = "\\localhost\Storeman\startup.ini",
-		[string]$BasePath = "\\localhost\Storeman\Office\"
+	# ------------------------------------------------------------------------------------------------
+	# Fallback: Get StoreName from system.ini ([SMS] Name=...) if still N/A
+	# ------------------------------------------------------------------------------------------------
+	if (
+		($script:FunctionResults['StoreName'] -eq 'N/A' -or
+			[string]::IsNullOrWhiteSpace($script:FunctionResults['StoreName'])) -and
+		$SystemIniPath -and (Test-Path $SystemIniPath)
 	)
-	
-	# Initialize StoreNumber
-	$script:FunctionResults['StoreNumber'] = "N/A"
-	
-	# Try to retrieve StoreNumber from the startup.ini file
-	if (Test-Path $IniFilePath)
 	{
-		$storeNumber = Select-String -Path $IniFilePath -Pattern "^STORE=" | ForEach-Object {
-			$_.Line.Split('=')[1].Trim()
-		}
-		if ($storeNumber)
+		$inSMSSection = $false
+		foreach ($line in Get-Content $SystemIniPath)
 		{
-			$script:FunctionResults['StoreNumber'] = $storeNumber
-			#	Write-Log "Store number found in startup.ini: $storeNumber" "green"
-		}
-		else
-		{
-			#	Write-Log "Store number not found in startup.ini." "yellow"
-		}
-	}
-	else
-	{
-		#	Write-Log "INI file not found: $IniFilePath" "yellow"
-	}
-	
-	# **Only proceed to check XF directories if StoreNumber was not found in INI**
-	if ($script:FunctionResults['StoreNumber'] -eq "N/A")
-	{
-		if (Test-Path $BasePath)
-		{
-			$XFDirs = Get-ChildItem -Path $BasePath -Directory -Filter "XF*"
-			foreach ($dir in $XFDirs)
+			$trimmed = $line.Trim()
+			if ($trimmed -match '^\[SMS\]$')
 			{
-				if ($dir.Name -match "^XF(\d{3})")
+				$inSMSSection = $true
+				continue
+			}
+			if ($inSMSSection)
+			{
+				# End of section if new [Section] starts
+				if ($trimmed -match '^\[.+\]$') { break }
+				# Look for Name=
+				if ($trimmed -match '^Name\s*=(.*)$')
 				{
-					$storeNumber = $Matches[1]
-					if ($storeNumber -ne "999")
+					$storeNameBackup = $Matches[1].Trim()
+					if ($storeNameBackup)
 					{
-						$script:FunctionResults['StoreNumber'] = $storeNumber
-						#	Write-Log "Store number found from XF directory: $storeNumber" "green"
-						break # Exit loop after finding the store number
+						$script:FunctionResults['StoreName'] = $storeNameBackup
+						break
 					}
 				}
 			}
-			if ($script:FunctionResults['StoreNumber'] -eq "N/A")
-			{
-				#	Write-Log "No valid XF directories found in $BasePath" "yellow"
-			}
-		}
-		else
-		{
-			#	Write-Log "Base path not found: $BasePath" "yellow"
 		}
 	}
 	
-	# Update the storeNumberLabel in the GUI if store number was found without manual input
-	if ($script:FunctionResults['StoreNumber'] -ne "")
+	# ------------------------------------------------------------------------------------------------
+	# Extract SQL Server/Database from SMSStart INI (first matching ServerName*/DatabaseName*)
+	# ------------------------------------------------------------------------------------------------
+	$dbServer = $null
+	$dbName = $null
+	
+	if ($SmsStartIniPath -and (Test-Path $SmsStartIniPath))
 	{
-		if (-not $SilentMode -and $storeNumberLabel -ne $null)
+		foreach ($line in Get-Content $SmsStartIniPath)
 		{
-			$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
-			$form.Refresh()
-			[System.Windows.Forms.Application]::DoEvents()
+			$trimmed = $line.Trim()
+			if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
+			$parts = $trimmed -split "=", 2
+			$key = $parts[0].Trim()
+			$value = $parts[1].Trim()
+			if (-not $dbServer -and $key -match 'ServerName') { $dbServer = $value }
+			if (-not $dbName -and $key -match 'DatabaseName') { $dbName = $value }
+			if ($dbServer -and $dbName) { break }
 		}
-		return # Exit function after successful retrieval and GUI update
 	}
 	
-	# Prompt for manual input via GUI
-	while (-not $script:FunctionResults['StoreNumber'])
+	# ------------------------------------------------------------------------------------------------
+	# Fallback: Try Startup.ini for DBSERVER/DBNAME if either is missing
+	# ------------------------------------------------------------------------------------------------
+	if ((!$dbServer -or !$dbName) -and $StartupIniPath -and (Test-Path $StartupIniPath))
 	{
-		$inputBox = New-Object System.Windows.Forms.Form
-		$inputBox.Text = "Enter Store Number"
-		$inputBox.Size = New-Object System.Drawing.Size(300, 150)
-		$inputBox.StartPosition = "CenterParent"
-		$inputBox.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-		$inputBox.MaximizeBox = $false
-		$inputBox.MinimizeBox = $false
-		$inputBox.TopMost = $true
-		
-		$label = New-Object System.Windows.Forms.Label
-		$label.Text = "Please enter the store number (e.g., 1, 12, 123):"
-		$label.AutoSize = $true
-		$label.Location = New-Object System.Drawing.Point(10, 20)
-		$inputBox.Controls.Add($label)
-		
-		$textBox = New-Object System.Windows.Forms.TextBox
-		$textBox.Location = New-Object System.Drawing.Point(10, 50)
-		$textBox.Width = 260
-		$inputBox.Controls.Add($textBox)
-		
-		$okButton = New-Object System.Windows.Forms.Button
-		$okButton.Text = "OK"
-		$okButton.Location = New-Object System.Drawing.Point(100, 80)
-		$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-		$inputBox.AcceptButton = $okButton
-		$inputBox.Controls.Add($okButton)
-		
-		$cancelButton = New-Object System.Windows.Forms.Button
-		$cancelButton.Text = "Cancel"
-		$cancelButton.Location = New-Object System.Drawing.Point(180, 80)
-		$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-		$inputBox.CancelButton = $cancelButton
-		$inputBox.Controls.Add($cancelButton)
-		
-		$result = $inputBox.ShowDialog()
-		
-		if ($result -eq [System.Windows.Forms.DialogResult]::OK)
+		foreach ($line in Get-Content $StartupIniPath)
 		{
-			$input = $textBox.Text.Trim()
-			if ($input -match "^\d{1,3}$" -and $input -ne "000")
-			{
-				# Pad the input with leading zeros to ensure it is 3 digits
-				$paddedInput = $input.PadLeft(3, '0')
-				$script:FunctionResults['StoreNumber'] = $paddedInput
-				Write-Log "Store number entered by user: $paddedInput" "green"
-				
-				# Update the storeNumberLabel in the GUI
-				if (-not $SilentMode -and $storeNumberLabel -ne $null)
-				{
-					$storeNumberLabel.Text = "Store Number: $input"
-					$form.Refresh()
-					[System.Windows.Forms.Application]::DoEvents()
-				}
-				
-				break
-			}
-			else
-			{
-				[System.Windows.Forms.MessageBox]::Show("Store number must be 1 to 3 digits, numeric, and not '000'.", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-			}
+			$trimmed = $line.Trim()
+			if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
+			$parts = $trimmed -split "=", 2
+			$key = $parts[0].Trim()
+			$value = $parts[1].Trim()
+			if (-not $dbServer -and $key -match 'DBSERVER') { $dbServer = $value }
+			if (-not $dbName -and $key -match 'DBNAME') { $dbName = $value }
+			if ($dbServer -and $dbName) { break }
 		}
-		else
-		{
-			#	Write-Log "Store number input canceled by user." "red"
-			exit 1
-		}
+		if (-not $dbServer) { $dbServer = "localhost" }
+		if (-not $dbName) { $dbName = "STORESQL" }
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Finalize connection string and store in function results
+	# ------------------------------------------------------------------------------------------------
+	if ($dbServer -and $dbName)
+	{
+		$script:FunctionResults['DBSERVER'] = $dbServer
+		$script:FunctionResults['DBNAME'] = $dbName
+		$script:FunctionResults['ConnectionString'] = "Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# GUI label updates (optional; can be removed if not needed)
+	# ------------------------------------------------------------------------------------------------
+	if ($storeNumberLabel -ne $null)
+	{
+		$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
+		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+	}
+	if ($storeNameLabel -ne $null)
+	{
+		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
+		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+	}
+	if ($smsVersionLabel -ne $null)
+	{
+		$smsVersionLabel.Text = "SMS Version: $($script:FunctionResults['SMSVersionFull'])"
+		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
 	}
 }
-
-
 
 # ===================================================================================================
 #                                       FUNCTION: Get-ActiveIPConfig
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Retrieves the active IP configuration for network adapters that are up and have valid IPv4 addresses.
+#   Optimized for performance by prefiltering and minimizing pipeline overhead.
 # ===================================================================================================
 
-function Get-ActiveIPConfig
+function Get_Active_IP_Config
 {
-	$ipConfig = Get-NetIPConfiguration | Where-Object {
-		$_.NetAdapter.Status -eq 'Up' -and $_.IPv4Address.IPAddress -notlike '169.254*' -and $_.IPv4Address.IPAddress -ne $null
+	# Prefilter by adapter status to reduce objects early
+	$adapters = Get-NetAdapter -Physical | Where-Object Status -eq 'Up'
+	if (-not $adapters) { return $null }
+	
+	# Get only configs for up adapters
+	$adapterNames = $adapters | Select-Object -ExpandProperty Name
+	$ipConfigs = Get-NetIPConfiguration -InterfaceAlias $adapterNames
+	
+	# Filter for valid IPv4 (not APIPA/169.254.x.x, not null)
+	$validConfigs = $ipConfigs | Where-Object {
+		$_.IPv4Address -and
+		$_.IPv4Address.IPAddress -and
+		($_.IPv4Address.IPAddress -notlike '169.254*')
 	}
 	
-	if ($ipConfig)
-	{
-		# Return all valid configuration objects
-		return $ipConfig
-	}
-	else
-	{
-		return $null
-	}
-}
-
-# ===================================================================================================
-#                                       FUNCTION: Get-MemoryInfo
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Retrieves the total system memory and calculates 25% of it in megabytes.
-#   This information can be used for memory-related configurations and optimizations.
-# ===================================================================================================
-
-function Get-MemoryInfo
-{
-	$TotalMemoryKB = (Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize
-	$TotalMemoryMB = [math]::Floor($TotalMemoryKB / 1024)
-	$Memory25PercentMB = [math]::Floor($TotalMemoryMB * 0.25)
-	return $Memory25PercentMB
+	if ($validConfigs) { return $validConfigs }
+	else { return $null }
 }
 
 # ===================================================================================================
@@ -683,14 +574,6 @@ function Configure-AdvancedSettings
 		$operationStatus["ConfigureAdvancedSettings"].Details = $_.Exception.Message
 	}
 }
-
-# ===================================================================================================
-#                                       FUNCTION: Remove-OldXFolders
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Removes old XF and XW folders based on the provided store number and machine name.
-#   The machine number is extracted from the last three characters of the machine name.
-# ===================================================================================================
 
 # ===================================================================================================
 #                                       FUNCTION: Remove-OldXFolders
@@ -924,97 +807,6 @@ function Execute-SqlCommand
 }
 
 # ===================================================================================================
-#                               FUNCTION: Get-DatabaseConnectionString
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Searches for the Startup.ini file in specified locations, extracts the DBNAME value,
-#   constructs the connection string, and stores it in a script-level hashtable.
-# ===================================================================================================
-
-function Get-DatabaseConnectionString
-{
-	# Ensure that the FunctionResults hashtable exists at the script level
-	if (-not $script:FunctionResults)
-	{
-		$script:FunctionResults = @{ }
-	}
-	
-	# Possible paths to Startup.ini
-	$possiblePaths = @(
-		'\\localhost\storeman\Startup.ini',
-		'C:\storeman\Startup.ini',
-		'D:\storeman\Startup.ini'
-	)
-	
-	$startupIniPath = $null
-	foreach ($path in $possiblePaths)
-	{
-		if (Test-Path -Path $path)
-		{
-			$startupIniPath = $path
-			break
-		}
-	}
-	
-	if (-not $startupIniPath)
-	{
-		return
-	}
-	
-	# Read the Startup.ini file
-	try
-	{
-		$content = Get-Content -Path $startupIniPath -ErrorAction Stop
-		
-		# Extract DBSERVER
-		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
-		if ($dbServerLine)
-		{
-			$dbServer = $dbServerLine -replace '^DBSERVER=', ''
-			$dbServer = $dbServer.Trim()
-			if (-not $dbServer)
-			{
-				$dbServer = "localhost"
-			}
-		}
-		else
-		{
-			$dbServer = "localhost"
-		}
-		
-		# Extract DBNAME
-		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
-		if ($dbNameLine)
-		{
-			$dbName = $dbNameLine -replace '^DBNAME=', ''
-			$dbName = $dbName.Trim()
-			if (-not $dbName)
-			{
-				return
-			}
-		}
-		else
-		{
-			return
-		}
-	}
-	catch
-	{
-		return
-	}
-	
-	# Store DBSERVER and DBNAME in the FunctionResults hashtable
-	$script:FunctionResults['DBSERVER'] = $dbServer
-	$script:FunctionResults['DBNAME'] = $dbName
-	
-	# Build the connection string
-	$connectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
-	
-	# Store the connection string in the FunctionResults hashtable
-	$script:FunctionResults['ConnectionString'] = $connectionString
-}
-
-# ===================================================================================================
 #                                       FUNCTION: Get-ValidStoreNumber
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -1105,29 +897,6 @@ function Update-StoreNumberInINI
 	{
 		return $false
 	}
-}
-
-# ===================================================================================================
-#                                       FUNCTION: Get-StoreNumberFromINI
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Retrieves the store number from the startup.ini file.
-# ===================================================================================================
-
-function Get-StoreNumberFromINI
-{
-	if (Test-Path $startupIniPath)
-	{
-		$iniContent = Get-Content $startupIniPath
-		foreach ($line in $iniContent)
-		{
-			if ($line -match "^STORE=(\d{3})")
-			{
-				return $matches[1] # Return store number found in the .ini file
-			}
-		}
-	}
-	return $null
 }
 
 # ===================================================================================================
@@ -1677,14 +1446,13 @@ END
 	
 	# Final SQL Operations: Recovery and Shrink
 	$finalCommands = @(
-		"ALTER DATABASE LANESQL SET RECOVERY SIMPLE;",
 		"DBCC CHECKDB('LANESQL');",
 		"EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD';",
 		"EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN';",
 		"DBCC SHRINKFILE (LANESQL);",
 		"DBCC SHRINKFILE (LANESQL_Log);",
-		"ALTER DATABASE LANESQL SET RECOVERY FULL;"
-	)
+		"ALTER DATABASE LANESQL SET RECOVERY SIMPLE;"
+		)
 	
 	# Execute Final Commands
 	foreach ($command in $finalCommands)
@@ -2083,38 +1851,13 @@ function Delete-Files
 #   Orchestrates the execution flow of the script, initializing variables, processing items, and handling user interactions.
 # ===================================================================================================
 
-# Ensure script is running as administrator
-# Ensure-Administrator
-
-<#
-# Only call the function if the script has not been relaunched
-if (-not $IsRelaunched)
-{
-	Write-Host "First launch detected. Calling Download-AndRelaunchSelf."
-	Download-AndRelaunchSelf -ScriptUrl "https://bit.ly/MiniGhost"
-}
-else
-{
-	Write-Host "Script has been relaunched. Continuing execution."
-}
-#>
-
-# Get the memory info
-# $Memory25Percent = Get-MemoryInfo
-
 # Get current IP configuration
-$currentConfigs = Get-ActiveIPConfig
+$currentConfigs = Get_Active_IP_Config
 
 # Get the store name
-Get-StoreNameGUI
+Get_Store_And_Database_Info
 $storeName = $script:FunctionResults['StoreName']
-
-# Get the Store Number
-Get-StoreNumberGUI
 $currentStoreNumber = $script:FunctionResults['StoreNumber']
-
-# Get the database connection string
-Get-DatabaseConnectionString
 $connectionString = $script:FunctionResults['ConnectionString']
 $oldMachineName = $currentMachineName # Set the old machine name variable
 
@@ -2195,86 +1938,16 @@ $form.Controls.AddRange(@($machineNameLabel, $storeNameLabel, $storeNumberLabel,
 #   Creates and configures buttons on the GUI form for various operations.
 # ===================================================================================================
 
-# Buttons for various operations
+############################################################################
+# 1) Update Store Number Button
+############################################################################
 $updateStoreNumberButton = New-Object System.Windows.Forms.Button
 $updateStoreNumberButton.Text = "Update Store Number"
 $updateStoreNumberButton.Location = New-Object System.Drawing.Point(10, 120)
 $updateStoreNumberButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$configureNetworkButton = New-Object System.Windows.Forms.Button
-$configureNetworkButton.Text = "Configure Network"
-$configureNetworkButton.Location = New-Object System.Drawing.Point(170, 120)
-$configureNetworkButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$changeMachineNameButton = New-Object System.Windows.Forms.Button
-$changeMachineNameButton.Text = "Change Machine Name"
-$changeMachineNameButton.Location = New-Object System.Drawing.Point(330, 120)
-$changeMachineNameButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$truncateTablesButton = New-Object System.Windows.Forms.Button
-$truncateTablesButton.Text = "Truncate Tables"
-$truncateTablesButton.Location = New-Object System.Drawing.Point(10, 160)
-$truncateTablesButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$repairDatabaseButton = New-Object System.Windows.Forms.Button
-$repairDatabaseButton.Text = "Repair Database"
-$repairDatabaseButton.Location = New-Object System.Drawing.Point(170, 160)
-$repairDatabaseButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$registryCleanupButton = New-Object System.Windows.Forms.Button
-$registryCleanupButton.Text = "Registry Cleanup"
-$registryCleanupButton.Location = New-Object System.Drawing.Point(330, 160)
-$registryCleanupButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$configurePowerButton = New-Object System.Windows.Forms.Button
-$configurePowerButton.Text = "Configure Power Settings"
-$configurePowerButton.Location = New-Object System.Drawing.Point(10, 200)
-$configurePowerButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$configureServicesButton = New-Object System.Windows.Forms.Button
-$configureServicesButton.Text = "Configure Services"
-$configureServicesButton.Location = New-Object System.Drawing.Point(170, 200)
-$configureServicesButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$configureAdvancedButton = New-Object System.Windows.Forms.Button
-$configureAdvancedButton.Text = "Configure Advanced Settings"
-$configureAdvancedButton.Location = New-Object System.Drawing.Point(330, 200)
-$configureAdvancedButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$updateSQLDatabaseButton = New-Object System.Windows.Forms.Button
-$updateSQLDatabaseButton.Text = "Update SQL Database"
-$updateSQLDatabaseButton.Location = New-Object System.Drawing.Point(10, 240)
-$updateSQLDatabaseButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$summaryButton = New-Object System.Windows.Forms.Button
-$summaryButton.Text = "Show Summary"
-$summaryButton.Location = New-Object System.Drawing.Point(170, 240)
-$summaryButton.Size = New-Object System.Drawing.Size(150, 35)
-
-$rebootButton = New-Object System.Windows.Forms.Button
-$rebootButton.Text = "Reboot System"
-$rebootButton.Location = New-Object System.Drawing.Point(330, 240)
-$rebootButton.Size = New-Object System.Drawing.Size(150, 35)
-
-# Add all buttons to the form
-$form.Controls.AddRange(@(
-		$updateStoreNumberButton, $changeMachineNameButton, $configureNetworkButton,
-		$truncateTablesButton, $repairDatabaseButton, $registryCleanupButton,
-		$configurePowerButton, $configureServicesButton, $configureAdvancedButton,
-		$updateSQLDatabaseButton, $summaryButton, $rebootButton
-	))
-
-# ===================================================================================================
-#                                       SECTION: Event Handlers for Buttons
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Defines the actions to be taken when each GUI button is clicked.
-# ===================================================================================================
-
-# Event Handler for Update Store Number Button
 $updateStoreNumberButton.Add_Click({
 		# Get the old store number from startup.ini
-		$oldStoreNumber = Get-StoreNumberFromINI
+		$oldStoreNumber = $script:FunctionResults['StoreNumber']
 		
 		if ($oldStoreNumber -ne $null)
 		{
@@ -2355,128 +2028,13 @@ $updateStoreNumberButton.Add_Click({
 		}
 	})
 
-# Event Handler for Change Machine Name Button
-$changeMachineNameButton.Add_Click({
-		# Ensure the script is running with administrative privileges
-		if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator))
-		{
-			[System.Windows.Forms.MessageBox]::Show("This script must be run as an administrator.", "Insufficient Privileges", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-			return
-		}
-		
-		# Get the new machine name from the user
-		$newMachineNameInput = Get-ValidMachineName
-		
-		if ($newMachineNameInput -ne $null)
-		{
-			# Confirm the change
-			$result = [System.Windows.Forms.MessageBox]::Show("Are you sure you want to change the machine name to '$newMachineNameInput'?", "Confirm Machine Name Change", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-			
-			if ($result -eq [System.Windows.Forms.DialogResult]::Yes)
-			{
-				# Proceed to change machine name
-				try
-				{
-					Rename-Computer -NewName $newMachineNameInput -Force -ErrorAction Stop
-					
-					# Assign to script-level variable
-					$script:newMachineName = $newMachineNameInput
-					
-					# Update the machine name label (ensure $machineNameLabel is defined)
-					$machineNameLabel.Text = "The machine name will change from: $env:COMPUTERNAME to $script:newMachineName"
-					
-					# Update operation status (ensure $operationStatus is initialized)
-					$operationStatus["MachineNameChange"].Status = "Successful"
-					$operationStatus["MachineNameChange"].Message = "Machine name changed successfully."
-					$operationStatus["MachineNameChange"].Details = "Machine name changed to '$script:newMachineName'."
-					
-					# Get the current store number from the .ini
-					$currentStoreNumber = Get-StoreNumberFromINI
-					
-					# Call Remove-OldXFolders (ensure this function and variables are defined)
-					Remove-OldXFolders -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
-					
-					# Update startup.ini file after changing machine name
-					$startupIniPath = "\\localhost\storeman\startup.ini"
-					$newDbServerName = $script:newMachineName
-					$serverName = $script:FunctionResults['DBSERVER']
-					
-					$terValue = "TER=$($newDbServerName.Substring(3))"
-					$dbServerValue = "DBSERVER=$($newDbServerName)\$($serverName.Split('\')[1])" # Ensure $serverName is defined
-					
-					if (Test-Path $startupIniPath)
-					{
-						$content = Get-Content $startupIniPath
-						$updatedContent = $content -replace "(?i)TER=\d{3}", $terValue -replace "(?i)DBSERVER=.*", $dbServerValue
-						Set-Content $startupIniPath $updatedContent
-						
-						$operationStatus["StartupIniUpdate"].Status = "Successful"
-						$operationStatus["StartupIniUpdate"].Message = "startup.ini updated successfully."
-						$operationStatus["StartupIniUpdate"].Details = "Updated TER to '$terValue' and DBSERVER to '$dbServerValue'."
-					}
-					else
-					{
-						$operationStatus["StartupIniUpdate"].Status = "Failed"
-						$operationStatus["StartupIniUpdate"].Message = "startup.ini file not found."
-						$operationStatus["StartupIniUpdate"].Details = "File not found at $startupIniPath."
-					}
-					
-					# Call the SQL update function
-					# Determine store number and machine number
-					$storeNumber = Get-StoreNumberFromINI
-					if ($script:newMachineName.Length -ge 6)
-					{
-						$machineNumber = $script:newMachineName.Substring(3, 3)
-					}
-					else
-					{
-						$machineNumber = ""
-					}
-					
-					$sqlUpdateResult = Update-SQLTablesForMachineNameChange -storeNumber $storeNumber -machineName $script:newMachineName -machineNumber $machineNumber
-					
-					if ($sqlUpdateResult.Success)
-					{
-						$operationStatus["SQLDatabaseUpdate"].Status = "Successful"
-						$operationStatus["SQLDatabaseUpdate"].Message = "SQL tables updated successfully after machine name change."
-						$operationStatus["SQLDatabaseUpdate"].Details = "STO_TAB, TER_TAB, LNK_TAB, and RUN_TAB updated."
-					}
-					else
-					{
-						$operationStatus["SQLDatabaseUpdate"].Status = "Failed"
-						$operationStatus["SQLDatabaseUpdate"].Message = "Failed to update SQL tables after machine name change."
-						$operationStatus["SQLDatabaseUpdate"].Details = "Failed commands: $($sqlUpdateResult.FailedCommands -join ', ')"
-					}
-					
-					# Inform the user about the reboot
-					$rebootResult = [System.Windows.Forms.MessageBox]::Show("Machine name changed successfully to '$script:newMachineName'. The system will need to reboot for changes to take effect. Do you want to reboot now?", "Success", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
-					
-					if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
-					{
-						Restart-Computer -Force
-					}
-					
-				}
-				catch
-				{
-					$errorMessage = $_.Exception.Message
-					[System.Windows.Forms.MessageBox]::Show("Error changing machine name: $errorMessage", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-					$operationStatus["MachineNameChange"].Status = "Failed"
-					$operationStatus["MachineNameChange"].Message = "Error changing machine name."
-					$operationStatus["MachineNameChange"].Details = "Error: $errorMessage"
-				}
-			}
-		}
-		else
-		{
-			# Handle cancellation
-			$operationStatus["MachineNameChange"].Status = "Cancelled"
-			$operationStatus["MachineNameChange"].Message = "Machine name change was cancelled by the user."
-			[System.Windows.Forms.MessageBox]::Show("Machine name change was cancelled.", "Cancelled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-		}
-	})
-
-# Event Handler for Configure Network Button
+############################################################################
+# 2) Configure Network Button
+############################################################################
+$configureNetworkButton = New-Object System.Windows.Forms.Button
+$configureNetworkButton.Text = "Configure Network"
+$configureNetworkButton.Location = New-Object System.Drawing.Point(170, 120)
+$configureNetworkButton.Size = New-Object System.Drawing.Size(150, 35)
 $configureNetworkButton.Add_Click({
 		# Implement the ConfigureNetwork function with GUI elements
 		
@@ -2678,7 +2236,140 @@ $configureNetworkButton.Add_Click({
 		}
 	})
 
-# Event Handler for Truncate Tables Button
+############################################################################
+# 3) Change Machine Name Button
+############################################################################
+$changeMachineNameButton = New-Object System.Windows.Forms.Button
+$changeMachineNameButton.Text = "Change Machine Name"
+$changeMachineNameButton.Location = New-Object System.Drawing.Point(330, 120)
+$changeMachineNameButton.Size = New-Object System.Drawing.Size(150, 35)
+$changeMachineNameButton.Add_Click({
+		# Ensure the script is running with administrative privileges
+		if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator))
+		{
+			[System.Windows.Forms.MessageBox]::Show("This script must be run as an administrator.", "Insufficient Privileges", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			return
+		}
+		
+		# Get the new machine name from the user
+		$newMachineNameInput = Get-ValidMachineName
+		
+		if ($newMachineNameInput -ne $null)
+		{
+			# Confirm the change
+			$result = [System.Windows.Forms.MessageBox]::Show("Are you sure you want to change the machine name to '$newMachineNameInput'?", "Confirm Machine Name Change", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+			
+			if ($result -eq [System.Windows.Forms.DialogResult]::Yes)
+			{
+				# Proceed to change machine name
+				try
+				{
+					Rename-Computer -NewName $newMachineNameInput -Force -ErrorAction Stop
+					
+					# Assign to script-level variable
+					$script:newMachineName = $newMachineNameInput
+					
+					# Update the machine name label (ensure $machineNameLabel is defined)
+					$machineNameLabel.Text = "The machine name will change from: $env:COMPUTERNAME to $script:newMachineName"
+					
+					# Update operation status (ensure $operationStatus is initialized)
+					$operationStatus["MachineNameChange"].Status = "Successful"
+					$operationStatus["MachineNameChange"].Message = "Machine name changed successfully."
+					$operationStatus["MachineNameChange"].Details = "Machine name changed to '$script:newMachineName'."
+					
+					# Get the current store number from the .ini
+					$currentStoreNumber = $script:FunctionResults['StoreNumber']
+					
+					# Call Remove-OldXFolders (ensure this function and variables are defined)
+					Remove-OldXFolders -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
+					
+					# Update startup.ini file after changing machine name
+					$startupIniPath = "\\localhost\storeman\startup.ini"
+					$newDbServerName = $script:newMachineName
+					$serverName = $script:FunctionResults['DBSERVER']
+					
+					$terValue = "TER=$($newDbServerName.Substring(3))"
+					$dbServerValue = "DBSERVER=$($newDbServerName)\$($serverName.Split('\')[1])" # Ensure $serverName is defined
+					
+					if (Test-Path $startupIniPath)
+					{
+						$content = Get-Content $startupIniPath
+						$updatedContent = $content -replace "(?i)TER=\d{3}", $terValue -replace "(?i)DBSERVER=.*", $dbServerValue
+						Set-Content $startupIniPath $updatedContent
+						
+						$operationStatus["StartupIniUpdate"].Status = "Successful"
+						$operationStatus["StartupIniUpdate"].Message = "startup.ini updated successfully."
+						$operationStatus["StartupIniUpdate"].Details = "Updated TER to '$terValue' and DBSERVER to '$dbServerValue'."
+					}
+					else
+					{
+						$operationStatus["StartupIniUpdate"].Status = "Failed"
+						$operationStatus["StartupIniUpdate"].Message = "startup.ini file not found."
+						$operationStatus["StartupIniUpdate"].Details = "File not found at $startupIniPath."
+					}
+					
+					# Call the SQL update function
+					# Determine store number and machine number
+					$storeNumber = $script:FunctionResults['StoreNumber']
+					if ($script:newMachineName.Length -ge 6)
+					{
+						$machineNumber = $script:newMachineName.Substring(3, 3)
+					}
+					else
+					{
+						$machineNumber = ""
+					}
+					
+					$sqlUpdateResult = Update-SQLTablesForMachineNameChange -storeNumber $storeNumber -machineName $script:newMachineName -machineNumber $machineNumber
+					
+					if ($sqlUpdateResult.Success)
+					{
+						$operationStatus["SQLDatabaseUpdate"].Status = "Successful"
+						$operationStatus["SQLDatabaseUpdate"].Message = "SQL tables updated successfully after machine name change."
+						$operationStatus["SQLDatabaseUpdate"].Details = "STO_TAB, TER_TAB, LNK_TAB, and RUN_TAB updated."
+					}
+					else
+					{
+						$operationStatus["SQLDatabaseUpdate"].Status = "Failed"
+						$operationStatus["SQLDatabaseUpdate"].Message = "Failed to update SQL tables after machine name change."
+						$operationStatus["SQLDatabaseUpdate"].Details = "Failed commands: $($sqlUpdateResult.FailedCommands -join ', ')"
+					}
+					
+					# Inform the user about the reboot
+					$rebootResult = [System.Windows.Forms.MessageBox]::Show("Machine name changed successfully to '$script:newMachineName'. The system will need to reboot for changes to take effect. Do you want to reboot now?", "Success", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+					
+					if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
+					{
+						Restart-Computer -Force
+					}
+					
+				}
+				catch
+				{
+					$errorMessage = $_.Exception.Message
+					[System.Windows.Forms.MessageBox]::Show("Error changing machine name: $errorMessage", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+					$operationStatus["MachineNameChange"].Status = "Failed"
+					$operationStatus["MachineNameChange"].Message = "Error changing machine name."
+					$operationStatus["MachineNameChange"].Details = "Error: $errorMessage"
+				}
+			}
+		}
+		else
+		{
+			# Handle cancellation
+			$operationStatus["MachineNameChange"].Status = "Cancelled"
+			$operationStatus["MachineNameChange"].Message = "Machine name change was cancelled by the user."
+			[System.Windows.Forms.MessageBox]::Show("Machine name change was cancelled.", "Cancelled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+		}
+	})
+
+############################################################################
+# 4) Truncate Tables Button
+############################################################################
+$truncateTablesButton = New-Object System.Windows.Forms.Button
+$truncateTablesButton.Text = "Truncate Tables"
+$truncateTablesButton.Location = New-Object System.Drawing.Point(10, 160)
+$truncateTablesButton.Size = New-Object System.Drawing.Size(150, 35)
 $truncateTablesButton.Add_Click({
 		# Define the tables to truncate
 		$tablesToTruncate = @(
@@ -2724,7 +2415,13 @@ $truncateTablesButton.Add_Click({
 		}
 	})
 
-# Event Handler for Repair Database Button
+############################################################################
+# 5) Repair Database Button
+############################################################################
+$repairDatabaseButton = New-Object System.Windows.Forms.Button
+$repairDatabaseButton.Text = "Repair Database"
+$repairDatabaseButton.Location = New-Object System.Drawing.Point(170, 160)
+$repairDatabaseButton.Size = New-Object System.Drawing.Size(150, 35)
 $repairDatabaseButton.Add_Click({
 		$result = [System.Windows.Forms.MessageBox]::Show("Do you want to repair the database?", "Repair Database", [System.Windows.Forms.MessageBoxButtons]::YesNo)
 		if ($result -eq [System.Windows.Forms.DialogResult]::Yes)
@@ -2752,7 +2449,13 @@ $repairDatabaseButton.Add_Click({
 		}
 	})
 
-# Event Handler for Registry Cleanup Button
+############################################################################
+# 6) Registry Cleanup Button
+############################################################################
+$registryCleanupButton = New-Object System.Windows.Forms.Button
+$registryCleanupButton.Text = "Registry Cleanup"
+$registryCleanupButton.Location = New-Object System.Drawing.Point(330, 160)
+$registryCleanupButton.Size = New-Object System.Drawing.Size(150, 35)
 $registryCleanupButton.Add_Click({
 		$result = [System.Windows.Forms.MessageBox]::Show("Do you want to delete all registry values starting with 'GT'?", "Registry Cleanup", [System.Windows.Forms.MessageBoxButtons]::YesNo)
 		if ($result -eq [System.Windows.Forms.DialogResult]::Yes)
@@ -2789,7 +2492,13 @@ $registryCleanupButton.Add_Click({
 		}
 	})
 
-# Event Handler for Configure Power Settings Button
+############################################################################
+# 7) Configure Power Settings Button
+############################################################################
+$configurePowerButton = New-Object System.Windows.Forms.Button
+$configurePowerButton.Text = "Configure Power Settings"
+$configurePowerButton.Location = New-Object System.Drawing.Point(10, 200)
+$configurePowerButton.Size = New-Object System.Drawing.Size(150, 35)
 $configurePowerButton.Add_Click({
 		$result = [System.Windows.Forms.MessageBox]::Show("Do you want to configure the power settings?", "Configure Power Settings", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
 		if ($result -eq [System.Windows.Forms.DialogResult]::Yes)
@@ -2804,7 +2513,13 @@ $configurePowerButton.Add_Click({
 		}
 	})
 
-# Event Handler for Configure Services Button
+############################################################################
+# 8) Configure Services Button
+############################################################################
+$configureServicesButton = New-Object System.Windows.Forms.Button
+$configureServicesButton.Text = "Configure Services"
+$configureServicesButton.Location = New-Object System.Drawing.Point(170, 200)
+$configureServicesButton.Size = New-Object System.Drawing.Size(150, 35)
 $configureServicesButton.Add_Click({
 		$result = [System.Windows.Forms.MessageBox]::Show("Do you want to configure the services?", "Configure Services", [System.Windows.Forms.MessageBoxButtons]::YesNo)
 		if ($result -eq [System.Windows.Forms.DialogResult]::Yes)
@@ -2819,7 +2534,13 @@ $configureServicesButton.Add_Click({
 		}
 	})
 
-# Event Handler for Configure Advanced Settings Button
+############################################################################
+# 8) Configure Advanced Settings Button
+############################################################################
+$configureAdvancedButton = New-Object System.Windows.Forms.Button
+$configureAdvancedButton.Text = "Configure Advanced Settings"
+$configureAdvancedButton.Location = New-Object System.Drawing.Point(330, 200)
+$configureAdvancedButton.Size = New-Object System.Drawing.Size(150, 35)
 $configureAdvancedButton.Add_Click({
 		$result = [System.Windows.Forms.MessageBox]::Show("Do you want to configure the advanced system settings?", "Configure Advanced Settings", [System.Windows.Forms.MessageBoxButtons]::YesNo)
 		if ($result -eq [System.Windows.Forms.DialogResult]::Yes)
@@ -2834,10 +2555,16 @@ $configureAdvancedButton.Add_Click({
 		}
 	})
 
-# Event Handler for Update SQL Database Button
+############################################################################
+# 9) Update Database Button
+############################################################################
+$updateSQLDatabaseButton = New-Object System.Windows.Forms.Button
+$updateSQLDatabaseButton.Text = "Update SQL Database"
+$updateSQLDatabaseButton.Location = New-Object System.Drawing.Point(10, 240)
+$updateSQLDatabaseButton.Size = New-Object System.Drawing.Size(150, 35)
 $updateSQLDatabaseButton.Add_Click({
 		# Read the store number directly from startup.ini
-		$storeNumberFromINI = Get-StoreNumberFromINI
+		$storeNumberFromINI = $script:FunctionResults['StoreNumber']
 		
 		if ($storeNumberFromINI -eq $null)
 		{
@@ -3087,7 +2814,13 @@ SET F1056 = '$storeNumber';
 		}
 	})
 
-# Event Handler for Show Summary Button
+############################################################################
+# 10) Summary Button
+############################################################################
+$summaryButton = New-Object System.Windows.Forms.Button
+$summaryButton.Text = "Show Summary"
+$summaryButton.Location = New-Object System.Drawing.Point(170, 240)
+$summaryButton.Size = New-Object System.Drawing.Size(150, 35)
 $summaryButton.Add_Click({
 		# Display the summary in a new form
 		$summaryForm = New-Object System.Windows.Forms.Form
@@ -3127,7 +2860,13 @@ $summaryButton.Add_Click({
 		$summaryForm.ShowDialog()
 	})
 
-# Event Handler for Reboot Button
+############################################################################
+# 11) Summary Button
+############################################################################
+$rebootButton = New-Object System.Windows.Forms.Button
+$rebootButton.Text = "Reboot System"
+$rebootButton.Location = New-Object System.Drawing.Point(330, 240)
+$rebootButton.Size = New-Object System.Drawing.Size(150, 35)
 $rebootButton.Add_Click({
 		$rebootResult = [System.Windows.Forms.MessageBox]::Show("Do you want to reboot now?", "Reboot", [System.Windows.Forms.MessageBoxButtons]::YesNo)
 		if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
@@ -3138,7 +2877,9 @@ $rebootButton.Add_Click({
 		}
 	})
 
+############################################################################
 # Handle form closing event (X button)
+############################################################################
 $form.add_FormClosing({
 		# Confirmation message box to confirm exit
 		$confirmResult = [System.Windows.Forms.MessageBox]::Show(
@@ -3162,6 +2903,14 @@ $form.add_FormClosing({
 			Delete-Files -Path "$TempDir" -SpecifiedFiles "MiniGhost.ps1"
 		}
 	})
+
+# Add all buttons to the form
+$form.Controls.AddRange(@(
+		$updateStoreNumberButton, $changeMachineNameButton, $configureNetworkButton,
+		$truncateTablesButton, $repairDatabaseButton, $registryCleanupButton,
+		$configurePowerButton, $configureServicesButton, $configureAdvancedButton,
+		$updateSQLDatabaseButton, $summaryButton, $rebootButton
+	))
 
 # ===================================================================================================
 #                                       SECTION: Show the Form
