@@ -92,8 +92,8 @@ foreach ($drive in $fixedDrives)
 	$dirs = Get-ChildItem -Path "$($drive.Root)" -Directory -ErrorAction SilentlyContinue |
 	Where-Object { $_.Name -imatch 'storeman' } |
 	ForEach-Object {
-		$candidatePath = Join-Path $_.FullName 'Office\Dbs'
-		$files = Get-ChildItem -Path $candidatePath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue
+		$candidatePath = Join-Path $_.FullName '\'
+		$files = Get-ChildItem -Path $candidatePath -Filter 'Startup.ini' -ErrorAction SilentlyContinue
 		if ($files) { $_ }
 	}
 	if ($dirs) { $storemanDirs += $dirs }
@@ -122,12 +122,12 @@ elseif ($storemanDirs.Count -eq 1)
 if (-not $BasePath)
 {
 	$fallback = "C:\storeman"
-	$candidatePath = Join-Path $fallback 'Office\Dbs'
-	$files = Get-ChildItem -Path $candidatePath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue
+	$candidatePath = Join-Path $fallback '\'
+	$files = Get-ChildItem -Path $candidatePath -Filter 'Startup.ini' -ErrorAction SilentlyContinue
 	if ($files) { $BasePath = $fallback }
 	else
 	{
-		Write-Warning "Could not locate any storeman folder containing Office\Dbs\INFO_*901_WIN.INI.`nRunning with limited functionality."
+		Write-Warning "Could not locate any storeman folder containing 'storeman\Startup.ini'.`nRunning with limited functionality."
 		$BasePath = $fallback
 	}
 }
@@ -171,187 +171,139 @@ $operationStatus = @{
 }
 
 # ===================================================================================================
-#                               FUNCTION: Get-Store-And-Db-Info
+#                               FUNCTION: Get_Database_Connection_String
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Uses provided paths to INFO_*901_WIN.INI, INFO_*901_SMSStart.ini, Startup.ini, and optionally
-#   system.ini, to extract:
-#     - Store metadata (store number, name, terminal, address, version, etc.) from WIN.INI
-#     - SQL Server/Database name using any key containing 'ServerName*' or 'DatabaseName*' from SMSStart.ini
-#     - Falls back to Startup.ini for DBSERVER/DBNAME if not found in SMSStart.ini
-#     - Falls back to system.ini [SMS] Name=... for store name if not found in WIN.INI
-#   Builds a SQL Server connection string using trusted authentication and TrustServerCertificate.
-#   Populates all results in $script:FunctionResults for downstream use.
+#   Searches for the Startup.ini file in specified locations, extracts the DBNAME value,
+#   constructs the connection string, and stores it in a script-level hashtable.
 # ===================================================================================================
 
-function Get_Store_And_Database_Info
+function Get_Database_Connection_String
+{		
+	if (-not $startupIniPath)
+	{
+		return
+	}
+	
+	# Read the Startup.ini file
+	try
+	{
+		$content = Get-Content -Path $startupIniPath -ErrorAction Stop
+		
+		# Extract DBSERVER
+		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
+		if ($dbServerLine)
+		{
+			$dbServer = $dbServerLine -replace '^DBSERVER=', ''
+			$dbServer = $dbServer.Trim()
+			if (-not $dbServer)
+			{
+				$dbServer = "localhost"
+			}
+		}
+		else
+		{
+			$dbServer = "localhost"
+		}
+		
+		# Extract DBNAME
+		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
+		if ($dbNameLine)
+		{
+			$dbName = $dbNameLine -replace '^DBNAME=', ''
+			$dbName = $dbName.Trim()
+			if (-not $dbName)
+			{
+				return
+			}
+		}
+		else
+		{
+			return
+		}
+	}
+	catch
+	{
+		return
+	}
+	
+	# Store DBSERVER and DBNAME in the FunctionResults hashtable
+	$script:FunctionResults['DBSERVER'] = $dbServer
+	$script:FunctionResults['DBNAME'] = $dbName
+	
+	# Build the connection string
+	$connectionString = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
+	
+	# Store the connection string in the FunctionResults hashtable
+	$script:FunctionResults['ConnectionString'] = $connectionString
+}
+
+# ===================================================================================================
+#                                       FUNCTION: Get-StoreNumberFromINI
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Retrieves the store number from the startup.ini file.
+# ===================================================================================================
+
+function Get-StoreNumberFromINI
+{
+	if (Test-Path $startupIniPath)
+	{
+		$iniContent = Get-Content $startupIniPath
+		foreach ($line in $iniContent)
+		{
+			if ($line -match "^STORE=(\d{3})")
+			{
+				return $matches[1] # Return store number found in the .ini file
+			}
+		}
+	}
+	return $null
+}
+
+# ===================================================================================================
+#                                        FUNCTION: Get-StoreNameGUI
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Retrieves the store name from the system.ini file.
+#   Stores the result in $script:FunctionResults['StoreName'].
+# ===================================================================================================
+
+function Get-StoreNameFromINI
 {
 	param (
-		[string]$WinIniPath,
-		[string]$SmsStartIniPath,
-		[string]$StartupIniPath,
-		[string]$SystemIniPath
+		[string]$INIPath = $SystemIniPath
 	)
 	
-	# ------------------------------------------------------------------------------------------------
-	# Initialize results with N/A for every expected property
-	# ------------------------------------------------------------------------------------------------
-	$fields = @(
-		'StoreNumber', 'StoreName', 'CompanyName', 'Terminal', 'Address', 'City', 'State',
-		'SMSVersionFull', 'StampDate', 'StampTime', 'KeyNumber',
-		'DBSERVER', 'DBNAME', 'ConnectionString'
-	)
-	foreach ($f in $fields) { $script:FunctionResults[$f] = 'N/A' }
+	# Initialize StoreName
+	$script:FunctionResults['StoreName'] = "N/A"
 	
-	# ------------------------------------------------------------------------------------------------
-	# Extract Store Info from WIN.INI (required for store metadata)
-	# ------------------------------------------------------------------------------------------------
-	if ($WinIniPath -and (Test-Path $WinIniPath))
+	if (Test-Path $INIPath)
 	{
-		$currentSection = ""
-		foreach ($line in Get-Content $WinIniPath)
+		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | ForEach-Object {
+			$_.Line.Split('=')[1].Trim()
+		}
+		if ($storeName)
 		{
-			$trimmed = $line.Trim()
-			if ($trimmed -match '^\[(.+)\]$') { $currentSection = $Matches[1]; continue }
-			if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
-			$parts = $trimmed -split "=", 2
-			$key = $parts[0].Trim()
-			$value = $parts[1].Trim()
-			switch ($currentSection)
-			{
-				"ORIGIN" {
-					if ($key -ieq "StampDate") { $script:FunctionResults['StampDate'] = $value }
-					if ($key -ieq "StampTime") { $script:FunctionResults['StampTime'] = $value }
-				}
-				"SYSTEM" {
-					if ($key -ieq "CompanyName") { $script:FunctionResults['CompanyName'] = $value }
-					if ($key -ieq "Store") { $script:FunctionResults['StoreNumber'] = $value.PadLeft(3, "0") }
-					if ($key -ieq "Terminal") { $script:FunctionResults['Terminal'] = $value }
-				}
-				"STOREDETAIL" {
-					if ($key -ieq "Name") { $script:FunctionResults['StoreName'] = $value }
-					if ($key -ieq "Address") { $script:FunctionResults['Address'] = $value }
-					if ($key -ieq "City") { $script:FunctionResults['City'] = $value }
-					if ($key -ieq "State") { $script:FunctionResults['State'] = $value }
-				}
-				"KEY" {
-					if ($key -ieq "KeyNumber") { $script:FunctionResults['KeyNumber'] = $value }
-				}
-				"Versions" {
-					if ($key -ieq "VersionIni") { $script:FunctionResults['SMSVersionFull'] = $value }
-				}
-			}
+			$script:FunctionResults['StoreName'] = $storeName
+			# Write-Log "Store name found in system.ini: $storeName" "green"
+		}
+		else
+		{
+			# Write-Log "Store name not found in system.ini." "yellow"
 		}
 	}
 	else
 	{
-		Write-Host "No INFO_*901_WIN.INI found at $WinIniPath" -ForegroundColor Red
+		# Write-Log "INI file not found: $INIPath" "yellow"
 	}
 	
-	# ------------------------------------------------------------------------------------------------
-	# Fallback: Get StoreName from system.ini ([SMS] Name=...) if still N/A
-	# ------------------------------------------------------------------------------------------------
-	if (
-		($script:FunctionResults['StoreName'] -eq 'N/A' -or
-			[string]::IsNullOrWhiteSpace($script:FunctionResults['StoreName'])) -and
-		$SystemIniPath -and (Test-Path $SystemIniPath)
-	)
-	{
-		$inSMSSection = $false
-		foreach ($line in Get-Content $SystemIniPath)
-		{
-			$trimmed = $line.Trim()
-			if ($trimmed -match '^\[SMS\]$')
-			{
-				$inSMSSection = $true
-				continue
-			}
-			if ($inSMSSection)
-			{
-				# End of section if new [Section] starts
-				if ($trimmed -match '^\[.+\]$') { break }
-				# Look for Name=
-				if ($trimmed -match '^Name\s*=(.*)$')
-				{
-					$storeNameBackup = $Matches[1].Trim()
-					if ($storeNameBackup)
-					{
-						$script:FunctionResults['StoreName'] = $storeNameBackup
-						break
-					}
-				}
-			}
-		}
-	}
-	
-	# ------------------------------------------------------------------------------------------------
-	# Extract SQL Server/Database from SMSStart INI (first matching ServerName*/DatabaseName*)
-	# ------------------------------------------------------------------------------------------------
-	$dbServer = $null
-	$dbName = $null
-	
-	if ($SmsStartIniPath -and (Test-Path $SmsStartIniPath))
-	{
-		foreach ($line in Get-Content $SmsStartIniPath)
-		{
-			$trimmed = $line.Trim()
-			if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
-			$parts = $trimmed -split "=", 2
-			$key = $parts[0].Trim()
-			$value = $parts[1].Trim()
-			if (-not $dbServer -and $key -match 'ServerName') { $dbServer = $value }
-			if (-not $dbName -and $key -match 'DatabaseName') { $dbName = $value }
-			if ($dbServer -and $dbName) { break }
-		}
-	}
-	
-	# ------------------------------------------------------------------------------------------------
-	# Fallback: Try Startup.ini for DBSERVER/DBNAME if either is missing
-	# ------------------------------------------------------------------------------------------------
-	if ((!$dbServer -or !$dbName) -and $StartupIniPath -and (Test-Path $StartupIniPath))
-	{
-		foreach ($line in Get-Content $StartupIniPath)
-		{
-			$trimmed = $line.Trim()
-			if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
-			$parts = $trimmed -split "=", 2
-			$key = $parts[0].Trim()
-			$value = $parts[1].Trim()
-			if (-not $dbServer -and $key -match 'DBSERVER') { $dbServer = $value }
-			if (-not $dbName -and $key -match 'DBNAME') { $dbName = $value }
-			if ($dbServer -and $dbName) { break }
-		}
-		if (-not $dbServer) { $dbServer = "localhost" }
-		if (-not $dbName) { $dbName = "STORESQL" }
-	}
-	
-	# ------------------------------------------------------------------------------------------------
-	# Finalize connection string and store in function results
-	# ------------------------------------------------------------------------------------------------
-	if ($dbServer -and $dbName)
-	{
-		$script:FunctionResults['DBSERVER'] = $dbServer
-		$script:FunctionResults['DBNAME'] = $dbName
-		$script:FunctionResults['ConnectionString'] = "Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
-	}
-	
-	# ------------------------------------------------------------------------------------------------
-	# GUI label updates (optional; can be removed if not needed)
-	# ------------------------------------------------------------------------------------------------
-	if ($storeNumberLabel -ne $null)
-	{
-		$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
-		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
-	}
-	if ($storeNameLabel -ne $null)
+	# Update the storeNameLabel in the GUI
+	if (-not $SilentMode -and $storeNameLabel -ne $null)
 	{
 		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
-		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
-	}
-	if ($smsVersionLabel -ne $null)
-	{
-		$smsVersionLabel.Text = "SMS Version: $($script:FunctionResults['SMSVersionFull'])"
-		$form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
+		$form.Refresh()
+		[System.Windows.Forms.Application]::DoEvents()
 	}
 }
 
@@ -878,19 +830,34 @@ function Get-ValidStoreNumber
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Updates the store number in the startup.ini file with the new store number provided.
+#   Also updates REDIRMAIL and REDIRMSG lines using the new store number.
+#   Example:
+#     STORE=003   => STORE=005
+#     REDIRMAIL=003901 => REDIRMAIL=005901
+#     REDIRMSG=003901  => REDIRMSG=005901
 # ===================================================================================================
 
 function Update-StoreNumberInINI
 {
 	param (
+		[Parameter(Mandatory)]
 		[string]$newStoreNumber,
+		# Should be a 3-digit string (e.g., "005")
+		[Parameter(Mandatory)]
 		[string]$startupIniPath
 	)
+	
 	if (Test-Path $startupIniPath)
 	{
 		$iniContent = Get-Content $startupIniPath
-		$updatedContent = $iniContent -replace "^STORE=\d{3}", "STORE=$newStoreNumber"
-		Set-Content $startupIniPath $updatedContent
+		
+		# Replace STORE=xxx
+		$iniContent = $iniContent -replace '^STORE=\d{3}', "STORE=$newStoreNumber"
+		
+		# Replace REDIRMAIL=xxx901 and REDIRMSG=xxx901
+		$iniContent = $iniContent -replace '^(REDIRMAIL|REDIRMSG)=\d{3}(901)', "`$1=$newStoreNumber`$2"
+		
+		Set-Content -Path $startupIniPath -Value $iniContent -Encoding UTF8
 		return $true
 	}
 	else
@@ -1854,12 +1821,17 @@ function Delete-Files
 # Get current IP configuration
 $currentConfigs = Get_Active_IP_Config
 
+# Get the store number
+$currentStoreNumber = Get-StoreNumberFromINI
+
 # Get the store name
-Get_Store_And_Database_Info
-$storeName = $script:FunctionResults['StoreName']
-$currentStoreNumber = $script:FunctionResults['StoreNumber']
-$connectionString = $script:FunctionResults['ConnectionString']
-$oldMachineName = $currentMachineName # Set the old machine name variable
+$storeName = Get-StoreNameFromINI
+
+# Get the database connection string
+$connectionString = Get_Database_Connection_String
+
+# Set the old machine name variable
+$oldMachineName = $currentMachineName
 
 # Clear %Temp% foder on start
 $FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "MiniGhost.ps1" -AsJob
@@ -1947,7 +1919,7 @@ $updateStoreNumberButton.Location = New-Object System.Drawing.Point(10, 120)
 $updateStoreNumberButton.Size = New-Object System.Drawing.Size(150, 35)
 $updateStoreNumberButton.Add_Click({
 		# Get the old store number from startup.ini
-		$oldStoreNumber = $script:FunctionResults['StoreNumber']
+		$oldStoreNumber = Get-StoreNumberFromINI
 		
 		if ($oldStoreNumber -ne $null)
 		{
@@ -2278,7 +2250,7 @@ $changeMachineNameButton.Add_Click({
 					$operationStatus["MachineNameChange"].Details = "Machine name changed to '$script:newMachineName'."
 					
 					# Get the current store number from the .ini
-					$currentStoreNumber = $script:FunctionResults['StoreNumber']
+					$currentStoreNumber = Get-StoreNumberFromINI
 					
 					# Call Remove-OldXFolders (ensure this function and variables are defined)
 					Remove-OldXFolders -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
@@ -2310,7 +2282,7 @@ $changeMachineNameButton.Add_Click({
 					
 					# Call the SQL update function
 					# Determine store number and machine number
-					$storeNumber = $script:FunctionResults['StoreNumber']
+					$storeNumber = Get-StoreNumberFromINI
 					if ($script:newMachineName.Length -ge 6)
 					{
 						$machineNumber = $script:newMachineName.Substring(3, 3)
@@ -2564,7 +2536,7 @@ $updateSQLDatabaseButton.Location = New-Object System.Drawing.Point(10, 240)
 $updateSQLDatabaseButton.Size = New-Object System.Drawing.Size(150, 35)
 $updateSQLDatabaseButton.Add_Click({
 		# Read the store number directly from startup.ini
-		$storeNumberFromINI = $script:FunctionResults['StoreNumber']
+		$storeNumberFromINI = Get-StoreNumberFromINI
 		
 		if ($storeNumberFromINI -eq $null)
 		{
