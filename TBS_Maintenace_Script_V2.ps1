@@ -8465,7 +8465,7 @@ while (`$true) {
 	if ($selectedAction.Value -eq "service")
 	{
 		$ServiceName = "Remove_Duplicates_From_toBizerba"
-		$DisplayName = "Remove Duplicates Files form the toBizerba folder to avoid starting many instances of BMS service."
+		$DisplayName = "Remove Duplicates From toBizerba"
 		$Script = $psScriptPath
 		$Interval = $intervalSeconds.Value
 		
