@@ -8749,6 +8749,7 @@ function Update_Scales_Specials_Interactive
 				[System.Windows.Forms.MessageBox]::Show("DEPLOY_CHG.sql not found!", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 			}
 			Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
+			$form.Close()
 			return
 		})
 	
