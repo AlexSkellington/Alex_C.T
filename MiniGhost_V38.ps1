@@ -1822,14 +1822,16 @@ function Delete-Files
 $currentConfigs = Get_Active_IP_Config
 
 # Get the store number
-$currentStoreNumber = Get-StoreNumberFromINI
+Get-StoreNumberFromINI
+$currentStoreNumber = $script:FunctionResults['StoreNumber']
 
 # Get the store name
 Get-StoreNameFromINI
 $storeName = $script:FunctionResults['StoreName']
 
 # Get the database connection string
-$connectionString = Get_Database_Connection_String
+Get_Database_Connection_String
+$connectionString = $script:FunctionResults['ConnectionString']
 
 # Set the old machine name variable
 $oldMachineName = $currentMachineName
