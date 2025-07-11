@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.3.1"
-$VersionDate = "2025-07-09"
+$VersionNumber = "2.3.2"
+$VersionDate = "2025-07-11"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -8328,41 +8328,37 @@ function Open_Selected_Scale/s_C_Path
 }
 
 # ===================================================================================================
-#                      FUNCTION: Schedule_Remove_Duplicates_Monitor
+#                      FUNCTION: Remove_Duplicates_From_toBizerba
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts the user to either run the Duplicate File Monitor now (as a background job) or
-#   schedule it as a Windows scheduled task (runs at logon, hidden, always-on).
+#   Prompts the user to install the Duplicate File Monitor as a Windows Service.
 #   Monitors the folder 'C:\Bizerba\RetailConnect\BMS\toBizerba' for duplicate files by content
 #   (using hash), and deletes all but the oldest file (by CreationTime).
-#   Writes batch/PowerShell scripts to disk and manages the Windows scheduled task.
+#   Writes PowerShell script to disk and registers it as a service using sc.exe.
 #   Author: Alex_C.T
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   (none - uses script context)
 # ===================================================================================================
 
-function Schedule_Remove_Duplicates_Monitor
+function Remove_Duplicates_From_toBizerba
 {
 	[CmdletBinding()]
 	param ()
 	
-	Write_Log "`r`n==================== Starting Schedule_Remove_Duplicates_Monitor Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Remove_Duplicates_From_toBizerba Function ====================`r`n" "blue"
 	
 	$scriptFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
-	$psScriptName = "Remove_Duplicates_Monitor.ps1"
+	$psScriptName = "Remove_Duplicates_From_toBizerba.ps1"
 	$psScriptPath = Join-Path $scriptFolder $psScriptName
-	$batchName = "Remove_Duplicates_Monitor.bat"
-	$batchPath = Join-Path $scriptFolder $batchName
 	$TargetPath = "C:\Bizerba\RetailConnect\BMS\toBizerba"
 	
 	if (-not (Test-Path $scriptFolder)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
 	
-	# Write the PowerShell watcher script (no backslash-escaped variables!)
+	# Write the PowerShell watcher script (no UI!)
 	$psScriptContent = @"
+param([int]`$IntervalSeconds = 2)
 `$Path = '$TargetPath'
-`$IntervalSeconds = `$env:MON_INTERVAL_SECONDS
-if (-not `$IntervalSeconds) { `$IntervalSeconds = 2 }
 function Remove-DuplicateFilesByContent {
     param([string]`$Path)
     `$files = Get-ChildItem -Path `$Path -File -ErrorAction SilentlyContinue
@@ -8380,9 +8376,7 @@ function Remove-DuplicateFilesByContent {
             `$original = `$fileList[0]
             `$duplicates = `$fileList[1..(`$fileList.Count - 1)]
             foreach (`$dup in `$duplicates) {
-                try {
-                    Remove-Item `$dup.FullName -Force
-                } catch {}
+                try { Remove-Item `$dup.FullName -Force } catch {}
             }
         }
     }
@@ -8397,36 +8391,30 @@ while (`$true) {
 	# --- Build the GUI ---
 	Add-Type -AssemblyName System.Windows.Forms
 	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Duplicate File Monitor"
-	$form.Size = New-Object System.Drawing.Size(430, 180)
+	$form.Text = "Duplicate File Monitor Service Installer"
+	$form.Size = New-Object System.Drawing.Size(440, 180)
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = 'FixedDialog'
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
 	
 	$label = New-Object System.Windows.Forms.Label
-	$label.Text = "How do you want to run the Duplicate File Monitor for:`r`n$TargetPath"
+	$label.Text = "Install Duplicate File Monitor as a Windows Service for:`r`n$TargetPath"
 	$label.Location = New-Object System.Drawing.Point(16, 15)
-	$label.Size = New-Object System.Drawing.Size(380, 40)
+	$label.Size = New-Object System.Drawing.Size(400, 40)
 	$label.TextAlign = 'MiddleCenter'
 	$form.Controls.Add($label)
 	
-	$btnNow = New-Object System.Windows.Forms.Button
-	$btnNow.Text = "Run Now (as Job)"
-	$btnNow.Location = New-Object System.Drawing.Point(30, 70)
-	$btnNow.Size = New-Object System.Drawing.Size(110, 35)
-	$form.Controls.Add($btnNow)
-	
-	$btnSchedule = New-Object System.Windows.Forms.Button
-	$btnSchedule.Text = "Schedule (background)"
-	$btnSchedule.Location = New-Object System.Drawing.Point(150, 70)
-	$btnSchedule.Size = New-Object System.Drawing.Size(140, 35)
-	$form.Controls.Add($btnSchedule)
+	$btnService = New-Object System.Windows.Forms.Button
+	$btnService.Text = "Install as Service"
+	$btnService.Location = New-Object System.Drawing.Point(60, 70)
+	$btnService.Size = New-Object System.Drawing.Size(140, 35)
+	$form.Controls.Add($btnService)
 	
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = New-Object System.Drawing.Point(300, 70)
-	$btnCancel.Size = New-Object System.Drawing.Size(75, 35)
+	$btnCancel.Location = New-Object System.Drawing.Point(240, 70)
+	$btnCancel.Size = New-Object System.Drawing.Size(100, 35)
 	$form.Controls.Add($btnCancel)
 	
 	$lblSec = New-Object System.Windows.Forms.Label
@@ -8444,22 +8432,10 @@ while (`$true) {
 	$selectedAction = [ref] ""
 	$intervalSeconds = [ref] 2
 	
-	$btnNow.Add_Click({
+	$btnService.Add_Click({
 			if ($txtSec.Text -match '^\d+$' -and [int]$txtSec.Text -ge 1)
 			{
-				$selectedAction.Value = "now"
-				$intervalSeconds.Value = [int]$txtSec.Text
-				$form.DialogResult = 'OK'; $form.Close()
-			}
-			else
-			{
-				[System.Windows.Forms.MessageBox]::Show("Enter a valid integer interval (1+ seconds).")
-			}
-		})
-	$btnSchedule.Add_Click({
-			if ($txtSec.Text -match '^\d+$' -and [int]$txtSec.Text -ge 1)
-			{
-				$selectedAction.Value = "schedule"
+				$selectedAction.Value = "service"
 				$intervalSeconds.Value = [int]$txtSec.Text
 				$form.DialogResult = 'OK'; $form.Close()
 			}
@@ -8473,72 +8449,51 @@ while (`$true) {
 			$form.DialogResult = 'Cancel'; $form.Close()
 		})
 	
-	$form.AcceptButton = $btnNow
+	$form.AcceptButton = $btnService
 	$form.CancelButton = $btnCancel
 	
 	$form.ShowDialog() | Out-Null
 	
 	if ($selectedAction.Value -eq "cancel" -or -not $selectedAction.Value)
 	{
-		Write_Log "User cancelled Duplicate Monitor scheduling." "Yellow"
-		Write_Log "`r`n==================== Schedule_Remove_Duplicates_Monitor Function Completed ====================" "blue"
+		Write_Log "User cancelled Duplicate Monitor service installation." "Yellow"
+		Write_Log "`r`n==================== Schedule Remove_Duplicates_From_toBizerba Function Completed ====================" "blue"
 		return
 	}
 	
-	# --- If Run Now ---
-	if ($selectedAction.Value -eq "now")
+	# --- Install as Service ---
+	if ($selectedAction.Value -eq "service")
 	{
-		$job = Start-Job -ScriptBlock {
-			param ($psScript,
-				$interval)
-			$env:MON_INTERVAL_SECONDS = $interval
-			& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $psScript
-		} -ArgumentList $psScriptPath, $intervalSeconds.Value
-		Write_Log "Duplicate monitor running as job." "Green"
-		Write_Log "`r`n==================== Schedule_Remove_Duplicates_Monitor Function Completed ====================" "blue"
-		return
-	}
-	
-	# --- If Schedule Task ---
-	if ($selectedAction.Value -eq "schedule")
-	{
-		$batchContent = @"
-@echo off
-set MON_INTERVAL_SECONDS=$($intervalSeconds.Value)
-powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "$psScriptPath"
-"@
-		Set-Content -Path $batchPath -Value $batchContent -Encoding ASCII
+		$ServiceName = "Remove_Duplicates_From_toBizerba"
+		$DisplayName = "Remove Duplicates Files form the toBizerba folder to avoid starting many instances of BMS service."
+		$Script = $psScriptPath
+		$Interval = $intervalSeconds.Value
 		
-		$taskName = "Remove_Duplicates_Monitor_Task"
-		schtasks /Delete /TN "$taskName" /F >$null 2>&1
+		# Command for the service: include the interval as parameter
+		$svcCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Script`" -IntervalSeconds $Interval"
 		
-		$schtasks = "schtasks /Create /TN `"$taskName`" /TR `"$batchPath`" /SC ONSTART /RL HIGHEST /RU SYSTEM /F"
-		Invoke-Expression $schtasks
+		Write_Log "Removing any existing service '$ServiceName'..." "Yellow"
+		sc.exe stop $ServiceName | Out-Null
+		sc.exe delete $ServiceName | Out-Null
+		
+		Write_Log "Creating new service '$ServiceName'..." "Green"
+		$createResult = sc.exe create $ServiceName binPath= "$svcCmd" start= auto DisplayName= "$DisplayName" obj= "LocalSystem"
 		
 		if ($LASTEXITCODE -eq 0)
 		{
-			Write_Log "Scheduled task created successfully for Duplicate File Monitor (runs as SYSTEM, every $($intervalSeconds.Value) seconds)." "Green"
-			# --- Start the task immediately after scheduling ---
-			try
-			{
-				Start-Process -FilePath $batchPath -WindowStyle Hidden
-				Write_Log "Duplicate monitor started immediately after scheduling." "Green"
-			}
-			catch
-			{
-				Write_Log "Failed to start Duplicate File Monitor immediately after scheduling." "Yellow"
-			}
+			Write_Log "Service '$ServiceName' created successfully. Starting it now..." "Green"
+			Start-Service $ServiceName
+			Write_Log "Service '$ServiceName' started." "Green"
 		}
 		else
 		{
-			Write_Log "Failed to create scheduled task for Duplicate File Monitor." "Red"
+			Write_Log "Failed to create the service. See output above." "Red"
 		}
-		Write_Log "`r`n==================== Schedule_Remove_Duplicates_Monitor Function Completed ====================" "blue"
+		Write_Log "`r`n==================== Schedule Remove_Duplicates_From_toBizerba Function Completed ====================" "blue"
 		return
 	}
 	
-	# In case something slips through, final function complete:
-	Write_Log "`r`n==================== Schedule_Remove_Duplicates_Monitor Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Schedule Remove_Duplicates_From_toBizerba Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -9907,7 +9862,7 @@ if (-not $form)
 	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Duplicate File Monitor")
 	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in toBizerba. Run now or schedule as SYSTEM."
 	$ScheduleRemoveDupesItem.Add_Click({
-			Schedule_Remove_Duplicates_Monitor
+			Remove_Duplicates_From_toBizerba
 		})
 	[void]$contextMenuGeneral.Items.Add($ScheduleRemoveDupesItem)
 	
