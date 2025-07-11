@@ -8657,7 +8657,7 @@ function Update_Scales_Specials_Interactive
 	
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Update Scales Specials"
-	$form.Size = New-Object System.Drawing.Size(490, 215)
+	$form.Size = New-Object System.Drawing.Size(495, 220)
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
@@ -8672,21 +8672,82 @@ function Update_Scales_Specials_Interactive
 	
 	$btnSchedule = New-Object System.Windows.Forms.Button
 	$btnSchedule.Text = "Schedule Daily (5 AM)"
-	$btnSchedule.Location = New-Object System.Drawing.Point(60, 90)
-	$btnSchedule.Size = New-Object System.Drawing.Size(140, 40)
+	$btnSchedule.Location = New-Object System.Drawing.Point(5, 90)
+	$btnSchedule.Size = New-Object System.Drawing.Size(150, 40)
 	$form.Controls.Add($btnSchedule)
+	
+	$btnRestoreDeployLine = New-Object System.Windows.Forms.Button
+	$btnRestoreDeployLine.Text = "Restore DEPLOY_CHG.sql Line"
+	$btnRestoreDeployLine.Location = New-Object System.Drawing.Point(155, 90)
+	$btnRestoreDeployLine.Size = New-Object System.Drawing.Size(170, 40)
+	$btnRestoreDeployLine.Enabled = $false
+	$form.Controls.Add($btnRestoreDeployLine)
 	
 	$btnScheduleMinutes = New-Object System.Windows.Forms.Button
 	$btnScheduleMinutes.Text = "Schedule Task (Minutes)"
-	$btnScheduleMinutes.Location = New-Object System.Drawing.Point(220, 90)
-	$btnScheduleMinutes.Size = New-Object System.Drawing.Size(180, 40)
+	$btnScheduleMinutes.Location = New-Object System.Drawing.Point(325, 90)
+	$btnScheduleMinutes.Size = New-Object System.Drawing.Size(150, 40)
 	$form.Controls.Add($btnScheduleMinutes)
 	
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = New-Object System.Drawing.Point(180, 150)
-	$btnCancel.Size = New-Object System.Drawing.Size(80, 30)
+	$btnCancel.Location = New-Object System.Drawing.Point(200, 145)
+	$btnCancel.Size = New-Object System.Drawing.Size(100, 30)
 	$form.Controls.Add($btnCancel)
+	
+	
+	# Enable restore button only if the deploy line is missing
+	$deployLineExists = $false
+	if (Test-Path $deployChgFile)
+	{
+		$deployContent = Get-Content $deployChgFile -Raw
+		if ($deployContent -match '(?i)ScaleManagementApp\.exe' -or $deployContent -match '(?i)ScaleManagementApp_FastDEPLOY\.exe')
+		{
+			$deployLineExists = $true
+		}
+	}
+	if (-not $deployLineExists) { $btnRestoreDeployLine.Enabled = $true }
+	
+	$btnRestoreDeployLine.Add_Click({
+			$exeLine = ""
+			if (Test-Path "C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe")
+			{
+				$exeLine = "@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe');"
+			}
+			elseif (Test-Path "C:\ScaleCommApp\ScaleManagementApp.exe")
+			{
+				$exeLine = "@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp.exe');"
+			}
+			else
+			{
+				[System.Windows.Forms.MessageBox]::Show("Neither FastDEPLOY nor regular ScaleManagementApp.exe found in C:\ScaleCommApp!", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				return
+			}
+			
+			if (Test-Path $deployChgFile)
+			{
+				try
+				{
+					$content = Get-Content $deployChgFile -Raw
+					$newContent = ($content -split "`r?`n") | Where-Object { $_ -notmatch '(?i)ScaleManagementApp\.exe|ScaleManagementApp_FastDEPLOY\.exe' }
+					$newContent += $exeLine
+					$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default
+					Write_Log "Restored line to DEPLOY_CHG.sql: $exeLine" "green"
+					[System.Windows.Forms.MessageBox]::Show("Line restored to DEPLOY_CHG.sql:`r`n$exeLine", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+					$btnRestoreDeployLine.Enabled = $false
+				}
+				catch
+				{
+					Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
+					[System.Windows.Forms.MessageBox]::Show("Failed to restore line: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				}
+			}
+			else
+			{
+				Write_Log "DEPLOY_CHG.sql not found for restore." "yellow"
+				[System.Windows.Forms.MessageBox]::Show("DEPLOY_CHG.sql not found!", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			}
+		})
 	
 	$selectedAction = $null
 	$minutesValue = $null
@@ -8831,7 +8892,11 @@ taskkill /IM BMS.exe /F
 del /s /q C:\Bizerba\RetailConnect\BMS\toBizerba\*.*
 rmdir /s /q C:\Bizerba\RetailConnect\BMS\terminals\ >nul 2>&1
 net start BMS /Y
-start C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe
+if exist C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe (
+    start C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe
+) else (
+    start C:\ScaleCommApp\ScaleManagementApp.exe
+)
 exit
 "@
 		Set-Content -Path $batchPath_Minutes -Value $batchContent -Encoding ASCII
