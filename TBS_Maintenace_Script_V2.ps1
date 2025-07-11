@@ -18,7 +18,6 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 #   Defines the script parameters, allowing users to run the script in silent mode.
 # ===================================================================================================
 
-
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.3.2"
 $VersionDate = "2025-07-11"
