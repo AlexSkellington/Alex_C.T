@@ -1992,7 +1992,7 @@ $connectionString = $script:FunctionResults['ConnectionString']
 $oldMachineName = $currentMachineName
 
 # Clear %Temp% foder on start
-$FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "MiniGhost.ps1" -AsJob
+# $FilesAndDirsDeleted = Delete-Files -Path "$TempDir" -Exclusions "MiniGhost.ps1" -AsJob
 
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
