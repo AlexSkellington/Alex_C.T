@@ -8328,7 +8328,7 @@ function Open_Selected_Scale/s_C_Path
 }
 
 # ===================================================================================================
-#                      FUNCTION: Schedule_Remove_Duplicates_Monitor
+#                      FUNCTION: Remove_Duplicate_Files_From_toBizerba
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Prompts the user to either run the Duplicate File Monitor now (as a background job) or
@@ -8440,7 +8440,7 @@ while (`$true) {
 	$txtSec.Size = New-Object System.Drawing.Size(50, 24)
 	$form.Controls.Add($txtSec)
 	
-	# --- New: Add Delete Scheduled Task button, only enabled if task exists ---
+	# --- Delete Scheduled Task button, only enabled if task exists ---
 	$btnDeleteTask = New-Object System.Windows.Forms.Button
 	$btnDeleteTask.Text = "Delete Scheduled Task"
 	$btnDeleteTask.Location = New-Object System.Drawing.Point(270, 70)
@@ -8491,16 +8491,45 @@ while (`$true) {
 	
 	$form.ShowDialog() | Out-Null
 	
+	# --- Inline STOP logic (no helper, no nested functions) ---
+	# Stops all powershell.exe processes running this script, and all jobs started by this script
+	if ($deleteScheduledTask.Value -or $selectedAction.Value -eq "schedule" -or $selectedAction.Value -eq "now")
+	{
+		# Stop powershell.exe processes matching our script
+		Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
+			$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
+		} | ForEach-Object {
+			try
+			{
+				Stop-Process -Id $_.ProcessId -Force
+				Write_Log "Stopped powershell.exe PID $($_.ProcessId) running $psScriptPath" "yellow"
+			}
+			catch
+			{
+				Write_Log "Failed to stop powershell.exe PID $($_.ProcessId)" "red"
+			}
+		}
+		# Stop jobs from this session
+		Get-Job | Where-Object {
+			$_.Command -like "*$psScriptPath*"
+		} | ForEach-Object {
+			try { Stop-Job $_ -Force }
+			catch { }
+			try { Remove-Job $_ -Force }
+			catch { }
+		}
+	}
+	
 	if ($deleteScheduledTask.Value)
 	{
-		try
+		$deleteOut = schtasks /Delete /TN "$taskName" /F 2>&1
+		if ($LASTEXITCODE -ne 0 -and $deleteOut -notmatch "cannot find the file specified")
 		{
-			schtasks /Delete /TN "$taskName" /F | Out-Null
-			Write_Log "Scheduled task '$taskName' deleted." "Green"
+			Write_Log "Failed to delete scheduled task. schtasks said: $deleteOut" "Red"
 		}
-		catch
+		else
 		{
-			Write_Log "Failed to delete scheduled task '$taskName'." "Red"
+			Write_Log "Scheduled task '$taskName' deleted." "Green"
 		}
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Function Completed ====================" "blue"
 		return
@@ -8529,13 +8558,36 @@ while (`$true) {
 	# --- If Schedule Task ---
 	if ($selectedAction.Value -eq "schedule")
 	{
-		# Always remove previous instance first:
-		schtasks /Delete /TN "$taskName" /F >$null 2>&1
+		# Check the script file exists first!
+		if (-not (Test-Path $psScriptPath))
+		{
+			Write_Log "Script path $psScriptPath does not exist! Aborting." "Red"
+			return
+		}
 		
 		$escapedPsScriptPath = $psScriptPath.Replace('"', '""')
 		$action = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$escapedPsScriptPath`" -IntervalSeconds $($intervalSeconds.Value)"
+		Write_Log "Task action: $action" "yellow"
 		
-		# --- Schedule the task with advanced settings ---
+		# Check if the scheduled task exists before attempting to delete it
+		$exists = schtasks /Query /TN "$taskName" 2>&1 | Select-String -Quiet -Pattern "$taskName"
+		if ($exists)
+		{
+			$deleteOut = schtasks /Delete /TN "$taskName" /F 2>&1
+			if ($LASTEXITCODE -ne 0)
+			{
+				Write_Log "Failed to delete scheduled task. schtasks said: $deleteOut" "Red"
+			}
+			else
+			{
+				Write_Log "Scheduled task '$taskName' deleted." "Green"
+			}
+		}
+		else
+		{
+			Write_Log "Scheduled task '$taskName' does not exist, nothing to delete." "Yellow"
+		}
+		
 		$createTaskArgs = @(
 			'/Create',
 			'/TN', $taskName,
@@ -8545,50 +8597,22 @@ while (`$true) {
 			'/RU', 'SYSTEM',
 			'/F'
 		)
-		schtasks @createTaskArgs | Out-Null
-		
-		# -- Now set all advanced settings via XML, for infinite restart --
-		$xml = schtasks /Query /TN "$taskName" /XML
-		
-		# Patch XML to set up infinite restart and exclusive instance
-		# The following values are set:
-		# - Don't start new instance if already running
-		# - Restart on failure: every 1 minute, unlimited
-		# - Never stop, don't stop if computer switches power state
-		
-		$xml = $xml -replace '<MultipleInstancesPolicy>.*?</MultipleInstancesPolicy>', '<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>'
-		$xml = $xml -replace '<RestartOnFailure><Interval>.*?</Interval><Count>.*?</Count></RestartOnFailure>',
-		'<RestartOnFailure><Interval>PT1M</Interval><Count>9999</Count></RestartOnFailure>'
-		if ($xml -notmatch '<RestartOnFailure>')
+		$createOut = schtasks @createTaskArgs 2>&1
+		if ($LASTEXITCODE -ne 0)
 		{
-			$xml = $xml -replace '(<Settings>)',
-			'$1<RestartOnFailure><Interval>PT1M</Interval><Count>9999</Count></RestartOnFailure>'
+			Write_Log "Failed to create scheduled task. schtasks said: $createOut" "Red"
+			return
 		}
 		
-		# Now update the scheduled task with the edited XML
-		$tmpXML = [System.IO.Path]::GetTempFileName()
-		Set-Content -Path $tmpXML -Value $xml -Encoding UTF8
-		schtasks /Delete /TN "$taskName" /F | Out-Null
-		schtasks /Create /TN "$taskName" /XML $tmpXML /RU SYSTEM | Out-Null
-		Remove-Item $tmpXML
-		
-		if ($LASTEXITCODE -eq 0)
+		Write_Log "Scheduled task created successfully for Duplicate File Monitor (runs as SYSTEM, every $($intervalSeconds.Value) seconds)." "Green"
+		try
 		{
-			Write_Log "Scheduled task created successfully for Duplicate File Monitor (runs as SYSTEM, every $($intervalSeconds.Value) seconds)." "Green"
-			# --- Start the task immediately after scheduling ---
-			try
-			{
-				Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$psScriptPath`"", "-IntervalSeconds", "$($intervalSeconds.Value)"
-				Write_Log "Duplicate monitor started immediately after scheduling." "Green"
-			}
-			catch
-			{
-				Write_Log "Failed to start Duplicate File Monitor immediately after scheduling." "Yellow"
-			}
+			Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$psScriptPath`"", "-IntervalSeconds", "$($intervalSeconds.Value)"
+			Write_Log "Duplicate monitor started immediately after scheduling." "Green"
 		}
-		else
+		catch
 		{
-			Write_Log "Failed to create scheduled task for Duplicate File Monitor." "Red"
+			Write_Log "Failed to start Duplicate File Monitor immediately after scheduling." "Yellow"
 		}
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Function Completed ====================" "blue"
 		return
