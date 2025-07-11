@@ -1825,7 +1825,8 @@ $currentConfigs = Get_Active_IP_Config
 $currentStoreNumber = Get-StoreNumberFromINI
 
 # Get the store name
-$storeName = Get-StoreNameFromINI
+Get-StoreNameFromINI
+$storeName = $script:FunctionResults['StoreName']
 
 # Get the database connection string
 $connectionString = Get_Database_Connection_String
