@@ -247,6 +247,9 @@ function Get_Database_Connection_String
 
 function Get-StoreNumberFromINI
 {
+	# Initialize StoreNumber
+	$script:FunctionResults['StoreNumber'] = "N/A"
+	
 	if (Test-Path $startupIniPath)
 	{
 		$iniContent = Get-Content $startupIniPath
@@ -259,6 +262,158 @@ function Get-StoreNumberFromINI
 		}
 	}
 	return $null
+}
+
+# ===================================================================================================
+#                                      FUNCTION: Get-StoreNumberGUI
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Retrieves the store number via GUI prompts or configuration files.
+#   Stores the result in $script:FunctionResults['StoreNumber'].
+# ===================================================================================================
+
+function Get-StoreNumber
+{
+	param (
+		[string]$IniFilePath = $StartupIniPath
+	)
+	
+	# Initialize StoreNumber
+	$script:FunctionResults['StoreNumber'] = "N/A"
+	
+	# Try to retrieve StoreNumber from the startup.ini file
+	if (Test-Path $IniFilePath)
+	{
+		$storeNumber = Select-String -Path $IniFilePath -Pattern "^STORE=" | ForEach-Object {
+			$_.Line.Split('=')[1].Trim()
+		}
+		if ($storeNumber)
+		{
+			$script:FunctionResults['StoreNumber'] = $storeNumber
+			#	Write-Log "Store number found in startup.ini: $storeNumber" "green"
+		}
+		else
+		{
+			#	Write-Log "Store number not found in startup.ini." "yellow"
+		}
+	}
+	else
+	{
+		#	Write-Log "INI file not found: $IniFilePath" "yellow"
+	}
+	
+	# **Only proceed to check XF directories if StoreNumber was not found in INI**
+	if ($script:FunctionResults['StoreNumber'] -eq "N/A")
+	{
+		if (Test-Path $BasePath)
+		{
+			$XFDirs = Get-ChildItem -Path $BasePath -Directory -Filter "XF*"
+			foreach ($dir in $XFDirs)
+			{
+				if ($dir.Name -match "^XF(\d{3})")
+				{
+					$storeNumber = $Matches[1]
+					if ($storeNumber -ne "999")
+					{
+						$script:FunctionResults['StoreNumber'] = $storeNumber
+						#	Write-Log "Store number found from XF directory: $storeNumber" "green"
+						break # Exit loop after finding the store number
+					}
+				}
+			}
+			if ($script:FunctionResults['StoreNumber'] -eq "N/A")
+			{
+				#	Write-Log "No valid XF directories found in $BasePath" "yellow"
+			}
+		}
+		else
+		{
+			#	Write-Log "Base path not found: $BasePath" "yellow"
+		}
+	}
+	
+	# Update the storeNumberLabel in the GUI if store number was found without manual input
+	if ($script:FunctionResults['StoreNumber'] -ne "")
+	{
+		if (-not $SilentMode -and $storeNumberLabel -ne $null)
+		{
+			$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
+			$form.Refresh()
+			[System.Windows.Forms.Application]::DoEvents()
+		}
+		return # Exit function after successful retrieval and GUI update
+	}
+	
+	# Prompt for manual input via GUI
+	while (-not $script:FunctionResults['StoreNumber'])
+	{
+		$inputBox = New-Object System.Windows.Forms.Form
+		$inputBox.Text = "Enter Store Number"
+		$inputBox.Size = New-Object System.Drawing.Size(300, 150)
+		$inputBox.StartPosition = "CenterParent"
+		$inputBox.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+		$inputBox.MaximizeBox = $false
+		$inputBox.MinimizeBox = $false
+		$inputBox.TopMost = $true
+		
+		$label = New-Object System.Windows.Forms.Label
+		$label.Text = "Please enter the store number (e.g., 1, 12, 123):"
+		$label.AutoSize = $true
+		$label.Location = New-Object System.Drawing.Point(10, 20)
+		$inputBox.Controls.Add($label)
+		
+		$textBox = New-Object System.Windows.Forms.TextBox
+		$textBox.Location = New-Object System.Drawing.Point(10, 50)
+		$textBox.Width = 260
+		$inputBox.Controls.Add($textBox)
+		
+		$okButton = New-Object System.Windows.Forms.Button
+		$okButton.Text = "OK"
+		$okButton.Location = New-Object System.Drawing.Point(100, 80)
+		$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+		$inputBox.AcceptButton = $okButton
+		$inputBox.Controls.Add($okButton)
+		
+		$cancelButton = New-Object System.Windows.Forms.Button
+		$cancelButton.Text = "Cancel"
+		$cancelButton.Location = New-Object System.Drawing.Point(180, 80)
+		$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+		$inputBox.CancelButton = $cancelButton
+		$inputBox.Controls.Add($cancelButton)
+		
+		$result = $inputBox.ShowDialog()
+		
+		if ($result -eq [System.Windows.Forms.DialogResult]::OK)
+		{
+			$input = $textBox.Text.Trim()
+			if ($input -match "^\d{1,3}$" -and $input -ne "000")
+			{
+				# Pad the input with leading zeros to ensure it is 3 digits
+				$paddedInput = $input.PadLeft(3, '0')
+				$script:FunctionResults['StoreNumber'] = $paddedInput
+				Write-Host "Store number entered by user: $paddedInput" "green"
+				
+				# Update the storeNumberLabel in the GUI
+				if (-not $SilentMode -and $storeNumberLabel -ne $null)
+				{
+					$storeNumberLabel.Text = "Store Number: $input"
+					$form.Refresh()
+					[System.Windows.Forms.Application]::DoEvents()
+				}
+				
+				break
+			}
+			else
+			{
+				[System.Windows.Forms.MessageBox]::Show("Store number must be 1 to 3 digits, numeric, and not '000'.", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			}
+		}
+		else
+		{
+			#	Write-Log "Store number input canceled by user." "red"
+			exit 1
+		}
+	}
 }
 
 # ===================================================================================================
@@ -1822,7 +1977,7 @@ function Delete-Files
 $currentConfigs = Get_Active_IP_Config
 
 # Get the store number
-Get-StoreNumberFromINI
+Get-StoreNumber
 $currentStoreNumber = $script:FunctionResults['StoreNumber']
 
 # Get the store name
