@@ -8640,12 +8640,10 @@ while (`$true) {
 # ===================================================================================================
 
 function Update_Scales_Specials_Interactive
-{
-	[CmdletBinding()]
-	param ()
-	
+{	
 	Write_Log "`r`n==================== Starting Update_Scales_Specials_Interactive Function ====================`r`n" "blue"
 	
+	$DeployRestored = [ref]$false
 	$scriptFolder = $script:ScriptsFolder
 	$batchName_Daily = "Update_Scales_Specials.bat"
 	$batchPath_Daily = Join-Path $scriptFolder $batchName_Daily
@@ -8711,44 +8709,70 @@ function Update_Scales_Specials_Interactive
 			$exeLine = ""
 			if (Test-Path "C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe")
 			{
-				$exeLine = "@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe');"
+				$exeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe');"
 			}
 			elseif (Test-Path "C:\ScaleCommApp\ScaleManagementApp.exe")
 			{
-				$exeLine = "@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp.exe');"
+				$exeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp.exe');"
 			}
 			else
 			{
-				[System.Windows.Forms.MessageBox]::Show("Neither FastDEPLOY nor regular ScaleManagementApp.exe found in C:\ScaleCommApp!", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				Write_Log "Neither FastDEPLOY nor regular ScaleManagementApp.exe found in C:\ScaleCommApp!" "red"
 				Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
+				$form.Close()
 				return
 			}
 			
+			# --- Restore DEPLOY_CHG.sql ---
 			if (Test-Path $deployChgFile)
 			{
 				try
 				{
 					$content = Get-Content $deployChgFile -Raw
-					$newContent = ($content -split "`r?`n") | Where-Object { $_ -notmatch '(?i)ScaleManagementApp\.exe|ScaleManagementApp_FastDEPLOY\.exe' }
+					$newContent = [System.Collections.Generic.List[string]]@(
+						($content -split "`r?`n") | Where-Object {
+							$_ -notmatch '^\s*/\* Deploy price changes to the scales \*/' -and
+							$_ -notmatch '(?i)@EXEC\(RUN=''C:\\ScaleCommApp\\ScaleManagementApp(_FastDEPLOY)?\.exe''\);'
+						}
+					)
+					while ($newContent.Count -gt 0 -and ($newContent[-1] -match '^\s*$'))
+					{
+						$null = $newContent.RemoveAt($newContent.Count - 1)
+					}
+					$newContent += ""
 					$newContent += $exeLine
 					$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default
 					Write_Log "Restored line to DEPLOY_CHG.sql: $exeLine" "green"
-					[System.Windows.Forms.MessageBox]::Show("Line restored to DEPLOY_CHG.sql:`r`n$exeLine", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 					$btnRestoreDeployLine.Enabled = $false
 				}
 				catch
 				{
 					Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
-					[System.Windows.Forms.MessageBox]::Show("Failed to restore line: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				}
 			}
 			else
 			{
 				Write_Log "DEPLOY_CHG.sql not found for restore." "yellow"
-				[System.Windows.Forms.MessageBox]::Show("DEPLOY_CHG.sql not found!", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 			}
+			
+			# --- Delete the minutes task if it exists ---
+			$minutesTaskName = "Update_Scales_Specials_Task_Minutes"
+			$taskExists = schtasks /Query /TN "$minutesTaskName" 2>&1 | Select-String -Quiet -Pattern "$minutesTaskName"
+			if ($taskExists)
+			{
+				$deleteOut = schtasks /Delete /TN "$minutesTaskName" /F 2>&1
+				if ($LASTEXITCODE -eq 0)
+				{
+					Write_Log "Deleted scheduled task '$minutesTaskName' after DEPLOY_CHG.sql restore." "yellow"
+				}
+				else
+				{
+					Write_Log "Attempted to delete '$minutesTaskName' after restore but schtasks said: $deleteOut" "yellow"
+				}
+			}
+			
 			Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
+			$DeployRestored.Value = $true
 			$form.Close()
 			return
 		})
@@ -8814,6 +8838,7 @@ function Update_Scales_Specials_Interactive
 	$form.CancelButton = $btnCancel
 	
 	$form.ShowDialog() | Out-Null
+	if ($DeployRestored.Value) { return }
 	if ($script:selectedAction -eq "cancel" -or -not $script:selectedAction)
 	{
 		Write_Log "User cancelled Update_Scales_Specials_Interactive." "yellow"
@@ -8866,12 +8891,33 @@ exit
 		{
 			try
 			{
-				$content = Get-Content $deployChgFile -Raw
-				$newContent = ($content -split "`r?`n") | Where-Object { $_ -notmatch '(?i)ScaleManagementApp\.exe|ScaleManagementApp_FastDEPLOY\.exe' }
-				if ($newContent.Count -lt (($content -split "`r?`n").Count))
+				$lines = [System.Collections.Generic.List[string]]@(Get-Content $deployChgFile)
+				
+				# Remove any lines that are: banner, @EXEC, or blank line just before the banner/@EXEC line
+				$toRemoveIdx = @()
+				for ($i = 0; $i -lt $lines.Count; $i++)
 				{
-					$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default
-					Write_Log "Removed lines from $deployChgFile containing ScaleManagementApp.exe or ScaleManagementApp_FastDEPLOY.exe" "green"
+					if (
+						$lines[$i] -match '^\s*/\* Deploy price changes to the scales \*/' -or
+						$lines[$i] -match '(?i)@EXEC\(RUN=''C:\\ScaleCommApp\\ScaleManagementApp(_FastDEPLOY)?\.exe''\);'
+					)
+					{
+						# If previous line is blank, mark it too
+						if ($i -gt 0 -and $lines[$i - 1] -match '^\s*$') { $toRemoveIdx += ($i - 1) }
+						$toRemoveIdx += $i
+					}
+				}
+				# Remove duplicates and sort descending to safely remove by index
+				$toRemoveIdx = $toRemoveIdx | Sort-Object -Unique -Descending
+				foreach ($idx in $toRemoveIdx) { $lines.RemoveAt($idx) }
+				
+				# Remove trailing blank lines
+				while ($lines.Count -gt 0 -and $lines[-1] -match '^\s*$') { $null = $lines.RemoveAt($lines.Count - 1) }
+				
+				$lines -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default
+				if ($toRemoveIdx.Count -gt 0)
+				{
+					Write_Log "Removed banner, @EXEC line, and any blank line above from $deployChgFile" "green"
 				}
 				else
 				{
