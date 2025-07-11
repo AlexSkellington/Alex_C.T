@@ -164,6 +164,11 @@ $StoresqlFilePath = Join-Path $TempDir "Server_Database_Maintenance.sqi"
 # $scriptName = Split-Path -Leaf $PSCommandPath
 
 # ---------------------------------------------------------------------------------------------------
+# Path where all script files will be saved
+# ---------------------------------------------------------------------------------------------------
+$script:ScriptsFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
+
+# ---------------------------------------------------------------------------------------------------
 # Add C# MailSlotSender Type for Direct Windows Mailslot Messaging (if not already loaded)
 # ---------------------------------------------------------------------------------------------------
 if (-not ([System.Management.Automation.PSTypeName]'MailslotSender').Type)
@@ -7891,7 +7896,7 @@ function Remove_ArchiveBit_Interactive
 	$iniFile = $StartupIniPath
 	$storeNumber = $script:FunctionResults['StoreNumber']
 	$terFile = Join-Path $OfficePath "Load\Ter_Load.sql"
-	$scriptFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
+	$scriptFolder = $script:ScriptsFolder
 	$batchName = "Remove_Archive_Bit.bat"
 	$batchPath = Join-Path $scriptFolder $batchName
 	
@@ -8349,7 +8354,7 @@ function Remove_Duplicate_Files_From_toBizerba
 	
 	Write_Log "`r`n==================== Starting Remove_Duplicate_Files_From_toBizerba Function ====================`r`n" "blue"
 	
-	$scriptFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
+	$scriptFolder = $script:ScriptsFolder
 	$psScriptName = "Remove_Duplicate_Files_From_toBizerba.ps1"
 	$psScriptPath = Join-Path $scriptFolder $psScriptName
 	$TargetPath = "C:\Bizerba\RetailConnect\BMS\toBizerba"
@@ -8641,7 +8646,7 @@ function Update_Scales_Specials_Interactive
 	
 	Write_Log "`r`n==================== Starting Update_Scales_Specials_Interactive Function ====================`r`n" "blue"
 	
-	$scriptFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
+	$scriptFolder = $script:ScriptsFolder
 	$batchName_Daily = "Update_Scales_Specials.bat"
 	$batchPath_Daily = Join-Path $scriptFolder $batchName_Daily
 	$batchName_Minutes = "Update_Scales_Specials_Minutes.bat"
