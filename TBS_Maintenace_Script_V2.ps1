@@ -1843,7 +1843,7 @@ function Get_Table_Aliases
 }
 
 # ===================================================================================================
-#                            FUNCTION: Get_All_Lanes_VNC_Passwords
+#                            FUNCTION: Get_All_VNC_Passwords
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Scans all specified lanes for the UltraVNC configuration file (UltraVNC.ini, any case) in the
@@ -1946,7 +1946,7 @@ function Get_All_VNC_Passwords
 	
 	# 3. Start jobs for online regular nodes
 	$jobs = @()
-	$MaxConcurrentJobs = 12
+	$MaxConcurrentJobs = 20 # Increased for faster processing
 	
 	foreach ($machineName in $OnlineNodes)
 	{
@@ -2103,13 +2103,26 @@ function Get_All_VNC_Passwords
 #                              FUNCTION: Get_Remote_Machine_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Windows Form prompts for Lanes, Scales, Backoffices (any or all).
-#   For each selected group, enables and starts Remote Registry, queries manufacturer/model,
-#   and writes Info.txt files to Desktop\Lanes, Desktop\Scales, Desktop\BackOffices.
-#   Also stores info in $script:LaneHardwareInfo, $script:ScaleHardwareInfo, $script:BackofficeHardwareInfo.
-#   (Uses variables populated by Retrieve_Nodes.)
+#   Displays a Windows Form with tabs for Lanes, Scales, and Backoffices, allowing selection via checkboxes.
+#   For selected nodes, enables and starts Remote Registry if necessary, queries hardware info (manufacturer, model, CPU, RAM)
+#   using WMI (preferred) or REG.exe (fallback), and restores Remote Registry state.
+#   Writes sorted Info.txt files to Desktop\Lanes, Desktop\Scales, Desktop\BackOffices.
+#   Stores results in $script:LaneHardwareInfo, $script:ScaleHardwareInfo, $script:BackofficeHardwareInfo.
+#   (Assumes variables populated by Retrieve_Nodes; handles non-Windows devices gracefully.)
 #
-# Author: Alex_C.T
+# Improvements:
+#   - Added restoration of Remote Registry service state (query before, restore after).
+#   - Improved error handling with specific messages (e.g., for non-Windows scales).
+#   - Added progress feedback via Write_Log as jobs complete.
+#   - Enhanced fallbacks: Added CIM for RAM/CPU if WMI fails but PSRemoting possible.
+#   - Sorted output numerically if machine names are numeric (e.g., IPs for scales).
+#   - Validation: Skip if no selections; better user feedback.
+#   - Granular timeout handling: More detailed logging.
+#   - Code cleanup: Reduced duplication; inlined all logic without helpers.
+#   - Compatibility: Removed ternary operators for PS5 support; used if-else instead.
+#   - For scales: Process Bizerba (Windows) with WMI/CIM/REG; skip Ishida (non-Windows) with message.
+#
+# Author: Alex_C.T (original); Improved by Grok
 # ===================================================================================================
 
 function Get_Remote_Machine_Info
@@ -2117,8 +2130,9 @@ function Get_Remote_Machine_Info
 	Write_Log "`r`n==================== Starting Get_Remote_Machine_Info ====================`r`n" "blue"
 	
 	$maxConcurrentJobs = 10
-	$wmiTimeoutSeconds = 10 # WMI should be very fast if working
-	$regTimeoutSeconds = 20 # REG.exe fallback is slower
+	$wmiTimeoutSeconds = 10 # WMI should be fast
+	$cimTimeoutSeconds = 10 # CIM should be fast
+	$regTimeoutSeconds = 20 # REG.exe is slower
 	
 	$script:LaneHardwareInfo = $null
 	$script:ScaleHardwareInfo = $null
@@ -2126,8 +2140,9 @@ function Get_Remote_Machine_Info
 	
 	# Build lists from FunctionResults (populate with Retrieve_Nodes first!)
 	$laneNames = $script:FunctionResults['LaneMachines'].Values | Where-Object { $_ } | Select-Object -Unique
-	$scaleNames = $script:FunctionResults['ScaleIPNetworks'].Values | ForEach-Object { $_.FullIP } | Where-Object { $_ } | Select-Object -Unique
+	$scaleIPs = $script:FunctionResults['ScaleIPNetworks'].Values | ForEach-Object { $_.FullIP } | Where-Object { $_ } | Select-Object -Unique
 	$boNames = $script:FunctionResults['BackofficeMachines'].Values | Where-Object { $_ } | Select-Object -Unique
+	$scaleBrands = $script:FunctionResults['ScaleIPNetworks']
 	
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
@@ -2165,7 +2180,7 @@ function Get_Remote_Machine_Info
 	$clbScales.Size = New-Object System.Drawing.Size(370, 300)
 	$clbScales.CheckOnClick = $true
 	$tabScales.Controls.Add($clbScales)
-	foreach ($scale in $scaleNames | Sort-Object) { $clbScales.Items.Add($scale) | Out-Null }
+	foreach ($scale in $scaleIPs | Sort-Object) { $clbScales.Items.Add($scale) | Out-Null }
 	$tabs.TabPages.Add($tabScales)
 	
 	# Backoffices Tab
@@ -2224,7 +2239,7 @@ function Get_Remote_Machine_Info
 	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
 	{
 		Write_Log "Get_Remote_Machine_Info cancelled by user." "yellow"
-		return
+		return $false
 	}
 	
 	# Gather selections
@@ -2244,6 +2259,13 @@ function Get_Remote_Machine_Info
 		if ($clbBO.GetItemChecked($i)) { $selectedBOs += $clbBO.Items[$i] }
 	}
 	
+	# Validation: No selections
+	if ($selectedLanes.Count -eq 0 -and $selectedScales.Count -eq 0 -and $selectedBOs.Count -eq 0)
+	{
+		Write_Log "No nodes selected. Operation aborted." "yellow"
+		return $false
+	}
+	
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
 	$scalesDir = Join-Path $desktop "Scales"
@@ -2254,11 +2276,12 @@ function Get_Remote_Machine_Info
 	}
 	
 	foreach ($section in @(
-			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt' },
-			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt' },
-			@{ Name = 'BackOffices'; Selected = $selectedBOs; Dir = $backofficesDir; ScriptVar = 'BackofficeHardwareInfo'; InfoLinesVar = 'BOInfoLines'; ResultsVar = 'BOResults'; FileName = 'Backoffices_Info.txt' }
+			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt'; IsWindows = $true },
+			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt'; IsWindows = $null }, # Determined per scale
+			@{ Name = 'BackOffices'; Selected = $selectedBOs; Dir = $backofficesDir; ScriptVar = 'BackofficeHardwareInfo'; InfoLinesVar = 'BOInfoLines'; ResultsVar = 'BOResults'; FileName = 'Backoffices_Info.txt'; IsWindows = $true }
 		))
 	{
+		if ($section.Selected.Count -eq 0) { continue }
 		Write_Log "Processing $($section.Name) nodes..." "yellow"
 		Set-Variable -Name $($section.ResultsVar) -Value @{ }
 		Set-Variable -Name $($section.InfoLinesVar) -Value @()
@@ -2266,6 +2289,40 @@ function Get_Remote_Machine_Info
 		$pending = @{ }
 		foreach ($remote in ($section.Selected | Sort-Object))
 		{
+			$isWindows = $section.IsWindows
+			if ($section.Name -eq 'Scales')
+			{
+				$isBizerba = $false
+				foreach ($scale in $scaleBrands.Values)
+				{
+					if ($scale.FullIP -eq $remote -and $scale.ScaleBrand -eq 'Bizerba')
+					{
+						$isBizerba = $true
+						break
+					}
+				}
+				if (-not $isBizerba)
+				{
+					$info = @{
+						Success		       = $false
+						SystemManufacturer = $null
+						SystemProductName  = $null
+						CPU			       = $null
+						RAM			       = $null
+						Error			   = "Non-Windows scale (e.g., Ishida); skipping."
+					}
+					$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
+					$results[$remote] = $info
+					Set-Variable -Name $($section.ResultsVar) -Value $results
+					$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
+					$infolines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
+					Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
+					Write_Log "Skipped $remote ($($section.Name)): $($info.Error)" "yellow"
+					continue
+				}
+				$isWindows = $true
+			}
+			
 			if (-not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
 			{
 				$info = @{
@@ -2274,7 +2331,7 @@ function Get_Remote_Machine_Info
 					SystemProductName  = $null
 					CPU			       = $null
 					RAM			       = $null
-					Error			   = "No hardware info could be retrieved (offline or unreachable)."
+					Error			   = "Offline or unreachable."
 				}
 				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
 				$results[$remote] = $info
@@ -2282,12 +2339,34 @@ function Get_Remote_Machine_Info
 				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 				$infolines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
 				Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
+				Write_Log "Skipped $remote ($($section.Name)): $($info.Error)" "red"
+				continue
+			}
+			
+			if (-not $isWindows)
+			{
+				$info = @{
+					Success		       = $false
+					SystemManufacturer = $null
+					SystemProductName  = $null
+					CPU			       = $null
+					RAM			       = $null
+					Error			   = "Non-Windows device; WMI/REG not supported."
+				}
+				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
+				$results[$remote] = $info
+				Set-Variable -Name $($section.ResultsVar) -Value $results
+				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
+				$infolines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
+				Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
+				Write_Log "Skipped $remote ($($section.Name)): $($info.Error)" "yellow"
 				continue
 			}
 			
 			$job = Start-Job -ScriptBlock {
 				param ($remote,
 					$wmiTimeoutSeconds,
+					$cimTimeoutSeconds,
 					$regTimeoutSeconds)
 				$info = @{
 					Success		       = $false
@@ -2298,31 +2377,22 @@ function Get_Remote_Machine_Info
 					Error			   = $null
 				}
 				
-				function Invoke-WithTimeout
+				# Inline: Get original RemoteRegistry state
+				$originalState = $null
+				try
 				{
-					param ([ScriptBlock]$code,
-						[int]$seconds)
-					$j = Start-Job -ScriptBlock $code
-					if (Wait-Job $j -Timeout $seconds)
-					{
-						$r = Receive-Job $j
-						Remove-Job $j -Force -ErrorAction SilentlyContinue
-						return $r
-					}
-					else
-					{
-						Stop-Job $j -ErrorAction SilentlyContinue
-						Remove-Job $j -Force -ErrorAction SilentlyContinue
-						return $null
-					}
+					$stateOutput = sc.exe "\\$remote" query RemoteRegistry 2>$null | Select-String "STATE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
+					$startTypeOutput = sc.exe "\\$remote" qc RemoteRegistry 2>$null | Select-String "START_TYPE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
+					$originalState = @{ State = $stateOutput; StartType = $startTypeOutput }
 				}
+				catch { }
 				
-				# 1. WMI
-				$wmiResult = Invoke-WithTimeout -seconds $wmiTimeoutSeconds -code {
+				# Inline: Timeout for WMI
+				$wmiJob = Start-Job -ScriptBlock {
 					try
 					{
 						$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $using:remote -ErrorAction Stop
-						$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $using:remote -ErrorAction Stop
+						$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $using:remote -ErrorAction Stop | Select-Object -First 1
 						@{
 							SystemManufacturer = $sys.Manufacturer
 							SystemProductName  = $sys.Model
@@ -2332,6 +2402,18 @@ function Get_Remote_Machine_Info
 					}
 					catch { $null }
 				}
+				if (Wait-Job $wmiJob -Timeout $wmiTimeoutSeconds)
+				{
+					$wmiResult = Receive-Job $wmiJob
+					Remove-Job $wmiJob -Force -ErrorAction SilentlyContinue
+				}
+				else
+				{
+					Stop-Job $wmiJob -ErrorAction SilentlyContinue
+					Remove-Job $wmiJob -Force -ErrorAction SilentlyContinue
+					$wmiResult = $null
+				}
+				
 				if ($wmiResult -and $wmiResult.SystemManufacturer -and $wmiResult.SystemProductName)
 				{
 					$info.SystemManufacturer = $wmiResult.SystemManufacturer
@@ -2342,48 +2424,99 @@ function Get_Remote_Machine_Info
 				}
 				else
 				{
-					# 2. reg.exe fallback (RAM always $null)
-					$regResult = Invoke-WithTimeout -seconds $regTimeoutSeconds -code {
+					# CIM fallback with separate timeout
+					$cimJob = Start-Job -ScriptBlock {
 						try
 						{
-							sc.exe \\$using:remote config RemoteRegistry start= auto | Out-Null
-							sc.exe \\$using:remote start RemoteRegistry | Out-Null
-							$manuf = reg.exe query "\\$using:remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-							$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
-							$prod = reg.exe query "\\$using:remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-							$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
-							$cpu = reg.exe query "\\$using:remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
-							$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-							$SystemManufacturer = $null
-							if ($manufMatch.Success) { $SystemManufacturer = $manufMatch.Groups[1].Value.Trim() }
-							$SystemProductName = $null
-							if ($prodMatch.Success) { $SystemProductName = $prodMatch.Groups[1].Value.Trim() }
-							$CPU = $null
-							if ($cpuMatch.Success) { $CPU = $cpuMatch.Groups[1].Value.Trim() }
+							$session = New-CimSession -ComputerName $using:remote -ErrorAction Stop
+							$sys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem
+							$cpu = Get-CimInstance -CimSession $session -ClassName Win32_Processor | Select-Object -First 1
+							Remove-CimSession $session
 							@{
-								SystemManufacturer = $SystemManufacturer
-								SystemProductName  = $SystemProductName
-								CPU			       = $CPU
-								RAM			       = $null
+								SystemManufacturer = $sys.Manufacturer
+								SystemProductName  = $sys.Model
+								CPU			       = $cpu.Name
+								RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
 							}
 						}
 						catch { $null }
 					}
-					if ($regResult -and $regResult.SystemManufacturer -and $regResult.SystemProductName)
+					if (Wait-Job $cimJob -Timeout $cimTimeoutSeconds)
 					{
-						$info.SystemManufacturer = $regResult.SystemManufacturer
-						$info.SystemProductName = $regResult.SystemProductName
-						$info.CPU = $regResult.CPU
-						$info.RAM = $null
+						$cimResult = Receive-Job $cimJob
+						Remove-Job $cimJob -Force -ErrorAction SilentlyContinue
+					}
+					else
+					{
+						Stop-Job $cimJob -ErrorAction SilentlyContinue
+						Remove-Job $cimJob -Force -ErrorAction SilentlyContinue
+						$cimResult = $null
+					}
+					
+					if ($cimResult -and $cimResult.SystemManufacturer -and $cimResult.SystemProductName)
+					{
+						$info.SystemManufacturer = $cimResult.SystemManufacturer
+						$info.SystemProductName = $cimResult.SystemProductName
+						$info.CPU = $cimResult.CPU
+						$info.RAM = $cimResult.RAM
 						$info.Success = $true
 					}
 					else
 					{
-						$info.Error = "All methods failed or timed out."
+						# 2. REG.exe fallback (no RAM)
+						try
+						{
+							if ($originalState.StartType -ne "AUTO_START" -and $originalState.StartType -ne "DEMAND_START")
+							{
+								sc.exe "\\$remote" config RemoteRegistry start= demand | Out-Null
+							}
+							if ($originalState.State -ne "RUNNING")
+							{
+								sc.exe "\\$remote" start RemoteRegistry | Out-Null
+								Start-Sleep -Milliseconds 500 # Brief wait for service start
+							}
+							
+							$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+							$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+							$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+							$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+							$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+							$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+							
+							$SystemManufacturer = if ($manufMatch.Success) { $manufMatch.Groups[1].Value.Trim() }
+							else { $null }
+							$SystemProductName = if ($prodMatch.Success) { $prodMatch.Groups[1].Value.Trim() }
+							else { $null }
+							$CPU = if ($cpuMatch.Success) { $cpuMatch.Groups[1].Value.Trim() }
+							else { $null }
+							
+							if ($SystemManufacturer -and $SystemProductName)
+							{
+								$info.SystemManufacturer = $SystemManufacturer
+								$info.SystemProductName = $SystemProductName
+								$info.CPU = $CPU
+								$info.RAM = $null # No reliable REG fallback for RAM
+								$info.Success = $true
+							}
+							else
+							{
+								$info.Error = "REG query failed to retrieve complete info."
+							}
+						}
+						catch
+						{
+							$info.Error = "REG fallback failed: $_"
+						}
+						finally
+						{
+							# Inline: Restore service state
+							if ($originalState.State -ne "RUNNING") { sc.exe "\\$remote" stop RemoteRegistry | Out-Null }
+							if ($originalState.StartType) { sc.exe "\\$remote" config RemoteRegistry start= $originalState.StartType | Out-Null }
+						}
 					}
 				}
-				return @{ Machine = $remote; Info = $info }
-			} -ArgumentList $remote, $wmiTimeoutSeconds, $regTimeoutSeconds
+				return @{ Machine = $remote; Info = $info; OriginalState = $originalState }
+			} -ArgumentList $remote, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds
 			
 			$jobs += $job
 			$pending[$job.Id] = $remote
@@ -2399,6 +2532,14 @@ function Get_Remote_Machine_Info
 						$result = Receive-Job $j
 						$remoteName = $result.Machine
 						$info = $result.Info
+						# Inline: Restore if not done in job (edge case)
+						$originalState = $result.OriginalState
+						if ($originalState)
+						{
+							if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null }
+							if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null }
+						}
+						
 						$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
 						$results[$remoteName] = $info
 						Set-Variable -Name $($section.ResultsVar) -Value $results
@@ -2406,18 +2547,18 @@ function Get_Remote_Machine_Info
 						if ($info.Success)
 						{
 							$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
-							if ($info.RAM -ne $null)
-							{
-								$line += " | RAM: $($info.RAM) GB"
-							}
+							if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
+							Write_Log "Processed $remoteName ($($section.Name)): Success" "green"
 						}
 						elseif ($info.Error)
 						{
 							$line += " [Hardware info unavailable]  Error: $($info.Error)"
+							Write_Log "Processed $remoteName ($($section.Name)): Error - $($info.Error)" "red"
 						}
 						else
 						{
 							$line += " [No hardware info found]"
+							Write_Log "Processed $remoteName ($($section.Name)): No info" "yellow"
 						}
 						$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 						$infolines += $line
@@ -2439,7 +2580,7 @@ function Get_Remote_Machine_Info
 						SystemProductName  = $null
 						CPU			       = $null
 						RAM			       = $null
-						Error			   = "Timed out"
+						Error			   = "Job timed out"
 					}
 					$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
 					$results[$remoteName] = $info
@@ -2448,6 +2589,7 @@ function Get_Remote_Machine_Info
 					$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 					$infolines += $line
 					Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
+					Write_Log "Processed $remoteName ($($section.Name)): Timed out" "red"
 					Stop-Job $oldest -ErrorAction SilentlyContinue
 					Remove-Job $oldest -Force -ErrorAction SilentlyContinue
 					$jobs = $jobs | Where-Object { $_.Id -ne $oldest.Id }
@@ -2473,14 +2615,33 @@ function Get_Remote_Machine_Info
 						SystemProductName  = $null
 						CPU			       = $null
 						RAM			       = $null
-						Error			   = "Timed out"
+						Error			   = "Job timed out"
 					}
+					Write_Log "Processed $remoteName ($($section.Name)): Timed out (cleanup)" "red"
 				}
 				else
 				{
 					$result = Receive-Job $j
 					$info = $result.Info
 					$remoteName = $result.Machine
+					# Inline: Restore service state
+					$originalState = $result.OriginalState
+					if ($originalState)
+					{
+						if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null }
+						if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null }
+					}
+					if ($info.Success)
+					{
+						$status = 'Success'
+						$color = 'green'
+					}
+					else
+					{
+						$status = "Error - $($info.Error)"
+						$color = 'red'
+					}
+					Write_Log "Processed $remoteName ($($section.Name)): $status" $color
 				}
 				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
 				$results[$remoteName] = $info
@@ -2489,10 +2650,7 @@ function Get_Remote_Machine_Info
 				if ($info.Success)
 				{
 					$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
-					if ($info.RAM -ne $null)
-					{
-						$line += " | RAM: $($info.RAM) GB"
-					}
+					if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
 				}
 				elseif ($info.Error)
 				{
@@ -2512,15 +2670,21 @@ function Get_Remote_Machine_Info
 		
 		Set-Variable -Name ("script:" + $section.ScriptVar) -Value (Get-Variable -Name $($section.ResultsVar) -ValueOnly) -Scope Script
 		$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-		# === Write output lines in descending order ===
+		# === Write output lines in sorted order (numerical if applicable) ===
 		if ($infolines.Count)
 		{
 			$sortedLines = $infolines | Sort-Object {
-				if ($_ -match "^Machine Name: ([^|]+)") { $matches[1] }
+				if ($_ -match "^Machine Name: ([^|]+)")
+				{
+					$name = $matches[1]
+					if ($name -match '^\d+$' -or $name -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') { [int]$name.Split('.')[-1] }
+					else { $name }
+				}
 				else { $_ }
 			}
 			$filePath = Join-Path $section.Dir $section.FileName
 			$sortedLines -join "`r`n" | Set-Content -Path $filePath -Encoding Default
+			Write_Log "Exported $($section.Name) info to $filePath" "green"
 		}
 		Write_Log "Completed processing $($section.Name).`r`n" "green"
 	}
@@ -8336,11 +8500,12 @@ function Open_Selected_Scale/s_C_Path
 #                      FUNCTION: Remove_Duplicate_Files_From_toBizerba
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts the user to either run the Duplicate File Monitor now (as a background job) or
+#   Prompts the user to either run the Duplicate File Monitor now (as a background job, controllable via the GUI) or
 #   schedule it as a Windows scheduled task (runs at logon, hidden, always-on).
 #   Monitors the folder 'C:\Bizerba\RetailConnect\BMS\toBizerba' for duplicate files by content
 #   (using hash), and deletes all but the oldest file (by CreationTime).
 #   Writes PowerShell script to disk and manages the Windows scheduled task.
+#   For "Run Now", starts as a job tied to the session, keeps the GUI open with a "Stop" button, and stops the job on close/stop.
 #   Author: Alex_C.T
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
@@ -8359,13 +8524,15 @@ function Remove_Duplicate_Files_From_toBizerba
 	$psScriptPath = Join-Path $scriptFolder $psScriptName
 	$TargetPath = "C:\Bizerba\RetailConnect\BMS\toBizerba"
 	$taskName = "Remove_Duplicate_Files_From_toBizerba"
+	$logPath = Join-Path $scriptFolder "Remove_Duplicates.log"
 	
 	if (-not (Test-Path $scriptFolder)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
 	
-	# Write the PowerShell watcher script (with param)
+	# Write the PowerShell watcher script (with param and logging)
 	$psScriptContent = @"
-param([int]`$IntervalSeconds = 2)
+param([int]`$IntervalSeconds = 5)
 `$Path = '$TargetPath'
+`$LogPath = '$logPath'
 function Remove-DuplicateFilesByContent {
     param([string]`$Path)
     `$files = Get-ChildItem -Path `$Path -File -ErrorAction SilentlyContinue
@@ -8379,15 +8546,22 @@ function Remove-DuplicateFilesByContent {
     foreach (`$entry in `$hashTable.GetEnumerator()) {
         `$fileList = `$entry.Value
         if (`$fileList.Count -gt 1) {
+            Add-Content -Path `$LogPath -Value "`$(Get-Date): Found duplicates for hash `$($entry.Key): `$(`$fileList.Count) files"
             `$fileList = `$fileList | Sort-Object CreationTime
             `$original = `$fileList[0]
             `$duplicates = `$fileList[1..(`$fileList.Count - 1)]
             foreach (`$dup in `$duplicates) {
-                try { Remove-Item `$dup.FullName -Force } catch {}
+                try { 
+                    Remove-Item `$dup.FullName -Force 
+                    Add-Content -Path `$LogPath -Value "`$(Get-Date): Removed duplicate `$($dup.FullName), kept `$($original.FullName)"
+                } catch {
+                    Add-Content -Path `$LogPath -Value "`$(Get-Date): Failed to remove `$($dup.FullName): `$_"
+                }
             }
         }
     }
 }
+Add-Content -Path `$LogPath -Value "`$(Get-Date): Monitor started with interval `$IntervalSeconds seconds"
 while (`$true) {
     Remove-DuplicateFilesByContent -Path `$Path
     Start-Sleep -Seconds `$IntervalSeconds
@@ -8396,7 +8570,7 @@ while (`$true) {
 	Set-Content -Path $psScriptPath -Value $psScriptContent -Encoding UTF8
 	
 	# ---- Check if task exists ----
-	$existingTask = schtasks /Query /TN "$taskName" 2>&1 | Select-String -Pattern "$taskName"
+	$hasTask = [bool](schtasks /Query /TN "$taskName" 2>$null)
 	
 	# --- Build the GUI ---
 	Add-Type -AssemblyName System.Windows.Forms
@@ -8415,11 +8589,11 @@ while (`$true) {
 	$label.TextAlign = 'MiddleCenter'
 	$form.Controls.Add($label)
 	
-	$btnNow = New-Object System.Windows.Forms.Button
-	$btnNow.Text = "Run Now (as Job)"
-	$btnNow.Location = New-Object System.Drawing.Point(10, 70)
-	$btnNow.Size = New-Object System.Drawing.Size(110, 35)
-	$form.Controls.Add($btnNow)
+	$btnRunNow = New-Object System.Windows.Forms.Button
+	$btnRunNow.Text = "Run Now (as Job)"
+	$btnRunNow.Location = New-Object System.Drawing.Point(10, 70)
+	$btnRunNow.Size = New-Object System.Drawing.Size(110, 35)
+	$form.Controls.Add($btnRunNow)
 	
 	$btnSchedule = New-Object System.Windows.Forms.Button
 	$btnSchedule.Text = "Schedule (background)"
@@ -8439,68 +8613,133 @@ while (`$true) {
 	$lblSec.Size = New-Object System.Drawing.Size(110, 22)
 	$form.Controls.Add($lblSec)
 	
-	$txtSec = New-Object System.Windows.Forms.TextBox
-	$txtSec.Text = "2"
-	$txtSec.Location = New-Object System.Drawing.Point(185, 118)
-	$txtSec.Size = New-Object System.Drawing.Size(50, 24)
-	$form.Controls.Add($txtSec)
+	$numSec = New-Object System.Windows.Forms.NumericUpDown
+	$numSec.Location = New-Object System.Drawing.Point(185, 118)
+	$numSec.Size = New-Object System.Drawing.Size(50, 24)
+	$numSec.Minimum = 1
+	$numSec.Maximum = 3600
+	$numSec.Value = 5
+	$form.Controls.Add($numSec)
 	
 	# --- Delete Scheduled Task button, only enabled if task exists ---
 	$btnDeleteTask = New-Object System.Windows.Forms.Button
 	$btnDeleteTask.Text = "Delete Scheduled Task"
 	$btnDeleteTask.Location = New-Object System.Drawing.Point(270, 70)
 	$btnDeleteTask.Size = New-Object System.Drawing.Size(140, 35)
-	$btnDeleteTask.Enabled = $false
-	if ($existingTask) { $btnDeleteTask.Enabled = $true }
+	$btnDeleteTask.Enabled = $hasTask
 	$form.Controls.Add($btnDeleteTask)
 	
 	$selectedAction = [ref] ""
-	$intervalSeconds = [ref] 2
+	$intervalSeconds = [ref] 5
 	$deleteScheduledTask = [ref]$false
+	$monitorJob = $null
 	
-	$btnNow.Add_Click({
-			if ($txtSec.Text -match '^\d+$' -and [int]$txtSec.Text -ge 1)
+	# Handle form closing: stop job and child processes if running
+	$form.Add_FormClosing({
+			if ($monitorJob -and $monitorJob.State -eq 'Running')
 			{
-				$selectedAction.Value = "now"
-				$intervalSeconds.Value = [int]$txtSec.Text
-				$form.DialogResult = 'OK'; $form.Close()
+				try
+				{
+					Stop-Job -Job $monitorJob -Force
+					Remove-Job -Job $monitorJob -Force
+					Write_Log "Monitor job stopped on form close." "yellow"
+				}
+				catch
+				{
+					Write_Log "Failed to stop monitor job on close: $_" "red"
+				}
+			}
+			# Stop any child powershell processes
+			Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
+				$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
+			} | ForEach-Object {
+				try
+				{
+					Stop-Process -Id $_.ProcessId -Force
+					Write_Log "Stopped powershell.exe PID $($_.ProcessId) on form close" "yellow"
+				}
+				catch
+				{
+					Write_Log "Failed to stop powershell.exe PID $($_.ProcessId) on close" "red"
+				}
+			}
+		})
+	
+	$btnRunNow.Add_Click({
+			if ($btnRunNow.Text -eq "Run Now (as Job)")
+			{
+				$intervalSeconds.Value = $numSec.Value
+				$monitorJob = Start-Job -ScriptBlock {
+					param ($scriptPath,
+						$interval)
+					& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath -IntervalSeconds $interval
+				} -ArgumentList $psScriptPath, $intervalSeconds.Value
+				
+				Write_Log "Started duplicate file monitor as job (ID: $($monitorJob.Id))." "green"
+				
+				$btnRunNow.Text = "Stop Monitor"
+				$btnSchedule.Enabled = $false
+				$btnDeleteTask.Enabled = $false
+				$btnCancel.Text = "Close (Monitor Running)"
 			}
 			else
 			{
-				[System.Windows.Forms.MessageBox]::Show("Enter a valid integer interval (1+ seconds).")
+				if ($monitorJob -and $monitorJob.State -eq 'Running')
+				{
+					try
+					{
+						Stop-Job -Job $monitorJob -Force
+						Remove-Job -Job $monitorJob -Force
+						Write_Log "Monitor job stopped by user." "yellow"
+					}
+					catch
+					{
+						Write_Log "Failed to stop monitor job: $_" "red"
+					}
+				}
+				# Stop any child powershell processes
+				Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
+					$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
+				} | ForEach-Object {
+					try
+					{
+						Stop-Process -Id $_.ProcessId -Force
+						Write_Log "Stopped powershell.exe PID $($_.ProcessId) by user stop" "yellow"
+					}
+					catch
+					{
+						Write_Log "Failed to stop powershell.exe PID $($_.ProcessId)" "red"
+					}
+				}
+				$btnRunNow.Text = "Run Now (as Job)"
+				$btnSchedule.Enabled = $true
+				$btnDeleteTask.Enabled = $hasTask
+				$btnCancel.Text = "Cancel"
 			}
 		})
+	
 	$btnSchedule.Add_Click({
-			if ($txtSec.Text -match '^\d+$' -and [int]$txtSec.Text -ge 1)
-			{
-				$selectedAction.Value = "schedule"
-				$intervalSeconds.Value = [int]$txtSec.Text
-				$form.DialogResult = 'OK'; $form.Close()
-			}
-			else
-			{
-				[System.Windows.Forms.MessageBox]::Show("Enter a valid integer interval (1+ seconds).")
-			}
+			$intervalSeconds.Value = $numSec.Value
+			$selectedAction.Value = "schedule"
+			$form.Close()
 		})
+	
 	$btnCancel.Add_Click({
-			$selectedAction.Value = "cancel"
-			$form.DialogResult = 'Cancel'; $form.Close()
+			$form.Close()
 		})
+	
 	$btnDeleteTask.Add_Click({
 			$deleteScheduledTask.Value = $true
-			$form.DialogResult = 'OK'; $form.Close()
+			$form.Close()
 		})
-	
-	$form.AcceptButton = $btnNow
-	$form.CancelButton = $btnCancel
 	
 	$form.ShowDialog() | Out-Null
 	
-	# --- Inline STOP logic (no helper, no nested functions) ---
-	# Stops all powershell.exe processes running this script, and all jobs started by this script
-	if ($deleteScheduledTask.Value -or $selectedAction.Value -eq "schedule" -or $selectedAction.Value -eq "now")
+	# --- Post-dialog actions ---
+	
+	# Stop existing processes/jobs if deleting or scheduling
+	if ($deleteScheduledTask.Value -or $selectedAction.Value -eq "schedule")
 	{
-		# Stop powershell.exe processes matching our script
 		Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
 			$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
 		} | ForEach-Object {
@@ -8514,7 +8753,6 @@ while (`$true) {
 				Write_Log "Failed to stop powershell.exe PID $($_.ProcessId)" "red"
 			}
 		}
-		# Stop jobs from this session
 		Get-Job | Where-Object {
 			$_.Command -like "*$psScriptPath*"
 		} | ForEach-Object {
@@ -8528,102 +8766,71 @@ while (`$true) {
 	if ($deleteScheduledTask.Value)
 	{
 		$deleteOut = schtasks /Delete /TN "$taskName" /F 2>&1
-		if ($LASTEXITCODE -ne 0 -and $deleteOut -notmatch "cannot find the file specified")
+		if ($LASTEXITCODE -ne 0 -and -not $deleteOut -match "cannot find the file specified")
 		{
-			Write_Log "Failed to delete scheduled task. schtasks said: $deleteOut" "Red"
+			Write_Log "Failed to delete scheduled task: $deleteOut" "red"
 		}
 		else
 		{
-			Write_Log "Scheduled task '$taskName' deleted." "Green"
+			Write_Log "Scheduled task deleted." "green"
 		}
-		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Function Completed ====================" "blue"
+		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 		return
 	}
 	
-	if ($selectedAction.Value -eq "cancel" -or -not $selectedAction.Value)
+	if (-not $selectedAction.Value)
 	{
-		Write_Log "User cancelled Duplicate Monitor scheduling." "Yellow"
-		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Function Completed ====================" "blue"
+		Write_Log "User cancelled." "yellow"
+		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 		return
 	}
 	
-	# --- If Run Now ---
-	if ($selectedAction.Value -eq "now")
-	{
-		$job = Start-Job -ScriptBlock {
-			param ($psScript,
-				$interval)
-			& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $psScript -IntervalSeconds $interval
-		} -ArgumentList $psScriptPath, $intervalSeconds.Value
-		Write_Log "Duplicate monitor running as job." "Green"
-		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Function Completed ====================" "blue"
-		return
-	}
-	
-	# --- If Schedule Task ---
 	if ($selectedAction.Value -eq "schedule")
 	{
-		# Check the script file exists first!
 		if (-not (Test-Path $psScriptPath))
 		{
-			Write_Log "Script path $psScriptPath does not exist! Aborting." "Red"
+			Write_Log "Script file missing: $psScriptPath" "red"
 			return
 		}
 		
-		$escapedPsScriptPath = $psScriptPath.Replace('"', '""')
-		$action = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$escapedPsScriptPath`" -IntervalSeconds $($intervalSeconds.Value)"
-		Write_Log "Task action: $action" "yellow"
+		$escapedPath = $psScriptPath -replace '"', '""'
+		$action = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$escapedPath`" -IntervalSeconds $($intervalSeconds.Value)"
 		
-		# Check if the scheduled task exists before attempting to delete it
-		$exists = schtasks /Query /TN "$taskName" 2>&1 | Select-String -Quiet -Pattern "$taskName"
-		if ($exists)
+		# Delete if exists
+		if (schtasks /Query /TN "$taskName" 2>$null)
 		{
-			$deleteOut = schtasks /Delete /TN "$taskName" /F 2>&1
-			if ($LASTEXITCODE -ne 0)
-			{
-				Write_Log "Failed to delete scheduled task. schtasks said: $deleteOut" "Red"
-			}
-			else
-			{
-				Write_Log "Scheduled task '$taskName' deleted." "Green"
-			}
-		}
-		else
-		{
-			Write_Log "Scheduled task '$taskName' does not exist, nothing to delete." "Yellow"
+			schtasks /Delete /TN "$taskName" /F | Out-Null
 		}
 		
-		$createTaskArgs = @(
+		$createArgs = @(
 			'/Create',
 			'/TN', $taskName,
 			'/TR', $action,
-			'/SC', 'ONSTART',
+			'/SC', 'ONLOGON',
 			'/RL', 'HIGHEST',
 			'/RU', 'SYSTEM',
 			'/F'
 		)
-		$createOut = schtasks @createTaskArgs 2>&1
+		$createOut = schtasks @createArgs 2>&1
 		if ($LASTEXITCODE -ne 0)
 		{
-			Write_Log "Failed to create scheduled task. schtasks said: $createOut" "Red"
+			Write_Log "Failed to schedule task: $createOut" "red"
 			return
 		}
+		Write_Log "Task scheduled successfully." "green"
 		
-		Write_Log "Scheduled task created successfully for Duplicate File Monitor (runs as SYSTEM, every $($intervalSeconds.Value) seconds)." "Green"
+		# Start immediately
 		try
 		{
-			Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$psScriptPath`"", "-IntervalSeconds", "$($intervalSeconds.Value)"
-			Write_Log "Duplicate monitor started immediately after scheduling." "Green"
+			Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$psScriptPath`" -IntervalSeconds $($intervalSeconds.Value)"
+			Write_Log "Started monitor immediately." "green"
 		}
 		catch
 		{
-			Write_Log "Failed to start Duplicate File Monitor immediately after scheduling." "Yellow"
+			Write_Log "Failed to start immediately: $_" "yellow"
 		}
-		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Function Completed ====================" "blue"
-		return
+		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 	}
-	
-	Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -8640,7 +8847,7 @@ while (`$true) {
 # ===================================================================================================
 
 function Update_Scales_Specials_Interactive
-{	
+{
 	Write_Log "`r`n==================== Starting Update_Scales_Specials_Interactive Function ====================`r`n" "blue"
 	
 	$DeployRestored = [ref]$false
