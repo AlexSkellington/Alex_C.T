@@ -88,9 +88,8 @@ $fixedDrives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0
 
 foreach ($drive in $fixedDrives)
 {
-	# Case-insensitive match for any *storeman* variation in directory name
+	# Check every top-level directory (no name filter) for the required subpath
 	$dirs = Get-ChildItem -Path "$($drive.Root)" -Directory -ErrorAction SilentlyContinue |
-	Where-Object { $_.Name -imatch 'storeman' } |
 	ForEach-Object {
 		$candidatePath = Join-Path $_.FullName 'Office\Dbs'
 		$files = Get-ChildItem -Path $candidatePath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue
@@ -3721,10 +3720,12 @@ function Repair_Windows
 		try
 		{
 			Write_Log "Updating Windows Defender signatures..." "blue"
-			& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -SignatureUpdate
+			$updateOutput = & "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -SignatureUpdate 2>&1
+			Write_Log "Windows Defender signatures update output: $updateOutput" "cyan"
 			Write_Log "Windows Defender signatures updated successfully." "green"
 			Write_Log "Running Windows Defender full scan..." "blue"
-			& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Scan -ScanType 2
+			$scanOutput = & "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Scan -ScanType 2 2>&1
+			Write_Log "Windows Defender full scan output: $scanOutput" "cyan"
 			Write_Log "Windows Defender full scan completed." "green"
 		}
 		catch { Write_Log "Defender update/scan failed: $_" "red" }
@@ -3736,10 +3737,12 @@ function Repair_Windows
 		try
 		{
 			Write_Log "Running DISM StartComponentCleanup..." "blue"
-			DISM /Online /Cleanup-Image /StartComponentCleanup /NoRestart
+			$dismCleanupOutput = DISM /Online /Cleanup-Image /StartComponentCleanup /NoRestart 2>&1
+			Write_Log "DISM StartComponentCleanup output: $dismCleanupOutput" "cyan"
 			Write_Log "DISM StartComponentCleanup completed." "green"
 			Write_Log "Running DISM RestoreHealth..." "blue"
-			DISM /Online /Cleanup-Image /RestoreHealth /NoRestart
+			$dismRestoreOutput = DISM /Online /Cleanup-Image /RestoreHealth /NoRestart 2>&1
+			Write_Log "DISM RestoreHealth output: $dismRestoreOutput" "cyan"
 			Write_Log "DISM RestoreHealth completed." "green"
 		}
 		catch { Write_Log "DISM failed: $_" "red" }
@@ -3751,7 +3754,8 @@ function Repair_Windows
 		try
 		{
 			Write_Log "Running System File Checker (SFC)..." "blue"
-			SFC /scannow
+			$sfcOutput = SFC /scannow 2>&1
+			Write_Log "System File Checker output: $sfcOutput" "cyan"
 			Write_Log "System File Checker completed." "green"
 		}
 		catch { Write_Log "SFC failed: $_" "red" }
@@ -3777,7 +3781,8 @@ function Repair_Windows
 			Write_Log "Optimizing all fixed drives..." "blue"
 			Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter } | ForEach-Object {
 				Write_Log "Optimizing drive: $($_.DriveLetter)" "blue"
-				Optimize-Volume -DriveLetter $_.DriveLetter -Verbose
+				$optimizeOutput = Optimize-Volume -DriveLetter $_.DriveLetter -Verbose 2>&1
+				Write_Log "Optimize drive output: $optimizeOutput" "cyan"
 			}
 			Write_Log "Disk optimization completed." "green"
 		}
@@ -3790,7 +3795,8 @@ function Repair_Windows
 		try
 		{
 			Write_Log "Scheduling Check Disk on C: drive..." "blue"
-			Start-Process "cmd.exe" -ArgumentList "/c echo Y|chkdsk C: /f /r" -Verb RunAs -Wait
+			$checkDiskOutput = Start-Process "cmd.exe" -ArgumentList "/c echo Y|chkdsk C: /f /r" -Verb RunAs -Wait -PassThru
+			Write_Log "Check Disk scheduling output: $checkDiskOutput" "cyan"
 			Write_Log "Check Disk scheduled. Restart may be required." "green"
 		}
 		catch { Write_Log "Check Disk scheduling failed: $_" "red" }
@@ -5520,7 +5526,7 @@ function Configure_System_Settings
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $false)]
-		[string]$UnorganizedFolderName = "My Unorganized Items"
+		[string]$UnorganizedFolderName = "Unorganized Items"
 	)
 	
 	Write_Log "`r`n==================== Starting Configure_System_Settings Function ====================`r`n" "blue"
@@ -5544,7 +5550,7 @@ function Configure_System_Settings
 		
 		# Define system icons and excluded folders
 		$systemIcons = @("This PC.lnk", "Network.lnk", "Control Panel.lnk", "Recycle Bin.lnk", "User's Files.lnk", "Execute(TBS_Maintenance_Script).bat", "Execute(MiniGhost).bat", "$scriptName")
-		$excludedFolders = @("Lanes", "Scales", "BackOffices", "My Unorganized Items")
+		$excludedFolders = @("Lanes", "Scales", "BackOffices", "Unorganized Items")
 		
 		# Create excluded folders if they don't exist
 		foreach ($folder in $excludedFolders)
@@ -7174,64 +7180,218 @@ function Send_Restart_All_Programs
 function Send_SERVER_time_to_Lanes
 {
 	param (
-		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber
+		[string]$StoreNumber,
+		[switch]$Schedule # Optional switch to enable scheduling mode
 	)
-	Write_Log "`r`n==================== Starting Send_SERVER_time_to_Lanes Function ====================`r`n" "blue"
 	
-	$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-	if (-not $nodes)
+	Write_Log "`r`n==================== Starting Time Sync ====================`r`n" "blue"
+	
+	if ($Schedule)
 	{
-		Write_Log "Failed to retrieve node information for store $StoreNumber." "red"
-		return
-	}
-	
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
-	if (-not $selection)
-	{
-		Write_Log "No lanes selected or selection cancelled. Exiting." "yellow"
-		return
-	}
-	
-	$lanes = $selection.Lanes
-	if (-not $lanes -or $lanes.Count -eq 0)
-	{
-		Write_Log "No valid lanes found. Exiting." "yellow"
-		return
-	}
-	
-	# Get date and time in required format
-	$currentDate = (Get-Date).ToString("MM/dd/yyyy")
-	$currentTime = (Get-Date).ToString("HHmmss")
-	
-	# Most direct: just send as @WIZRPL... (if your Launchpad accepts it)
-	$commandMessage = "@WIZRPL(DATE=$currentDate)@WIZRPL(TIME=$currentTime)"
-	
-	# If your lanes require the two-phase WINMAIL parsing (as in your doc), use this:
-	# $commandMessage = "Â©WIZRPL(DATE=$currentDate)Â©WIZRPL(TIME=$currentTime)"
-	
-	foreach ($lane in $lanes)
-	{
-		# Zero-pad lane number to 3 digits
-		$lanePadded = $lane.PadLeft(3, '0')
-		$machineName = $nodes.LaneMachines[$lane]
-		if (-not $machineName)
+		# Scheduling mode: Prompt for interval
+		Add-Type -AssemblyName System.Windows.Forms
+		$formInterval = New-Object System.Windows.Forms.Form
+		$formInterval.Text = "Set Sync Interval"
+		$formInterval.Size = New-Object System.Drawing.Size(300, 150)
+		$formInterval.StartPosition = "CenterScreen"
+		
+		$label = New-Object System.Windows.Forms.Label
+		$label.Text = "Enter interval in minutes:"
+		$label.Location = New-Object System.Drawing.Point(20, 20)
+		$formInterval.Controls.Add($label)
+		
+		$textBox = New-Object System.Windows.Forms.TextBox
+		$textBox.Location = New-Object System.Drawing.Point(20, 50)
+		$textBox.Size = New-Object System.Drawing.Size(240, 20)
+		$formInterval.Controls.Add($textBox)
+		
+		$okButton = New-Object System.Windows.Forms.Button
+		$okButton.Text = "OK"
+		$okButton.Location = New-Object System.Drawing.Point(100, 80)
+		$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+		$formInterval.Controls.Add($okButton)
+		
+		$result = $formInterval.ShowDialog()
+		if ($result -ne [System.Windows.Forms.DialogResult]::OK)
 		{
-			Write_Log "No machine found for lane $lane. Skipping." "yellow"
+			Write_Log "Scheduling canceled." "yellow"
+			return
+		}
+		
+		$intervalMinutes = $textBox.Text
+		if (-not [int]::TryParse($intervalMinutes, [ref]$null) -or [int]$intervalMinutes -le 0)
+		{
+			Write_Log "Invalid interval. Must be a positive integer." "red"
+			return
+		}
+		
+		$isScheduling = $true
+		$scheduleMo = "/mo $intervalMinutes"
+		$scheduleSc = "/sc minute"
+		$taskName = "ScheduledTimeSync"
+		$logMessage = "Scheduled time sync every $intervalMinutes minutes on lane"
+	}
+	else
+	{
+		$isScheduling = $false
+		$scheduleMo = ""
+		$scheduleSc = "/sc once"
+		$taskName = "SyncTime"
+		$logMessage = "Executed time sync on lane"
+		$scheduleSt = "" # Omit /st for immediate run
+	}
+	
+	# Use existing lane selection form to choose lanes
+	$laneSelection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	if (-not $laneSelection -or $laneSelection.Lanes.Count -eq 0)
+	{
+		Write_Log "No lanes selected for time sync." "yellow"
+		return
+	}
+	$selectedLanes = $laneSelection.Lanes # Array of lane numbers like '001', '002'
+	
+	# Get server IP reliably (from ping to self)
+	$serverIP = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1).IPv4Address.IPAddressToString
+	if (-not $serverIP)
+	{
+		$serverIP = $env:COMPUTERNAME # Fallback to hostname if IP fails
+	}
+	Write_Log "Using server IP/Hostname: $serverIP" "cyan" # Log for debugging
+	
+	foreach ($laneNumber in $selectedLanes)
+	{
+		# Pad lane number if needed (e.g., '1' -> '001')
+		$laneNumberPadded = $laneNumber.PadLeft(3, '0')
+		
+		# Get lane machine name
+		$laneMachine = $script:FunctionResults['LaneMachines'][$laneNumberPadded]
+		if (-not $laneMachine)
+		{
+			Write_Log "No machine name found for lane $laneNumberPadded." "red"
 			continue
 		}
-		$mailslotAddress = "\\$machineName\MailSlot\WIN$lanePadded"
-		$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
-		if ($result)
+		
+		# Direct command to run (use IP)
+		$command = "net time \\$serverIP /set /yes"
+		
+		# Try primary method: Create and run schtasks remotely
+		$success = $false
+		$stParam = if (-not $isScheduling) { $scheduleSt }
+		else { "" }
+		$createCmd = "schtasks /create /s $laneMachine /tn $taskName /tr `"$command`" $scheduleSc $scheduleMo $stParam /ru SYSTEM /f /rl HIGHEST"
+		$createOutput = Invoke-Expression $createCmd 2>&1
+		if ($LASTEXITCODE -eq 0)
 		{
-			Write_Log "Time sync command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lanePadded)." "green"
+			if (-not $isScheduling)
+			{
+				$runCmd = "schtasks /run /s $laneMachine /tn $taskName"
+				$runOutput = Invoke-Expression $runCmd 2>&1
+				if ($LASTEXITCODE -eq 0)
+				{
+					$success = $true
+				}
+				else
+				{
+					Write_Log "Run output for [$laneMachine]: $runOutput" "yellow"
+				}
+			}
+			else
+			{
+				$success = $true
+			}
+			if ($success)
+			{
+				Write_Log "$logMessage $laneNumberPadded." "green"
+			}
 		}
 		else
 		{
-			Write_Log "Failed to send time sync command to Machine $machineName (Store $StoreNumber, Lane $lanePadded)." "red"
+			Write_Log "Create output for [$laneMachine]: $createOutput" "yellow"
 		}
+		
+		if ($success)
+		{
+			if (-not $isScheduling)
+			{
+				# Wait for completion in one-time mode
+				Start-Sleep -Seconds 5
+				
+				# Delete the task remotely
+				$deleteCmd = "schtasks /delete /s $laneMachine /tn $taskName /f"
+				$deleteOutput = Invoke-Expression $deleteCmd 2>&1
+				if ($LASTEXITCODE -ne 0)
+				{
+					Write_Log "Delete output for [$laneMachine]: $deleteOutput" "yellow"
+				}
+			}
+			continue
+		}
+		else
+		{
+			Write_Log "schtasks failed for lane $laneNumberPadded. Falling back to file copy method." "yellow"
+		}
+		
+		# Fallback: Copy .bat to lane's %TEMP% and trigger @EXEC in XF folder
+		
+		# Build remote temp path (\\laneMachine\C$\Windows\Temp\sync_time.bat)
+		$remoteTempPath = "\\$laneMachine\C$\Windows\Temp\sync_time.bat"
+		
+		# Create local .bat file
+		$batContent = "@echo off`r`n$command"
+		$localBatPath = Join-Path $TempDir "sync_time_$laneNumberPadded.bat"
+		Set-Content -Path $localBatPath -Value $batContent -Encoding Ascii
+		
+		# Copy .bat to lane's temp folder
+		try
+		{
+			Copy-Item -Path $localBatPath -Destination $remoteTempPath -Force -ErrorAction Stop
+			Write_Log "Copied sync_time.bat to temp folder on lane $laneNumberPadded." "green"
+		}
+		catch
+		{
+			Write_Log "Failed to copy .bat to temp folder on lane [$laneNumberPadded]: $_" "red"
+			Remove-Item -Path $localBatPath -Force
+			continue
+		}
+		
+		# Clean up local .bat
+		Remove-Item -Path $localBatPath -Force
+		
+		# Build the lane's XF folder path on the server
+		$xfFolder = Join-Path $OfficePath "XF${StoreNumber}${laneNumberPadded}"
+		if (-not (Test-Path $xfFolder))
+		{
+			Write_Log "XF folder for lane $laneNumberPadded does not exist: $xfFolder" "red"
+			Remove-Item -Path $remoteTempPath -Force -ErrorAction SilentlyContinue
+			continue
+		}
+		
+		# Create @EXEC file in XF folder
+		$execFilePath = Join-Path $xfFolder "exec_time_sync.txt" # Or whatever extension; assume .txt
+		$execContent = "@EXEC(Run='C:\Windows\Temp\sync_time.bat')"
+		try
+		{
+			Set-Content -Path $execFilePath -Value $execContent -Encoding Ascii -ErrorAction Stop
+			# Clear the archive bit
+			$attr = (Get-Item $execFilePath).Attributes
+			Set-ItemProperty -Path $execFilePath -Name Attributes -Value ($attr -band -bnot [System.IO.FileAttributes]::Archive)
+			Write_Log "Created @EXEC trigger in XF folder for lane $laneNumberPadded and cleared archive bit." "green"
+		}
+		catch
+		{
+			Write_Log "Failed to create @EXEC file in XF folder: $_" "red"
+			Remove-Item -Path $remoteTempPath -Force -ErrorAction SilentlyContinue
+			continue
+		}
+		
+		# Wait for execution (adjust based on your system's polling time)
+		Start-Sleep -Seconds 10
+		
+		# Clean up: Remove the remote .bat (but not @EXEC, as lane deletes it)
+		Remove-Item -Path $remoteTempPath -Force -ErrorAction SilentlyContinue
 	}
-	Write_Log "`r`n==================== Send_SERVER_time_to_Lanes Function Completed ====================" "blue"
+	
+	Write_Log "`r`n==================== Ending Time Sync ====================`r`n" "blue"
 }
 
 # ===================================================================================================
@@ -10568,10 +10728,18 @@ if (-not $form)
 	############################################################################
 	# 13) Set the time on the lanes
 	############################################################################
-	$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set the time on lanes")
-	$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize the time for the selected lanes."
+	$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set/Schedule Time on Lanes")
+	$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize or schedule time sync for selected lanes."
 	$SetLaneTimeFromLocalItem.Add_Click({
-			Send_SERVER_time_to_Lanes -StoreNumber "$StoreNumber"
+			# Prompt for mode: one-time or schedule
+			$modeResult = [System.Windows.Forms.MessageBox]::Show(
+				"Do you want to schedule recurring sync? (Yes for schedule, No for one-time)",
+				"Choose Mode",
+				[System.Windows.Forms.MessageBoxButtons]::YesNo,
+				[System.Windows.Forms.MessageBoxIcon]::Question
+			)
+			$isSchedule = ($modeResult -eq [System.Windows.Forms.DialogResult]::Yes)
+			Send_SERVER_time_to_Lanes -StoreNumber $StoreNumber -Schedule:$isSchedule
 		})
 	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 	
