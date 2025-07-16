@@ -10826,9 +10826,9 @@ Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
 
-# Clear %Temp% folder on start
+<# Clear %Temp% folder on start
 $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
-$ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob
+$ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob #>
 
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
