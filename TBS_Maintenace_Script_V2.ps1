@@ -5552,19 +5552,16 @@ function Configure_System_Settings
 		$systemIcons = @("This PC.lnk", "Network.lnk", "Control Panel.lnk", "Recycle Bin.lnk", "User's Files.lnk", "Execute(TBS_Maintenance_Script).bat", "Execute(MiniGhost).bat", "$scriptName")
 		$excludedFolders = @("Lanes", "Scales", "BackOffices", "Unorganized Items")
 		
-		# Create excluded folders if they don't exist
-		foreach ($folder in $excludedFolders)
+		# Create Unorganized Items folder if it doesn't exist
+		$folderPath = Join-Path -Path $DesktopPath -ChildPath "Unorganized Items"
+		if (-not (Test-Path -Path $folderPath))
 		{
-			$folderPath = Join-Path -Path $DesktopPath -ChildPath $folder
-			if (-not (Test-Path -Path $folderPath))
-			{
-				New-Item -Path $folderPath -ItemType Directory | Out-Null
-				Write_Log "Created excluded folder: $folderPath" "green"
-			}
-			else
-			{
-				Write_Log "Excluded folder already exists: $folderPath" "Cyan"
-			}
+			New-Item -Path $folderPath -ItemType Directory | Out-Null
+			Write_Log "Created folder: $folderPath" "green"
+		}
+		else
+		{
+			Write_Log "Folder already exists: $folderPath" "Cyan"
 		}
 		
 		# Get all items on the desktop
