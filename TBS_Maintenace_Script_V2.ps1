@@ -2099,7 +2099,7 @@ function Get_All_VNC_Passwords
 }
 
 # ===================================================================================================
-#                              FUNCTION: Insert-TestItem
+#                              FUNCTION: Insert_Test_Item
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Inserts or updates a test item record (PLU '0020077700000') in the SCL_TAB, OBJ_TAB, POS_TAB, and PRICE_TAB tables
@@ -2133,10 +2133,11 @@ function Insert_Test_Item
 	
 	$preferredPLU = '0020077700000'
 	$alternativePLU = '0020777700000'
-	$PLU = $preferredPLU
+	$doInsert = $false
+	$PLU = $null
 	
-	# Check both F02 and F29 for "Test" or "Tecnica" (either one triggers delete)
-	$shouldDelete = $false
+	# 1. Check preferred PLU
+	$isPreferredTest = $false
 	try
 	{
 		$descPOS = ""
@@ -2145,46 +2146,71 @@ function Insert_Test_Item
 		if ($posResult) { $descPOS = $posResult.F02 }
 		$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$preferredPLU'"
 		if ($objResult) { $descOBJ = $objResult.F29 }
-		if ($descPOS -match '(?i)test' -or $descPOS -match '(?i)tecnica' -or
-			$descOBJ -match '(?i)test' -or $descOBJ -match '(?i)tecnica')
+		if ($descPOS -match '(?i)test' -or $descPOS -match '(?i)tecnica' -or $descOBJ -match '(?i)test' -or $descOBJ -match '(?i)tecnica')
 		{
-			$shouldDelete = $true
-		}
-		else
-		{
-			$PLU = $alternativePLU
+			$isPreferredTest = $true
 		}
 	}
-	catch { $shouldDelete = $true }
+	catch { }
 	
-	# --- SCL_TXT_TAB: Dynamically pick test F267 (777 or 7777) based on F1836 ---
-	$TestF267 = 777
-	$isTestRow = $false
-	try
+	if ($isPreferredTest)
 	{
-		$row = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F1836 FROM SCL_TXT_TAB WHERE F267 = $TestF267"
-		if ($row)
+		$PLU = $preferredPLU
+		$doInsert = $true
+	}
+	else
+	{
+		# 2. Check alternate PLU
+		$isAltTest = $false
+		try
 		{
-			$marker = $row.F1836
-			if ($marker -match '(?i)test' -or $marker -match '(?i)tecnica')
+			$descPOS = ""
+			$descOBJ = ""
+			$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$alternativePLU'"
+			if ($posResult) { $descPOS = $posResult.F02 }
+			$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$alternativePLU'"
+			if ($objResult) { $descOBJ = $objResult.F29 }
+			if ($descPOS -match '(?i)test' -or $descPOS -match '(?i)tecnica' -or $descOBJ -match '(?i)test' -or $descOBJ -match '(?i)tecnica')
+			{
+				$isAltTest = $true
+			}
+		}
+		catch { }
+		if ($isAltTest)
+		{
+			$PLU = $alternativePLU
+			$doInsert = $true
+		}
+	}
+	
+	if ($doInsert -and $PLU)
+	{
+		# --- SCL_TXT_TAB: Dynamically pick test F267 (777 or 7777) based on F1836 ---
+		$TestF267 = 777
+		$isTestRow = $false
+		try
+		{
+			$row = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F1836 FROM SCL_TXT_TAB WHERE F267 = $TestF267"
+			if ($row)
+			{
+				$marker = $row.F1836
+				if ($marker -match '(?i)test' -or $marker -match '(?i)tecnica')
+				{
+					$isTestRow = $true
+				}
+			}
+			else
 			{
 				$isTestRow = $true
 			}
 		}
-		else
+		catch { $isTestRow = $true }
+		if (-not $isTestRow)
 		{
-			$isTestRow = $true # No row exists; safe to use 777
+			$TestF267 = 7777
 		}
-	}
-	catch { $isTestRow = $true }
-	
-	if (-not $isTestRow)
-	{
-		$TestF267 = 7777
-	}
-	
-	if ($shouldDelete)
-	{
+		
+		# Delete old rows for the PLU and for SCL_TXT_TAB test row
 		$deleteQueries = @(
 			"DELETE FROM SCL_TAB WHERE F01 = '$PLU'",
 			"DELETE FROM OBJ_TAB WHERE F01 = '$PLU'",
@@ -2197,61 +2223,61 @@ function Insert_Test_Item
 			try { Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query }
 			catch { }
 		}
-	}
-	
-	# ===== Insert into SCL_TAB =====
-	try
-	{
-		Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+		
+		# ===== Insert into SCL_TAB =====
+		try
+		{
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
 INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F258, F267, F1952, F1964, F2581, F2582)
 VALUES ('$PLU', 'PAL', 'MANUAL', 1, 10, 777, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
 "@
-	}
-	catch { }
-	
-	# ===== Insert into OBJ_TAB =====
-	try
-	{
-		$F29 = 'Tecnica Test Item'
-		if ($F29.Length -gt 60) { $F29 = $F29.Substring(0, 60) }
-		Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+		}
+		catch { }
+		
+		# ===== Insert into OBJ_TAB =====
+		try
+		{
+			$F29 = 'Tecnica Test Item'
+			if ($F29.Length -gt 60) { $F29 = $F29.Substring(0, 60) }
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
 INSERT INTO OBJ_TAB (F01, F902, F1001, F21, F29, F270, F1118, F1959)
 VALUES ('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
 "@
-	}
-	catch { }
-	
-	# ===== Insert into POS_TAB =====
-	try
-	{
-		Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+		}
+		catch { }
+		
+		# ===== Insert into POS_TAB =====
+		try
+		{
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
 INSERT INTO POS_TAB (F01, F1000, F902, F1001, F02, F09, F79, F80, F82, F104, F115, F176, F178, F217, F1964, F2119)
 VALUES ('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '1', '0', '0', '1', '1', 1.0, '001', '1')
 "@
-	}
-	catch { }
-	
-	# ===== Insert into PRICE_TAB =====
-	try
-	{
-		Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+		}
+		catch { }
+		
+		# ===== Insert into PRICE_TAB =====
+		try
+		{
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
 INSERT INTO PRICE_TAB (F01, F1000, F126, F902, F1001, F21, F30, F31, F113, F1006, F1007, F1008, F1009, F1803)
 VALUES ('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate', '1858', 1.0)
 "@
-	}
-	catch { }
-	
-	# ===== Insert into SCL_TXT_TAB (no F04, no F1759, no F1964) =====
-	try
-	{
-		Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+		}
+		catch { }
+		
+		# ===== Insert into SCL_TXT_TAB =====
+		try
+		{
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
 INSERT INTO SCL_TXT_TAB
 (F267, F1000, F253, F297, F902, F1001, F1836)
 VALUES
 ($TestF267, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, 'Tecnica Test Item')
 "@
+		}
+		catch { }
 	}
-	catch { }
 }
 
 # ===================================================================================================
