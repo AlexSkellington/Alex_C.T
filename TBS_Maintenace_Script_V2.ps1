@@ -2135,13 +2135,14 @@ function Insert_Test_Item
 	$alternativePLU = '0020777700000'
 	$doInsert = $false
 	$PLU = $null
+	$TestF267 = 777
 	
-	# 1. Check preferred PLU
+	# Check preferred PLU
 	$isPreferredTest = $false
+	$descPOS = ""
+	$descOBJ = ""
 	try
 	{
-		$descPOS = ""
-		$descOBJ = ""
 		$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$preferredPLU'"
 		if ($posResult) { $descPOS = $posResult.F02 }
 		$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$preferredPLU'"
@@ -2153,15 +2154,11 @@ function Insert_Test_Item
 	}
 	catch { }
 	
-	if ($isPreferredTest)
+	if ($isPreferredTest -or ($descPOS -eq "" -and $descOBJ -eq ""))
 	{
+		# Preferred PLU is a test or does not exist, safe to use
 		$PLU = $preferredPLU
-		$doInsert = $true
-	}
-	elseif ($descPOS -eq "" -and $descOBJ -eq "")
-	{
-		# preferred PLU doesn't exist in either table, safe to create test
-		$PLU = $preferredPLU
+		$TestF267 = 777
 		$doInsert = $true
 	}
 	else
@@ -2182,47 +2179,17 @@ function Insert_Test_Item
 			}
 		}
 		catch { }
-		if ($isAltTest)
+		if ($isAltTest -or ($descPOS2 -eq "" -and $descOBJ2 -eq ""))
 		{
 			$PLU = $alternativePLU
-			$doInsert = $true
-		}
-		elseif ($descPOS2 -eq "" -and $descOBJ2 -eq "")
-		{
-			# alternative PLU doesn't exist in either table, safe to create test
-			$PLU = $alternativePLU
+			$TestF267 = 7777
 			$doInsert = $true
 		}
 	}
 	
 	if ($doInsert -and $PLU)
 	{
-		# --- SCL_TXT_TAB: Dynamically pick test F267 (777 or 7777) based on F1836 ---
-		$TestF267 = 777
-		$isTestRow = $false
-		try
-		{
-			$row = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F1836 FROM SCL_TXT_TAB WHERE F267 = $TestF267"
-			if ($row)
-			{
-				$marker = $row.F1836
-				if ($marker -match '(?i)test' -or $marker -match '(?i)tecnica')
-				{
-					$isTestRow = $true
-				}
-			}
-			else
-			{
-				$isTestRow = $true
-			}
-		}
-		catch { $isTestRow = $true }
-		if (-not $isTestRow)
-		{
-			$TestF267 = 7777
-		}
-		
-		# Delete old rows for the PLU and for SCL_TXT_TAB test row
+		# Always delete old rows for the chosen PLU and F267 code
 		$deleteQueries = @(
 			"DELETE FROM SCL_TAB WHERE F01 = '$PLU'",
 			"DELETE FROM OBJ_TAB WHERE F01 = '$PLU'",
@@ -2241,7 +2208,7 @@ function Insert_Test_Item
 		{
 			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
 INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F258, F267, F1952, F1964, F2581, F2582)
-VALUES ('$PLU', 'PAL', 'MANUAL', 1, 10, 777, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
+VALUES ('$PLU', 'PAL', 'MANUAL', 1, 10, $TestF267, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
 "@
 		}
 		catch { }
