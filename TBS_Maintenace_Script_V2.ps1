@@ -2158,19 +2158,25 @@ function Insert_Test_Item
 		$PLU = $preferredPLU
 		$doInsert = $true
 	}
+	elseif ($descPOS -eq "" -and $descOBJ -eq "")
+	{
+		# preferred PLU doesn't exist in either table, safe to create test
+		$PLU = $preferredPLU
+		$doInsert = $true
+	}
 	else
 	{
-		# 2. Check alternate PLU
+		# Check alternate PLU
 		$isAltTest = $false
+		$descPOS2 = ""
+		$descOBJ2 = ""
 		try
 		{
-			$descPOS = ""
-			$descOBJ = ""
 			$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$alternativePLU'"
-			if ($posResult) { $descPOS = $posResult.F02 }
+			if ($posResult) { $descPOS2 = $posResult.F02 }
 			$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$alternativePLU'"
-			if ($objResult) { $descOBJ = $objResult.F29 }
-			if ($descPOS -match '(?i)test' -or $descPOS -match '(?i)tecnica' -or $descOBJ -match '(?i)test' -or $descOBJ -match '(?i)tecnica')
+			if ($objResult) { $descOBJ2 = $objResult.F29 }
+			if ($descPOS2 -match '(?i)test' -or $descPOS2 -match '(?i)tecnica' -or $descOBJ2 -match '(?i)test' -or $descOBJ2 -match '(?i)tecnica')
 			{
 				$isAltTest = $true
 			}
@@ -2178,6 +2184,12 @@ function Insert_Test_Item
 		catch { }
 		if ($isAltTest)
 		{
+			$PLU = $alternativePLU
+			$doInsert = $true
+		}
+		elseif ($descPOS2 -eq "" -and $descOBJ2 -eq "")
+		{
+			# alternative PLU doesn't exist in either table, safe to create test
 			$PLU = $alternativePLU
 			$doInsert = $true
 		}
