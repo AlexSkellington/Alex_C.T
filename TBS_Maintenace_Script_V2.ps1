@@ -2157,6 +2157,32 @@ function Insert_Test_Item
 	}
 	catch { $shouldDelete = $true }
 	
+	# --- SCL_TXT_TAB: Dynamically pick test F267 (777 or 7777) based on F1836 ---
+	$TestF267 = 777
+	$isTestRow = $false
+	try
+	{
+		$row = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F1836 FROM SCL_TXT_TAB WHERE F267 = $TestF267"
+		if ($row)
+		{
+			$marker = $row.F1836
+			if ($marker -match '(?i)test' -or $marker -match '(?i)tecnica')
+			{
+				$isTestRow = $true
+			}
+		}
+		else
+		{
+			$isTestRow = $true # No row exists; safe to use 777
+		}
+	}
+	catch { $isTestRow = $true }
+	
+	if (-not $isTestRow)
+	{
+		$TestF267 = 7777
+	}
+	
 	if ($shouldDelete)
 	{
 		$deleteQueries = @(
@@ -2164,7 +2190,7 @@ function Insert_Test_Item
 			"DELETE FROM OBJ_TAB WHERE F01 = '$PLU'",
 			"DELETE FROM POS_TAB WHERE F01 = '$PLU'",
 			"DELETE FROM PRICE_TAB WHERE F01 = '$PLU'",
-			"DELETE FROM SCL_TXT_TAB WHERE F267 = 777 AND F297 = 'Ingredients Test'"
+			"DELETE FROM SCL_TXT_TAB WHERE F267 = $TestF267"
 		)
 		foreach ($query in $deleteQueries)
 		{
@@ -2222,7 +2248,7 @@ VALUES ('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate
 INSERT INTO SCL_TXT_TAB
 (F267, F1000, F253, F297, F902, F1001, F1836)
 VALUES
-(777, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, '')
+($TestF267, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, 'Tecnica Test Item')
 "@
 	}
 	catch { }
