@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.3.2"
-$VersionDate = "2025-07-11"
+$VersionNumber = "2.3.3"
+$VersionDate = "2025-07-18"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -2131,19 +2131,46 @@ function Insert_Test_Item
 	$nowFull = $now.ToString("yyyy-MM-dd HH:mm:ss.fff")
 	$nowDate = $now.ToString("yyyy-MM-dd 00:00:00.000")
 	
-	# ===== Delete existing test item from all tables =====
-	$deleteQueries = @(
-		"DELETE FROM SCL_TAB WHERE F01 = '0020077700000'",
-		"DELETE FROM OBJ_TAB WHERE F01 = '0020077700000'",
-		"DELETE FROM POS_TAB WHERE F01 = '0020077700000'",
-		"DELETE FROM PRICE_TAB WHERE F01 = '0020077700000'",
-		# SCL_TXT_TAB: Remove where all identifiers match
-		"DELETE FROM SCL_TXT_TAB WHERE F267 = 777 AND F297 = 'Ingredients Test'"
-	)
-	foreach ($query in $deleteQueries)
+	$preferredPLU = '0020077700000'
+	$alternativePLU = '0020777700000'
+	$PLU = $preferredPLU
+	
+	# Check both F02 and F29 for "Test" or "Tecnica" (either one triggers delete)
+	$shouldDelete = $false
+	try
 	{
-		try { Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query }
-		catch { }
+		$descPOS = ""
+		$descOBJ = ""
+		$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$preferredPLU'"
+		if ($posResult) { $descPOS = $posResult.F02 }
+		$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$preferredPLU'"
+		if ($objResult) { $descOBJ = $objResult.F29 }
+		if ($descPOS -match '(?i)test' -or $descPOS -match '(?i)tecnica' -or
+			$descOBJ -match '(?i)test' -or $descOBJ -match '(?i)tecnica')
+		{
+			$shouldDelete = $true
+		}
+		else
+		{
+			$PLU = $alternativePLU
+		}
+	}
+	catch { $shouldDelete = $true }
+	
+	if ($shouldDelete)
+	{
+		$deleteQueries = @(
+			"DELETE FROM SCL_TAB WHERE F01 = '$PLU'",
+			"DELETE FROM OBJ_TAB WHERE F01 = '$PLU'",
+			"DELETE FROM POS_TAB WHERE F01 = '$PLU'",
+			"DELETE FROM PRICE_TAB WHERE F01 = '$PLU'",
+			"DELETE FROM SCL_TXT_TAB WHERE F267 = 777 AND F297 = 'Ingredients Test'"
+		)
+		foreach ($query in $deleteQueries)
+		{
+			try { Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query }
+			catch { }
+		}
 	}
 	
 	# ===== Insert into SCL_TAB =====
@@ -2151,7 +2178,7 @@ function Insert_Test_Item
 	{
 		Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
 INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F258, F267, F1952, F1964, F2581, F2582)
-VALUES ('0020077700000', 'PAL', 'MANUAL', 1, 10, 777, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
+VALUES ('$PLU', 'PAL', 'MANUAL', 1, 10, 777, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
 "@
 	}
 	catch { }
@@ -2159,9 +2186,11 @@ VALUES ('0020077700000', 'PAL', 'MANUAL', 1, 10, 777, 'Test Descriptor 2', '001'
 	# ===== Insert into OBJ_TAB =====
 	try
 	{
+		$F29 = 'Tecnica Test Item'
+		if ($F29.Length -gt 60) { $F29 = $F29.Substring(0, 60) }
 		Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
 INSERT INTO OBJ_TAB (F01, F902, F1001, F21, F29, F270, F1118, F1959)
-VALUES ('0020077700000', '00001153', 0, 1, 'Tecnica Test Item', 123.45, '001', '001')
+VALUES ('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
 "@
 	}
 	catch { }
@@ -2171,7 +2200,7 @@ VALUES ('0020077700000', '00001153', 0, 1, 'Tecnica Test Item', 123.45, '001', '
 	{
 		Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
 INSERT INTO POS_TAB (F01, F1000, F902, F1001, F02, F09, F79, F80, F82, F104, F115, F176, F178, F217, F1964, F2119)
-VALUES ('0020077700000', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '1', '0', '0', '1', '1', 1.0, '001', '1')
+VALUES ('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '1', '0', '0', '1', '1', 1.0, '001', '1')
 "@
 	}
 	catch { }
@@ -2181,7 +2210,7 @@ VALUES ('0020077700000', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1
 	{
 		Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
 INSERT INTO PRICE_TAB (F01, F1000, F126, F902, F1001, F21, F30, F31, F113, F1006, F1007, F1008, F1009, F1803)
-VALUES ('0020077700000', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate', '1858', 1.0)
+VALUES ('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate', '1858', 1.0)
 "@
 	}
 	catch { }
