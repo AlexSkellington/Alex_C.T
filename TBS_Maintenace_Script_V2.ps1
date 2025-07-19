@@ -2099,167 +2099,6 @@ function Get_All_VNC_Passwords
 }
 
 # ===================================================================================================
-#                              FUNCTION: Insert_Test_Item
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Inserts or updates a test item record (PLU '0020077700000') in the SCL_TAB, OBJ_TAB, POS_TAB, and PRICE_TAB tables
-#   using the provided SQL connection string. If the record does not exist in a table, it inserts a new one with specified
-#   non-null fields. If it exists, it updates the relevant non-null fields. For PRICE_TAB specifically, the price field (F30)
-#   is only updated to 777.77 if its current value is exactly 777.77; otherwise, it remains unchanged. Null fields are ignored
-#   in both insert and update operations to minimize unnecessary changes. Errors during execution are silently caught to
-#   prevent script interruption.
-#
-# Improvements:
-#   - Handles both insert and update scenarios with existence checks for each table.
-#   - Selective update for PRICE_TAB price field to avoid overwriting custom values.
-#   - Optimized queries to include only non-null fields, reducing query complexity.
-#   - Silent error handling for robustness in production environments.
-#   - Uses Invoke-Sqlcmd for efficient SQL execution.
-#
-# Author: Alex_C.T
-# ===================================================================================================
-
-function Insert_Test_Item
-{
-	param (
-		[string]$ConnectionString = $script:FunctionResults['ConnectionString']
-	)
-	
-	if (-not $ConnectionString) { return }
-	
-	$now = Get-Date
-	$nowFull = $now.ToString("yyyy-MM-dd HH:mm:ss.fff")
-	$nowDate = $now.ToString("yyyy-MM-dd 00:00:00.000")
-	
-	$preferredPLU = '0020077700000'
-	$alternativePLU = '0020777700000'
-	$doInsert = $false
-	$PLU = $null
-	$TestF267 = 777
-	
-	# Check preferred PLU
-	$isPreferredTest = $false
-	$descPOS = ""
-	$descOBJ = ""
-	try
-	{
-		$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$preferredPLU'"
-		if ($posResult) { $descPOS = $posResult.F02 }
-		$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$preferredPLU'"
-		if ($objResult) { $descOBJ = $objResult.F29 }
-		if ($descPOS -match '(?i)test' -or $descPOS -match '(?i)tecnica' -or $descOBJ -match '(?i)test' -or $descOBJ -match '(?i)tecnica')
-		{
-			$isPreferredTest = $true
-		}
-	}
-	catch { }
-	
-	if ($isPreferredTest -or ($descPOS -eq "" -and $descOBJ -eq ""))
-	{
-		# Preferred PLU is a test or does not exist, safe to use
-		$PLU = $preferredPLU
-		$TestF267 = 777
-		$doInsert = $true
-	}
-	else
-	{
-		# Check alternate PLU
-		$isAltTest = $false
-		$descPOS2 = ""
-		$descOBJ2 = ""
-		try
-		{
-			$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$alternativePLU'"
-			if ($posResult) { $descPOS2 = $posResult.F02 }
-			$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$alternativePLU'"
-			if ($objResult) { $descOBJ2 = $objResult.F29 }
-			if ($descPOS2 -match '(?i)test' -or $descPOS2 -match '(?i)tecnica' -or $descOBJ2 -match '(?i)test' -or $descOBJ2 -match '(?i)tecnica')
-			{
-				$isAltTest = $true
-			}
-		}
-		catch { }
-		if ($isAltTest -or ($descPOS2 -eq "" -and $descOBJ2 -eq ""))
-		{
-			$PLU = $alternativePLU
-			$TestF267 = 7777
-			$doInsert = $true
-		}
-	}
-	
-	if ($doInsert -and $PLU)
-	{
-		# Always delete old rows for the chosen PLU and F267 code
-		$deleteQueries = @(
-			"DELETE FROM SCL_TAB WHERE F01 = '$PLU'",
-			"DELETE FROM OBJ_TAB WHERE F01 = '$PLU'",
-			"DELETE FROM POS_TAB WHERE F01 = '$PLU'",
-			"DELETE FROM PRICE_TAB WHERE F01 = '$PLU'",
-			"DELETE FROM SCL_TXT_TAB WHERE F267 = $TestF267"
-		)
-		foreach ($query in $deleteQueries)
-		{
-			try { Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query }
-			catch { }
-		}
-		
-		# ===== Insert into SCL_TAB =====
-		try
-		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
-INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F258, F267, F1952, F1964, F2581, F2582)
-VALUES ('$PLU', 'PAL', 'MANUAL', 1, 10, $TestF267, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
-"@
-		}
-		catch { }
-		
-		# ===== Insert into OBJ_TAB =====
-		try
-		{
-			$F29 = 'Tecnica Test Item'
-			if ($F29.Length -gt 60) { $F29 = $F29.Substring(0, 60) }
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
-INSERT INTO OBJ_TAB (F01, F902, F1001, F21, F29, F270, F1118, F1959)
-VALUES ('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
-"@
-		}
-		catch { }
-		
-		# ===== Insert into POS_TAB =====
-		try
-		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
-INSERT INTO POS_TAB (F01, F1000, F902, F1001, F02, F09, F79, F80, F82, F104, F115, F176, F178, F217, F1964, F2119)
-VALUES ('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '1', '0', '0', '1', '1', 1.0, '001', '1')
-"@
-		}
-		catch { }
-		
-		# ===== Insert into PRICE_TAB =====
-		try
-		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
-INSERT INTO PRICE_TAB (F01, F1000, F126, F902, F1001, F21, F30, F31, F113, F1006, F1007, F1008, F1009, F1803)
-VALUES ('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate', '1858', 1.0)
-"@
-		}
-		catch { }
-		
-		# ===== Insert into SCL_TXT_TAB =====
-		try
-		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
-INSERT INTO SCL_TXT_TAB
-(F267, F1000, F253, F297, F902, F1001, F1836)
-VALUES
-($TestF267, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, 'Tecnica Test Item')
-"@
-		}
-		catch { }
-	}
-}
-
-# ===================================================================================================
 #                              FUNCTION: Get_Remote_Machine_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -3384,28 +3223,101 @@ function Delete_Files
 			{
 				if ($SpecifiedFiles)
 				{
-					# Use -Include and -Exclude for efficient batch deletion
-					$matchedItems = Get-ChildItem -Path $targetPath -Include $SpecifiedFiles -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
-					
-					if ($matchedItems)
+					# Delete only specified files and folders
+					foreach ($filePattern in $SpecifiedFiles)
 					{
-						$matchedItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
-						$deletedCount = $matchedItems.Count # Approximate count (assumes most succeed)
-					}
-					else
-					{
-						# Write_Log "No items matched the specified patterns in '$targetPath'." "Yellow"
+						# Retrieve matching items using wildcards
+						$matchedItems = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue
+						
+						if ($matchedItems)
+						{
+							foreach ($matchedItem in $matchedItems)
+							{
+								# Check against exclusions
+								$exclude = $false
+								if ($Exclusions)
+								{
+									foreach ($exclusionPattern in $Exclusions)
+									{
+										if ($matchedItem.Name -like $exclusionPattern)
+										{
+											$exclude = $true
+											# Write_Log "Excluded: $($matchedItem.FullName)" "Yellow"
+											break
+										}
+									}
+								}
+								
+								if (-not $exclude)
+								{
+									try
+									{
+										if ($matchedItem.PSIsContainer)
+										{
+											Remove-Item -Path $matchedItem.FullName -Recurse -Force -ErrorAction Stop
+										}
+										else
+										{
+											Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
+										}
+										$deletedCount++
+										# Write_Log "Deleted: $($matchedItem.FullName)" "Green"
+									}
+									catch
+									{
+										# Write_Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
+									}
+								}
+							}
+						}
+						else
+						{
+							# Write_Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
+						}
 					}
 				}
 				else
 				{
-					# Delete all except exclusions
-					$allItems = Get-ChildItem -Path $targetPath -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
+					# Delete all files and folders in the path
+					$allItems = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue
 					
-					if ($allItems)
+					foreach ($item in $allItems)
 					{
-						$allItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
-						$deletedCount = $allItems.Count # Approximate
+						# Check against exclusions
+						$exclude = $false
+						if ($Exclusions)
+						{
+							foreach ($exclusionPattern in $Exclusions)
+							{
+								if ($item.Name -like $exclusionPattern)
+								{
+									$exclude = $true
+									# Write_Log "Excluded: $($item.FullName)" "Yellow"
+									break
+								}
+							}
+						}
+						
+						if (-not $exclude)
+						{
+							try
+							{
+								if ($item.PSIsContainer)
+								{
+									Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
+								}
+								else
+								{
+									Remove-Item -Path $item.FullName -Force -ErrorAction Stop
+								}
+								$deletedCount++
+								# Write_Log "Deleted: $($item.FullName)" "Green"
+							}
+							catch
+							{
+								# Write_Log "Failed to delete $($item.FullName). Error: $_" "Red"
+							}
+						}
 					}
 				}
 				
@@ -3441,28 +3353,101 @@ function Delete_Files
 		{
 			if ($SpecifiedFiles)
 			{
-				# Use -Include and -Exclude for efficient batch deletion
-				$matchedItems = Get-ChildItem -Path $targetPath -Include $SpecifiedFiles -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
-				
-				if ($matchedItems)
+				# Delete only specified files and folders
+				foreach ($filePattern in $SpecifiedFiles)
 				{
-					$matchedItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
-					$deletedCount = $matchedItems.Count # Approximate count (assumes most succeed)
-				}
-				else
-				{
-					Write_Log "No items matched the specified patterns in '$targetPath'." "Yellow"
+					# Retrieve matching items using wildcards
+					$matchedItems = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue
+					
+					if ($matchedItems)
+					{
+						foreach ($matchedItem in $matchedItems)
+						{
+							# Check against exclusions
+							$exclude = $false
+							if ($Exclusions)
+							{
+								foreach ($exclusionPattern in $Exclusions)
+								{
+									if ($matchedItem.Name -like $exclusionPattern)
+									{
+										$exclude = $true
+										Write_Log "Excluded: $($matchedItem.FullName)" "Yellow"
+										break
+									}
+								}
+							}
+							
+							if (-not $exclude)
+							{
+								try
+								{
+									if ($matchedItem.PSIsContainer)
+									{
+										Remove-Item -Path $matchedItem.FullName -Recurse -Force -ErrorAction Stop
+									}
+									else
+									{
+										Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
+									}
+									$deletedCount++
+									Write_Log "Deleted: $($matchedItem.FullName)" "Green"
+								}
+								catch
+								{
+									Write_Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
+								}
+							}
+						}
+					}
+					else
+					{
+						Write_Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
+					}
 				}
 			}
 			else
 			{
-				# Delete all except exclusions
-				$allItems = Get-ChildItem -Path $targetPath -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
+				# Delete all files and folders in the path
+				$allItems = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue
 				
-				if ($allItems)
+				foreach ($item in $allItems)
 				{
-					$allItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
-					$deletedCount = $allItems.Count # Approximate
+					# Check against exclusions
+					$exclude = $false
+					if ($Exclusions)
+					{
+						foreach ($exclusionPattern in $Exclusions)
+						{
+							if ($item.Name -like $exclusionPattern)
+							{
+								$exclude = $true
+								Write_Log "Excluded: $($item.FullName)" "Yellow"
+								break
+							}
+						}
+					}
+					
+					if (-not $exclude)
+					{
+						try
+						{
+							if ($item.PSIsContainer)
+							{
+								Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
+							}
+							else
+							{
+								Remove-Item -Path $item.FullName -Force -ErrorAction Stop
+							}
+							$deletedCount++
+							Write_Log "Deleted: $($item.FullName)" "Green"
+						}
+						catch
+						{
+							Write_Log "Failed to delete $($item.FullName). Error: $_" "Red"
+						}
+					}
 				}
 			}
 			
@@ -9352,7 +9337,7 @@ exit
 }
 
 # ===================================================================================================
-#                        FUNCTION: Export-VNCFiles-ForAllNodes
+#                        FUNCTION: Export_VNC_Files_For_All_Nodes
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Generates UltraVNC (.vnc) connection files for all lanes, scales, and backoffices discovered in
@@ -9364,19 +9349,19 @@ exit
 #   - LaneMachines      [hashtable]: LaneNumber => MachineName mapping.
 #   - ScaleIPNetworks   [hashtable]: ScaleCode => Scale Object (includes IP).
 #   - BackofficeMachines[hashtable]: BackofficeTerminal => MachineName mapping.
-#   - LaneVNCPasswords  [hashtable] (optional): MachineName => Password mapping.
+#   - AllVNCPasswords  [hashtable] (optional): MachineName => Password mapping.
 #
 # Details:
 #   - Password is set to: 4330df922eb03b6e (UltraVNC encrypted format) by default.
-#   - Per-lane password is used if available in LaneVNCPasswords.
+#   - Per-lane password is used if available in AllVNCPasswords.
 #   - Files are written with clear, descriptive names.
 #   - Uses Write_Log for all status and progress messages.
-#   - Ensures all required folders exist.
+#   - Ensures folders are created only if there are actual VNC files to write, avoiding empty folders.
 #   - Skips scales with missing IP/network info and logs them.
 #   - Creates Ishida_Wrapper_#.vnc for each Ishida scale found.
 #
 # Usage:
-#   Export-VNCFiles-ForAllNodes -LaneMachines $... -ScaleIPNetworks $... -BackofficeMachines $... [-LaneVNCPasswords $...]
+#   Export_VNC_Files_For_All_Nodes -LaneMachines $... -ScaleIPNetworks $... -BackofficeMachines $... [-AllVNCPasswords $...]
 #
 # Author: Alex_C.T
 # ===================================================================================================
@@ -9394,7 +9379,7 @@ function Export_VNC_Files_For_All_Nodes
 		[hashtable]$AllVNCPasswords
 	)
 	
-	Write_Log "`r`n==================== Starting Export_VNCFiles_ForAllNodes ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Export_VNC_Files_For_All_Nodes ====================`r`n" "blue"
 	$DefaultVNCPassword = "4330df922eb03b6e"
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
@@ -9516,8 +9501,8 @@ PreemptiveUpdates=0
 	
 	# ---- Lanes ---- #
 	Write_Log "-------------------- Exporting Lane VNC Files --------------------" "blue"
+	$laneFiles = @()
 	$laneCount = 0
-	$laneInfoLines = @()
 	
 	foreach ($lane in $LaneMachines.GetEnumerator())
 	{
@@ -9535,8 +9520,6 @@ PreemptiveUpdates=0
 		}
 		
 		$filePath = Join-Path $lanesDir $fileName
-		$parent = Split-Path $filePath -Parent
-		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
 		
 		# Use custom password if available, else default
 		$VNCPassword = $DefaultVNCPassword
@@ -9545,14 +9528,24 @@ PreemptiveUpdates=0
 			$VNCPassword = $AllVNCPasswords[$machineName]
 		}
 		$content = $vncTemplate.Replace('%%HOST%%', $machineName).Replace('%%PASSWORD%%', $VNCPassword)
-		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
-		Write_Log "Created: $filePath" "green"
+		$laneFiles += @{ Path = $filePath; Content = $content }
 		$laneCount++
+	}
+	
+	if ($laneFiles.Count -gt 0)
+	{
+		if (-not (Test-Path $lanesDir)) { New-Item -Path $lanesDir -ItemType Directory | Out-Null }
+		foreach ($file in $laneFiles)
+		{
+			[System.IO.File]::WriteAllText($file.Path, $file.Content, $script:ansiPcEncoding)
+			Write_Log "Created: $($file.Path)" "green"
+		}
 	}
 	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
 	
 	# ---- Scales ---- #
 	Write_Log "-------------------- Exporting Scale VNC Files --------------------" "blue"
+	$scaleFiles = @()
 	$scaleCount = 0
 	foreach ($scale in $ScaleIPNetworks.GetEnumerator())
 	{
@@ -9596,8 +9589,6 @@ PreemptiveUpdates=0
 			}
 			
 			$filePath = Join-Path $scalesDir $fileName
-			$parent = Split-Path $filePath -Parent
-			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
 			# Set AllowUntrustedServers=1 for Ishida, else use template as-is
 			if ($brand -like '*Ishida*')
 			{
@@ -9608,8 +9599,7 @@ PreemptiveUpdates=0
 			{
 				$content = $vncTemplate.Replace('%%HOST%%', $ip).Replace('%%PASSWORD%%', $DefaultVNCPassword)
 			}
-			[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
-			Write_Log "Created: $filePath" "green"
+			$scaleFiles += @{ Path = $filePath; Content = $content }
 			$scaleCount++
 		}
 		else
@@ -9617,10 +9607,21 @@ PreemptiveUpdates=0
 			Write_Log "Skipped scale $scaleCode (missing IP)" "yellow"
 		}
 	}
+	
+	if ($scaleFiles.Count -gt 0)
+	{
+		if (-not (Test-Path $scalesDir)) { New-Item -Path $scalesDir -ItemType Directory | Out-Null }
+		foreach ($file in $scaleFiles)
+		{
+			[System.IO.File]::WriteAllText($file.Path, $file.Content, $script:ansiPcEncoding)
+			Write_Log "Created: $($file.Path)" "green"
+		}
+	}
 	Write_Log "$scaleCount scale VNC files written to $scalesDir`r`n" "blue"
 	
 	# ---- Backoffices ---- #
 	Write_Log "-------------------- Exporting Backoffice VNC Files --------------------" "blue"
+	$boFiles = @()
 	$boCount = 0
 	foreach ($bo in $BackofficeMachines.GetEnumerator())
 	{
@@ -9628,17 +9629,24 @@ PreemptiveUpdates=0
 		$boName = $bo.Value
 		$fileName = "Backoffice_${terminal}.vnc"
 		$filePath = Join-Path $backofficesDir $fileName
-		$parent = Split-Path $filePath -Parent
-		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
 		$content = $vncTemplate.Replace('%%HOST%%', $boName).Replace('%%PASSWORD%%', $DefaultVNCPassword)
-		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
-		Write_Log "Created: $filePath" "green"
+		$boFiles += @{ Path = $filePath; Content = $content }
 		$boCount++
+	}
+	
+	if ($boFiles.Count -gt 0)
+	{
+		if (-not (Test-Path $backofficesDir)) { New-Item -Path $backofficesDir -ItemType Directory | Out-Null }
+		foreach ($file in $boFiles)
+		{
+			[System.IO.File]::WriteAllText($file.Path, $file.Content, $script:ansiPcEncoding)
+			Write_Log "Created: $($file.Path)" "green"
+		}
 	}
 	Write_Log "$boCount backoffice VNC files written to $backofficesDir`r`n" "blue"
 	
 	Write_Log "VNC file export complete!" "green"
-	Write_Log "`r`n==================== Export_VNCFiles_ForAllNodes Completed ====================" "blue"
+	Write_Log "`r`n==================== Export_VNC_Files_For_All_Nodes Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -10312,194 +10320,7 @@ if (-not $form)
 	
 	# Add the RichTextBox to the form
 	$form.Controls.Add($logBox)
-	
-	######################################################################################################################
-	# 
-	# General Tools Buttons
-	#
-	######################################################################################################################
-	
-	############################################################################
-	# General Tools Anchor Button
-	############################################################################
-	$GeneralToolsButton = New-Object System.Windows.Forms.Button
-	$GeneralToolsButton.Text = "General Tools"
-	$GeneralToolsButton.Location = New-Object System.Drawing.Point(650, 475)
-	$GeneralToolsButton.Size = New-Object System.Drawing.Size(300, 50)
-	$ContextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
-	$ContextMenuGeneral.ShowItemToolTips = $true
-	
-	
-	############################################################################
-	# 1) Activate Windows ("Alex_C.T")
-	############################################################################
-	$activateItem = New-Object System.Windows.Forms.ToolStripMenuItem("Alex_C.T")
-	$activateItem.ToolTipText = "Activate Windows using Alex_C.T's method."
-	$activateItem.Add_Click({
-			Invoke_Secure_Script
-		})
-	[void]$contextMenuGeneral.Items.Add($activateItem)
-	
-	############################################################################
-	# 2) Reboot System
-	############################################################################
-	$rebootItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot System")
-	$rebootItem.ToolTipText = "Reboot the host system immediately."
-	$rebootItem.Add_Click({
-			$rebootResult = [System.Windows.Forms.MessageBox]::Show(
-				"Do you want to reboot now?",
-				"Reboot",
-				[System.Windows.Forms.MessageBoxButtons]::YesNo
-			)
-			if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
-			{
-				Restart-Computer -Force
-				Delete_Files -Path "$TempDir" -SpecifiedFiles `
-							 "Server_Database_Maintenance.sqi", `
-							 "Lane_Database_Maintenance.sqi", `
-							 "TBS_Maintenance_Script.ps1"
-			}
-		})
-	[void]$contextMenuGeneral.Items.Add($rebootItem)
-	
-	############################################################################
-	# 3) Install Function in SMS
-	############################################################################
-	$Install_ONE_FUNCTION_Into_SMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install Function in SMS")
-	$Install_ONE_FUNCTION_Into_SMSItem.ToolTipText = "Installs 'Deploy_ONE_FCT' & 'Pump_All_Items_Tables' into the SMS system."
-	$Install_ONE_FUNCTION_Into_SMSItem.Add_Click({
-			Install_ONE_FUNCTION_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
-		})
-	[void]$contextMenuGeneral.Items.Add($Install_ONE_FUNCTION_Into_SMSItem)
-	
-	############################################################################
-	# 4) Repair BMS Service
-	############################################################################
-	$repairBMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair BMS Service")
-	$repairBMSItem.ToolTipText = "Repairs the BMS service for scale deployment."
-	$repairBMSItem.Add_Click({
-			Repair_BMS
-		})
-	[void]$contextMenuGeneral.Items.Add($repairBMSItem)
-	
-	############################################################################
-	# 5) Manual Repair
-	############################################################################
-	$manualRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manual Repair")
-	$manualRepairItem.ToolTipText = "Writes SQL repair scripts to the desktop."
-	$manualRepairItem.Add_Click({
-			Write_SQL_Scripts_To_Desktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
-		})
-	[void]$contextMenuGeneral.Items.Add($manualRepairItem)
-	
-	############################################################################
-	# 6) Fix Journal
-	############################################################################
-	$fixJournalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Journal")
-	$fixJournalItem.ToolTipText = "Fix journal entries for the specified date."
-	$fixJournalItem.Add_Click({
-			Fix_Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
-		})
-	[void]$contextMenuGeneral.Items.Add($fixJournalItem)
-	
-	############################################################################
-	# 7) Reboot Scales
-	############################################################################
-	$Reboot_ScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Scales")
-	$Reboot_ScalesItem.ToolTipText = "Reboot Scale/s."
-	$Reboot_ScalesItem.Add_Click({
-			Reboot_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
-		})
-	[void]$contextMenuGeneral.Items.Add($Reboot_ScalesItem)
-	
-	############################################################################
-	# 8) Open Lane C$ Share(s)
-	############################################################################
-	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
-	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
-	$OpenLaneCShareItem.Add_Click({
-			Open_Selected_Lane/s_C_Path -StoreNumber $storeNumber
-		})
-	[void]$contextMenuGeneral.Items.Add($OpenLaneCShareItem)
-	
-	############################################################################
-	# 9) Open Scale C$ Share(s)
-	############################################################################
-	$OpenScaleCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Scale C$ Share(s)")
-	$OpenScaleCShareItem.ToolTipText = "Select scales and open their C$ administrative shares as 'bizuser' (bizerba/biyerba)."
-	$OpenScaleCShareItem.Add_Click({
-			Open_Selected_Scale/s_C_Path -StoreNumber $storeNumber
-		})
-	[void]$contextMenuGeneral.Items.Add($OpenScaleCShareItem)
-	
-	############################################################################
-	# 10) Export All VNC Files
-	############################################################################
-	$ExportVNCFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export All VNC Files")
-	$ExportVNCFilesItem.ToolTipText = "Generate UltraVNC (.vnc) connection files for all lanes, scales, and backoffices."
-	$ExportVNCFilesItem.Add_Click({
-			Export_VNC_Files_For_All_Nodes `
-										   -LaneMachines $script:FunctionResults['LaneMachines'] `
-										   -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks'] `
-										   -BackofficeMachines $script:FunctionResults['BackofficeMachines']`
-										   -AllVNCPasswords $script:FunctionResults['AllVNCPasswords']
-		})
-	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
-	
-	############################################################################
-	# 11) Export Machines Hardware Info
-	############################################################################
-	$ExportMachineHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Machines Hardware Info")
-	$ExportMachineHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all machines"
-	$ExportMachineHardwareInfoItem.Add_Click({
-			$didExport = Get_Remote_Machine_Info
-			if ($didExport)
-			{
-				[System.Windows.Forms.MessageBox]::Show("Machine hardware info exported", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-			}
-		})
-	[void]$contextMenuGeneral.Items.Add($ExportMachineHardwareInfoItem)
-	
-	############################################################################
-	# 12) Remove Archive Bit
-	############################################################################
-	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
-	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
-	$RemoveArchiveBitItem.Add_Click({
-			Remove_ArchiveBit_Interactive
-		})
-	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
-	
-	############################################################################
-	# 13) Update Scales Specials
-	############################################################################
-	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
-	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
-	$UpdateScalesSpecialsItem.Add_Click({
-			Update_Scales_Specials_Interactive
-		})
-	[void]$contextMenuGeneral.Items.Add($UpdateScalesSpecialsItem)
-	
-	############################################################################
-	# 14) Schedule Duplicate File Monitor
-	############################################################################
-	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove duplicate files from toBizerba")
-	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in toBizerba. Run now or schedule as SYSTEM."
-	$ScheduleRemoveDupesItem.Add_Click({
-			Remove_Duplicate_Files_From_toBizerba
-		})
-	[void]$contextMenuGeneral.Items.Add($ScheduleRemoveDupesItem)
-	
-	############################################################################
-	# Show the context menu when the General Tools button is clicked
-	############################################################################
-	$GeneralToolsButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-	$GeneralToolsButton.Add_Click({
-			$contextMenuGeneral.Show($GeneralToolsButton, 0, $GeneralToolsButton.Height)
-		})
-	$toolTip.SetToolTip($GeneralToolsButton, "Click to see some tools created for SMS.")
-	$form.Controls.Add($GeneralToolsButton)
-	
+		
 	######################################################################################################################
 	# 
 	# Server Tools Button
@@ -10512,7 +10333,7 @@ if (-not $form)
 	$ServerToolsButton = New-Object System.Windows.Forms.Button
 	$ServerToolsButton.Text = "Server Tools"
 	$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 475)
-	$ServerToolsButton.Size = New-Object System.Drawing.Size(300, 50)
+	$ServerToolsButton.Size = New-Object System.Drawing.Size(200, 50)
 	$ContextMenuServer = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuServer.ShowItemToolTips = $true
 	
@@ -10622,8 +10443,8 @@ if (-not $form)
 	############################################################################
 	$LaneToolsButton = New-Object System.Windows.Forms.Button
 	$LaneToolsButton.Text = "Lane Tools"
-	$LaneToolsButton.Location = New-Object System.Drawing.Point(350, 475)
-	$LaneToolsButton.Size = New-Object System.Drawing.Size(300, 50)
+	$LaneToolsButton.Location = New-Object System.Drawing.Point(275, 475)
+	$LaneToolsButton.Size = New-Object System.Drawing.Size(200, 50)
 	$ContextMenuLane = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuLane.ShowItemToolTips = $true
 	
@@ -10783,7 +10604,219 @@ if (-not $form)
 		})
 	$toolTip.SetToolTip($LaneToolsButton, "Click to see Lane-related tools.")
 	$form.Controls.Add($LaneToolsButton)
+	
+	######################################################################################################################
+	# 
+	# Scales Tools Button
+	#
+	######################################################################################################################
+	
+	############################################################################
+	# Scales Tools Anchor Button
+	############################################################################
+	$ScaleToolsButton = New-Object System.Windows.Forms.Button
+	$ScaleToolsButton.Text = "Scale Tools"
+	$ScaleToolsButton.Location = New-Object System.Drawing.Point(525, 475)
+	$ScaleToolsButton.Size = New-Object System.Drawing.Size(200, 50)
+	$ContextMenuScale = New-Object System.Windows.Forms.ContextMenuStrip
+	$ContextMenuScale.ShowItemToolTips = $true
+	
+	############################################################################
+	# 1) Repair BMS Service
+	############################################################################
+	$repairBMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair BMS Service")
+	$repairBMSItem.ToolTipText = "Repairs the BMS service for scale deployment."
+	$repairBMSItem.Add_Click({
+			Repair_BMS
+		})
+	[void]$ContextMenuScale.Items.Add($repairBMSItem)
+	
+	############################################################################
+	# 2) Reboot Scales
+	############################################################################
+	$Reboot_ScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Scales")
+	$Reboot_ScalesItem.ToolTipText = "Reboot Scale/s."
+	$Reboot_ScalesItem.Add_Click({
+			Reboot_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
+		})
+	[void]$ContextMenuScale.Items.Add($Reboot_ScalesItem)
+	
+	############################################################################
+	# 3) Open Scale C$ Share(s)
+	############################################################################
+	$OpenScaleCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Scale C$ Share(s)")
+	$OpenScaleCShareItem.ToolTipText = "Select scales and open their C$ administrative shares as 'bizuser' (bizerba/biyerba)."
+	$OpenScaleCShareItem.Add_Click({
+			Open_Selected_Scale/s_C_Path -StoreNumber $storeNumber
+		})
+	[void]$ContextMenuScale.Items.Add($OpenScaleCShareItem)
+	
+	############################################################################
+	# 4) Update Scales Specials
+	############################################################################
+	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
+	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
+	$UpdateScalesSpecialsItem.Add_Click({
+			Update_Scales_Specials_Interactive
+		})
+	[void]$ContextMenuScale.Items.Add($UpdateScalesSpecialsItem)
+	
+	############################################################################
+	# 5) Schedule Duplicate File Monitor
+	############################################################################
+	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove duplicate files from toBizerba")
+	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in toBizerba. Run now or schedule as SYSTEM."
+	$ScheduleRemoveDupesItem.Add_Click({
+			Remove_Duplicate_Files_From_toBizerba
+		})
+	[void]$ContextMenuScale.Items.Add($ScheduleRemoveDupesItem)
+	
+	############################################################################
+	# Show the context menu when the Server Tools button is clicked
+	############################################################################
+	$ScaleToolsButton.Add_Click({
+			$ContextMenuScale.Show($ScaleToolsButton, 0, $ScaleToolsButton.Height)
+		})
+	$toolTip.SetToolTip($ScaleToolsButton, "Click to see Scale-related tools.")
+	$form.Controls.Add($ScaleToolsButton)
+	
+	######################################################################################################################
+	# 
+	# General Tools Buttons
+	#
+	######################################################################################################################
+	
+	############################################################################
+	# General Tools Anchor Button
+	############################################################################
+	$GeneralToolsButton = New-Object System.Windows.Forms.Button
+	$GeneralToolsButton.Text = "General Tools"
+	$GeneralToolsButton.Location = New-Object System.Drawing.Point(750, 475)
+	$GeneralToolsButton.Size = New-Object System.Drawing.Size(200, 50)
+	$ContextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
+	$ContextMenuGeneral.ShowItemToolTips = $true
+	
+	############################################################################
+	# 1) Activate Windows ("Alex_C.T")
+	############################################################################
+	$activateItem = New-Object System.Windows.Forms.ToolStripMenuItem("Alex_C.T")
+	$activateItem.ToolTipText = "Activate Windows using Alex_C.T's method."
+	$activateItem.Add_Click({
+			Invoke_Secure_Script
+		})
+	[void]$contextMenuGeneral.Items.Add($activateItem)
+	
+	############################################################################
+	# 2) Reboot System
+	############################################################################
+	$rebootItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot System")
+	$rebootItem.ToolTipText = "Reboot the host system immediately."
+	$rebootItem.Add_Click({
+			$rebootResult = [System.Windows.Forms.MessageBox]::Show(
+				"Do you want to reboot now?",
+				"Reboot",
+				[System.Windows.Forms.MessageBoxButtons]::YesNo
+			)
+			if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
+			{
+				Restart-Computer -Force
+				Delete_Files -Path "$TempDir" -SpecifiedFiles `
+							 "Server_Database_Maintenance.sqi", `
+							 "Lane_Database_Maintenance.sqi", `
+							 "TBS_Maintenance_Script.ps1"
+			}
+		})
+	[void]$contextMenuGeneral.Items.Add($rebootItem)
+	
+	############################################################################
+	# 3) Install Function in SMS
+	############################################################################
+	$Install_ONE_FUNCTION_Into_SMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install Function in SMS")
+	$Install_ONE_FUNCTION_Into_SMSItem.ToolTipText = "Installs 'Deploy_ONE_FCT' & 'Pump_All_Items_Tables' into the SMS system."
+	$Install_ONE_FUNCTION_Into_SMSItem.Add_Click({
+			Install_ONE_FUNCTION_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
+		})
+	[void]$contextMenuGeneral.Items.Add($Install_ONE_FUNCTION_Into_SMSItem)
+		
+	############################################################################
+	# 5) Manual Repair
+	############################################################################
+	$manualRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manual Repair")
+	$manualRepairItem.ToolTipText = "Writes SQL repair scripts to the desktop."
+	$manualRepairItem.Add_Click({
+			Write_SQL_Scripts_To_Desktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
+		})
+	[void]$contextMenuGeneral.Items.Add($manualRepairItem)
+	
+	############################################################################
+	# 6) Fix Journal
+	############################################################################
+	$fixJournalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Journal")
+	$fixJournalItem.ToolTipText = "Fix journal entries for the specified date."
+	$fixJournalItem.Add_Click({
+			Fix_Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
+		})
+	[void]$contextMenuGeneral.Items.Add($fixJournalItem)
+		
+	############################################################################
+	# 8) Open Lane C$ Share(s)
+	############################################################################
+	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
+	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
+	$OpenLaneCShareItem.Add_Click({
+			Open_Selected_Lane/s_C_Path -StoreNumber $storeNumber
+		})
+	[void]$contextMenuGeneral.Items.Add($OpenLaneCShareItem)
+		
+	############################################################################
+	# 10) Export All VNC Files
+	############################################################################
+	$ExportVNCFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export All VNC Files")
+	$ExportVNCFilesItem.ToolTipText = "Generate UltraVNC (.vnc) connection files for all lanes, scales, and backoffices."
+	$ExportVNCFilesItem.Add_Click({
+			Export_VNC_Files_For_All_Nodes `
+										   -LaneMachines $script:FunctionResults['LaneMachines'] `
+										   -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks'] `
+										   -BackofficeMachines $script:FunctionResults['BackofficeMachines']`
+										   -AllVNCPasswords $script:FunctionResults['AllVNCPasswords']
+		})
+	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
+	
+	############################################################################
+	# 11) Export Machines Hardware Info
+	############################################################################
+	$ExportMachineHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Machines Hardware Info")
+	$ExportMachineHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all machines"
+	$ExportMachineHardwareInfoItem.Add_Click({
+			$didExport = Get_Remote_Machine_Info
+			if ($didExport)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Machine hardware info exported", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+			}
+		})
+	[void]$contextMenuGeneral.Items.Add($ExportMachineHardwareInfoItem)
+	
+	############################################################################
+	# 12) Remove Archive Bit
+	############################################################################
+	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
+	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
+	$RemoveArchiveBitItem.Add_Click({
+			Remove_ArchiveBit_Interactive
+		})
+	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
+	
+	############################################################################
+	# Show the context menu when the General Tools button is clicked
+	############################################################################
+	$GeneralToolsButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+	$GeneralToolsButton.Add_Click({
+			$contextMenuGeneral.Show($GeneralToolsButton, 0, $GeneralToolsButton.Height)
+		})
+	$toolTip.SetToolTip($GeneralToolsButton, "Click to see some tools created for SMS.")
+	$form.Controls.Add($GeneralToolsButton)
 }
+
 ######################################################################################################################
 # 
 # Anchor all controls for resize
@@ -10838,12 +10871,9 @@ Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
 
-# Clear %Temp% folder on start
-# $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
-# $ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob
-
-# Insert the "777" Tecnica Test Item
-Insert_Test_Item
+<# Clear %Temp% folder on start
+$ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
+$ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob #>
 
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
