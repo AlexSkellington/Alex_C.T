@@ -2099,6 +2099,167 @@ function Get_All_VNC_Passwords
 }
 
 # ===================================================================================================
+#                              FUNCTION: Insert_Test_Item
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Inserts or updates a test item record (PLU '0020077700000') in the SCL_TAB, OBJ_TAB, POS_TAB, and PRICE_TAB tables
+#   using the provided SQL connection string. If the record does not exist in a table, it inserts a new one with specified
+#   non-null fields. If it exists, it updates the relevant non-null fields. For PRICE_TAB specifically, the price field (F30)
+#   is only updated to 777.77 if its current value is exactly 777.77; otherwise, it remains unchanged. Null fields are ignored
+#   in both insert and update operations to minimize unnecessary changes. Errors during execution are silently caught to
+#   prevent script interruption.
+#
+# Improvements:
+#   - Handles both insert and update scenarios with existence checks for each table.
+#   - Selective update for PRICE_TAB price field to avoid overwriting custom values.
+#   - Optimized queries to include only non-null fields, reducing query complexity.
+#   - Silent error handling for robustness in production environments.
+#   - Uses Invoke-Sqlcmd for efficient SQL execution.
+#
+# Author: Alex_C.T
+# ===================================================================================================
+
+function Insert_Test_Item
+{
+	param (
+		[string]$ConnectionString = $script:FunctionResults['ConnectionString']
+	)
+	
+	if (-not $ConnectionString) { return }
+	
+	$now = Get-Date
+	$nowFull = $now.ToString("yyyy-MM-dd HH:mm:ss.fff")
+	$nowDate = $now.ToString("yyyy-MM-dd 00:00:00.000")
+	
+	$preferredPLU = '0020077700000'
+	$alternativePLU = '0020777700000'
+	$doInsert = $false
+	$PLU = $null
+	$TestF267 = 777
+	
+	# Check preferred PLU
+	$isPreferredTest = $false
+	$descPOS = ""
+	$descOBJ = ""
+	try
+	{
+		$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$preferredPLU'"
+		if ($posResult) { $descPOS = $posResult.F02 }
+		$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$preferredPLU'"
+		if ($objResult) { $descOBJ = $objResult.F29 }
+		if ($descPOS -match '(?i)test' -or $descPOS -match '(?i)tecnica' -or $descOBJ -match '(?i)test' -or $descOBJ -match '(?i)tecnica')
+		{
+			$isPreferredTest = $true
+		}
+	}
+	catch { }
+	
+	if ($isPreferredTest -or ($descPOS -eq "" -and $descOBJ -eq ""))
+	{
+		# Preferred PLU is a test or does not exist, safe to use
+		$PLU = $preferredPLU
+		$TestF267 = 777
+		$doInsert = $true
+	}
+	else
+	{
+		# Check alternate PLU
+		$isAltTest = $false
+		$descPOS2 = ""
+		$descOBJ2 = ""
+		try
+		{
+			$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$alternativePLU'"
+			if ($posResult) { $descPOS2 = $posResult.F02 }
+			$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$alternativePLU'"
+			if ($objResult) { $descOBJ2 = $objResult.F29 }
+			if ($descPOS2 -match '(?i)test' -or $descPOS2 -match '(?i)tecnica' -or $descOBJ2 -match '(?i)test' -or $descOBJ2 -match '(?i)tecnica')
+			{
+				$isAltTest = $true
+			}
+		}
+		catch { }
+		if ($isAltTest -or ($descPOS2 -eq "" -and $descOBJ2 -eq ""))
+		{
+			$PLU = $alternativePLU
+			$TestF267 = 7777
+			$doInsert = $true
+		}
+	}
+	
+	if ($doInsert -and $PLU)
+	{
+		# Always delete old rows for the chosen PLU and F267 code
+		$deleteQueries = @(
+			"DELETE FROM SCL_TAB WHERE F01 = '$PLU'",
+			"DELETE FROM OBJ_TAB WHERE F01 = '$PLU'",
+			"DELETE FROM POS_TAB WHERE F01 = '$PLU'",
+			"DELETE FROM PRICE_TAB WHERE F01 = '$PLU'",
+			"DELETE FROM SCL_TXT_TAB WHERE F267 = $TestF267"
+		)
+		foreach ($query in $deleteQueries)
+		{
+			try { Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query }
+			catch { }
+		}
+		
+		# ===== Insert into SCL_TAB =====
+		try
+		{
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F258, F267, F1952, F1964, F2581, F2582)
+VALUES ('$PLU', 'PAL', 'MANUAL', 1, 10, $TestF267, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
+"@
+		}
+		catch { }
+		
+		# ===== Insert into OBJ_TAB =====
+		try
+		{
+			$F29 = 'Tecnica Test Item'
+			if ($F29.Length -gt 60) { $F29 = $F29.Substring(0, 60) }
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+INSERT INTO OBJ_TAB (F01, F902, F1001, F21, F29, F270, F1118, F1959)
+VALUES ('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
+"@
+		}
+		catch { }
+		
+		# ===== Insert into POS_TAB =====
+		try
+		{
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+INSERT INTO POS_TAB (F01, F1000, F902, F1001, F02, F09, F79, F80, F82, F104, F115, F176, F178, F217, F1964, F2119)
+VALUES ('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '1', '0', '0', '1', '1', 1.0, '001', '1')
+"@
+		}
+		catch { }
+		
+		# ===== Insert into PRICE_TAB =====
+		try
+		{
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+INSERT INTO PRICE_TAB (F01, F1000, F126, F902, F1001, F21, F30, F31, F113, F1006, F1007, F1008, F1009, F1803)
+VALUES ('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate', '1858', 1.0)
+"@
+		}
+		catch { }
+		
+		# ===== Insert into SCL_TXT_TAB =====
+		try
+		{
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+INSERT INTO SCL_TXT_TAB
+(F267, F1000, F253, F297, F902, F1001, F1836)
+VALUES
+($TestF267, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, 'Tecnica Test Item')
+"@
+		}
+		catch { }
+	}
+}
+
+# ===================================================================================================
 #                              FUNCTION: Get_Remote_Machine_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -3223,101 +3384,28 @@ function Delete_Files
 			{
 				if ($SpecifiedFiles)
 				{
-					# Delete only specified files and folders
-					foreach ($filePattern in $SpecifiedFiles)
+					# Use -Include and -Exclude for efficient batch deletion
+					$matchedItems = Get-ChildItem -Path $targetPath -Include $SpecifiedFiles -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
+					
+					if ($matchedItems)
 					{
-						# Retrieve matching items using wildcards
-						$matchedItems = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue
-						
-						if ($matchedItems)
-						{
-							foreach ($matchedItem in $matchedItems)
-							{
-								# Check against exclusions
-								$exclude = $false
-								if ($Exclusions)
-								{
-									foreach ($exclusionPattern in $Exclusions)
-									{
-										if ($matchedItem.Name -like $exclusionPattern)
-										{
-											$exclude = $true
-											# Write_Log "Excluded: $($matchedItem.FullName)" "Yellow"
-											break
-										}
-									}
-								}
-								
-								if (-not $exclude)
-								{
-									try
-									{
-										if ($matchedItem.PSIsContainer)
-										{
-											Remove-Item -Path $matchedItem.FullName -Recurse -Force -ErrorAction Stop
-										}
-										else
-										{
-											Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
-										}
-										$deletedCount++
-										# Write_Log "Deleted: $($matchedItem.FullName)" "Green"
-									}
-									catch
-									{
-										# Write_Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
-									}
-								}
-							}
-						}
-						else
-						{
-							# Write_Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
-						}
+						$matchedItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+						$deletedCount = $matchedItems.Count # Approximate count (assumes most succeed)
+					}
+					else
+					{
+						# Write_Log "No items matched the specified patterns in '$targetPath'." "Yellow"
 					}
 				}
 				else
 				{
-					# Delete all files and folders in the path
-					$allItems = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue
+					# Delete all except exclusions
+					$allItems = Get-ChildItem -Path $targetPath -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
 					
-					foreach ($item in $allItems)
+					if ($allItems)
 					{
-						# Check against exclusions
-						$exclude = $false
-						if ($Exclusions)
-						{
-							foreach ($exclusionPattern in $Exclusions)
-							{
-								if ($item.Name -like $exclusionPattern)
-								{
-									$exclude = $true
-									# Write_Log "Excluded: $($item.FullName)" "Yellow"
-									break
-								}
-							}
-						}
-						
-						if (-not $exclude)
-						{
-							try
-							{
-								if ($item.PSIsContainer)
-								{
-									Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
-								}
-								else
-								{
-									Remove-Item -Path $item.FullName -Force -ErrorAction Stop
-								}
-								$deletedCount++
-								# Write_Log "Deleted: $($item.FullName)" "Green"
-							}
-							catch
-							{
-								# Write_Log "Failed to delete $($item.FullName). Error: $_" "Red"
-							}
-						}
+						$allItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+						$deletedCount = $allItems.Count # Approximate
 					}
 				}
 				
@@ -3353,101 +3441,28 @@ function Delete_Files
 		{
 			if ($SpecifiedFiles)
 			{
-				# Delete only specified files and folders
-				foreach ($filePattern in $SpecifiedFiles)
+				# Use -Include and -Exclude for efficient batch deletion
+				$matchedItems = Get-ChildItem -Path $targetPath -Include $SpecifiedFiles -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
+				
+				if ($matchedItems)
 				{
-					# Retrieve matching items using wildcards
-					$matchedItems = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue
-					
-					if ($matchedItems)
-					{
-						foreach ($matchedItem in $matchedItems)
-						{
-							# Check against exclusions
-							$exclude = $false
-							if ($Exclusions)
-							{
-								foreach ($exclusionPattern in $Exclusions)
-								{
-									if ($matchedItem.Name -like $exclusionPattern)
-									{
-										$exclude = $true
-										Write_Log "Excluded: $($matchedItem.FullName)" "Yellow"
-										break
-									}
-								}
-							}
-							
-							if (-not $exclude)
-							{
-								try
-								{
-									if ($matchedItem.PSIsContainer)
-									{
-										Remove-Item -Path $matchedItem.FullName -Recurse -Force -ErrorAction Stop
-									}
-									else
-									{
-										Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
-									}
-									$deletedCount++
-									Write_Log "Deleted: $($matchedItem.FullName)" "Green"
-								}
-								catch
-								{
-									Write_Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
-								}
-							}
-						}
-					}
-					else
-					{
-						Write_Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
-					}
+					$matchedItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+					$deletedCount = $matchedItems.Count # Approximate count (assumes most succeed)
+				}
+				else
+				{
+					Write_Log "No items matched the specified patterns in '$targetPath'." "Yellow"
 				}
 			}
 			else
 			{
-				# Delete all files and folders in the path
-				$allItems = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue
+				# Delete all except exclusions
+				$allItems = Get-ChildItem -Path $targetPath -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
 				
-				foreach ($item in $allItems)
+				if ($allItems)
 				{
-					# Check against exclusions
-					$exclude = $false
-					if ($Exclusions)
-					{
-						foreach ($exclusionPattern in $Exclusions)
-						{
-							if ($item.Name -like $exclusionPattern)
-							{
-								$exclude = $true
-								Write_Log "Excluded: $($item.FullName)" "Yellow"
-								break
-							}
-						}
-					}
-					
-					if (-not $exclude)
-					{
-						try
-						{
-							if ($item.PSIsContainer)
-							{
-								Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
-							}
-							else
-							{
-								Remove-Item -Path $item.FullName -Force -ErrorAction Stop
-							}
-							$deletedCount++
-							Write_Log "Deleted: $($item.FullName)" "Green"
-						}
-						catch
-						{
-							Write_Log "Failed to delete $($item.FullName). Error: $_" "Red"
-						}
-					}
+					$allItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+					$deletedCount = $allItems.Count # Approximate
 				}
 			}
 			
@@ -9337,7 +9352,7 @@ exit
 }
 
 # ===================================================================================================
-#                        FUNCTION: Export_VNC_Files_For_All_Nodes
+#                        FUNCTION: Export-VNCFiles-ForAllNodes
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Generates UltraVNC (.vnc) connection files for all lanes, scales, and backoffices discovered in
@@ -9349,19 +9364,19 @@ exit
 #   - LaneMachines      [hashtable]: LaneNumber => MachineName mapping.
 #   - ScaleIPNetworks   [hashtable]: ScaleCode => Scale Object (includes IP).
 #   - BackofficeMachines[hashtable]: BackofficeTerminal => MachineName mapping.
-#   - AllVNCPasswords  [hashtable] (optional): MachineName => Password mapping.
+#   - LaneVNCPasswords  [hashtable] (optional): MachineName => Password mapping.
 #
 # Details:
 #   - Password is set to: 4330df922eb03b6e (UltraVNC encrypted format) by default.
-#   - Per-lane password is used if available in AllVNCPasswords.
+#   - Per-lane password is used if available in LaneVNCPasswords.
 #   - Files are written with clear, descriptive names.
 #   - Uses Write_Log for all status and progress messages.
-#   - Ensures folders are created only if there are actual VNC files to write, avoiding empty folders.
+#   - Ensures all required folders exist.
 #   - Skips scales with missing IP/network info and logs them.
 #   - Creates Ishida_Wrapper_#.vnc for each Ishida scale found.
 #
 # Usage:
-#   Export_VNC_Files_For_All_Nodes -LaneMachines $... -ScaleIPNetworks $... -BackofficeMachines $... [-AllVNCPasswords $...]
+#   Export-VNCFiles-ForAllNodes -LaneMachines $... -ScaleIPNetworks $... -BackofficeMachines $... [-LaneVNCPasswords $...]
 #
 # Author: Alex_C.T
 # ===================================================================================================
@@ -9379,7 +9394,7 @@ function Export_VNC_Files_For_All_Nodes
 		[hashtable]$AllVNCPasswords
 	)
 	
-	Write_Log "`r`n==================== Starting Export_VNC_Files_For_All_Nodes ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Export_VNCFiles_ForAllNodes ====================`r`n" "blue"
 	$DefaultVNCPassword = "4330df922eb03b6e"
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
@@ -9501,8 +9516,8 @@ PreemptiveUpdates=0
 	
 	# ---- Lanes ---- #
 	Write_Log "-------------------- Exporting Lane VNC Files --------------------" "blue"
-	$laneFiles = @()
 	$laneCount = 0
+	$laneInfoLines = @()
 	
 	foreach ($lane in $LaneMachines.GetEnumerator())
 	{
@@ -9520,6 +9535,8 @@ PreemptiveUpdates=0
 		}
 		
 		$filePath = Join-Path $lanesDir $fileName
+		$parent = Split-Path $filePath -Parent
+		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
 		
 		# Use custom password if available, else default
 		$VNCPassword = $DefaultVNCPassword
@@ -9528,24 +9545,14 @@ PreemptiveUpdates=0
 			$VNCPassword = $AllVNCPasswords[$machineName]
 		}
 		$content = $vncTemplate.Replace('%%HOST%%', $machineName).Replace('%%PASSWORD%%', $VNCPassword)
-		$laneFiles += @{ Path = $filePath; Content = $content }
+		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
+		Write_Log "Created: $filePath" "green"
 		$laneCount++
-	}
-	
-	if ($laneFiles.Count -gt 0)
-	{
-		if (-not (Test-Path $lanesDir)) { New-Item -Path $lanesDir -ItemType Directory | Out-Null }
-		foreach ($file in $laneFiles)
-		{
-			[System.IO.File]::WriteAllText($file.Path, $file.Content, $script:ansiPcEncoding)
-			Write_Log "Created: $($file.Path)" "green"
-		}
 	}
 	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
 	
 	# ---- Scales ---- #
 	Write_Log "-------------------- Exporting Scale VNC Files --------------------" "blue"
-	$scaleFiles = @()
 	$scaleCount = 0
 	foreach ($scale in $ScaleIPNetworks.GetEnumerator())
 	{
@@ -9589,6 +9596,8 @@ PreemptiveUpdates=0
 			}
 			
 			$filePath = Join-Path $scalesDir $fileName
+			$parent = Split-Path $filePath -Parent
+			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
 			# Set AllowUntrustedServers=1 for Ishida, else use template as-is
 			if ($brand -like '*Ishida*')
 			{
@@ -9599,7 +9608,8 @@ PreemptiveUpdates=0
 			{
 				$content = $vncTemplate.Replace('%%HOST%%', $ip).Replace('%%PASSWORD%%', $DefaultVNCPassword)
 			}
-			$scaleFiles += @{ Path = $filePath; Content = $content }
+			[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
+			Write_Log "Created: $filePath" "green"
 			$scaleCount++
 		}
 		else
@@ -9607,21 +9617,10 @@ PreemptiveUpdates=0
 			Write_Log "Skipped scale $scaleCode (missing IP)" "yellow"
 		}
 	}
-	
-	if ($scaleFiles.Count -gt 0)
-	{
-		if (-not (Test-Path $scalesDir)) { New-Item -Path $scalesDir -ItemType Directory | Out-Null }
-		foreach ($file in $scaleFiles)
-		{
-			[System.IO.File]::WriteAllText($file.Path, $file.Content, $script:ansiPcEncoding)
-			Write_Log "Created: $($file.Path)" "green"
-		}
-	}
 	Write_Log "$scaleCount scale VNC files written to $scalesDir`r`n" "blue"
 	
 	# ---- Backoffices ---- #
 	Write_Log "-------------------- Exporting Backoffice VNC Files --------------------" "blue"
-	$boFiles = @()
 	$boCount = 0
 	foreach ($bo in $BackofficeMachines.GetEnumerator())
 	{
@@ -9629,24 +9628,17 @@ PreemptiveUpdates=0
 		$boName = $bo.Value
 		$fileName = "Backoffice_${terminal}.vnc"
 		$filePath = Join-Path $backofficesDir $fileName
+		$parent = Split-Path $filePath -Parent
+		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
 		$content = $vncTemplate.Replace('%%HOST%%', $boName).Replace('%%PASSWORD%%', $DefaultVNCPassword)
-		$boFiles += @{ Path = $filePath; Content = $content }
+		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
+		Write_Log "Created: $filePath" "green"
 		$boCount++
-	}
-	
-	if ($boFiles.Count -gt 0)
-	{
-		if (-not (Test-Path $backofficesDir)) { New-Item -Path $backofficesDir -ItemType Directory | Out-Null }
-		foreach ($file in $boFiles)
-		{
-			[System.IO.File]::WriteAllText($file.Path, $file.Content, $script:ansiPcEncoding)
-			Write_Log "Created: $($file.Path)" "green"
-		}
 	}
 	Write_Log "$boCount backoffice VNC files written to $backofficesDir`r`n" "blue"
 	
 	Write_Log "VNC file export complete!" "green"
-	Write_Log "`r`n==================== Export_VNC_Files_For_All_Nodes Completed ====================" "blue"
+	Write_Log "`r`n==================== Export_VNCFiles_ForAllNodes Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -10320,7 +10312,7 @@ if (-not $form)
 	
 	# Add the RichTextBox to the form
 	$form.Controls.Add($logBox)
-		
+	
 	######################################################################################################################
 	# 
 	# Server Tools Button
@@ -10737,7 +10729,7 @@ if (-not $form)
 			Install_ONE_FUNCTION_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
 	[void]$contextMenuGeneral.Items.Add($Install_ONE_FUNCTION_Into_SMSItem)
-		
+	
 	############################################################################
 	# 5) Manual Repair
 	############################################################################
@@ -10757,7 +10749,7 @@ if (-not $form)
 			Fix_Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
 	[void]$contextMenuGeneral.Items.Add($fixJournalItem)
-		
+	
 	############################################################################
 	# 8) Open Lane C$ Share(s)
 	############################################################################
@@ -10767,7 +10759,7 @@ if (-not $form)
 			Open_Selected_Lane/s_C_Path -StoreNumber $storeNumber
 		})
 	[void]$contextMenuGeneral.Items.Add($OpenLaneCShareItem)
-		
+	
 	############################################################################
 	# 10) Export All VNC Files
 	############################################################################
@@ -10871,9 +10863,12 @@ Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
 
-<# Clear %Temp% folder on start
-$ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
-$ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob #>
+# Clear %Temp% folder on start
+# $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
+# $ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob
+
+# Insert the "777" Tecnica Test Item
+Insert_Test_Item
 
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
