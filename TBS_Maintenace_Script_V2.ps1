@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.3.3"
-$VersionDate = "2025-07-18"
+$VersionNumber = "2.3.4"
+$VersionDate = "2025-07-22"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -236,9 +236,8 @@ function Write_Log
 		[switch]$IncludeTimestamp = $true
 	)
 	
-	<# Prepare timestamp if needed
-	$timestamp = if ($IncludeTimestamp) { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
-	else { "" }#>
+	# Prepare timestamp if needed
+	#$timestamp = if ($IncludeTimestamp) { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' } else { "" }
 	
 	if ($logBox -ne $null)
 	{
@@ -1571,8 +1570,7 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 	# Store the ServerSQLScript in the script scope
 	$script:ServerSQLScript = $ServerSQLScript
 	
-		<#
-	# Optionally write to file as fallback
+	<# Optionally write to file as fallback
 	if ($StoresqlFilePath)
 	{
 		[System.IO.File]::WriteAllText($StoresqlFilePath, $script:ServerSQLScript, $utf8NoBOM)
@@ -2127,12 +2125,15 @@ function Insert_Test_Item
 	
 	if (-not $ConnectionString) { return }
 	
+	Write_Log "`r`n==================== Starting Insert_Test_Item ====================`r`n" "blue"
+	
 	$now = Get-Date
 	$nowFull = $now.ToString("yyyy-MM-dd HH:mm:ss.fff")
 	$nowDate = $now.ToString("yyyy-MM-dd 00:00:00.000")
 	
 	$preferredPLU = '0020077700000'
 	$alternativePLU = '0020777700000'
+	$fallbackPLU = '0027777700000' # New PLU for 77777
 	$doInsert = $false
 	$PLU = $null
 	$TestF267 = 777
@@ -2160,6 +2161,7 @@ function Insert_Test_Item
 		$PLU = $preferredPLU
 		$TestF267 = 777
 		$doInsert = $true
+		Write_Log "Using preferred PLU: $PLU with F267: $TestF267" "green"
 	}
 	else
 	{
@@ -2184,11 +2186,43 @@ function Insert_Test_Item
 			$PLU = $alternativePLU
 			$TestF267 = 7777
 			$doInsert = $true
+			Write_Log "Using alternative PLU: $PLU with F267: $TestF267" "green"
+		}
+		else
+		{
+			# Check fallback PLU
+			$isFallbackTest = $false
+			$descPOS3 = ""
+			$descOBJ3 = ""
+			try
+			{
+				$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$fallbackPLU'"
+				if ($posResult) { $descPOS3 = $posResult.F02 }
+				$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$fallbackPLU'"
+				if ($objResult) { $descOBJ3 = $objResult.F29 }
+				if ($descPOS3 -match '(?i)test' -or $descPOS3 -match '(?i)tecnica' -or $descOBJ3 -match '(?i)test' -or $descOBJ3 -match '(?i)tecnica')
+				{
+					$isFallbackTest = $true
+				}
+			}
+			catch { }
+			if ($isFallbackTest -or ($descPOS3 -eq "" -and $descOBJ3 -eq ""))
+			{
+				$PLU = $fallbackPLU
+				$TestF267 = 77777
+				$doInsert = $true
+				Write_Log "Using fallback PLU: $PLU with F267: $TestF267" "green"
+			}
+			else
+			{
+				Write_Log "No suitable PLU found for test item insertion" "red"
+			}
 		}
 	}
 	
 	if ($doInsert -and $PLU)
 	{
+		Write_Log "Deleting existing records for PLU: $PLU and F267: $TestF267" "yellow"
 		# Always delete old rows for the chosen PLU and F267 code
 		$deleteQueries = @(
 			"DELETE FROM SCL_TAB WHERE F01 = '$PLU'",
@@ -2200,9 +2234,10 @@ function Insert_Test_Item
 		foreach ($query in $deleteQueries)
 		{
 			try { Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query }
-			catch { }
+			catch { Write_Log "Error during deletion: $_" "red" }
 		}
 		
+		Write_Log "Inserting into SCL_TAB..." "yellow"
 		# ===== Insert into SCL_TAB =====
 		try
 		{
@@ -2210,9 +2245,11 @@ function Insert_Test_Item
 INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F258, F267, F1952, F1964, F2581, F2582)
 VALUES ('$PLU', 'PAL', 'MANUAL', 1, 10, $TestF267, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
 "@
+			Write_Log "SCL_TAB insertion successful" "green"
 		}
-		catch { }
+		catch { Write_Log "Error inserting into SCL_TAB: $_" "red" }
 		
+		Write_Log "Inserting into OBJ_TAB..." "yellow"
 		# ===== Insert into OBJ_TAB =====
 		try
 		{
@@ -2222,9 +2259,11 @@ VALUES ('$PLU', 'PAL', 'MANUAL', 1, 10, $TestF267, 'Test Descriptor 2', '001', '
 INSERT INTO OBJ_TAB (F01, F902, F1001, F21, F29, F270, F1118, F1959)
 VALUES ('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
 "@
+			Write_Log "OBJ_TAB insertion successful" "green"
 		}
-		catch { }
+		catch { Write_Log "Error inserting into OBJ_TAB: $_" "red" }
 		
+		Write_Log "Inserting into POS_TAB..." "yellow"
 		# ===== Insert into POS_TAB =====
 		try
 		{
@@ -2232,9 +2271,11 @@ VALUES ('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
 INSERT INTO POS_TAB (F01, F1000, F902, F1001, F02, F09, F79, F80, F82, F104, F115, F176, F178, F217, F1964, F2119)
 VALUES ('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '1', '0', '0', '1', '1', 1.0, '001', '1')
 "@
+			Write_Log "POS_TAB insertion successful" "green"
 		}
-		catch { }
+		catch { Write_Log "Error inserting into POS_TAB: $_" "red" }
 		
+		Write_Log "Inserting into PRICE_TAB..." "yellow"
 		# ===== Insert into PRICE_TAB =====
 		try
 		{
@@ -2242,9 +2283,11 @@ VALUES ('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '
 INSERT INTO PRICE_TAB (F01, F1000, F126, F902, F1001, F21, F30, F31, F113, F1006, F1007, F1008, F1009, F1803)
 VALUES ('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate', '1858', 1.0)
 "@
+			Write_Log "PRICE_TAB insertion successful" "green"
 		}
-		catch { }
+		catch { Write_Log "Error inserting into PRICE_TAB: $_" "red" }
 		
+		Write_Log "Inserting into SCL_TXT_TAB..." "yellow"
 		# ===== Insert into SCL_TXT_TAB =====
 		try
 		{
@@ -2254,8 +2297,15 @@ INSERT INTO SCL_TXT_TAB
 VALUES
 ($TestF267, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, 'Tecnica Test Item')
 "@
+			Write_Log "SCL_TXT_TAB insertion successful" "green"
 		}
-		catch { }
+		catch { Write_Log "Error inserting into SCL_TXT_TAB: $_" "red" }
+		
+		Write_Log "`r`n==================== Insert_Test_Item Completed ====================`r`n" "blue"
+	}
+	else
+	{
+		Write_Log "`r`n==================== Insert_Test_Item Completed (No Data) ====================`r`n" "blue"
 	}
 }
 
@@ -7673,341 +7723,6 @@ function Refresh_Database
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Retrive_Transactions
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Prompts the user for a start date and a stop date, then deploys an SQI file to selected
-#   registers for a specified store. The SQI file retrieves transactions from SAL_HDR based on the
-#   provided dates. The file is written in ANSI PC format (ASCII encoding with CRLF line endings).
-# ---------------------------------------------------------------------------------------------------
-# Parameters:
-#   - StoreNumber: The store number to process. (Mandatory)
-# ---------------------------------------------------------------------------------------------------
-# Requirements:
-#   - The Show_Lane_Selection_Form function must be available.
-#   - Variables such as $OfficePath must be defined.
-#   - Helper functions like Write_Log, Retrieve_Nodes, and the class [MailslotSender] must be available.
-# ===================================================================================================
-
-function Retrive_Transactions
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber,
-		[Parameter(Mandatory = $false)]
-		[string]$OutputCsv
-	)
-	
-	Write_Log "`r`n==================== Starting Retrive_Transactions ====================`r`n" "blue"
-	
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
-	
-	$dateForm = New-Object System.Windows.Forms.Form
-	$dateForm.Text = "Select Date Range for Transactions"
-	$dateForm.Size = New-Object System.Drawing.Size(400, 250)
-	$dateForm.StartPosition = "CenterScreen"
-	
-	# Start Date Label
-	$startLabel = New-Object System.Windows.Forms.Label
-	$startLabel.Text = "Start Date:"
-	$startLabel.Location = New-Object System.Drawing.Point(10, 20)
-	$startLabel.AutoSize = $true
-	$dateForm.Controls.Add($startLabel)
-	
-	# Start Date Picker
-	$startPicker = New-Object System.Windows.Forms.DateTimePicker
-	$startPicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
-	$startPicker.Location = New-Object System.Drawing.Point(100, 15)
-	$startPicker.Width = 100
-	$dateForm.Controls.Add($startPicker)
-	
-	# Stop Date Label
-	$stopLabel = New-Object System.Windows.Forms.Label
-	$stopLabel.Text = "Stop Date:"
-	$stopLabel.Location = New-Object System.Drawing.Point(10, 60)
-	$stopLabel.AutoSize = $true
-	$dateForm.Controls.Add($stopLabel)
-	
-	# Stop Date Picker
-	$stopPicker = New-Object System.Windows.Forms.DateTimePicker
-	$stopPicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
-	$stopPicker.Location = New-Object System.Drawing.Point(100, 55)
-	$stopPicker.Width = 100
-	$dateForm.Controls.Add($stopPicker)
-	
-	# OK Button
-	$okButton = New-Object System.Windows.Forms.Button
-	$okButton.Text = "OK"
-	$okButton.Location = New-Object System.Drawing.Point(80, 120)
-	$okButton.Add_Click({
-			$dateForm.Tag = @{
-				StartDate = $startPicker.Value
-				StopDate  = $stopPicker.Value
-			}
-			$dateForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
-			$dateForm.Close()
-		})
-	$dateForm.Controls.Add($okButton)
-	
-	# Cancel Button
-	$cancelButton = New-Object System.Windows.Forms.Button
-	$cancelButton.Text = "Cancel"
-	$cancelButton.Location = New-Object System.Drawing.Point(180, 120)
-	$cancelButton.Add_Click({
-			$dateForm.Tag = "Cancelled"
-			$dateForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-			$dateForm.Close()
-		})
-	$dateForm.Controls.Add($cancelButton)
-	
-	$dateForm.AcceptButton = $okButton
-	$dateForm.CancelButton = $cancelButton
-	
-	$resultDate = $dateForm.ShowDialog()
-	if ($dateForm.Tag -eq "Cancelled" -or $resultDate -eq [System.Windows.Forms.DialogResult]::Cancel)
-	{
-		Write_Log "User cancelled the date selection." "yellow"
-		Write_Log "==================== Retrive_Transactions Function Completed ====================" "blue"
-		return
-	}
-	
-	# Format the dates as MM/dd/yyyy
-	$startDateFormatted = $dateForm.Tag.StartDate.ToString("MM/dd/yyyy")
-	$stopDateFormatted = $dateForm.Tag.StopDate.ToString("MM/dd/yyyy")
-	Write_Log "Start Date selected: $startDateFormatted" "green"
-	Write_Log "Stop Date selected: $stopDateFormatted" "green"
-	
-	# --- STEP 2: Ask which lanes ---
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
-	if (-not $selection)
-	{
-		Write-Warning "Lane selection cancelled."
-		return
-	}
-	$lanes = $selection.Lanes
-	
-	# --- STEP 3: Query each lane over named pipes, fallback to TCP ---
-	$allResults = @()
-	foreach ($lane in $lanes)
-	{
-		$machine = $script:FunctionResults['LaneMachines'][$lane]
-		if (-not $machine)
-		{
-			Write-Warning "No machine mapped for lane $lane"
-			continue
-		}
-		
-		$instance = 'SQLEXPRESS'
-		$npServer = "np:\\$machine\pipe\MSSQL`$$instance\sql\query"
-		$tcpServer = "$machine\$instance"
-		
-		$query = @"
-SELECT
-    F1032 AS TransactionNumber,
-    F254  AS TransactionDate,
-    F1067 AS Status,
-    *
-FROM SAL_HDR
-WHERE F1067 = 'CLOSE'
-  AND F254 >= '$startDateFormatted'
-  AND F254 <= '$stopDateFormatted'
-ORDER BY F254, F1032;
-"@
-		
-		try
-		{
-			$res = Invoke-Sqlcmd -ServerInstance $npServer -Database "LANESQL" -Query $query -ErrorAction Stop
-		}
-		catch
-		{
-			Write-Warning "Named-pipe connect to $machine failed, trying TCP..."
-			try { $res = Invoke-Sqlcmd -ServerInstance $tcpServer -Database "LANESQL" -Query $query -ErrorAction Stop }
-			catch { Write-Error "Cannot connect to $machine via TCP: $_"; continue }
-		}
-		
-		if ($res)
-		{
-			# <- inject the Lane note-property here
-			$res |
-			ForEach-Object { $_ | Add-Member -NotePropertyName Lane -NotePropertyValue $lane -PassThru } |
-			ForEach-Object { $allResults += $_ }
-		}
-		else
-		{
-			Write-Warning "No closed transactions found on lane $lane"
-		}
-	}
-	
-	if (-not $allResults)
-	{
-		Write_Log "No transactions found on any selected lane." "yellow"
-		return
-	}
-	
-	# Display results similar to Organize_TBS_SCL...
-	Write_Log "Displaying closed transactions:" "yellow"
-	try
-	{
-		$formatted = $allResults | Format-Table -AutoSize | Out-String
-		Write_Log $formatted "blue"
-	}
-	catch
-	{
-		Write_Log "Failed to format and display transactions: $_" "red"
-	}
-	
-	# --- 5) WRITE A / T / X FILES ------------------------------------
-	$outDir = Join-Path $OfficePath "Exports\Transactions\$StoreNumber"
-	if (-not (Test-Path $outDir)) { New-Item $outDir -ItemType Directory | Out-Null }
-	
-	foreach ($tran in $allResults)
-	{
-		# zero-pad
-		$tn = "{0:D8}" -f $tran.F1032
-		$st = $StoreNumber.PadLeft(3, '0')
-		$ln = "{0:D3}" -f $tran.Lane
-		
-		# --- A-FILE (SIL) COMPLETE FORMAT ---
-		$A = New-Object System.Text.StringBuilder
-		
-		# SAL_SAV section
-		$A.AppendLine('@WIZRPL(ARCHIVE_TYPE=SAL_SAV);')
-		
-		# SAL_HDR section
-		$A.AppendLine("@WIZRPL(SILHDR_TABLE_SAL_HDR=SH$st$ln$tn);")
-		$hdrCols = @(
-			'F1032', 'F1148', 'F76', 'F91', 'F253', 'F254', 'F902', 'F1035', 'F1036', 'F1056', 'F1057', 'F1067', 'F1068', 'F1101',
-			'F1126', 'F1127', 'F1137', 'F1149', 'F1150', 'F1151', 'F1152', 'F1153', 'F1154', 'F1155', 'F1156', 'F1157', 'F1158', 'F1159',
-			'F1160', 'F1161', 'F1163', 'F1164', 'F1165', 'F1167', 'F1168', 'F1170', 'F1171', 'F1172', 'F1173', 'F1185', 'F1238', 'F1242',
-			'F1245', 'F1246', 'F1254', 'F1255', 'F1504', 'F1520', 'F1642', 'F1643', 'F1644', 'F1645', 'F1646', 'F1647', 'F1648', 'F1649',
-			'F1650', 'F1651', 'F1652', 'F1653', 'F1654', 'F1655', 'F1686', 'F1687', 'F1688', 'F1689', 'F1692', 'F1693', 'F1694', 'F1695',
-			'F1696', 'F1697', 'F1699', 'F1711', 'F1763', 'F1764', 'F1271', 'F1272', 'F1287', 'F1288', 'F1295', 'F1273', 'F1274', 'F1277',
-			'F1685', 'F1938', 'F2596', 'F2598', 'F2599', 'F2613', 'F2614', 'F2615', 'F2616', 'F2617', 'F2618', 'F2619', 'F2620', 'F2621',
-			'F2622', 'F2623', 'F2816', 'F2848', 'F1573', 'F2889', 'F2904', 'F2934', 'F2602'
-		)
-		$A.AppendLine("CREATE VIEW SH$st$ln$tn AS SELECT " + ($hdrCols -join ',') + " FROM TRS_DCT;")
-		$A.AppendLine("INSERT INTO SH$st$ln$tn VALUES")
-		# Map the values in the same order:
-		$hdrVals = $hdrCols | ForEach-Object {
-			$v = $tran."$_"
-			if ($null -eq $v) { "''" }
-			elseif ($v -is [datetime]) { "'$($v.ToString('yyyyMMdd HH:mm:ss'))'" }
-			elseif ($v -is [string]) { "'$v'" }
-			else { $v }
-		}
-		$A.AppendLine("(" + ($hdrVals -join ',') + ");")
-		
-		# SAL_REG section
-		$A.AppendLine("@WIZRPL(SILHDR_TABLE_SAL_REG=SR$st$ln$tn);")
-		$regCols = @(
-			'F1032', 'F1101', 'F01', 'F03', 'F04', 'F05', 'F06', 'F24', 'F30', 'F31', 'F43', 'F50', 'F60', 'F61', 'F64', 'F65', 'F67', 'F77',
-			'F79', 'F80', 'F81', 'F82', 'F83', 'F88', 'F96', 'F97', 'F98', 'F99', 'F100', 'F101', 'F102', 'F104', 'F106', 'F108', 'F109',
-			'F110', 'F113', 'F114', 'F115', 'F124', 'F125', 'F126', 'F149', 'F150', 'F160', 'F168', 'F169', 'F170', 'F171', 'F172', 'F173',
-			'F175', 'F178', 'F253', 'F254', 'F270', 'F383', 'F903', 'F1002', 'F1006', 'F1007', 'F1034', 'F1041', 'F1063', 'F1067', 'F1069',
-			'F1070', 'F1071', 'F1072', 'F1078', 'F1080', 'F1086', 'F1120', 'F1136', 'F1178', 'F1203', 'F1204', 'F1205', 'F1206', 'F1207',
-			'F1208', 'F1209', 'F1224', 'F1225', 'F1239', 'F1240', 'F1241', 'F1256', 'F1263', 'F1595', 'F1596', 'F1683', 'F1684', 'F1691',
-			'F1693', 'F1694', 'F1699', 'F1712', 'F1715', 'F1716', 'F1717', 'F1718', 'F1719', 'F1720', 'F1721', 'F1722', 'F1723', 'F1724',
-			'F1725', 'F1726', 'F1727', 'F1728', 'F1729', 'F1730', 'F1731', 'F1732', 'F1733', 'F1734', 'F1739', 'F1740', 'F1741', 'F1742',
-			'F177', 'F1785', 'F1787', 'F1789', 'F1802', 'F1803', 'F1805', 'F1081', 'F1831', 'F1832', 'F1833', 'F1834', 'F1835', 'F1079',
-			'F1860', 'F1861', 'F1862', 'F1863', 'F1864', 'F1888', 'F1874', 'F08', 'F1924', 'F1925', 'F1926', 'F1927', 'F1928', 'F1929',
-			'F1930', 'F1931', 'F1932', 'F1933', 'F1934', 'F1935', 'F1936', 'F1126', 'F1185', 'F2551', 'F2552', 'F2553', 'F2554', 'F2555',
-			'F1815', 'F1816', 'F1164', 'F1938', 'F2608', 'F2609', 'F2610', 'F2611', 'F2612', 'F2613', 'F2614', 'F2660', 'F2745', 'F2746',
-			'F2752', 'F2753', 'F2747', 'F2748', 'F2749', 'F2750', 'F2751', 'F2744', 'F1687', 'F2860', 'F2861', 'F2862', 'F2863', 'F2865',
-			'F2866', 'F2867', 'F2869', 'F2870', 'F2871', 'F163', 'F117', 'F3038', 'F3039', 'F3040', 'F3041', 'F3042', 'F3043', 'F3044',
-			'F3045', 'F3046', 'F3047'
-		)
-		$A.AppendLine("CREATE VIEW SR$st$ln$tn AS SELECT " + ($regCols -join ',') + " FROM TRS_DCT;")
-		$A.AppendLine("INSERT INTO SR$st$ln$tn VALUES")
-		# Map the values in the same order:
-		$regVals = $regCols | ForEach-Object {
-			$v = $tran."$_"
-			if ($null -eq $v) { "''" }
-			elseif ($v -is [datetime]) { "'$($v.ToString('yyyyMMdd HH:mm:ss'))'" }
-			elseif ($v -is [string]) { "'$v'" }
-			else { $v }
-		}
-		$A.AppendLine("(" + ($regVals -join ',') + ");")
-		
-		# SAL_DET section
-		$A.AppendLine("@WIZRPL(SILHDR_TABLE_SAL_DET=SD$st$ln$tn);")
-		$detCols = @('F1032', 'F1101', 'F2770', 'F01', 'F64', 'F65', 'F1041', 'F1079', 'F1081', 'F1691', 'F1802', 'F2771')
-		$A.AppendLine("CREATE VIEW SD$st$ln$tn AS SELECT " + ($detCols -join ',') + " FROM TRS_DCT;")
-		$A.AppendLine("INSERT INTO SD$st$ln$tn VALUES")
-		# Map the values in the same order:
-		$detVals = $detCols | ForEach-Object {
-			$v = $tran."$_"
-			if ($null -eq $v) { "''" }
-			elseif ($v -is [datetime]) { "'$($v.ToString('yyyyMMdd HH:mm:ss'))'" }
-			elseif ($v -is [string]) { "'$v'" }
-			else { $v }
-		}
-		$A.AppendLine("(" + ($detVals -join ',') + ");")
-		
-		# SAL_TTL section
-		$A.AppendLine("@WIZRPL(SILHDR_TABLE_SAL_TTL=ST$st$ln$tn);")
-		$ttlCols = @('F1032', 'F1034', 'F64', 'F65', 'F67', 'F1039', 'F1067', 'F1093', 'F1094', 'F1095', 'F1096', 'F1097', 'F1098')
-		$A.AppendLine("CREATE VIEW ST$st$ln$tn AS SELECT " + ($ttlCols -join ',') + " FROM TRS_DCT;")
-		$A.AppendLine("INSERT INTO ST$st$ln$tn VALUES")
-		$ttlVals = $ttlCols | ForEach-Object {
-			$v = $tran."$_"
-			if ($null -eq $v) { "''" }
-			elseif ($v -is [datetime]) { "'$($v.ToString('yyyyMMdd HH:mm:ss'))'" }
-			elseif ($v -is [string]) { "'$v'" }
-			else { $v }
-		}
-		$A.AppendLine("(" + ($ttlVals -join ',') + ");")
-		
-		# Import command
-		$A.AppendLine("@IMPORT_SIL(SAL_SAV.sqi);")
-		
-		$A.ToString() | Out-File (Join-Path $outDir "A$tn$st.$ln") -Encoding ASCII
-		
-		# - T-FILE (header + TRS_ADD) -
-		$fileT = Join-Path $outDir "T$tn$st.$ln"
-		$sbT = New-Object System.Text.StringBuilder
-		
-		# 1) HEADER
-		$sbT.AppendLine(
-			"INSERT INTO HEADER_DCT VALUES('HR','$tn','$st$ln','$st$ln',,,'2025...','...','...','...',,'ADD','SALE',...);"
-		)
-		
-		# 2) CREATE VIEW
-		$sbT.AppendLine(
-			"CREATE VIEW TRS_ADD AS SELECT F1056,F1057,F254,F1036,F1031,F1032,F1101,F1033,F01,F1034,F126,F30,F31,F64,F65,F67,F1079 FROM TRS_TAB;"
-		)
-		
-		# 3) BUILD THE VALUES LIST
-		$rowVals = "{0:D3},{1:D3},'{2}',{3},'{4}',{5},{6}" -f `
-		$tran.F1056, `
-		$tran.F1057, `
-		$tran.F254.ToString('MM/dd/yyyy HH:mm:ss'), `
-		$tran.F1035, `
-		$tran.F1031, `
-		$tran.F1032, `
-		$tran.F1101
-		
-		# 4) FINAL INSERT
-		$sbT.AppendLine("INSERT INTO TRS_ADD VALUES($rowVals);")
-		
-		# 5) OUTPUT
-		$sbT.ToString() | Out-File -FilePath $fileT -Encoding ASCII
-		
-		# …then later you need to close your foreach and function:
-	}
-	#
-	# - X-FILE (.xml) -
-	#
-	$fileX = Join-Path $outDir "X$tn$st.$ln.xml"
-	$tran.XmlPayload | Out-File $fileX -Encoding ASCII
-	
-	
-	Write_Log "✅ A/T/X files written to $outDir" "green"
-	Write_Log "`r`n==================== Retrive_Transactions Function Completed ====================" "blue"
-}
-
-# ===================================================================================================
 #                           FUNCTION: Reboot_Scales
 # ---------------------------------------------------------------------------------------------------
 # **Purpose:**
@@ -8027,7 +7742,6 @@ ORDER BY F254, F1032;
 # **Usage:**
 #   ```powershell
 #   Reboot_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
-#   ```
 #
 # **Notes:**
 #   - Replace or adjust the reboot logic as needed for your environment.
@@ -10577,17 +10291,7 @@ if (-not $form)
 			Reboot_Lanes -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($RebootLaneItem)
-	
-	<############################################################################
-	# Retrive Transactions
-	############################################################################
-	$RetriveTransactionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions")
-	$RetriveTransactionsItem.ToolTipText = "Retrive Transactions from lane/s."
-	$RetriveTransactionsItem.Add_Click({
-		Retrive_Transactions -StoreNumber "$StoreNumber"
-	})
-	[void]$ContextMenuLane.Items.Add($RetriveTransactionsItem)#>
-	
+		
 	############################################################################
 	# Show the context menu when the Server Tools button is clicked
 	############################################################################
@@ -10751,7 +10455,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($fixJournalItem)
 	
 	############################################################################
-	# 8) Open Lane C$ Share(s)
+	# 7) Open Lane C$ Share(s)
 	############################################################################
 	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
 	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
@@ -10761,7 +10465,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($OpenLaneCShareItem)
 	
 	############################################################################
-	# 10) Export All VNC Files
+	# 8) Export All VNC Files
 	############################################################################
 	$ExportVNCFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export All VNC Files")
 	$ExportVNCFilesItem.ToolTipText = "Generate UltraVNC (.vnc) connection files for all lanes, scales, and backoffices."
@@ -10775,7 +10479,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
 	
 	############################################################################
-	# 11) Export Machines Hardware Info
+	# 9) Export Machines Hardware Info
 	############################################################################
 	$ExportMachineHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Machines Hardware Info")
 	$ExportMachineHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all machines"
@@ -10789,7 +10493,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($ExportMachineHardwareInfoItem)
 	
 	############################################################################
-	# 12) Remove Archive Bit
+	# 10) Remove Archive Bit
 	############################################################################
 	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
 	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
@@ -10797,6 +10501,16 @@ if (-not $form)
 			Remove_ArchiveBit_Interactive
 		})
 	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
+	
+	############################################################################
+	# 11) Insert Test Item
+	############################################################################
+	$InsertTestItem = New-Object System.Windows.Forms.ToolStripMenuItem("Insert Test Item")
+	$InsertTestItem.ToolTipText = "Inserts or updates a test item (PLU 0020077700000 or alternatives) in the database."
+	$InsertTestItem.Add_Click({
+			Insert_Test_Item
+		})
+	[void]$ContextMenuGeneral.Items.Add($InsertTestItem)
 	
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
@@ -10809,11 +10523,13 @@ if (-not $form)
 	$form.Controls.Add($GeneralToolsButton)
 }
 
+
 ######################################################################################################################
 # 
-# Anchor all controls for resize
+# Anchor all controls for resize (PowerShell WinForms)
 #
 ######################################################################################################################
+
 $smsVersionLabel.Anchor = 'Top,Left'
 $storeNumberLabel.Anchor = 'Top,Right'
 $NodesBackoffices.Anchor = 'Top,Left'
@@ -10824,15 +10540,40 @@ $clearLogButton.Anchor = 'Top,Right'
 $GeneralToolsButton.Anchor = 'Bottom,Right'
 $ServerToolsButton.Anchor = 'Bottom,Left'
 $LaneToolsButton.Anchor = 'Bottom'
+$ScaleToolsButton.Anchor = 'Bottom'
 
 $form.add_Resize({
-		$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
-		$logBox.Width = $form.ClientSize.Width - 100
+		# Margin between logBox and Clear Log button
+		$buttonMargin = 10
+		
+		# Position Clear Log button in top-right
+		$clearLogButton.Left = $form.ClientSize.Width - $clearLogButton.Width - 15
+		$clearLogButton.Top = 70 # or wherever you want it (70 is your original)
+		
+		# Calculate the rightmost edge the logBox should go to
+		$logBoxRightEdge = $clearLogButton.Left - $buttonMargin
+		
+		# Make logBox fill to just before the Clear Log button
+		$logBox.Left = 50
+		$logBox.Top = 70
+		$logBox.Width = [math]::Max(100, $logBoxRightEdge - $logBox.Left)
 		$logBox.Height = $form.ClientSize.Height - 170
-		$clearLogButton.Left = $form.ClientSize.Width - 55
-		$GeneralToolsButton.Left = $form.ClientSize.Width - 350
-		$ServerToolsButton.Top = $LaneToolsButton.Top = $GeneralToolsButton.Top = $form.ClientSize.Height - 85
-		$LaneToolsButton.Left = [math]::Max(350, ($form.ClientSize.Width - 950) / 2 + 300)
+		
+		# Center store name label
+		$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
+		$NodesStore.Left = [math]::Max(0, ($form.ClientSize.Width - $NodesStore.Width) / 2)
+		
+		# Space the bottom buttons evenly
+		$buttonWidth = 200
+		$buttonHeight = 50
+		$numButtons = 4
+		$availableWidth = $form.ClientSize.Width
+		$gap = [math]::Max(10, ($availableWidth - ($numButtons * $buttonWidth)) / ($numButtons + 1))
+		$ServerToolsButton.Left = $gap
+		$LaneToolsButton.Left = $ServerToolsButton.Left + $buttonWidth + $gap
+		$ScaleToolsButton.Left = $LaneToolsButton.Left + $buttonWidth + $gap
+		$GeneralToolsButton.Left = $ScaleToolsButton.Left + $buttonWidth + $gap
+		$ServerToolsButton.Top = $LaneToolsButton.Top = $ScaleToolsButton.Top = $GeneralToolsButton.Top = $form.ClientSize.Height - ($buttonHeight + $buttonHeight)
 	})
 
 # ===================================================================================================
@@ -10866,9 +10607,6 @@ $ClearXEJob = Clear_XE_Folder
 # Clear %Temp% folder on start
 # $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
 # $ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob
-
-# Insert the "777" Tecnica Test Item
-Insert_Test_Item
 
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
