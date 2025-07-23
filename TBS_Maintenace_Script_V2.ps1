@@ -8794,36 +8794,36 @@ function Update_Scales_Specials_Interactive
 			}
 		})
 	
-	# Enable restore button only if the deploy line is missing
-	$deployLineExists = $false
+	# Determine the correct exe and line first
+	$correctExeLine = ""
+	if (Test-Path "C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe")
+	{
+		$correctExeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe');"
+	}
+	elseif (Test-Path "C:\ScaleCommApp\ScaleManagementApp.exe")
+	{
+		$correctExeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp.exe');"
+	}
+	else
+	{
+		Write_Log "Neither FastDEPLOY nor regular ScaleManagementApp.exe found in C:\ScaleCommApp!" "red"
+		Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
+		return
+	}
+	
+	# Enable restore button if the exact correct line is missing (exists but wrong format will enable it)
+	$deployLineCorrect = $false
 	if (Test-Path $deployChgFile)
 	{
 		$deployContent = Get-Content $deployChgFile -Raw
-		if ($deployContent -match '(?i)ScaleManagementApp\.exe' -or $deployContent -match '(?i)ScaleManagementApp_FastDEPLOY\.exe')
+		if ($deployContent -match [regex]::Escape($correctExeLine))
 		{
-			$deployLineExists = $true
+			$deployLineCorrect = $true
 		}
 	}
-	if (-not $deployLineExists) { $btnRestoreDeployLine.Enabled = $true }
+	if (-not $deployLineCorrect) { $btnRestoreDeployLine.Enabled = $true }
 	
 	$btnRestoreDeployLine.Add_Click({
-			$exeLine = ""
-			if (Test-Path "C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe")
-			{
-				$exeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe');"
-			}
-			elseif (Test-Path "C:\ScaleCommApp\ScaleManagementApp.exe")
-			{
-				$exeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp.exe');"
-			}
-			else
-			{
-				Write_Log "Neither FastDEPLOY nor regular ScaleManagementApp.exe found in C:\ScaleCommApp!" "red"
-				Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
-				$form.Close()
-				return
-			}
-			
 			# --- Restore DEPLOY_CHG.sql ---
 			if (Test-Path $deployChgFile)
 			{
@@ -8841,9 +8841,9 @@ function Update_Scales_Specials_Interactive
 						$null = $newContent.RemoveAt($newContent.Count - 1)
 					}
 					$newContent += ""
-					$newContent += $exeLine
+					$newContent += $correctExeLine
 					$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default
-					Write_Log "Restored line to DEPLOY_CHG.sql: $exeLine" "green"
+					Write_Log "Restored line to DEPLOY_CHG.sql: $correctExeLine" "green"
 					$btnRestoreDeployLine.Enabled = $false
 				}
 				catch
