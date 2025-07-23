@@ -9256,7 +9256,7 @@ function Manage_Sa_Account
 			Write_Log "Enable button clicked. Attempting to enable 'sa'..." "blue"
 			try
 			{
-				$enableQuery = "ALTER LOGIN sa ENABLE; ALTER LOGIN sa WITH PASSWORD = 'TB$upp0rT';"
+				$enableQuery = "ALTER LOGIN sa ENABLE; ALTER LOGIN sa WITH PASSWORD = 'TB`$upp0rT';"
 				Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $enableQuery -ErrorAction Stop
 				Write_Log "'sa' account enabled and password set successfully." "green"
 				
