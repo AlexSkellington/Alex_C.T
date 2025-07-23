@@ -5213,6 +5213,240 @@ function Ping_All_Lanes
 }
 
 # ===================================================================================================
+#                                       FUNCTION: Ping_All_Scales
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#    Ping all scales at once for a given store (store mode only).
+# ===================================================================================================
+
+function Ping_All_Scales
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[hashtable]$ScaleIPNetworks
+	)
+	
+	Write_Log "`r`n==================== Starting Ping_All_Scales Function ====================`r`n" "blue"
+	
+	# Ensure necessary functions are available
+	foreach ($func in @('Write_Log'))
+	{
+		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
+		{
+			Write-Error "Function '$func' is not available. Please ensure it is loaded."
+			return
+		}
+	}
+	
+	# Check if FunctionResults has the necessary data
+	if ($ScaleIPNetworks.Count -eq 0)
+	{
+		Write_Log "No scales found to ping." "Yellow"
+		return
+	}
+	
+	# Assume all scales are selected
+	$selectedScales = $ScaleIPNetworks.Keys | Sort-Object
+	
+	Write_Log "All scales will be pinged." "Green"
+	
+	# Prepare list of scales to ping
+	$scalesToPing = @()
+	foreach ($scaleCode in $selectedScales)
+	{
+		$scaleObj = $ScaleIPNetworks[$scaleCode]
+		$ip = $scaleObj.FullIP
+		if ($ip)
+		{
+			$scalesToPing += [PSCustomObject]@{
+				ScaleCode = $scaleCode
+				IP	      = $ip
+			}
+		}
+		else
+		{
+			$scalesToPing += [PSCustomObject]@{
+				ScaleCode = $scaleCode
+				IP	      = "Unknown"
+			}
+		}
+	}
+	
+	if ($scalesToPing.Count -eq 0)
+	{
+		Write_Log "No valid IPs found to ping." "Yellow"
+		return
+	}
+	
+	# Initialize counters
+	$successCount = 0
+	$failureCount = 0
+	
+	# Ping each scale and log status
+	foreach ($scale in $scalesToPing)
+	{
+		$scaleCode = $scale.ScaleCode
+		$ip = $scale.IP
+		
+		if ($ip -eq "Unknown")
+		{
+			Write_Log "Scale #${scaleCode}: IP - $ip. Status: Skipped." "Yellow"
+			continue
+		}
+		
+		try
+		{
+			$pingResult = Test-Connection -ComputerName $ip -Count 1 -Quiet -ErrorAction Stop
+			if ($pingResult)
+			{
+				Write_Log "Scale #${scaleCode}: IP '$ip' is reachable. Status: Success." "Green"
+				$successCount++
+			}
+			else
+			{
+				Write_Log "Scale #${scaleCode}: IP '$ip' is not reachable. Status: Failed." "Red"
+				$failureCount++
+			}
+		}
+		catch
+		{
+			Write_Log "Scale #${scaleCode}: Failed to ping IP '$ip'. Error: $($_.Exception.Message)" "Red"
+			$failureCount++
+		}
+	}
+	
+	# Summary of ping results
+	Write_Log "Ping Summary - Success: $successCount, Failed: $failureCount." "Blue"
+	Write_Log "`r`n==================== Ping_All_Scales Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                                       FUNCTION: Ping_All_Backoffices
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#    Ping all backoffices at once for a given store (store mode only).
+# ===================================================================================================
+
+function Ping_All_Backoffices
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	
+	Write_Log "`r`n==================== Starting Ping_All_Backoffices Function ====================`r`n" "blue"
+	
+	# Ensure necessary functions are available
+	foreach ($func in @('Write_Log'))
+	{
+		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
+		{
+			Write-Error "Function '$func' is not available. Please ensure it is loaded."
+			return
+		}
+	}
+	
+	# Check if FunctionResults has the necessary data
+	if (-not $script:FunctionResults.ContainsKey('BackofficeMachines'))
+	{
+		Write_Log "Backoffice information is not available. Please run Retrieve_Nodes first." "Red"
+		return
+	}
+	
+	# Retrieve backoffice information
+	$BackofficeMachines = $script:FunctionResults['BackofficeMachines']
+	
+	if ($BackofficeMachines.Count -eq 0)
+	{
+		Write_Log "No backoffices found for Store Number: $StoreNumber." "Yellow"
+		return
+	}
+	
+	# Assume all backoffices are selected
+	$selectedBackoffices = $BackofficeMachines.Keys | Sort-Object
+	
+	Write_Log "All backoffices will be pinged for Store Number: $StoreNumber." "Green"
+	
+	# Prepare list of machines to ping
+	$machinesToPing = @()
+	foreach ($terminal in $selectedBackoffices)
+	{
+		if ($BackofficeMachines.ContainsKey($terminal))
+		{
+			$machineName = $BackofficeMachines[$terminal]
+			if ($machineName)
+			{
+				$machinesToPing += [PSCustomObject]@{
+					Terminal = $terminal
+					Machine  = $machineName
+				}
+			}
+			else
+			{
+				$machinesToPing += [PSCustomObject]@{
+					Terminal = $terminal
+					Machine  = "Unknown"
+				}
+			}
+		}
+		else
+		{
+			$machinesToPing += [PSCustomObject]@{
+				Terminal = $terminal
+				Machine  = "Not Found"
+			}
+		}
+	}
+	
+	if ($machinesToPing.Count -eq 0)
+	{
+		Write_Log "No valid machines found to ping." "Yellow"
+		return
+	}
+	
+	# Initialize counters
+	$successCount = 0
+	$failureCount = 0
+	
+	# Ping each machine and log status
+	foreach ($machine in $machinesToPing)
+	{
+		$terminal = $machine.Terminal
+		$machineName = $machine.Machine
+		
+		if ($machineName -in @("Unknown", "Not Found"))
+		{
+			Write_Log "Backoffice #${terminal}: Machine Name - $machineName. Status: Skipped." "Yellow"
+			continue
+		}
+		
+		try
+		{
+			$pingResult = Test-Connection -ComputerName $machineName -Count 1 -Quiet -ErrorAction Stop
+			if ($pingResult)
+			{
+				Write_Log "Backoffice #${terminal}: Machine '$machineName' is reachable. Status: Success." "Green"
+				$successCount++
+			}
+			else
+			{
+				Write_Log "Backoffice #${terminal}: Machine '$machineName' is not reachable. Status: Failed." "Red"
+				$failureCount++
+			}
+		}
+		catch
+		{
+			Write_Log "Backoffice #${terminal}: Failed to ping Machine '$machineName'. Error: $($_.Exception.Message)" "Red"
+			$failureCount++
+		}
+	}
+	
+	# Summary of ping results
+	Write_Log "Ping Summary for Store Number: $StoreNumber - Success: $successCount, Failed: $failureCount." "Blue"
+	Write_Log "`r`n==================== Ping_All_Backoffices Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                                           FUNCTION: Delete_DBS
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -9179,7 +9413,7 @@ function Fix_Deploy_CHG
 #   - Local SQL Server default instance ('.').
 #   - Write_Log function is available for logging.
 #
-# Author: Grok (based on user request)
+# Author: Alex_C.T
 # ===================================================================================================
 
 function Manage_Sa_Account
@@ -10491,7 +10725,17 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($PingLanesItem)
 	
 	############################################################################
-	# 7) Delete DBS Menu Item
+	# 7) Open Lane C$ Share(s)
+	############################################################################
+	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
+	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
+	$OpenLaneCShareItem.Add_Click({
+			Open_Selected_Lane/s_C_Path -StoreNumber $storeNumber
+		})
+	[void]$ContextMenuLane.Items.Add($OpenLaneCShareItem)
+	
+	############################################################################
+	# 8) Delete DBS Menu Item
 	############################################################################
 	$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
 	$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
@@ -10501,7 +10745,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
 	
 	############################################################################
-	# 8) Refresh PIN Pad Files Menu Item
+	# 9) Refresh PIN Pad Files Menu Item
 	############################################################################
 	$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
 	$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
@@ -10511,7 +10755,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 	
 	############################################################################
-	# 9) Drawer Control Item
+	# 10) Drawer Control Item
 	############################################################################
 	$DrawerControlItem = New-Object System.Windows.Forms.ToolStripMenuItem("Drawer Control")
 	$DrawerControlItem.ToolTipText = "Set the Drawer Control for a lane for testing"
@@ -10521,7 +10765,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($DrawerControlItem)
 	
 	############################################################################
-	# 10) Refresh Database
+	# 11) Refresh Database
 	############################################################################
 	$RefreshDatabaseItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh Database")
 	$RefreshDatabaseItem.ToolTipText = "Refresh the database at the lane/s"
@@ -10531,7 +10775,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 	
 	############################################################################
-	# 11) Send Restart Command Menu Item
+	# 12) Send Restart Command Menu Item
 	############################################################################
 	$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 	$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
@@ -10541,7 +10785,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 	
 	############################################################################
-	# 13) Set the time on the lanes
+	# 14) Set the time on the lanes
 	############################################################################
 	$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set/Schedule Time on Lanes")
 	$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize or schedule time sync for selected lanes."
@@ -10559,7 +10803,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 	
 	############################################################################
-	# 14) Reboot Lane Menu Item
+	# 15) Reboot Lane Menu Item
 	############################################################################
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
@@ -10594,7 +10838,17 @@ if (-not $form)
 	$ContextMenuScale.ShowItemToolTips = $true
 	
 	############################################################################
-	# 1) Repair BMS Service
+	# 1) Ping Scales Menu Item
+	############################################################################
+	$PingScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Scales")
+	$PingScalesItem.ToolTipText = "Ping all scale devices to check connectivity."
+	$PingScalesItem.Add_Click({
+			Ping_All_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
+		})
+	[void]$ContextMenuScale.Items.Add($PingScalesItem)
+	
+	############################################################################
+	# 2) Repair BMS Service
 	############################################################################
 	$repairBMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair BMS Service")
 	$repairBMSItem.ToolTipText = "Repairs the BMS service for scale deployment."
@@ -10604,7 +10858,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($repairBMSItem)
 	
 	############################################################################
-	# 2) Reboot Scales
+	# 3) Reboot Scales
 	############################################################################
 	$Reboot_ScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Scales")
 	$Reboot_ScalesItem.ToolTipText = "Reboot Scale/s."
@@ -10614,7 +10868,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($Reboot_ScalesItem)
 	
 	############################################################################
-	# 3) Open Scale C$ Share(s)
+	# 4) Open Scale C$ Share(s)
 	############################################################################
 	$OpenScaleCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Scale C$ Share(s)")
 	$OpenScaleCShareItem.ToolTipText = "Select scales and open their C$ administrative shares as 'bizuser' (bizerba/biyerba)."
@@ -10624,7 +10878,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($OpenScaleCShareItem)
 	
 	############################################################################
-	# 4) Update Scales Specials
+	# 5) Update Scales Specials
 	############################################################################
 	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
 	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
@@ -10634,7 +10888,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($UpdateScalesSpecialsItem)
 	
 	############################################################################
-	# 5) Schedule Duplicate File Monitor
+	# 6) Schedule Duplicate File Monitor
 	############################################################################
 	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove duplicate files from toBizerba")
 	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in toBizerba. Run now or schedule as SYSTEM."
@@ -10667,7 +10921,7 @@ if (-not $form)
 	$GeneralToolsButton.Size = New-Object System.Drawing.Size(200, 50)
 	$ContextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuGeneral.ShowItemToolTips = $true
-	
+		
 	############################################################################
 	# 1) Activate Windows ("Alex_C.T")
 	############################################################################
@@ -10731,15 +10985,15 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($fixJournalItem)
 	
 	############################################################################
-	# 7) Open Lane C$ Share(s)
+	# 7) Ping Backoffices Menu Item
 	############################################################################
-	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
-	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
-	$OpenLaneCShareItem.Add_Click({
-			Open_Selected_Lane/s_C_Path -StoreNumber $storeNumber
+	$PingBackofficesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Backoffices")
+	$PingBackofficesItem.ToolTipText = "Ping all backoffice devices to check connectivity."
+	$PingBackofficesItem.Add_Click({
+			Ping_All_Backoffices -StoreNumber $StoreNumber
 		})
-	[void]$contextMenuGeneral.Items.Add($OpenLaneCShareItem)
-	
+	[void]$contextMenuGeneral.Items.Add($PingBackofficesItem)
+		
 	############################################################################
 	# 8) Export All VNC Files
 	############################################################################
