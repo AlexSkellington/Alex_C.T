@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.3.4"
-$VersionDate = "2025-07-22"
+$VersionNumber = "2.3.5"
+$VersionDate = "2025-07-23"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -9066,6 +9066,98 @@ exit
 }
 
 # ===================================================================================================
+#                                   FUNCTION: Fix_Deploy_CHG
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Restores the deploy line to DEPLOY_CHG.sql for scale management.
+#   Checks for FastDEPLOY or regular ScaleManagementApp.exe and constructs the appropriate @EXEC line.
+#   Removes any existing matching deploy lines from the file, then appends the new line.
+#   Deletes the minutes scheduled task if it exists.
+#   Uses Write_Log for progress and error reporting.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - OfficePath: Path to the Office folder containing DEPLOY_CHG.sql (defaults to script's $OfficePath).
+# ===================================================================================================
+
+function Fix_Deploy_CHG
+{
+	param (
+		[string]$OfficePath = $script:OfficePath
+	)
+	
+	Write_Log "`r`n==================== Starting Fix_Deploy_CHG Function ====================`r`n" "blue"
+	
+	$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
+	
+	if (-not (Test-Path $deployChgFile))
+	{
+		Write_Log "DEPLOY_CHG.sql not found at $deployChgFile" "red"
+		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
+		return
+	}
+	
+	$exeLine = ""
+	if (Test-Path "C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe")
+	{
+		$exeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe');"
+	}
+	elseif (Test-Path "C:\ScaleCommApp\ScaleManagementApp.exe")
+	{
+		$exeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp.exe');"
+	}
+	else
+	{
+		Write_Log "Neither FastDEPLOY nor regular ScaleManagementApp.exe found in C:\ScaleCommApp!" "red"
+		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
+		return
+	}
+	
+	# --- Restore DEPLOY_CHG.sql ---
+	try
+	{
+		$content = Get-Content $deployChgFile -Raw
+		$newContent = [System.Collections.Generic.List[string]]@(
+			($content -split "`r?`n") | Where-Object {
+				$_ -notmatch '^\s*/\* Deploy price changes to the scales \*/' -and
+				$_ -notmatch '(?i)@EXEC\(RUN=''C:\\ScaleCommApp\\ScaleManagementApp(_FastDEPLOY)?\.exe''\);'
+			}
+		)
+		while ($newContent.Count -gt 0 -and ($newContent[-1] -match '^\s*$'))
+		{
+			$null = $newContent.RemoveAt($newContent.Count - 1)
+		}
+		$newContent += ""
+		$newContent += $exeLine
+		$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default
+		Write_Log "Restored line to DEPLOY_CHG.sql: $exeLine" "green"
+	}
+	catch
+	{
+		Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
+		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
+		return
+	}
+	
+	# --- Delete the minutes task if it exists ---
+	$minutesTaskName = "Update_Scales_Specials_Task_Minutes"
+	$taskExists = schtasks /Query /TN "$minutesTaskName" 2>&1 | Select-String -Quiet -Pattern "$minutesTaskName"
+	if ($taskExists)
+	{
+		$deleteOut = schtasks /Delete /TN "$minutesTaskName" /F 2>&1
+		if ($LASTEXITCODE -eq 0)
+		{
+			Write_Log "Deleted scheduled task '$minutesTaskName' after DEPLOY_CHG.sql restore." "yellow"
+		}
+		else
+		{
+			Write_Log "Attempted to delete '$minutesTaskName' after restore but schtasks said: $deleteOut" "yellow"
+		}
+	}
+	
+	Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                        FUNCTION: Export-VNCFiles-ForAllNodes
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -10511,6 +10603,16 @@ if (-not $form)
 			Insert_Test_Item
 		})
 	[void]$ContextMenuGeneral.Items.Add($InsertTestItem)
+	
+	############################################################################
+	# 12) Fix Deploy CHG
+	############################################################################
+	$FixDeployCHGItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Deploy CHG")
+	$FixDeployCHGItem.ToolTipText = "Restores the deploy line to DEPLOY_CHG.sql for scale management."
+	$FixDeployCHGItem.Add_Click({
+			Fix_Deploy_CHG
+		})
+	[void]$ContextMenuGeneral.Items.Add($FixDeployCHGItem)
 	
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
