@@ -9856,6 +9856,73 @@ PreemptiveUpdates=0
 }
 
 # ===================================================================================================
+#                                FUNCTION: Configure_Windows_Defender_Exclusions
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Modifies Windows Defender exclusions by removing all existing extension exclusions,
+#   recreating the Extensions key, and adding path exclusions for specified paths.
+#   Logs each step and handles errors appropriately.
+# ===================================================================================================
+
+function Configure_Windows_Defender_Exclusions
+{
+	Write_Log "`r`n==================== Starting Configure_Windows_Defender_Exclusions Function ====================`r`n" "blue"
+	
+	# Ensure necessary functions are available
+	foreach ($func in @('Write_Log'))
+	{
+		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
+		{
+			Write-Error "Function '$func' is not available. Please ensure it is loaded."
+			return
+		}
+	}
+	
+	# Define registry paths
+	$extensionsKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Extensions"
+	$pathsKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths"
+	
+	# Define paths to exclude
+	$excludePaths = @(
+		"C:\Windows\SysWOW64\rserver30",
+		"C:\storeman\SmsLog64\SmsLogService.exe"
+	)
+	
+	try
+	{
+		# Step 1: Remove all existing entries under Extensions
+		if (Test-Path $extensionsKey)
+		{
+			Remove-Item -Path $extensionsKey -Recurse -Force
+			Write_Log "Removed all existing extension exclusions." "green"
+		}
+		else
+		{
+			Write_Log "Extensions key does not exist. Skipping removal." "yellow"
+		}
+		
+		# Step 2: Recreate the Extensions key (empty)
+		New-Item -Path $extensionsKey -Force | Out-Null
+		Write_Log "Recreated empty Extensions key." "green"
+		
+		# Step 3: Add path exclusions
+		foreach ($path in $excludePaths)
+		{
+			Set-ItemProperty -Path $pathsKey -Name $path -Value 0 -Type DWord -Force
+			Write_Log "Added path exclusion for '$path'." "green"
+		}
+	}
+	catch
+	{
+		Write_Log "Error occurred while configuring Windows Defender exclusions: $($_.Exception.Message)" "red"
+		return
+	}
+	
+	Write_Log "Windows Defender exclusions configured successfully." "green"
+	Write_Log "`r`n==================== Configure_Windows_Defender_Exclusions Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                                FUNCTION: Show_Lane_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -10890,8 +10957,8 @@ if (-not $form)
 	############################################################################
 	# 6) Schedule Duplicate File Monitor
 	############################################################################
-	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove duplicate files from toBizerba")
-	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in toBizerba. Run now or schedule as SYSTEM."
+	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove duplicate files from (toBizerba)")
+	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in (toBizerba). Run now or schedule as SYSTEM."
 	$ScheduleRemoveDupesItem.Add_Click({
 			Remove_Duplicate_Files_From_toBizerba
 		})
@@ -11051,6 +11118,25 @@ if (-not $form)
 			Fix_Deploy_CHG
 		})
 	[void]$ContextMenuGeneral.Items.Add($FixDeployCHGItem)
+	
+	############################################################################
+	# 13) Configure Defender Exclusions
+	############################################################################
+	$ConfigureDefenderExclusionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure Windows Defender Exclusions")
+	$ConfigureDefenderExclusionsItem.ToolTipText = "Configures Windows Defender exclusions by removing extension exclusions and adding specific path exclusions."
+	$ConfigureDefenderExclusionsItem.Add_Click({
+			$confirmResult = [System.Windows.Forms.MessageBox]::Show(
+				"This will modify Windows Defender exclusions. Do you want to proceed?",
+				"Confirm Changes",
+				[System.Windows.Forms.MessageBoxButtons]::YesNo,
+				[System.Windows.Forms.MessageBoxIcon]::Warning
+			)
+			if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes)
+			{
+				Configure_Windows_Defender_Exclusions
+			}
+		})
+	[void]$contextMenuGeneral.Items.Add($ConfigureDefenderExclusionsItem)
 	
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
