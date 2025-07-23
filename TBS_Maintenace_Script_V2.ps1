@@ -8720,7 +8720,7 @@ while (`$true) {
 }
 
 # ===================================================================================================
-#                         FUNCTION: Update_Scales_Specials_Interactive
+#                                FUNCTION: Update_Scales_Specials_Interactive
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Prompts the user to either run the "Update Scales Specials" action now or schedule it as a daily task.
@@ -8785,6 +8785,14 @@ function Update_Scales_Specials_Interactive
 	$btnCancel.Location = New-Object System.Drawing.Point(200, 145)
 	$btnCancel.Size = New-Object System.Drawing.Size(100, 30)
 	$form.Controls.Add($btnCancel)
+	
+	# Handle form closing via 'X' to ensure cancel
+	$form.add_FormClosing({
+			if ($form.DialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+			{
+				$script:selectedAction = "cancel"
+			}
+		})
 	
 	# Enable restore button only if the deploy line is missing
 	$deployLineExists = $false
