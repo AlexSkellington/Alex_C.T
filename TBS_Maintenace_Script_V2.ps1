@@ -9859,8 +9859,8 @@ PreemptiveUpdates=0
 #                                FUNCTION: Configure_Windows_Defender_Exclusions
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Modifies Windows Defender exclusions by removing all existing extension exclusions,
-#   recreating the Extensions key, and adding path exclusions for specified paths.
+#   Modifies Windows Defender exclusions by clearing all existing exclusions under Extensions, Paths,
+#   Processes, IpAddresses, and TemporaryPaths keys, then adding specified path and process exclusions.
 #   Logs each step and handles errors appropriately.
 # ===================================================================================================
 
@@ -9878,38 +9878,81 @@ function Configure_Windows_Defender_Exclusions
 		}
 	}
 	
-	# Define registry paths
+	# Define registry keys
 	$extensionsKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Extensions"
 	$pathsKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths"
+	$processesKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Processes"
+	$ipAddressesKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\IpAddresses"
+	$temporaryPathsKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\TemporaryPaths"
 	
-	# Define paths to exclude
-	$excludePaths = @(
-		"C:\Windows\SysWOW64\rserver30",
+	# Define exclusions
+	$pathExclusions = @(
+		"C:\Windows\SysWOW64\rserver30"
+	)
+	$processExclusions = @(
 		"C:\storeman\SmsLog64\SmsLogService.exe"
 	)
 	
 	try
 	{
-		# Step 1: Remove all existing entries under Extensions
+		# Helper function to clear properties from a key
+		function Clear-ExclusionKey
+		{
+			param ([string]$keyPath)
+			if (Test-Path $keyPath)
+			{
+				Get-ItemProperty -Path $keyPath |
+				Get-Member -MemberType NoteProperty |
+				Where-Object { $_.Name -ne '(default)' } |
+				ForEach-Object {
+					Remove-ItemProperty -Path $keyPath -Name $_.Name -Force
+				}
+				Write_Log "Cleared all existing exclusions from '$keyPath'." "green"
+			}
+			else
+			{
+				Write_Log "'$keyPath' does not exist. Creating it." "yellow"
+				New-Item -Path $keyPath -Force | Out-Null
+			}
+		}
+		
+		# Step 1: Clear Extensions (delete and recreate for full reset)
 		if (Test-Path $extensionsKey)
 		{
 			Remove-Item -Path $extensionsKey -Recurse -Force
-			Write_Log "Removed all existing extension exclusions." "green"
+			Write_Log "Cleared all existing extension exclusions." "green"
 		}
 		else
 		{
-			Write_Log "Extensions key does not exist. Skipping removal." "yellow"
+			Write_Log "Extensions key does not exist. Skipping clearing." "yellow"
 		}
-		
-		# Step 2: Recreate the Extensions key (empty)
 		New-Item -Path $extensionsKey -Force | Out-Null
 		Write_Log "Recreated empty Extensions key." "green"
 		
-		# Step 3: Add path exclusions
-		foreach ($path in $excludePaths)
+		# Step 2: Clear Paths
+		Clear-ExclusionKey -keyPath $pathsKey
+		
+		# Step 3: Clear Processes
+		Clear-ExclusionKey -keyPath $processesKey
+		
+		# Step 4: Clear IpAddresses
+		Clear-ExclusionKey -keyPath $ipAddressesKey
+		
+		# Step 5: Clear TemporaryPaths
+		Clear-ExclusionKey -keyPath $temporaryPathsKey
+		
+		# Step 6: Add path exclusions
+		foreach ($path in $pathExclusions)
 		{
 			Set-ItemProperty -Path $pathsKey -Name $path -Value 0 -Type DWord -Force
 			Write_Log "Added path exclusion for '$path'." "green"
+		}
+		
+		# Step 7: Add process exclusions
+		foreach ($process in $processExclusions)
+		{
+			Set-ItemProperty -Path $processesKey -Name $process -Value 0 -Type DWord -Force
+			Write_Log "Added process exclusion for '$process'." "green"
 		}
 	}
 	catch
