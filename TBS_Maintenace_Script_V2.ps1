@@ -222,6 +222,58 @@ public class MailslotSender {
 }
 
 # ===================================================================================================
+#                              FUNCTION: Ensure Administrator Privileges
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Ensures that the script is running with administrative privileges. If not, it attempts to restart the script with elevated rights.
+# ===================================================================================================
+
+function Ensure_Administrator
+{
+	# Retrieve the current Windows identity
+	$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+	# Create a WindowsPrincipal object with the current identity
+	$principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
+	
+	# Check if the user is not in the Administrator role
+	if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+	{
+		try
+		{
+			# Build the argument list
+			$arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`""
+			if ($Silent)
+			{
+				$arguments += " -Silent"
+			}
+			
+			# Create a ProcessStartInfo object
+			$psi = New-Object System.Diagnostics.ProcessStartInfo
+			$psi.FileName = (Get-Process -Id $PID).Path # Use the same PowerShell executable
+			$psi.Arguments = $arguments
+			$psi.Verb = 'runas' # Run as administrator
+			$psi.UseShellExecute = $true
+			$psi.WindowStyle = 'Normal' # Allow the console window to show (temporarily)
+			
+			# Start the new elevated process
+			$process = [System.Diagnostics.Process]::Start($psi)
+			exit # Exit the current process after starting the elevated one
+		}
+		catch
+		{
+			[System.Windows.Forms.MessageBox]::Show("Failed to elevate to administrator.`r`nError: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			exit 1
+		}
+	}
+	else
+	{
+		# Elevated, continue execution
+		# Optional: Display a message box if needed
+		# [System.Windows.Forms.MessageBox]::Show("Running as Administrator.", "Info")
+	}
+}
+
+# ===================================================================================================
 #                                       FUNCTION: Write to Log
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -11251,6 +11303,9 @@ $form.add_Resize({
 # Description:
 #   Orchestrates the execution flow of the script, initializing variables, processing items, and handling user interactions.
 # ===================================================================================================
+
+# Call the function to ensure admin privileges
+Ensure_Administrator
 
 # Get SQL Connection String
 Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
