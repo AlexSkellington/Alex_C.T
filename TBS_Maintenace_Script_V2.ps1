@@ -9166,6 +9166,162 @@ function Fix_Deploy_CHG
 }
 
 # ===================================================================================================
+#                                 FUNCTION: Manage_Sa_Account
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Displays a Windows Form with buttons to enable or disable the 'sa' account on the local SQL Server.
+#   Sets the password to 'TB$upp0rT' when enabling. Buttons are enabled/disabled based on the current
+#   state of the 'sa' account. Uses integrated security for connection. Assumes default SQL instance.
+#   Logs actions and errors using Write_Log.
+#
+# Assumptions:
+#   - Script runs with sufficient privileges (sysadmin on SQL).
+#   - Local SQL Server default instance ('.').
+#   - Write_Log function is available for logging.
+#
+# Author: Grok (based on user request)
+# ===================================================================================================
+
+function Manage_Sa_Account
+{
+	[CmdletBinding()]
+	param ()
+	
+	Write_Log "`r`n==================== Starting Manage_Sa_Account Function ====================`r`n" "blue"
+	
+	# Load necessary assemblies
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	# SQL Server details
+	$serverInstance = "."
+	$database = "master" # Use master for login operations
+	
+	# Function to check if 'sa' is enabled
+	function Is_Sa_Enabled
+	{
+		try
+		{
+			$query = "SELECT is_disabled FROM sys.sql_logins WHERE name = 'sa'"
+			$result = Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $query -ErrorAction Stop
+			if ($result)
+			{
+				return ($result.is_disabled -eq 0)
+			}
+			else
+			{
+				Write_Log "'sa' account not found." "red"
+				return $false
+			}
+		}
+		catch
+		{
+			Write_Log "Error checking 'sa' status: $_" "red"
+			return $false
+		}
+	}
+	
+	# Function to enable 'sa' and set password
+	function Enable_Sa
+	{
+		try
+		{
+			$enableQuery = "ALTER LOGIN sa ENABLE; ALTER LOGIN sa WITH PASSWORD = 'TB$upp0rT';"
+			Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $enableQuery -ErrorAction Stop
+			Write_Log "'sa' account enabled and password set successfully." "green"
+			return $true
+		}
+		catch
+		{
+			Write_Log "Error enabling 'sa' account: $_" "red"
+			return $false
+		}
+	}
+	
+	# Function to disable 'sa'
+	function Disable_Sa
+	{
+		try
+		{
+			$disableQuery = "ALTER LOGIN sa DISABLE;"
+			Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $disableQuery -ErrorAction Stop
+			Write_Log "'sa' account disabled successfully." "green"
+			return $true
+		}
+		catch
+		{
+			Write_Log "Error disabling 'sa' account: $_" "red"
+			return $false
+		}
+	}
+	
+	# Create the form
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Manage SQL 'sa' Account"
+	$form.Size = New-Object System.Drawing.Size(300, 150)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	# Enable Button
+	$btnEnable = New-Object System.Windows.Forms.Button
+	$btnEnable.Text = "Enable 'sa'"
+	$btnEnable.Location = New-Object System.Drawing.Point(50, 30)
+	$btnEnable.Size = New-Object System.Drawing.Size(200, 30)
+	$form.Controls.Add($btnEnable)
+	
+	# Disable Button
+	$btnDisable = New-Object System.Windows.Forms.Button
+	$btnDisable.Text = "Disable 'sa'"
+	$btnDisable.Location = New-Object System.Drawing.Point(50, 70)
+	$btnDisable.Size = New-Object System.Drawing.Size(200, 30)
+	$form.Controls.Add($btnDisable)
+	
+	# Update button states based on current 'sa' status
+	function Update_Button_States
+	{
+		$isEnabled = Is_Sa_Enabled
+		$btnEnable.Enabled = -not $isEnabled
+		$btnDisable.Enabled = $isEnabled
+		if ($isEnabled)
+		{
+			Write_Log "'sa' is currently enabled. Enable button greyed out." "yellow"
+		}
+		else
+		{
+			Write_Log "'sa' is currently disabled. Disable button greyed out." "yellow"
+		}
+	}
+	
+	# Initial state update
+	Update_Button_States
+	
+	# Enable button click event
+	$btnEnable.Add_Click({
+			Write_Log "Enable button clicked. Attempting to enable 'sa'..." "blue"
+			if (Enable_Sa)
+			{
+				Update_Button_States
+			}
+		})
+	
+	# Disable button click event
+	$btnDisable.Add_Click({
+			Write_Log "Disable button clicked. Attempting to disable 'sa'..." "blue"
+			if (Disable_Sa)
+			{
+				Update_Button_States
+			}
+		})
+	
+	# Show the form
+	$form.ShowDialog() | Out-Null
+	
+	Write_Log "==================== Manage_Sa_Account Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                        FUNCTION: Export-VNCFiles-ForAllNodes
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -10192,7 +10348,17 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($OrganizeScaleTableItem)
 	
 	############################################################################
-	# 4) Repair Windows Menu Item
+	# 4) Manage SQL 'sa' Account Menu Item
+	############################################################################
+	$ManageSaAccountItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manage SQL 'sa' Account")
+	$ManageSaAccountItem.ToolTipText = "Enable or disable the 'sa' account on the local SQL Server with a predefined password."
+	$ManageSaAccountItem.Add_Click({
+			Manage_Sa_Account
+		})
+	[void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
+	
+	############################################################################
+	# 5) Repair Windows Menu Item
 	############################################################################
 	$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
 	$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
@@ -10202,7 +10368,7 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
 	
 	############################################################################
-	# 5) Configure System Settings Menu Item
+	# 6) Configure System Settings Menu Item
 	############################################################################
 	$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
 	$ConfigureSystemSettingsItem.ToolTipText = "Organize the desktop, set power plan to maximize performance and make sure necessary services are running."
@@ -10228,7 +10394,7 @@ if (-not $form)
 			}
 		})
 	[void]$ContextMenuServer.Items.Add($ConfigureSystemSettingsItem)
-	
+		
 	############################################################################
 	# Show the context menu when the Server Tools button is clicked
 	############################################################################
