@@ -11216,7 +11216,7 @@ if (-not $form)
 	$EnableSQLProtocolsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Enable SQL Protocols")
 	$EnableSQLProtocolsItem.ToolTipText = "Enable TCP/IP, Named Pipes, and set static port for SQL Server on selected lane(s)."
 	$EnableSQLProtocolsItem.Add_Click({
-			Enable_SQL_Protocols_On_Selected_Lanes
+			Enable_SQL_Protocols_On_Selected_Lanes -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($EnableSQLProtocolsItem)
 	
