@@ -1666,177 +1666,135 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Get_Table_Aliases
+#                        FUNCTION: Get_Table_Aliases
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Parses SQL files in the specified target directory to extract table names and their corresponding
-#   aliases from @CREATE statements. This function internally defines the list of base table names to search
-#   for and uses regex to identify and capture the full table name and alias pairs. The results are returned
-#   as a collection of objects containing details about each match, along with a hash table for quick
-#   lookups in both directions (Table Name ? Alias).
+#   Returns hashtable mapping table aliases to table names.
+#   Uses hardcoded mapping if SMSVersion is 3.3.0.0 to 3.6.0.8 (inclusive),
+#   else runs dynamic scan of *_Load.sql files.
+#   Relies on $script:FunctionResults['SMSVersionFull'] (set by Get_Store_And_Database_Info).
 # ===================================================================================================
 
 function Get_Table_Aliases
-{
-	# Define the target directory for SQL files
-	$targetDirectory = "$LoadPath"
+{	
+	$MinSupportedSMSVersion = "3.3.0.0"
+	$MaxSupportedSMSVersion = "3.6.0.8"
 	
-	# Define the list of base table names internally (without _TAB)
-	$baseTables = @(
+	# Fetch version (normalize to '0.0.0.0' if missing)
+	$SMSVersion = $script:FunctionResults['SMSVersionFull']
+	if ([string]::IsNullOrWhiteSpace($SMSVersion)) { $SMSVersion = "0.0.0.0" }
+	
+	# Version compare (true if in range)
+	function Test-VersionInRange ($TestVersion, $MinVersion, $MaxVersion)
+	{
+		try
+		{
+			[version]$vTest = $TestVersion
+			[version]$vMin = $MinVersion
+			[version]$vMax = $MaxVersion
+			return ($vTest -ge $vMin -and $vTest -le $vMax)
+		}
+		catch { return $false }
+	}
+	
+	# Hardcoded alias → table mapping (from your summary)
+	$AliasToTable = @{
+		'ALT'	   = 'ALT_TAB'
+		'BIO'	   = 'BIO_TAB'
+		'BTL'	   = 'BTL_TAB'
+		'CAT'	   = 'CAT_TAB'
+		'CFG'	   = 'CFG_TAB'
+		'CLF'	   = 'CLF_TAB'
+		'CLFSDP'   = 'CLF_SDP_TAB'
+		'CLG'	   = 'CLG_TAB'
+		'CLK'	   = 'CLK_TAB'
+		'CLL'	   = 'CLL_TAB'
+		'CLR'	   = 'CLR_TAB'
+		'CLT'	   = 'CLT_TAB'
+		'CLTITM'   = 'CLT_ITM_TAB'
+		'COST'	   = 'COST_TAB'
+		'CPN'	   = 'CPN_TAB'
+		'DELV'	   = 'DELV_TAB'
+		'DEPT'	   = 'DEPT_TAB'
+		'DSD'	   = 'DSD_TAB'
+		'ECL'	   = 'ECL_TAB'
+		'FAM'	   = 'FAM_TAB'
+		'KIT'	   = 'KIT_TAB'
+		'LOC'	   = 'LOC_TAB'
+		'LVL'	   = 'LVL_TAB'
+		'MIX'	   = 'MIX_TAB'
+		'MOD'	   = 'MOD_TAB'
+		'OBJ'	   = 'OBJ_TAB'
+		'POS'	   = 'POS_TAB'
+		'PRICE'    = 'PRICE_TAB'
+		'PUB'	   = 'PUB_TAB'
+		'RES'	   = 'RES_TAB'
+		'ROUTE'    = 'ROUTE_TAB'
+		'RPC'	   = 'RPC_TAB'
+		'SCAL_ITM' = 'SCL_TAB'
+		'SCAL_NUT' = 'SCL_NUT_TAB'
+		'SCAL_TXT' = 'SCL_TXT_TAB'
+		'SDP'	   = 'SDP_TAB'
+		'STD'	   = 'STD_TAB'
+		'TAR'	   = 'TAR_TAB'
+		'UNT'	   = 'UNT_TAB'
+		'VENDOR'   = 'VENDOR_TAB'
+	}
+	
+	if (Test-VersionInRange $SMSVersion $MinSupportedSMSVersion $MaxSupportedSMSVersion)
+	{
+		return $AliasToTable
+	}
+	
+	# Out of range: fallback to dynamic scan (slower, but robust)
+	Write-Host "SMS Version $SMSVersion is outside supported range ($MinSupportedSMSVersion - $MaxSupportedSMSVersion). Scanning SQL files for table/alias map..." -ForegroundColor Yellow
+	
+	$BaseTables = @(
 		'OBJ', 'POS', 'PRICE', 'COST', 'DSD', 'KIT', 'LOC', 'ALT', 'ECL',
 		'SCL', 'SCL_TXT', 'SCL_NUT', 'DEPT', 'SDP', 'CAT', 'RPC', 'FAM',
 		'CPN', 'PUB', 'BIO', 'CLK', 'LVL', 'MIX', 'BTL', 'TAR', 'UNT',
 		'RES', 'ROUTE', 'VENDOR', 'DELV', 'CLT', 'CLG', 'CLF', 'CLR',
 		'CLL', 'CLT_ITM', 'CLF_SDP', 'STD', 'CFG', 'MOD'
 	)
-	
-	# Escape special regex characters in table names and sort by length (longest first)
-	$escapedTables = $baseTables | Sort-Object Length -Descending | ForEach-Object { [regex]::Escape($_) }
+	$escapedTables = $BaseTables | Sort-Object Length -Descending | ForEach-Object { [regex]::Escape($_) }
 	$tablesPattern = $escapedTables -join '|'
-	
-	# Updated Regex to allow optional whitespace around the comma and various quotation styles
 	$pattern = "^\s*@CREATE\s*\(\s*['""]?(?<Table>($tablesPattern)(_[A-Z]+))?['""]?\s*,\s*['""]?(?<Alias>[\w-]+)['""]?\s*\);"
-	
-	# Compile the regex with IgnoreCase for case-insensitive matching
 	$regex = [regex]::new($pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-	
-	# Initialize a collection to store matched files using ArrayList for better performance
-	$sqlFiles = New-Object System.Collections.ArrayList
-	
-	# Try using -File parameter; if it fails, fallback to older approach
-	try
+	$allSqlFiles = Get-ChildItem -Path $LoadPath -Recurse -Filter '*_Load.sql' -ErrorAction SilentlyContinue
+	$AliasToTableLive = @{ }
+	foreach ($file in $allSqlFiles)
 	{
-		# Primary attempt with -File parameter
-		$allLoadSqlFiles = Get-ChildItem -Path $TargetDirectory -Recurse -File -Filter '*_Load.sql' -ErrorAction Stop
-	}
-	catch
-	{
-		# If primary fails, try fallback with -ErrorAction Stop so it can be caught
-		try
-		{
-			$allLoadSqlFiles = Get-ChildItem -Path "C:\storeman\office\load" -Recurse -Filter '*_Load.sql' -ErrorAction Stop |
-			Where-Object { -not $_.PsIsContainer }
-		}
-		catch
-		{
-			# If fallback also fails, handle it without showing a big red error
-			Write_Log "Could not find load files in either of the specified paths." "red"
-			$allLoadSqlFiles = @() # Provide an empty array so the script continues gracefully
-		}
-	}
-	
-	foreach ($file in $allLoadSqlFiles)
-	{
-		# Check if the file name starts with any of the base table names
-		foreach ($baseTable in $baseTables)
+		foreach ($baseTable in $BaseTables)
 		{
 			if ($file.Name -ieq "$baseTable`_Load.sql")
 			{
-				# Using -ieq for case-insensitive comparison
-				[void]$sqlFiles.Add($file)
-				break # Move to next file once matched
-			}
-		}
-	}
-	
-	# Remove duplicates
-	$uniqueSqlFiles = $sqlFiles | Sort-Object -Unique
-	
-	# Confirm number of files found
-	Write-Verbose "`nTotal matched .sql files: $($uniqueSqlFiles.Count)"
-	
-	# Initialize ArrayList for results
-	$aliasResults = New-Object System.Collections.ArrayList
-	
-	# Initialize hash table for quick alias and table name lookup
-	$tableAliasHash = @{ }
-	
-	# Process each matched SQL file
-	foreach ($file in $uniqueSqlFiles)
-	{
-		Write-Verbose "`nProcessing file: $($file.FullName)"
-		try
-		{
-			# Open the file for reading using a streaming approach
-			$reader = [System.IO.File]::OpenText($file.FullName)
-			$lineNumber = 0 # Initialize line number
-			while (($line = $reader.ReadLine()) -ne $null)
-			{
-				$lineNumber++
-				
-				# Remove single-line and multi-line comments
-				$lineClean = $line -replace '--.*', '' -replace '/\*.*?\*/', ''
-				
-				# Check if the line contains @CREATE
-				if ($lineClean -match '@CREATE')
+				$content = Get-Content $file.FullName
+				foreach ($line in $content)
 				{
-					Write-Verbose "Found @CREATE on line ${lineNumber}: $lineClean"
-					$match = $regex.Match($lineClean)
-					
-					if ($match.Success)
+					$lineClean = $line -replace '--.*', '' -replace '/\*.*?\*/', ''
+					if ($lineClean -match '@CREATE')
 					{
-						$matchedTable = $match.Groups['Table'].Value # Full table name with _TAB
-						$matchedAlias = $match.Groups['Alias'].Value
-						if ([string]::IsNullOrEmpty($matchedTable) -or [string]::IsNullOrEmpty($matchedAlias))
+						$match = $regex.Match($lineClean)
+						if ($match.Success)
 						{
-							Write-Warning "Incomplete match in file $($file.FullName) on line ${lineNumber}: Table='$matchedTable', Alias='$matchedAlias'"
-						}
-						else
-						{
-							# Create a PSObject with match details
-							$aliasInfo = [PSCustomObject]@{
-								File	   = $file.FullName
-								Table	   = $matchedTable
-								Alias	   = $matchedAlias
-								LineNumber = $lineNumber
-								Context    = $lineClean.Trim()
-							}
-							
-							[void]$aliasResults.Add($aliasInfo)
-							Write-Verbose "Match found: Table='$matchedTable', Alias='$matchedAlias' on line $lineNumber"
-							
-							# Populate the hash table for quick lookup in both directions
-							if (-not $tableAliasHash.ContainsKey($matchedTable))
+							$table = $match.Groups['Table'].Value
+							$alias = $match.Groups['Alias'].Value
+							if ($table -and $alias)
 							{
-								$tableAliasHash[$matchedTable] = $matchedAlias
-							}
-							if (-not $tableAliasHash.ContainsKey($matchedAlias))
-							{
-								$tableAliasHash[$matchedAlias] = $matchedTable
+								$AliasToTableLive[$alias] = $table
 							}
 						}
-					}
-					else
-					{
-						Write-Verbose "Line found with @CREATE but did not match pattern on line ${lineNumber}: $lineClean"
 					}
 				}
+				break
 			}
-			$reader.Close()
-		}
-		catch
-		{
-			Write-Warning "Failed to read file: $($file.FullName). Skipping."
-			continue
 		}
 	}
-	
-	# Optionally, sort the results before returning
-	if ($aliasResults.Count -gt 0)
+	if ($AliasToTableLive.Count -eq 0)
 	{
-		$sortedResults = $aliasResults | Sort-Object File, Table, LineNumber
+		Write-Warning "No table-alias pairs detected. Using empty hashtable."
 	}
-	else
-	{
-		Write-Verbose "`nNo @CREATE table-alias pairs found in the specified files."
-		$sortedResults = @()
-	}
-	
-	# Store results in script-scoped hash table
-	$script:FunctionResults['Get_Table_Aliases'] = @{
-		Aliases   = $sortedResults
-		AliasHash = $tableAliasHash
-	}
+	return $AliasToTableLive
 }
 
 # ===================================================================================================
