@@ -1754,8 +1754,22 @@ function Get_Table_Aliases
 	
 	if ($versionInRange)
 	{
+		# Build a detailed array of objects (as if they were parsed from files)
+		$aliasResults = @()
+		foreach ($alias in $AliasToTable.Keys)
+		{
+			$table = $AliasToTable[$alias]
+			$aliasInfo = [PSCustomObject]@{
+				File	   = ""
+				Table	   = $table
+				Alias	   = $alias
+				LineNumber = 0
+				Context    = "@CREATE('$table','$alias');"
+			}
+			$aliasResults += $aliasInfo
+		}
 		$script:FunctionResults['Get_Table_Aliases'] = @{
-			Aliases   = @()
+			Aliases   = $aliasResults
 			AliasHash = $AliasToTable
 			TableHash = $TableToAlias
 		}
