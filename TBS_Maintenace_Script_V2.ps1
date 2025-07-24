@@ -1682,7 +1682,15 @@ function Get_Table_Aliases
 	
 	# Fetch version (normalize to '0.0.0.0' if missing)
 	$SMSVersion = $script:FunctionResults['SMSVersionFull']
-	if ([string]::IsNullOrWhiteSpace($SMSVersion)) { $SMSVersion = "0.0.0.0" }
+	# Extract version number if possible (fix for V3.6.0.5 etc.)
+	if ($SMSVersion -match '([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)')
+	{
+		$SMSVersion = $Matches[1]
+	}
+	else
+	{
+		$SMSVersion = "0.0.0.0"
+	}
 	
 	# Version compare (true if in range)
 	function Test-VersionInRange ($TestVersion, $MinVersion, $MaxVersion)
