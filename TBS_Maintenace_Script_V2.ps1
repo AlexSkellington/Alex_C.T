@@ -1692,18 +1692,16 @@ function Get_Table_Aliases
 		$SMSVersion = "0.0.0.0"
 	}
 	
-	# Version compare (true if in range)
-	function Test-VersionInRange ($TestVersion, $MinVersion, $MaxVersion)
+	# Do version comparison up-front
+	$versionInRange = $false
+	try
 	{
-		try
-		{
-			[version]$vTest = $TestVersion
-			[version]$vMin = $MinVersion
-			[version]$vMax = $MaxVersion
-			return ($vTest -ge $vMin -and $vTest -le $vMax)
-		}
-		catch { return $false }
+		$vTest = [version]$SMSVersion
+		$vMin = [version]$MinSupportedSMSVersion
+		$vMax = [version]$MaxSupportedSMSVersion
+		if ($vTest -ge $vMin -and $vTest -le $vMax) { $versionInRange = $true }
 	}
+	catch { $versionInRange = $false }
 	
 	# Hardcoded alias → table mapping (from your summary)
 	$AliasToTable = @{
@@ -1749,7 +1747,7 @@ function Get_Table_Aliases
 		'VENDOR'   = 'VENDOR_TAB'
 	}
 	
-	if (Test-VersionInRange $SMSVersion $MinSupportedSMSVersion $MaxSupportedSMSVersion)
+	if ($versionInRange)
 	{
 		return $AliasToTable
 	}
@@ -11133,7 +11131,7 @@ $Nodes = $script:FunctionResults['Nodes']
 $LaneMachines = $script:FunctionResults['LaneMachines']
 
 # Populate the hash table with results from various functions
-Get_Table_Aliases
+$AliasToTable = Get_Table_Aliases
 
 # Generate SQL scripts
 Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
