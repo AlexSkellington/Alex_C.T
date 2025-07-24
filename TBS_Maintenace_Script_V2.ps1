@@ -3652,38 +3652,32 @@ function Process_Lanes
 					Write_Log "--------------------------------------------------------------------------------"
 					
 					$protocolSuccess = $false
+					$protocolType = "FAILED"
 					try
 					{
-						# Place your protocol call or direct SQL call here
-						# Example: Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $sqlCommands -ErrorAction Stop
-						# If TCP fails, fallback to named pipes:
-						try
-						{
-							Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
-							$protocolSuccess = $true
-						}
-						catch
-						{
-							Write_Log "TCP protocol failed for section '$sectionName' on $machineName. Trying Named Pipes..." "yellow"
-							try
-							{
-								Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
-								$protocolSuccess = $true
-							}
-							catch
-							{
-								Write_Log "Named Pipes protocol also failed for section '$sectionName' on $machineName." "red"
-							}
-						}
+						# Try TCP first
+						Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
+						$protocolSuccess = $true
+						$protocolType = "TCP"
 					}
 					catch
 					{
-						Write_Log "Protocol failed for section '$sectionName' on $machineName." "yellow"
+						Write_Log "TCP protocol failed for section '$sectionName' on $machineName. Trying Named Pipes..." "yellow"
+						try
+						{
+							Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
+							$protocolSuccess = $true
+							$protocolType = "Named Pipes"
+						}
+						catch
+						{
+							Write_Log "Named Pipes protocol also failed for section '$sectionName' on $machineName." "red"
+						}
 					}
 					
 					if ($protocolSuccess)
 					{
-						Write_Log "Section '$sectionName' executed successfully on $machineName (protocol)." "green"
+						Write_Log "Section '$sectionName' executed successfully on $machineName (protocol: $protocolType)." "green"
 						$protocolWorked = $true
 					}
 					else
@@ -3737,7 +3731,7 @@ function Process_Lanes
 				
 				Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
 				Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-				Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully." "green"
+				Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file fallback)" "green"
 				
 				if (-not ($script:ProcessedLanes -contains $LaneNumber))
 				{
@@ -11559,9 +11553,6 @@ $AliasToTable = Get_Table_Aliases
 
 # Generate SQL scripts
 Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
-
-# Always gather latest database info for lanes
-Get_All_Lanes_Database_Info
 
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
