@@ -1370,7 +1370,7 @@ RECONFIGURE;
 			"@EXEC($line)"
 		}
 	}
-	$script:LaneSQLScript_SQL_Protocols = ($fixedLines -join "`r`n")
+	$script:LaneSQLScript_Mailslot = ($fixedLines -join "`r`n")
 	
 	<#
 	# Optionally write to file as fallback
@@ -8645,6 +8645,8 @@ exit /b
 function Enable_SQL_Protocols_On_Selected_Lanes
 {
 	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
 		[Parameter(Mandatory = $false)]
 		[string]$tcpPort = "1433"
 	)
@@ -8857,6 +8859,27 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				}
 			}
 			$reg.Close()
+			
+			# --- Send mailslot command to restart all programs ---
+			$mailslotAddress = "\\$machine\Mailslot\SMSStart_${StoreNumber}${lane}"
+			$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+			if ([type]::GetType("MailslotSender"))
+			{
+				$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+			}
+			else
+			{
+				# Optional: Add your own fallback mailslot sender here if needed
+				$result = $false
+			}
+			if ($result)
+			{
+				Write_Log "Restart command sent successfully to $machine (Store $StoreNumber, Lane $lane)." "green"
+			}
+			else
+			{
+				Write_Log "Failed to send restart command to $machine (Store $StoreNumber, Lane $lane)." "red"
+			}
 		}
 		catch
 		{
