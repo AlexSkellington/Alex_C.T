@@ -1680,9 +1680,7 @@ function Get_Table_Aliases
 	$MinSupportedSMSVersion = "3.3.0.0"
 	$MaxSupportedSMSVersion = "3.6.0.8"
 	
-	# Fetch version (normalize to '0.0.0.0' if missing)
 	$SMSVersion = $script:FunctionResults['SMSVersionFull']
-	# Extract version number if possible (fix for V3.6.0.5 etc.)
 	if ($SMSVersion -match '([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)')
 	{
 		$SMSVersion = $Matches[1]
@@ -1692,7 +1690,7 @@ function Get_Table_Aliases
 		$SMSVersion = "0.0.0.0"
 	}
 	
-	# Do version comparison up-front
+	# Version range check
 	$versionInRange = $false
 	try
 	{
@@ -1703,7 +1701,7 @@ function Get_Table_Aliases
 	}
 	catch { $versionInRange = $false }
 	
-	# Hardcoded alias → table mapping (from your summary)
+	# Hardcoded alias → table mapping
 	$AliasToTable = @{
 		'ALT'	   = 'ALT_TAB'
 		'BIO'	   = 'BIO_TAB'
@@ -1747,12 +1745,24 @@ function Get_Table_Aliases
 		'VENDOR'   = 'VENDOR_TAB'
 	}
 	
+	# Static: build reverse (table → alias) as well
+	$TableToAlias = @{ }
+	foreach ($k in $AliasToTable.Keys)
+	{
+		$TableToAlias[$AliasToTable[$k]] = $k
+	}
+	
 	if ($versionInRange)
 	{
+		$script:FunctionResults['Get_Table_Aliases'] = @{
+			Aliases   = @()
+			AliasHash = $AliasToTable
+			TableHash = $TableToAlias
+		}
 		return $AliasToTable
 	}
 	
-	# Out of range: fallback to dynamic scan (slower, but robust)
+	# Out of range: fallback to dynamic scan (and store full results)
 	Write-Host "SMS Version $SMSVersion is outside supported range ($MinSupportedSMSVersion - $MaxSupportedSMSVersion). Scanning SQL files for table/alias map..." -ForegroundColor Yellow
 	
 	$BaseTables = @(
@@ -1766,8 +1776,12 @@ function Get_Table_Aliases
 	$tablesPattern = $escapedTables -join '|'
 	$pattern = "^\s*@CREATE\s*\(\s*['""]?(?<Table>($tablesPattern)(_[A-Z]+))?['""]?\s*,\s*['""]?(?<Alias>[\w-]+)['""]?\s*\);"
 	$regex = [regex]::new($pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+	
 	$allSqlFiles = Get-ChildItem -Path $LoadPath -Recurse -Filter '*_Load.sql' -ErrorAction SilentlyContinue
+	
+	$aliasResults = New-Object System.Collections.ArrayList
 	$AliasToTableLive = @{ }
+	$TableToAliasLive = @{ }
 	foreach ($file in $allSqlFiles)
 	{
 		foreach ($baseTable in $BaseTables)
@@ -1775,8 +1789,10 @@ function Get_Table_Aliases
 			if ($file.Name -ieq "$baseTable`_Load.sql")
 			{
 				$content = Get-Content $file.FullName
+				$lineNum = 0
 				foreach ($line in $content)
 				{
+					$lineNum++
 					$lineClean = $line -replace '--.*', '' -replace '/\*.*?\*/', ''
 					if ($lineClean -match '@CREATE')
 					{
@@ -1787,7 +1803,17 @@ function Get_Table_Aliases
 							$alias = $match.Groups['Alias'].Value
 							if ($table -and $alias)
 							{
+								# Add to array of objects
+								$aliasInfo = [PSCustomObject]@{
+									File	   = $file.FullName
+									Table	   = $table
+									Alias	   = $alias
+									LineNumber = $lineNum
+									Context    = $lineClean.Trim()
+								}
+								[void]$aliasResults.Add($aliasInfo)
 								$AliasToTableLive[$alias] = $table
+								$TableToAliasLive[$table] = $alias
 							}
 						}
 					}
@@ -1799,6 +1825,12 @@ function Get_Table_Aliases
 	if ($AliasToTableLive.Count -eq 0)
 	{
 		Write-Warning "No table-alias pairs detected. Using empty hashtable."
+	}
+	
+	$script:FunctionResults['Get_Table_Aliases'] = @{
+		Aliases   = $aliasResults
+		AliasHash = $AliasToTableLive
+		TableHash = $TableToAliasLive
 	}
 	return $AliasToTableLive
 }
