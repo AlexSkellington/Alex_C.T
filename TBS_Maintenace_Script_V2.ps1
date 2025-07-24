@@ -2143,7 +2143,7 @@ function Insert_Test_Item
 	
 	$preferredPLU = '0020077700000'
 	$alternativePLU = '0020777700000'
-	$fallbackPLU = '0027777700000' # New PLU for 77777
+	$fallbackPLU = '0027777700000'
 	$doInsert = $false
 	$PLU = $null
 	$TestF267 = 777
@@ -8506,6 +8506,267 @@ exit /b
 }
 
 # ===================================================================================================
+#                      FUNCTION: Enable_SQL_Protocols_On_Selected_Lanes
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Enables TCP/IP, Named Pipes, and Shared Memory protocols for all SQL Server instances
+#   on the selected remote lane machines. Sets static TCP port (default: 1433), disables dynamic ports,
+#   and restarts each SQL Server service. Handles both 64-bit and 32-bit registry locations.
+#   Logs detailed status for each lane and each protocol.
+#
+# Parameters:
+#   - [string]$StoreNumber
+#         A 3-digit identifier for the store (SSS). Used to retrieve lanes and machine mappings.
+#   - [string]$tcpPort
+#         The static TCP port to set for all SQL Server instances (default: "1433")
+#
+# Workflow:
+#   1. Prompt user for lanes using Show_Lane_Selection_Form.
+#   2. For each selected lane, find the machine and enumerate all SQL Server instances.
+#   3. For each instance:
+#         - Enable TCP/IP, Named Pipes, Shared Memory protocols (in both 64- and 32-bit registry if found)
+#         - Set static TCP port and clear dynamic port
+#         - Restart the SQL Server service for the instance
+#         - Log all actions and verification results
+#
+# Returns:
+#   None. Outputs results and errors via Write_Log.
+#
+# Example Usage:
+#   Enable_SQL_Protocols_On_Selected_Lanes -StoreNumber "123"
+#
+# Notes:
+#   - RemoteRegistry and service control must be allowed on the remote machine.
+#   - $script:FunctionResults['LaneMachines'] must be defined and populated.
+#   - Show_Lane_Selection_Form and Write_Log must be available.
+# ===================================================================================================
+
+function Enable_SQL_Protocols_On_Selected_Lanes
+{
+	param (
+		[Parameter(Mandatory = $false)]
+		[string]$tcpPort = "1433"
+	)
+	
+	Write_Log "`r`n==================== Starting Enable_SQL_Protocols_On_Selected_Lanes Function ====================`r`n" "blue"
+	
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	if (-not $LaneMachines -or $LaneMachines.Count -eq 0)
+	{
+		Write_Log "No lanes available. Please retrieve nodes first." "red"
+		Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
+	{
+		Write_Log "No lanes selected or selection cancelled. Exiting." "yellow"
+		Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	$lanes = $selection.Lanes | ForEach-Object { $_.ToString().PadLeft(3, '0') }
+	Write_Log "Selected lanes: $($lanes -join ', ')" "green"
+	
+	foreach ($lane in $lanes)
+	{
+		$machine = $LaneMachines[$lane]
+		if (-not $machine)
+		{
+			Write_Log "Machine name not found for lane $lane. Skipping." "yellow"
+			continue
+		}
+		
+		Write_Log "`r`n--- Processing Machine: $machine (Store $StoreNumber, Lane $lane) ---" "blue"
+		try
+		{
+			Write_Log "Ensuring RemoteRegistry is running on $machine..." "gray"
+			sc.exe "\\$machine" config RemoteRegistry start= demand | Out-Null
+			sc.exe "\\$machine" start RemoteRegistry | Out-Null
+			
+			$reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $machine)
+			$instanceRootPaths = @(
+				"SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL",
+				"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL"
+			)
+			
+			$allInstances = @{ }
+			foreach ($rootPath in $instanceRootPaths)
+			{
+				$instKey = $reg.OpenSubKey($rootPath)
+				if ($instKey)
+				{
+					foreach ($name in $instKey.GetValueNames())
+					{
+						$id = $instKey.GetValue($name)
+						if ($id -and !$allInstances.ContainsKey($name))
+						{
+							$allInstances[$name] = $id
+						}
+					}
+					$instKey.Close()
+				}
+			}
+			
+			if ($allInstances.Count -eq 0)
+			{
+				Write_Log "No SQL instances found on $machine." "yellow"
+				$reg.Close()
+				continue
+			}
+			
+			foreach ($instanceName in $allInstances.Keys)
+			{
+				$instanceID = $allInstances[$instanceName]
+				Write_Log "Processing SQL Instance: $instanceName (ID: $instanceID)" "blue"
+				
+				# Enable TCP/IP protocol
+				$enabledSet = $false
+				$basePaths = @(
+					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
+					"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp"
+				)
+				foreach ($basePath in $basePaths)
+				{
+					$regKey = $reg.OpenSubKey($basePath, $true)
+					if ($regKey)
+					{
+						$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+						$regKey.Close()
+						Write_Log "TCP/IP protocol enabled at $basePath." "green"
+						$enabledSet = $true
+						break
+					}
+				}
+				if (-not $enabledSet)
+				{
+					Write_Log "Registry path for enabling TCP/IP not found for instance $instanceName on $machine." "yellow"
+				}
+				
+				# Set static port for TCP/IP
+				$portSet = $false
+				$ipAllPaths = @(
+					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll",
+					"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll"
+				)
+				foreach ($ipAllPath in $ipAllPaths)
+				{
+					$regKey = $reg.OpenSubKey($ipAllPath, $true)
+					if ($regKey)
+					{
+						$regKey.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
+						$regKey.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
+						$regKey.Close()
+						Write_Log "Registry port set to $tcpPort at $ipAllPath." "green"
+						$portSet = $true
+						break
+					}
+				}
+				if (-not $portSet)
+				{
+					Write_Log "Registry path for TCP/IP IPAll not found for instance $instanceName on $machine." "yellow"
+				}
+				
+				# Enable Named Pipes protocol
+				$npEnabledSet = $false
+				$npBasePaths = @(
+					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np",
+					"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np"
+				)
+				foreach ($npBasePath in $npBasePaths)
+				{
+					$regKey = $reg.OpenSubKey($npBasePath, $true)
+					if ($regKey)
+					{
+						$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+						$regKey.Close()
+						Write_Log "Named Pipes protocol enabled at $npBasePath." "green"
+						$npEnabledSet = $true
+						break
+					}
+				}
+				if (-not $npEnabledSet)
+				{
+					Write_Log "Registry path for enabling Named Pipes not found for instance $instanceName on $machine." "yellow"
+				}
+				
+				# Enable Shared Memory protocol
+				$smEnabledSet = $false
+				$smBasePaths = @(
+					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm",
+					"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm"
+				)
+				foreach ($smBasePath in $smBasePaths)
+				{
+					$regKey = $reg.OpenSubKey($smBasePath, $true)
+					if ($regKey)
+					{
+						$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+						$regKey.Close()
+						Write_Log "Shared Memory protocol enabled at $smBasePath." "green"
+						$smEnabledSet = $true
+						break
+					}
+				}
+				if (-not $smEnabledSet)
+				{
+					Write_Log "Registry path for enabling Shared Memory not found for instance $instanceName on $machine." "yellow"
+				}
+				
+				# Build service name and restart SQL service
+				$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
+				else { "MSSQL`$$instanceName" }
+				Write_Log "Restarting SQL Service $svcName on $machine..." "gray"
+				sc.exe "\\$machine" stop $svcName | Out-Null
+				Start-Sleep -Seconds 10
+				sc.exe "\\$machine" start $svcName | Out-Null
+				
+				# Verification
+				Write_Log "Verifying protocol enablement after restart..." "gray"
+				foreach ($basePath in $basePaths)
+				{
+					$regKey = $reg.OpenSubKey($basePath)
+					if ($regKey)
+					{
+						$enabledValue = $regKey.GetValue('Enabled')
+						Write_Log "TCP/IP enabled value at [$basePath]: $enabledValue" "gray"
+						$regKey.Close()
+					}
+				}
+				foreach ($npBasePath in $npBasePaths)
+				{
+					$regKey = $reg.OpenSubKey($npBasePath)
+					if ($regKey)
+					{
+						$enabledValue = $regKey.GetValue('Enabled')
+						Write_Log "Named Pipes enabled value at [$npBasePath]: $enabledValue" "gray"
+						$regKey.Close()
+					}
+				}
+				foreach ($smBasePath in $smBasePaths)
+				{
+					$regKey = $reg.OpenSubKey($smBasePath)
+					if ($regKey)
+					{
+						$enabledValue = $regKey.GetValue('Enabled')
+						Write_Log "Shared Memory enabled value at [$smBasePath]: $enabledValue" "gray"
+						$regKey.Close()
+					}
+				}
+			}
+			$reg.Close()
+		}
+		catch
+		{
+			Write_Log "Failed to process [$machine]: $_" "red"
+			continue
+		}
+	}
+	Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                           FUNCTION: Open-SelectedLanesCPath
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -10824,6 +11085,16 @@ if (-not $form)
 			Send_Restart_All_Programs -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
+	
+	############################################################################
+	# 13) Enable SQL Protocols Menu Item
+	############################################################################
+	$EnableSQLProtocolsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Enable SQL Protocols")
+	$EnableSQLProtocolsItem.ToolTipText = "Enable TCP/IP, Named Pipes, and set static port for SQL Server on selected lane(s)."
+	$EnableSQLProtocolsItem.Add_Click({
+			Enable_SQL_Protocols_On_Selected_Lanes
+		})
+	[void]$ContextMenuLane.Items.Add($EnableSQLProtocolsItem)
 	
 	############################################################################
 	# 14) Set the time on the lanes
