@@ -460,27 +460,36 @@ function Get_Store_And_Database_Info
 }
 
 # ===================================================================================================
-#                                FUNCTION: Get_All_Lanes_Database_Info
+#                            FUNCTION: Get_All_Lanes_Database_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Retrieves the DB server names and database names for all lanes in TER_TAB.
-#   The lane number starts with '0' and excludes '901' and '999'.
-#   Constructs a unique connection string for each lane and stores it in $script:FunctionResults['LaneDatabaseInfo'].
+#   Retrieves the DB server names and database names for all lanes in TER_TAB or for a single lane.
+#   If -LaneNumber is supplied, only looks up info for that lane.
+#   Updates $script:FunctionResults['LaneDatabaseInfo'] and returns lane info if single.
 # ===================================================================================================
 
 function Get_All_Lanes_Database_Info
 {
-	Write-Host "Gathering connection string information for all lanes..."
+	param (
+		[string]$LaneNumber
+	)
+	
+	if (-not $script:FunctionResults.ContainsKey('LaneDatabaseInfo'))
+	{
+		$script:FunctionResults['LaneDatabaseInfo'] = @{ }
+	}
+	$LaneDatabaseInfo = $script:FunctionResults['LaneDatabaseInfo']
 	
 	$LaneMachines = $script:FunctionResults['LaneMachines']
-	if (-not $LaneMachines) { return }
+	if (-not $LaneMachines) { return $null }
 	
-	$script:FunctionResults['LaneDatabaseInfo'] = @{ }
+	$lanesToProcess = if ($LaneNumber) { @($LaneNumber) }
+	else { $LaneMachines.Keys }
 	
-	foreach ($laneNumber in $LaneMachines.Keys)
+	foreach ($laneNumber in $lanesToProcess)
 	{
-		# Skip unwanted lanes
-		if ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999') { continue }
+		# Skip unwanted lanes for full mode
+		if (-not $LaneNumber -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
 		
 		$machineName = $LaneMachines[$laneNumber]
 		if (-not $machineName) { continue }
@@ -552,7 +561,7 @@ function Get_All_Lanes_Database_Info
 			$namedPipesConnStr = "Server=$namedPipes;Database=$dbName;Integrated Security=True;"
 			$simpleConnStr = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
 			
-			$script:FunctionResults['LaneDatabaseInfo'][$laneNumber] = @{
+			$laneInfo = @{
 				'MachineName'	    = $machineName
 				'DBName'		    = $dbName
 				'DBServer'		    = $dbServer
@@ -564,12 +573,17 @@ function Get_All_Lanes_Database_Info
 				'NamedPipesConnStr' = $namedPipesConnStr
 				'TcpConnStr'	    = $tcpConnStr
 			}
+			
+			$LaneDatabaseInfo[$laneNumber] = $laneInfo
+			
+			if ($LaneNumber) { return $laneInfo }
 		}
 		catch
 		{
 			continue
 		}
 	}
+	if ($LaneNumber) { return $null }
 }
 
 # ===================================================================================================
@@ -1356,7 +1370,7 @@ RECONFIGURE;
 			"@EXEC($line)"
 		}
 	}
-	$script:LaneSQLScript_Mailslot = ($fixedLines -join "`r`n")
+	$script:LaneSQLScript_SQL_Protocols = ($fixedLines -join "`r`n")
 	
 	<#
 	# Optionally write to file as fallback
@@ -3542,13 +3556,13 @@ function Delete_Files
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Processes one or more lanes based on user selection, parses and writes the lane SQL script
-#   (with embedded fixed header/footer), and logs all progress and errors. Handles all-in-one.
+#   (with embedded fixed header/footer), and logs all progress and errors.
+#   Tries protocol execution first (filtered script), falls back to file writing (classic logic).
 # ===================================================================================================
 
 function Process_Lanes
 {
 	param (
-		[string]$LanesqlFilePath,
 		[string]$StoreNumber,
 		[switch]$ProcessAllLanes
 	)
@@ -3558,25 +3572,35 @@ function Process_Lanes
 	if (-not (Test-Path $OfficePath))
 	{
 		Write_Log "XF Base Path not found: $OfficePath" "yellow"
+		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
 	
-	# Get the user's lane selection
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	if (-not $LaneMachines -or $LaneMachines.Count -eq 0)
+	{
+		Write_Log "No lanes available. Please retrieve nodes first." "red"
+		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	# Get user's lane selection
 	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 	if ($selection -eq $null)
 	{
 		Write_Log "Lane processing canceled by user." "yellow"
+		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-	$Type = $selection.Type
 	$Lanes = $selection.Lanes
 	
-	# Prompt for section selection ONCE
+	# Parse original Lane SQL script sections (with macros)
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
+	$matches = [regex]::Matches($script:LaneSQLScript, $sectionPattern)
 	if ($matches.Count -eq 0)
 	{
 		Write_Log "No sections found in Lane SQL script." "red"
+		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
 	
@@ -3589,23 +3613,107 @@ function Process_Lanes
 	if (-not $SectionsToSend -or $SectionsToSend.Count -eq 0)
 	{
 		Write_Log "No sections selected for lanes." "yellow"
+		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
 	
 	foreach ($LaneNumber in $Lanes)
 	{
-		# Get the correct machine name for this lane
-		$machineName = $LaneNumber
-		if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'].ContainsKey($LaneNumber))
+		# Always get latest lane info for this lane
+		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
+		if (-not $laneInfo)
 		{
-			$machineName = $script:FunctionResults['LaneMachines'][$LaneNumber]
+			Write_Log "Could not get DB info for lane $LaneNumber. Skipping." "yellow"
+			continue
 		}
+		$machineName = $laneInfo['MachineName']
+		$connString = $laneInfo['ConnectionString']
+		$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
+		$tcpConnStr = $laneInfo['TcpConnStr']
 		
 		$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 		
+		# Try protocol logic first (using the filtered script)
+		$protocolWorked = $false
+		try
+		{
+			if (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue)
+			{
+				$matchesFiltered = [regex]::Matches($script:LaneSQLFiltered, $sectionPattern)
+				$sections = ($matchesFiltered | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() })
+				Write_Log "`r`nProcessing $machineName via protocol/SQL..." "blue"
+				foreach ($match in $sections)
+				{
+					$sectionName = $match.Groups['SectionName'].Value.Trim()
+					$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
+					Write_Log "`r`nExecuting section: '$sectionName' on $machineName" "blue"
+					Write_Log "--------------------------------------------------------------------------------"
+					Write_Log "$sqlCommands" "orange"
+					Write_Log "--------------------------------------------------------------------------------"
+					
+					$protocolSuccess = $false
+					try
+					{
+						# Place your protocol call or direct SQL call here
+						# Example: Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $sqlCommands -ErrorAction Stop
+						# If TCP fails, fallback to named pipes:
+						try
+						{
+							Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
+							$protocolSuccess = $true
+						}
+						catch
+						{
+							Write_Log "TCP protocol failed for section '$sectionName' on $machineName. Trying Named Pipes..." "yellow"
+							try
+							{
+								Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
+								$protocolSuccess = $true
+							}
+							catch
+							{
+								Write_Log "Named Pipes protocol also failed for section '$sectionName' on $machineName." "red"
+							}
+						}
+					}
+					catch
+					{
+						Write_Log "Protocol failed for section '$sectionName' on $machineName." "yellow"
+					}
+					
+					if ($protocolSuccess)
+					{
+						Write_Log "Section '$sectionName' executed successfully on $machineName (protocol)." "green"
+						$protocolWorked = $true
+					}
+					else
+					{
+						Write_Log "Failed to execute section '$sectionName' on $machineName via protocol. Will attempt fallback." "yellow"
+						$protocolWorked = $false
+						break
+					}
+				}
+			}
+		}
+		catch
+		{
+			Write_Log "Error with protocol execution on [$machineName]: $_" "yellow"
+			$protocolWorked = $false
+		}
+		
+		if ($protocolWorked)
+		{
+			if (-not ($script:ProcessedLanes -contains $LaneNumber))
+			{
+				$script:ProcessedLanes += $LaneNumber
+			}
+			continue
+		}
+		
+		# --- Fallback: classic file-based method (with header/footer and section selection) ---
 		if (Test-Path $LaneLocalPath)
 		{
-			Write_Log "`r`nProcessing $machineName..." "blue"
+			Write_Log "`r`nProcessing $machineName using file fallback..." "blue"
 			Write_Log "Lane path found: $LaneLocalPath" "blue"
 			Write_Log "Writing Lane_Database_Maintenance.sqi to Lane..." "blue"
 			
@@ -3617,7 +3725,6 @@ function Process_Lanes
 				# Always embed the fixed bottom section
 				$bottomBlock = "--------------------------------------------------------------------------------`r`n" +
 				"/* Clear the long database timeout */`r`n@WIZCLR(DBASE_TIMEOUT);"
-				
 				# User-selected middle sections (with section headers)
 				$middleBlock = ($matches | Where-Object {
 						$SectionsToSend -contains $_.Groups['SectionName'].Value.Trim()
@@ -11452,6 +11559,9 @@ $AliasToTable = Get_Table_Aliases
 
 # Generate SQL scripts
 Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
+
+# Always gather latest database info for lanes
+Get_All_Lanes_Database_Info
 
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
