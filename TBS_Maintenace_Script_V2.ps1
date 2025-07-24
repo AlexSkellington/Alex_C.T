@@ -2242,8 +2242,8 @@ function Insert_Test_Item
 		try
 		{
 			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
-INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F258, F267, F1952, F1964, F2581, F2582)
-VALUES ('$PLU', 'PAL', 'MANUAL', 1, 10, $TestF267, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
+INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F258, F264, F267, F1952, F1964, F2581, F2582)
+VALUES ('$PLU', 'PAL', 'MANUAL', 1, 10, 7, $TestF267, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
 "@
 			Write_Log "SCL_TAB insertion successful" "green"
 		}
@@ -11076,7 +11076,7 @@ if (-not $form)
 	############################################################################
 	# 12) Fix Deploy CHG
 	############################################################################
-	$FixDeployCHGItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Deploy CHG")
+	$FixDeployCHGItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Deploy_CHG")
 	$FixDeployCHGItem.ToolTipText = "Restores the deploy line to DEPLOY_CHG.sql for scale management."
 	$FixDeployCHGItem.Add_Click({
 			Fix_Deploy_CHG
