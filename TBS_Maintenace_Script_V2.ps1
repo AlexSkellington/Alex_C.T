@@ -222,58 +222,6 @@ public class MailslotSender {
 }
 
 # ===================================================================================================
-#                              FUNCTION: Ensure Administrator Privileges
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Ensures that the script is running with administrative privileges. If not, it attempts to restart the script with elevated rights.
-# ===================================================================================================
-
-function Ensure_Administrator
-{
-	# Retrieve the current Windows identity
-	$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-	# Create a WindowsPrincipal object with the current identity
-	$principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
-	
-	# Check if the user is not in the Administrator role
-	if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
-	{
-		try
-		{
-			# Build the argument list
-			$arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`""
-			if ($Silent)
-			{
-				$arguments += " -Silent"
-			}
-			
-			# Create a ProcessStartInfo object
-			$psi = New-Object System.Diagnostics.ProcessStartInfo
-			$psi.FileName = (Get-Process -Id $PID).Path # Use the same PowerShell executable
-			$psi.Arguments = $arguments
-			$psi.Verb = 'runas' # Run as administrator
-			$psi.UseShellExecute = $true
-			$psi.WindowStyle = 'Normal' # Allow the console window to show (temporarily)
-			
-			# Start the new elevated process
-			$process = [System.Diagnostics.Process]::Start($psi)
-			exit # Exit the current process after starting the elevated one
-		}
-		catch
-		{
-			[System.Windows.Forms.MessageBox]::Show("Failed to elevate to administrator.`r`nError: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-			exit 1
-		}
-	}
-	else
-	{
-		# Elevated, continue execution
-		# Optional: Display a message box if needed
-		# [System.Windows.Forms.MessageBox]::Show("Running as Administrator.", "Info")
-	}
-}
-
-# ===================================================================================================
 #                                       FUNCTION: Write to Log
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -5839,6 +5787,10 @@ function Invoke_Secure_Script
 #        - Sets specified services (e.g., "fdPHost", "FDResPub", "SSDPSRV", "upnphost") to start automatically.
 #        - Starts the services if they are not already running.
 #
+#     4. **Configures Visual Settings**:
+#        - Enables "Show thumbnails instead of icons" in Explorer.
+#        - Enables "Smooth edges of screen fonts" (font smoothing with ClearType).
+#
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   - [string]$UnorganizedFolderName (Optional)
@@ -5881,14 +5833,7 @@ function Configure_System_Settings
 	)
 	
 	Write_Log "`r`n==================== Starting Configure_System_Settings Function ====================`r`n" "blue"
-	
-	# Ensure the function is run as Administrator
-	if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator))
-	{
-		Write_Log "This script must be run as an Administrator. Please restart PowerShell with elevated privileges." "Red"
-		return
-	}
-	
+		
 	try
 	{
 		# ===========================================
@@ -6041,6 +5986,40 @@ function Configure_System_Settings
 		}
 		
 		Write_Log "Service configuration complete." "Green"
+		
+		# ===========================================
+		# 4. Configure Visual Settings
+		# ===========================================
+		Write_Log "`r`nConfiguring visual settings..." "Blue"
+		
+		try
+		{
+			# Enable "Show thumbnails instead of icons" (disable "Always show icons, never thumbnails")
+			Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "IconsOnly" -Value 0 -Type DWord -ErrorAction Stop
+			Write_Log "Enabled 'Show thumbnails instead of icons'." "Green"
+		}
+		catch
+		{
+			Write_Log "Failed to enable thumbnails. Error: $_" "Red"
+		}
+		
+		try
+		{
+			# Enable "Smooth edges of screen fonts" (font smoothing with ClearType)
+			Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "FontSmoothing" -Value "2" -Type String -ErrorAction Stop
+			Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "FontSmoothingType" -Value 2 -Type DWord -ErrorAction Stop
+			Write_Log "Enabled 'Smooth edges of screen fonts'." "Green"
+		}
+		catch
+		{
+			Write_Log "Failed to enable font smoothing. Error: $_" "Red"
+		}
+		
+		Write_Log "Visual settings configuration complete." "Green"
+		
+		Write_Log "Restarting Explorer to apply changes..." "Yellow"
+		Stop-Process -Name explorer -Force
+		Write_Log "Explorer restarted." "Green"
 		
 		Write_Log "All system configurations have been applied successfully." "Green"
 		Write_Log "`r`n==================== Configure_System_Settings Function Completed ====================`r`n" "blue"
@@ -9908,116 +9887,6 @@ PreemptiveUpdates=0
 }
 
 # ===================================================================================================
-#                                FUNCTION: Configure_Windows_Defender_Exclusions
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Modifies Windows Defender exclusions by clearing all existing exclusions under Extensions, Paths,
-#   Processes, IpAddresses, and TemporaryPaths keys, then adding specified path and process exclusions.
-#   Logs each step and handles errors appropriately.
-# ===================================================================================================
-
-function Configure_Windows_Defender_Exclusions
-{
-	Write_Log "`r`n==================== Starting Configure_Windows_Defender_Exclusions Function ====================`r`n" "blue"
-	
-	# Ensure necessary functions are available
-	foreach ($func in @('Write_Log'))
-	{
-		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
-		{
-			Write-Error "Function '$func' is not available. Please ensure it is loaded."
-			return
-		}
-	}
-	
-	# Define registry keys
-	$extensionsKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Extensions"
-	$pathsKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths"
-	$processesKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Processes"
-	$ipAddressesKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\IpAddresses"
-	$temporaryPathsKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\TemporaryPaths"
-	
-	# Define exclusions
-	$pathExclusions = @(
-		"C:\Windows\SysWOW64\rserver30"
-	)
-	$processExclusions = @(
-		"C:\storeman\SmsLog64\SmsLogService.exe"
-	)
-	
-	try
-	{
-		# Helper function to clear properties from a key
-		function Clear-ExclusionKey
-		{
-			param ([string]$keyPath)
-			if (Test-Path $keyPath)
-			{
-				Get-ItemProperty -Path $keyPath |
-				Get-Member -MemberType NoteProperty |
-				Where-Object { $_.Name -ne '(default)' } |
-				ForEach-Object {
-					Remove-ItemProperty -Path $keyPath -Name $_.Name -Force
-				}
-				Write_Log "Cleared all existing exclusions from '$keyPath'." "green"
-			}
-			else
-			{
-				Write_Log "'$keyPath' does not exist. Creating it." "yellow"
-				New-Item -Path $keyPath -Force | Out-Null
-			}
-		}
-		
-		# Step 1: Clear Extensions (delete and recreate for full reset)
-		if (Test-Path $extensionsKey)
-		{
-			Remove-Item -Path $extensionsKey -Recurse -Force
-			Write_Log "Cleared all existing extension exclusions." "green"
-		}
-		else
-		{
-			Write_Log "Extensions key does not exist. Skipping clearing." "yellow"
-		}
-		New-Item -Path $extensionsKey -Force | Out-Null
-		Write_Log "Recreated empty Extensions key." "green"
-		
-		# Step 2: Clear Paths
-		Clear-ExclusionKey -keyPath $pathsKey
-		
-		# Step 3: Clear Processes
-		Clear-ExclusionKey -keyPath $processesKey
-		
-		# Step 4: Clear IpAddresses
-		Clear-ExclusionKey -keyPath $ipAddressesKey
-		
-		# Step 5: Clear TemporaryPaths
-		Clear-ExclusionKey -keyPath $temporaryPathsKey
-		
-		# Step 6: Add path exclusions
-		foreach ($path in $pathExclusions)
-		{
-			Set-ItemProperty -Path $pathsKey -Name $path -Value 0 -Type DWord -Force
-			Write_Log "Added path exclusion for '$path'." "green"
-		}
-		
-		# Step 7: Add process exclusions
-		foreach ($process in $processExclusions)
-		{
-			Set-ItemProperty -Path $processesKey -Name $process -Value 0 -Type DWord -Force
-			Write_Log "Added process exclusion for '$process'." "green"
-		}
-	}
-	catch
-	{
-		Write_Log "Error occurred while configuring Windows Defender exclusions: $($_.Exception.Message)" "red"
-		return
-	}
-	
-	Write_Log "Windows Defender exclusions configured successfully." "green"
-	Write_Log "`r`n==================== Configure_Windows_Defender_Exclusions Function Completed ====================" "blue"
-}
-
-# ===================================================================================================
 #                                FUNCTION: Show_Lane_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -11213,26 +11082,7 @@ if (-not $form)
 			Fix_Deploy_CHG
 		})
 	[void]$ContextMenuGeneral.Items.Add($FixDeployCHGItem)
-	
-	############################################################################
-	# 13) Configure Defender Exclusions
-	############################################################################
-	$ConfigureDefenderExclusionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure Windows Defender Exclusions")
-	$ConfigureDefenderExclusionsItem.ToolTipText = "Configures Windows Defender exclusions by removing extension exclusions and adding specific path exclusions."
-	$ConfigureDefenderExclusionsItem.Add_Click({
-			$confirmResult = [System.Windows.Forms.MessageBox]::Show(
-				"This will modify Windows Defender exclusions. Do you want to proceed?",
-				"Confirm Changes",
-				[System.Windows.Forms.MessageBoxButtons]::YesNo,
-				[System.Windows.Forms.MessageBoxIcon]::Warning
-			)
-			if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes)
-			{
-				Configure_Windows_Defender_Exclusions
-			}
-		})
-	[void]$contextMenuGeneral.Items.Add($ConfigureDefenderExclusionsItem)
-	
+		
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
 	############################################################################
@@ -11303,9 +11153,6 @@ $form.add_Resize({
 # Description:
 #   Orchestrates the execution flow of the script, initializing variables, processing items, and handling user interactions.
 # ===================================================================================================
-
-# Call the function to ensure admin privileges
-Ensure_Administrator
 
 # Get SQL Connection String
 Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
