@@ -8841,9 +8841,10 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 			{
 				$instanceID = $allInstances[$instanceName]
 				Write_Log "Processing SQL Instance: $instanceName (ID: $instanceID)" "blue"
+				$needsRestart = $false
 				
-				# Enable TCP/IP protocol
-				$enabledSet = $false
+				# ---------- TCP/IP ----------
+				$tcpWasSet = $false
 				$basePaths = @(
 					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
 					"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp"
@@ -8853,20 +8854,29 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$regKey = $reg.OpenSubKey($basePath, $true)
 					if ($regKey)
 					{
-						$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+						$tcpEnabled = $regKey.GetValue('Enabled', 0)
+						if ($tcpEnabled -eq 1)
+						{
+							Write_Log "TCP/IP already enabled at $basePath." "gray"
+						}
+						else
+						{
+							$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+							Write_Log "TCP/IP protocol enabled at $basePath." "green"
+							$needsRestart = $true
+						}
 						$regKey.Close()
-						Write_Log "TCP/IP protocol enabled at $basePath." "green"
-						$enabledSet = $true
+						$tcpWasSet = $true
 						break
 					}
 				}
-				if (-not $enabledSet)
+				if (-not $tcpWasSet)
 				{
-					Write_Log "Registry path for enabling TCP/IP not found for instance $instanceName on $machine." "yellow"
+					Write_Log "Registry path for TCP/IP not found for $instanceName." "yellow"
 				}
 				
-				# Set static port for TCP/IP
-				$portSet = $false
+				# ---------- TCP Port ----------
+				$portWasSet = $false
 				$ipAllPaths = @(
 					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll",
 					"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll"
@@ -8876,21 +8886,31 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$regKey = $reg.OpenSubKey($ipAllPath, $true)
 					if ($regKey)
 					{
-						$regKey.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
-						$regKey.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
+						$curPort = $regKey.GetValue('TcpPort', "")
+						$curDyn = $regKey.GetValue('TcpDynamicPorts', "")
+						if ($curPort -eq $tcpPort -and $curDyn -eq "")
+						{
+							Write_Log "TCP port already set to $tcpPort at $ipAllPath." "gray"
+						}
+						else
+						{
+							$regKey.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
+							$regKey.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
+							Write_Log "Registry port set to $tcpPort at $ipAllPath." "green"
+							$needsRestart = $true
+						}
 						$regKey.Close()
-						Write_Log "Registry port set to $tcpPort at $ipAllPath." "green"
-						$portSet = $true
+						$portWasSet = $true
 						break
 					}
 				}
-				if (-not $portSet)
+				if (-not $portWasSet)
 				{
-					Write_Log "Registry path for TCP/IP IPAll not found for instance $instanceName on $machine." "yellow"
+					Write_Log "Registry path for TCP/IP IPAll not found for $instanceName." "yellow"
 				}
 				
-				# Enable Named Pipes protocol
-				$npEnabledSet = $false
+				# ---------- Named Pipes ----------
+				$npWasSet = $false
 				$npBasePaths = @(
 					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np",
 					"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np"
@@ -8900,20 +8920,29 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$regKey = $reg.OpenSubKey($npBasePath, $true)
 					if ($regKey)
 					{
-						$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+						$npEnabled = $regKey.GetValue('Enabled', 0)
+						if ($npEnabled -eq 1)
+						{
+							Write_Log "Named Pipes already enabled at $npBasePath." "gray"
+						}
+						else
+						{
+							$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+							Write_Log "Named Pipes protocol enabled at $npBasePath." "green"
+							$needsRestart = $true
+						}
 						$regKey.Close()
-						Write_Log "Named Pipes protocol enabled at $npBasePath." "green"
-						$npEnabledSet = $true
+						$npWasSet = $true
 						break
 					}
 				}
-				if (-not $npEnabledSet)
+				if (-not $npWasSet)
 				{
-					Write_Log "Registry path for enabling Named Pipes not found for instance $instanceName on $machine." "yellow"
+					Write_Log "Registry path for Named Pipes not found for $instanceName." "yellow"
 				}
 				
-				# Enable Shared Memory protocol
-				$smEnabledSet = $false
+				# ---------- Shared Memory ----------
+				$smWasSet = $false
 				$smBasePaths = @(
 					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm",
 					"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm"
@@ -8923,31 +8952,43 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$regKey = $reg.OpenSubKey($smBasePath, $true)
 					if ($regKey)
 					{
-						$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+						$smEnabled = $regKey.GetValue('Enabled', 0)
+						if ($smEnabled -eq 1)
+						{
+							Write_Log "Shared Memory already enabled at $smBasePath." "gray"
+						}
+						else
+						{
+							$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+							Write_Log "Shared Memory protocol enabled at $smBasePath." "green"
+							$needsRestart = $true
+						}
 						$regKey.Close()
-						Write_Log "Shared Memory protocol enabled at $smBasePath." "green"
-						$smEnabledSet = $true
+						$smWasSet = $true
 						break
 					}
 				}
-				if (-not $smEnabledSet)
+				if (-not $smWasSet)
 				{
-					Write_Log "Registry path for enabling Shared Memory not found for instance $instanceName on $machine." "yellow"
+					Write_Log "Registry path for Shared Memory not found for $instanceName." "yellow"
 				}
 				
-				# Restart SQL Service
-				$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
-				else { "MSSQL`$$instanceName" }
-				Write_Log "Restarting SQL Service $svcName on $machine..." "gray"
-				sc.exe "\\$machine" stop $svcName | Out-Null
-				Start-Sleep -Seconds 10
-				sc.exe "\\$machine" start $svcName | Out-Null
-				
-				# Wait a moment for the lane programs to settle (3 seconds is typical)
-				Start-Sleep -Seconds 3
-				
-				# Send restart command for just this lane using your working function
-				Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers @($lane) -Silent
+				# ---------- Restart SQL Service only if something changed ----------
+				if ($needsRestart)
+				{
+					$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
+					else { "MSSQL`$$instanceName" }
+					Write_Log "Restarting SQL Service $svcName on $machine..." "gray"
+					sc.exe "\\$machine" stop $svcName | Out-Null
+					Start-Sleep -Seconds 10
+					sc.exe "\\$machine" start $svcName | Out-Null
+					Start-Sleep -Seconds 3
+					Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers @($lane) -Silent
+				}
+				else
+				{
+					Write_Log "No protocol changes required for $instanceName on $machine. No restart needed." "green"
+				}
 			}
 			$reg.Close()
 		}
