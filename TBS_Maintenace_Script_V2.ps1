@@ -3737,7 +3737,7 @@ function Process_Lanes
 						Write_Log "--------------------------------------------------------------------------------"
 						
 						Invoke-Sqlcmd -ConnectionString $workingConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
-						Write_Log "Section '$sectionName' executed successfully on $machineName using $protocolType." "green"					}
+						Write_Log "Section '$sectionName' executed successfully on $machineName using ($protocolType)." "green"					}
 				}
 				catch
 				{
