@@ -3635,7 +3635,7 @@ function Process_Lanes
 	# If MULTIPLE lanes: always do file copy fallback for all (fast, no protocol try)
 	if ($Lanes.Count -gt 1)
 	{
-		Write_Log "`r`nMultiple lanes selected, using file-based fallback for all lanes." "yellow"
+		Write_Log "Multiple lanes selected, using file-based fallback for all lanes." "yellow"
 		foreach ($LaneNumber in $Lanes)
 		{
 			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
