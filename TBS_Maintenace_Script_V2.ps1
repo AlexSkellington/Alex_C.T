@@ -3688,7 +3688,8 @@ function Process_Lanes
 			$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 			
 			# Use protocol from $script:LaneProtocols, else fallback
-			$protocolType = $script:LaneProtocols[$LaneNumber]
+			$laneKey = $LaneNumber.PadLeft(3, '0')
+			$protocolType = $script:LaneProtocols[$laneKey]
 			$workingConnStr = $null
 			
 			if ($protocolType -eq "Named Pipes") { $workingConnStr = $namedPipesConnStr }
@@ -4543,10 +4544,11 @@ function Pump_Tables
 		$tcpConnStr = $laneInfo['TcpConnStr']
 		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${lane}"
 		
-		# Use the protocol detected earlier (or default to file)
-		$protocolType = if ($script:LaneProtocols.ContainsKey($lane))
+		# Normalize lane key to match padded format (e.g., "003")
+		$laneKey = $lane.PadLeft(3, '0')
+		$protocolType = if ($script:LaneProtocols.ContainsKey($laneKey))
 		{
-			$script:LaneProtocols[$lane]
+			$script:LaneProtocols[$laneKey]
 		}
 		else
 		{
@@ -5017,31 +5019,19 @@ function Close_Open_Transactions
 	
 	Write_Log "`r`n==================== Starting CloseOpenTransactions ====================`r`n" "blue"
 	
-	# Define the path to monitor
 	$XEFolderPath = "$OfficePath\XE${StoreNumber}901"
-	
-	# Ensure the XE folder exists
 	if (-not (Test-Path $XEFolderPath))
 	{
 		Write_Log -Message "XE folder not found: $XEFolderPath" "red"
 		return
 	}
 	
-	# Path to the manual Close_Transaction.sqi content
 	$CloseTransactionManual = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE')"
-	
-	# Path to the log file
 	$LogFolderPath = "$BasePath\Scripts_by_Alex_C.T"
 	$LogFilePath = Join-Path -Path $LogFolderPath -ChildPath "Closed_Transactions_LOG.txt"
-	
-	# Ensure the log directory exists
 	if (-not (Test-Path $LogFolderPath))
 	{
-		try
-		{
-			New-Item -Path $LogFolderPath -ItemType Directory -Force | Out-Null
-			Write_Log -Message "Created log directory: $LogFolderPath" "green"
-		}
+		try { New-Item -Path $LogFolderPath -ItemType Directory -Force | Out-Null }
 		catch
 		{
 			Write_Log -Message "Failed to create log directory '$LogFolderPath'. Error: $_" "red"
@@ -5064,14 +5054,8 @@ function Close_Open_Transactions
 			{
 				try
 				{
-					if ($file.Name -match '^S.*\.(\d{3})$')
-					{
-						$LaneNumber = $Matches[1]
-					}
-					else
-					{
-						continue
-					}
+					if ($file.Name -match '^S.*\.(\d{3})$') { $LaneNumber = $Matches[1] }
+					else { continue }
 					$content = Get-Content -Path $file.FullName
 					$fromLine = $content | Where-Object { $_ -like 'From:*' }
 					$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
@@ -5087,119 +5071,101 @@ function Close_Open_Transactions
 							if ($subjectLine -match 'Subject:\s*(.*)')
 							{
 								$subject = $Matches[1].Trim()
-								if ($subject -eq 'Health')
+								if ($subject -eq 'Health' -and $msgLine -match 'MSG:\s*(.*)' -and $Matches[1].Trim() -eq 'This application is not running.')
 								{
-									if ($msgLine -match 'MSG:\s*(.*)')
+									if ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
 									{
-										$message = $Matches[1].Trim()
-										if ($message -eq 'This application is not running.')
+										$transactionNumber = $Matches[1]
+										$laneKey = $LaneNumber.PadLeft(3, '0')
+										$protocolType = if ($script:LaneProtocols.ContainsKey($laneKey))
 										{
-											if ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
+											$script:LaneProtocols[$laneKey]
+										}
+										else { "File" }
+										
+										$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
+										$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
+										$tcpConnStr = $laneInfo['TcpConnStr']
+										$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber"
+										$protocolWorked = $false
+										
+										if ($protocolType -eq "Named Pipes")
+										{
+											try
 											{
-												$transactionNumber = $Matches[1]
-												
-												# Try to close transaction directly on lane using protocol
-												$protocolWorked = $false
-												$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
-												if ($laneInfo)
-												{
-													$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-													$tcpConnStr = $laneInfo['TcpConnStr']
-													$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber"
-													if (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue)
-													{
-														try
-														{
-															Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-															$protocolWorked = $true
-															Write_Log "Closed transaction $transactionNumber via SQL protocol (Named Pipes) on lane $LaneNumber." "green"
-														}
-														catch
-														{
-															Write_Log "Named Pipes failed for lane $LaneNumber, trying TCP..." "yellow"
-															try
-															{
-																Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-																$protocolWorked = $true
-																Write_Log "Closed transaction $transactionNumber via SQL protocol (TCP) on lane $LaneNumber." "green"
-															}
-															catch
-															{
-																Write_Log "SQL protocol also failed for lane $LaneNumber. Falling back to file method." "red"
-																$protocolWorked = $false
-															}
-														}
-													}
-												}
-												
-												if (-not $protocolWorked)
-												{
-													# Protocol failed: fallback to file method
-													$CloseTransactionAuto = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber)"
-													$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
-													if (Test-Path $LaneDirectory)
-													{
-														$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
-														Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionAuto -Encoding ASCII
-														Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-														Write_Log -Message "Wrote Close_Transaction.sqi file for lane $LaneNumber (fallback)." "yellow"
-													}
-													else
-													{
-														Write_Log -Message "Lane directory $LaneDirectory not found (file fallback)." "yellow"
-													}
-												}
-												
-												# Log the event (protocol or file)
-												$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Closed transaction $transactionNumber on lane $LaneNumber"
-												Add-Content -Path $LogFilePath -Value $logMessage
-												
-												Remove-Item -Path $file.FullName -Force
-												Write_Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
-												$MatchedTransactions = $true
-												
-												# Send restart command after deployment
-												Start-Sleep -Seconds 3
-												$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-												if ($nodes)
-												{
-													$machineName = $nodes.LaneMachines[$LaneNumber]
-													if ($machineName)
-													{
-														$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
-														$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
-														$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
-														if ($result)
-														{
-															Write_Log -Message "Restart command sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after deployment." "green"
-														}
-														else
-														{
-															Write_Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
-														}
-													}
-													else
-													{
-														Write_Log -Message "No machine found for lane $LaneNumber. Restart command not sent." "yellow"
-													}
-												}
-												else
-												{
-													Write_Log -Message "Could not retrieve node information for store $StoreNumber. Restart command not sent." "red"
-												}
+												Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
+												$protocolWorked = $true
+												Write_Log "Closed transaction $transactionNumber via SQL protocol (Named Pipes) on lane $LaneNumber." "green"
+											}
+											catch
+											{
+												Write_Log "Named Pipes failed for lane $LaneNumber." "yellow"
+											}
+										}
+										elseif ($protocolType -eq "TCP")
+										{
+											try
+											{
+												Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
+												$protocolWorked = $true
+												Write_Log "Closed transaction $transactionNumber via SQL protocol (TCP) on lane $LaneNumber." "green"
+											}
+											catch
+											{
+												Write_Log "TCP failed for lane $LaneNumber." "yellow"
+											}
+										}
+										
+										if (-not $protocolWorked)
+										{
+											$CloseTransactionAuto = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber)"
+											$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
+											if (Test-Path $LaneDirectory)
+											{
+												$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
+												Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionAuto -Encoding ASCII
+												Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+												Write_Log -Message "Wrote Close_Transaction.sqi file for lane $LaneNumber (fallback)." "yellow"
 											}
 											else
 											{
-												Write_Log -Message "Could not extract transaction number from Last recorded status line in file $($file.Name)" "red"
+												Write_Log -Message "Lane directory $LaneDirectory not found (file fallback)." "yellow"
+											}
+										}
+										
+										$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Closed transaction $transactionNumber on lane $LaneNumber"
+										Add-Content -Path $LogFilePath -Value $logMessage
+										Remove-Item -Path $file.FullName -Force
+										Write_Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
+										$MatchedTransactions = $true
+										
+										Start-Sleep -Seconds 3
+										$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
+										if ($nodes)
+										{
+											$machineName = $nodes.LaneMachines[$LaneNumber]
+											if ($machineName)
+											{
+												$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
+												$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+												$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+												if ($result)
+												{
+													Write_Log -Message "Restart command sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after deployment." "green"
+												}
+												else
+												{
+													Write_Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
+												}
 											}
 										}
 									}
+									else
+									{
+										Write_Log -Message "Could not extract transaction number from Last recorded status in file $($file.Name)" "red"
+									}
 								}
 							}
-						}
-						else
-						{
-							Write_Log -Message "Store or Lane number mismatch in file $($file.Name). File Store/Lane: $fileStoreNumber/$fileLaneNumber vs Expected Store/Lane: $StoreNumber/$LaneNumber" "yellow"
 						}
 					}
 				}
@@ -5210,12 +5176,9 @@ function Close_Open_Transactions
 			}
 		}
 		
-		# After processing all files, if no matched transactions were found, prompt once for lane number
 		if (-not $MatchedTransactions)
 		{
 			Write_Log -Message "No files or no matching transactions found. Prompting for lane number." "yellow"
-			
-			# Show your lane-selection form
 			$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
 			if (-not $selection)
 			{
@@ -5227,43 +5190,43 @@ function Close_Open_Transactions
 			foreach ($LaneNumber in $selection.Lanes)
 			{
 				$LaneNumber = $LaneNumber.PadLeft(3, '0')
-				if (-not $LaneNumber)
+				$laneKey = $LaneNumber
+				$protocolType = if ($script:LaneProtocols.ContainsKey($laneKey))
 				{
-					Write_Log -Message "No lane number provided by the user." "red"
-					return
+					$script:LaneProtocols[$laneKey]
 				}
+				else { "File" }
 				
-				# Try direct protocol first (Named Pipes, then TCP)
-				$protocolWorked = $false
 				$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
-				if ($laneInfo)
+				$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
+				$tcpConnStr = $laneInfo['TcpConnStr']
+				$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE'"
+				$protocolWorked = $false
+				
+				if ($protocolType -eq "Named Pipes")
 				{
-					$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-					$tcpConnStr = $laneInfo['TcpConnStr']
-					$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE'"
-					if (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue)
+					try
 					{
-						try
-						{
-							Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-							$protocolWorked = $true
-							Write_Log "Closed all open transactions via SQL protocol (Named Pipes) on lane $LaneNumber." "green"
-						}
-						catch
-						{
-							Write_Log "Named Pipes failed for lane $LaneNumber, trying TCP..." "yellow"
-							try
-							{
-								Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-								$protocolWorked = $true
-								Write_Log "Closed all open transactions via SQL protocol (TCP) on lane $LaneNumber." "green"
-							}
-							catch
-							{
-								Write_Log "SQL protocol also failed for lane $LaneNumber. Falling back to file method." "red"
-								$protocolWorked = $false
-							}
-						}
+						Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
+						$protocolWorked = $true
+						Write_Log "Closed all open transactions via SQL protocol (Named Pipes) on lane $LaneNumber." "green"
+					}
+					catch
+					{
+						Write_Log "Named Pipes failed for lane $LaneNumber." "yellow"
+					}
+				}
+				elseif ($protocolType -eq "TCP")
+				{
+					try
+					{
+						Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
+						$protocolWorked = $true
+						Write_Log "Closed all open transactions via SQL protocol (TCP) on lane $LaneNumber." "green"
+					}
+					catch
+					{
+						Write_Log "TCP failed for lane $LaneNumber." "yellow"
 					}
 				}
 				
@@ -5285,11 +5248,8 @@ function Close_Open_Transactions
 				
 				$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - User deployed Close_Transaction to lane $LaneNumber"
 				Add-Content -Path $LogFilePath -Value $logMessage
-				
-				# After user deploys the file, clear the XE folder except for files with "FATAL" in the name
 				Get-ChildItem -Path $XEFolderPath -File | Where-Object { $_.Name -notlike "*FATAL*" } | Remove-Item -Force
 				
-				# Send restart command 3 seconds after deployment by the user
 				$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 				if ($nodes)
 				{
@@ -5308,14 +5268,6 @@ function Close_Open_Transactions
 							Write_Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
 						}
 					}
-					else
-					{
-						Write_Log -Message "No machine found for lane $LaneNumber. Restart command not sent." "yellow"
-					}
-				}
-				else
-				{
-					Write_Log -Message "Could not retrieve node information for store $StoreNumber. Restart command not sent." "red"
 				}
 				
 				Write_Log "Prompt deployment process completed." "yellow"
@@ -8914,9 +8866,9 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 	$lanes = $selection.Lanes | ForEach-Object { $_.ToString().PadLeft(3, '0') }
 	Write_Log "Selected lanes: $($lanes -join ', ')" "green"
 	
-	$allResults = @()
-	$jobs = @()
 	$isSingle = ($lanes.Count -eq 1)
+	
+	$jobs = @()
 	
 	foreach ($lane in $lanes)
 	{
@@ -8927,17 +8879,14 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 			continue
 		}
 		
-		# Single lane: run inline for direct output
 		if ($isSingle)
 		{
-			$output = @()
-			$output += @{ Text = "`r`n--- Processing Machine: $machine (Store $StoreNumber, Lane $lane) ---"; Color = "blue" }
+			Write_Log "`r`n--- Processing Machine: $machine (Store $StoreNumber, Lane $lane) ---" "blue"
 			try
 			{
-				$output += @{ Text = "Ensuring RemoteRegistry is running on $machine..."; Color = "gray" }
+				Write_Log "Ensuring RemoteRegistry is running on $machine..." "gray"
 				sc.exe "\\$machine" config RemoteRegistry start= demand | Out-Null
 				sc.exe "\\$machine" start RemoteRegistry | Out-Null
-				
 				$reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $machine)
 				$instanceRootPaths = @(
 					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL",
@@ -8962,18 +8911,50 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				}
 				if ($allInstances.Count -eq 0)
 				{
-					$output += @{ Text = "No SQL instances found on $machine."; Color = "yellow" }
+					Write_Log "No SQL instances found on $machine." "yellow"
 					$reg.Close()
 				}
 				else
 				{
+					$protocolSet = $false
 					foreach ($instanceName in $allInstances.Keys)
 					{
 						$instanceID = $allInstances[$instanceName]
-						$output += @{ Text = "Processing SQL Instance: $instanceName (ID: $instanceID)"; Color = "blue" }
+						Write_Log "Processing SQL Instance: $instanceName (ID: $instanceID)" "blue"
 						$needsRestart = $false
+						# Enable Mixed Mode (LoginMode = 2)
+						$authPaths = @(
+							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer",
+							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer"
+						)
+						$authSet = $false
+						foreach ($authPath in $authPaths)
+						{
+							$authKey = $reg.OpenSubKey($authPath, $true)
+							if ($authKey)
+							{
+								$loginMode = $authKey.GetValue("LoginMode", 1)
+								if ($loginMode -ne 2)
+								{
+									$authKey.SetValue("LoginMode", 2, [Microsoft.Win32.RegistryValueKind]::DWord)
+									Write_Log "Mixed Mode Authentication enabled at $authPath." "green"
+									$needsRestart = $true
+								}
+								else
+								{
+									Write_Log "Mixed Mode Authentication already enabled at $authPath." "gray"
+								}
+								$authKey.Close()
+								$authSet = $true
+								break
+							}
+						}
+						if (-not $authSet)
+						{
+							Write_Log "LoginMode registry path not found for $instanceName." "yellow"
+						}
 						
-						# TCP/IP
+						# --- TCP/IP Protocol ---
 						$tcpWasSet = $false
 						$basePaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
@@ -8987,25 +8968,25 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 								$tcpEnabled = $regKey.GetValue('Enabled', 0)
 								if ($tcpEnabled -eq 1)
 								{
-									$output += @{ Text = "TCP/IP already enabled at $basePath."; Color = "gray" }
+									Write_Log "TCP/IP already enabled at $basePath." "gray"
 								}
 								else
 								{
 									$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-									$output += @{ Text = "TCP/IP protocol enabled at $basePath."; Color = "green" }
+									Write_Log "TCP/IP protocol enabled at $basePath." "green"
 									$needsRestart = $true
 								}
 								$regKey.Close()
 								$tcpWasSet = $true
+								$protocolSet = $true
 								break
 							}
 						}
 						if (-not $tcpWasSet)
 						{
-							$output += @{ Text = "Registry path for TCP/IP not found for $instanceName."; Color = "yellow" }
+							Write_Log "Registry path for TCP/IP not found for $instanceName." "yellow"
 						}
-						
-						# TCP Port
+						# --- TCP Port ---
 						$portWasSet = $false
 						$ipAllPaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll",
@@ -9020,13 +9001,13 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 								$curDyn = $regKey.GetValue('TcpDynamicPorts', "")
 								if ($curPort -eq $tcpPort -and $curDyn -eq "")
 								{
-									$output += @{ Text = "TCP port already set to $tcpPort at $ipAllPath."; Color = "gray" }
+									Write_Log "TCP port already set to $tcpPort at $ipAllPath." "gray"
 								}
 								else
 								{
 									$regKey.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
 									$regKey.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
-									$output += @{ Text = "Registry port set to $tcpPort at $ipAllPath."; Color = "green" }
+									Write_Log "Registry port set to $tcpPort at $ipAllPath." "green"
 									$needsRestart = $true
 								}
 								$regKey.Close()
@@ -9036,10 +9017,9 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						}
 						if (-not $portWasSet)
 						{
-							$output += @{ Text = "Registry path for TCP/IP IPAll not found for $instanceName."; Color = "yellow" }
+							Write_Log "Registry path for TCP/IP IPAll not found for $instanceName." "yellow"
 						}
-						
-						# Named Pipes
+						# --- Named Pipes ---
 						$npWasSet = $false
 						$npBasePaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np",
@@ -9053,12 +9033,12 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 								$npEnabled = $regKey.GetValue('Enabled', 0)
 								if ($npEnabled -eq 1)
 								{
-									$output += @{ Text = "Named Pipes already enabled at $npBasePath."; Color = "gray" }
+									Write_Log "Named Pipes already enabled at $npBasePath." "gray"
 								}
 								else
 								{
 									$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-									$output += @{ Text = "Named Pipes protocol enabled at $npBasePath."; Color = "green" }
+									Write_Log "Named Pipes protocol enabled at $npBasePath." "green"
 									$needsRestart = $true
 								}
 								$regKey.Close()
@@ -9068,10 +9048,9 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						}
 						if (-not $npWasSet)
 						{
-							$output += @{ Text = "Registry path for Named Pipes not found for $instanceName."; Color = "yellow" }
+							Write_Log "Registry path for Named Pipes not found for $instanceName." "yellow"
 						}
-						
-						# Shared Memory
+						# --- Shared Memory ---
 						$smWasSet = $false
 						$smBasePaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm",
@@ -9085,12 +9064,12 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 								$smEnabled = $regKey.GetValue('Enabled', 0)
 								if ($smEnabled -eq 1)
 								{
-									$output += @{ Text = "Shared Memory already enabled at $smBasePath."; Color = "gray" }
+									Write_Log "Shared Memory already enabled at $smBasePath." "gray"
 								}
 								else
 								{
 									$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-									$output += @{ Text = "Shared Memory protocol enabled at $smBasePath."; Color = "green" }
+									Write_Log "Shared Memory protocol enabled at $smBasePath." "green"
 									$needsRestart = $true
 								}
 								$regKey.Close()
@@ -9100,34 +9079,44 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						}
 						if (-not $smWasSet)
 						{
-							$output += @{ Text = "Registry path for Shared Memory not found for $instanceName."; Color = "yellow" }
+							Write_Log "Registry path for Shared Memory not found for $instanceName." "yellow"
 						}
-						
-						# Restart SQL Service only if changed
+						# --- Service restart if needed ---
 						if ($needsRestart)
 						{
 							$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
 							else { "MSSQL`$$instanceName" }
-							$output += @{ Text = "Restarting SQL Service $svcName on $machine..."; Color = "gray" }
+							Write_Log "Restarting SQL Service $svcName on $machine..." "gray"
 							sc.exe "\\$machine" stop $svcName | Out-Null
 							Start-Sleep -Seconds 10
 							sc.exe "\\$machine" start $svcName | Out-Null
 							Start-Sleep -Seconds 3
+							Write_Log "SQL Service $svcName restarted successfully on $machine." "green"
 							Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers @($lane) -Silent
+							Write_Log "Restart All Programs sent to $machine (Lane $lane) after protocol update." "green"
 						}
 						else
 						{
-							$output += @{ Text = "No protocol changes required for $instanceName on $machine. No restart needed."; Color = "green" }
+							Write_Log "No protocol or auth changes required for $instanceName on $machine. No restart needed." "green"
 						}
 					}
 					$reg.Close()
+					# Update lane protocol if TCP was set
+					if ($protocolSet)
+					{
+						$script:LaneProtocols[$lane] = "TCP"
+					}
+					else
+					{
+						$script:LaneProtocols[$lane] = "File"
+					}
 				}
 			}
 			catch
 			{
-				$output += @{ Text = "Failed to process [$machine]: $_"; Color = "red" }
+				Write_Log "Failed to process [$machine]: $_" "red"
+				$script:LaneProtocols[$lane] = "File"
 			}
-			foreach ($line in $output) { Write_Log $line.Text $line.Color }
 		}
 		else
 		{
@@ -9138,13 +9127,13 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$StoreNumber,
 					$tcpPort)
 				$output = @()
+				$finalProtocol = "File"
 				$output += @{ Text = "`r`n--- Processing Machine: $machine (Store $StoreNumber, Lane $lane) ---"; Color = "blue" }
 				try
 				{
 					$output += @{ Text = "Ensuring RemoteRegistry is running on $machine..."; Color = "gray" }
 					sc.exe "\\$machine" config RemoteRegistry start= demand | Out-Null
 					sc.exe "\\$machine" start RemoteRegistry | Out-Null
-					
 					$reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $machine)
 					$instanceRootPaths = @(
 						"SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL",
@@ -9174,13 +9163,44 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					}
 					else
 					{
+						$protocolSet = $false
 						foreach ($instanceName in $allInstances.Keys)
 						{
 							$instanceID = $allInstances[$instanceName]
 							$output += @{ Text = "Processing SQL Instance: $instanceName (ID: $instanceID)"; Color = "blue" }
 							$needsRestart = $false
-							
-							# TCP/IP
+							# Enable Mixed Mode Authentication
+							$authPaths = @(
+								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer",
+								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer"
+							)
+							$authSet = $false
+							foreach ($authPath in $authPaths)
+							{
+								$authKey = $reg.OpenSubKey($authPath, $true)
+								if ($authKey)
+								{
+									$loginMode = $authKey.GetValue("LoginMode", 1)
+									if ($loginMode -ne 2)
+									{
+										$authKey.SetValue("LoginMode", 2, [Microsoft.Win32.RegistryValueKind]::DWord)
+										$output += @{ Text = "Mixed Mode Authentication enabled at $authPath."; Color = "green" }
+										$needsRestart = $true
+									}
+									else
+									{
+										$output += @{ Text = "Mixed Mode Authentication already enabled at $authPath."; Color = "gray" }
+									}
+									$authKey.Close()
+									$authSet = $true
+									break
+								}
+							}
+							if (-not $authSet)
+							{
+								$output += @{ Text = "LoginMode registry path not found for $instanceName."; Color = "yellow" }
+							}
+							# --- TCP/IP Protocol ---
 							$tcpWasSet = $false
 							$basePaths = @(
 								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
@@ -9204,6 +9224,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 									}
 									$regKey.Close()
 									$tcpWasSet = $true
+									$protocolSet = $true
 									break
 								}
 							}
@@ -9211,8 +9232,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							{
 								$output += @{ Text = "Registry path for TCP/IP not found for $instanceName."; Color = "yellow" }
 							}
-							
-							# TCP Port
+							# --- TCP Port ---
 							$portWasSet = $false
 							$ipAllPaths = @(
 								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll",
@@ -9220,7 +9240,8 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							)
 							foreach ($ipAllPath in $ipAllPaths)
 							{
-								$regKey = $reg.OpenSubKey($ipAllPath, $true)
+								$regKey = $reg.OpenSubKey($ipAllPath, $true
+								)
 								if ($regKey)
 								{
 									$curPort = $regKey.GetValue('TcpPort', "")
@@ -9245,12 +9266,11 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							{
 								$output += @{ Text = "Registry path for TCP/IP IPAll not found for $instanceName."; Color = "yellow" }
 							}
-							
-							# Named Pipes
+							# --- Named Pipes ---
 							$npWasSet = $false
 							$npBasePaths = @(
-								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np",
-								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np"
+								"SOFTWARE\Microsoft\Microsoft SQL Server\$instanceID\MSSQLServer\SuperSocketNetLib\Np",
+								"SOFTWARE\Wow6432Node\Microsoft\Microsoft SQL Server\$instanceID\MSSQLServer\SuperSocketNetLib\Np"
 							)
 							foreach ($npBasePath in $npBasePaths)
 							{
@@ -9277,12 +9297,11 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							{
 								$output += @{ Text = "Registry path for Named Pipes not found for $instanceName."; Color = "yellow" }
 							}
-							
-							# Shared Memory
+							# --- Shared Memory ---
 							$smWasSet = $false
 							$smBasePaths = @(
-								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm",
-								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm"
+								"SOFTWARE\Microsoft\Microsoft SQL Server\$instanceID\MSSQLServer\SuperSocketNetLib\Sm",
+								"SOFTWARE\Wow6432Node\Microsoft\Microsoft SQL Server\$instanceID\MSSQLServer\SuperSocketNetLib\Sm"
 							)
 							foreach ($smBasePath in $smBasePaths)
 							{
@@ -9309,54 +9328,58 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							{
 								$output += @{ Text = "Registry path for Shared Memory not found for $instanceName."; Color = "yellow" }
 							}
-							
-							# Restart SQL Service only if changed
 							if ($needsRestart)
 							{
 								$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
 								else { "MSSQL`$$instanceName" }
 								$output += @{ Text = "Restarting SQL Service $svcName on $machine..."; Color = "gray" }
-								sc.exe "\\$machine" stop $svcName | Out-Null
+								sc.exe "\$machine" stop $svcName | Out-Null
 								Start-Sleep -Seconds 10
-								sc.exe "\\$machine" start $svcName | Out-Null
+								sc.exe "\$machine" start $svcName | Out-Null
 								Start-Sleep -Seconds 3
+								$output += @{ Text = "SQL Service $svcName restarted successfully on $machine."; Color = "green" }
 								Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers @($lane) -Silent
+								$output += @{ Text = "Restart All Programs sent to $machine (Lane $lane) after protocol update."; Color = "green" }
 							}
 							else
 							{
-								$output += @{ Text = "No protocol changes required for $instanceName on $machine. No restart needed."; Color = "green" }
+								$output += @{ Text = "No protocol or auth changes required for $instanceName on $machine. No restart needed."; Color = "green" }
 							}
 						}
 						$reg.Close()
+						if ($protocolSet) { $finalProtocol = "TCP" }
 					}
 				}
 				catch
 				{
 					$output += @{ Text = "Failed to process [$machine]: $_"; Color = "red" }
+					$finalProtocol = "File"
 				}
-				return, $output
+				[PSCustomObject]@{
+					Output   = $output
+					Protocol = $finalProtocol
+					Lane	 = $lane
+				}
 			}
 			$jobs += @{ Lane = $lane; Job = $job }
 		}
 	}
 	
-	# Collect job output in original lane order, log all lines with correct color
 	if (-not $isSingle)
 	{
-		$laneOrder = $jobs | ForEach-Object { $_.Lane }
+		$laneOrder = $jobs | Sort-Object Lane | ForEach-Object { $_.Lane }
 		$jobMap = @{ }
 		foreach ($j in $jobs) { $jobMap[$j.Lane] = $j.Job }
-		
 		foreach ($lane in $laneOrder)
 		{
 			$job = $jobMap[$lane]
 			Wait-Job $job | Out-Null
-			$output = Receive-Job $job
+			$result = Receive-Job $job
 			Remove-Job $job
-			foreach ($line in $output) { Write_Log $line.Text $line.Color }
+			foreach ($line in $result.Output) { Write_Log $line.Text $line.Color }
+			$script:LaneProtocols[$result.Lane] = $result.Protocol
 		}
 	}
-	
 	Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Function Completed ====================" "blue"
 }
 
@@ -12107,7 +12130,7 @@ $protocolTimer.add_Tick({
 				$result = Receive-Job $job -ErrorAction SilentlyContinue
 				if ($result -and $result.Lane -and $result.Protocol)
 				{
-					$script:LaneProtocols[$result.Lane] = $result.Protocol
+					$script:LaneProtocols[$result.Lane.PadLeft(3, '0')] = $result.Protocol
 					$script:ProtocolResults += $result
 				}
 				Remove-Job $job -Force
