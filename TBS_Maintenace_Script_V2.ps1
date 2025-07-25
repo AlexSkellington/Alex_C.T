@@ -8882,34 +8882,6 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 	
 	$jobs = @()
 	
-	function Test-Lane-WorkingProtocol
-	{
-		param ([string]$machine)
-		# TCP
-		try
-		{
-			$tcpClient = New-Object System.Net.Sockets.TcpClient
-			$connectTask = $tcpClient.ConnectAsync($machine, 1433)
-			if ($connectTask.Wait(600) -and $tcpClient.Connected)
-			{
-				$tcpClient.Close()
-				return "TCP"
-			}
-		}
-		catch { }
-		# Named Pipes
-		try
-		{
-			Import-Module SqlServer -ErrorAction Stop
-			$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
-			Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 2 -ErrorAction Stop | Out-Null
-			return "Named Pipes"
-		}
-		catch { }
-		# Shared Memory (not remote, so fallback)
-		return "File"
-	}
-	
 	foreach ($lane in $lanes)
 	{
 		$machine = $LaneMachines[$lane]
@@ -8956,6 +8928,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				}
 				else
 				{
+					$laneNeedsRestart = $false
 					foreach ($instanceName in $allInstances.Keys)
 					{
 						$instanceID = $allInstances[$instanceName]
@@ -8995,7 +8968,6 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						}
 						
 						# --- TCP/IP Protocol ---
-						$tcpEnabledOk = $false
 						$basePaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
 							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp"
@@ -9009,14 +8981,12 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 								if ($tcpEnabled -eq 1)
 								{
 									Write_Log "TCP/IP already enabled at $basePath." "gray"
-									$tcpEnabledOk = $true
 								}
 								else
 								{
 									$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
 									Write_Log "TCP/IP protocol enabled at $basePath." "green"
 									$needsRestart = $true
-									$tcpEnabledOk = $true
 								}
 								$regKey.Close()
 								break
@@ -9037,7 +9007,6 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 								if ($curPort -eq $tcpPort -and $curDyn -eq "")
 								{
 									Write_Log "TCP port already set to $tcpPort at $ipAllPath." "gray"
-									$tcpEnabledOk = $true
 								}
 								else
 								{
@@ -9045,14 +9014,12 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 									$regKey.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
 									Write_Log "Registry port set to $tcpPort at $ipAllPath." "green"
 									$needsRestart = $true
-									$tcpEnabledOk = $true
 								}
 								$regKey.Close()
 								break
 							}
 						}
 						# --- Named Pipes ---
-						$npEnabledOk = $false
 						$npBasePaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np",
 							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np"
@@ -9066,21 +9033,18 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 								if ($npEnabled -eq 1)
 								{
 									Write_Log "Named Pipes already enabled at $npBasePath." "gray"
-									$npEnabledOk = $true
 								}
 								else
 								{
 									$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
 									Write_Log "Named Pipes protocol enabled at $npBasePath." "green"
 									$needsRestart = $true
-									$npEnabledOk = $true
 								}
 								$regKey.Close()
 								break
 							}
 						}
 						# --- Shared Memory ---
-						$smEnabledOk = $false
 						$smBasePaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm",
 							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm"
@@ -9094,14 +9058,12 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 								if ($smEnabled -eq 1)
 								{
 									Write_Log "Shared Memory already enabled at $smBasePath." "gray"
-									$smEnabledOk = $true
 								}
 								else
 								{
 									$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
 									Write_Log "Shared Memory protocol enabled at $smBasePath." "green"
 									$needsRestart = $true
-									$smEnabledOk = $true
 								}
 								$regKey.Close()
 								break
@@ -9118,8 +9080,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							sc.exe "\\$machine" start $svcName | Out-Null
 							Start-Sleep -Seconds 3
 							Write_Log "SQL Service $svcName restarted successfully on $machine." "green"
-							Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers @($lane) -Silent
-							Write_Log "Restart All Programs sent to $machine (Lane $lane) after protocol update." "green"
+							$laneNeedsRestart = $true
 						}
 						else
 						{
@@ -9128,8 +9089,36 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					}
 					$reg.Close()
 					
+					if ($laneNeedsRestart)
+					{
+						Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers @($lane) -Silent
+						Write_Log "Restart All Programs sent to $machine (Lane $lane) after protocol update." "green"
+					}
+					
 					# --- Test actual protocol ---
-					$protocol = Test-Lane-WorkingProtocol -machine $machine
+					$protocol = "File"
+					try
+					{
+						$tcpClient = New-Object System.Net.Sockets.TcpClient
+						$connectTask = $tcpClient.ConnectAsync($machine, 1433)
+						if ($connectTask.Wait(600) -and $tcpClient.Connected)
+						{
+							$tcpClient.Close()
+							$protocol = "TCP"
+						}
+						else
+						{
+							try
+							{
+								Import-Module SqlServer -ErrorAction Stop
+								$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
+								Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 2 -ErrorAction Stop | Out-Null
+								$protocol = "Named Pipes"
+							}
+							catch { }
+						}
+					}
+					catch { }
 					$script:LaneProtocols[$lane] = $protocol
 					$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $lane }
 					$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
@@ -9152,9 +9141,206 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$lane,
 					$StoreNumber,
 					$tcpPort)
-				function Test-Lane-WorkingProtocol
+				$output = @()
+				$laneNeedsRestart = $false
+				try
 				{
-					param ([string]$machine)
+					$output += @{ Text = "`r`n--- Processing Machine: $machine (Store $StoreNumber, Lane $lane) ---"; Color = "blue" }
+					$output += @{ Text = "Ensuring RemoteRegistry is running on $machine..."; Color = "gray" }
+					$null = sc.exe "\\$machine" config RemoteRegistry start= demand
+					$null = sc.exe "\\$machine" start RemoteRegistry
+					$reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $machine)
+					$instanceRootPaths = @(
+						"SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL",
+						"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL"
+					)
+					$allInstances = @{ }
+					foreach ($rootPath in $instanceRootPaths)
+					{
+						$instKey = $reg.OpenSubKey($rootPath)
+						if ($instKey)
+						{
+							foreach ($name in $instKey.GetValueNames())
+							{
+								$id = $instKey.GetValue($name)
+								if ($id -and !$allInstances.ContainsKey($name))
+								{
+									$allInstances[$name] = $id
+								}
+							}
+							$instKey.Close()
+						}
+					}
+					if ($allInstances.Count -eq 0)
+					{
+						$output += @{ Text = "No SQL instances found on $machine."; Color = "yellow" }
+						$reg.Close()
+					}
+					else
+					{
+						foreach ($instanceName in $allInstances.Keys)
+						{
+							$instanceID = $allInstances[$instanceName]
+							$output += @{ Text = "Processing SQL Instance: $instanceName (ID: $instanceID)"; Color = "blue" }
+							$needsRestart = $false
+							
+							# --- Mixed Mode ---
+							$authPaths = @(
+								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer",
+								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer"
+							)
+							$authSet = $false
+							foreach ($authPath in $authPaths)
+							{
+								$authKey = $reg.OpenSubKey($authPath, $true)
+								if ($authKey)
+								{
+									$loginMode = $authKey.GetValue("LoginMode", 1)
+									if ($loginMode -ne 2)
+									{
+										$authKey.SetValue("LoginMode", 2, [Microsoft.Win32.RegistryValueKind]::DWord)
+										$output += @{ Text = "Mixed Mode Authentication enabled at $authPath."; Color = "green" }
+										$needsRestart = $true
+									}
+									else
+									{
+										$output += @{ Text = "Mixed Mode Authentication already enabled at $authPath."; Color = "gray" }
+									}
+									$authKey.Close()
+									$authSet = $true
+									break
+								}
+							}
+							if (-not $authSet)
+							{
+								$output += @{ Text = "LoginMode registry path not found for $instanceName."; Color = "yellow" }
+							}
+							
+							# --- TCP/IP Protocol ---
+							$basePaths = @(
+								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
+								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp"
+							)
+							foreach ($basePath in $basePaths)
+							{
+								$regKey = $reg.OpenSubKey($basePath, $true)
+								if ($regKey)
+								{
+									$tcpEnabled = $regKey.GetValue('Enabled', 0)
+									if ($tcpEnabled -eq 1)
+									{
+										$output += @{ Text = "TCP/IP already enabled at $basePath."; Color = "gray" }
+									}
+									else
+									{
+										$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+										$output += @{ Text = "TCP/IP protocol enabled at $basePath."; Color = "green" }
+										$needsRestart = $true
+									}
+									$regKey.Close()
+									break
+								}
+							}
+							# --- TCP Port ---
+							$ipAllPaths = @(
+								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll",
+								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll"
+							)
+							foreach ($ipAllPath in $ipAllPaths)
+							{
+								$regKey = $reg.OpenSubKey($ipAllPath, $true)
+								if ($regKey)
+								{
+									$curPort = $regKey.GetValue('TcpPort', "")
+									$curDyn = $regKey.GetValue('TcpDynamicPorts', "")
+									if ($curPort -eq $tcpPort -and $curDyn -eq "")
+									{
+										$output += @{ Text = "TCP port already set to $tcpPort at $ipAllPath."; Color = "gray" }
+									}
+									else
+									{
+										$regKey.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
+										$regKey.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
+										$output += @{ Text = "Registry port set to $tcpPort at $ipAllPath."; Color = "green" }
+										$needsRestart = $true
+									}
+									$regKey.Close()
+									break
+								}
+							}
+							# --- Named Pipes ---
+							$npBasePaths = @(
+								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np",
+								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np"
+							)
+							foreach ($npBasePath in $npBasePaths)
+							{
+								$regKey = $reg.OpenSubKey($npBasePath, $true)
+								if ($regKey)
+								{
+									$npEnabled = $regKey.GetValue('Enabled', 0)
+									if ($npEnabled -eq 1)
+									{
+										$output += @{ Text = "Named Pipes already enabled at $npBasePath."; Color = "gray" }
+									}
+									else
+									{
+										$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+										$output += @{ Text = "Named Pipes protocol enabled at $npBasePath."; Color = "green" }
+										$needsRestart = $true
+									}
+									$regKey.Close()
+									break
+								}
+							}
+							# --- Shared Memory ---
+							$smBasePaths = @(
+								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm",
+								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm"
+							)
+							foreach ($smBasePath in $smBasePaths)
+							{
+								$regKey = $reg.OpenSubKey($smBasePath, $true)
+								if ($regKey)
+								{
+									$smEnabled = $regKey.GetValue('Enabled', 0)
+									if ($smEnabled -eq 1)
+									{
+										$output += @{ Text = "Shared Memory already enabled at $smBasePath."; Color = "gray" }
+									}
+									else
+									{
+										$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+										$output += @{ Text = "Shared Memory protocol enabled at $smBasePath."; Color = "green" }
+										$needsRestart = $true
+									}
+									$regKey.Close()
+									break
+								}
+							}
+							# --- Service restart if needed ---
+							if ($needsRestart)
+							{
+								$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
+								else { "MSSQL`$$instanceName" }
+								$output += @{ Text = "Restarting SQL Service $svcName on $machine..."; Color = "gray" }
+								sc.exe "\\$machine" stop $svcName | Out-Null
+								Start-Sleep -Seconds 10
+								sc.exe "\\$machine" start $svcName | Out-Null
+								Start-Sleep -Seconds 3
+								$output += @{ Text = "SQL Service $svcName restarted successfully on $machine."; Color = "green" }
+								$laneNeedsRestart = $true
+							}
+							else
+							{
+								$output += @{ Text = "No protocol or auth changes required for $instanceName on $machine. No restart needed."; Color = "green" }
+							}
+						}
+						$reg.Close()
+					}
+					
+					# --- Test actual protocol ---
+					$protocol = "File"
 					try
 					{
 						$tcpClient = New-Object System.Net.Sockets.TcpClient
@@ -9162,28 +9348,33 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						if ($connectTask.Wait(600) -and $tcpClient.Connected)
 						{
 							$tcpClient.Close()
-							return "TCP"
+							$protocol = "TCP"
+						}
+						else
+						{
+							try
+							{
+								Import-Module SqlServer -ErrorAction Stop
+								$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
+								Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 2 -ErrorAction Stop | Out-Null
+								$protocol = "Named Pipes"
+							}
+							catch { }
 						}
 					}
 					catch { }
-					try
-					{
-						Import-Module SqlServer -ErrorAction Stop
-						$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
-						Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 2 -ErrorAction Stop | Out-Null
-						return "Named Pipes"
-					}
-					catch { }
-					return "File"
+					$output += @{ Text = "Protocol detected for $machine (Lane $lane): $protocol"; Color = "magenta" }
 				}
-				$output = @()
-				$output += @{ Text = "`r`n--- Processing Machine: $machine (Store $StoreNumber, Lane $lane) ---"; Color = "blue" }
-				# (All the registry and protocol code as above, with the test at the end:)
-				$protocol = Test-Lane-WorkingProtocol -machine $machine
+				catch
+				{
+					$output += @{ Text = "Failed to process [$machine]: $_"; Color = "red" }
+					$protocol = "File"
+				}
 				[PSCustomObject]@{
-					Output   = $output
-					Protocol = $protocol
-					Lane	 = $lane
+					Output    = $output
+					Protocol  = $protocol
+					Lane	  = $lane
+					Restarted = $laneNeedsRestart
 				}
 			}
 			$jobs += @{ Lane = $lane; Job = $job }
@@ -9192,9 +9383,10 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 	
 	if (-not $isSingle)
 	{
-		$laneOrder = $jobs | Sort-Object Lane | ForEach-Object { $_.Lane }
+		$laneOrder = $lanes | Sort-Object
 		$jobMap = @{ }
 		foreach ($j in $jobs) { $jobMap[$j.Lane] = $j.Job }
+		$restartedLanes = @()
 		foreach ($lane in $laneOrder)
 		{
 			$job = $jobMap[$lane]
@@ -9205,6 +9397,15 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 			$script:LaneProtocols[$result.Lane] = $result.Protocol
 			$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $result.Lane }
 			$script:ProtocolResults += [PSCustomObject]@{ Lane = $result.Lane; Protocol = $result.Protocol }
+			if ($result.Restarted)
+			{
+				$restartedLanes += $lane
+			}
+		}
+		if ($restartedLanes.Count -gt 0)
+		{
+			Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers $restartedLanes -Silent
+			Write_Log "Restart All Programs sent to restarted lanes: $($restartedLanes -join ', ')" "green"
 		}
 	}
 	Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Function Completed ====================" "blue"
