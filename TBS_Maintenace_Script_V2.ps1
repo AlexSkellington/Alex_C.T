@@ -3655,23 +3655,23 @@ function Process_Lanes
 					$protocolType = "FAILED"
 					try
 					{
-						# Try TCP first
-						Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
+						# Now try Named Pipes first, then TCP
+						Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
 						$protocolSuccess = $true
-						$protocolType = "TCP"
+						$protocolType = "Named Pipes"
 					}
 					catch
 					{
-						Write_Log "TCP protocol failed for section '$sectionName' on $machineName. Trying Named Pipes..." "yellow"
+						Write_Log "Named Pipes protocol failed for section '$sectionName' on $machineName. Trying TCP..." "yellow"
 						try
 						{
-							Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
+							Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
 							$protocolSuccess = $true
-							$protocolType = "Named Pipes"
+							$protocolType = "TCP"
 						}
 						catch
 						{
-							Write_Log "Named Pipes protocol also failed for section '$sectionName' on $machineName." "red"
+							Write_Log "TCP protocol also failed for section '$sectionName' on $machineName." "red"
 						}
 					}
 					
@@ -4012,16 +4012,13 @@ function Update_Lane_Config
 	
 	Write_Log "`r`n==================== Starting Update_Lane_Config Function ====================" "blue"
 	
-	# Ensure $LoadPath exists
 	if (-not (Test-Path $LoadPath))
 	{
 		Write_Log "`r`nLoad Base Path not found: $LoadPath" "yellow"
 		return
 	}
 	
-	# Get the user's lane selection
 	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
-	
 	if ($selection -eq $null)
 	{
 		Write_Log "`r`nLane processing canceled by user." "yellow"
@@ -4030,21 +4027,14 @@ function Update_Lane_Config
 	
 	$Type = $selection.Type
 	$Lanes = $selection.Lanes
-	
-	# Determine if "All Lanes" is selected
 	$processAllLanes = $false
-	if ($Type -eq "All")
-	{
-		$processAllLanes = $true
-	}
+	if ($Type -eq "All") { $processAllLanes = $true }
 	
-	# If "All Lanes" is selected, attempt to retrieve LaneContents
 	if ($processAllLanes)
 	{
 		try
 		{
 			$LaneContents = $script:FunctionResults['LaneContents']
-			
 			if ($LaneContents -and $LaneContents.Count -gt 0)
 			{
 				$Lanes = $LaneContents
@@ -4061,10 +4051,13 @@ function Update_Lane_Config
 		}
 	}
 	
-	# --------------------------------------------------------------------------------------------
-	# Define the run_load, lnk_load, sto_load, and ter_load script parts
-	# --------------------------------------------------------------------------------------------
+	$ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
+	$runLoadFilename = "run_load.sql"
+	$lnkLoadFilename = "lnk_load.sql"
+	$stoLoadFilename = "sto_load.sql"
+	$terLoadFilename = "ter_load.sql"
 	
+	# Original SQL data (unchanged for file copy)
 	$runLoadScript = @"
 @CREATE(RUN_TAB,RUN);
 CREATE VIEW Run_Load AS SELECT F1102,F1000,F1103,F1104,F1105,F1106,F1107,F1108,F1109,F1110,F1111,F1112,F1113,F1114,F1115,F1116,F1117 FROM RUN_TAB;
@@ -4086,14 +4079,12 @@ SRC=SELECT * FROM Run_Load);
 
 DROP TABLE Run_Load;
 "@
-	
 	$lnkLoadHeader = @"
 @CREATE(LNK_TAB,LNK);
 CREATE VIEW Lnk_Load AS SELECT F1000,F1056,F1057 FROM LNK_TAB;
 
 INSERT INTO Lnk_Load VALUES
 "@
-	
 	$lnkLoadFooter = @"
 
 @UPDATE_BATCH(JOB=ADDRPL,TAR=LNK_TAB,
@@ -4102,14 +4093,12 @@ SRC=SELECT * FROM Lnk_Load);
 
 DROP TABLE Lnk_Load;
 "@
-	
 	$stoLoadHeader = @"
 @CREATE(STO_TAB,STO);
 CREATE VIEW Sto_Load AS SELECT F1000,F1018,F1180,F1181,F1182,F1937,F1965,F1966,F2691 FROM STO_TAB;
 
 INSERT INTO Sto_Load VALUES
 "@
-	
 	$stoLoadFooter = @"
 
 @UPDATE_BATCH(JOB=ADDRPL,TAR=STO_TAB,
@@ -4118,14 +4107,12 @@ SRC=SELECT * FROM Sto_Load);
 
 DROP TABLE Sto_Load;
 "@
-	
 	$terLoadHeader = @"
 @CREATE(TER_TAB,TER); 
 CREATE VIEW Ter_Load AS SELECT F1056,F1057,F1058,F1125,F1169 FROM TER_TAB;
 
 INSERT INTO Ter_Load VALUES
 "@
-	
 	$terLoadFooter = @"
 
 @UPDATE_BATCH(JOB=ADDRPL,TAR=TER_TAB,
@@ -4135,216 +4122,253 @@ SRC=SELECT * FROM Ter_Load);
 DROP TABLE Ter_Load;
 "@
 	
-	# Script filenames
-	$runLoadFilename = "run_load.sql"
-	$lnkLoadFilename = "lnk_load.sql"
-	$stoLoadFilename = "sto_load.sql"
-	$terLoadFilename = "ter_load.sql"
-	
-	# --------------------------------------------------------------------------------------------
-	# Loop each selected Lane
-	# --------------------------------------------------------------------------------------------
 	foreach ($laneNumber in $Lanes)
 	{
+		$protocolWorked = @{ }
+		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNumber
+		$MachineName = $null
+		$namedPipesConnStr = $null
+		if ($laneInfo)
+		{
+			$MachineName = $laneInfo['MachineName']
+			$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
+			Write_Log "Lane #${laneNumber}: Connection info found. Machine: $MachineName" "green"
+		}
+		else
+		{
+			$MachineName = $script:FunctionResults['LaneMachines'][$laneNumber]
+			if (-not $MachineName) { $MachineName = "POS${laneNumber}" }
+			Write_Log "Lane #${laneNumber}: Fallback machine name '$MachineName'" "yellow"
+		}
+		
 		$laneFolderName = "XF${StoreNumber}${laneNumber}"
 		$laneFolderPath = Join-Path -Path $OfficePath -ChildPath $laneFolderName
-		
 		if (-not (Test-Path $laneFolderPath))
 		{
 			Write_Log "`r`nLane #$laneNumber not found at path: $laneFolderPath" "yellow"
 			continue
 		}
-		
 		$laneFolder = Get-Item -Path $laneFolderPath
 		Write_Log "`r`nProcessing Lane #$laneNumber" "blue"
-		
 		$actionSummaries = @()
+		$fileCopyNeeded = @()
 		
-		# Determine Machine Name from LaneMachines
-		try
+		# --- FIX: Parse run_load rows ahead of time ---
+		$runRows =
+		$runLoadScript -split "INSERT INTO Run_Load VALUES", 2 |
+		Select-Object -Last 1 |
+		ForEach-Object { ($_ -replace "(?ms);.*", "") -split "`r?`n" } |
+		Where-Object { $_ -match "^\s*\(" }
+		
+		if ($namedPipesConnStr -and (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
 		{
-			Write_Log "Determining machine name for Lane #$laneNumber..." "blue"
-			
-			$MachineName = $script:FunctionResults['LaneMachines'][$laneNumber]
-			
-			if ($MachineName)
+			foreach ($tableJob in @(
+					@{
+						Table    = 'RUN_TAB'
+						Filename = $runLoadFilename
+						Rows	 = $runRows
+					}
+					@{
+						Table																																																																							     = 'LNK_TAB'
+						Filename																																																																							 = $lnkLoadFilename
+						Rows																																																																								 = @(
+							"('${laneNumber}','${StoreNumber}','${laneNumber}')",
+							"('DSM','${StoreNumber}','${laneNumber}')",
+							"('PAL','${StoreNumber}','${laneNumber}')",
+							"('RAL','${StoreNumber}','${laneNumber}')",
+							"('XAL','${StoreNumber}','${laneNumber}')"
+						)
+					}
+					@{
+						Table																																																															   = 'STO_TAB'
+						Filename																																																														   = $stoLoadFilename
+						Rows																																																															   = @(
+							"('${laneNumber}','Terminal ${laneNumber}',1,1,1,,,,)",
+							"('DSM','Deploy SMS',1,1,1,,,,)",
+							"('PAL','Program all',0,0,1,1,,,)",
+							"('RAL','Report all',1,0,0,,,,)",
+							"('XAL','Exchange all',0,1,0,,,,)"
+						)
+					}
+					@{
+						Table																																																								  = 'TER_TAB'
+						Filename																																																							  = $terLoadFilename
+						Rows																																																								  = @(
+							"('${StoreNumber}','${laneNumber}','Terminal ${laneNumber}','\\${MachineName}\storeman\office\XF${StoreNumber}${laneNumber}\','\\${MachineName}\storeman\office\XF${StoreNumber}901\')",
+							"('${StoreNumber}','901','Server','','')"
+						)
+					}
+				))
 			{
-				Write_Log "Lane #${laneNumber}: Retrieved machine name '$MachineName' from LaneMachines." "green"
+				$table = $tableJob.Table
+				$rows = $tableJob.Rows
+				
+				try
+				{
+					$srcConn = $script:FunctionResults['ConnectionString']
+					$srcSqlConn = New-Object System.Data.SqlClient.SqlConnection($srcConn)
+					$srcSqlConn.Open()
+					$cmd = $srcSqlConn.CreateCommand()
+					$cmd.CommandText = @"
+SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME = '$table'
+ORDER BY ORDINAL_POSITION
+"@
+					$rdr = $cmd.ExecuteReader()
+					$colDefs = @()
+					while ($rdr.Read())
+					{
+						$col = $rdr["COLUMN_NAME"]
+						$type = $rdr["DATA_TYPE"]
+						$nullText = if ($rdr["IS_NULLABLE"] -eq "NO") { "NOT NULL" }
+						else { "NULL" }
+						switch ($type)
+						{
+							'nvarchar' { $typeText = "nvarchar($($rdr["CHARACTER_MAXIMUM_LENGTH"]))" }
+							'varchar'  { $typeText = "varchar($($rdr["CHARACTER_MAXIMUM_LENGTH"]))" }
+							'char'     { $typeText = "char($($rdr["CHARACTER_MAXIMUM_LENGTH"]))" }
+							'nchar'    { $typeText = "nchar($($rdr["CHARACTER_MAXIMUM_LENGTH"]))" }
+							'decimal'  { $typeText = "decimal($($rdr["NUMERIC_PRECISION"]),$($rdr["NUMERIC_SCALE"]))" }
+							'numeric'  { $typeText = "numeric($($rdr["NUMERIC_PRECISION"]),$($rdr["NUMERIC_SCALE"]))" }
+							default    { $typeText = $type }
+						}
+						$colDefs += "[$col] $typeText $nullText"
+					}
+					$rdr.Close()
+					$srcSqlConn.Close()
+					$colDefsText = $colDefs -join ", "
+					$dropCreate = "IF OBJECT_ID(N'[$table]', N'U') IS NOT NULL DROP TABLE [$table]; CREATE TABLE [$table] ($colDefsText);"
+					Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $dropCreate -QueryTimeout 30 -ErrorAction Stop
+					Write_Log "Dropped and recreated $table on lane $laneNumber via protocol." "green"
+					
+					# Get column names for the insert
+					$schema = Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$table' ORDER BY ORDINAL_POSITION"
+					$colNames = $schema | ForEach-Object { $_.COLUMN_NAME }
+					
+					$successfulRows = 0
+					foreach ($row in $rows)
+					{
+						$cleanRow = $row.Trim().TrimEnd(',', ';')
+						if ($cleanRow.StartsWith("(") -and $cleanRow.EndsWith(")"))
+						{
+							$cleanRow = $cleanRow.Substring(1, $cleanRow.Length - 2)
+						}
+						$splitRegex = ',(?=(?:[^'']*''[^'']*'')*[^'']*$)'
+						$values = [regex]::Split($cleanRow, $splitRegex) | ForEach-Object {
+							$v = $_.Trim()
+							if ($v -eq "" -or $v -eq "' '") { "NULL" }
+							else
+							{
+								if ($v.StartsWith("'") -and $v.EndsWith("'"))
+								{
+									$unquoted = $v.Trim("'")
+									$res = $unquoted
+									$res = $res -replace "@STORE", $StoreNumber.PadLeft(3, "0")
+									$res = $res -replace "@TER", $laneNumber.PadLeft(3, "0")
+									$res = $res -replace "@USER", $env:USERNAME
+									$res = $res -replace "@USERNAME", $env:USERNAME
+									$res = $res -replace "@RUN", "C:\storeman"
+									$res = $res -replace "@OFFICE", "C:\storeman\office"
+									$now = Get-Date
+									$res = $res -replace "@TIME", $now.ToString("HHmm")
+									$res = $res -replace "@NOW", $now.ToString("HHmmss")
+									$res = $res -replace "@DSSF", $now.ToString("yyyyMMdd")
+									$res = $res -replace "@DSW-001", $now.AddDays(-1).ToString("yyyyMMdd")
+									$res = $res -replace "@DSW-008", $now.AddDays(-8).ToString("yyyyMMdd")
+									$res = $res -replace "@DSS\+001", $now.AddDays(1).ToString("yyyyMMdd")
+									$res = $res -replace "@DSS", $now.ToString("yyyyMMdd")
+									"'" + $res + "'"
+								}
+								else { $v }
+							}
+						}
+						# Fill with NULLs or trim
+						if ($values.Count -lt $colNames.Count)
+						{
+							$values += @("NULL") * ($colNames.Count - $values.Count)
+						}
+						elseif ($values.Count -gt $colNames.Count)
+						{
+							$values = $values[0 .. ($colNames.Count - 1)]
+						}
+						$sql = "INSERT INTO $table ([{0}]) VALUES ({1})" -f ($colNames -join "],["), ($values -join ", ")
+						try
+						{
+							Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $sql -QueryTimeout 30 -ErrorAction Stop
+							$successfulRows++
+						}
+						catch
+						{
+							Write_Log "$table row insert failed: $sql; Error: $_" "red"
+						}
+					}
+					if ($successfulRows -gt 0)
+					{
+						Write_Log "Inserted $successfulRows rows into $table on lane $laneNumber via Named Pipes protocol." "green"
+						$protocolWorked[$table] = $true
+						$actionSummaries += "Protocol loaded $($tableJob.Filename)"
+					}
+					else
+					{
+						Write_Log "No data inserted to $table on lane $laneNumber." "yellow"
+						$fileCopyNeeded += $tableJob.Filename
+						$protocolWorked[$table] = $false
+					}
+				}
+				catch
+				{
+					Write_Log "Protocol copy failed for $table on lane [$laneNumber]: $_" "red"
+					$fileCopyNeeded += $tableJob.Filename
+					$protocolWorked[$table] = $false
+				}
 			}
-			else
+		}
+		else
+		{
+			# No protocol possible at all, mark all as needing fallback
+			$fileCopyNeeded += $runLoadFilename, $lnkLoadFilename, $stoLoadFilename, $terLoadFilename
+		}
+		
+		# --- Fallback file copy for only failed tables (preserving original format) ---
+		$tableFileData = @{
+			$runLoadFilename = $runLoadScript
+			$lnkLoadFilename = $lnkLoadHeader + "`r`n" +
+			"('${laneNumber}','${StoreNumber}','${laneNumber}'),`r`n" +
+			"('DSM','${StoreNumber}','${laneNumber}'),`r`n" +
+			"('PAL','${StoreNumber}','${laneNumber}'),`r`n" +
+			"('RAL','${StoreNumber}','${laneNumber}'),`r`n" +
+			"('XAL','${StoreNumber}','${laneNumber}');`r`n" +
+			"`r`n" + $lnkLoadFooter.TrimStart() + "`r`n"
+			$stoLoadFilename = $stoLoadHeader + "`r`n" +
+			"('${laneNumber}','Terminal ${laneNumber}',1,1,1,,,,),`r`n" +
+			"('DSM','Deploy SMS',1,1,1,,,,),`r`n" +
+			"('PAL','Program all',0,0,1,1,,,),`r`n" +
+			"('RAL','Report all',1,0,0,,,,),`r`n" +
+			"('XAL','Exchange all',0,1,0,,,,);`r`n" +
+			"`r`n" + $stoLoadFooter.TrimStart() + "`r`n"
+			$terLoadFilename = $terLoadHeader + "`r`n" +
+			"('${StoreNumber}','${laneNumber}','Terminal ${laneNumber}','\\${MachineName}\storeman\office\XF${StoreNumber}${laneNumber}\','\\${MachineName}\storeman\office\XF${StoreNumber}901\'),`r`n" +
+			"('${StoreNumber}','901','Server','','');`r`n" +
+			"`r`n" + $terLoadFooter.TrimStart() + "`r`n"
+		}
+		foreach ($file in $fileCopyNeeded | Select-Object -Unique)
+		{
+			try
 			{
-				Write_Log "Lane #${laneNumber}: Machine name not found in LaneMachines. Defaulting to 'POS${laneNumber}'." "yellow"
-				$MachineName = "POS${laneNumber}"
+				$dest = Join-Path -Path $laneFolder.FullName -ChildPath $file
+				[System.IO.File]::WriteAllText($dest, $tableFileData[$file], $ansiPcEncoding)
+				Set-ItemProperty -Path $dest -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+				$actionSummaries += "Copied $file"
+			}
+			catch
+			{
+				$actionSummaries += "Failed to copy $file"
 			}
 		}
-		catch
-		{
-			Write_Log "Lane #${laneNumber}: Error retrieving machine name. Error: $_. Defaulting to 'POS${laneNumber}'." "red"
-			$MachineName = "POS${laneNumber}"
-		}
 		
-	<# 
-		# Process each load SQL file (currently commented out; uncomment if needed)
-		foreach ($file in $loadFiles) 
-		{
-		    Write_Log "Processing file '$($file.Name)' for Lane #$laneNumber..." "blue"
-		    
-		    # Read the original file content
-		    try 
-		    {
-		        $originalContent = Get-Content -Path $file.FullName -ErrorAction Stop
-		        Write_Log "Successfully read '$($file.Name)'." "green"
-		    }
-		    catch 
-		    {
-		        Write_Log "Failed to read '$($file.Name)'. Error: $_" "red"
-		        $actionSummaries += "Failed to read $($file.Name)"
-		        continue
-		    }
-		    
-		    # Filter content to include only records matching the current StoreNumber and LaneNumber
-		    $filteredContent = $originalContent | Where-Object { 
-		        $_ -match "^\s*\(\s*'[^']+'\s*,\s*'$StoreNumber'\s*,\s*'$laneNumber'\s*\)\s*[;,]?$"
-		    }
-		    
-		    if ($filteredContent) 
-		    {
-		        # Construct the destination path with .sql extension
-		        $destinationPath = Join-Path -Path $laneFolder.FullName -ChildPath ($file.BaseName + ".sql")
-		    
-		        try 
-		        {
-		            # Write the filtered content to the lane-specific .sql file using UTF8 without BOM
-		            [System.IO.File]::WriteAllText($destinationPath, ($filteredContent -join "`r`n"), $utf8NoBOM)
-		    
-		            # Set the archive bit on the copied file
-		            $fileItem = Get-Item -Path $destinationPath
-		            $fileItem.Attributes = $fileItem.Attributes -bor [System.IO.FileAttributes]::Archive
-		    
-		            Write_Log "Successfully copied to '$destinationPath'." "green"
-		            $actionSummaries += "Copied $($file.Name)"
-		        }
-		        catch 
-		        {
-		            Write_Log "Failed to copy '$($file.Name)' to '$destinationPath'. Error: $_" "red"
-		            $actionSummaries += "Failed to copy $($file.Name)"
-		        }
-		    }
-		    else 
-		    {
-		        Write_Log "No matching records found in '$($file.Name)' for Lane #$laneNumber." "yellow"
-		    }
-		}
-	#>
-		
-		# --------------------------------------------------------------------------------------------
-		# run_load.sql
-		# --------------------------------------------------------------------------------------------
-		try
-		{
-			# Replace line endings with CRLF before writing
-			$runLoadScriptCRLF = $runLoadScript -replace "`r?`n", "`r`n"
-			
-			$runLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $runLoadFilename
-			[System.IO.File]::WriteAllText($runLoadDestinationPath, $runLoadScriptCRLF, $ansiPcEncoding)
-			
-			Set-ItemProperty -Path $runLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			$actionSummaries += "Copied run_load.sql"
-		}
-		catch
-		{
-			$actionSummaries += "Failed to copy run_load.sql"
-		}
-		
-		# --------------------------------------------------------------------------------------------
-		# lnk_load.sql
-		# --------------------------------------------------------------------------------------------
-		try
-		{
-			$lnkLoadInsertStatements = @(
-				"('${laneNumber}','${StoreNumber}','${laneNumber}'),",
-				"('DSM','${StoreNumber}','${laneNumber}'),",
-				"('PAL','${StoreNumber}','${laneNumber}'),",
-				"('RAL','${StoreNumber}','${laneNumber}'),",
-				"('XAL','${StoreNumber}','${laneNumber}');"
-			)
-			
-			$completeLnkLoadScript = $lnkLoadHeader + "`r`n" + ($lnkLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $lnkLoadFooter.TrimStart() + "`r`n"
-			
-			# Replace line endings with CRLF before writing
-			$completeLnkLoadScriptCRLF = $completeLnkLoadScript -replace "`r?`n", "`r`n"
-			
-			$lnkLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $lnkLoadFilename
-			[System.IO.File]::WriteAllText($lnkLoadDestinationPath, $completeLnkLoadScriptCRLF, $ansiPcEncoding)
-			
-			Set-ItemProperty -Path $lnkLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			$actionSummaries += "Copied lnk_load.sql"
-		}
-		catch
-		{
-			$actionSummaries += "Failed to copy lnk_load.sql"
-		}
-		
-		# --------------------------------------------------------------------------------------------
-		# sto_load.sql
-		# --------------------------------------------------------------------------------------------
-		try
-		{
-			$stoLoadInsertStatements = @(
-				"('${laneNumber}','Terminal ${laneNumber}',1,1,1,,,,),",
-				"('DSM','Deploy SMS',1,1,1,,,,),",
-				"('PAL','Program all',0,0,1,1,,,),",
-				"('RAL','Report all',1,0,0,,,,),",
-				"('XAL','Exchange all',0,1,0,,,,);"
-			)
-			
-			$completeStoLoadScript = $stoLoadHeader + "`r`n" + ($stoLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $stoLoadFooter.TrimStart() + "`r`n"
-			
-			# Replace line endings with CRLF before writing
-			$completeStoLoadScriptCRLF = $completeStoLoadScript -replace "`r?`n", "`r`n"
-			
-			$stoLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $stoLoadFilename
-			[System.IO.File]::WriteAllText($stoLoadDestinationPath, $completeStoLoadScriptCRLF, $ansiPcEncoding)
-			
-			Set-ItemProperty -Path $stoLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			$actionSummaries += "Copied sto_load.sql"
-		}
-		catch
-		{
-			$actionSummaries += "Failed to copy sto_load.sql"
-		}
-		
-		# --------------------------------------------------------------------------------------------
-		# ter_load.sql
-		# --------------------------------------------------------------------------------------------
-		try
-		{
-			$terLoadInsertStatements = @(
-				"('${StoreNumber}','${laneNumber}','Terminal ${laneNumber}','\\${MachineName}\storeman\office\XF${StoreNumber}${laneNumber}\','\\${MachineName}\storeman\office\XF${StoreNumber}901\'),",
-				"('${StoreNumber}','901','Server','','');"
-			)
-			
-			$completeTerLoadScript = $terLoadHeader + "`r`n" + ($terLoadInsertStatements -join "`r`n") + "`r`n`r`n" + $terLoadFooter.TrimStart() + "`r`n"
-			
-			# Replace line endings with CRLF before writing
-			$completeTerLoadScriptCRLF = $completeTerLoadScript -replace "`r?`n", "`r`n"
-			
-			$terLoadDestinationPath = Join-Path -Path $laneFolder.FullName -ChildPath $terLoadFilename
-			[System.IO.File]::WriteAllText($terLoadDestinationPath, $completeTerLoadScriptCRLF, $ansiPcEncoding)
-			
-			Set-ItemProperty -Path $terLoadDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-			$actionSummaries += "Copied ter_load.sql"
-		}
-		catch
-		{
-			$actionSummaries += "Failed to copy ter_load.sql"
-		}
-		
-		# Summarize
 		$summaryMessage = "Lane ${laneNumber} (Machine: ${MachineName}): " + ($actionSummaries -join "; ")
 		Write_Log $summaryMessage "green"
-		
-		# Mark lane as processed
 		if (-not ($script:ProcessedLanes -contains $laneNumber))
 		{
 			$script:ProcessedLanes += $laneNumber
@@ -4359,8 +4383,7 @@ DROP TABLE Ter_Load;
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Allows a user to select a subset of tables (from Get_Table_Aliases) to extract from SQL Server
-#   and copy to the specified lanes or hosts. Similar to Pump_All_Items but restricted to a user-chosen
-#   list of tables.
+#   and copy to the specified lanes or hosts. Will try direct SQL protocol first; falls back to file copy.
 # ===================================================================================================
 
 function Pump_Tables
@@ -4394,14 +4417,12 @@ function Pump_Tables
 	{
 		$processAllLanes = $true
 	}
-	
 	# If "All Lanes" is selected, attempt to retrieve LaneContents
 	if ($processAllLanes)
 	{
 		try
 		{
 			$LaneContents = $script:FunctionResults['LaneContents']
-			
 			if ($LaneContents -and $LaneContents.Count -gt 0)
 			{
 				$Lanes = $LaneContents
@@ -4431,7 +4452,6 @@ function Pump_Tables
 		Write_Log "Alias data not found. Ensure Get_Table_Aliases has been run." "red"
 		return
 	}
-	
 	if ($aliasResults.Count -eq 0)
 	{
 		Write_Log "No tables found to process. Exiting Pump_Tables." "red"
@@ -4446,9 +4466,7 @@ function Pump_Tables
 		return
 	}
 	
-	# --------------------------------------------------------------------------------------------
-	# Get the SQL ConnectionString from script-scoped results
-	# --------------------------------------------------------------------------------------------
+	# Get main connection string (source DB)
 	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
 	{
 		Write_Log "Connection string not found. Cannot proceed with Pump_Tables." "red"
@@ -4456,15 +4474,15 @@ function Pump_Tables
 	}
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	
-	# Open SQL connection
-	$sqlConnection = New-Object System.Data.SqlClient.SqlConnection
-	$sqlConnection.ConnectionString = $ConnectionString
-	$sqlConnection.Open()
+	# Open SQL connection to source DB
+	$srcSqlConnection = New-Object System.Data.SqlClient.SqlConnection
+	$srcSqlConnection.ConnectionString = $ConnectionString
+	$srcSqlConnection.Open()
 	
-	# Prepare tracking
-	$generatedFiles = @()
-	$copiedTables = @()
-	$skippedTables = @()
+	# Prepare tracking for file fallback
+	$ProcessedLanes = @()
+	$protocolLanes = @()
+	$fileCopyLanes = @()
 	
 	# Filter out only the alias entries that match the user's selection
 	$filteredAliasEntries = $aliasResults | Where-Object {
@@ -4472,100 +4490,216 @@ function Pump_Tables
 	}
 	
 	# --------------------------------------------------------------------------------------------
-	# Process each user-selected table
+	# Process each lane
 	# --------------------------------------------------------------------------------------------
-	foreach ($aliasEntry in $filteredAliasEntries)
+	foreach ($lane in $Lanes)
 	{
-		$table = $aliasEntry.Table # e.g. "XYZ_TAB"
-		$tableAlias = $aliasEntry.Alias # e.g. "XYZ"
-		
-		if (-not $table -or -not $tableAlias)
+		# Always get latest lane info for this lane
+		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $lane
+		if (-not $laneInfo)
 		{
-			Write_Log "Invalid table or alias: $($aliasEntry | ConvertTo-Json)" "yellow"
+			Write_Log "Could not get DB info for lane $lane. Skipping." "yellow"
 			continue
 		}
+		$machineName = $laneInfo['MachineName']
+		$connString = $laneInfo['ConnectionString']
+		$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
+		$tcpConnStr = $laneInfo['TcpConnStr']
 		
-		# Check row count
-		$dataCheckQuery = "SELECT COUNT(*) FROM [$table]"
-		$cmdCheck = $sqlConnection.CreateCommand()
-		$cmdCheck.CommandText = $dataCheckQuery
+		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${lane}"
 		
+		$protocolWorked = $false
+		$laneSqlConn = $null
+		$protocolType = ""
 		try
 		{
-			$rowCount = $cmdCheck.ExecuteScalar()
-		}
-		catch
-		{
-			Write_Log "Error checking row count for '$table': $_" "red"
-			continue
-		}
-		
-		# Skip tables with zero rows
-		if ($rowCount -eq 0)
-		{
-			$skippedTables += $table
-			continue
-		}
-		
-		Write_Log "Processing table '$table'..." "blue"
-		
-		# Remove "_TAB" suffix for the base name
-		$baseTable = $table -replace '_TAB$', ''
-		
-		# File name for the extracted data
-		$sqlFileName = "${baseTable}_Load.sql"
-		$localTempPath = Join-Path $env:TEMP $sqlFileName
-		
-		# Check for a recent file in TEMP (less than 1 hour old)
-		$useExistingFile = $false
-		if (Test-Path $localTempPath)
-		{
-			$fileInfo = Get-Item $localTempPath
-			$fileAge = (Get-Date) - $fileInfo.LastWriteTime
-			if ($fileAge.TotalHours -le 1)
+			# Try Named Pipes FIRST
+			try
 			{
-				Write_Log "Recent SQL file found for '$table' in %TEMP%. Using existing file." "green"
-				$useExistingFile = $true
+				$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $namedPipesConnStr
+				$laneSqlConn.Open()
+				$protocolType = "Named Pipes"
+			}
+			catch
+			{
+				Write_Log "Named Pipes connection failed for $machineName. Trying TCP..." "yellow"
+				try
+				{
+					$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $tcpConnStr
+					$laneSqlConn.Open()
+					$protocolType = "TCP"
+				}
+				catch
+				{
+					Write_Log "TCP connection also failed for $machineName." "yellow"
+				}
+			}
+			
+			if ($laneSqlConn -and $laneSqlConn.State -eq 'Open')
+			{
+				Write_Log "`r`nCopying data to Lane $lane ($machineName) via SQL protocol [$protocolType]..." "blue"
+				foreach ($aliasEntry in $filteredAliasEntries)
+				{
+					$table = $aliasEntry.Table
+					Write_Log "Pumping table '$table' to lane $lane via SQL..." "blue"
+					try
+					{
+						# Build CREATE TABLE from source schema
+						$schemaCmd = $srcSqlConnection.CreateCommand()
+						$schemaCmd.CommandText = @"
+SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME = '$table'
+ORDER BY ORDINAL_POSITION
+"@
+						$reader = $schemaCmd.ExecuteReader()
+						$colDefs = @()
+						while ($reader.Read())
+						{
+							$colName = $reader["COLUMN_NAME"]
+							$dataType = $reader["DATA_TYPE"]
+							$isNullable = $reader["IS_NULLABLE"]
+							$nullText = if ($isNullable -eq "NO") { "NOT NULL" }
+							else { "NULL" }
+							switch ($dataType)
+							{
+								'nvarchar' { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "nvarchar($length)" }
+								'varchar'  { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "varchar($length)" }
+								'char'     { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "char($length)" }
+								'nchar'    { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "nchar($length)" }
+								'decimal'  { $prec = $reader["NUMERIC_PRECISION"]; $scale = $reader["NUMERIC_SCALE"]; $typeText = "decimal($prec,$scale)" }
+								'numeric'  { $prec = $reader["NUMERIC_PRECISION"]; $scale = $reader["NUMERIC_SCALE"]; $typeText = "numeric($prec,$scale)" }
+								default    { $typeText = $dataType }
+							}
+							$colDefs += "[$colName] $typeText $nullText"
+						}
+						$reader.Close()
+						$colDefsText = $colDefs -join ", "
+						$createTableSQL = "IF OBJECT_ID(N'[$table]', N'U') IS NOT NULL DROP TABLE [$table]; CREATE TABLE [$table] ($colDefsText);"
+						
+						# Drop/recreate table structure
+						$cmdCreate = $laneSqlConn.CreateCommand()
+						$cmdCreate.CommandText = $createTableSQL
+						$cmdCreate.ExecuteNonQuery() | Out-Null
+						Write_Log "Recreated table structure for '$table' on $machineName" "green"
+						
+						# Select data from source
+						$dataQuery = "SELECT * FROM [$table]"
+						$cmdSource = $srcSqlConnection.CreateCommand()
+						$cmdSource.CommandText = $dataQuery
+						$readerSource = $cmdSource.ExecuteReader()
+						$schemaTable = $readerSource.GetSchemaTable()
+						$colNames = $schemaTable | ForEach-Object { $_["ColumnName"] }
+						$insertPrefix = "INSERT INTO [$table] ([$($colNames -join '],[')]) VALUES "
+						$rowCountCopied = 0
+						while ($readerSource.Read())
+						{
+							$values = @()
+							foreach ($col in $colNames)
+							{
+								$val = $readerSource[$col]
+								if ($val -eq $null -or $val -is [System.DBNull])
+								{
+									$values += "NULL"
+								}
+								elseif ($val -is [string])
+								{
+									$escaped = $val.Replace("'", "''")
+									$values += "'$escaped'"
+								}
+								elseif ($val -is [datetime])
+								{
+									$values += "'" + $val.ToString("yyyy-MM-dd HH:mm:ss") + "'"
+								}
+								else
+								{
+									$values += $val.ToString()
+								}
+							}
+							$insertCmd = $laneSqlConn.CreateCommand()
+							$insertCmd.CommandText = $insertPrefix + "(" + ($values -join ",") + ")"
+							$insertCmd.ExecuteNonQuery() | Out-Null
+							$rowCountCopied++
+						}
+						$readerSource.Close()
+						Write_Log "Copied $rowCountCopied rows to $table on lane $lane (SQL protocol)." "green"
+					}
+					catch
+					{
+						Write_Log "Failed to copy table '$table' to lane $lane via SQL: $_" "red"
+					}
+				}
+				$laneSqlConn.Close()
+				$protocolWorked = $true
+				$protocolLanes += $lane
+				$ProcessedLanes += $lane
 			}
 			else
 			{
-				Write_Log "SQL file for '$table' is older than 1 hour. Regenerating." "yellow"
+				Write_Log "Could not open protocol connection to lane $lane ($machineName). Will attempt file fallback." "yellow"
+				$protocolWorked = $false
 			}
 		}
-		
-		# ----------------------------------------------------------------------------------------
-		# Generate or reuse the _Load.sql file
-		# ----------------------------------------------------------------------------------------
-		if (-not $useExistingFile)
+		catch
 		{
-			try
+			Write_Log "SQL protocol copy failed for lane [$lane]: $_" "yellow"
+			$protocolWorked = $false
+		}
+		
+		# --------------------------------------------------------------------------------------------
+		# File fallback (only if protocol copy failed)
+		# --------------------------------------------------------------------------------------------
+		if (-not $protocolWorked)
+		{
+			$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${lane}"
+			if (Test-Path $LaneLocalPath)
 			{
-				# Create a StreamWriter in Windows-1252 encoding, CRLF endings
-				$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $ansiPcEncoding)
-				$streamWriter.NewLine = "`r`n" # Force CRLF
-				
-				# 1) Gather column data types
-				$columnDataTypesQuery = @"
+				Write_Log "`r`nCopying via FILE fallback for Lane #$lane..." "blue"
+				foreach ($aliasEntry in $filteredAliasEntries)
+				{
+					$table = $aliasEntry.Table
+					$baseTable = $table -replace '_TAB$', ''
+					$sqlFileName = "${baseTable}_Load.sql"
+					$localTempPath = Join-Path $env:TEMP $sqlFileName
+					
+					# Generate/reuse file as before
+					$useExistingFile = $false
+					if (Test-Path $localTempPath)
+					{
+						$fileInfo = Get-Item $localTempPath
+						$fileAge = (Get-Date) - $fileInfo.LastWriteTime
+						if ($fileAge.TotalHours -le 1)
+						{
+							$useExistingFile = $true
+						}
+					}
+					if (-not $useExistingFile)
+					{
+						try
+						{
+							$ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
+							$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $ansiPcEncoding)
+							$streamWriter.NewLine = "`r`n"
+							# Get columns
+							$columnDataTypesQuery = @"
 SELECT COLUMN_NAME, DATA_TYPE
 FROM INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_NAME = '$table'
 ORDER BY ORDINAL_POSITION
 "@
-				$cmdColumnTypes = $sqlConnection.CreateCommand()
-				$cmdColumnTypes.CommandText = $columnDataTypesQuery
-				$readerColumnTypes = $cmdColumnTypes.ExecuteReader()
-				
-				$columnDataTypes = [ordered]@{ }
-				while ($readerColumnTypes.Read())
-				{
-					$colName = $readerColumnTypes["COLUMN_NAME"]
-					$dataType = $readerColumnTypes["DATA_TYPE"]
-					$columnDataTypes[$colName] = $dataType
-				}
-				$readerColumnTypes.Close()
-				
-				# 2) Retrieve primary key columns
-				$pkQuery = @"
+							$cmdColumnTypes = $srcSqlConnection.CreateCommand()
+							$cmdColumnTypes.CommandText = $columnDataTypesQuery
+							$readerColumnTypes = $cmdColumnTypes.ExecuteReader()
+							$columnDataTypes = [ordered]@{ }
+							while ($readerColumnTypes.Read())
+							{
+								$colName = $readerColumnTypes["COLUMN_NAME"]
+								$dataType = $readerColumnTypes["DATA_TYPE"]
+								$columnDataTypes[$colName] = $dataType
+							}
+							$readerColumnTypes.Close()
+							# PK
+							$pkQuery = @"
 SELECT c.COLUMN_NAME
 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
 JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c
@@ -4574,140 +4708,119 @@ JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c
 WHERE tc.TABLE_NAME = '$table' AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
 ORDER BY c.ORDINAL_POSITION
 "@
-				$cmdPK = $sqlConnection.CreateCommand()
-				$cmdPK.CommandText = $pkQuery
-				$readerPK = $cmdPK.ExecuteReader()
-				$pkColumns = @()
-				while ($readerPK.Read())
-				{
-					$pkColumns += $readerPK["COLUMN_NAME"]
-				}
-				$readerPK.Close()
-				
-				# If no PK, default to first column
-				if ($pkColumns.Count -eq 0)
-				{
-					$primaryKeyColumns = @()
-					$cmdFirstColumn = $sqlConnection.CreateCommand()
-					$cmdFirstColumn.CommandText = "SELECT TOP 1 * FROM [$table]"
-					$readerFirstColumn = $cmdFirstColumn.ExecuteReader()
-					
-					if ($readerFirstColumn.Read())
-					{
-						$primaryKeyColumns = @($readerFirstColumn.GetName(0))
-					}
-					$readerFirstColumn.Close()
-				}
-				else
-				{
-					$primaryKeyColumns = $pkColumns
-				}
-				
-				# Build the key string for @UPDATE_BATCH
-				$keyString = ($primaryKeyColumns | ForEach-Object { "$_=:$_" }) -join " AND "
-				
-				# 3) Generate @CREATE, CREATE VIEW, and INSERT lines
-				$viewName = $baseTable.Substring(0, 1).ToUpper() + $baseTable.Substring(1).ToLower() + '_Load'
-				$columnList = ($columnDataTypes.Keys) -join ','
-				
-				$header = @"
+							$cmdPK = $srcSqlConnection.CreateCommand()
+							$cmdPK.CommandText = $pkQuery
+							$readerPK = $cmdPK.ExecuteReader()
+							$pkColumns = @()
+							while ($readerPK.Read())
+							{
+								$pkColumns += $readerPK["COLUMN_NAME"]
+							}
+							$readerPK.Close()
+							if ($pkColumns.Count -eq 0)
+							{
+								$primaryKeyColumns = @()
+								$cmdFirstColumn = $srcSqlConnection.CreateCommand()
+								$cmdFirstColumn.CommandText = "SELECT TOP 1 * FROM [$table]"
+								$readerFirstColumn = $cmdFirstColumn.ExecuteReader()
+								if ($readerFirstColumn.Read())
+								{
+									$primaryKeyColumns = @($readerFirstColumn.GetName(0))
+								}
+								$readerFirstColumn.Close()
+							}
+							else
+							{
+								$primaryKeyColumns = $pkColumns
+							}
+							$keyString = ($primaryKeyColumns | ForEach-Object { "$_=:$_" }) -join " AND "
+							$viewName = $baseTable.Substring(0, 1).ToUpper() + $baseTable.Substring(1).ToLower() + '_Load'
+							$columnList = ($columnDataTypes.Keys) -join ','
+							$header = @"
 @WIZRPL(DBASE_TIMEOUT=E);
 
 CREATE VIEW $viewName AS SELECT $columnList FROM $table;
 
 INSERT INTO $viewName VALUES
 "@
-				# Normalize line endings to CRLF
-				$header = $header -replace "(\r\n|\n|\r)", "`r`n"
-				$streamWriter.WriteLine($header.TrimEnd())
-				
-				# 4) Fetch data from the table
-				$dataQuery = "SELECT * FROM [$table]"
-				$cmdData = $sqlConnection.CreateCommand()
-				$cmdData.CommandText = $dataQuery
-				$readerData = $cmdData.ExecuteReader()
-				
-				$firstRow = $true
-				while ($readerData.Read())
-				{
-					if ($firstRow)
-					{
-						$firstRow = $false
-					}
-					else
-					{
-						$streamWriter.WriteLine(",")
-					}
-					
-					$values = @()
-					foreach ($col in $columnDataTypes.Keys)
-					{
-						$val = $readerData[$col]
-						$dataType = $columnDataTypes[$col]
-						
-						if ($val -eq $null -or $val -is [System.DBNull])
-						{
-							$values += ""
-							continue
-						}
-						
-						switch -Wildcard ($dataType)
-						{
-							{ $_ -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext') } {
-								$escapedVal = $val.ToString().Replace("'", "''")
-								$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
-								$values += "'$escapedVal'"
-								break
-							}
-							{ $_ -in @('datetime', 'smalldatetime', 'date', 'datetime2') } {
-								$dayOfYear = $val.DayOfYear.ToString("D3")
-								$formattedDate = "'{0}{1} {2}'" -f $val.Year, $dayOfYear, $val.ToString("HH:mm:ss")
-								$values += $formattedDate
-								break
-							}
-							{ $_ -eq 'bit' } {
-								$bitVal = if ($val) { "1" }
-								else { "0" }
-								$values += $bitVal
-								break
-							}
-							{ $_ -in @('decimal', 'numeric', 'float', 'real', 'money', 'smallmoney') } {
-								if ([math]::Floor($val) -eq $val)
+							$header = $header -replace "(\r\n|\n|\r)", "`r`n"
+							$streamWriter.WriteLine($header.TrimEnd())
+							$dataQuery = "SELECT * FROM [$table]"
+							$cmdData = $srcSqlConnection.CreateCommand()
+							$cmdData.CommandText = $dataQuery
+							$readerData = $cmdData.ExecuteReader()
+							$firstRow = $true
+							while ($readerData.Read())
+							{
+								if ($firstRow)
 								{
-									$values += $val.ToString()
+									$firstRow = $false
 								}
 								else
 								{
-									$values += $val.ToString("0.00")
+									$streamWriter.WriteLine(",")
 								}
-								break
+								$values = @()
+								foreach ($col in $columnDataTypes.Keys)
+								{
+									$val = $readerData[$col]
+									$dataType = $columnDataTypes[$col]
+									if ($val -eq $null -or $val -is [System.DBNull])
+									{
+										$values += ""
+										continue
+									}
+									switch -Wildcard ($dataType)
+									{
+										{ $_ -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext') } {
+											$escapedVal = $val.ToString().Replace("'", "''")
+											$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+											$values += "'$escapedVal'"
+											break
+										}
+										{ $_ -in @('datetime', 'smalldatetime', 'date', 'datetime2') } {
+											$dayOfYear = $val.DayOfYear.ToString("D3")
+											$formattedDate = "'{0}{1} {2}'" -f $val.Year, $dayOfYear, $val.ToString("HH:mm:ss")
+											$values += $formattedDate
+											break
+										}
+										{ $_ -eq 'bit' } {
+											$bitVal = if ($val) { "1" }
+											else { "0" }
+											$values += $bitVal
+											break
+										}
+										{ $_ -in @('decimal', 'numeric', 'float', 'real', 'money', 'smallmoney') } {
+											if ([math]::Floor($val) -eq $val)
+											{
+												$values += $val.ToString()
+											}
+											else
+											{
+												$values += $val.ToString("0.00")
+											}
+											break
+										}
+										{ $_ -in @('tinyint', 'smallint', 'int', 'bigint') } {
+											$values += $val.ToString()
+											break
+										}
+										default {
+											$escapedVal = $val.ToString().Replace("'", "''")
+											$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+											$values += "'$escapedVal'"
+											break
+										}
+									}
+								}
+								$insertStatement = "(" + ($values -join ",") + ")"
+								$insertStatement = $insertStatement -replace "(\r\n|\n|\r)", " "
+								$streamWriter.Write($insertStatement)
 							}
-							{ $_ -in @('tinyint', 'smallint', 'int', 'bigint') } {
-								$values += $val.ToString()
-								break
-							}
-							default {
-								# Fallback to string
-								$escapedVal = $val.ToString().Replace("'", "''")
-								$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
-								$values += "'$escapedVal'"
-								break
-							}
-						}
-					}
-					
-					$insertStatement = "(" + ($values -join ",") + ")"
-					$insertStatement = $insertStatement -replace "(\r\n|\n|\r)", " "
-					$streamWriter.Write($insertStatement)
-				}
-				$readerData.Close()
-				
-				# End the INSERT
-				$streamWriter.WriteLine(";")
-				$streamWriter.WriteLine()
-				
-				# Footer
-				$footer = @"
+							$readerData.Close()
+							$streamWriter.WriteLine(";")
+							$streamWriter.WriteLine()
+							$footer = @"
 @UPDATE_BATCH(JOB=ADDRPL,TAR=$table,
 KEY=$keyString,
 SRC=SELECT * FROM $viewName);
@@ -4718,94 +4831,58 @@ DROP TABLE $viewName;
 
 @WIZCLR(DBASE_TIMEOUT);
 "@
-				$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
-				$streamWriter.WriteLine($footer.TrimEnd())
-				$streamWriter.WriteLine()
-				
-				$streamWriter.Flush()
-				$streamWriter.Close()
-				$streamWriter.Dispose()
-				
-				$generatedFiles += $localTempPath
-				$copiedTables += $table
-			}
-			catch
-			{
-				Write_Log "Error generating SQL for table '$table': $_" "red"
-				continue
-			}
-		}
-		else
-		{
-			# Reuse existing file
-			$generatedFiles += $localTempPath
-			$copiedTables += $table
-		}
-	} # end foreach table
-	
-	$sqlConnection.Close()
-	
-	# Summaries
-	if ($copiedTables.Count -gt 0)
-	{
-		Write_Log "Successfully generated _Load.sql files for tables: $($copiedTables -join ', ')" "green"
-	}
-	if ($skippedTables.Count -gt 0)
-	{
-		Write_Log "Tables with no data (skipped): $($skippedTables -join ', ')" "yellow"
-	}
-	
-	# --------------------------------------------------------------------------------------------
-	# Copy the generated .sql files to each selected lane
-	# --------------------------------------------------------------------------------------------
-	Write_Log "`r`nDetermining selected lanes...`r`n" "magenta"
-	$ProcessedLanes = @()
-	foreach ($lane in $Lanes)
-	{
-		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${lane}"
-		
-		if (Test-Path $LaneLocalPath)
-		{
-			Write_Log "Copying _Load.sql files to Lane #$lane..." "blue"
-			try
-			{
-				foreach ($filePath in $generatedFiles)
-				{
-					$fileName = [System.IO.Path]::GetFileName($filePath)
-					$destinationPath = Join-Path $LaneLocalPath $fileName
-					
-					# Copy the file
-					Copy-Item -Path $filePath -Destination $destinationPath -Force -ErrorAction Stop
-					
-					# **Clear the Archive attribute on the copied file**
-					$fileItem = Get-Item $destinationPath
-					if ($fileItem.Attributes -band [System.IO.FileAttributes]::Archive)
-					{
-						$fileItem.Attributes -= [System.IO.FileAttributes]::Archive
-						Write_Log "Cleared Archive attribute for '$fileName' in Lane #$lane." "green"
+							$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
+							$streamWriter.WriteLine($footer.TrimEnd())
+							$streamWriter.WriteLine()
+							$streamWriter.Flush()
+							$streamWriter.Close()
+							$streamWriter.Dispose()
+						}
+						catch
+						{
+							Write_Log "Error generating SQL for table '$table' (file fallback): $_" "red"
+							continue
+						}
 					}
-					
+					# Copy the file to the lane's folder
+					try
+					{
+						$destinationPath = Join-Path $LaneLocalPath $sqlFileName
+						Copy-Item -Path $localTempPath -Destination $destinationPath -Force -ErrorAction Stop
+						$fileItem = Get-Item $destinationPath
+						if ($fileItem.Attributes -band [System.IO.FileAttributes]::Archive)
+						{
+							$fileItem.Attributes -= [System.IO.FileAttributes]::Archive
+						}
+						Write_Log "Copied $sqlFileName to Lane #$lane (file fallback)." "green"
+						$fileCopyLanes += $lane
+						$ProcessedLanes += $lane
+					}
+					catch
+					{
+						Write_Log "Error copying $sqlFileName to Lane #[$lane]: $_" "red"
+					}
 				}
-				Write_Log "Successfully copied all generated _Load.sql files to Lane #$lane." "green"
-				$ProcessedLanes += $lane
 			}
-			catch
+			else
 			{
-				Write_Log "Error copying files to Lane #${lane}: $_" "red"
+				Write_Log "Lane #$lane not found at path: $LaneLocalPath (file fallback failed)" "yellow"
 			}
-		}
-		else
-		{
-			Write_Log "Lane #$lane not found at path: $LaneLocalPath" "yellow"
 		}
 	}
 	
-	Write_Log "`r`nTotal Lane folders processed: $($ProcessedLanes.Count)" "green"
-	if ($ProcessedLanes.Count -gt 0)
+	$srcSqlConnection.Close()
+	
+	Write_Log "`r`nTotal Lanes processed: $($ProcessedLanes | Select-Object -Unique | Measure-Object | % Count)" "green"
+	if ($protocolLanes.Count -gt 0)
 	{
-		Write_Log "Processed Lanes: $($ProcessedLanes -join ', ')" "green"
-		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
+		Write_Log "Lanes processed via SQL protocol: $($protocolLanes -join ', ')" "green"
 	}
+	if ($fileCopyLanes.Count -gt 0)
+	{
+		Write_Log "Lanes processed via FILE fallback: $($fileCopyLanes -join ', ')" "yellow"
+	}
+	Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -4947,128 +5024,139 @@ function Close_Open_Transactions
 	
 	try
 	{
-		# Get the current time
 		$currentTime = Get-Date
-		
-		# Get the list of files matching the pattern in the XE folder that are not older than 30 days
 		$files = Get-ChildItem -Path $XEFolderPath -Filter "S*.???" | Where-Object {
 			($currentTime - $_.LastWriteTime).TotalDays -le 30
 		}
 		
 		if ($files -and $files.Count -gt 0)
 		{
-			# We have files, attempt to process them
 			foreach ($file in $files)
 			{
 				try
 				{
-					# Extract lane number from filename based on the pattern S*."???"
 					if ($file.Name -match '^S.*\.(\d{3})$')
 					{
 						$LaneNumber = $Matches[1]
 					}
 					else
 					{
-						continue # Skip to the next file if pattern doesn't match
+						continue
 					}
-					
-					# Read the content of the file
 					$content = Get-Content -Path $file.FullName
-					
-					# Parse the content
 					$fromLine = $content | Where-Object { $_ -like 'From:*' }
 					$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
 					$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
 					$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
 					
-					# Extract store number and lane number from the From line
 					if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
 					{
 						$fileStoreNumber = $Matches[1]
 						$fileLaneNumber = $Matches[2]
-						
-						# Check if the store number matches
 						if ($fileStoreNumber -eq $StoreNumber -and $fileLaneNumber -eq $LaneNumber)
 						{
-							# Check the Subject line
 							if ($subjectLine -match 'Subject:\s*(.*)')
 							{
 								$subject = $Matches[1].Trim()
 								if ($subject -eq 'Health')
 								{
-									# Check the MSG line
 									if ($msgLine -match 'MSG:\s*(.*)')
 									{
 										$message = $Matches[1].Trim()
 										if ($message -eq 'This application is not running.')
 										{
-											# Extract the transaction number from the Last recorded status line
 											if ($lastRecordedStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
 											{
 												$transactionNumber = $Matches[1]
 												
-												# Path to the automatic Close_Transaction.sqi content
-												$CloseTransactionAuto = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber)"
-												
-												# Define the path to the lane directory
-												$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
-												
-												if (Test-Path $LaneDirectory)
+												# Try to close transaction directly on lane using protocol
+												$protocolWorked = $false
+												$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
+												if ($laneInfo)
 												{
-													# Define the path to the Close_Transaction.sqi file in the lane directory
-													$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
-													
-													# Write the content to the file
-													Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionAuto -Encoding ASCII
-													
-													# Remove the Archive attribute from the file
-													Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-													
-													# Log the event
-													$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Closed transaction $transactionNumber on lane $LaneNumber"
-													Add-Content -Path $LogFilePath -Value $logMessage
-													
-													# Delete the error file from the XE folder
-													Remove-Item -Path $file.FullName -Force
-													
-													Write_Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
-													$MatchedTransactions = $true
-													
-													# Send restart command 3 seconds after deployment
-													Start-Sleep -Seconds 3
-													
-													# Retrieve updated node information to get machine mapping
-													$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-													if ($nodes)
+													$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
+													$tcpConnStr = $laneInfo['TcpConnStr']
+													$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber"
+													if (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue)
 													{
-														$machineName = $nodes.LaneMachines[$LaneNumber]
-														if ($machineName)
+														try
 														{
-															$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
-															$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
-															$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
-															if ($result)
+															Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
+															$protocolWorked = $true
+															Write_Log "Closed transaction $transactionNumber via SQL protocol (Named Pipes) on lane $LaneNumber." "green"
+														}
+														catch
+														{
+															Write_Log "Named Pipes failed for lane $LaneNumber, trying TCP..." "yellow"
+															try
 															{
-																Write_Log -Message "Restart command sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after deployment." "green"
+																Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
+																$protocolWorked = $true
+																Write_Log "Closed transaction $transactionNumber via SQL protocol (TCP) on lane $LaneNumber." "green"
 															}
-															else
+															catch
 															{
-																Write_Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
+																Write_Log "SQL protocol also failed for lane $LaneNumber. Falling back to file method." "red"
+																$protocolWorked = $false
 															}
+														}
+													}
+												}
+												
+												if (-not $protocolWorked)
+												{
+													# Protocol failed: fallback to file method
+													$CloseTransactionAuto = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber)"
+													$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
+													if (Test-Path $LaneDirectory)
+													{
+														$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
+														Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionAuto -Encoding ASCII
+														Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+														Write_Log -Message "Wrote Close_Transaction.sqi file for lane $LaneNumber (fallback)." "yellow"
+													}
+													else
+													{
+														Write_Log -Message "Lane directory $LaneDirectory not found (file fallback)." "yellow"
+													}
+												}
+												
+												# Log the event (protocol or file)
+												$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Closed transaction $transactionNumber on lane $LaneNumber"
+												Add-Content -Path $LogFilePath -Value $logMessage
+												
+												Remove-Item -Path $file.FullName -Force
+												Write_Log -Message "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
+												$MatchedTransactions = $true
+												
+												# Send restart command after deployment
+												Start-Sleep -Seconds 3
+												$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
+												if ($nodes)
+												{
+													$machineName = $nodes.LaneMachines[$LaneNumber]
+													if ($machineName)
+													{
+														$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
+														$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+														$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+														if ($result)
+														{
+															Write_Log -Message "Restart command sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after deployment." "green"
 														}
 														else
 														{
-															Write_Log -Message "No machine found for lane $LaneNumber. Restart command not sent." "yellow"
+															Write_Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
 														}
 													}
 													else
 													{
-														Write_Log -Message "Could not retrieve node information for store $StoreNumber. Restart command not sent." "red"
+														Write_Log -Message "No machine found for lane $LaneNumber. Restart command not sent." "yellow"
 													}
 												}
 												else
 												{
-													Write_Log -Message "Lane directory $LaneDirectory not found" "yellow"
+													Write_Log -Message "Could not retrieve node information for store $StoreNumber. Restart command not sent." "red"
 												}
 											}
 											else
@@ -5076,20 +5164,15 @@ function Close_Open_Transactions
 												Write_Log -Message "Could not extract transaction number from Last recorded status line in file $($file.Name)" "red"
 											}
 										}
-										# else MSG did not match the condition - no action needed
 									}
-									# else no MSG line found - no action needed
 								}
-								# else subject not health - no action needed
 							}
-							# else no Subject line found - no action needed
 						}
 						else
 						{
 							Write_Log -Message "Store or Lane number mismatch in file $($file.Name). File Store/Lane: $fileStoreNumber/$fileLaneNumber vs Expected Store/Lane: $StoreNumber/$LaneNumber" "yellow"
 						}
 					}
-					# else From line not matched - no action needed
 				}
 				catch
 				{
@@ -5112,74 +5195,98 @@ function Close_Open_Transactions
 				return
 			}
 			
-			# Loop through each selected lane
 			foreach ($LaneNumber in $selection.Lanes)
 			{
-				# Pad to three digits
 				$LaneNumber = $LaneNumber.PadLeft(3, '0')
-				
 				if (-not $LaneNumber)
 				{
 					Write_Log -Message "No lane number provided by the user." "red"
 					return
 				}
 				
-				# Define the path to the lane directory
-				$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
-				
-				if (Test-Path $LaneDirectory)
+				# Try direct protocol first (Named Pipes, then TCP)
+				$protocolWorked = $false
+				$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
+				if ($laneInfo)
 				{
-					# Define the path to the Close_Transaction.sqi file in the lane directory
-					$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
-					
-					# Write the content to the file
-					Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionManual -Encoding ASCII
-					
-					# Remove the Archive attribute from the file
-					Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-					
-					# Log the event
-					$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - User deployed Close_Transaction.sqi to lane $LaneNumber"
-					Add-Content -Path $LogFilePath -Value $logMessage
-					
-					Write_Log -Message "Deployed Close_Transaction.sqi to lane $LaneNumber" "green"
-					
-					# After user deploys the file, clear the folder except for files with "FATAL" in the name
-					Get-ChildItem -Path $XEFolderPath -File | Where-Object { $_.Name -notlike "*FATAL*" } | Remove-Item -Force
-					
-					# Send restart command 3 seconds after deployment by the user
-					# Start-Sleep -Seconds 3
-					$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-					if ($nodes)
+					$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
+					$tcpConnStr = $laneInfo['TcpConnStr']
+					$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE'"
+					if (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue)
 					{
-						$machineName = $nodes.LaneMachines[$LaneNumber]
-						if ($machineName)
+						try
 						{
-							$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
-							$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
-							$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
-							if ($result)
+							Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
+							$protocolWorked = $true
+							Write_Log "Closed all open transactions via SQL protocol (Named Pipes) on lane $LaneNumber." "green"
+						}
+						catch
+						{
+							Write_Log "Named Pipes failed for lane $LaneNumber, trying TCP..." "yellow"
+							try
 							{
-								Write_Log -Message "Restart All Programs sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after user deployment." "green"
+								Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
+								$protocolWorked = $true
+								Write_Log "Closed all open transactions via SQL protocol (TCP) on lane $LaneNumber." "green"
 							}
-							else
+							catch
 							{
-								Write_Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
+								Write_Log "SQL protocol also failed for lane $LaneNumber. Falling back to file method." "red"
+								$protocolWorked = $false
 							}
+						}
+					}
+				}
+				
+				if (-not $protocolWorked)
+				{
+					$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
+					if (Test-Path $LaneDirectory)
+					{
+						$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
+						Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionManual -Encoding ASCII
+						Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+						Write_Log -Message "Deployed Close_Transaction.sqi to lane $LaneNumber (fallback)." "yellow"
+					}
+					else
+					{
+						Write_Log -Message "Lane directory $LaneDirectory not found" "yellow"
+					}
+				}
+				
+				$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - User deployed Close_Transaction to lane $LaneNumber"
+				Add-Content -Path $LogFilePath -Value $logMessage
+				
+				# After user deploys the file, clear the XE folder except for files with "FATAL" in the name
+				Get-ChildItem -Path $XEFolderPath -File | Where-Object { $_.Name -notlike "*FATAL*" } | Remove-Item -Force
+				
+				# Send restart command 3 seconds after deployment by the user
+				$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
+				if ($nodes)
+				{
+					$machineName = $nodes.LaneMachines[$LaneNumber]
+					if ($machineName)
+					{
+						$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
+						$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+						$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+						if ($result)
+						{
+							Write_Log -Message "Restart All Programs sent to Machine $machineName (Store $StoreNumber, Lane $LaneNumber) after user deployment." "green"
 						}
 						else
 						{
-							Write_Log -Message "No machine found for lane $LaneNumber. Restart command not sent." "yellow"
+							Write_Log -Message "Failed to send restart command to Machine $machineName (Store $StoreNumber, Lane $LaneNumber)." "red"
 						}
 					}
 					else
 					{
-						Write_Log -Message "Could not retrieve node information for store $StoreNumber. Restart command not sent." "red"
+						Write_Log -Message "No machine found for lane $LaneNumber. Restart command not sent." "yellow"
 					}
 				}
 				else
 				{
-					Write_Log -Message "Lane directory $LaneDirectory not found" "yellow"
+					Write_Log -Message "Could not retrieve node information for store $StoreNumber. Restart command not sent." "red"
 				}
 				
 				Write_Log "Prompt deployment process completed." "yellow"
@@ -7523,10 +7630,15 @@ function Send_Restart_All_Programs
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber,
-		[array]$LaneNumbers # Optional. If supplied, skips prompts and sends to these lanes.
+		[array]$LaneNumbers, # Optional. If supplied, skips prompts and sends to these lanes.
+		[Parameter(Mandatory = $false)]
+		[switch]$Silent
 	)
 	
-	Write_Log "`r`n==================== Starting Send_Restart_All_Programs Function ====================`r`n" "blue"
+	if (-not $Silent)
+	{
+		Write_Log "`r`n==================== Starting Send_Restart_All_Programs Function ====================`r`n" "blue"
+	}
 	
 	$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 	if (-not $nodes)
@@ -7571,7 +7683,10 @@ function Send_Restart_All_Programs
 			Write_Log "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
 		}
 	}
-	Write_Log "`r`n==================== Send_Restart_All_Programs Function Completed ====================" "blue"
+	if (-not $Silent)
+	{
+		Write_Log "`r`n==================== Send_Restart_All_Programs Function Completed ====================" "blue"
+	}
 }
 
 # ===================================================================================================
@@ -8817,7 +8932,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					Write_Log "Registry path for enabling Shared Memory not found for instance $instanceName on $machine." "yellow"
 				}
 				
-				# Build service name and restart SQL service
+				# Restart SQL Service
 				$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
 				else { "MSSQL`$$instanceName" }
 				Write_Log "Restarting SQL Service $svcName on $machine..." "gray"
@@ -8825,61 +8940,13 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				Start-Sleep -Seconds 10
 				sc.exe "\\$machine" start $svcName | Out-Null
 				
-				# Verification
-				Write_Log "Verifying protocol enablement after restart..." "gray"
-				foreach ($basePath in $basePaths)
-				{
-					$regKey = $reg.OpenSubKey($basePath)
-					if ($regKey)
-					{
-						$enabledValue = $regKey.GetValue('Enabled')
-						Write_Log "TCP/IP enabled value at [$basePath]: $enabledValue" "gray"
-						$regKey.Close()
-					}
-				}
-				foreach ($npBasePath in $npBasePaths)
-				{
-					$regKey = $reg.OpenSubKey($npBasePath)
-					if ($regKey)
-					{
-						$enabledValue = $regKey.GetValue('Enabled')
-						Write_Log "Named Pipes enabled value at [$npBasePath]: $enabledValue" "gray"
-						$regKey.Close()
-					}
-				}
-				foreach ($smBasePath in $smBasePaths)
-				{
-					$regKey = $reg.OpenSubKey($smBasePath)
-					if ($regKey)
-					{
-						$enabledValue = $regKey.GetValue('Enabled')
-						Write_Log "Shared Memory enabled value at [$smBasePath]: $enabledValue" "gray"
-						$regKey.Close()
-					}
-				}
+				# Wait a moment for the lane programs to settle (3 seconds is typical)
+				Start-Sleep -Seconds 3
+				
+				# Send restart command for just this lane using your working function
+				Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers @($lane) -Silent
 			}
 			$reg.Close()
-			
-			# --- Send mailslot command to restart all programs ---
-			$mailslotAddress = "\\$machine\Mailslot\SMSStart_${StoreNumber}${lane}"
-			$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
-			if ([type]::GetType("MailslotSender"))
-			{
-				$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
-			}
-			else
-			{
-				# Optional: Add your own fallback mailslot sender here if needed
-				$result = $false
-			}
-			if ($result)
-			{
-				Write_Log "Restart command sent successfully to $machine (Store $StoreNumber, Lane $lane)." "green"
-			}
-			else
-			{
-				Write_Log "Failed to send restart command to $machine (Store $StoreNumber, Lane $lane)." "red"
-			}
 		}
 		catch
 		{
