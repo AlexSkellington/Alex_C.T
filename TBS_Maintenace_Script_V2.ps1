@@ -11910,10 +11910,9 @@ foreach ($lane in $LaneMachines.Keys)
 	$script:LaneProtocolJobs[$lane] = Start-Job -ArgumentList $machine, $lane -ScriptBlock {
 		param ($machine,
 			$lane)
-		
 		$protocol = "File"
 		
-		# Fast TCP check with TcpClient (~10-50ms)
+		# Fast TCP check with TcpClient
 		try
 		{
 			$tcpClient = New-Object System.Net.Sockets.TcpClient
@@ -11942,7 +11941,7 @@ foreach ($lane in $LaneMachines.Keys)
 	}
 }
 
-# Timer to poll jobs (PS5-compatible)
+# Live-poll table view (keeps running, shows table as long as PowerShell window is open)
 $protocolTimer = New-Object System.Windows.Forms.Timer
 $protocolTimer.Interval = 500
 $protocolTimer.add_Tick({
@@ -11956,7 +11955,8 @@ $protocolTimer.add_Tick({
 				if ($result -and $result.Lane -and $result.Protocol)
 				{
 					$script:LaneProtocols[$result.Lane.PadLeft(3, '0')] = $result.Protocol
-					$script:ProtocolResults += $result
+					$already = $script:ProtocolResults | Where-Object { $_.Lane -eq $result.Lane }
+					if (-not $already) { $script:ProtocolResults += $result }
 				}
 				Remove-Job $job -Force
 				$script:LaneProtocolJobs.Remove($lane)
@@ -11965,13 +11965,20 @@ $protocolTimer.add_Tick({
 			{
 				Write-Host "`r`nJob for Lane $lane failed: $($job.ChildJobs[0].JobStateInfo.Reason)" -ForegroundColor Red
 				$script:LaneProtocols[$lane] = "File"
-				$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = "File" }
+				$already = $script:ProtocolResults | Where-Object { $_.Lane -eq $lane }
+				if (-not $already)
+				{
+					$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = "File" }
+				}
 				Remove-Job $job -Force
 				$script:LaneProtocolJobs.Remove($lane)
 			}
 		}
-		# Output the table on EVERY tick for live updates
+		# Always show live table
 		Clear-Host
+		Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
+		Write-Host "Selected (storeman) folder: '$BasePath'" -ForegroundColor Magenta
+		Write-Host "Script started" -ForegroundColor Green
 		Write-Host ("{0,-6} {1,-15}" -f "Lane", "Protocol") -ForegroundColor Cyan
 		Write-Host ("{0,-6} {1,-15}" -f "-----", "--------") -ForegroundColor Cyan
 		$script:ProtocolResults |
@@ -11979,12 +11986,7 @@ $protocolTimer.add_Tick({
 		ForEach-Object {
 			Write-Host ("{0,-6} {1,-15}" -f $_.Lane.PadLeft(3, '0'), $_.Protocol)
 		}
-		if ($script:LaneProtocolJobs.Count -eq 0)
-		{
-			$protocolTimer.Stop()
-			$protocolTimer.Dispose()
-			Write-Host "All protocol detection jobs completed.`r`n" -ForegroundColor Green
-		}
+		# If all jobs done, keep showing table-don't stop polling (Ctrl+C to exit)
 	})
 $protocolTimer.Start()
 
