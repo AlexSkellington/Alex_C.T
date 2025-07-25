@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.3.6"
-$VersionDate = "2025-07-24"
+$VersionDate = "2025-07-25"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -61,6 +61,8 @@ $script:ProcessedLanes = @()
 $script:ProcessedStores = @()
 $script:ProcessedServers = @()
 $script:ProcessedHosts = @()
+$script:LaneProtocols = @{ }
+$script:LaneProtocolJobs = @{ }
 
 # ---------------------------------------------------------------------------------------------------
 # Count Tracking Variables
@@ -3557,7 +3559,8 @@ function Delete_Files
 # Description:
 #   Processes one or more lanes based on user selection, parses and writes the lane SQL script
 #   (with embedded fixed header/footer), and logs all progress and errors.
-#   Tries protocol execution first (filtered script), falls back to file writing (classic logic).
+#   Tries protocol execution first (from pre-populated protocol table), falls back to file writing.
+#   Protocol detection is NOT performed here; background jobs must fill $script:LaneProtocols.
 # ===================================================================================================
 
 function Process_Lanes
@@ -3594,7 +3597,7 @@ function Process_Lanes
 	}
 	$Lanes = $selection.Lanes
 	
-	# Parse original Lane SQL script sections (with macros)
+	# Parse Lane SQL script sections
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	$matches = [regex]::Matches($script:LaneSQLScript, $sectionPattern)
 	if ($matches.Count -eq 0)
@@ -3629,7 +3632,7 @@ function Process_Lanes
 	} | Out-String
 	$finalScript = $topBlock + $middleBlock + $bottomBlock
 	
-	# ==== If MULTIPLE lanes: always do file copy ====
+	# If MULTIPLE lanes: always do file copy fallback for all (fast, no protocol try)
 	if ($Lanes.Count -gt 1)
 	{
 		Write_Log "`r`nMultiple lanes selected, using file-based fallback for all lanes." "yellow"
@@ -3670,7 +3673,7 @@ function Process_Lanes
 	}
 	else
 	{
-		# ==== If only ONE lane: use protocol first, fallback to file ====
+		# If only ONE lane: use protocol from background job if available, else file fallback
 		foreach ($LaneNumber in $Lanes)
 		{
 			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
@@ -3680,79 +3683,76 @@ function Process_Lanes
 				continue
 			}
 			$machineName = $laneInfo['MachineName']
-			$connString = $laneInfo['ConnectionString']
 			$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
 			$tcpConnStr = $laneInfo['TcpConnStr']
 			$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
+			
+			# Use protocol from $script:LaneProtocols, else fallback
+			$protocolType = $script:LaneProtocols[$LaneNumber]
 			$workingConnStr = $null
-			$protocolType = "NONE"
-			$testQuery = "SELECT 1 AS Test"
-			try
+			
+			if ($protocolType -eq "Named Pipes") { $workingConnStr = $namedPipesConnStr }
+			elseif ($protocolType -eq "TCP") { $workingConnStr = $tcpConnStr }
+			
+			if (-not $protocolType -or $protocolType -eq "File" -or -not $workingConnStr)
 			{
-				if (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue)
+				Write_Log "Protocol not ready or unavailable for $machineName. Skipping protocol and using file fallback." "yellow"
+				if (Test-Path $LaneLocalPath)
 				{
-					Write_Log "Testing protocols for $machineName..." "blue"
+					Write_Log "`r`nProcessing $machineName using file fallback..." "blue"
+					Write_Log "Lane path found: $LaneLocalPath" "blue"
+					Write_Log "Writing Lane_Database_Maintenance.sqi to Lane..." "blue"
 					try
 					{
-						Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $testQuery -QueryTimeout 30 -ErrorAction Stop | Out-Null
-						$workingConnStr = $namedPipesConnStr
-						$protocolType = "Named Pipes"
+						Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
+						Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+						Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file fallback)" "green"
+						if (-not ($script:ProcessedLanes -contains $LaneNumber))
+						{
+							$script:ProcessedLanes += $LaneNumber
+						}
 					}
 					catch
 					{
-						Write_Log "Named Pipes test failed for $machineName. Trying TCP..." "yellow"
-						try
-						{
-							Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $testQuery -QueryTimeout 30 -ErrorAction Stop | Out-Null
-							$workingConnStr = $tcpConnStr
-							$protocolType = "TCP"
-						}
-						catch
-						{
-							Write_Log "TCP test also failed for $machineName. Falling back to file method." "yellow"
-						}
+						Write_Log "Failed to write to [$machineName]: $_" "red"
 					}
+				}
+				else
+				{
+					Write_Log "Lane #$LaneNumber not found at path: $LaneLocalPath" "yellow"
+				}
+				continue
+			}
+			
+			$protocolWorked = $true
+			try
+			{
+				$matchesFiltered = [regex]::Matches($script:LaneSQLFiltered, $sectionPattern)
+				$sections = ($matchesFiltered | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() })
+				foreach ($match in $sections)
+				{
+					$sectionName = $match.Groups['SectionName'].Value.Trim()
+					$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
+					Write_Log "`r`nExecuting section: '$sectionName' on $machineName" "blue"
+					Write_Log "--------------------------------------------------------------------------------"
+					Write_Log "$sqlCommands" "orange"
+					Write_Log "--------------------------------------------------------------------------------"
+					Invoke-Sqlcmd -ConnectionString $workingConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
+					Write_Log "Section '$sectionName' executed successfully on $machineName using ($protocolType)." "green"
 				}
 			}
 			catch
 			{
-				Write_Log "Error during protocol test on [$machineName]: $_" "yellow"
+				Write_Log "Failed to execute a section on $machineName via protocol: $_. Falling back to file." "yellow"
+				$protocolWorked = $false
 			}
-			
-			Write_Log "Using $protocolType protocol for $machineName." "green"
-			if ($workingConnStr)
+			if ($protocolWorked)
 			{
-				$protocolWorked = $true
-				try
+				if (-not ($script:ProcessedLanes -contains $LaneNumber))
 				{
-					$matchesFiltered = [regex]::Matches($script:LaneSQLFiltered, $sectionPattern)
-					$sections = ($matchesFiltered | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() })
-					foreach ($match in $sections)
-					{
-						$sectionName = $match.Groups['SectionName'].Value.Trim()
-						$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
-						Write_Log "`r`nExecuting section: '$sectionName' on $machineName" "blue"
-						Write_Log "--------------------------------------------------------------------------------"
-						Write_Log "$sqlCommands" "orange"
-						Write_Log "--------------------------------------------------------------------------------"
-						
-						Invoke-Sqlcmd -ConnectionString $workingConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
-						Write_Log "Section '$sectionName' executed successfully on $machineName using ($protocolType)." "green"					}
+					$script:ProcessedLanes += $LaneNumber
 				}
-				catch
-				{
-					Write_Log "Failed to execute a section on $machineName via protocol: $_. Falling back to file." "yellow"
-					$protocolWorked = $false
-				}
-				
-				if ($protocolWorked)
-				{
-					if (-not ($script:ProcessedLanes -contains $LaneNumber))
-					{
-						$script:ProcessedLanes += $LaneNumber
-					}
-					continue
-				}
+				continue
 			}
 			
 			# Fallback: classic file-based method
@@ -3784,7 +3784,6 @@ function Process_Lanes
 			}
 		}
 	}
-	
 	Write_Log "`r`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
 	if ($script:ProcessedLanes.Count -gt 0)
 	{
@@ -4419,7 +4418,8 @@ ORDER BY ORDINAL_POSITION
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Allows a user to select a subset of tables (from Get_Table_Aliases) to extract from SQL Server
-#   and copy to the specified lanes or hosts. Will try direct SQL protocol first; falls back to file copy.
+#   and copy to the specified lanes or hosts. Uses cached protocol (from $script:LaneProtocols)
+#   for each lane to determine protocol or file copy.
 # ===================================================================================================
 
 function Pump_Tables
@@ -4541,153 +4541,145 @@ function Pump_Tables
 		$connString = $laneInfo['ConnectionString']
 		$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
 		$tcpConnStr = $laneInfo['TcpConnStr']
-		
 		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${lane}"
 		
-		$protocolWorked = $false
-		$laneSqlConn = $null
-		$protocolType = ""
-		try
+		# Use the protocol detected earlier (or default to file)
+		$protocolType = if ($script:LaneProtocols.ContainsKey($lane))
 		{
-			# Try Named Pipes FIRST
+			$script:LaneProtocols[$lane]
+		}
+		else
+		{
+			"File"
+		}
+		$laneSqlConn = $null
+		$protocolWorked = $false
+		
+		if ($protocolType -eq "Named Pipes" -or $protocolType -eq "TCP")
+		{
 			try
 			{
-				$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $namedPipesConnStr
-				$laneSqlConn.Open()
-				$protocolType = "Named Pipes"
-			}
-			catch
-			{
-				Write_Log "Named Pipes connection failed for $machineName. Trying TCP..." "yellow"
-				try
+				if ($protocolType -eq "Named Pipes")
+				{
+					$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $namedPipesConnStr
+				}
+				elseif ($protocolType -eq "TCP")
 				{
 					$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $tcpConnStr
-					$laneSqlConn.Open()
-					$protocolType = "TCP"
 				}
-				catch
+				$laneSqlConn.Open()
+				if ($laneSqlConn.State -eq 'Open')
 				{
-					Write_Log "TCP connection also failed for $machineName." "yellow"
-				}
-			}
-			
-			if ($laneSqlConn -and $laneSqlConn.State -eq 'Open')
-			{
-				Write_Log "`r`nCopying data to Lane $lane ($machineName) via SQL protocol [$protocolType]..." "blue"
-				foreach ($aliasEntry in $filteredAliasEntries)
-				{
-					$table = $aliasEntry.Table
-					Write_Log "Pumping table '$table' to lane $lane via SQL..." "blue"
-					try
+					Write_Log "`r`nCopying data to Lane $lane ($machineName) via SQL protocol [$protocolType]..." "blue"
+					foreach ($aliasEntry in $filteredAliasEntries)
 					{
-						# Build CREATE TABLE from source schema
-						$schemaCmd = $srcSqlConnection.CreateCommand()
-						$schemaCmd.CommandText = @"
+						$table = $aliasEntry.Table
+						Write_Log "Pumping table '$table' to lane $lane via SQL..." "blue"
+						try
+						{
+							# Build CREATE TABLE from source schema
+							$schemaCmd = $srcSqlConnection.CreateCommand()
+							$schemaCmd.CommandText = @"
 SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE
 FROM INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_NAME = '$table'
 ORDER BY ORDINAL_POSITION
 "@
-						$reader = $schemaCmd.ExecuteReader()
-						$colDefs = @()
-						while ($reader.Read())
-						{
-							$colName = $reader["COLUMN_NAME"]
-							$dataType = $reader["DATA_TYPE"]
-							$isNullable = $reader["IS_NULLABLE"]
-							$nullText = if ($isNullable -eq "NO") { "NOT NULL" }
-							else { "NULL" }
-							switch ($dataType)
+							$reader = $schemaCmd.ExecuteReader()
+							$colDefs = @()
+							while ($reader.Read())
 							{
-								'nvarchar' { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "nvarchar($length)" }
-								'varchar'  { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "varchar($length)" }
-								'char'     { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "char($length)" }
-								'nchar'    { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "nchar($length)" }
-								'decimal'  { $prec = $reader["NUMERIC_PRECISION"]; $scale = $reader["NUMERIC_SCALE"]; $typeText = "decimal($prec,$scale)" }
-								'numeric'  { $prec = $reader["NUMERIC_PRECISION"]; $scale = $reader["NUMERIC_SCALE"]; $typeText = "numeric($prec,$scale)" }
-								default    { $typeText = $dataType }
+								$colName = $reader["COLUMN_NAME"]
+								$dataType = $reader["DATA_TYPE"]
+								$isNullable = $reader["IS_NULLABLE"]
+								$nullText = if ($isNullable -eq "NO") { "NOT NULL" }
+								else { "NULL" }
+								switch ($dataType)
+								{
+									'nvarchar' { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "nvarchar($length)" }
+									'varchar'  { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "varchar($length)" }
+									'char'     { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "char($length)" }
+									'nchar'    { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "nchar($length)" }
+									'decimal'  { $prec = $reader["NUMERIC_PRECISION"]; $scale = $reader["NUMERIC_SCALE"]; $typeText = "decimal($prec,$scale)" }
+									'numeric'  { $prec = $reader["NUMERIC_PRECISION"]; $scale = $reader["NUMERIC_SCALE"]; $typeText = "numeric($prec,$scale)" }
+									default    { $typeText = $dataType }
+								}
+								$colDefs += "[$colName] $typeText $nullText"
 							}
-							$colDefs += "[$colName] $typeText $nullText"
-						}
-						$reader.Close()
-						$colDefsText = $colDefs -join ", "
-						$createTableSQL = "IF OBJECT_ID(N'[$table]', N'U') IS NOT NULL DROP TABLE [$table]; CREATE TABLE [$table] ($colDefsText);"
-						
-						# Drop/recreate table structure
-						$cmdCreate = $laneSqlConn.CreateCommand()
-						$cmdCreate.CommandText = $createTableSQL
-						$cmdCreate.ExecuteNonQuery() | Out-Null
-						Write_Log "Recreated table structure for '$table' on $machineName" "green"
-						
-						# Select data from source
-						$dataQuery = "SELECT * FROM [$table]"
-						$cmdSource = $srcSqlConnection.CreateCommand()
-						$cmdSource.CommandText = $dataQuery
-						$readerSource = $cmdSource.ExecuteReader()
-						$schemaTable = $readerSource.GetSchemaTable()
-						$colNames = $schemaTable | ForEach-Object { $_["ColumnName"] }
-						$insertPrefix = "INSERT INTO [$table] ([$($colNames -join '],[')]) VALUES "
-						$rowCountCopied = 0
-						while ($readerSource.Read())
-						{
-							$values = @()
-							foreach ($col in $colNames)
+							$reader.Close()
+							$colDefsText = $colDefs -join ", "
+							$createTableSQL = "IF OBJECT_ID(N'[$table]', N'U') IS NOT NULL DROP TABLE [$table]; CREATE TABLE [$table] ($colDefsText);"
+							
+							# Drop/recreate table structure
+							$cmdCreate = $laneSqlConn.CreateCommand()
+							$cmdCreate.CommandText = $createTableSQL
+							$cmdCreate.ExecuteNonQuery() | Out-Null
+							Write_Log "Recreated table structure for '$table' on $machineName" "green"
+							
+							# Select data from source
+							$dataQuery = "SELECT * FROM [$table]"
+							$cmdSource = $srcSqlConnection.CreateCommand()
+							$cmdSource.CommandText = $dataQuery
+							$readerSource = $cmdSource.ExecuteReader()
+							$schemaTable = $readerSource.GetSchemaTable()
+							$colNames = $schemaTable | ForEach-Object { $_["ColumnName"] }
+							$insertPrefix = "INSERT INTO [$table] ([$($colNames -join '],[')]) VALUES "
+							$rowCountCopied = 0
+							while ($readerSource.Read())
 							{
-								$val = $readerSource[$col]
-								if ($val -eq $null -or $val -is [System.DBNull])
+								$values = @()
+								foreach ($col in $colNames)
 								{
-									$values += "NULL"
+									$val = $readerSource[$col]
+									if ($val -eq $null -or $val -is [System.DBNull])
+									{
+										$values += "NULL"
+									}
+									elseif ($val -is [string])
+									{
+										$escaped = $val.Replace("'", "''")
+										$values += "'$escaped'"
+									}
+									elseif ($val -is [datetime])
+									{
+										$values += "'" + $val.ToString("yyyy-MM-dd HH:mm:ss") + "'"
+									}
+									else
+									{
+										$values += $val.ToString()
+									}
 								}
-								elseif ($val -is [string])
-								{
-									$escaped = $val.Replace("'", "''")
-									$values += "'$escaped'"
-								}
-								elseif ($val -is [datetime])
-								{
-									$values += "'" + $val.ToString("yyyy-MM-dd HH:mm:ss") + "'"
-								}
-								else
-								{
-									$values += $val.ToString()
-								}
+								$insertCmd = $laneSqlConn.CreateCommand()
+								$insertCmd.CommandText = $insertPrefix + "(" + ($values -join ",") + ")"
+								$insertCmd.ExecuteNonQuery() | Out-Null
+								$rowCountCopied++
 							}
-							$insertCmd = $laneSqlConn.CreateCommand()
-							$insertCmd.CommandText = $insertPrefix + "(" + ($values -join ",") + ")"
-							$insertCmd.ExecuteNonQuery() | Out-Null
-							$rowCountCopied++
+							$readerSource.Close()
+							Write_Log "Copied $rowCountCopied rows to $table on lane $lane (SQL protocol)." "green"
 						}
-						$readerSource.Close()
-						Write_Log "Copied $rowCountCopied rows to $table on lane $lane (SQL protocol)." "green"
+						catch
+						{
+							Write_Log "Failed to copy table '$table' to lane $lane via SQL: $_" "red"
+						}
 					}
-					catch
-					{
-						Write_Log "Failed to copy table '$table' to lane $lane via SQL: $_" "red"
-					}
+					$laneSqlConn.Close()
+					$protocolWorked = $true
+					$protocolLanes += $lane
+					$ProcessedLanes += $lane
 				}
-				$laneSqlConn.Close()
-				$protocolWorked = $true
-				$protocolLanes += $lane
-				$ProcessedLanes += $lane
 			}
-			else
+			catch
 			{
-				Write_Log "Could not open protocol connection to lane $lane ($machineName). Will attempt file fallback." "yellow"
+				Write_Log "SQL protocol copy failed for lane [$lane] ($protocolType): $_" "yellow"
 				$protocolWorked = $false
 			}
 		}
-		catch
-		{
-			Write_Log "SQL protocol copy failed for lane [$lane]: $_" "yellow"
-			$protocolWorked = $false
-		}
 		
 		# --------------------------------------------------------------------------------------------
-		# File fallback (only if protocol copy failed)
+		# File fallback (if protocol copy not possible)
 		# --------------------------------------------------------------------------------------------
 		if (-not $protocolWorked)
 		{
-			$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${lane}"
 			if (Test-Path $LaneLocalPath)
 			{
 				Write_Log "`r`nCopying via FILE fallback for Lane #$lane..." "blue"
@@ -4909,14 +4901,15 @@ DROP TABLE $viewName;
 	
 	$srcSqlConnection.Close()
 	
-	Write_Log "`r`nTotal Lanes processed: $($ProcessedLanes | Select-Object -Unique | Measure-Object | % Count)" "green"
+	$uniqueProcessedLanes = $ProcessedLanes | Select-Object -Unique
+	Write_Log "`r`nTotal Lanes processed: $($uniqueProcessedLanes.Count)" "green"
 	if ($protocolLanes.Count -gt 0)
 	{
-		Write_Log "Lanes processed via SQL protocol: $($protocolLanes -join ', ')" "green"
+		Write_Log "Lanes processed via SQL protocol: $($protocolLanes | Select-Object -Unique -join ', ')" "green"
 	}
 	if ($fileCopyLanes.Count -gt 0)
 	{
-		Write_Log "Lanes processed via FILE fallback: $($fileCopyLanes -join ', ')" "yellow"
+		Write_Log "Lanes processed via FILE fallback: $($fileCopyLanes | Select-Object -Unique -join ', ')" "yellow"
 	}
 	Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 }
@@ -5464,6 +5457,104 @@ function Ping_All_Lanes
 	# Summary of ping results
 	Write_Log "Ping Summary for Store Number: $StoreNumber - Success: $successCount, Failed: $failureCount." "Blue"
 	Write_Log "`r`n==================== Ping_All_Lanes Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                              FUNCTION: Test-Lane-SqlProtocol
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   For a given machine, checks the registry remotely to see if SQL protocols are enabled,
+#   then tries a fast connection using Invoke-Sqlcmd. Returns "Named Pipes", "TCP", or "File".
+#   Will NOT attempt protocol connection if the protocol is not enabled in the registry.
+#   Checks both SQLEXPRESS and default instance.
+# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   -MachineName   [string]: Target lane machine name.
+#   -TimeoutSec    [int]:    Query timeout in seconds (default: 5)
+# Returns:
+#   [string]: "Named Pipes", "TCP", or "File"
+# Author: Alex_C.T
+# ===================================================================================================
+
+function Test_Lane_SQL_Protocol
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$MachineName,
+		[int]$TimeoutSec = 5
+	)
+	# Registry keys for SQL protocols (both 32/64-bit, both instances)
+	$instances = @(
+		@{ Name = "SQLEXPRESS"; SubKey = "MSSQL$SQLEXPRESS" },
+		@{ Name = "MSSQLSERVER"; SubKey = "MSSQLSERVER" }
+	)
+	$roots = @(
+		"SOFTWARE\Microsoft\Microsoft SQL Server",
+		"SOFTWARE\Wow6432Node\Microsoft\Microsoft SQL Server"
+	)
+	
+	$foundProtocol = "File"
+	foreach ($instance in $instances)
+	{
+		foreach ($root in $roots)
+		{
+			$tcpKeyPath = "$root\$($instance.SubKey)\MSSQLServer\SuperSocketNetLib\Tcp"
+			$npKeyPath = "$root\$($instance.SubKey)\MSSQLServer\SuperSocketNetLib\Np"
+			try
+			{
+				$tcpEnabled = 0
+				$npEnabled = 0
+				
+				$reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $MachineName)
+				$tcpKey = $reg.OpenSubKey($tcpKeyPath)
+				if ($tcpKey) { $tcpEnabled = $tcpKey.GetValue('Enabled', 0) }
+				$npKey = $reg.OpenSubKey($npKeyPath)
+				if ($npKey) { $npEnabled = $npKey.GetValue('Enabled', 0) }
+				$reg.Close()
+				
+				# Test Named Pipes if enabled
+				if ($npEnabled -eq 1)
+				{
+					$npConnStrings = @(
+						"Server=$MachineName\$($instance.Name);Database=master;Integrated Security=True;Network Library=dbnmpntw",
+						"Server=$MachineName;Database=master;Integrated Security=True;Network Library=dbnmpntw"
+					)
+					foreach ($connStr in $npConnStrings)
+					{
+						try
+						{
+							Invoke-Sqlcmd -ConnectionString $connStr -Query "SELECT 1" -QueryTimeout $TimeoutSec -ErrorAction Stop | Out-Null
+							return "Named Pipes"
+						}
+						catch { }
+					}
+				}
+				# Test TCP if enabled
+				if ($tcpEnabled -eq 1)
+				{
+					$tcpConnStrings = @(
+						"Server=$MachineName\$($instance.Name),1433;Database=master;Integrated Security=True",
+						"Server=$MachineName,1433;Database=master;Integrated Security=True"
+					)
+					foreach ($connStr in $tcpConnStrings)
+					{
+						try
+						{
+							Invoke-Sqlcmd -ConnectionString $connStr -Query "SELECT 1" -QueryTimeout $TimeoutSec -ErrorAction Stop | Out-Null
+							return "TCP"
+						}
+						catch { }
+					}
+				}
+			}
+			catch
+			{
+				# Failsafe: registry or network inaccessible
+				continue
+			}
+		}
+	}
+	return $foundProtocol
 }
 
 # ===================================================================================================
@@ -11242,6 +11333,14 @@ if (-not $form)
 			}
 			else
 			{
+				# Existing cleanup...
+				$protocolTimer.Stop(); $protocolTimer.Dispose()
+				foreach ($job in $script:LaneProtocolJobs.Values)
+				{
+					try { Stop-Job $job -Force }
+					catch { }
+				}
+				$script:LaneProtocolJobs.Clear()
 				Write_Log "Form is closing. Performing cleanup." "green"
 				Delete_Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql"
 			}
@@ -11258,7 +11357,7 @@ if (-not $form)
 		})
 	$form.Controls.Add($clearLogButton)
 	$toolTip.SetToolTip($clearLogButton, "Clears the log display area.")
-	
+		
 	######################################################################################################################
 	# 																													 #
 	# 												Labels																 #
@@ -11949,6 +12048,98 @@ $Nodes = $script:FunctionResults['Nodes']
 
 # Retrieve the list of machine names from the FunctionResults dictionary
 $LaneMachines = $script:FunctionResults['LaneMachines']
+
+# Start per-lane jobs for protocol checks (PS5-compatible parallelism via multiple jobs)
+$script:LaneProtocolJobs = @{ }
+$script:LaneProtocols = @{ }
+$script:ProtocolResults = @()
+
+foreach ($lane in $LaneMachines.Keys)
+{
+	$machine = $LaneMachines[$lane]
+	$script:LaneProtocolJobs[$lane] = Start-Job -ArgumentList $machine, $lane -ScriptBlock {
+		param ($machine,
+			$lane)
+		
+		$protocol = "File"
+		
+		# Fast TCP check with TcpClient (~10-50ms)
+		try
+		{
+			$tcpClient = New-Object System.Net.Sockets.TcpClient
+			$connectTask = $tcpClient.ConnectAsync($machine, 1433)
+			if ($connectTask.Wait(500) -and $tcpClient.Connected)
+			{
+				$protocol = "TCP"
+				$tcpClient.Close()
+			}
+		}
+		catch { }
+		
+		# Try Named Pipes if TCP not detected
+		if ($protocol -eq "File")
+		{
+			$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
+			try
+			{
+				Import-Module SqlServer -ErrorAction Stop
+				Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 1 -ErrorAction Stop | Out-Null
+				$protocol = "Named Pipes"
+			}
+			catch { }
+		}
+		
+		[PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
+	}
+}
+
+# Timer to poll jobs (PS5-compatible)
+$protocolTimer = New-Object System.Windows.Forms.Timer
+$protocolTimer.Interval = 500
+$protocolTimer.add_Tick({
+		$keysCopy = @($script:LaneProtocolJobs.Keys)
+		
+		foreach ($lane in $keysCopy)
+		{
+			$job = $script:LaneProtocolJobs[$lane]
+			if ($job.State -eq 'Completed')
+			{
+				$result = Receive-Job $job -ErrorAction SilentlyContinue
+				if ($result -and $result.Lane -and $result.Protocol)
+				{
+					$script:LaneProtocols[$result.Lane] = $result.Protocol
+					$script:ProtocolResults += $result
+				}
+				Remove-Job $job -Force
+				$script:LaneProtocolJobs.Remove($lane)
+			}
+			elseif ($job.State -eq 'Failed')
+			{
+				Write-Host "`r`nJob for Lane $lane failed: $($job.ChildJobs[0].JobStateInfo.Reason)" -ForegroundColor Red
+				$script:LaneProtocols[$lane] = "File"
+				$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = "File" }
+				Remove-Job $job -Force
+				$script:LaneProtocolJobs.Remove($lane)
+			}
+		}
+		
+		if ($script:LaneProtocolJobs.Count -eq 0)
+		{
+			$protocolTimer.Stop()
+			$protocolTimer.Dispose()			
+			# Output formatted table
+			Write-Host ""
+			Write-Host ("{0,-6} {1,-15}" -f "Lane", "Protocol") -ForegroundColor Cyan
+			Write-Host ("{0,-6} {1,-15}" -f "-----", "--------") -ForegroundColor Cyan
+			$script:ProtocolResults |
+			Sort-Object Lane |
+			ForEach-Object {
+				Write-Host ("{0,-6} {1,-15}" -f $_.Lane.PadLeft(3, '0'), $_.Protocol)
+			}
+			Write-Host "All protocol detection jobs completed.`r`n" -ForegroundColor Green
+		}
+	})
+$protocolTimer.Start()
 
 # Populate the hash table with results from various functions
 $AliasToTable = Get_Table_Aliases
