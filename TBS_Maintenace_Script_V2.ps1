@@ -19,7 +19,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.3.5"
+$VersionNumber = "2.3.6"
 $VersionDate = "2025-07-24"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -3617,6 +3617,18 @@ function Process_Lanes
 		return
 	}
 	
+	# Pre-build the final SQI script for fallback (same for all lanes)
+	$topBlock = "/* Set a long timeout so the entire script runs */`r`n@WIZRPL(DBASE_TIMEOUT=E);`r`n" +
+	"--------------------------------------------------------------------------------`r`n"
+	$bottomBlock = "--------------------------------------------------------------------------------`r`n" +
+	"/* Clear the long database timeout */`r`n@WIZCLR(DBASE_TIMEOUT);"
+	$middleBlock = ($matches | Where-Object {
+			$SectionsToSend -contains $_.Groups['SectionName'].Value.Trim()
+		}) | ForEach-Object {
+		"/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())"
+	} | Out-String
+	$finalScript = $topBlock + $middleBlock + $bottomBlock
+	
 	foreach ($LaneNumber in $Lanes)
 	{
 		# Always get latest lane info for this lane
@@ -3633,15 +3645,55 @@ function Process_Lanes
 		
 		$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 		
-		# Try protocol logic first (using the filtered script)
-		$protocolWorked = $false
+		# --- Optimized Protocol Test: Check connectivity once with a simple query ---
+		$workingConnStr = $null
+		$protocolType = "NONE"
+		$testQuery = "SELECT 1 AS Test"
 		try
 		{
 			if (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue)
 			{
+				Write_Log "Testing protocols for $machineName..." "blue"
+				
+				# Try Named Pipes first
+				try
+				{
+					Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $testQuery -QueryTimeout 30 -ErrorAction Stop | Out-Null
+					$workingConnStr = $namedPipesConnStr
+					$protocolType = "Named Pipes"
+				}
+				catch
+				{
+					Write_Log "Named Pipes test failed for $machineName. Trying TCP..." "yellow"
+					
+					# Try TCP
+					try
+					{
+						Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $testQuery -QueryTimeout 30 -ErrorAction Stop | Out-Null
+						$workingConnStr = $tcpConnStr
+						$protocolType = "TCP"
+					}
+					catch
+					{
+						Write_Log "TCP test also failed for $machineName. Falling back to file method." "yellow"
+					}
+				}
+			}
+		}
+		catch
+		{
+			Write_Log "Error during protocol test on [$machineName]: $_" "yellow"
+		}
+		
+		# If a working protocol found, execute all sections using it
+		if ($workingConnStr)
+		{
+			Write_Log "Using $protocolType protocol for $machineName." "green"
+			$protocolWorked = $true
+			try
+			{
 				$matchesFiltered = [regex]::Matches($script:LaneSQLFiltered, $sectionPattern)
 				$sections = ($matchesFiltered | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() })
-				Write_Log "`r`nProcessing $machineName via protocol/SQL..." "blue"
 				foreach ($match in $sections)
 				{
 					$sectionName = $match.Groups['SectionName'].Value.Trim()
@@ -3651,57 +3703,24 @@ function Process_Lanes
 					Write_Log "$sqlCommands" "orange"
 					Write_Log "--------------------------------------------------------------------------------"
 					
-					$protocolSuccess = $false
-					$protocolType = "FAILED"
-					try
-					{
-						# Now try Named Pipes first, then TCP
-						Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
-						$protocolSuccess = $true
-						$protocolType = "Named Pipes"
-					}
-					catch
-					{
-						Write_Log "Named Pipes protocol failed for section '$sectionName' on $machineName. Trying TCP..." "yellow"
-						try
-						{
-							Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
-							$protocolSuccess = $true
-							$protocolType = "TCP"
-						}
-						catch
-						{
-							Write_Log "TCP protocol also failed for section '$sectionName' on $machineName." "red"
-						}
-					}
-					
-					if ($protocolSuccess)
-					{
-						Write_Log "Section '$sectionName' executed successfully on $machineName (protocol: $protocolType)." "green"
-						$protocolWorked = $true
-					}
-					else
-					{
-						Write_Log "Failed to execute section '$sectionName' on $machineName via protocol. Will attempt fallback." "yellow"
-						$protocolWorked = $false
-						break
-					}
+					Invoke-Sqlcmd -ConnectionString $workingConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
+					Write_Log "Section '$sectionName' executed successfully on $machineName." "green"
 				}
 			}
-		}
-		catch
-		{
-			Write_Log "Error with protocol execution on [$machineName]: $_" "yellow"
-			$protocolWorked = $false
-		}
-		
-		if ($protocolWorked)
-		{
-			if (-not ($script:ProcessedLanes -contains $LaneNumber))
+			catch
 			{
-				$script:ProcessedLanes += $LaneNumber
+				Write_Log "Failed to execute a section on $machineName via protocol: $_. Falling back to file." "yellow"
+				$protocolWorked = $false
 			}
-			continue
+			
+			if ($protocolWorked)
+			{
+				if (-not ($script:ProcessedLanes -contains $LaneNumber))
+				{
+					$script:ProcessedLanes += $LaneNumber
+				}
+				continue
+			}
 		}
 		
 		# --- Fallback: classic file-based method (with header/footer and section selection) ---
@@ -3713,22 +3732,6 @@ function Process_Lanes
 			
 			try
 			{
-				# Always embed the fixed top section
-				$topBlock = "/* Set a long timeout so the entire script runs */`r`n@WIZRPL(DBASE_TIMEOUT=E);`r`n" +
-				"--------------------------------------------------------------------------------`r`n"
-				# Always embed the fixed bottom section
-				$bottomBlock = "--------------------------------------------------------------------------------`r`n" +
-				"/* Clear the long database timeout */`r`n@WIZCLR(DBASE_TIMEOUT);"
-				# User-selected middle sections (with section headers)
-				$middleBlock = ($matches | Where-Object {
-						$SectionsToSend -contains $_.Groups['SectionName'].Value.Trim()
-					}) | ForEach-Object {
-					"/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())"
-				} | Out-String
-				
-				# Compose the final script
-				$finalScript = $topBlock + $middleBlock + $bottomBlock
-				
 				Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
 				Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
 				Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file fallback)" "green"
@@ -11286,7 +11289,7 @@ if (-not $form)
 			Enable_SQL_Protocols_On_Selected_Lanes -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($EnableSQLProtocolsItem)
-	
+		
 	############################################################################
 	# 14) Set the time on the lanes
 	############################################################################
