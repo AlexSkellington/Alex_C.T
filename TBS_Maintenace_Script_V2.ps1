@@ -7709,7 +7709,8 @@ function Send_Restart_All_Programs
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber,
-		[array]$LaneNumbers, # Optional. If supplied, skips prompts and sends to these lanes.
+		[array]$LaneNumbers,
+		# Optional. If supplied, skips prompts and sends to these lanes.
 		[Parameter(Mandatory = $false)]
 		[switch]$Silent
 	)
@@ -7755,16 +7756,23 @@ function Send_Restart_All_Programs
 		$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
 		if ($result)
 		{
-			Write_Log "Command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
+			if (-not $Silent)
+			{
+				Write_Log "Command sent successfully to Machine $machineName (Store $StoreNumber, Lane $lane)." "green"
+			}
 		}
 		else
 		{
-			Write_Log "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
+			if (-not $Silent)
+			{
+				Write_Log "Failed to send command to Machine $machineName (Store $StoreNumber, Lane $lane)." "red"
+			}
 		}
-	}
-	if (-not $Silent)
-	{
-		Write_Log "`r`n==================== Send_Restart_All_Programs Function Completed ====================" "blue"
+		
+		if (-not $Silent)
+		{
+			Write_Log "`r`n==================== Send_Restart_All_Programs Function Completed ====================" "blue"
+		}
 	}
 }
 
@@ -8977,12 +8985,11 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 									$needsRestart = $true
 								}
 								$regKey.Close()
-								$tcpWasSet = $true
-								$protocolSet = $true
-								break
+								$tcpSet = $true
+								break # <---- Stop after finding/setting in one place
 							}
 						}
-						if (-not $tcpWasSet)
+						if (-not $tcpSet)
 						{
 							Write_Log "Registry path for TCP/IP not found for $instanceName." "yellow"
 						}
@@ -8992,32 +8999,30 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll",
 							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll"
 						)
-						foreach ($ipAllPath in $ipAllPaths)
+						foreach ($basePath in $basePaths)
 						{
-							$regKey = $reg.OpenSubKey($ipAllPath, $true)
+							$regKey = $reg.OpenSubKey($basePath, $true)
 							if ($regKey)
 							{
-								$curPort = $regKey.GetValue('TcpPort', "")
-								$curDyn = $regKey.GetValue('TcpDynamicPorts', "")
-								if ($curPort -eq $tcpPort -and $curDyn -eq "")
+								$tcpEnabled = $regKey.GetValue('Enabled', 0)
+								if ($tcpEnabled -eq 1)
 								{
-									Write_Log "TCP port already set to $tcpPort at $ipAllPath." "gray"
+									Write_Log "TCP/IP already enabled at $basePath." "gray"
 								}
 								else
 								{
-									$regKey.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
-									$regKey.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
-									Write_Log "Registry port set to $tcpPort at $ipAllPath." "green"
+									$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+									Write_Log "TCP/IP protocol enabled at $basePath." "green"
 									$needsRestart = $true
 								}
 								$regKey.Close()
-								$portWasSet = $true
+								$tcpWasSet = $true
 								break
 							}
 						}
-						if (-not $portWasSet)
+						if (-not $tcpWasSet)
 						{
-							Write_Log "Registry path for TCP/IP IPAll not found for $instanceName." "yellow"
+							Write_Log "Registry path for TCP/IP not found for $instanceName." "yellow"
 						}
 						# --- Named Pipes ---
 						$npWasSet = $false
@@ -9043,7 +9048,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 								}
 								$regKey.Close()
 								$npWasSet = $true
-								break
+								break # <--- Stop here after first path
 							}
 						}
 						if (-not $npWasSet)
