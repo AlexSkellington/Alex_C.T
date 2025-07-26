@@ -500,100 +500,130 @@ function Get_All_Lanes_Database_Info
 	
 	foreach ($laneNumber in $lanesToProcess)
 	{
+		if ($LaneDatabaseInfo.ContainsKey($laneNumber))
+		{
+			if ($LaneNumber) { return $LaneDatabaseInfo[$laneNumber] }
+			continue
+		}
 		# Skip unwanted lanes for full mode
 		if (-not $LaneNumber -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
 		
 		$machineName = $LaneMachines[$laneNumber]
 		if (-not $machineName) { continue }
 		
-		$startupIniPath = "\\$machineName\storeman\Startup.ini"
-		if (-not (Test-Path $startupIniPath)) { continue }
+		# ---------- 1. Try LOCAL Startup file (INI\STARTUP.###) ----------
+		$startupLocalPath = Join-Path $OfficePath "INI\STARTUP.$($laneNumber.PadLeft(3, '0'))"
+		$startupIniPath = $null
+		$content = $null
+		$source = $null
 		
-		try
+		if (Test-Path $startupLocalPath)
 		{
-			$content = Get-Content -Path $startupIniPath -ErrorAction Stop
-			$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
-			$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
-			
-			if ($dbNameLine)
+			try
 			{
-				$dbName = ($dbNameLine -replace '^DBNAME=', '').Trim()
+				$content = Get-Content -Path $startupLocalPath -ErrorAction Stop
+				$source = "local"
 			}
-			else
-			{
-				continue
-			}
-			if ($dbServerLine)
-			{
-				$dbServerRaw = ($dbServerLine -replace '^DBSERVER=', '').Trim()
-			}
-			else
-			{
-				$dbServerRaw = ""
-			}
-			$dbServer = $dbServerRaw
-			if (-not $dbServer -or $dbServer -eq '')
-			{
-				$dbServer = $machineName
-			}
-			
-			# Parse instance name for Named Pipes/TCP logic
-			$serverName = $dbServer
-			$instanceName = $null
-			if ($dbServer -match '\\')
-			{
-				$parts = $dbServer -split '\\'
-				$serverName = $parts[0]
-				$instanceName = $parts[1]
-			}
-			elseif ($dbServer -match ',')
-			{
-				$serverName = $dbServer
-				$instanceName = $null
-			}
-			else
-			{
-				$serverName = $dbServer
-				$instanceName = $null
-			}
-			
-			# Build connection strings
-			if ($instanceName -and $instanceName.ToUpper() -ne "MSSQLSERVER")
-			{
-				$namedPipes = "np:\\$serverName\pipe\MSSQL`$$instanceName\sql\query"
-				$tcpServer = "$serverName\$instanceName"
-			}
-			else
-			{
-				$namedPipes = "np:\\$serverName\pipe\sql\query"
-				$tcpServer = $serverName
-			}
-			
-			$tcpConnStr = "Server=$tcpServer;Database=$dbName;Integrated Security=True;"
-			$namedPipesConnStr = "Server=$namedPipes;Database=$dbName;Integrated Security=True;"
-			$simpleConnStr = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
-			
-			$laneInfo = @{
-				'MachineName'	    = $machineName
-				'DBName'		    = $dbName
-				'DBServer'		    = $dbServer
-				'ServerName'	    = $serverName
-				'InstanceName'	    = $instanceName
-				'NamedPipes'	    = $namedPipes
-				'TcpServer'		    = $tcpServer
-				'ConnectionString'  = $simpleConnStr
-				'NamedPipesConnStr' = $namedPipesConnStr
-				'TcpConnStr'	    = $tcpConnStr
-			}
-			
-			$LaneDatabaseInfo[$laneNumber] = $laneInfo
-			
-			if ($LaneNumber) { return $laneInfo }
+			catch { $content = $null }
 		}
-		catch
+		
+		# ---------- 2. Fallback: Try REMOTE Startup.ini ----------
+		if (-not $content)
+		{
+			$startupIniPath = "\\$machineName\storeman\Startup.ini"
+			if (Test-Path $startupIniPath)
+			{
+				try
+				{
+					$content = Get-Content -Path $startupIniPath -ErrorAction Stop
+					$source = "remote"
+				}
+				catch { $content = $null }
+			}
+		}
+		
+		if (-not $content) { continue }
+		
+		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
+		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
+		
+		if ($dbNameLine)
+		{
+			$dbName = ($dbNameLine -replace '^DBNAME=', '').Trim()
+		}
+		else
 		{
 			continue
 		}
+		
+		if ($dbServerLine)
+		{
+			$dbServerRaw = ($dbServerLine -replace '^DBSERVER=', '').Trim()
+		}
+		else
+		{
+			$dbServerRaw = ""
+		}
+		
+		$dbServer = $dbServerRaw
+		if (-not $dbServer -or $dbServer -eq '')
+		{
+			$dbServer = $machineName
+		}
+		
+		# Parse instance name for Named Pipes/TCP logic
+		$serverName = $dbServer
+		$instanceName = $null
+		if ($dbServer -match '\\')
+		{
+			$parts = $dbServer -split '\\'
+			$serverName = $parts[0]
+			$instanceName = $parts[1]
+		}
+		elseif ($dbServer -match ',')
+		{
+			$serverName = $dbServer
+			$instanceName = $null
+		}
+		else
+		{
+			$serverName = $dbServer
+			$instanceName = $null
+		}
+		
+		# Build connection strings
+		if ($instanceName -and $instanceName.ToUpper() -ne "MSSQLSERVER")
+		{
+			$namedPipes = "np:\\$serverName\pipe\MSSQL`$$instanceName\sql\query"
+			$tcpServer = "$serverName\$instanceName"
+		}
+		else
+		{
+			$namedPipes = "np:\\$serverName\pipe\sql\query"
+			$tcpServer = $serverName
+		}
+		
+		$tcpConnStr = "Server=$tcpServer;Database=$dbName;Integrated Security=True;"
+		$namedPipesConnStr = "Server=$namedPipes;Database=$dbName;Integrated Security=True;"
+		$simpleConnStr = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
+		
+		$laneInfo = @{
+			'MachineName'	    = $machineName
+			'DBName'		    = $dbName
+			'DBServer'		    = $dbServer
+			'ServerName'	    = $serverName
+			'InstanceName'	    = $instanceName
+			'NamedPipes'	    = $namedPipes
+			'TcpServer'		    = $tcpServer
+			'ConnectionString'  = $simpleConnStr
+			'NamedPipesConnStr' = $namedPipesConnStr
+			'TcpConnStr'	    = $tcpConnStr
+			'Source'		    = $source
+		}
+		
+		$LaneDatabaseInfo[$laneNumber] = $laneInfo
+		
+		if ($LaneNumber) { return $laneInfo }
 	}
 	if ($LaneNumber) { return $null }
 }
@@ -1724,7 +1754,7 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE
 # ===================================================================================================
 
 function Get_Table_Aliases
-{	
+{
 	$MinSupportedSMSVersion = "3.3.0.0"
 	$MaxSupportedSMSVersion = "3.6.0.8"
 	
@@ -4237,9 +4267,9 @@ DROP TABLE Ter_Load;
 						Rows	 = $runRows
 					}
 					@{
-						Table																																																																							     = 'LNK_TAB'
-						Filename																																																																							 = $lnkLoadFilename
-						Rows																																																																								 = @(
+						Table																																																										     = 'LNK_TAB'
+						Filename																																																										 = $lnkLoadFilename
+						Rows																																																											 = @(
 							"('${laneNumber}','${StoreNumber}','${laneNumber}')",
 							"('DSM','${StoreNumber}','${laneNumber}')",
 							"('PAL','${StoreNumber}','${laneNumber}')",
@@ -4248,9 +4278,9 @@ DROP TABLE Ter_Load;
 						)
 					}
 					@{
-						Table																																																															   = 'STO_TAB'
-						Filename																																																														   = $stoLoadFilename
-						Rows																																																															   = @(
+						Table																																																		   = 'STO_TAB'
+						Filename																																																	   = $stoLoadFilename
+						Rows																																																		   = @(
 							"('${laneNumber}','Terminal ${laneNumber}',1,1,1,,,,)",
 							"('DSM','Deploy SMS',1,1,1,,,,)",
 							"('PAL','Program all',0,0,1,1,,,)",
@@ -4259,9 +4289,9 @@ DROP TABLE Ter_Load;
 						)
 					}
 					@{
-						Table																																																								  = 'TER_TAB'
-						Filename																																																							  = $terLoadFilename
-						Rows																																																								  = @(
+						Table																																																				     = 'TER_TAB'
+						Filename																																																				 = $terLoadFilename
+						Rows																																																					 = @(
 							"('${StoreNumber}','${laneNumber}','Terminal ${laneNumber}','\\${MachineName}\storeman\office\XF${StoreNumber}${laneNumber}\','\\${MachineName}\storeman\office\XF${StoreNumber}901\')",
 							"('${StoreNumber}','901','Server','','')"
 						)
@@ -6162,7 +6192,7 @@ function Configure_System_Settings
 	)
 	
 	Write_Log "`r`n==================== Starting Configure_System_Settings Function ====================`r`n" "blue"
-		
+	
 	try
 	{
 		# ===========================================
@@ -11440,7 +11470,7 @@ if (-not $form)
 		})
 	$form.Controls.Add($clearLogButton)
 	$toolTip.SetToolTip($clearLogButton, "Clears the log display area.")
-		
+	
 	######################################################################################################################
 	# 																													 #
 	# 												Labels																 #
@@ -11625,7 +11655,7 @@ if (-not $form)
 			}
 		})
 	[void]$ContextMenuServer.Items.Add($ConfigureSystemSettingsItem)
-		
+	
 	############################################################################
 	# Show the context menu when the Server Tools button is clicked
 	############################################################################
@@ -11780,7 +11810,7 @@ if (-not $form)
 			Enable_SQL_Protocols_On_Selected_Lanes -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($EnableSQLProtocolsItem)
-		
+	
 	############################################################################
 	# 14) Set the time on the lanes
 	############################################################################
@@ -11808,7 +11838,7 @@ if (-not $form)
 			Reboot_Lanes -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($RebootLaneItem)
-		
+	
 	############################################################################
 	# Show the context menu when the Server Tools button is clicked
 	############################################################################
@@ -11918,7 +11948,7 @@ if (-not $form)
 	$GeneralToolsButton.Size = New-Object System.Drawing.Size(200, 50)
 	$ContextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuGeneral.ShowItemToolTips = $true
-		
+	
 	############################################################################
 	# 1) Activate Windows ("Alex_C.T")
 	############################################################################
@@ -11990,7 +12020,7 @@ if (-not $form)
 			Ping_All_Backoffices -StoreNumber $StoreNumber
 		})
 	[void]$contextMenuGeneral.Items.Add($PingBackofficesItem)
-		
+	
 	############################################################################
 	# 8) Export All VNC Files
 	############################################################################
@@ -12048,7 +12078,7 @@ if (-not $form)
 			Fix_Deploy_CHG
 		})
 	[void]$ContextMenuGeneral.Items.Add($FixDeployCHGItem)
-		
+	
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
 	############################################################################
@@ -12132,6 +12162,9 @@ $Nodes = $script:FunctionResults['Nodes']
 # Retrieve the list of machine names from the FunctionResults dictionary
 $LaneMachines = $script:FunctionResults['LaneMachines']
 
+# Get the SQL connection string for all machines
+Get_All_Lanes_Database_Info
+
 # Start per-lane jobs for protocol checks (PS5-compatible parallelism via multiple jobs)
 $script:LaneProtocolJobs = @{ }
 $script:LaneProtocols = @{ }
@@ -12176,7 +12209,7 @@ foreach ($lane in $LaneMachines.Keys)
 
 # Live-poll table view (keeps running, shows table as long as PowerShell window is open)
 $protocolTimer = New-Object System.Windows.Forms.Timer
-$protocolTimer.Interval = 500
+$protocolTimer.Interval = 1000
 $protocolTimer.add_Tick({
 		$keysCopy = @($script:LaneProtocolJobs.Keys)
 		foreach ($lane in $keysCopy)
