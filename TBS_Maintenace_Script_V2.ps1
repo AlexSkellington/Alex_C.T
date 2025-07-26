@@ -169,6 +169,16 @@ $StoresqlFilePath = Join-Path $TempDir "Server_Database_Maintenance.sqi"
 # ---------------------------------------------------------------------------------------------------
 $script:ScriptsFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
 
+# ===================================================================================================
+#   Detect -ConnectionString support ONCE (run at top of script, before any SQL commands)
+# ===================================================================================================
+$script:SqlcmdSupportsConnectionString = $null
+try
+{
+	$script:SqlcmdSupportsConnectionString = (Get-Command Invoke-Sqlcmd -ErrorAction Stop).Parameters.Keys -contains "ConnectionString"
+}
+catch { $script:SqlcmdSupportsConnectionString = $false }
+
 # ---------------------------------------------------------------------------------------------------
 # Add C# MailSlotSender Type for Direct Windows Mailslot Messaging (if not already loaded)
 # ---------------------------------------------------------------------------------------------------
@@ -684,9 +694,28 @@ function Retrieve_Nodes
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$NodesFromDatabase = $false
 	
+	# Parse ConnectionString upfront for server and database
+	$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
+	$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+	
 	# -------------------- 1. Database --------------------
 	if ($ConnectionString)
 	{
+		# Import SqlServer module if available
+		Import-Module SqlServer -ErrorAction SilentlyContinue
+		
+		# Check if Invoke-Sqlcmd exists and supports -ConnectionString
+		$invokeSqlCmd = Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue
+		$supportsConnStr = $false
+		if ($invokeSqlCmd)
+		{
+			$supportsConnStr = $invokeSqlCmd.Parameters.ContainsKey('ConnectionString')
+		}
+		else
+		{
+			Write_Log "Invoke-Sqlcmd command not found. Ensure SqlServer module is installed." "yellow"
+		}
+		
 		$NodesFromDatabase = $true
 		try
 		{
@@ -701,13 +730,12 @@ WHERE F1056 = '$StoreNumber'
   AND F1057 NOT LIKE '8%'
   AND F1057 NOT LIKE '9%'
 "@
-			try
+			if ($supportsConnStr)
 			{
 				$laneContentsResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryLaneContents -ErrorAction Stop
 			}
-			catch [System.Management.Automation.ParameterBindingException] {
-				$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
-				$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+			else
+			{
 				$laneContentsResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryLaneContents -ErrorAction Stop
 			}
 			
@@ -736,13 +764,12 @@ WHERE F1056 = '$StoreNumber'
   AND F1057 NOT LIKE '0%'
   AND F1057 NOT LIKE '9%'
 "@
-			try
+			if ($supportsConnStr)
 			{
 				$scaleContentsResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryScaleContents -ErrorAction Stop
 			}
-			catch [System.Management.Automation.ParameterBindingException] {
-				$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
-				$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+			else
+			{
 				$scaleContentsResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryScaleContents -ErrorAction Stop
 			}
 			
@@ -759,7 +786,14 @@ WHERE Active = 'Y'
 "@
 			try
 			{
-				$tbsSclScalesResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryTbsSclScales -ErrorAction Stop
+				if ($supportsConnStr)
+				{
+					$tbsSclScalesResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryTbsSclScales -ErrorAction Stop
+				}
+				else
+				{
+					$tbsSclScalesResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryTbsSclScales -ErrorAction Stop
+				}
 			}
 			catch
 			{
@@ -769,7 +803,7 @@ WHERE Active = 'Y'
 				}
 				else
 				{
-					throw # rethrow for other errors, which will trigger fallback
+					throw
 				}
 			}
 			
@@ -803,13 +837,12 @@ FROM TER_TAB
 WHERE F1056 = '$StoreNumber'
   AND F1057 = '901'
 "@
-			try
+			if ($supportsConnStr)
 			{
 				$serverResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryServer -ErrorAction Stop
 			}
-			catch [System.Management.Automation.ParameterBindingException] {
-				$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
-				$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+			else
+			{
 				$serverResult = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryServer -ErrorAction Stop
 			}
 			
@@ -826,13 +859,12 @@ WHERE F1056 = '$StoreNumber'
   AND F1057 >= '902'
   AND F1057 <= '998'
 "@
-			try
+			if ($supportsConnStr)
 			{
 				$backofficesList = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $queryBackoffices -ErrorAction Stop
 			}
-			catch [System.Management.Automation.ParameterBindingException] {
-				$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
-				$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+			else
+			{
 				$backofficesList = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $queryBackoffices -ErrorAction Stop
 			}
 			$BackofficeMachines = @{ }
