@@ -2607,6 +2607,7 @@ function Get_Remote_Machine_Info
 						SystemProductName  = $null
 						CPU			       = $null
 						RAM			       = $null
+						OSInfo			   = $null
 						Error			   = "Non-Windows scale (e.g., Ishida); skipping."
 					}
 					$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
@@ -2629,6 +2630,7 @@ function Get_Remote_Machine_Info
 					SystemProductName  = $null
 					CPU			       = $null
 					RAM			       = $null
+					OSInfo			   = $null
 					Error			   = "Offline or unreachable."
 				}
 				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
@@ -2649,6 +2651,7 @@ function Get_Remote_Machine_Info
 					SystemProductName  = $null
 					CPU			       = $null
 					RAM			       = $null
+					OSInfo			   = $null
 					Error			   = "Non-Windows device; WMI/REG not supported."
 				}
 				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
@@ -2672,6 +2675,7 @@ function Get_Remote_Machine_Info
 					SystemProductName  = $null
 					CPU			       = $null
 					RAM			       = $null
+					OSInfo			   = $null
 					Error			   = $null
 				}
 				
@@ -2691,11 +2695,13 @@ function Get_Remote_Machine_Info
 					{
 						$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $using:remote -ErrorAction Stop
 						$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $using:remote -ErrorAction Stop | Select-Object -First 1
+						$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $using:remote -ErrorAction Stop
 						@{
 							SystemManufacturer = $sys.Manufacturer
 							SystemProductName  = $sys.Model
 							CPU			       = $cpu.Name
 							RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
+							OSInfo			   = "$($os.Caption) ($($os.Version))"
 						}
 					}
 					catch { $null }
@@ -2718,6 +2724,7 @@ function Get_Remote_Machine_Info
 					$info.SystemProductName = $wmiResult.SystemProductName
 					$info.CPU = $wmiResult.CPU
 					$info.RAM = $wmiResult.RAM
+					$info.OSInfo = $wmiResult.OSInfo
 					$info.Success = $true
 				}
 				else
@@ -2729,12 +2736,14 @@ function Get_Remote_Machine_Info
 							$session = New-CimSession -ComputerName $using:remote -ErrorAction Stop
 							$sys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem
 							$cpu = Get-CimInstance -CimSession $session -ClassName Win32_Processor | Select-Object -First 1
+							$os = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem
 							Remove-CimSession $session
 							@{
 								SystemManufacturer = $sys.Manufacturer
 								SystemProductName  = $sys.Model
 								CPU			       = $cpu.Name
 								RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
+								OSInfo			   = "$($os.Caption) ($($os.Version))"
 							}
 						}
 						catch { $null }
@@ -2757,11 +2766,12 @@ function Get_Remote_Machine_Info
 						$info.SystemProductName = $cimResult.SystemProductName
 						$info.CPU = $cimResult.CPU
 						$info.RAM = $cimResult.RAM
+						$info.OSInfo = $cimResult.OSInfo
 						$info.Success = $true
 					}
 					else
 					{
-						# 2. REG.exe fallback (no RAM)
+						# 2. REG.exe fallback (no RAM, limited OS info)
 						try
 						{
 							if ($originalState.StartType -ne "AUTO_START" -and $originalState.StartType -ne "DEMAND_START")
@@ -2780,19 +2790,23 @@ function Get_Remote_Machine_Info
 							$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
 							$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
 							$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-							
+							# OS fallback: product name from registry
+							$osVer = reg.exe query "\\$remote\HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v ProductName 2>&1
+							$osVerMatch = [regex]::Match($osVer, 'ProductName\s+REG_SZ\s+(.+)$')
 							$SystemManufacturer = if ($manufMatch.Success) { $manufMatch.Groups[1].Value.Trim() }
 							else { $null }
 							$SystemProductName = if ($prodMatch.Success) { $prodMatch.Groups[1].Value.Trim() }
 							else { $null }
 							$CPU = if ($cpuMatch.Success) { $cpuMatch.Groups[1].Value.Trim() }
 							else { $null }
-							
+							$OSInfo = if ($osVerMatch.Success) { $osVerMatch.Groups[1].Value.Trim() }
+							else { $null }
 							if ($SystemManufacturer -and $SystemProductName)
 							{
 								$info.SystemManufacturer = $SystemManufacturer
 								$info.SystemProductName = $SystemProductName
 								$info.CPU = $CPU
+								$info.OSInfo = $OSInfo
 								$info.RAM = $null # No reliable REG fallback for RAM
 								$info.Success = $true
 							}
@@ -2846,6 +2860,7 @@ function Get_Remote_Machine_Info
 						{
 							$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 							if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
+							if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
 							Write_Log "Processed $remoteName ($($section.Name)): Success" "green"
 						}
 						elseif ($info.Error)
@@ -2878,6 +2893,7 @@ function Get_Remote_Machine_Info
 						SystemProductName  = $null
 						CPU			       = $null
 						RAM			       = $null
+						OSInfo			   = $null
 						Error			   = "Job timed out"
 					}
 					$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
@@ -2913,6 +2929,7 @@ function Get_Remote_Machine_Info
 						SystemProductName  = $null
 						CPU			       = $null
 						RAM			       = $null
+						OSInfo			   = $null
 						Error			   = "Job timed out"
 					}
 					Write_Log "Processed $remoteName ($($section.Name)): Timed out (cleanup)" "red"
@@ -2949,6 +2966,7 @@ function Get_Remote_Machine_Info
 				{
 					$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 					if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
+					if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
 				}
 				elseif ($info.Error)
 				{
