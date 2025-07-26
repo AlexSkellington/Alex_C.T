@@ -12163,7 +12163,7 @@ $Nodes = $script:FunctionResults['Nodes']
 $LaneMachines = $script:FunctionResults['LaneMachines']
 
 # Get the SQL connection string for all machines
-Get_All_Lanes_Database_Info
+Get_All_Lanes_Database_Info | Out-Null
 
 # Start per-lane jobs for protocol checks (PS5-compatible parallelism via multiple jobs)
 $script:LaneProtocolJobs = @{ }
