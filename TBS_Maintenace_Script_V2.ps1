@@ -2522,7 +2522,7 @@ function Get_Remote_Machine_Info
 	
 	# Backoffices Tab
     	$tabBO = New-Object System.Windows.Forms.TabPage
-   	 $tabBO.Text = "Backoffices"
+   	$tabBO.Text = "Backoffices"
     	$clbBO = New-Object System.Windows.Forms.CheckedListBox
     	$clbBO.Location = New-Object System.Drawing.Point(10, 10)
     	$clbBO.Size = New-Object System.Drawing.Size(370, 300)
