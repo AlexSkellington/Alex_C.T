@@ -2521,15 +2521,23 @@ function Get_Remote_Machine_Info
 	$tabs.TabPages.Add($tabScales)
 	
 	# Backoffices Tab
-	$tabBO = New-Object System.Windows.Forms.TabPage
-	$tabBO.Text = "Backoffices"
-	$clbBO = New-Object System.Windows.Forms.CheckedListBox
-	$clbBO.Location = New-Object System.Drawing.Point(10, 10)
-	$clbBO.Size = New-Object System.Drawing.Size(370, 300)
-	$clbBO.CheckOnClick = $true
-	$tabBO.Controls.Add($clbBO)
-	foreach ($bo in $boNames | Sort-Object) { $clbBO.Items.Add($bo) | Out-Null }
-	$tabs.TabPages.Add($tabBO)
+    	$tabBO = New-Object System.Windows.Forms.TabPage
+   	 $tabBO.Text = "Backoffices"
+    	$clbBO = New-Object System.Windows.Forms.CheckedListBox
+    	$clbBO.Location = New-Object System.Drawing.Point(10, 10)
+    	$clbBO.Size = New-Object System.Drawing.Size(370, 300)
+    	$clbBO.CheckOnClick = $true
+    	$tabBO.Controls.Add($clbBO)
+    	foreach ($boNum in $boNums) {
+        $boName = $boDict[$boNum]
+        if ($boName) {
+            $display = "$boName ($boNum)"
+        } else {
+            $display = "Unknown ($boNum)"
+        }
+        $clbBO.Items.Add($display) | Out-Null
+    	}
+    	$tabs.TabPages.Add($tabBO)
 	
 	# Select/Deselect All Buttons
 	$btnSelectAll = New-Object System.Windows.Forms.Button
