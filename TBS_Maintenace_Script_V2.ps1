@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.3.6"
-$VersionDate = "2025-07-25"
+$VersionDate = "2025-07-28"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -12194,25 +12194,40 @@ foreach ($lane in $LaneMachines.Keys)
 	$script:LaneProtocolJobs[$lane] = Start-Job -ArgumentList $machine, $lane -ScriptBlock {
 		param ($machine,
 			$lane)
-		$protocol = "File"
 		
-		# Fast TCP check with TcpClient
+		$protocol = "File"
+		$tcpConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=DBMSSOCN"
+		$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
+		
+		# Step 1: Fast TCP port check
+		$tcpPortOpen = $false
 		try
 		{
 			$tcpClient = New-Object System.Net.Sockets.TcpClient
 			$connectTask = $tcpClient.ConnectAsync($machine, 1433)
 			if ($connectTask.Wait(500) -and $tcpClient.Connected)
 			{
-				$protocol = "TCP"
+				$tcpPortOpen = $true
 				$tcpClient.Close()
 			}
 		}
 		catch { }
 		
-		# Try Named Pipes if TCP not detected
+		# Step 2: If TCP port is open, try SQL query over TCP
+		if ($tcpPortOpen)
+		{
+			try
+			{
+				Import-Module SqlServer -ErrorAction Stop
+				Invoke-Sqlcmd -ConnectionString $tcpConn -Query "SELECT 1" -QueryTimeout 1 -ErrorAction Stop | Out-Null
+				$protocol = "TCP"
+			}
+			catch { }
+		}
+		
+		# Step 3: If not TCP, try Named Pipes SQL query
 		if ($protocol -eq "File")
 		{
-			$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
 			try
 			{
 				Import-Module SqlServer -ErrorAction Stop
@@ -12221,6 +12236,8 @@ foreach ($lane in $LaneMachines.Keys)
 			}
 			catch { }
 		}
+		
+		# Step 4: If neither works, protocol remains "File"
 		[PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
 	}
 }
