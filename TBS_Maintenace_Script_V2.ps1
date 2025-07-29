@@ -19,7 +19,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.3.9"
+$VersionNumber = "2.3.6"
 $VersionDate = "2025-07-28"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -2458,6 +2458,7 @@ VALUES
 #   - Code cleanup: Reduced duplication; inlined all logic without helpers.
 #   - Compatibility: Removed ternary operators for PS5 support; used if-else instead.
 #   - For scales: Process Bizerba (Windows) with WMI/CIM/REG; skip Ishida (non-Windows) with message.
+#   - For Backoffices: Added INI fallback method after all others fail.
 #
 # Author: Alex_C.T (original); Improved by Grok
 # ===================================================================================================
@@ -2478,8 +2479,10 @@ function Get_Remote_Machine_Info
 	# Build lists from FunctionResults (populate with Retrieve_Nodes first!)
 	$laneNames = $script:FunctionResults['LaneMachines'].Values | Where-Object { $_ } | Select-Object -Unique
 	$scaleIPs = $script:FunctionResults['ScaleIPNetworks'].Values | ForEach-Object { $_.FullIP } | Where-Object { $_ } | Select-Object -Unique
-	$boNames = $script:FunctionResults['BackofficeMachines'].Values | Where-Object { $_ } | Select-Object -Unique
-	$scaleBrands = $script:FunctionResults['ScaleIPNetworks']
+	$boDict = $script:FunctionResults['BackofficeMachines'] # Key = BO num, Value = machine name
+	$boNums = $boDict.Keys | Sort-Object
+	$scaleBrands = $script:FunctionResults['ScaleIPNetworks']	
+	$StoreNumber = $script:FunctionResults['StoreNumber'] # 3-digit, zero-padded store number
 	
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
@@ -2605,7 +2608,13 @@ function Get_Remote_Machine_Info
 	$selectedBOs = @()
 	for ($i = 0; $i -lt $clbBO.Items.Count; $i++)
 	{
-		if ($clbBO.GetItemChecked($i)) { $selectedBOs += $clbBO.Items[$i] }
+		if ($clbBO.GetItemChecked($i))
+		{
+			if ($clbBO.Items[$i] -match '\((\d{3})\)$')
+			{
+				$selectedBOs += $matches[1]
+			}
+		}
 	}
 	
 	# Validation: No selections
@@ -2626,7 +2635,7 @@ function Get_Remote_Machine_Info
 	
 	foreach ($section in @(
 			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt'; IsWindows = $true },
-			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt'; IsWindows = $null }, # Determined per scale
+			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt'; IsWindows = $null },
 			@{ Name = 'BackOffices'; Selected = $selectedBOs; Dir = $backofficesDir; ScriptVar = 'BackofficeHardwareInfo'; InfoLinesVar = 'BOInfoLines'; ResultsVar = 'BOResults'; FileName = 'Backoffices_Info.txt'; IsWindows = $true }
 		))
 	{
@@ -2636,6 +2645,7 @@ function Get_Remote_Machine_Info
 		Set-Variable -Name $($section.InfoLinesVar) -Value @()
 		$jobs = @()
 		$pending = @{ }
+		
 		foreach ($remote in ($section.Selected | Sort-Object))
 		{
 			$isWindows = $section.IsWindows
@@ -2673,53 +2683,15 @@ function Get_Remote_Machine_Info
 				$isWindows = $true
 			}
 			
-			if (-not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
-			{
-				$info = @{
-					Success		       = $false
-					SystemManufacturer = $null
-					SystemProductName  = $null
-					CPU			       = $null
-					RAM			       = $null
-					OSInfo			   = $null
-					Error			   = "Offline or unreachable."
-				}
-				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
-				$results[$remote] = $info
-				Set-Variable -Name $($section.ResultsVar) -Value $results
-				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-				$infolines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
-				Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
-				Write_Log "Skipped $remote ($($section.Name)): $($info.Error)" "red"
-				continue
-			}
-			
-			if (-not $isWindows)
-			{
-				$info = @{
-					Success		       = $false
-					SystemManufacturer = $null
-					SystemProductName  = $null
-					CPU			       = $null
-					RAM			       = $null
-					OSInfo			   = $null
-					Error			   = "Non-Windows device; WMI/REG not supported."
-				}
-				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
-				$results[$remote] = $info
-				Set-Variable -Name $($section.ResultsVar) -Value $results
-				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-				$infolines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
-				Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
-				Write_Log "Skipped $remote ($($section.Name)): $($info.Error)" "yellow"
-				continue
-			}
-			
 			$job = Start-Job -ScriptBlock {
 				param ($remote,
 					$wmiTimeoutSeconds,
 					$cimTimeoutSeconds,
-					$regTimeoutSeconds)
+					$regTimeoutSeconds,
+					$DbsPath,
+					$StoreNumber,
+					$section)
+				# Write-Host "[JOB DEBUG] DbsPath inside job: '$DbsPath'" -ForegroundColor Green
 				$info = @{
 					Success		       = $false
 					SystemManufacturer = $null
@@ -2729,18 +2701,13 @@ function Get_Remote_Machine_Info
 					OSInfo			   = $null
 					Error			   = $null
 				}
-				
-				# Inline: Get original RemoteRegistry state
-				$originalState = $null
-				try
+				$isBackoffice = ($section.Name -eq 'BackOffices')
+				if (-not $isBackoffice -and -not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
 				{
-					$stateOutput = sc.exe "\\$remote" query RemoteRegistry 2>$null | Select-String "STATE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
-					$startTypeOutput = sc.exe "\\$remote" qc RemoteRegistry 2>$null | Select-String "START_TYPE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
-					$originalState = @{ State = $stateOutput; StartType = $startTypeOutput }
+					$info.Error = "Offline or unreachable."
+					return @{ Machine = $remote; Info = $info }
 				}
-				catch { }
-				
-				# Inline: Timeout for WMI
+				# WMI
 				$wmiJob = Start-Job -ScriptBlock {
 					try
 					{
@@ -2768,7 +2735,6 @@ function Get_Remote_Machine_Info
 					Remove-Job $wmiJob -Force -ErrorAction SilentlyContinue
 					$wmiResult = $null
 				}
-				
 				if ($wmiResult -and $wmiResult.SystemManufacturer -and $wmiResult.SystemProductName)
 				{
 					$info.SystemManufacturer = $wmiResult.SystemManufacturer
@@ -2780,7 +2746,7 @@ function Get_Remote_Machine_Info
 				}
 				else
 				{
-					# CIM fallback with separate timeout
+					# CIM
 					$cimJob = Start-Job -ScriptBlock {
 						try
 						{
@@ -2810,7 +2776,6 @@ function Get_Remote_Machine_Info
 						Remove-Job $cimJob -Force -ErrorAction SilentlyContinue
 						$cimResult = $null
 					}
-					
 					if ($cimResult -and $cimResult.SystemManufacturer -and $cimResult.SystemProductName)
 					{
 						$info.SystemManufacturer = $cimResult.SystemManufacturer
@@ -2822,7 +2787,7 @@ function Get_Remote_Machine_Info
 					}
 					else
 					{
-						# 2. REG.exe fallback (no RAM, limited OS info)
+						# REG fallback (no RAM, limited OS info)
 						try
 						{
 							if ($originalState.StartType -ne "AUTO_START" -and $originalState.StartType -ne "DEMAND_START")
@@ -2841,23 +2806,19 @@ function Get_Remote_Machine_Info
 							$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
 							$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
 							$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-							# OS fallback: product name from registry
-							$osVer = reg.exe query "\\$remote\HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v ProductName 2>&1
-							$osVerMatch = [regex]::Match($osVer, 'ProductName\s+REG_SZ\s+(.+)$')
+							
 							$SystemManufacturer = if ($manufMatch.Success) { $manufMatch.Groups[1].Value.Trim() }
 							else { $null }
 							$SystemProductName = if ($prodMatch.Success) { $prodMatch.Groups[1].Value.Trim() }
 							else { $null }
 							$CPU = if ($cpuMatch.Success) { $cpuMatch.Groups[1].Value.Trim() }
 							else { $null }
-							$OSInfo = if ($osVerMatch.Success) { $osVerMatch.Groups[1].Value.Trim() }
-							else { $null }
+							
 							if ($SystemManufacturer -and $SystemProductName)
 							{
 								$info.SystemManufacturer = $SystemManufacturer
 								$info.SystemProductName = $SystemProductName
 								$info.CPU = $CPU
-								$info.OSInfo = $OSInfo
 								$info.RAM = $null # No reliable REG fallback for RAM
 								$info.Success = $true
 							}
@@ -2870,21 +2831,113 @@ function Get_Remote_Machine_Info
 						{
 							$info.Error = "REG fallback failed: $_"
 						}
-						finally
+						# INI fallback for Backoffices
+						if (-not $info.Success -and $section.Name -eq 'BackOffices')
 						{
-							# Inline: Restore service state
-							if ($originalState.State -ne "RUNNING") { sc.exe "\\$remote" stop RemoteRegistry | Out-Null }
-							if ($originalState.StartType) { sc.exe "\\$remote" config RemoteRegistry start= $originalState.StartType | Out-Null }
+							try
+							{
+								$boNum = $remote
+								$pattern = "INFO_${StoreNumber}${boNum}_SMSStart.ini"
+								$searchPath = Join-Path $DbsPath $pattern
+								# Write-Host "[JOB DEBUG] INI Fallback Path: $searchPath" -ForegroundColor Yellow
+								$iniFile = Get-ChildItem -Path $DbsPath -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+								if ($iniFile)
+								{
+									$iniLines = Get-Content $iniFile.FullName
+									$sections = @{ }
+									$currentSection = ""
+									foreach ($line in $iniLines)
+									{
+										if ($line -match '^\[(.+)\]$')
+										{
+											$currentSection = $matches[1]
+											$sections[$currentSection] = @{ }
+										}
+										elseif ($line -match '^\s*([^=]+?)\s*=\s*(.*)$' -and $currentSection)
+										{
+											$key = $matches[1].Trim()
+											$val = $matches[2].Trim()
+											$sections[$currentSection][$key] = $val
+										}
+									}
+									
+									# Machine Name
+									if ($sections.ContainsKey('ORIGIN') -and $sections['ORIGIN'].ContainsKey('ComputerName') -and $sections['ORIGIN']['ComputerName'])
+									{
+										$realMachineName = $sections['ORIGIN']['ComputerName']
+									}
+									else
+									{
+										$realMachineName = $remote
+									}
+									$info.MachineNameOverride = $realMachineName
+									
+									# Manufacturer/Model
+									$info.SystemManufacturer = "Unknown"
+									$info.SystemProductName = "Unknown"
+									
+									# CPU
+									if ($sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores') -and $sections['PROCESSOR'].ContainsKey('Architecture'))
+									{
+										$cores = $sections['PROCESSOR']['Cores']
+										$arch = $sections['PROCESSOR']['Architecture']
+										$info.CPU = "$cores cores ($arch)"
+									}
+									else
+									{
+										$info.CPU = "Unknown"
+									}
+									
+									# RAM in GB, 1 decimal
+									if ($sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
+									{
+										$ramMb = $sections['Memory']['PhysicalMemory']
+										if ($ramMb -match '^\d+$')
+										{
+											$info.RAM = "{0:N1}" -f ([double]$ramMb / 1024)
+										}
+										else
+										{
+											$info.RAM = "Unknown"
+										}
+									}
+									else
+									{
+										$info.RAM = "Unknown"
+									}
+									
+									# OS
+									if ($sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
+									{
+										$info.OSInfo = $sections['OperatingSystem']['ProductName']
+									}
+									else
+									{
+										$info.OSInfo = "Unknown"
+									}
+									
+									$info.Success = $true
+									$info.Error = "Read from $($iniFile.FullName)"
+								}
+								else
+								{
+									$info.Error = "No fallback INI file found for $remote ($pattern, full path: $searchPath)"
+								}
+							}
+							catch
+							{
+								$info.Error = "INI fallback failed: $_"
+							}
 						}
 					}
 				}
-				return @{ Machine = $remote; Info = $info; OriginalState = $originalState }
-			} -ArgumentList $remote, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds
+				return @{ Machine = $remote; Info = $info }
+			} -ArgumentList $remote, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $DbsPath, $StoreNumber, $section
 			
 			$jobs += $job
 			$pending[$job.Id] = $remote
 			
-			# Throttle
+			# Throttle background jobs for max parallelism
 			while ($jobs.Count -ge $maxConcurrentJobs)
 			{
 				$done = Wait-Job -Job $jobs -Any -Timeout 60
@@ -2895,14 +2948,6 @@ function Get_Remote_Machine_Info
 						$result = Receive-Job $j
 						$remoteName = $result.Machine
 						$info = $result.Info
-						# Inline: Restore if not done in job (edge case)
-						$originalState = $result.OriginalState
-						if ($originalState)
-						{
-							if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null }
-							if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null }
-						}
-						
 						$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
 						$results[$remoteName] = $info
 						Set-Variable -Name $($section.ResultsVar) -Value $results
@@ -2933,82 +2978,29 @@ function Get_Remote_Machine_Info
 						$pending.Remove($j.Id)
 					}
 				}
-				else
-				{
-					# Timed out, kill oldest
-					$oldest = $jobs[0]
-					$remoteName = $pending[$oldest.Id]
-					$info = @{
-						Success		       = $false
-						SystemManufacturer = $null
-						SystemProductName  = $null
-						CPU			       = $null
-						RAM			       = $null
-						OSInfo			   = $null
-						Error			   = "Job timed out"
-					}
-					$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
-					$results[$remoteName] = $info
-					Set-Variable -Name $($section.ResultsVar) -Value $results
-					$line = "Machine Name: $remoteName | [Hardware info unavailable]  Error: Timed out"
-					$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-					$infolines += $line
-					Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
-					Write_Log "Processed $remoteName ($($section.Name)): Timed out" "red"
-					Stop-Job $oldest -ErrorAction SilentlyContinue
-					Remove-Job $oldest -Force -ErrorAction SilentlyContinue
-					$jobs = $jobs | Where-Object { $_.Id -ne $oldest.Id }
-					$pending.Remove($oldest.Id)
-				}
 			}
 		}
 		
-		# Clean up remaining jobs
+		# Wait for all jobs to finish and collect results
 		if ($jobs.Count -gt 0)
 		{
 			Wait-Job -Job $jobs -Timeout 60 | Out-Null
 			foreach ($j in $jobs)
 			{
 				$remoteName = $pending[$j.Id]
-				if ($j.State -eq 'Running')
+				$result = Receive-Job $j
+				$info = $result.Info
+				if ($info.Success)
 				{
-					Stop-Job $j -ErrorAction SilentlyContinue
-					Remove-Job $j -Force -ErrorAction SilentlyContinue
-					$info = @{
-						Success		       = $false
-						SystemManufacturer = $null
-						SystemProductName  = $null
-						CPU			       = $null
-						RAM			       = $null
-						OSInfo			   = $null
-						Error			   = "Job timed out"
-					}
-					Write_Log "Processed $remoteName ($($section.Name)): Timed out (cleanup)" "red"
+					$status = 'Success'
+					$color = 'green'
 				}
 				else
 				{
-					$result = Receive-Job $j
-					$info = $result.Info
-					$remoteName = $result.Machine
-					# Inline: Restore service state
-					$originalState = $result.OriginalState
-					if ($originalState)
-					{
-						if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null }
-						if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null }
-					}
-					if ($info.Success)
-					{
-						$status = 'Success'
-						$color = 'green'
-					}
-					else
-					{
-						$status = "Error - $($info.Error)"
-						$color = 'red'
-					}
-					Write_Log "Processed $remoteName ($($section.Name)): $status" $color
+					$status = "Error - $($info.Error)"
+					$color = 'red'
 				}
+				Write_Log "Processed $remoteName ($($section.Name)): $status" $color
 				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
 				$results[$remoteName] = $info
 				Set-Variable -Name $($section.ResultsVar) -Value $results
@@ -3056,10 +3048,14 @@ function Get_Remote_Machine_Info
 		Write_Log "Completed processing $($section.Name).`r`n" "green"
 	}
 	
-	# Final result for caller
-	$laneLines = Get-Variable -Name LaneInfoLines -ValueOnly
-	$scaleLines = Get-Variable -Name ScaleInfoLines -ValueOnly
-	$boLines = Get-Variable -Name BOInfoLines -ValueOnly
+	# Safely retrieve info lines
+	if (Get-Variable -Name LaneInfoLines -Scope Local -ErrorAction SilentlyContinue) { $laneLines = Get-Variable -Name LaneInfoLines -ValueOnly }
+	else { $laneLines = @() }
+	if (Get-Variable -Name ScaleInfoLines -Scope Local -ErrorAction SilentlyContinue) { $scaleLines = Get-Variable -Name ScaleInfoLines -ValueOnly }
+	else { $scaleLines = @() }
+	if (Get-Variable -Name BOInfoLines -Scope Local -ErrorAction SilentlyContinue) { $boLines = Get-Variable -Name BOInfoLines -ValueOnly }
+	else { $boLines = @() }
+	
 	if (($laneLines.Count -gt 0) -or ($scaleLines.Count -gt 0) -or ($boLines.Count -gt 0))
 	{
 		Write_Log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
