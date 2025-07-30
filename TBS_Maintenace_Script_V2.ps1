@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.3.7"
-$VersionDate = "2025-07-29"
+$VersionDate = "2025-07-30"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -167,7 +167,12 @@ $StoresqlFilePath = Join-Path $TempDir "Server_Database_Maintenance.sqi"
 # ---------------------------------------------------------------------------------------------------
 # Path where all script files will be saved
 # ---------------------------------------------------------------------------------------------------
-$script:ScriptsFolder = "C:\Tecnica_Systems\Scripts_by_Alex_C.T"
+$script:ScriptsFolder = "C:\Tecnica_Systems\Alex_C.T\Scripts"
+
+# ---------------------------------------------------------------------------------------------------
+# Path where all tools will be saved
+# ---------------------------------------------------------------------------------------------------
+$script:ToolsDir = "C:\Tecnica_Systems\Alex_C.T\Tools"
 
 # ===================================================================================================
 #   Detect -ConnectionString support ONCE (run at top of script, before any SQL commands)
@@ -231,6 +236,133 @@ public class MailslotSender {
     }
 }
 "@
+}
+
+# ===================================================================================================
+#                                      FUNCTION: Get-PsExec
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Ensures Sysinternals PsExec.exe is present at the specified tools directory (default: C:\Tecnica_Systems\Alex_C.T\Tools).
+#   If missing, downloads PSTools.zip from Microsoft, extracts PsExec.exe in the background,
+#   and provides a visible progress indicator compatible with ISE and console hosts.
+#   Cleans up temporary files and prints clear log output for all actions and errors.
+#
+# Improvements:
+#   - Fully self-contained, no helpers/nested functions.
+#   - Compatible with PowerShell ISE and Windows PowerShell 5+.
+#   - Progress display uses Write-Host for log-friendly output (no cursor jumps).
+#   - Extraction is robust: uses manual file copy for maximum compatibility.
+#   - Handles concurrent job detection; never double-downloads.
+#   - Detailed feedback on errors or success, always visible to the user.
+#
+# Author: Alex_C.T
+# ===================================================================================================
+
+function Get_PsExec
+{
+	param (
+		[string]$ToolsDir = $script:ToolsDir
+	)
+		
+	$psexecPath = Join-Path $ToolsDir "PsExec.exe"
+	$pstoolsZip = Join-Path $ToolsDir "PSTools.zip"
+	$pstoolsUrl = "https://download.sysinternals.com/files/PSTools.zip"
+	$jobName = "Get_PsExec_Download_Job"
+	
+	# Check if PsExec.exe already exists
+	if (Test-Path $psexecPath)
+	{
+		Write-Host "PsExec.exe is ready to be used at $psexecPath."
+		return $psexecPath
+	}
+	
+	# Check for existing running job (compatible method)
+	$existingJob = Get-Job | Where-Object { $_.Name -eq $jobName -and $_.State -eq 'Running' }
+	if ($existingJob)
+	{
+		Write-Host "Download job already running. Waiting for completion..."
+		$job = $existingJob
+	}
+	else
+	{
+		Write-Host "PsExec.exe not found. Starting background download and extraction..."
+		$job = Start-Job -Name $jobName -ScriptBlock {
+			param ($pstoolsUrl,
+				$pstoolsZip,
+				$ToolsDir,
+				$psexecPath)
+			try
+			{
+				if (!(Test-Path $ToolsDir))
+				{
+					Write-Host "[Job] Creating directory: $ToolsDir"
+					New-Item -Path $ToolsDir -ItemType Directory | Out-Null
+				}
+				Write-Host "[Job] Downloading PSTools.zip..."
+				Invoke-WebRequest -Uri $pstoolsUrl -OutFile $pstoolsZip -UseBasicParsing -ErrorAction Stop
+				
+				Write-Host "[Job] Extracting PsExec.exe..."
+				Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+				$zip = [System.IO.Compression.ZipFile]::OpenRead($pstoolsZip)
+				$entry = $zip.Entries | Where-Object { $_.Name -ieq "PsExec.exe" }
+				if ($entry)
+				{
+					# Manual extraction (compat with older PowerShell/ISE)
+					$fs = $entry.Open()
+					$bytes = New-Object byte[] $entry.Length
+					[void]$fs.Read($bytes, 0, $entry.Length)
+					$fs.Close()
+					[System.IO.File]::WriteAllBytes($psexecPath, $bytes)
+					Write-Host "[Job] PsExec.exe extracted to $psexecPath"
+				}
+				else
+				{
+					Write-Host "[Job] WARNING: PsExec.exe not found in ZIP!"
+				}
+				$zip.Dispose()
+				
+				if (Test-Path $pstoolsZip) { Remove-Item $pstoolsZip -ErrorAction SilentlyContinue }
+				if (Test-Path $psexecPath)
+				{
+					Write-Host "[Job] PsExec is ready at $psexecPath"
+				}
+				else
+				{
+					Write-Host "[Job] WARNING: PsExec.exe not found after extraction."
+				}
+			}
+			catch
+			{
+				Write-Host "[Job] ERROR: $($_.Exception.Message)"
+				if (Test-Path $pstoolsZip) { Remove-Item $pstoolsZip -ErrorAction SilentlyContinue }
+			}
+		} -ArgumentList $pstoolsUrl, $pstoolsZip, $ToolsDir, $psexecPath
+	}
+	
+	# Simple progress indicator (compatible with ISE)
+	Write-Host -NoNewline "Downloading and extracting PsExec.exe"
+	while ($job.State -eq "Running")
+	{
+		Write-Host -NoNewline "."
+		Start-Sleep -Seconds 1
+		$job = Get-Job | Where-Object { $_.Id -eq $job.Id }
+	}
+	Write-Host ""
+	
+	# Show job output
+	Receive-Job -Id $job.Id | ForEach-Object { Write-Host $_ }
+	Remove-Job -Id $job.Id -Force
+	
+	if (Test-Path $psexecPath)
+	{
+		Write-Host "All done! PsExec.exe is ready at $psexecPath"
+		return $psexecPath
+	}
+	else
+	{
+		Write-Host "ERROR: PsExec.exe was not found after extraction. Check above for errors."
+		return $null
+	}
 }
 
 # ===================================================================================================
@@ -2742,8 +2874,8 @@ function Get_Remote_Machine_Info
 								CPU			       = $CPU
 								OSInfo			   = $osString
 								Method			   = "REG"
-								Success		       = ($SystemManufacturer -and $SystemProductName)
-								Error			   = $null
+								Success		       = ($SystemManufacturer -and $SystemProductName) # Only true if BOTH are found!
+								Error			   = if (!($SystemManufacturer -and $SystemProductName)) { "REG query did not return complete info" } else { $null }
 							}
 						}
 						catch
@@ -2779,26 +2911,97 @@ function Get_Remote_Machine_Info
 							Error			   = "REG query timed out after $regTimeoutSeconds seconds."
 						}
 					}
-					if ($regResult.Success)
-					{
-						$info.SystemManufacturer = $regResult.SystemManufacturer
-						$info.SystemProductName = $regResult.SystemProductName
-						$info.CPU = $regResult.CPU
-						$info.RAM = $null
-						$info.OSInfo = $regResult.OSInfo
-						$info.Method = "REG"
-						$info.Success = $true
-					}
-					else
-					{
-						$info.Error = $regResult.Error
-						$info.Method = "REG"
-					}
+					# Set all info, including Success
+					$info.SystemManufacturer = $regResult.SystemManufacturer
+					$info.SystemProductName = $regResult.SystemProductName
+					$info.CPU = $regResult.CPU
+					$info.RAM = $null
+					$info.OSInfo = $regResult.OSInfo
+					$info.Method = "REG"
+					$info.Error = $regResult.Error
+					$info.Success = $regResult.Success # <- CRITICAL
 					# Inline: Restore service state
 					if ($originalState.State -ne "RUNNING") { sc.exe "\\$resolvedRemote" stop RemoteRegistry | Out-Null }
 					if ($originalState.StartType) { sc.exe "\\$resolvedRemote" config RemoteRegistry start= $originalState.StartType | Out-Null }
 				}
-				# -- INI Fallback for Backoffices only --
+				$info.Error = "Entered Lane INI fallback" # Temporary; will overwrite if actual error
+				# -- INI Fallback for Lanes (remote share) --
+				if (-not $info.Success -and $section.Name -eq 'Lanes')
+				{
+					$info.Error = "Entered Lane INI fallback" # Temporary; will overwrite if actual error
+					try
+					{
+						# Robust: always extract the last 3 digits (e.g., "POS001", "Lane03", "001")
+						if ($remote -match '(\d{3})$') { $laneNum = $matches[1] }
+						else { $laneNum = $remote }
+						$pattern = "INFO_${StoreNumber}${laneNum}_SMSStart.ini"
+						$remoteDbsPath = "\\$resolvedRemote\storeman\office\dbs"
+						$iniFile = Get-ChildItem -Path $remoteDbsPath -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+						if ($iniFile)
+						{
+							$iniLines = Get-Content $iniFile.FullName
+							$sections = @{ }
+							$currentSection = ""
+							foreach ($line in $iniLines)
+							{
+								if ($line -match '^\[(.+)\]$')
+								{
+									$currentSection = $matches[1]
+									$sections[$currentSection] = @{ }
+								}
+								elseif ($line -match '^\s*([^=]+?)\s*=\s*(.*)$' -and $currentSection)
+								{
+									$key = $matches[1].Trim()
+									$val = $matches[2].Trim()
+									$sections[$currentSection][$key] = $val
+								}
+							}
+							if ($sections.ContainsKey('ORIGIN') -and $sections['ORIGIN'].ContainsKey('ComputerName') -and $sections['ORIGIN']['ComputerName'])
+							{
+								$info.MachineNameOverride = $sections['ORIGIN']['ComputerName']
+							}
+							else
+							{
+								$info.MachineNameOverride = $laneNum
+							}
+							$info.SystemManufacturer = "Unknown"
+							$info.SystemProductName = "Unknown"
+							if ($sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores') -and $sections['PROCESSOR'].ContainsKey('Architecture'))
+							{
+								$cores = $sections['PROCESSOR']['Cores']
+								$arch = $sections['PROCESSOR']['Architecture']
+								$info.CPU = "$cores cores ($arch)"
+							}
+							else { $info.CPU = "Unknown" }
+							if ($sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
+							{
+								$ramMb = $sections['Memory']['PhysicalMemory']
+								if ($ramMb -match '^\d+$') { $info.RAM = "{0:N1}" -f ([double]$ramMb / 1024) }
+								else { $info.RAM = "Unknown" }
+							}
+							else { $info.RAM = "Unknown" }
+							if ($sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
+							{
+								$info.OSInfo = $sections['OperatingSystem']['ProductName']
+							}
+							else { $info.OSInfo = "Unknown" }
+							$info.Method = "INI"
+							$info.Success = $true
+							$info.Error = "Read from $($iniFile.FullName)"
+						}
+						else
+						{
+							$info.Error = "No fallback INI file found for $remote ($pattern, path: $remoteDbsPath)"
+							$info.Method = "INI"
+						}
+					}
+					catch
+					{
+						$info.Error = "Lane INI fallback failed: $_"
+						$info.Method = "INI"
+					}
+				}
+				# -- INI Fallback for Backoffices (local share) --
 				if (-not $info.Success -and $section.Name -eq 'BackOffices')
 				{
 					try
@@ -10375,6 +10578,19 @@ PreemptiveUpdates=0
 #   Returns: hashtable with keys matching selected node types (Lanes, Scales, Backoffices)
 # ===================================================================================================
 
+# ===================================================================================================
+#                             FUNCTION: Show_Node_Selection_Form
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Shows a node selector dialog for Lanes, Scales, Backoffices, or any combination.
+#   Usage:
+#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
+#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale"
+#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes @("Lane","Scale","Backoffice")
+#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale" -OnlyBizerbaScales
+#   Returns: hashtable with keys matching selected node types (Lanes, Scales, Backoffices)
+# ===================================================================================================
+
 function Show_Node_Selection_Form
 {
 	param (
@@ -10449,8 +10665,7 @@ function Show_Node_Selection_Form
 			$clbLanes.Items.Add($obj) | Out-Null
 		}
 	}
-	
-	# ------------------ Scales Tab ------------------
+	# ----- Scales Tab -----
 	if ("Scale" -in $NodeTypes)
 	{
 		$tabScales = New-Object System.Windows.Forms.TabPage
@@ -10463,12 +10678,10 @@ function Show_Node_Selection_Form
 		$tabs.TabPages.Add($tabScales)
 		$tabControls["Scales"] = $clbScales
 		
-		# Get scale objects (not keys)
 		$allScales = @()
 		if ($script:FunctionResults.ContainsKey('ScaleIPNetworks'))
 		{
 			$allScales = $script:FunctionResults['ScaleIPNetworks'].Values
-			# Only show Bizerba if flag set
 			if ($OnlyBizerbaScales)
 			{
 				$allScales = $allScales | Where-Object { $_.ScaleBrand -match 'bizerba' }
@@ -10495,7 +10708,6 @@ function Show_Node_Selection_Form
 			$clbScales.Items.Add($scaleObj) | Out-Null
 		}
 	}
-	
 	# ----- Backoffices Tab -----
 	if ("Backoffice" -in $NodeTypes)
 	{
@@ -10529,40 +10741,369 @@ function Show_Node_Selection_Form
 		}
 	}
 	
-	# ----- Select/Deselect All Buttons -----
 	$btnSelectAll = New-Object System.Windows.Forms.Button
 	$btnSelectAll.Location = New-Object System.Drawing.Point(20, 340)
 	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
 	$btnSelectAll.Text = "Select All"
-	$btnSelectAll.Add_Click({
-			foreach ($clb in $tabControls.Values)
-			{
-				for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $true) }
-			}
-		})
-	$form.Controls.Add($btnSelectAll)
+	$btnSelectAll.BackColor = [System.Drawing.SystemColors]::Control
 	
 	$btnDeselectAll = New-Object System.Windows.Forms.Button
 	$btnDeselectAll.Location = New-Object System.Drawing.Point(220, 340)
 	$btnDeselectAll.Size = New-Object System.Drawing.Size(180, 32)
 	$btnDeselectAll.Text = "Deselect All"
-	$btnDeselectAll.Add_Click({
-			foreach ($clb in $tabControls.Values)
+	$btnDeselectAll.BackColor = [System.Drawing.SystemColors]::Control
+	
+	# Utility: Set button color (no nested function)
+	$setBtnColor = {
+		param ($btn,
+			$state)
+		switch ($state)
+		{
+			1 { $btn.BackColor = [System.Drawing.Color]::Yellow }
+			2 { $btn.BackColor = [System.Drawing.Color]::LightGreen }
+			Default { $btn.BackColor = [System.Drawing.SystemColors]::Control }
+		}
+	}
+	&$setBtnColor $btnSelectAll 0
+	&$setBtnColor $btnDeselectAll 0
+	
+	# --- SINGLE TAB SELECT ALL LOGIC ---
+	if ($tabs.TabPages.Count -eq 1)
+	{
+		$clb = $tabControls[$tabs.TabPages[0].Text]
+		$isAllChecked = {
+			for ($i = 0; $i -lt $clb.Items.Count; $i++)
 			{
-				for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $false) }
+				if (-not $clb.GetItemChecked($i)) { return $false }
 			}
-		})
+			return $clb.Items.Count -gt 0
+		}
+		$isAnyChecked = {
+			for ($i = 0; $i -lt $clb.Items.Count; $i++)
+			{
+				if ($clb.GetItemChecked($i)) { return $true }
+			}
+			return $false
+		}
+		$btnSelectAll.Add_Click({
+				$allChecked = & $isAllChecked
+				if (-not $allChecked)
+				{
+					for ($i = 0; $i -lt $clb.Items.Count; $i++)
+					{
+						$clb.SetItemChecked($i, $true)
+					}
+					& $setBtnColor $btnSelectAll 2
+				}
+				# If already all checked, do nothing
+			})
+		$btnDeselectAll.Add_Click({
+				for ($i = 0; $i -lt $clb.Items.Count; $i++)
+				{
+					$clb.SetItemChecked($i, $false)
+				}
+				& $setBtnColor $btnSelectAll 0
+				& $setBtnColor $btnDeselectAll 0
+			})
+		foreach ($event in @("Add_ItemCheck", "Add_MouseUp", "Add_KeyUp"))
+		{
+			$clb.$event.Invoke({
+					Start-Sleep -Milliseconds 30
+					$allChecked = & $isAllChecked
+					$anyChecked = & $isAnyChecked
+					if ($allChecked)
+					{
+						& $setBtnColor $btnSelectAll 2
+					}
+					elseif ($anyChecked)
+					{
+						& $setBtnColor $btnSelectAll 1
+					}
+					else
+					{
+						& $setBtnColor $btnSelectAll 0
+					}
+				})
+		}
+	}
+	else
+	{
+		# ---- NORMAL MULTI-TAB LOGIC ----
+		$tabSelectState = @{ }
+		$lastSelectTabIndex = $null
+		$selectAllYellowTabIndex = $null
+		
+		$btnSelectAll.Add_Click({
+				$tabName = $tabs.SelectedTab.Text
+				$clb = $tabControls[$tabName]
+				$tabIndex = $tabs.SelectedIndex
+				$currentTabAllChecked = $true
+				for ($i = 0; $i -lt $clb.Items.Count; $i++)
+				{
+					if (-not $clb.GetItemChecked($i)) { $currentTabAllChecked = $false; break }
+				}
+				$allTabsChecked = $true
+				foreach ($clbTest in $tabControls.Values)
+				{
+					for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
+					{
+						if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
+					}
+				}
+				if ($allTabsChecked)
+				{
+					foreach ($k in $tabControls.Keys)
+					{
+						$tabIndex2 = -1
+						for ($t = 0; $t -lt $tabs.TabPages.Count; $t++)
+						{
+							if ($tabs.TabPages[$t].Text -eq $k) { $tabIndex2 = $t; break }
+						}
+						if ($tabIndex2 -eq -1) { continue }
+						$tabSelectState[$tabIndex2] = 0
+					}
+					$tabSelectState[$tabIndex] = 0
+					$selectAllYellowTabIndex = $null
+					&$setBtnColor $btnSelectAll 0
+					return
+				}
+				if ($currentTabAllChecked -and -not $allTabsChecked)
+				{
+					foreach ($k in $tabControls.Keys)
+					{
+						$list = $tabControls[$k]
+						for ($i = 0; $i -lt $list.Items.Count; $i++) { $list.SetItemChecked($i, $true) }
+						$tabIndex2 = -1
+						for ($t = 0; $t -lt $tabs.TabPages.Count; $t++)
+						{
+							if ($tabs.TabPages[$t].Text -eq $k) { $tabIndex2 = $t; break }
+						}
+						if ($tabIndex2 -eq -1) { continue }
+						$tabSelectState[$tabIndex2] = 2
+					}
+					&$setBtnColor $btnSelectAll 2
+					$selectAllYellowTabIndex = $null
+					return
+				}
+				for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $true) }
+				$tabSelectState[$tabIndex] = 1
+				$lastSelectTabIndex = $tabIndex
+				$selectAllYellowTabIndex = $tabIndex
+				$allTabsChecked = $true
+				foreach ($clbTest in $tabControls.Values)
+				{
+					for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
+					{
+						if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
+					}
+				}
+				if ($allTabsChecked)
+				{
+					&$setBtnColor $btnSelectAll 2
+					$selectAllYellowTabIndex = $null
+				}
+				else
+				{
+					&$setBtnColor $btnSelectAll 1
+				}
+			})
+		$btnDeselectAll.Add_Click({
+				$tabName = $tabs.SelectedTab.Text
+				$clb = $tabControls[$tabName]
+				$tabIndex = $tabs.SelectedIndex
+				$noneChecked = $true
+				for ($i = 0; $i -lt $clb.Items.Count; $i++)
+				{
+					if ($clb.GetItemChecked($i)) { $noneChecked = $false; break }
+				}
+				if ($noneChecked)
+				{
+					$originalTab = $tabs.SelectedTab
+					foreach ($k in $tabControls.Keys)
+					{
+						$tabIndex2 = -1
+						for ($t = 0; $t -lt $tabs.TabPages.Count; $t++)
+						{
+							if ($tabs.TabPages[$t].Text -eq $k) { $tabIndex2 = $t; break }
+						}
+						if ($tabIndex2 -eq -1) { continue }
+						$tabs.SelectedTab = $tabs.TabPages[$tabIndex2]
+						$list = $tabControls[$k]
+						for ($i = 0; $i -lt $list.Items.Count; $i++) { $list.SetItemChecked($i, $false) }
+						$tabSelectState[$tabIndex2] = 0
+						$list.Refresh()
+					}
+					$tabs.SelectedTab = $originalTab
+				}
+				else
+				{
+					for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $false) }
+					$tabSelectState[$tabIndex] = 0
+				}
+				&$setBtnColor $btnDeselectAll 0
+				&$setBtnColor $btnSelectAll 0
+				$selectAllYellowTabIndex = $null
+			})
+		foreach ($clb in $tabControls.Values)
+		{
+			$clb.Add_ItemCheck({
+					Start-Sleep -Milliseconds 50
+					$allTabsChecked = $true
+					foreach ($clbTest in $tabControls.Values)
+					{
+						for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
+						{
+							if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
+						}
+					}
+					if ($allTabsChecked)
+					{
+						&$setBtnColor $btnSelectAll 2
+						$selectAllYellowTabIndex = $null
+					}
+					else
+					{
+						$tabIndex = $tabs.SelectedIndex
+						$clbLocal = $tabControls[$tabs.SelectedTab.Text]
+						$allChecked = $true
+						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++)
+						{
+							if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break }
+						}
+						if ($allChecked -and $clbLocal.Items.Count -gt 0)
+						{
+							&$setBtnColor $btnSelectAll 1
+							$selectAllYellowTabIndex = $tabIndex
+						}
+						else
+						{
+							&$setBtnColor $btnSelectAll 0
+							$selectAllYellowTabIndex = $null
+						}
+					}
+				})
+			$clb.Add_MouseUp({
+					$allTabsChecked = $true
+					foreach ($clbTest in $tabControls.Values)
+					{
+						for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
+						{
+							if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
+						}
+					}
+					if ($allTabsChecked)
+					{
+						&$setBtnColor $btnSelectAll 2
+						$selectAllYellowTabIndex = $null
+					}
+					else
+					{
+						$tabIndex = $tabs.SelectedIndex
+						$clbLocal = $tabControls[$tabs.SelectedTab.Text]
+						$allChecked = $true
+						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++)
+						{
+							if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break }
+						}
+						if ($allChecked -and $clbLocal.Items.Count -gt 0)
+						{
+							&$setBtnColor $btnSelectAll 1
+							$selectAllYellowTabIndex = $tabIndex
+						}
+						else
+						{
+							&$setBtnColor $btnSelectAll 0
+							$selectAllYellowTabIndex = $null
+						}
+					}
+				})
+			$clb.Add_KeyUp({
+					$allTabsChecked = $true
+					foreach ($clbTest in $tabControls.Values)
+					{
+						for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
+						{
+							if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
+						}
+					}
+					if ($allTabsChecked)
+					{
+						&$setBtnColor $btnSelectAll 2
+						$selectAllYellowTabIndex = $null
+					}
+					else
+					{
+						$tabIndex = $tabs.SelectedIndex
+						$clbLocal = $tabControls[$tabs.SelectedTab.Text]
+						$allChecked = $true
+						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++)
+						{
+							if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break }
+						}
+						if ($allChecked -and $clbLocal.Items.Count -gt 0)
+						{
+							&$setBtnColor $btnSelectAll 1
+							$selectAllYellowTabIndex = $tabIndex
+						}
+						else
+						{
+							&$setBtnColor $btnSelectAll 0
+							$selectAllYellowTabIndex = $null
+						}
+					}
+				})
+		}
+		$tabs.add_SelectedIndexChanged({
+				$tabIndex = $tabs.SelectedIndex
+				$clb = $tabControls[$tabs.SelectedTab.Text]
+				$allTabsChecked = $true
+				foreach ($clbTest in $tabControls.Values)
+				{
+					for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
+					{
+						if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
+					}
+				}
+				if ($allTabsChecked)
+				{
+					&$setBtnColor $btnSelectAll 2
+					$selectAllYellowTabIndex = $null
+				}
+				else
+				{
+					$allChecked = $true
+					for ($i = 0; $i -lt $clb.Items.Count; $i++)
+					{
+						if (-not $clb.GetItemChecked($i)) { $allChecked = $false; break }
+					}
+					if ($allChecked -and $clb.Items.Count -gt 0)
+					{
+						&$setBtnColor $btnSelectAll 1
+						$selectAllYellowTabIndex = $tabIndex
+					}
+					else
+					{
+						&$setBtnColor $btnSelectAll 0
+						$selectAllYellowTabIndex = $null
+					}
+				}
+				&$setBtnColor $btnDeselectAll 0
+			})
+	}
+	
+	$form.Controls.Add($btnSelectAll)
 	$form.Controls.Add($btnDeselectAll)
 	
-	# ----- OK/Cancel Buttons -----
+	# OK Button
 	$btnOK = New-Object System.Windows.Forms.Button
 	$btnOK.Text = "OK"
-	$btnOK.Location = New-Object System.Drawing.Point(50, 380)
+	$btnOK.Location = New-Object System.Drawing.Point(60, 380)
 	$btnOK.Size = New-Object System.Drawing.Size(140, 32)
 	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 	$form.AcceptButton = $btnOK
 	$form.Controls.Add($btnOK)
 	
+	# Cancel Button
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Location = New-Object System.Drawing.Point(220, 380)
@@ -10630,101 +11171,164 @@ function Show_Table_Selection_Form
 		[Parameter(Mandatory = $true)]
 		[System.Collections.ArrayList]$AliasResults
 	)
-	
-	# We assume $AliasResults is the .Aliases property from Get_Table_Aliases
-	# that contains objects with .Table and .Alias, e.g. "XYZ_TAB" and "XYZ".
-	
-	# Load necessary assemblies
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
-	# Create the form
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select Tables to Process"
-	$form.Size = New-Object System.Drawing.Size(450, 550)
+	$form.Size = New-Object System.Drawing.Size(450, 570)
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
 	
-	# Label
 	$label = New-Object System.Windows.Forms.Label
 	$label.Text = "Please select the tables you want to pump:"
 	$label.Location = New-Object System.Drawing.Point(10, 10)
 	$label.AutoSize = $true
 	$form.Controls.Add($label)
 	
-	# CheckedListBox
 	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
 	$checkedListBox.Location = New-Object System.Drawing.Point(10, 40)
-	$checkedListBox.Size = New-Object System.Drawing.Size(400, 400)
+	$checkedListBox.Size = New-Object System.Drawing.Size(410, 400)
 	$checkedListBox.CheckOnClick = $true
 	$form.Controls.Add($checkedListBox)
 	
-	# Populate the checked list box with unique table names (with _TAB)
-	# Make a distinct list of tables from the $AliasResults
-	$distinctTables = $AliasResults |
-	Select-Object -ExpandProperty Table -Unique |
-	Sort-Object
-	
+	$distinctTables = $AliasResults | Select-Object -ExpandProperty Table -Unique | Sort-Object
 	foreach ($tableName in $distinctTables)
 	{
 		[void]$checkedListBox.Items.Add($tableName, $false)
 	}
 	
-	# Button: Select All
+	# Buttons styled/positioned like Node form (Y=460 and 500 for a 550-height window)
 	$btnSelectAll = New-Object System.Windows.Forms.Button
 	$btnSelectAll.Text = "Select All"
-	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 450)
-	$btnSelectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$btnSelectAll.Location = New-Object System.Drawing.Point(20, 460)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
+	$btnSelectAll.BackColor = [System.Drawing.SystemColors]::Control
 	$form.Controls.Add($btnSelectAll)
 	
-	$btnSelectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $true)
-			}
-		})
-	
-	# Button: Deselect All
 	$btnDeselectAll = New-Object System.Windows.Forms.Button
 	$btnDeselectAll.Text = "Deselect All"
-	$btnDeselectAll.Location = New-Object System.Drawing.Point(120, 450)
-	$btnDeselectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(220, 460)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(180, 32)
+	$btnDeselectAll.BackColor = [System.Drawing.SystemColors]::Control
 	$form.Controls.Add($btnDeselectAll)
 	
+	$btnOK = New-Object System.Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Location = New-Object System.Drawing.Point(60, 500)
+	$btnOK.Size = New-Object System.Drawing.Size(140, 32)
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $btnOK
+	$form.Controls.Add($btnOK)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(220, 500)
+	$btnCancel.Size = New-Object System.Drawing.Size(140, 32)
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.CancelButton = $btnCancel
+	$form.Controls.Add($btnCancel)
+	
+	$setBtnColor = {
+		param ($btn,
+			$state)
+		switch ($state)
+		{
+			1 { $btn.BackColor = [System.Drawing.Color]::Yellow }
+			2 { $btn.BackColor = [System.Drawing.Color]::LightGreen }
+			Default { $btn.BackColor = [System.Drawing.SystemColors]::Control }
+		}
+	}
+	
+	$isAllChecked = {
+		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+		{
+			if (-not $checkedListBox.GetItemChecked($i)) { return $false }
+		}
+		return $checkedListBox.Items.Count -gt 0
+	}
+	$isAnyChecked = {
+		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+		{
+			if ($checkedListBox.GetItemChecked($i)) { return $true }
+		}
+		return $false
+	}
+	
+	$btnSelectAll.Add_Click({
+			$allChecked = & $isAllChecked
+			if (-not $allChecked)
+			{
+				for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+				{
+					$checkedListBox.SetItemChecked($i, $true)
+				}
+				& $setBtnColor $btnSelectAll 2
+			}
+		})
 	$btnDeselectAll.Add_Click({
 			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
 			{
 				$checkedListBox.SetItemChecked($i, $false)
 			}
+			& $setBtnColor $btnSelectAll 0
 		})
 	
-	# OK Button
-	$btnOK = New-Object System.Windows.Forms.Button
-	$btnOK.Text = "OK"
-	$btnOK.Location = New-Object System.Drawing.Point(240, 450)
-	$btnOK.Size = New-Object System.Drawing.Size(80, 30)
-	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$form.Controls.Add($btnOK)
+	$checkedListBox.Add_ItemCheck({
+			Start-Sleep -Milliseconds 30
+			$allChecked = & $isAllChecked
+			$anyChecked = & $isAnyChecked
+			if ($allChecked)
+			{
+				& $setBtnColor $btnSelectAll 2
+			}
+			elseif ($anyChecked)
+			{
+				& $setBtnColor $btnSelectAll 1
+			}
+			else
+			{
+				& $setBtnColor $btnSelectAll 0
+			}
+		})
+	$checkedListBox.Add_MouseUp({
+			$allChecked = & $isAllChecked
+			$anyChecked = & $isAnyChecked
+			if ($allChecked)
+			{
+				& $setBtnColor $btnSelectAll 2
+			}
+			elseif ($anyChecked)
+			{
+				& $setBtnColor $btnSelectAll 1
+			}
+			else
+			{
+				& $setBtnColor $btnSelectAll 0
+			}
+		})
+	$checkedListBox.Add_KeyUp({
+			$allChecked = & $isAllChecked
+			$anyChecked = & $isAnyChecked
+			if ($allChecked)
+			{
+				& $setBtnColor $btnSelectAll 2
+			}
+			elseif ($anyChecked)
+			{
+				& $setBtnColor $btnSelectAll 1
+			}
+			else
+			{
+				& $setBtnColor $btnSelectAll 0
+			}
+		})
 	
-	# Cancel Button
-	$btnCancel = New-Object System.Windows.Forms.Button
-	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = New-Object System.Drawing.Point(330, 450)
-	$btnCancel.Size = New-Object System.Drawing.Size(80, 30)
-	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$form.Controls.Add($btnCancel)
-	
-	$form.AcceptButton = $btnOK
-	$form.CancelButton = $btnCancel
-	
-	# Show the dialog
 	$dialogResult = $form.ShowDialog()
-	
 	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
 	{
-		# Gather checked items
 		$selectedTables = @()
 		foreach ($item in $checkedListBox.CheckedItems)
 		{
@@ -10752,21 +11356,17 @@ function Show_Section_Selection_Form
 		[Parameter(Mandatory = $true)]
 		[string[]]$SectionNames
 	)
-	
-	# Make sure .NET WinForms is loaded
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
-	# Create the form
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select SQL Sections"
 	$form.StartPosition = "CenterScreen"
-	$form.Size = New-Object System.Drawing.Size(550, 420)
+	$form.Size = New-Object System.Drawing.Size(550, 440)
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
 	
-	# Label: brief instructions
 	$label = New-Object System.Windows.Forms.Label
 	$label.Text = "Check the sections you want to run, then click OK."
 	$label.AutoSize = $true
@@ -10774,7 +11374,6 @@ function Show_Section_Selection_Form
 	$label.Top = 10
 	$form.Controls.Add($label)
 	
-	# CheckedListBox
 	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
 	$checkedListBox.Width = 500
 	$checkedListBox.Height = 280
@@ -10783,81 +11382,146 @@ function Show_Section_Selection_Form
 	$checkedListBox.CheckOnClick = $true
 	$form.Controls.Add($checkedListBox)
 	
-	# Populate with section names
 	foreach ($name in $SectionNames)
 	{
 		[void]$checkedListBox.Items.Add($name, $false)
 	}
 	
-	# "Select All" button
-	$selectAllButton = New-Object System.Windows.Forms.Button
-	$selectAllButton.Text = "Select All"
-	$selectAllButton.Width = 90
-	$selectAllButton.Height = 30
-	$selectAllButton.Left = 20
-	$selectAllButton.Top = 330
-	$form.Controls.Add($selectAllButton)
+	# Place Select All and Deselect All like the Node dialog (Y=310)
+	$btnSelectAll = New-Object System.Windows.Forms.Button
+	$btnSelectAll.Text = "Select All"
+	$btnSelectAll.Location = New-Object System.Drawing.Point(75, 320)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
+	$btnSelectAll.BackColor = [System.Drawing.SystemColors]::Control
+	$form.Controls.Add($btnSelectAll)
 	
-	$selectAllButton.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+	$btnDeselectAll = New-Object System.Windows.Forms.Button
+	$btnDeselectAll.Text = "Deselect All"
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(275, 320)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(180, 32)
+	$btnDeselectAll.BackColor = [System.Drawing.SystemColors]::Control
+	$form.Controls.Add($btnDeselectAll)
+	
+	# Place OK/Cancel like Node dialog (Y=350)
+	$btnOK = New-Object System.Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Location = New-Object System.Drawing.Point(115, 360)
+	$btnOK.Size = New-Object System.Drawing.Size(140, 32)
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $btnOK
+	$form.Controls.Add($btnOK)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(275, 360)
+	$btnCancel.Size = New-Object System.Drawing.Size(140, 32)
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.CancelButton = $btnCancel
+	$form.Controls.Add($btnCancel)
+	
+	$setBtnColor = {
+		param ($btn,
+			$state)
+		switch ($state)
+		{
+			1 { $btn.BackColor = [System.Drawing.Color]::Yellow }
+			2 { $btn.BackColor = [System.Drawing.Color]::LightGreen }
+			Default { $btn.BackColor = [System.Drawing.SystemColors]::Control }
+		}
+	}
+	
+	$isAllChecked = {
+		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+		{
+			if (-not $checkedListBox.GetItemChecked($i)) { return $false }
+		}
+		return $checkedListBox.Items.Count -gt 0
+	}
+	$isAnyChecked = {
+		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+		{
+			if ($checkedListBox.GetItemChecked($i)) { return $true }
+		}
+		return $false
+	}
+	
+	$btnSelectAll.Add_Click({
+			$allChecked = & $isAllChecked
+			if (-not $allChecked)
 			{
-				$checkedListBox.SetItemChecked($i, $true)
+				for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+				{
+					$checkedListBox.SetItemChecked($i, $true)
+				}
+				& $setBtnColor $btnSelectAll 2
 			}
 		})
-	
-	# "Deselect All" button
-	$deselectAllButton = New-Object System.Windows.Forms.Button
-	$deselectAllButton.Text = "Deselect All"
-	$deselectAllButton.Width = 90
-	$deselectAllButton.Height = 30
-	$deselectAllButton.Left = 120
-	$deselectAllButton.Top = 330
-	$form.Controls.Add($deselectAllButton)
-	
-	$deselectAllButton.Add_Click({
+	$btnDeselectAll.Add_Click({
 			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
 			{
 				$checkedListBox.SetItemChecked($i, $false)
 			}
+			& $setBtnColor $btnSelectAll 0
 		})
 	
-	# OK button
-	$okButton = New-Object System.Windows.Forms.Button
-	$okButton.Text = "OK"
-	$okButton.Width = 80
-	$okButton.Height = 30
-	$okButton.Left = 240
-	$okButton.Top = 330
-	# Crucial: set DialogResult, not a manual event
-	$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$form.Controls.Add($okButton)
+	$checkedListBox.Add_ItemCheck({
+			Start-Sleep -Milliseconds 30
+			$allChecked = & $isAllChecked
+			$anyChecked = & $isAnyChecked
+			if ($allChecked)
+			{
+				& $setBtnColor $btnSelectAll 2
+			}
+			elseif ($anyChecked)
+			{
+				& $setBtnColor $btnSelectAll 1
+			}
+			else
+			{
+				& $setBtnColor $btnSelectAll 0
+			}
+		})
+	$checkedListBox.Add_MouseUp({
+			$allChecked = & $isAllChecked
+			$anyChecked = & $isAnyChecked
+			if ($allChecked)
+			{
+				& $setBtnColor $btnSelectAll 2
+			}
+			elseif ($anyChecked)
+			{
+				& $setBtnColor $btnSelectAll 1
+			}
+			else
+			{
+				& $setBtnColor $btnSelectAll 0
+			}
+		})
+	$checkedListBox.Add_KeyUp({
+			$allChecked = & $isAllChecked
+			$anyChecked = & $isAnyChecked
+			if ($allChecked)
+			{
+				& $setBtnColor $btnSelectAll 2
+			}
+			elseif ($anyChecked)
+			{
+				& $setBtnColor $btnSelectAll 1
+			}
+			else
+			{
+				& $setBtnColor $btnSelectAll 0
+			}
+		})
 	
-	# Cancel button
-	$cancelButton = New-Object System.Windows.Forms.Button
-	$cancelButton.Text = "Cancel"
-	$cancelButton.Width = 80
-	$cancelButton.Height = 30
-	$cancelButton.Left = 340
-	$cancelButton.Top = 330
-	$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$form.Controls.Add($cancelButton)
-	
-	# Set AcceptButton and CancelButton so Enter/Esc work
-	$form.AcceptButton = $okButton
-	$form.CancelButton = $cancelButton
-	
-	# Show the dialog
 	$dialogResult = $form.ShowDialog()
-	
 	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
 	{
-		# Gather checked items AFTER the form closes
 		$selectedSections = @()
 		foreach ($item in $checkedListBox.CheckedItems)
 		{
 			$selectedSections += $item
 		}
-		
 		return $selectedSections
 	}
 	else
@@ -10974,7 +11638,7 @@ if (-not $form)
 		$global:ProtocolGrid.SelectionMode = "FullRowSelect"
 		$global:ProtocolGrid.Font = New-Object System.Drawing.Font("Consolas", 10)
 		$global:ProtocolForm.Controls.Add($global:ProtocolGrid)
-		
+				
 		$closeBtn = New-Object System.Windows.Forms.Button
 		$closeBtn.Text = "Hide"
 		$closeBtn.Location = New-Object System.Drawing.Point(60, 420)
@@ -11008,6 +11672,26 @@ if (-not $form)
 						$global:ProtocolGrid.Rows[$row].Cells[0].Value = $_.Lane.PadLeft(3, '0')
 						$global:ProtocolGrid.Rows[$row].Cells[1].Value = $_.Protocol
 					}
+					
+					# --- Auto-resize Protocol column based on scroll bar presence ---
+					
+					# Calculate visible row count
+					$visibleRowCount = [math]::Floor($global:ProtocolGrid.DisplayRectangle.Height / $global:ProtocolGrid.RowTemplate.Height)
+					$scrollBarVisible = $global:ProtocolGrid.Rows.Count -gt $visibleRowCount
+					
+					# Set Lane column width (fixed)
+					$global:ProtocolGrid.Columns[0].Width = 60
+					
+					# Set Protocol column width (auto)
+					if ($scrollBarVisible)
+					{
+						$global:ProtocolGrid.Columns[1].Width = $global:ProtocolGrid.Width - 60 - 4 - [System.Windows.Forms.SystemInformation]::VerticalScrollBarWidth
+					}
+					else
+					{
+						$global:ProtocolGrid.Columns[1].Width = $global:ProtocolGrid.Width - 60 - 4
+					}
+				
 					if ($global:ProtocolGrid.Rows.Count -gt $scrollIndex)
 					{
 						$global:ProtocolGrid.FirstDisplayedScrollingRowIndex = $scrollIndex
@@ -11725,6 +12409,9 @@ $form.add_Resize({
 # Description:
 #   Orchestrates the execution flow of the script, initializing variables, processing items, and handling user interactions.
 # ===================================================================================================
+
+# Check for the precense of PsExec for later use
+# $GetPsExec = Get_PsExec
 
 # Get SQL Connection String
 Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
