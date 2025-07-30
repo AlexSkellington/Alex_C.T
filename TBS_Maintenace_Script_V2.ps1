@@ -2435,10 +2435,10 @@ function Get_Remote_Machine_Info
 	Write_Log "`r`n==================== Starting Get_Remote_Machine_Info ====================`r`n" "blue"
 	
 	# Set up concurrent job and timeout parameters
-	$maxConcurrentJobs = 10
-	$wmiTimeoutSeconds = 10 # WMI should be fast
+	$maxConcurrentJobs = 25
+	$wmiTimeoutSeconds = 5 # WMI should be fast
 	$cimTimeoutSeconds = 10 # CIM should be fast
-	$regTimeoutSeconds = 20 # REG.exe is slower
+	$regTimeoutSeconds = 30 # REG.exe is slower
 	
 	# Clear previous results
 	$script:LaneHardwareInfo = $null
@@ -2509,7 +2509,7 @@ function Get_Remote_Machine_Info
 			$section.Selected = $uniqueWindowsScales
 		}
 		
-		# -------------------------------------
+		# ----------- MAIN NODE LOOP -----------
 		foreach ($remoteObj in ($section.Selected | Sort-Object {
 					if ($section.Name -eq 'Scales') { $_.FullIP }
 					else { $_ }
@@ -2548,11 +2548,22 @@ function Get_Remote_Machine_Info
 			{
 				$remote = $remoteObj
 			}
-			# Start job to gather info; pass in boDict for INI fallback
-			$job = Start-Job -ArgumentList $remote, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $DbsPath, $StoreNumber, $section, $boDict `
+			
+			# --------- FIX: RESOLVE REMOTE HOST FOR BOs (AND PASS IT AS PARAMETER) ---------
+			if ($section.Name -eq 'BackOffices' -and $boDict -and $boDict.ContainsKey($remote) -and $boDict[$remote])
+			{
+				$resolvedRemote = $boDict[$remote]
+			}
+			else
+			{
+				$resolvedRemote = $remote
+			}
+			
+			$job = Start-Job -ArgumentList $remote, $resolvedRemote, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $DbsPath, $StoreNumber, $section, $boDict `
 							 -ScriptBlock {
 				param (
 					$remote,
+					$resolvedRemote,
 					$wmiTimeoutSeconds,
 					$cimTimeoutSeconds,
 					$regTimeoutSeconds,
@@ -2561,8 +2572,6 @@ function Get_Remote_Machine_Info
 					$section,
 					$boDict
 				)
-				
-				# Initialize info object
 				$info = [PSCustomObject]@{
 					Success			    = $false
 					SystemManufacturer  = $null
@@ -2574,11 +2583,20 @@ function Get_Remote_Machine_Info
 					Error			    = $null
 					MachineNameOverride = $null
 				}
-				
 				$isBackoffice = ($section.Name -eq 'BackOffices')
 				
-				# -- WMI Method --
-				if (-not $isBackoffice -and -not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
+				# Inline: Get original RemoteRegistry state
+				$originalState = $null
+				try
+				{
+					$stateOutput = sc.exe "\\$resolvedRemote" query RemoteRegistry 2>$null | Select-String "STATE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
+					$startTypeOutput = sc.exe "\\$resolvedRemote" qc RemoteRegistry 2>$null | Select-String "START_TYPE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
+					$originalState = @{ State = $stateOutput; StartType = $startTypeOutput }
+				}
+				catch { }
+				
+				# -- WMI Method -- (timeout enforced)
+				if (-not $isBackoffice -and -not (Test-Connection -ComputerName $resolvedRemote -Count 1 -Quiet -ErrorAction SilentlyContinue))
 				{
 					$info.Error = "Offline or unreachable."
 					$info.Method = "Offline"
@@ -2586,11 +2604,12 @@ function Get_Remote_Machine_Info
 				else
 				{
 					$wmiJob = Start-Job -ScriptBlock {
+						param ($resolvedRemote)
 						try
 						{
-							$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $using:remote -ErrorAction Stop
-							$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $using:remote -ErrorAction Stop | Select-Object -First 1
-							$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $using:remote -ErrorAction Stop
+							$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $resolvedRemote -ErrorAction Stop
+							$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $resolvedRemote -ErrorAction Stop | Select-Object -First 1
+							$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $resolvedRemote -ErrorAction Stop
 							[PSCustomObject]@{
 								SystemManufacturer = $sys.Manufacturer
 								SystemProductName  = $sys.Model
@@ -2601,7 +2620,8 @@ function Get_Remote_Machine_Info
 							}
 						}
 						catch { $null }
-					}
+					} -ArgumentList $resolvedRemote
+					
 					if (Wait-Job $wmiJob -Timeout $wmiTimeoutSeconds)
 					{
 						$wmiResult = Receive-Job $wmiJob
@@ -2624,13 +2644,15 @@ function Get_Remote_Machine_Info
 						$info.Success = $true
 					}
 				}
-				# -- CIM Method --
+				
+				# -- CIM Method -- (timeout enforced)
 				if (-not $info.Success)
 				{
 					$cimJob = Start-Job -ScriptBlock {
+						param ($resolvedRemote)
 						try
 						{
-							$session = New-CimSession -ComputerName $using:remote -ErrorAction Stop
+							$session = New-CimSession -ComputerName $resolvedRemote -ErrorAction Stop
 							$sys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem
 							$cpu = Get-CimInstance -CimSession $session -ClassName Win32_Processor | Select-Object -First 1
 							$os = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem
@@ -2645,7 +2667,8 @@ function Get_Remote_Machine_Info
 							}
 						}
 						catch { $null }
-					}
+					} -ArgumentList $resolvedRemote
+					
 					if (Wait-Job $cimJob -Timeout $cimTimeoutSeconds)
 					{
 						$cimResult = Receive-Job $cimJob
@@ -2668,87 +2691,112 @@ function Get_Remote_Machine_Info
 						$info.Success = $true
 					}
 				}
-				# -- REG Method --
+				
+				# -- REG Method -- (timeout enforced)
 				if (-not $info.Success)
 				{
-					try
+					$regJob = Start-Job -ScriptBlock {
+						param ($resolvedRemote,
+							$originalState)
+						try
+						{
+							if ($originalState.StartType -ne "AUTO_START" -and $originalState.StartType -ne "DEMAND_START")
+							{
+								sc.exe "\\$resolvedRemote" config RemoteRegistry start= demand | Out-Null
+							}
+							if ($originalState.State -ne "RUNNING")
+							{
+								sc.exe "\\$resolvedRemote" start RemoteRegistry | Out-Null
+								Start-Sleep -Milliseconds 500
+							}
+							$manuf = reg.exe query "\\$resolvedRemote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+							$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+							$prod = reg.exe query "\\$resolvedRemote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+							$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+							$cpu = reg.exe query "\\$resolvedRemote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+							$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+							$osKey = "\\$resolvedRemote\HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+							$osName = reg.exe query $osKey /v ProductName 2>&1
+							$osVer = reg.exe query $osKey /v CurrentVersion 2>&1
+							$osBuild = reg.exe query $osKey /v DisplayVersion 2>&1
+							$osNameMatch = [regex]::Match($osName, 'ProductName\s+REG_SZ\s+(.+)$')
+							$osVerMatch = [regex]::Match($osVer, 'CurrentVersion\s+REG_SZ\s+(.+)$')
+							$osBuildMatch = [regex]::Match($osBuild, 'DisplayVersion\s+REG_SZ\s+(.+)$')
+							$SystemManufacturer = if ($manufMatch.Success) { $manufMatch.Groups[1].Value.Trim() }
+							else { $null }
+							$SystemProductName = if ($prodMatch.Success) { $prodMatch.Groups[1].Value.Trim() }
+							else { $null }
+							$CPU = if ($cpuMatch.Success) { $cpuMatch.Groups[1].Value.Trim() }
+							else { $null }
+							if ($osNameMatch.Success)
+							{
+								$osString = $osNameMatch.Groups[1].Value.Trim()
+								if ($osVerMatch.Success) { $osString += " (" + $osVerMatch.Groups[1].Value.Trim() }
+								if ($osBuildMatch.Success) { $osString += ", " + $osBuildMatch.Groups[1].Value.Trim() + ")" }
+								elseif ($osVerMatch.Success) { $osString += ")" }
+							}
+							else { $osString = $null }
+							[PSCustomObject]@{
+								SystemManufacturer = $SystemManufacturer
+								SystemProductName  = $SystemProductName
+								CPU			       = $CPU
+								OSInfo			   = $osString
+								Method			   = "REG"
+								Success		       = ($SystemManufacturer -and $SystemProductName)
+								Error			   = $null
+							}
+						}
+						catch
+						{
+							[PSCustomObject]@{
+								SystemManufacturer = $null
+								SystemProductName  = $null
+								CPU			       = $null
+								OSInfo			   = $null
+								Method			   = "REG"
+								Success		       = $false
+								Error			   = "REG fallback failed: $_"
+							}
+						}
+					} -ArgumentList $resolvedRemote, $originalState
+					
+					if (Wait-Job $regJob -Timeout $regTimeoutSeconds)
 					{
-						if ($originalState.StartType -ne "AUTO_START" -and $originalState.StartType -ne "DEMAND_START")
-						{
-							sc.exe "\\$remote" config RemoteRegistry start= demand | Out-Null
-						}
-						if ($originalState.State -ne "RUNNING")
-						{
-							sc.exe "\\$remote" start RemoteRegistry | Out-Null
-							Start-Sleep -Milliseconds 500 # Brief wait for service start
-						}
-						
-						# Manufacturer & Model
-						$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-						$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
-						$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-						$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
-						
-						# CPU
-						$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
-						$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-						
-						# --- NEW: OS INFO from registry ---
-						$osKey = "\\$remote\HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
-						$osName = reg.exe query $osKey /v ProductName 2>&1
-						$osVer = reg.exe query $osKey /v CurrentVersion 2>&1
-						$osBuild = reg.exe query $osKey /v DisplayVersion 2>&1
-						$osNameMatch = [regex]::Match($osName, 'ProductName\s+REG_SZ\s+(.+)$')
-						$osVerMatch = [regex]::Match($osVer, 'CurrentVersion\s+REG_SZ\s+(.+)$')
-						$osBuildMatch = [regex]::Match($osBuild, 'DisplayVersion\s+REG_SZ\s+(.+)$')
-						
-						$SystemManufacturer = if ($manufMatch.Success) { $manufMatch.Groups[1].Value.Trim() }
-						else { $null }
-						$SystemProductName = if ($prodMatch.Success) { $prodMatch.Groups[1].Value.Trim() }
-						else { $null }
-						$CPU = if ($cpuMatch.Success) { $cpuMatch.Groups[1].Value.Trim() }
-						else { $null }
-						
-						# Compose OS string, prefer: "Win 10 Pro (10.0, 22H2)"
-						if ($osNameMatch.Success)
-						{
-							$osString = $osNameMatch.Groups[1].Value.Trim()
-							if ($osVerMatch.Success) { $osString += " (" + $osVerMatch.Groups[1].Value.Trim() }
-							if ($osBuildMatch.Success) { $osString += ", " + $osBuildMatch.Groups[1].Value.Trim() + ")" }
-							elseif ($osVerMatch.Success) { $osString += ")" }
-						}
-						else
-						{
-							$osString = $null
-						}
-						
-						if ($SystemManufacturer -and $SystemProductName)
-						{
-							$info.SystemManufacturer = $SystemManufacturer
-							$info.SystemProductName = $SystemProductName
-							$info.CPU = $CPU
-							$info.RAM = $null # No reliable REG fallback for RAM
-							$info.OSInfo = $osString
-							$info.Method = "REG"
-							$info.Success = $true
-						}
-						else
-						{
-							$info.Error = "REG query failed to retrieve complete info."
-							$info.Method = "REG"
+						$regResult = Receive-Job $regJob
+						Remove-Job $regJob -Force -ErrorAction SilentlyContinue
+					}
+					else
+					{
+						Stop-Job $regJob -ErrorAction SilentlyContinue
+						Remove-Job $regJob -Force -ErrorAction SilentlyContinue
+						$regResult = [PSCustomObject]@{
+							SystemManufacturer = $null
+							SystemProductName  = $null
+							CPU			       = $null
+							OSInfo			   = $null
+							Method			   = "REG"
+							Success		       = $false
+							Error			   = "REG query timed out after $regTimeoutSeconds seconds."
 						}
 					}
-					catch
+					if ($regResult.Success)
 					{
-						$info.Error = "REG fallback failed: $_"
+						$info.SystemManufacturer = $regResult.SystemManufacturer
+						$info.SystemProductName = $regResult.SystemProductName
+						$info.CPU = $regResult.CPU
+						$info.RAM = $null
+						$info.OSInfo = $regResult.OSInfo
+						$info.Method = "REG"
+						$info.Success = $true
+					}
+					else
+					{
+						$info.Error = $regResult.Error
 						$info.Method = "REG"
 					}
-					finally
-					{
-						# Inline: Restore service state
-						if ($originalState.State -ne "RUNNING") { sc.exe "\\$remote" stop RemoteRegistry | Out-Null }
-						if ($originalState.StartType) { sc.exe "\\$remote" config RemoteRegistry start= $originalState.StartType | Out-Null }
-					}
+					# Inline: Restore service state
+					if ($originalState.State -ne "RUNNING") { sc.exe "\\$resolvedRemote" stop RemoteRegistry | Out-Null }
+					if ($originalState.StartType) { sc.exe "\\$resolvedRemote" config RemoteRegistry start= $originalState.StartType | Out-Null }
 				}
 				# -- INI Fallback for Backoffices only --
 				if (-not $info.Success -and $section.Name -eq 'BackOffices')
@@ -2855,6 +2903,13 @@ function Get_Remote_Machine_Info
 						$result = Receive-Job $j
 						$remoteName = $pending[$j.Id]
 						$info = $result.Info
+						# Inline: Restore if not done in job (edge case)
+						$originalState = $result.OriginalState
+						if ($originalState)
+						{
+							if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null }
+							if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null }
+						}
 						# Determine display name (MachineNameOverride logic, supports serialization)
 						if ($section.Name -eq 'BackOffices')
 						{
@@ -2934,6 +2989,13 @@ function Get_Remote_Machine_Info
 				$remoteName = $pending[$j.Id]
 				$result = Receive-Job $j
 				$info = $result.Info
+				# --- Restore RemoteRegistry state if needed ---
+				$originalState = $result.OriginalState
+				if ($originalState)
+				{
+					if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null }
+					if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null }
+				}
 				if ($section.Name -eq 'BackOffices')
 				{
 					$boNum = $remoteName
