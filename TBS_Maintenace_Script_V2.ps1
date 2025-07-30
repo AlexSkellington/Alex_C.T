@@ -739,14 +739,26 @@ function Retrieve_Nodes
 	# -------------------- Init --------------------
 	$HostPath = "$OfficePath"
 	$LaneContents = @()
-	$LaneMachines = @{ }
+	$LaneMachines = @{ } # Key: LaneNum or MachineName, Value: MachineName
+	$LaneLabels = @{ }
+	$LanePaths = @{ }
+	$LaneHostPaths = @{ }
+	$ScaleContents = @()
+	$ScaleTerLabels = @{ }
+	$ScalePaths = @{ }
 	$ScaleIPNetworks = @{ }
+	$BackofficeMachines = @{ }
+	$BackofficeLabels = @{ }
+	$BackofficePaths = @{ }
+	$ServerMachine = $null
+	$ServerLabel = $null
+	$ServerPath = $null
 	$TerLoadSqlPath = Join-Path $LoadPath 'Ter_Load.sql'
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$NodesFromDatabase = $false
 	$SqlModule = $script:FunctionResults['SqlModuleName']
 	
-	# If not already detected, check and store SQL module
+	# Detect SQL Module if needed
 	if (-not $SqlModule -or $SqlModule -eq 'N/A')
 	{
 		if (Get-Module -ListAvailable -Name SqlServer) { $SqlModule = "SqlServer" }
@@ -755,7 +767,6 @@ function Retrieve_Nodes
 		$script:FunctionResults['SqlModuleName'] = $SqlModule
 	}
 	
-	# Use the correct module for all database calls
 	if ($SqlModule -eq "SqlServer" -or $SqlModule -eq "SQLPS")
 	{
 		Import-Module $SqlModule -ErrorAction Stop
@@ -766,14 +777,12 @@ function Retrieve_Nodes
 		$ConnectionString = $null
 	}
 	
-	# Parse ConnectionString upfront for server and database
-	$server = ($ConnectionString -split ';' | Where-Object { $_ -like 'Server=*' }) -replace 'Server=', ''
-	$database = ($ConnectionString -split ';' | Where-Object { $_ -like 'Database=*' }) -replace 'Database=', ''
+	$server = $script:FunctionResults['DBSERVER']
+	$database = $script:FunctionResults['DBNAME']
 	
 	# -------------------- 1. Database --------------------
 	if ($ConnectionString)
 	{
-		# Check if Invoke-Sqlcmd exists and supports -ConnectionString
 		$invokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModule -ErrorAction SilentlyContinue
 		$supportsConnStr = $false
 		if ($invokeSqlCmd)
@@ -788,66 +797,84 @@ function Retrieve_Nodes
 		$NodesFromDatabase = $true
 		try
 		{
-			#--------------------------------------------------------------------------------
-			# 1) Retrieve Lanes from TER_TAB
-			#--------------------------------------------------------------------------------
-			$queryLaneContents = @"
-SELECT F1057, F1125
+			# -- Query TER_TAB for all device info
+			$queryTerTab = @"
+SELECT F1057, F1058, F1125, F1169
 FROM TER_TAB
 WHERE F1056 = '$StoreNumber'
-  AND F1057 LIKE '0%'
-  AND F1057 NOT LIKE '8%'
-  AND F1057 NOT LIKE '9%'
 "@
 			if ($supportsConnStr)
 			{
-				$laneContentsResult = & $invokeSqlCmd -ConnectionString $ConnectionString -Query $queryLaneContents -ErrorAction Stop
+				$terTabResult = & $invokeSqlCmd -ConnectionString $ConnectionString -Query $queryTerTab -ErrorAction Stop
 			}
 			else
 			{
-				$laneContentsResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryLaneContents -ErrorAction Stop
+				$terTabResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTerTab -ErrorAction Stop
 			}
 			
-			$LaneContents = $laneContentsResult | Select-Object -ExpandProperty F1057
-			$NumberOfLanes = $LaneContents.Count
-			
-			foreach ($row in $laneContentsResult)
+			foreach ($row in $terTabResult)
 			{
-				$laneNumber = $row.F1057
-				$machinePath = $row.F1125
-				if ($machinePath -match '\\\\([^\\]+)\\')
+				$terminal = $row.F1057 # Usually a 3-digit code, but we handle any string for "lane" machine
+				$label = $row.F1058
+				$path = $row.F1125
+				$hostPath = $row.F1169
+				
+				# Lanes: 0xx or any machine name, path like \\MACHINE\...
+				if (
+					($terminal -match '^0\d\d$' -or $path -match '^\\\\[^\\]+\\') -and
+					$terminal -notmatch '^8' -and $terminal -notmatch '^9'
+				)
 				{
-					$machineName = $matches[1]
-					$LaneMachines[$laneNumber] = $machineName
+					# Extract machine name from path: \\MACHINE\...
+					$machineName = $null
+					if ($path -match '\\\\([^\\]+)\\')
+					{
+						$machineName = $matches[1]
+					}
+					else
+					{
+						# If not UNC, fallback to terminal
+						$machineName = $terminal
+					}
+					
+					$LaneContents += $machineName
+					$LaneMachines[$machineName] = $machineName
+					$LaneLabels[$machineName] = $label
+					$LanePaths[$machineName] = $path
+					$LaneHostPaths[$machineName] = $hostPath
+				}
+				
+				# Scales: 8xx (not 0xx or 9xx), path like c:\...XchScale.exe (case insensitive)
+				elseif ($terminal -match '^8\d\d$' -and $terminal -notmatch '^0' -and $terminal -notmatch '^9' -and $path -match '(?i)^[cC]:\\.*XchScale\\XchScale\.exe$')
+				{
+					$ScaleContents += $terminal
+					$ScaleTerLabels[$terminal] = $label
+					$ScalePaths[$terminal] = $path
+				}
+				# Server: exactly 901, path like @MACHINE
+				elseif ($terminal -eq '901' -and $path -match '^@[^@]+$')
+				{
+					$ServerMachine = $path -replace '^@', ''
+					$ServerLabel = $label
+					$ServerPath = $path
+				}
+				# Backoffices: 902-998 (not 999), path like @MACHINE
+				elseif ($terminal -match '^9(0[2-9]|[1-8]\d|9[0-8])$' -and $path -match '^@[^@]+$')
+				{
+					$machineName = $path -replace '^@', ''
+					$BackofficeMachines[$terminal] = $machineName
+					$BackofficeLabels[$terminal] = $label
+					$BackofficePaths[$terminal] = $path
 				}
 			}
 			
-			#--------------------------------------------------------------------------------
-			# 2) Retrieve scales from TER_TAB (count only)
-			#--------------------------------------------------------------------------------
-			$queryScaleContents = @"
-SELECT F1057, F1125
-FROM TER_TAB
-WHERE F1056 = '$StoreNumber'
-  AND F1057 LIKE '8%'
-  AND F1057 NOT LIKE '0%'
-  AND F1057 NOT LIKE '9%'
-"@
-			if ($supportsConnStr)
-			{
-				$scaleContentsResult = & $invokeSqlCmd -ConnectionString $ConnectionString -Query $queryScaleContents -ErrorAction Stop
-			}
-			else
-			{
-				$scaleContentsResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryScaleContents -ErrorAction Stop
-			}
+			$NumberOfLanes = $LaneContents.Count
+			$NumberOfScales = $ScaleContents.Count
+			$NumberOfServers = if ($ServerMachine) { 1 }
+			else { 0 }
+			$NumberOfBackoffices = $BackofficeMachines.Count
 			
-			$ScaleContents = $scaleContentsResult | Select-Object -ExpandProperty F1057
-			$NumberOfScales += $ScaleContents.Count
-			
-			#--------------------------------------------------------------------------------
-			# 3) Retrieve additional scales from TBS_SCL_ver520 (with IPNetwork)
-			#--------------------------------------------------------------------------------
+			# -- Extra scales: TBS_SCL_ver520
 			$queryTbsSclScales = @"
 SELECT ScaleCode, ScaleName, ScaleLocation, IPNetwork, IPDevice, Active, ScaleBrand, ScaleModel
 FROM TBS_SCL_ver520
@@ -896,61 +923,6 @@ WHERE Active = 'Y'
 					$ScaleIPNetworks[$row.ScaleCode] = $scaleObj
 				}
 			}
-			
-			#--------------------------------------------------------------------------------
-			# 4) Check if server exists for the store (F1057 = '901')
-			#--------------------------------------------------------------------------------
-			$queryServer = @"
-SELECT COUNT(*) AS ServerCount
-FROM TER_TAB
-WHERE F1056 = '$StoreNumber'
-  AND F1057 = '901'
-"@
-			if ($supportsConnStr)
-			{
-				$serverResult = & $invokeSqlCmd -ConnectionString $ConnectionString -Query $queryServer -ErrorAction Stop
-			}
-			else
-			{
-				$serverResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryServer -ErrorAction Stop
-			}
-			
-			$NumberOfServers = if ($serverResult.ServerCount -gt 0) { 1 }
-			else { 0 }
-			
-			#--------------------------------------------------------------------------------
-			# 5) Retrieve backoffices (F1057 = '902', '903', etc): COUNT and MAP at once
-			#--------------------------------------------------------------------------------
-			$queryBackoffices = @"
-SELECT F1057, F1125
-FROM TER_TAB
-WHERE F1056 = '$StoreNumber'
-  AND F1057 >= '902'
-  AND F1057 <= '998'
-"@
-			if ($supportsConnStr)
-			{
-				$backofficesList = & $invokeSqlCmd -ConnectionString $ConnectionString -Query $queryBackoffices -ErrorAction Stop
-			}
-			else
-			{
-				$backofficesList = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryBackoffices -ErrorAction Stop
-			}
-			$BackofficeMachines = @{ }
-			if ($backofficesList)
-			{
-				foreach ($row in $backofficesList)
-				{
-					$terminal = $row.F1057
-					$backofficeName = $row.F1125
-					if ($backofficeName)
-					{
-						$cleanName = $backofficeName -replace '^@', ''
-						$BackofficeMachines[$terminal] = $cleanName
-					}
-				}
-			}
-			$NumberOfBackoffices = $BackofficeMachines.Count
 		}
 		catch
 		{
@@ -959,124 +931,79 @@ WHERE F1056 = '$StoreNumber'
 		}
 	}
 	
-	#--------------------------------------------------------------------------------
-	# Fallback: If counts from database failed, use Ter_Load.sql fallback
-	#--------------------------------------------------------------------------------
+	# -------------------- 2. Fallback: Ter_Load.sql --------------------
 	$TerLoadUsed = $false
 	if ((-not $NodesFromDatabase) -and (Test-Path $TerLoadSqlPath))
 	{
 		Write_Log "Using Ter_Load.sql as backup for TER_TAB information." "yellow"
 		$TerLoadUsed = $true
-		$insertLines = Select-String -Path $TerLoadSqlPath -Pattern "INSERT INTO Ter_Load VALUES" -Context 0, 100 |
-		Select-Object -First 1 | ForEach-Object { $_.Context.PostContext }
-		
-		$rows = @()
-		$current = ""
-		foreach ($line in $insertLines)
+		$content = Get-Content $TerLoadSqlPath -Raw
+		if ($content -match 'INSERT INTO Ter_Load VALUES\s*(.*);' -or $content -match 'INSERT INTO Ter_Load VALUES\s*(.*)')
 		{
-			if ($line.Trim() -eq "") { continue }
-			$current += $line.Trim()
-			if ($current -match "\),$|\);$")
+			$insertBlock = $matches[1]
+			$values = $insertBlock -split '\),\s*\(' | ForEach-Object { $_.Trim('() ') }
+			
+			foreach ($value in $values)
 			{
-				$rows += $current.TrimEnd(',', ';')
-				$current = ""
-			}
-		}
-		
-		$parsed = @()
-		if ($rows -and $rows.Count -gt 0)
-		{
-			$parsed = $rows | ForEach-Object {
-				if ($_ -match "\((.*)\)")
+				$fields = $value -split "',\s*'" | ForEach-Object { $_.Trim("'") }
+				if ($fields.Count -ge 5 -and $fields[0] -eq $StoreNumber)
 				{
-					$split = $matches[1] -split "',\s*'"
-					if ($split.Count -ge 5)
+					$terminal = $fields[1]
+					$label = $fields[2]
+					$path = $fields[3]
+					$hostPath = $fields[4]
+					
+					# Lanes: accept anything with UNC path, use machine name from path
+					if (
+						($terminal -match '^0\d\d$' -or $path -match '^\\\\[^\\]+\\') -and
+						$terminal -notmatch '^8' -and $terminal -notmatch '^9'
+					)
 					{
-						[PSCustomObject]@{
-							Store    = $split[0].Trim("'")
-							Terminal = $split[1].Trim("'")
-							Label    = $split[2].Trim("'")
-							LanePath = $split[3].Trim("'")
-							HostPath = $split[4].Trim("'")
+						$machineName = $null
+						if ($path -match '\\\\([^\\]+)\\')
+						{
+							$machineName = $matches[1]
 						}
+						else
+						{
+							$machineName = $terminal
+						}
+						$LaneContents += $machineName
+						$LaneMachines[$machineName] = $machineName
+						$LaneLabels[$machineName] = $label
+						$LanePaths[$machineName] = $path
+						$LaneHostPaths[$machineName] = $hostPath
+					}
+					elseif ($terminal -match '^8\d\d$' -and $terminal -notmatch '^0' -and $terminal -notmatch '^9' -and $path -match '(?i)^[cC]:\\.*XchScale\\XchScale\.exe$')
+					{
+						$ScaleContents += $terminal
+						$ScaleTerLabels[$terminal] = $label
+						$ScalePaths[$terminal] = $path
+					}
+					elseif ($terminal -eq '901' -and $path -match '^@[^@]+$')
+					{
+						$ServerMachine = $path -replace '^@', ''
+						$ServerLabel = $label
+						$ServerPath = $path
+					}
+					elseif ($terminal -match '^9(0[2-9]|[1-8]\d|9[0-8])$' -and $path -match '^@[^@]+$')
+					{
+						$machineName = $path -replace '^@', ''
+						$BackofficeMachines[$terminal] = $machineName
+						$BackofficeLabels[$terminal] = $label
+						$BackofficePaths[$terminal] = $path
 					}
 				}
-			} | Where-Object { $_.Store -eq $StoreNumber }
-		}
-		
-		# Lanes: terminals starting with 0
-		$laneObjs = @()
-		if ($parsed.Count -gt 0)
-		{
-			$laneObjs = $parsed | Where-Object { $_.Terminal -match '^0\d\d$' }
-		}
-		$NumberOfLanes = $laneObjs.Count
-		$LaneContents = $laneObjs | Select-Object -ExpandProperty Terminal
-		foreach ($obj in $laneObjs)
-		{
-			if ($obj.LanePath -match '\\\\([^\\]+)\\')
-			{
-				$LaneMachines[$obj.Terminal] = $matches[1]
 			}
 		}
-		# Scales: terminals starting with 8
-		$scaleObjs = @()
-		if ($parsed.Count -gt 0)
-		{
-			$scaleObjs = $parsed | Where-Object { $_.Terminal -match '^8\d\d$' }
-		}
-		$NumberOfScales = $scaleObjs.Count
-		
-		# Servers: terminal 901
-		$NumberOfServers = 0
-		if ($parsed.Count -gt 0)
-		{
-			$NumberOfServers = ($parsed | Where-Object { $_.Terminal -eq '901' }).Count
-		}
-		
-		# Backoffices: 902-998
-		$NumberOfBackoffices = 0
-		if ($parsed.Count -gt 0)
-		{
-			$NumberOfBackoffices = ($parsed | Where-Object { $_.Terminal -match '^9(0[2-9]|[1-8][0-9])$' }).Count
-		}
-	}
-	
-	#--------------------------------------------------------------------------------
-	# Fallback: If counts from database failed, use directory-based logic
-	#--------------------------------------------------------------------------------
-	if ((-not $NodesFromDatabase) -and (-not $TerLoadUsed))
-	{
-		Write_Log "Using file system directories as backup for node counts." "yellow"
-		
-		if (Test-Path $HostPath)
-		{
-			$LaneFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}0??"
-			$NumberOfLanes = $LaneFolders.Count
-			$LaneContents = $LaneFolders | ForEach-Object { $_.Name.Substring($_.Name.Length - 3, 3) }
-		}
-		
-		if (Test-Path $HostPath)
-		{
-			$ScaleFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}8??"
-			$NumberOfScales = $ScaleFolders.Count
-		}
-		
-		$NumberOfServers = if (Test-Path "$HostPath\XF${StoreNumber}901") { 1 }
+		$NumberOfLanes = $LaneContents.Count
+		$NumberOfScales = $ScaleContents.Count
+		$NumberOfServers = if ($ServerMachine) { 1 }
 		else { 0 }
-		
-		# Backoffice folders: XF${StoreNumber}902 - XF${StoreNumber}998
-		if (Test-Path $HostPath)
-		{
-			$BackofficeFolders = Get-ChildItem -Path $HostPath -Directory -Filter "XF${StoreNumber}9??" |
-			Where-Object { $_.Name -match "^XF${StoreNumber}9(0[2-9]|[1-8][0-9])$" -and $_.Name -ne "XF${StoreNumber}999" }
-			$NumberOfBackoffices = $BackofficeFolders.Count
-		}
+		$NumberOfBackoffices = $BackofficeMachines.Count
 	}
 	
-	#--------------------------------------------------------------------------------
-	# Final: Create a custom object with the counts
-	#--------------------------------------------------------------------------------
+	# -------------------- 3. Return Object & Store Results --------------------
 	$Nodes = [PSCustomObject]@{
 		NumberOfLanes	    = $NumberOfLanes
 		NumberOfServers	    = $NumberOfServers
@@ -1084,25 +1011,58 @@ WHERE F1056 = '$StoreNumber'
 		NumberOfScales	    = $NumberOfScales
 		LaneContents	    = $LaneContents
 		LaneMachines	    = $LaneMachines
+		LaneLabels		    = $LaneLabels
+		LanePaths		    = $LanePaths
+		LaneHostPaths	    = $LaneHostPaths
+		ScaleContents	    = $ScaleContents
+		ScaleTerLabels	    = $ScaleTerLabels
+		ScalePaths		    = $ScalePaths
 		ScaleIPNetworks	    = $ScaleIPNetworks
+		BackofficeMachines  = $BackofficeMachines
+		BackofficeLabels    = $BackofficeLabels
+		BackofficePaths	    = $BackofficePaths
+		ServerMachine	    = $ServerMachine
+		ServerLabel		    = $ServerLabel
+		ServerPath		    = $ServerPath
 	}
 	
-	#--------------------------------------------------------------------------------
-	# Store counts in FunctionResults
-	#--------------------------------------------------------------------------------
+	# Store in FunctionResults
 	$script:FunctionResults['NumberOfLanes'] = $NumberOfLanes
 	$script:FunctionResults['NumberOfServers'] = $NumberOfServers
 	$script:FunctionResults['NumberOfBackoffices'] = $NumberOfBackoffices
 	$script:FunctionResults['NumberOfScales'] = $NumberOfScales
 	$script:FunctionResults['LaneContents'] = $LaneContents
 	$script:FunctionResults['LaneMachines'] = $LaneMachines
+	$script:FunctionResults['LaneLabels'] = $LaneLabels
+	$script:FunctionResults['LanePaths'] = $LanePaths
+	$script:FunctionResults['LaneHostPaths'] = $LaneHostPaths
+	$script:FunctionResults['ScaleContents'] = $ScaleContents
+	$script:FunctionResults['ScaleTerLabels'] = $ScaleTerLabels
+	$script:FunctionResults['ScalePaths'] = $ScalePaths
 	$script:FunctionResults['ScaleIPNetworks'] = $ScaleIPNetworks
 	$script:FunctionResults['BackofficeMachines'] = $BackofficeMachines
+	$script:FunctionResults['BackofficeLabels'] = $BackofficeLabels
+	$script:FunctionResults['BackofficePaths'] = $BackofficePaths
+	$script:FunctionResults['ServerMachine'] = $ServerMachine
+	$script:FunctionResults['ServerLabel'] = $ServerLabel
+	$script:FunctionResults['ServerPath'] = $ServerPath
 	$script:FunctionResults['Nodes'] = $Nodes
 	
-	#--------------------------------------------------------------------------------
-	# Update the GUI labels (if labels exist)
-	#--------------------------------------------------------------------------------
+	# =============================================
+	# Collect only Windows scales (e.g., Bizerba)
+	# =============================================
+	$WindowsScales = @{ }
+	foreach ($code in $ScaleIPNetworks.Keys)
+	{
+		$scale = $ScaleIPNetworks[$code]
+		if ($scale.ScaleBrand -and $scale.ScaleBrand -match 'bizerba')
+		{
+			$WindowsScales[$code] = $scale
+		}
+	}
+	$script:FunctionResults['WindowsScales'] = $WindowsScales
+	
+	# GUI Update
 	if ($NodesHost -ne $null) { $NodesHost.Text = "Number of Servers: $NumberOfServers" }
 	if ($NodesBackoffices -ne $null) { $NodesBackoffices.Text = "Number of Backoffices: $NumberOfBackoffices" }
 	if ($NodesStore -ne $null) { $NodesStore.Text = "Number of Lanes: $NumberOfLanes" }
@@ -2002,6 +1962,10 @@ function Get_All_VNC_Passwords
 		[hashtable]$BackofficeMachines
 	)
 	
+	# Default VNC password for lanes, backoffices, and scales with fixed passwords (e.g., Ishida)
+	$DefaultVNCPassword = "4330df922eb03b6e"
+	$script:DefaultVNCPassword = $DefaultVNCPassword
+	
 	$uvncFolders = @(
 		"C$\Program Files\uvnc bvba\UltraVNC",
 		"C$\Program Files (x86)\uvnc bvba\UltraVNC"
@@ -2042,8 +2006,12 @@ function Get_All_VNC_Passwords
 			}
 			if ($ip)
 			{
-				if ($isIshida) { continue }
-				Write_Log "Skipping Ishida scale [$ip] for VNC password scan (password is fixed).`r`n" "yellow"
+				if ($isIshida)
+				{
+					Write_Log "Ishida scale [$ip] will use default VNC password.`r`n" "yellow"
+					$AllVNCPasswords[$ip] = $DefaultVNCPassword
+					continue
+				}
 				if ($isBizerba) { $BizerbaScales += @{ Host = $ip; Obj = $scaleObj }; continue }
 				$NodeList += $ip
 			}
@@ -2168,7 +2136,7 @@ function Get_All_VNC_Passwords
 	# 4. Handle Bizerba scales (using cmdkey/bizuser logic, serially)
 	foreach ($b in $BizerbaScales)
 	{
-		$host = $b.Host
+		$scaleHost = $b.Host
 		$uvncIniRelativePaths = @(
 			"Program Files\uvnc bvba\UltraVNC\ultravnc.ini",
 			"Program Files (x86)\uvnc bvba\UltraVNC\ultravnc.ini"
@@ -2179,9 +2147,9 @@ function Get_All_VNC_Passwords
 		$fullIniPath = $null
 		
 		# Ping check first
-		if (-not (Test-Connection -ComputerName $host -Count 1 -Quiet -ErrorAction SilentlyContinue))
+		if (-not (Test-Connection -ComputerName $scaleHost -Count 1 -Quiet -ErrorAction SilentlyContinue))
 		{
-			$AllVNCPasswords[$host] = $null
+			$AllVNCPasswords[$scaleHost] = $null
 			continue
 		}
 		
@@ -2190,9 +2158,9 @@ function Get_All_VNC_Passwords
 			foreach ($pw in $passwords)
 			{
 				# Remove any previous credential
-				cmdkey /delete:$host | Out-Null
-				cmdkey /add:$host /user:$username /pass:$pw | Out-Null
-				$shareIniPath = "\\$host\c$\$uvncIniRel"
+				cmdkey /delete:$scaleHost | Out-Null
+				cmdkey /add:$scaleHost /user:$username /pass:$pw | Out-Null
+				$shareIniPath = "\\$scaleHost\c$\$uvncIniRel"
 				if (Test-Path $shareIniPath -ErrorAction SilentlyContinue)
 				{
 					try
@@ -2211,14 +2179,13 @@ function Get_All_VNC_Passwords
 					catch { }
 				}
 				# Remove credential after attempt
-				cmdkey /delete:$host | Out-Null
+				cmdkey /delete:$scaleHost | Out-Null
 				if ($password) { break }
 			}
 			if ($password) { break }
 		}
-		$AllVNCPasswords[$host] = $password
+		$AllVNCPasswords[$scaleHost] = $password
 	}
-	
 	$script:FunctionResults['AllVNCPasswords'] = $AllVNCPasswords
 	return $AllVNCPasswords
 }
@@ -2467,155 +2434,41 @@ function Get_Remote_Machine_Info
 {
 	Write_Log "`r`n==================== Starting Get_Remote_Machine_Info ====================`r`n" "blue"
 	
+	# Set up concurrent job and timeout parameters
 	$maxConcurrentJobs = 10
 	$wmiTimeoutSeconds = 10 # WMI should be fast
 	$cimTimeoutSeconds = 10 # CIM should be fast
 	$regTimeoutSeconds = 20 # REG.exe is slower
 	
+	# Clear previous results
 	$script:LaneHardwareInfo = $null
 	$script:ScaleHardwareInfo = $null
 	$script:BackofficeHardwareInfo = $null
 	
 	# Build lists from FunctionResults (populate with Retrieve_Nodes first!)
 	$laneNames = $script:FunctionResults['LaneMachines'].Values | Where-Object { $_ } | Select-Object -Unique
-	$scaleIPs = $script:FunctionResults['ScaleIPNetworks'].Values | ForEach-Object { $_.FullIP } | Where-Object { $_ } | Select-Object -Unique
+	$scaleObjs = $script:FunctionResults['ScaleIPNetworks'].Values
 	$boDict = $script:FunctionResults['BackofficeMachines'] # Key = BO num, Value = machine name
 	$boNums = $boDict.Keys | Sort-Object
-	$scaleBrands = $script:FunctionResults['ScaleIPNetworks']	
 	$StoreNumber = $script:FunctionResults['StoreNumber'] # 3-digit, zero-padded store number
 	
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
+	# Only keep Bizerba scales (Windows)
+	$windowsScaleObjs = $scaleObjs | Where-Object { $_.ScaleBrand -and $_.ScaleBrand -match 'bizerba' } | Sort-Object FullIP -Unique
 	
-	# ----- GUI -----
-	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Select Nodes to Pull Hardware Info"
-	$form.Size = New-Object System.Drawing.Size(440, 470)
-	$form.StartPosition = "CenterScreen"
-	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-	$form.MaximizeBox = $false
-	$form.MinimizeBox = $false
+	# Selection form - pass in only Windows Scales for "Scales"
+	$nodeSelection = Show_Node_Selection_Form -StoreNumber $StoreNumber `
+											  -NodeTypes @("Lane", "Scale", "Backoffice") `
+											  -Title "Select Nodes to Pull Hardware Info" `
+											  -OnlyBizerbaScales
 	
-	$tabs = New-Object System.Windows.Forms.TabControl
-	$tabs.Location = New-Object System.Drawing.Point(10, 10)
-	$tabs.Size = New-Object System.Drawing.Size(400, 340)
-	$form.Controls.Add($tabs)
-	
-	# Lanes Tab
-	$tabLanes = New-Object System.Windows.Forms.TabPage
-	$tabLanes.Text = "Lanes"
-	$clbLanes = New-Object System.Windows.Forms.CheckedListBox
-	$clbLanes.Location = New-Object System.Drawing.Point(10, 10)
-	$clbLanes.Size = New-Object System.Drawing.Size(370, 300)
-	$clbLanes.CheckOnClick = $true
-	$tabLanes.Controls.Add($clbLanes)
-	foreach ($lane in $laneNames | Sort-Object) { $clbLanes.Items.Add($lane) | Out-Null }
-	$tabs.TabPages.Add($tabLanes)
-	
-	# Scales Tab
-	$tabScales = New-Object System.Windows.Forms.TabPage
-	$tabScales.Text = "Scales"
-	$clbScales = New-Object System.Windows.Forms.CheckedListBox
-	$clbScales.Location = New-Object System.Drawing.Point(10, 10)
-	$clbScales.Size = New-Object System.Drawing.Size(370, 300)
-	$clbScales.CheckOnClick = $true
-	$tabScales.Controls.Add($clbScales)
-	foreach ($scale in $scaleIPs | Sort-Object) { $clbScales.Items.Add($scale) | Out-Null }
-	$tabs.TabPages.Add($tabScales)
-	
-	# Backoffices Tab
-	$tabBO = New-Object System.Windows.Forms.TabPage
-	$tabBO.Text = "Backoffices"
-	$clbBO = New-Object System.Windows.Forms.CheckedListBox
-	$clbBO.Location = New-Object System.Drawing.Point(10, 10)
-	$clbBO.Size = New-Object System.Drawing.Size(370, 300)
-	$clbBO.CheckOnClick = $true
-	$tabBO.Controls.Add($clbBO)
-	foreach ($boNum in $boNums)
-	{
-		$boName = $boDict[$boNum]
-		if ($boName)
-		{
-			$display = "$boName ($boNum)"
-		}
-		else
-		{
-			$display = "Unknown ($boNum)"
-		}
-		$clbBO.Items.Add($display) | Out-Null
-	}
-	$tabs.TabPages.Add($tabBO)
-	
-	# Select/Deselect All Buttons
-	$btnSelectAll = New-Object System.Windows.Forms.Button
-	$btnSelectAll.Location = New-Object System.Drawing.Point(20, 360)
-	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
-	$btnSelectAll.Text = "Select All"
-	$btnSelectAll.Add_Click({
-			foreach ($clb in @($clbLanes, $clbScales, $clbBO))
-			{
-				for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $true) }
-			}
-		})
-	$form.Controls.Add($btnSelectAll)
-	
-	$btnDeselectAll = New-Object System.Windows.Forms.Button
-	$btnDeselectAll.Location = New-Object System.Drawing.Point(220, 360)
-	$btnDeselectAll.Size = New-Object System.Drawing.Size(180, 32)
-	$btnDeselectAll.Text = "Deselect All"
-	$btnDeselectAll.Add_Click({
-			foreach ($clb in @($clbLanes, $clbScales, $clbBO))
-			{
-				for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $false) }
-			}
-		})
-	$form.Controls.Add($btnDeselectAll)
-	
-	$btnOK = New-Object System.Windows.Forms.Button
-	$btnOK.Text = "OK"
-	$btnOK.Location = New-Object System.Drawing.Point(50, 400)
-	$btnOK.Size = New-Object System.Drawing.Size(150, 32)
-	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$form.AcceptButton = $btnOK
-	$form.Controls.Add($btnOK)
-	
-	$btnCancel = New-Object System.Windows.Forms.Button
-	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = New-Object System.Drawing.Point(220, 400)
-	$btnCancel.Size = New-Object System.Drawing.Size(150, 32)
-	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$form.CancelButton = $btnCancel
-	$form.Controls.Add($btnCancel)
-	
-	$dialogResult = $form.ShowDialog()
-	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+	if (-not $nodeSelection)
 	{
 		Write_Log "Get_Remote_Machine_Info cancelled by user." "yellow"
 		return $false
 	}
-	
-	# Gather selections
-	$selectedLanes = @()
-	for ($i = 0; $i -lt $clbLanes.Items.Count; $i++)
-	{
-		if ($clbLanes.GetItemChecked($i)) { $selectedLanes += $clbLanes.Items[$i] }
-	}
-	$selectedScales = @()
-	for ($i = 0; $i -lt $clbScales.Items.Count; $i++)
-	{
-		if ($clbScales.GetItemChecked($i)) { $selectedScales += $clbScales.Items[$i] }
-	}
-	$selectedBOs = @()
-	for ($i = 0; $i -lt $clbBO.Items.Count; $i++)
-	{
-		if ($clbBO.GetItemChecked($i))
-		{
-			if ($clbBO.Items[$i] -match '\((\d{3})\)$')
-			{
-				$selectedBOs += $matches[1]
-			}
-		}
-	}
+	$selectedLanes = $nodeSelection.Lanes # array of lane machine names
+	$selectedScales = $nodeSelection.Scales # array of scale objects
+	$selectedBOs = $nodeSelection.Backoffices # array of BO numbers
 	
 	# Validation: No selections
 	if ($selectedLanes.Count -eq 0 -and $selectedScales.Count -eq 0 -and $selectedBOs.Count -eq 0)
@@ -2624,6 +2477,7 @@ function Get_Remote_Machine_Info
 		return $false
 	}
 	
+	# Prepare export directories
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
 	$scalesDir = Join-Path $desktop "Scales"
@@ -2633,12 +2487,14 @@ function Get_Remote_Machine_Info
 		if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory | Out-Null }
 	}
 	
+	# Main hardware info processing loop
 	foreach ($section in @(
 			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt'; IsWindows = $true },
 			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt'; IsWindows = $null },
 			@{ Name = 'BackOffices'; Selected = $selectedBOs; Dir = $backofficesDir; ScriptVar = 'BackofficeHardwareInfo'; InfoLinesVar = 'BOInfoLines'; ResultsVar = 'BOResults'; FileName = 'Backoffices_Info.txt'; IsWindows = $true }
 		))
 	{
+		# Skip if no selection
 		if ($section.Selected.Count -eq 0) { continue }
 		Write_Log "Processing $($section.Name) nodes..." "yellow"
 		Set-Variable -Name $($section.ResultsVar) -Value @{ }
@@ -2646,20 +2502,24 @@ function Get_Remote_Machine_Info
 		$jobs = @()
 		$pending = @{ }
 		
-		foreach ($remote in ($section.Selected | Sort-Object))
+		# For Scales: deduplicate by FullIP, only process Bizerba (Windows) scales
+		if ($section.Name -eq 'Scales')
 		{
-			$isWindows = $section.IsWindows
+			$uniqueWindowsScales = $section.Selected | Where-Object { $_.ScaleBrand -and $_.ScaleBrand -match 'bizerba' } | Sort-Object FullIP -Unique
+			$section.Selected = $uniqueWindowsScales
+		}
+		
+		# -------------------------------------
+		foreach ($remoteObj in ($section.Selected | Sort-Object {
+					if ($section.Name -eq 'Scales') { $_.FullIP }
+					else { $_ }
+				}))
+		{
+			# For scales, use the FullIP as "remote"; for lanes/backoffices use name/number
 			if ($section.Name -eq 'Scales')
 			{
-				$isBizerba = $false
-				foreach ($scale in $scaleBrands.Values)
-				{
-					if ($scale.FullIP -eq $remote -and $scale.ScaleBrand -eq 'Bizerba')
-					{
-						$isBizerba = $true
-						break
-					}
-				}
+				$remote = $remoteObj.FullIP
+				$isBizerba = $remoteObj.ScaleBrand -and $remoteObj.ScaleBrand -match 'bizerba'
 				if (-not $isBizerba)
 				{
 					$info = @{
@@ -2669,84 +2529,104 @@ function Get_Remote_Machine_Info
 						CPU			       = $null
 						RAM			       = $null
 						OSInfo			   = $null
+						Method			   = "N/A"
 						Error			   = "Non-Windows scale (e.g., Ishida); skipping."
 					}
 					$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
 					$results[$remote] = $info
 					Set-Variable -Name $($section.ResultsVar) -Value $results
 					$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-					$infolines += "Machine Name: $remote | [Hardware info unavailable]  Error: $($info.Error)"
+					$displayName = if ($remoteObj.ScaleName) { "$($remoteObj.ScaleName) ($remote)" }
+					else { $remote }
+					$infolines += "Machine Name: $displayName | [Hardware info unavailable]  Error: $($info.Error)"
 					Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
-					Write_Log "Skipped $remote ($($section.Name)): $($info.Error)" "yellow"
+					Write_Log "Skipped $displayName ($($section.Name)): $($info.Error)" "yellow"
 					continue
 				}
-				$isWindows = $true
 			}
-			
-			$job = Start-Job -ScriptBlock {
-				param ($remote,
+			else
+			{
+				$remote = $remoteObj
+			}
+			# Start job to gather info; pass in boDict for INI fallback
+			$job = Start-Job -ArgumentList $remote, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $DbsPath, $StoreNumber, $section, $boDict `
+							 -ScriptBlock {
+				param (
+					$remote,
 					$wmiTimeoutSeconds,
 					$cimTimeoutSeconds,
 					$regTimeoutSeconds,
 					$DbsPath,
 					$StoreNumber,
-					$section)
-				# Write-Host "[JOB DEBUG] DbsPath inside job: '$DbsPath'" -ForegroundColor Green
-				$info = @{
-					Success		       = $false
-					SystemManufacturer = $null
-					SystemProductName  = $null
-					CPU			       = $null
-					RAM			       = $null
-					OSInfo			   = $null
-					Error			   = $null
+					$section,
+					$boDict
+				)
+				
+				# Initialize info object
+				$info = [PSCustomObject]@{
+					Success			    = $false
+					SystemManufacturer  = $null
+					SystemProductName   = $null
+					CPU				    = $null
+					RAM				    = $null
+					OSInfo			    = $null
+					Method			    = $null
+					Error			    = $null
+					MachineNameOverride = $null
 				}
+				
 				$isBackoffice = ($section.Name -eq 'BackOffices')
+				
+				# -- WMI Method --
 				if (-not $isBackoffice -and -not (Test-Connection -ComputerName $remote -Count 1 -Quiet -ErrorAction SilentlyContinue))
 				{
 					$info.Error = "Offline or unreachable."
-					return @{ Machine = $remote; Info = $info }
+					$info.Method = "Offline"
 				}
-				# WMI
-				$wmiJob = Start-Job -ScriptBlock {
-					try
-					{
-						$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $using:remote -ErrorAction Stop
-						$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $using:remote -ErrorAction Stop | Select-Object -First 1
-						$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $using:remote -ErrorAction Stop
-						@{
-							SystemManufacturer = $sys.Manufacturer
-							SystemProductName  = $sys.Model
-							CPU			       = $cpu.Name
-							RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
-							OSInfo			   = "$($os.Caption) ($($os.Version))"
+				else
+				{
+					$wmiJob = Start-Job -ScriptBlock {
+						try
+						{
+							$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $using:remote -ErrorAction Stop
+							$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $using:remote -ErrorAction Stop | Select-Object -First 1
+							$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $using:remote -ErrorAction Stop
+							[PSCustomObject]@{
+								SystemManufacturer = $sys.Manufacturer
+								SystemProductName  = $sys.Model
+								CPU			       = $cpu.Name
+								RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
+								OSInfo			   = "$($os.Caption) ($($os.Version))"
+								Method			   = "WMI"
+							}
 						}
+						catch { $null }
 					}
-					catch { $null }
+					if (Wait-Job $wmiJob -Timeout $wmiTimeoutSeconds)
+					{
+						$wmiResult = Receive-Job $wmiJob
+						Remove-Job $wmiJob -Force -ErrorAction SilentlyContinue
+					}
+					else
+					{
+						Stop-Job $wmiJob -ErrorAction SilentlyContinue
+						Remove-Job $wmiJob -Force -ErrorAction SilentlyContinue
+						$wmiResult = $null
+					}
+					if ($wmiResult -and $wmiResult.SystemManufacturer -and $wmiResult.SystemProductName)
+					{
+						$info.SystemManufacturer = $wmiResult.SystemManufacturer
+						$info.SystemProductName = $wmiResult.SystemProductName
+						$info.CPU = $wmiResult.CPU
+						$info.RAM = $wmiResult.RAM
+						$info.OSInfo = $wmiResult.OSInfo
+						$info.Method = "WMI"
+						$info.Success = $true
+					}
 				}
-				if (Wait-Job $wmiJob -Timeout $wmiTimeoutSeconds)
+				# -- CIM Method --
+				if (-not $info.Success)
 				{
-					$wmiResult = Receive-Job $wmiJob
-					Remove-Job $wmiJob -Force -ErrorAction SilentlyContinue
-				}
-				else
-				{
-					Stop-Job $wmiJob -ErrorAction SilentlyContinue
-					Remove-Job $wmiJob -Force -ErrorAction SilentlyContinue
-					$wmiResult = $null
-				}
-				if ($wmiResult -and $wmiResult.SystemManufacturer -and $wmiResult.SystemProductName)
-				{
-					$info.SystemManufacturer = $wmiResult.SystemManufacturer
-					$info.SystemProductName = $wmiResult.SystemProductName
-					$info.CPU = $wmiResult.CPU
-					$info.RAM = $wmiResult.RAM
-					$info.OSInfo = $wmiResult.OSInfo
-					$info.Success = $true
-				}
-				else
-				{
-					# CIM
 					$cimJob = Start-Job -ScriptBlock {
 						try
 						{
@@ -2755,12 +2635,13 @@ function Get_Remote_Machine_Info
 							$cpu = Get-CimInstance -CimSession $session -ClassName Win32_Processor | Select-Object -First 1
 							$os = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem
 							Remove-CimSession $session
-							@{
+							[PSCustomObject]@{
 								SystemManufacturer = $sys.Manufacturer
 								SystemProductName  = $sys.Model
 								CPU			       = $cpu.Name
 								RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
 								OSInfo			   = "$($os.Caption) ($($os.Version))"
+								Method			   = "CIM"
 							}
 						}
 						catch { $null }
@@ -2783,156 +2664,182 @@ function Get_Remote_Machine_Info
 						$info.CPU = $cimResult.CPU
 						$info.RAM = $cimResult.RAM
 						$info.OSInfo = $cimResult.OSInfo
+						$info.Method = "CIM"
 						$info.Success = $true
 					}
-					else
+				}
+				# -- REG Method --
+				if (-not $info.Success)
+				{
+					try
 					{
-						# REG fallback (no RAM, limited OS info)
-						try
+						if ($originalState.StartType -ne "AUTO_START" -and $originalState.StartType -ne "DEMAND_START")
 						{
-							if ($originalState.StartType -ne "AUTO_START" -and $originalState.StartType -ne "DEMAND_START")
+							sc.exe "\\$remote" config RemoteRegistry start= demand | Out-Null
+						}
+						if ($originalState.State -ne "RUNNING")
+						{
+							sc.exe "\\$remote" start RemoteRegistry | Out-Null
+							Start-Sleep -Milliseconds 500 # Brief wait for service start
+						}
+						
+						# Manufacturer & Model
+						$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+						$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+						$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+						$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+						
+						# CPU
+						$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+						$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+						
+						# --- NEW: OS INFO from registry ---
+						$osKey = "\\$remote\HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+						$osName = reg.exe query $osKey /v ProductName 2>&1
+						$osVer = reg.exe query $osKey /v CurrentVersion 2>&1
+						$osBuild = reg.exe query $osKey /v DisplayVersion 2>&1
+						$osNameMatch = [regex]::Match($osName, 'ProductName\s+REG_SZ\s+(.+)$')
+						$osVerMatch = [regex]::Match($osVer, 'CurrentVersion\s+REG_SZ\s+(.+)$')
+						$osBuildMatch = [regex]::Match($osBuild, 'DisplayVersion\s+REG_SZ\s+(.+)$')
+						
+						$SystemManufacturer = if ($manufMatch.Success) { $manufMatch.Groups[1].Value.Trim() }
+						else { $null }
+						$SystemProductName = if ($prodMatch.Success) { $prodMatch.Groups[1].Value.Trim() }
+						else { $null }
+						$CPU = if ($cpuMatch.Success) { $cpuMatch.Groups[1].Value.Trim() }
+						else { $null }
+						
+						# Compose OS string, prefer: "Win 10 Pro (10.0, 22H2)"
+						if ($osNameMatch.Success)
+						{
+							$osString = $osNameMatch.Groups[1].Value.Trim()
+							if ($osVerMatch.Success) { $osString += " (" + $osVerMatch.Groups[1].Value.Trim() }
+							if ($osBuildMatch.Success) { $osString += ", " + $osBuildMatch.Groups[1].Value.Trim() + ")" }
+							elseif ($osVerMatch.Success) { $osString += ")" }
+						}
+						else
+						{
+							$osString = $null
+						}
+						
+						if ($SystemManufacturer -and $SystemProductName)
+						{
+							$info.SystemManufacturer = $SystemManufacturer
+							$info.SystemProductName = $SystemProductName
+							$info.CPU = $CPU
+							$info.RAM = $null # No reliable REG fallback for RAM
+							$info.OSInfo = $osString
+							$info.Method = "REG"
+							$info.Success = $true
+						}
+						else
+						{
+							$info.Error = "REG query failed to retrieve complete info."
+							$info.Method = "REG"
+						}
+					}
+					catch
+					{
+						$info.Error = "REG fallback failed: $_"
+						$info.Method = "REG"
+					}
+					finally
+					{
+						# Inline: Restore service state
+						if ($originalState.State -ne "RUNNING") { sc.exe "\\$remote" stop RemoteRegistry | Out-Null }
+						if ($originalState.StartType) { sc.exe "\\$remote" config RemoteRegistry start= $originalState.StartType | Out-Null }
+					}
+				}
+				# -- INI Fallback for Backoffices only --
+				if (-not $info.Success -and $section.Name -eq 'BackOffices')
+				{
+					try
+					{
+						$boNum = $remote
+						$pattern = "INFO_${StoreNumber}${boNum}_SMSStart.ini"
+						$searchPath = Join-Path $DbsPath $pattern
+						$iniFile = Get-ChildItem -Path $DbsPath -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+						if ($iniFile)
+						{
+							$iniLines = Get-Content $iniFile.FullName
+							$sections = @{ }
+							$currentSection = ""
+							foreach ($line in $iniLines)
 							{
-								sc.exe "\\$remote" config RemoteRegistry start= demand | Out-Null
+								if ($line -match '^\[(.+)\]$')
+								{
+									$currentSection = $matches[1]
+									$sections[$currentSection] = @{ }
+								}
+								elseif ($line -match '^\s*([^=]+?)\s*=\s*(.*)$' -and $currentSection)
+								{
+									$key = $matches[1].Trim()
+									$val = $matches[2].Trim()
+									$sections[$currentSection][$key] = $val
+								}
 							}
-							if ($originalState.State -ne "RUNNING")
+							# Machine Name: Prefer ComputerName in ORIGIN, else boDict, else numeric
+							if ($sections.ContainsKey('ORIGIN') -and $sections['ORIGIN'].ContainsKey('ComputerName') -and $sections['ORIGIN']['ComputerName'])
 							{
-								sc.exe "\\$remote" start RemoteRegistry | Out-Null
-								Start-Sleep -Milliseconds 500 # Brief wait for service start
+								$realMachineName = $sections['ORIGIN']['ComputerName']
 							}
-							
-							$manuf = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
-							$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
-							$prod = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
-							$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
-							$cpu = reg.exe query "\\$remote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
-							$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
-							
-							$SystemManufacturer = if ($manufMatch.Success) { $manufMatch.Groups[1].Value.Trim() }
-							else { $null }
-							$SystemProductName = if ($prodMatch.Success) { $prodMatch.Groups[1].Value.Trim() }
-							else { $null }
-							$CPU = if ($cpuMatch.Success) { $cpuMatch.Groups[1].Value.Trim() }
-							else { $null }
-							
-							if ($SystemManufacturer -and $SystemProductName)
+							elseif ($boDict -and $boDict.ContainsKey($boNum) -and $boDict[$boNum])
 							{
-								$info.SystemManufacturer = $SystemManufacturer
-								$info.SystemProductName = $SystemProductName
-								$info.CPU = $CPU
-								$info.RAM = $null # No reliable REG fallback for RAM
-								$info.Success = $true
+								$realMachineName = $boDict[$boNum]
 							}
 							else
 							{
-								$info.Error = "REG query failed to retrieve complete info."
+								$realMachineName = $remote
 							}
-						}
-						catch
-						{
-							$info.Error = "REG fallback failed: $_"
-						}
-						# INI fallback for Backoffices
-						if (-not $info.Success -and $section.Name -eq 'BackOffices')
-						{
-							try
+							$info.MachineNameOverride = $realMachineName
+							# Manufacturer/Model
+							$info.SystemManufacturer = "Unknown"
+							$info.SystemProductName = "Unknown"
+							# CPU
+							if ($sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores') -and $sections['PROCESSOR'].ContainsKey('Architecture'))
 							{
-								$boNum = $remote
-								$pattern = "INFO_${StoreNumber}${boNum}_SMSStart.ini"
-								$searchPath = Join-Path $DbsPath $pattern
-								# Write-Host "[JOB DEBUG] INI Fallback Path: $searchPath" -ForegroundColor Yellow
-								$iniFile = Get-ChildItem -Path $DbsPath -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-								if ($iniFile)
-								{
-									$iniLines = Get-Content $iniFile.FullName
-									$sections = @{ }
-									$currentSection = ""
-									foreach ($line in $iniLines)
-									{
-										if ($line -match '^\[(.+)\]$')
-										{
-											$currentSection = $matches[1]
-											$sections[$currentSection] = @{ }
-										}
-										elseif ($line -match '^\s*([^=]+?)\s*=\s*(.*)$' -and $currentSection)
-										{
-											$key = $matches[1].Trim()
-											$val = $matches[2].Trim()
-											$sections[$currentSection][$key] = $val
-										}
-									}
-									
-									# Machine Name
-									if ($sections.ContainsKey('ORIGIN') -and $sections['ORIGIN'].ContainsKey('ComputerName') -and $sections['ORIGIN']['ComputerName'])
-									{
-										$realMachineName = $sections['ORIGIN']['ComputerName']
-									}
-									else
-									{
-										$realMachineName = $remote
-									}
-									$info.MachineNameOverride = $realMachineName
-									
-									# Manufacturer/Model
-									$info.SystemManufacturer = "Unknown"
-									$info.SystemProductName = "Unknown"
-									
-									# CPU
-									if ($sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores') -and $sections['PROCESSOR'].ContainsKey('Architecture'))
-									{
-										$cores = $sections['PROCESSOR']['Cores']
-										$arch = $sections['PROCESSOR']['Architecture']
-										$info.CPU = "$cores cores ($arch)"
-									}
-									else
-									{
-										$info.CPU = "Unknown"
-									}
-									
-									# RAM in GB, 1 decimal
-									if ($sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
-									{
-										$ramMb = $sections['Memory']['PhysicalMemory']
-										if ($ramMb -match '^\d+$')
-										{
-											$info.RAM = "{0:N1}" -f ([double]$ramMb / 1024)
-										}
-										else
-										{
-											$info.RAM = "Unknown"
-										}
-									}
-									else
-									{
-										$info.RAM = "Unknown"
-									}
-									
-									# OS
-									if ($sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
-									{
-										$info.OSInfo = $sections['OperatingSystem']['ProductName']
-									}
-									else
-									{
-										$info.OSInfo = "Unknown"
-									}
-									
-									$info.Success = $true
-									$info.Error = "Read from $($iniFile.FullName)"
-								}
-								else
-								{
-									$info.Error = "No fallback INI file found for $remote ($pattern, full path: $searchPath)"
-								}
+								$cores = $sections['PROCESSOR']['Cores']
+								$arch = $sections['PROCESSOR']['Architecture']
+								$info.CPU = "$cores cores ($arch)"
 							}
-							catch
+							else { $info.CPU = "Unknown" }
+							# RAM in GB, 1 decimal
+							if ($sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
 							{
-								$info.Error = "INI fallback failed: $_"
+								$ramMb = $sections['Memory']['PhysicalMemory']
+								if ($ramMb -match '^\d+$') { $info.RAM = "{0:N1}" -f ([double]$ramMb / 1024) }
+								else { $info.RAM = "Unknown" }
 							}
+							else { $info.RAM = "Unknown" }
+							# OS -- ADDED: OSInfo from INI [OperatingSystem] section, ProductName key
+							if ($sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
+							{
+								$info.OSInfo = $sections['OperatingSystem']['ProductName']
+							}
+							else { $info.OSInfo = "Unknown" }
+							$info.Method = "INI"
+							$info.Success = $true
+							$info.Error = "Read from $($iniFile.FullName)"
+						}
+						else
+						{
+							$info.Error = "No fallback INI file found for $remote ($pattern, full path: $searchPath)"
+							$info.Method = "INI"
 						}
 					}
+					catch
+					{
+						$info.Error = "INI fallback failed: $_"
+						$info.Method = "INI"
+					}
 				}
-				return @{ Machine = $remote; Info = $info }
-			} -ArgumentList $remote, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $DbsPath, $StoreNumber, $section
+				# Always return as PSCustomObject and expose MachineNameOverride at the top
+				return [PSCustomObject]@{
+					Machine			    = $remote
+					MachineNameOverride = $info.MachineNameOverride
+					Info			    = $info
+				}
+			} # End ScriptBlock
 			
 			$jobs += $job
 			$pending[$job.Id] = $remote
@@ -2946,28 +2853,65 @@ function Get_Remote_Machine_Info
 					foreach ($j in $done)
 					{
 						$result = Receive-Job $j
-						$remoteName = $result.Machine
+						$remoteName = $pending[$j.Id]
 						$info = $result.Info
-						$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
-						$results[$remoteName] = $info
-						Set-Variable -Name $($section.ResultsVar) -Value $results
-						$line = "Machine Name: $remoteName |"
+						# Determine display name (MachineNameOverride logic, supports serialization)
+						if ($section.Name -eq 'BackOffices')
+						{
+							$boNum = $remoteName
+							$boName = $null
+							if ($result.PSObject.Properties.Name -contains "MachineNameOverride" -and $result.MachineNameOverride)
+							{
+								$boName = $result.MachineNameOverride
+							}
+							elseif ($info.PSObject.Properties.Name -contains "MachineNameOverride" -and $info.MachineNameOverride)
+							{
+								$boName = $info.MachineNameOverride
+							}
+							elseif ($boDict -and $boDict.ContainsKey($boNum) -and $boDict[$boNum])
+							{
+								$boName = $boDict[$boNum]
+							}
+							else
+							{
+								$boName = $boNum
+							}
+							$displayName = "$boName ($boNum)"
+						}
+						else
+						{
+							if ($result.PSObject.Properties.Name -contains "MachineNameOverride" -and $result.MachineNameOverride)
+							{
+								$displayName = $result.MachineNameOverride
+							}
+							elseif ($info.PSObject.Properties.Name -contains "MachineNameOverride" -and $info.MachineNameOverride)
+							{
+								$displayName = $info.MachineNameOverride
+							}
+							else
+							{
+								$displayName = $remoteName
+							}
+						}
+						$line = "Machine Name: $displayName |"
 						if ($info.Success)
 						{
 							$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 							if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
 							if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
-							Write_Log "Processed $remoteName ($($section.Name)): Success" "green"
+							$line += " | Method: $($info.Method)"
+							Write_Log "Processed $displayName ($($section.Name)): Success [$($info.Method)]" "green"
 						}
 						elseif ($info.Error)
 						{
 							$line += " [Hardware info unavailable]  Error: $($info.Error)"
-							Write_Log "Processed $remoteName ($($section.Name)): Error - $($info.Error)" "red"
+							$line += " | Method: $($info.Method)"
+							Write_Log "Processed $displayName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
 						}
 						else
 						{
-							$line += " [No hardware info found]"
-							Write_Log "Processed $remoteName ($($section.Name)): No info" "yellow"
+							$line += " [No hardware info found] | Method: $($info.Method)"
+							Write_Log "Processed $displayName ($($section.Name)): No info [$($info.Method)]" "yellow"
 						}
 						$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 						$infolines += $line
@@ -2990,34 +2934,62 @@ function Get_Remote_Machine_Info
 				$remoteName = $pending[$j.Id]
 				$result = Receive-Job $j
 				$info = $result.Info
-				if ($info.Success)
+				if ($section.Name -eq 'BackOffices')
 				{
-					$status = 'Success'
-					$color = 'green'
+					$boNum = $remoteName
+					$boName = $null
+					if ($result.PSObject.Properties.Name -contains "MachineNameOverride" -and $result.MachineNameOverride)
+					{
+						$boName = $result.MachineNameOverride
+					}
+					elseif ($info.PSObject.Properties.Name -contains "MachineNameOverride" -and $info.MachineNameOverride)
+					{
+						$boName = $info.MachineNameOverride
+					}
+					elseif ($boDict -and $boDict.ContainsKey($boNum) -and $boDict[$boNum])
+					{
+						$boName = $boDict[$boNum]
+					}
+					else
+					{
+						$boName = $boNum
+					}
+					$displayName = "$boName ($boNum)"
 				}
 				else
 				{
-					$status = "Error - $($info.Error)"
-					$color = 'red'
+					if ($result.PSObject.Properties.Name -contains "MachineNameOverride" -and $result.MachineNameOverride)
+					{
+						$displayName = $result.MachineNameOverride
+					}
+					elseif ($info.PSObject.Properties.Name -contains "MachineNameOverride" -and $info.MachineNameOverride)
+					{
+						$displayName = $info.MachineNameOverride
+					}
+					else
+					{
+						$displayName = $remoteName
+					}
 				}
-				Write_Log "Processed $remoteName ($($section.Name)): $status" $color
-				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
-				$results[$remoteName] = $info
-				Set-Variable -Name $($section.ResultsVar) -Value $results
-				$line = "Machine Name: $remoteName |"
+				$line = "Machine Name: $displayName |"
 				if ($info.Success)
 				{
 					$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 					if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
 					if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
+					$line += " | Method: $($info.Method)"
+					Write_Log "Processed $displayName ($($section.Name)): Success [$($info.Method)]" "green"
 				}
 				elseif ($info.Error)
 				{
 					$line += " [Hardware info unavailable]  Error: $($info.Error)"
+					$line += " | Method: $($info.Method)"
+					Write_Log "Processed $displayName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
 				}
 				else
 				{
-					$line += " [No hardware info found]"
+					$line += " [No hardware info found] | Method: $($info.Method)"
+					Write_Log "Processed $displayName ($($section.Name)): No info [$($info.Method)]" "yellow"
 				}
 				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 				$infolines += $line
@@ -3029,7 +3001,7 @@ function Get_Remote_Machine_Info
 		
 		Set-Variable -Name ("script:" + $section.ScriptVar) -Value (Get-Variable -Name $($section.ResultsVar) -ValueOnly) -Scope Script
 		$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-		# === Write output lines in sorted order (numerical if applicable) ===
+		# Write sorted output
 		if ($infolines.Count)
 		{
 			$sortedLines = $infolines | Sort-Object {
@@ -3674,7 +3646,7 @@ function Process_Lanes
 	# ----------------------------------------
 	# Get user's lane selection
 	# ----------------------------------------
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if ($selection -eq $null)
 	{
 		Write_Log "Lane processing canceled by user." "yellow"
@@ -4234,7 +4206,7 @@ function Update_Lane_Config
 		return
 	}
 	
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if ($selection -eq $null)
 	{
 		Write_Log "`r`nLane processing canceled by user." "yellow"
@@ -4619,7 +4591,7 @@ function Pump_Tables
 	}
 	
 	# Prompt for lane selection
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if ($selection -eq $null)
 	{
 		Write_Log "Lane processing canceled by user." "yellow"
@@ -4910,91 +4882,6 @@ ORDER BY ORDINAL_POSITION
 }
 
 # ===================================================================================================
-#                                     FUNCTION: Reboot_Lanes
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Reboots one, a range, or all lane machines based on the user's selection.
-#   Builds a Windows Form for lane selection using the LaneMachines hashtable from FunctionResults.
-#   For each lane, creates a custom object (with LaneNumber, MachineName, and a friendly DisplayName).
-#   Reboots the selected machines by first attempting the shutdown command and, if that fails, falling
-#   back to using Restart-Computer.
-# ===================================================================================================
-
-function Reboot_Lanes
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber
-	)
-	
-	Write_Log "`r`n==================== Starting Reboot_Lanes Function ====================`r`n" "blue"
-	
-	# Grab the lane→machine map
-	$LaneMachines = $script:FunctionResults['LaneMachines']
-	if (-not $LaneMachines -or $LaneMachines.Count -eq 0)
-	{
-		Write_Log "LaneMachines not available. Cannot reboot lanes." "Red"
-		return
-	}
-	
-	# Let user pick lanes
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
-	if (-not $selection -or -not $selection.Lanes)
-	{
-		Write_Log "No lanes selected or selection cancelled. Exiting." "Yellow"
-		return
-	}
-	$lanes = $selection.Lanes
-	
-	# Loop through each lane and attempt reboots
-	foreach ($lane in $lanes)
-	{
-		
-		if (-not $LaneMachines.ContainsKey($lane))
-		{
-			Write_Log "Unknown lane '$lane'. Skipping." "Yellow"
-			continue
-		}
-		
-		$machine = $LaneMachines[$lane]
-		Write_Log "Lane $lane on [$machine]: attempting mailslot reboot" "Yellow"
-		
-		# 1) SMSStart mailslot reboot
-		$mailslot = "\\$machine\mailslot\SMSStart_${StoreNumber}${lane}"
-		$msResult = [MailslotSender]::SendMailslotCommand($mailslot, '@exec(REBOOT=1).')
-		if ($msResult)
-		{
-			Write_Log "Mailslot reboot sent to $machine (Lane $lane)" "Green"
-			continue
-		}
-		Write_Log "Mailslot reboot failed for $machine. Falling back to shutdown.exe" "Yellow"
-		
-		# 2) Fallback: shutdown.exe
-		Write_Log "Running shutdown.exe /r /m \\$machine /t 0 /f" "Yellow"
-		cmd.exe /c "shutdown /r /m \\$machine /t 0 /f" | Out-Null
-		if ($LASTEXITCODE -eq 0)
-		{
-			Write_Log "shutdown.exe reboot succeeded for $machine" "Green"
-			continue
-		}
-		Write_Log "shutdown.exe exit code $LASTEXITCODE. Now trying Restart-Computer" "Yellow"
-		
-		# 3) Final fallback: Restart-Computer
-		Restart-Computer -ComputerName $machine -Force -ErrorAction SilentlyContinue
-		if ($?)
-		{
-			Write_Log "Restart-Computer succeeded for $machine" "Green"
-		}
-		else
-		{
-			Write_Log "All reboot methods failed for $machine (Lane $lane)" "Red"
-		}
-	}
-	Write_Log "`r`n==================== Reboot_Lanes Function Completed ====================" "blue"
-}
-
-# ===================================================================================================
 #                                       FUNCTION: CloseOpenTransactions
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -5176,7 +5063,7 @@ function Close_Open_Transactions
 		if (-not $MatchedTransactions)
 		{
 			Write_Log -Message "No files or no matching transactions found. Prompting for lane number." "yellow"
-			$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+			$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 			if (-not $selection)
 			{
 				Write_Log -Message "Lane selection cancelled or returned no selection." "yellow"
@@ -5278,22 +5165,30 @@ function Close_Open_Transactions
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Ping_All_Lanes
+#                                  FUNCTION: Ping_All_Nodes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#    Ping all lanes at once for a given store (store mode only).
+#    Ping all nodes of a given type (Lanes, Scales, or Backoffices) for a store.
+#    Usage:
+#        Ping_All_Nodes -NodeType "Lane"       -StoreNumber "001"
+#        Ping_All_Nodes -NodeType "Scale"
+#        Ping_All_Nodes -NodeType "Backoffice" -StoreNumber "001"
+#    All context (Lane/Scale/Backoffice lists) are sourced from $script:FunctionResults.
 # ===================================================================================================
 
-function Ping_All_Lanes
+function Ping_All_Nodes
 {
 	param (
 		[Parameter(Mandatory = $true)]
+		[ValidateSet("Lane", "Scale", "Backoffice")]
+		[string]$NodeType,
 		[string]$StoreNumber
 	)
 	
-	Write_Log "`r`n==================== Starting Ping_All_Lanes Function ====================`r`n" "blue"
+	# Log the function start
+	Write_Log "`r`n==================== Starting Ping_All_Nodes ($NodeType) Function ====================`r`n" "blue"
 	
-	# Ensure necessary functions are available
+	# Ensure Write_Log exists
 	foreach ($func in @('Write_Log'))
 	{
 		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
@@ -5303,340 +5198,134 @@ function Ping_All_Lanes
 		}
 	}
 	
-	# Check if FunctionResults has the necessary data
-	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
-		-not $script:FunctionResults.ContainsKey('LaneMachines'))
+	# Determine which node list to use based on NodeType
+	$nodesToPing = @()
+	$nodeLabel = ""
+	$nodeSummary = ""
+	switch ($NodeType)
 	{
-		Write_Log "Lane information is not available. Please run Retrieve_Nodes first." "Red"
-		return
-	}
-	
-	# Retrieve lane information
-	$LaneContents = $script:FunctionResults['LaneContents']
-	$LaneMachines = $script:FunctionResults['LaneMachines']
-	
-	if ($LaneContents.Count -eq 0)
-	{
-		Write_Log "No lanes found for Store Number: $StoreNumber." "Yellow"
-		return
-	}
-	
-	# Assume all lanes are selected
-	$selectedLanes = $LaneContents
-	
-	Write_Log "All lanes will be pinged for Store Number: $StoreNumber." "Green"
-	
-	# Prepare list of machines to ping
-	$machinesToPing = @()
-	foreach ($lane in $selectedLanes)
-	{
-		if ($LaneMachines.ContainsKey($lane))
-		{
-			$machineName = $LaneMachines[$lane]
-			if ($machineName)
+		"Lane" {
+			$nodeLabel = "Lane"
+			$nodeSummary = "Lanes"
+			if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
+				-not $script:FunctionResults.ContainsKey('LaneMachines'))
 			{
-				$machinesToPing += [PSCustomObject]@{
-					Lane    = $lane
-					Machine = $machineName
-				}
+				Write_Log "Lane information is not available. Please run Retrieve_Nodes first." "Red"
+				return
 			}
-			else
+			$LaneContents = $script:FunctionResults['LaneContents']
+			$LaneMachines = $script:FunctionResults['LaneMachines']
+			
+			if ($LaneContents.Count -eq 0)
 			{
-				$machinesToPing += [PSCustomObject]@{
-					Lane    = $lane
-					Machine = "Unknown"
+				Write_Log "No lanes found for Store Number: $StoreNumber." "Yellow"
+				return
+			}
+			foreach ($lane in $LaneContents)
+			{
+				$machineName = $LaneMachines[$lane]
+				$nodesToPing += [PSCustomObject]@{
+					Name   = $lane
+					Target = $machineName
 				}
 			}
 		}
-		else
-		{
-			$machinesToPing += [PSCustomObject]@{
-				Lane    = $lane
-				Machine = "Not Found"
+		"Scale" {
+			$nodeLabel = "Scale"
+			$nodeSummary = "Scales"
+			if (-not $script:FunctionResults.ContainsKey('ScaleIPNetworks') -or $script:FunctionResults['ScaleIPNetworks'].Count -eq 0)
+			{
+				Write_Log "No scales found to ping." "Yellow"
+				return
+			}
+			$ScaleIPNetworks = $script:FunctionResults['ScaleIPNetworks']
+			foreach ($scaleCode in $ScaleIPNetworks.Keys | Sort-Object)
+			{
+				$scaleObj = $ScaleIPNetworks[$scaleCode]
+				$ip = $scaleObj.FullIP
+				$nodesToPing += [PSCustomObject]@{
+					Name   = $scaleCode
+					Target = $ip
+				}
+			}
+		}
+		"Backoffice" {
+			$nodeLabel = "Backoffice"
+			$nodeSummary = "Backoffices"
+			if (-not $script:FunctionResults.ContainsKey('BackofficeMachines'))
+			{
+				Write_Log "Backoffice information is not available. Please run Retrieve_Nodes first." "Red"
+				return
+			}
+			$BackofficeMachines = $script:FunctionResults['BackofficeMachines']
+			if ($BackofficeMachines.Count -eq 0)
+			{
+				Write_Log "No backoffices found for Store Number: $StoreNumber." "Yellow"
+				return
+			}
+			foreach ($terminal in $BackofficeMachines.Keys | Sort-Object)
+			{
+				$machineName = $BackofficeMachines[$terminal]
+				$nodesToPing += [PSCustomObject]@{
+					Name   = $terminal
+					Target = $machineName
+				}
 			}
 		}
 	}
 	
-	if ($machinesToPing.Count -eq 0)
+	if ($nodesToPing.Count -eq 0)
 	{
-		Write_Log "No valid machines found to ping." "Yellow"
+		Write_Log "No valid $nodeSummary found to ping." "Yellow"
 		return
 	}
+	
+	Write_Log "All $nodeSummary will be pinged." "Green"
 	
 	# Initialize counters
 	$successCount = 0
 	$failureCount = 0
 	
-	# Ping each machine and log status
-	foreach ($machine in $machinesToPing)
+	# Ping each node and log status
+	foreach ($node in $nodesToPing)
 	{
-		$lane = $machine.Lane
-		$machineName = $machine.Machine
+		$nodeName = $node.Name
+		$target = $node.Target
 		
-		if ($machineName -in @("Unknown", "Not Found"))
+		if ([string]::IsNullOrWhiteSpace($target) -or $target -in @("Unknown", "Not Found"))
 		{
-			Write_Log "Lane #${lane}: Machine Name - $machineName. Status: Skipped." "Yellow"
+			Write_Log "$nodeLabel #[$nodeName]: Target '$target'. Status: Skipped." "Yellow"
 			continue
 		}
 		
 		try
 		{
-			$pingResult = Test-Connection -ComputerName $machineName -Count 1 -Quiet -ErrorAction Stop
+			$pingResult = Test-Connection -ComputerName $target -Count 1 -Quiet -ErrorAction Stop
 			if ($pingResult)
 			{
-				Write_Log "Lane #${lane}: Machine '$machineName' is reachable. Status: Success." "Green"
+				Write_Log "$nodeLabel #[$nodeName]: Target '$target' is reachable. Status: Success." "Green"
 				$successCount++
 			}
 			else
 			{
-				Write_Log "Lane #${lane}: Machine '$machineName' is not reachable. Status: Failed." "Red"
+				Write_Log "$nodeLabel #[$nodeName]: Target '$target' is not reachable. Status: Failed." "Red"
 				$failureCount++
 			}
 		}
 		catch
 		{
-			Write_Log "Lane #${lane}: Failed to ping Machine '$machineName'. Error: $($_.Exception.Message)" "Red"
+			Write_Log "$nodeLabel #[$nodeName]: Failed to ping target '$target'. Error: $($_.Exception.Message)" "Red"
 			$failureCount++
 		}
 	}
 	
 	# Summary of ping results
-	Write_Log "Ping Summary for Store Number: $StoreNumber - Success: $successCount, Failed: $failureCount." "Blue"
-	Write_Log "`r`n==================== Ping_All_Lanes Function Completed ====================" "blue"
-}
-
-# ===================================================================================================
-#                                       FUNCTION: Ping_All_Scales
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#    Ping all scales at once for a given store (store mode only).
-# ===================================================================================================
-
-function Ping_All_Scales
-{
-	param (
-		[Parameter(Mandatory = $true)]
-		[hashtable]$ScaleIPNetworks
-	)
+	$summaryMsg = "Ping Summary for $nodeSummary"
+	if ($StoreNumber) { $summaryMsg += " (Store Number: $StoreNumber)" }
+	$summaryMsg += " - Success: $successCount, Failed: $failureCount."
 	
-	Write_Log "`r`n==================== Starting Ping_All_Scales Function ====================`r`n" "blue"
-	
-	# Ensure necessary functions are available
-	foreach ($func in @('Write_Log'))
-	{
-		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
-		{
-			Write-Error "Function '$func' is not available. Please ensure it is loaded."
-			return
-		}
-	}
-	
-	# Check if FunctionResults has the necessary data
-	if ($ScaleIPNetworks.Count -eq 0)
-	{
-		Write_Log "No scales found to ping." "Yellow"
-		return
-	}
-	
-	# Assume all scales are selected
-	$selectedScales = $ScaleIPNetworks.Keys | Sort-Object
-	
-	Write_Log "All scales will be pinged." "Green"
-	
-	# Prepare list of scales to ping
-	$scalesToPing = @()
-	foreach ($scaleCode in $selectedScales)
-	{
-		$scaleObj = $ScaleIPNetworks[$scaleCode]
-		$ip = $scaleObj.FullIP
-		if ($ip)
-		{
-			$scalesToPing += [PSCustomObject]@{
-				ScaleCode = $scaleCode
-				IP	      = $ip
-			}
-		}
-		else
-		{
-			$scalesToPing += [PSCustomObject]@{
-				ScaleCode = $scaleCode
-				IP	      = "Unknown"
-			}
-		}
-	}
-	
-	if ($scalesToPing.Count -eq 0)
-	{
-		Write_Log "No valid IPs found to ping." "Yellow"
-		return
-	}
-	
-	# Initialize counters
-	$successCount = 0
-	$failureCount = 0
-	
-	# Ping each scale and log status
-	foreach ($scale in $scalesToPing)
-	{
-		$scaleCode = $scale.ScaleCode
-		$ip = $scale.IP
-		
-		if ($ip -eq "Unknown")
-		{
-			Write_Log "Scale #${scaleCode}: IP - $ip. Status: Skipped." "Yellow"
-			continue
-		}
-		
-		try
-		{
-			$pingResult = Test-Connection -ComputerName $ip -Count 1 -Quiet -ErrorAction Stop
-			if ($pingResult)
-			{
-				Write_Log "Scale #${scaleCode}: IP '$ip' is reachable. Status: Success." "Green"
-				$successCount++
-			}
-			else
-			{
-				Write_Log "Scale #${scaleCode}: IP '$ip' is not reachable. Status: Failed." "Red"
-				$failureCount++
-			}
-		}
-		catch
-		{
-			Write_Log "Scale #${scaleCode}: Failed to ping IP '$ip'. Error: $($_.Exception.Message)" "Red"
-			$failureCount++
-		}
-	}
-	
-	# Summary of ping results
-	Write_Log "Ping Summary - Success: $successCount, Failed: $failureCount." "Blue"
-	Write_Log "`r`n==================== Ping_All_Scales Function Completed ====================" "blue"
-}
-
-# ===================================================================================================
-#                                       FUNCTION: Ping_All_Backoffices
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#    Ping all backoffices at once for a given store (store mode only).
-# ===================================================================================================
-
-function Ping_All_Backoffices
-{
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber
-	)
-	
-	Write_Log "`r`n==================== Starting Ping_All_Backoffices Function ====================`r`n" "blue"
-	
-	# Ensure necessary functions are available
-	foreach ($func in @('Write_Log'))
-	{
-		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
-		{
-			Write-Error "Function '$func' is not available. Please ensure it is loaded."
-			return
-		}
-	}
-	
-	# Check if FunctionResults has the necessary data
-	if (-not $script:FunctionResults.ContainsKey('BackofficeMachines'))
-	{
-		Write_Log "Backoffice information is not available. Please run Retrieve_Nodes first." "Red"
-		return
-	}
-	
-	# Retrieve backoffice information
-	$BackofficeMachines = $script:FunctionResults['BackofficeMachines']
-	
-	if ($BackofficeMachines.Count -eq 0)
-	{
-		Write_Log "No backoffices found for Store Number: $StoreNumber." "Yellow"
-		return
-	}
-	
-	# Assume all backoffices are selected
-	$selectedBackoffices = $BackofficeMachines.Keys | Sort-Object
-	
-	Write_Log "All backoffices will be pinged for Store Number: $StoreNumber." "Green"
-	
-	# Prepare list of machines to ping
-	$machinesToPing = @()
-	foreach ($terminal in $selectedBackoffices)
-	{
-		if ($BackofficeMachines.ContainsKey($terminal))
-		{
-			$machineName = $BackofficeMachines[$terminal]
-			if ($machineName)
-			{
-				$machinesToPing += [PSCustomObject]@{
-					Terminal = $terminal
-					Machine  = $machineName
-				}
-			}
-			else
-			{
-				$machinesToPing += [PSCustomObject]@{
-					Terminal = $terminal
-					Machine  = "Unknown"
-				}
-			}
-		}
-		else
-		{
-			$machinesToPing += [PSCustomObject]@{
-				Terminal = $terminal
-				Machine  = "Not Found"
-			}
-		}
-	}
-	
-	if ($machinesToPing.Count -eq 0)
-	{
-		Write_Log "No valid machines found to ping." "Yellow"
-		return
-	}
-	
-	# Initialize counters
-	$successCount = 0
-	$failureCount = 0
-	
-	# Ping each machine and log status
-	foreach ($machine in $machinesToPing)
-	{
-		$terminal = $machine.Terminal
-		$machineName = $machine.Machine
-		
-		if ($machineName -in @("Unknown", "Not Found"))
-		{
-			Write_Log "Backoffice #${terminal}: Machine Name - $machineName. Status: Skipped." "Yellow"
-			continue
-		}
-		
-		try
-		{
-			$pingResult = Test-Connection -ComputerName $machineName -Count 1 -Quiet -ErrorAction Stop
-			if ($pingResult)
-			{
-				Write_Log "Backoffice #${terminal}: Machine '$machineName' is reachable. Status: Success." "Green"
-				$successCount++
-			}
-			else
-			{
-				Write_Log "Backoffice #${terminal}: Machine '$machineName' is not reachable. Status: Failed." "Red"
-				$failureCount++
-			}
-		}
-		catch
-		{
-			Write_Log "Backoffice #${terminal}: Failed to ping Machine '$machineName'. Error: $($_.Exception.Message)" "Red"
-			$failureCount++
-		}
-	}
-	
-	# Summary of ping results
-	Write_Log "Ping Summary for Store Number: $StoreNumber - Success: $successCount, Failed: $failureCount." "Blue"
-	Write_Log "`r`n==================== Ping_All_Backoffices Function Completed ====================" "blue"
+	Write_Log $summaryMsg "Blue"
+	Write_Log "`r`n==================== Ping_All_Nodes ($NodeType) Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -5761,7 +5450,7 @@ function Delete_DBS
 	Write_Log "Starting deletion of file types: $($fileExtensions -join ', ') for Store Number: $StoreNumber." "Green"
 	
 	# Show the selection dialog to choose lanes
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	
 	if (-not $selection)
 	{
@@ -6270,7 +5959,7 @@ function Refresh_PIN_Pad_Files
 	$NumberOfLanes = $script:FunctionResults['NumberOfLanes']
 	
 	# Get the user's selection
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	
 	if ($selection -eq $null)
 	{
@@ -6651,7 +6340,7 @@ function Schedule_Lane_DB_Maintenance
 		return
 	}
 	
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if (-not $selection -or -not $selection.Lanes)
 	{
 		Write_Log "No lanes selected. Cancelling operation." "yellow"
@@ -7452,7 +7141,7 @@ function Send_Restart_All_Programs
 	}
 	else
 	{
-		$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 		if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 		{
 			Write_Log "No lanes selected or selection cancelled. Exiting." "yellow"
@@ -7600,7 +7289,7 @@ function Send_SERVER_time_to_Lanes
 	}
 	
 	# Use existing lane selection form to choose lanes
-	$laneSelection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	$laneSelection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if (-not $laneSelection -or $laneSelection.Lanes.Count -eq 0)
 	{
 		Write_Log "No lanes selected for time sync." "yellow"
@@ -7859,7 +7548,7 @@ function Drawer_Control
 	# --------------------------------------------------
 	# STEP 2: Use Show_Lane_Selection_Form to select lanes (Store mode)
 	# --------------------------------------------------
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if ($null -eq $selection)
 	{
 		Write_Log "No lanes selected or selection cancelled." "yellow"
@@ -7962,7 +7651,7 @@ function Refresh_Database
 	# STEP 1: Use Show_Lane_Selection_Form to select registers
 	# --------------------------------------------------
 	# The Show_Lane_Selection_Form function is assumed to be available and operating in "Store" mode.
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if ($null -eq $selection)
 	{
 		Write_Log "No registers selected or selection cancelled." "yellow"
@@ -8019,203 +7708,287 @@ function Refresh_Database
 }
 
 # ===================================================================================================
-#                           FUNCTION: Reboot_Scales
+#                                  FUNCTION: Reboot_Nodes
 # ---------------------------------------------------------------------------------------------------
-# **Purpose:**
-#   The `Reboot_Scales` function displays a Windows Form that allows the user to select which scales
-#   to reboot based on their full IP addresses. The full IP address should already be built by 
-#   concatenating the IPNetwork (first 3 octets) with the IPDevice (last octet). If available, the function
-#   uses the ScaleName (from the table) for a friendly display; otherwise, it extracts the last octet
-#   of the IP to generate a display name. In either case, the full IP is shown in parentheses next to
-#   the name (e.g., "Scale 101 (192.168.5.101)").
-#
-# **Parameters:**
-#   - [hashtable]$ScaleIPNetworks
-#       - **Description:** A hashtable where each key represents a scale identifier. The value may either be:
-#           1. A full IP address as a string (e.g., "192.168.5.101"), or
-#           2. A custom object with at least the properties **FullIP** and **ScaleName**.
-#
-# **Usage:**
-#   ```powershell
-#   Reboot_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
-#
-# **Notes:**
-#   - Replace or adjust the reboot logic as needed for your environment.
+# Description:
+#   Presents a tabbed dialog for rebooting Lanes (with mailslot), Scales, and/or Backoffices.
+#   - For Lanes: tries SMSStart mailslot, then shutdown.exe, then Restart-Computer.
+#   - For Scales and Backoffices: tries shutdown.exe, then Restart-Computer.
+#   - Tabs are dynamically shown depending on -NodeTypes.
+# Usage:
+#   Reboot_Nodes -StoreNumber "001" -NodeTypes Lane
+#   Reboot_Nodes -StoreNumber "001" -NodeTypes Scale
+#   Reboot_Nodes -StoreNumber "001" -NodeTypes Lane,Scale
+#   Reboot_Nodes -StoreNumber "001" -NodeTypes Backoffice
+#   Reboot_Nodes -StoreNumber "001" -NodeTypes Lane,Scale,Backoffice
 # ===================================================================================================
 
-function Reboot_Scales
+function Reboot_Nodes
 {
 	param (
-		[hashtable]$ScaleIPNetworks
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[Parameter()]
+		[ValidateSet("Lane", "Scale", "Backoffice")]
+		[string[]]$NodeTypes = @("Lane", "Scale", "Backoffice")
 	)
+	Write_Log "`r`n==================== Starting Reboot_Nodes Function ====================`r`n" "blue"
 	
-	# Load Windows Forms assemblies
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
-	
-	# Create the form
-	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Reboot Scales"
-	$form.Size = New-Object System.Drawing.Size(400, 500)
-	$form.StartPosition = "CenterScreen"
-	
-	# Create a CheckedListBox to list scales
-	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
-	$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
-	$checkedListBox.Size = New-Object System.Drawing.Size(360, 350)
-	$checkedListBox.CheckOnClick = $true
-	
-	# Accumulate items in an array
-	$scaleItems = @()
-	foreach ($key in $ScaleIPNetworks.Keys)
-	{
-		$entry = $ScaleIPNetworks[$key]
-		if ($entry -is [string])
-		{
-			# Entry is a string containing the full IP.
-			$ip = $entry.Trim()
-			$octets = $ip -split "\."
-			if ($octets.Count -ge 1)
-			{
-				$lastOctet = $octets[-1]
-				# Build display name with the IP in parentheses.
-				$displayName = "Scale $lastOctet ($ip)"
-			}
-			else
-			{
-				$displayName = $key
-			}
-		}
-		elseif ($entry -is [psobject] -and $entry.PSObject.Properties.Name -contains "ScaleName")
-		{
-			# Entry is a custom object with ScaleName and FullIP.
-			$ip = $entry.FullIP.Trim()
-			$displayName = "$($entry.ScaleName) ($ip)"
-		}
-		else
-		{
-			# Fallback: treat entry as a string.
-			$ip = "$entry".Trim()
-			$octets = $ip -split "\."
-			if ($octets.Count -ge 1)
-			{
-				$lastOctet = $octets[-1]
-				$displayName = "Scale $lastOctet ($ip)"
-			}
-			else
-			{
-				$displayName = $key
-			}
-		}
+	# Load global node data
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	$ScaleIPNetworks = $script:FunctionResults['ScaleIPNetworks']
+	$BackofficeMachines = $script:FunctionResults['BackofficeMachines']
 		
-		$item = New-Object PSObject -Property @{
-			DisplayName = $displayName
-			IP		    = $ip
-		}
-		$item | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
-		$scaleItems += $item
-	}
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Reboot Nodes"
+	$form.Size = New-Object System.Drawing.Size(500, 520)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
 	
-	# Sort items in ascending order by DisplayName
-	$sortedScaleItems = $scaleItems | Sort-Object -Property DisplayName
+	$tabs = New-Object System.Windows.Forms.TabControl
+	$tabs.Location = New-Object System.Drawing.Point(10, 10)
+	$tabs.Size = New-Object System.Drawing.Size(460, 385)
+	$form.Controls.Add($tabs)
 	
-	# Add sorted items to the CheckedListBox
-	foreach ($item in $sortedScaleItems)
+	$clbLanes = $null
+	$clbScales = $null
+	$clbBO = $null
+	
+	if ("Lane" -in $NodeTypes)
 	{
-		$checkedListBox.Items.Add($item) | Out-Null
+		$tabLanes = New-Object System.Windows.Forms.TabPage
+		$tabLanes.Text = "Lanes"
+		$clbLanes = New-Object System.Windows.Forms.CheckedListBox
+		$clbLanes.Location = New-Object System.Drawing.Point(10, 10)
+		$clbLanes.Size = New-Object System.Drawing.Size(420, 320)
+		$clbLanes.CheckOnClick = $true
+		$tabLanes.Controls.Add($clbLanes)
+		$tabs.TabPages.Add($tabLanes)
+		
+		foreach ($lane in $LaneMachines.Keys | Sort-Object)
+		{
+			$machine = $LaneMachines[$lane]
+			$display = "Lane $lane [$machine]"
+			$obj = New-Object PSObject -Property @{
+				DisplayName = $display
+				LaneNumber  = $lane
+				MachineName = $machine
+			}
+			$obj | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.DisplayName } -Force
+			$clbLanes.Items.Add($obj) | Out-Null
+		}
 	}
 	
-	# "Select All" button
+	if ("Scale" -in $NodeTypes)
+	{
+		$tabScales = New-Object System.Windows.Forms.TabPage
+		$tabScales.Text = "Scales"
+		$clbScales = New-Object System.Windows.Forms.CheckedListBox
+		$clbScales.Location = New-Object System.Drawing.Point(10, 10)
+		$clbScales.Size = New-Object System.Drawing.Size(420, 320)
+		$clbScales.CheckOnClick = $true
+		$tabScales.Controls.Add($clbScales)
+		$tabs.TabPages.Add($tabScales)
+		
+		foreach ($code in $ScaleIPNetworks.Keys | Sort-Object)
+		{
+			$scale = $ScaleIPNetworks[$code]
+			$ip = $scale.FullIP
+			$name = $scale.ScaleName
+			$display = if ($name) { "$name [$ip]" }
+			else { "$code [$ip]" }
+			$obj = New-Object PSObject -Property @{
+				DisplayName = $display
+				ScaleCode   = $code
+				IP		    = $ip
+				ScaleName   = $name
+			}
+			$obj | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.DisplayName } -Force
+			$clbScales.Items.Add($obj) | Out-Null
+		}
+	}
+	
+	if ("Backoffice" -in $NodeTypes)
+	{
+		$tabBO = New-Object System.Windows.Forms.TabPage
+		$tabBO.Text = "Backoffices"
+		$clbBO = New-Object System.Windows.Forms.CheckedListBox
+		$clbBO.Location = New-Object System.Drawing.Point(10, 10)
+		$clbBO.Size = New-Object System.Drawing.Size(420, 320)
+		$clbBO.CheckOnClick = $true
+		$tabBO.Controls.Add($clbBO)
+		$tabs.TabPages.Add($tabBO)
+		
+		foreach ($bonum in $BackofficeMachines.Keys | Sort-Object)
+		{
+			$machine = $BackofficeMachines[$bonum]
+			$display = "BO $bonum [$machine]"
+			$obj = New-Object PSObject -Property @{
+				DisplayName = $display
+				BONumber    = $bonum
+				MachineName = $machine
+			}
+			$obj | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.DisplayName } -Force
+			$clbBO.Items.Add($obj) | Out-Null
+		}
+	}
+	
+	# Select/Deselect all
 	$btnSelectAll = New-Object System.Windows.Forms.Button
-	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 370)
-	$btnSelectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$btnSelectAll.Location = New-Object System.Drawing.Point(20, 410)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(140, 32)
 	$btnSelectAll.Text = "Select All"
 	$btnSelectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			foreach ($clb in @($clbLanes, $clbScales, $clbBO))
 			{
-				$checkedListBox.SetItemChecked($i, $true)
+				if ($clb) { for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $true) } }
 			}
 		})
+	$form.Controls.Add($btnSelectAll)
 	
-	# "Deselect All" button
 	$btnDeselectAll = New-Object System.Windows.Forms.Button
-	$btnDeselectAll.Location = New-Object System.Drawing.Point(120, 370)
-	$btnDeselectAll.Size = New-Object System.Drawing.Size(100, 30)
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(180, 410)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(140, 32)
 	$btnDeselectAll.Text = "Deselect All"
 	$btnDeselectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			foreach ($clb in @($clbLanes, $clbScales, $clbBO))
 			{
-				$checkedListBox.SetItemChecked($i, $false)
+				if ($clb) { for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $false) } }
 			}
 		})
+	$form.Controls.Add($btnDeselectAll)
 	
-	# "Reboot Selected" button
+	# Reboot Selected button
 	$btnReboot = New-Object System.Windows.Forms.Button
-	$btnReboot.Location = New-Object System.Drawing.Point(230, 370)
-	$btnReboot.Size = New-Object System.Drawing.Size(140, 30)
+	$btnReboot.Location = New-Object System.Drawing.Point(340, 410)
+	$btnReboot.Size = New-Object System.Drawing.Size(120, 32)
 	$btnReboot.Text = "Reboot Selected"
 	$btnReboot.Add_Click({
-			$selectedItems = $checkedListBox.CheckedItems
-			if ($selectedItems.Count -eq 0)
+			# ---- Lanes ----
+			if ($clbLanes)
 			{
-				[System.Windows.Forms.MessageBox]::Show("No scales selected.", "Information", `
-					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-			}
-			else
-			{
-				foreach ($item in $selectedItems)
+				$checkedLanes = $clbLanes.CheckedItems
+				foreach ($item in $checkedLanes)
 				{
-					$machineName = $item.IP # Using the full IP address
-					Write_Log "Attempting to reboot scale: $($item.DisplayName) at $machineName" "Yellow"
+					$lane = $item.LaneNumber
+					$machine = $item.MachineName
+					Write_Log "Lane $lane on [$machine]: attempting mailslot reboot" "Yellow"
 					try
 					{
-						# First, attempt to reboot using the shutdown command
-						$shutdownArgs = "/r /m \\$machineName /t 0 /f"
-						$process = Start-Process -FilePath "shutdown.exe" -ArgumentList $shutdownArgs -Wait -PassThru -ErrorAction Stop
-						if ($process.ExitCode -ne 0)
+						$mailslot = "\\$machine\mailslot\SMSStart_${StoreNumber}${lane}"
+						$msResult = [MailslotSender]::SendMailslotCommand($mailslot, '@exec(REBOOT=1).')
+					}
+					catch { $msResult = $false }
+					if ($msResult)
+					{
+						Write_Log "Mailslot reboot sent to $machine (Lane $lane)" "Green"
+						continue
+					}
+					Write_Log "Mailslot reboot failed for $machine. Falling back to shutdown.exe" "Yellow"
+					cmd.exe /c "shutdown /r /m \\$machine /t 0 /f" | Out-Null
+					if ($LASTEXITCODE -eq 0)
+					{
+						Write_Log "shutdown.exe reboot succeeded for $machine" "Green"
+						continue
+					}
+					Write_Log "shutdown.exe exit code $LASTEXITCODE. Now trying Restart-Computer" "Yellow"
+					try
+					{
+						Restart-Computer -ComputerName $machine -Force -ErrorAction SilentlyContinue
+						if ($?)
 						{
-							throw "Shutdown command exited with code $($process.ExitCode)"
+							Write_Log "Restart-Computer succeeded for $machine" "Green"
 						}
-						Write_Log "Shutdown command executed successfully for $machineName." "Green"
+						else
+						{
+							Write_Log "All reboot methods failed for $machine (Lane $lane)" "Red"
+						}
 					}
 					catch
 					{
-						Write_Log "Shutdown command failed for $machineName. Falling back to Restart-Computer." "Red"
+						Write_Log "All reboot methods failed for $machine (Lane $lane)" "Red"
+					}
+				}
+			}
+			# ---- Scales ----
+			if ($clbScales)
+			{
+				$checkedScales = $clbScales.CheckedItems
+				foreach ($item in $checkedScales)
+				{
+					$ip = $item.IP
+					$display = $item.DisplayName
+					Write_Log "Attempting to reboot scale: $display at $ip" "Yellow"
+					try
+					{
+						$shutdownArgs = "/r /m \\$ip /t 0 /f"
+						$proc = Start-Process -FilePath "shutdown.exe" -ArgumentList $shutdownArgs -Wait -PassThru -ErrorAction Stop
+						if ($proc.ExitCode -ne 0) { throw "Shutdown command exited with code $($proc.ExitCode)" }
+						Write_Log "Shutdown command executed successfully for $ip." "Green"
+					}
+					catch
+					{
+						Write_Log "Shutdown command failed for $ip. Falling back to Restart-Computer." "Red"
 						try
 						{
-							Restart-Computer -ComputerName $machineName -Force -ErrorAction Stop
-							Write_Log "Restart-Computer command executed successfully for $machineName." "Green"
+							Restart-Computer -ComputerName $ip -Force -ErrorAction Stop
+							Write_Log "Restart-Computer command executed successfully for $ip." "Green"
 						}
 						catch
 						{
-							Write_Log "Failed to reboot scale $machineName using both methods: $_" "Red"
+							Write_Log "Failed to reboot scale $ip using both methods: $_" "Red"
 						}
 					}
 				}
-				[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected scales.", "Reboot", `
-					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			}
+			# ---- Backoffices ----
+			if ($clbBO)
+			{
+				$checkedBOs = $clbBO.CheckedItems
+				foreach ($item in $checkedBOs)
+				{
+					$boNum = $item.BONumber
+					$machine = $item.MachineName
+					Write_Log "Attempting to reboot backoffice $boNum [$machine]" "Yellow"
+					try
+					{
+						$shutdownArgs = "/r /m \\$machine /t 0 /f"
+						$proc = Start-Process -FilePath "shutdown.exe" -ArgumentList $shutdownArgs -Wait -PassThru -ErrorAction Stop
+						if ($proc.ExitCode -ne 0) { throw "Shutdown command exited with code $($proc.ExitCode)" }
+						Write_Log "Shutdown command executed successfully for $machine." "Green"
+					}
+					catch
+					{
+						Write_Log "Shutdown command failed for $machine. Falling back to Restart-Computer." "Red"
+						try
+						{
+							Restart-Computer -ComputerName $machine -Force -ErrorAction Stop
+							Write_Log "Restart-Computer command executed successfully for $machine." "Green"
+						}
+						catch
+						{
+							Write_Log "Failed to reboot backoffice $boNum ($machine) using both methods: $_" "Red"
+						}
+					}
+				}
+			}
+			[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected nodes.", "Reboot",
+				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 		})
-	
-	# "Close" button
-	$btnCancel = New-Object System.Windows.Forms.Button
-	$btnCancel.Location = New-Object System.Drawing.Point(10, 410)
-	$btnCancel.Size = New-Object System.Drawing.Size(360, 30)
-	$btnCancel.Text = "Close"
-	$btnCancel.Add_Click({
-			$form.Close()
-		})
-	
-	# Add controls to the form
-	$form.Controls.Add($checkedListBox)
-	$form.Controls.Add($btnSelectAll)
-	$form.Controls.Add($btnDeselectAll)
 	$form.Controls.Add($btnReboot)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Location = New-Object System.Drawing.Point(20, 460)
+	$btnCancel.Size = New-Object System.Drawing.Size(440, 28)
+	$btnCancel.Text = "Close"
+	$btnCancel.Add_Click({ $form.Close() })
 	$form.Controls.Add($btnCancel)
 	
-	# Show the form
 	$form.Add_Shown({ $form.Activate() })
 	[void]$form.ShowDialog()
+	Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -8581,7 +8354,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 		return
 	}
 	
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 	{
 		Write_Log "No lanes selected or selection cancelled. Exiting." "yellow"
@@ -9130,155 +8903,112 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 }
 
 # ===================================================================================================
-#                           FUNCTION: Open-SelectedLanesCPath
+#                 FUNCTION: Open_Selected_Node_C_Path (Unified, uses tabbed picker)
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts the user with a GUI dialog to select one or more lanes (registers) within a store
-#   and opens the administrative C$ share of each selected lane in Windows Explorer.
-#   Uses lane-to-machine mapping from the most recent Retrieve_Nodes execution.
-# ---------------------------------------------------------------------------------------------------
-# Parameters:
-#   - StoreNumber (string, required): The 3-digit store number for lane selection.
-#   - LaneType (string, optional): Lane type to display (e.g., "POS" or "SCO"). Default is "POS".
+#   Prompts user with Show_Node_Selection_Form for Lanes and/or Bizerba Scales,
+#   then opens \\MACHINE\c$ or \\SCALEIP\c$ accordingly.
+#   - For scales: tries bizuser/bizerba, then bizuser/biyerba if needed.
+# Usage:
+#   Open_Selected_Node_C_Path -StoreNumber "001" -NodeTypes Lane
+#   Open_Selected_Node_C_Path -StoreNumber "001" -NodeTypes Scale
+#   Open_Selected_Node_C_Path -StoreNumber "001" -NodeTypes Lane,Scale
 # ===================================================================================================
 
-function Open_Selected_Lane/s_C_Path
+function Open_Selected_Node_C_Path
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber,
-		[Parameter(Mandatory = $false)]
-		[string]$LaneType = "POS"
+		[Parameter()]
+		[ValidateSet("Lane", "Scale")]
+		[string[]]$NodeTypes = @("Lane", "Scale")
 	)
 	
-	Write_Log "`r`n==================== Starting Open_Selected_Lane/s_C_Path Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Open_Selected_Node_C_Path Function ====================`r`n" "blue"
 	
-	# Get selection from GUI
-	$selection = Show_Lane_Selection_Form -StoreNumber $StoreNumber -LaneType $LaneType
-	if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
+	# Call your unified picker to select lanes and/or scales
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes $NodeTypes
+	if (-not $selection)
 	{
-		Write_Log "No lanes selected. Exiting." "Yellow"
-		Write_Log "`r`n==================== Open_Selected_Lane/s_C_Path Function Completed ====================" "blue"
+		Write_Log "No selection made. Exiting." "Yellow"
 		return
 	}
 	
-	$laneMachines = $script:FunctionResults['LaneMachines']
-	foreach ($lane in $selection.Lanes)
+	# Handle Lanes
+	if ($selection.Lanes -and $selection.Lanes.Count -gt 0)
 	{
-		if ($laneMachines.ContainsKey($lane))
+		$LaneMachines = $script:FunctionResults['LaneMachines']
+		foreach ($lane in $selection.Lanes)
 		{
-			$machine = $laneMachines[$lane]
-			$sharePath = "\\$machine\c$"
-			Write_Log "Opened $sharePath ..." "Green"
-			Start-Process "explorer.exe" $sharePath
+			if ($LaneMachines.ContainsKey($lane))
+			{
+				$machine = $LaneMachines[$lane]
+				$sharePath = "\\$machine\c$"
+				Write_Log "Opened $sharePath ..." "Green"
+				Start-Process "explorer.exe" $sharePath
+			}
+			else
+			{
+				Write_Log "Machine not found for lane '$lane'." "Red"
+			}
 		}
-		else
-		{
-			Write_Log "Machine not found for lane '$lane'." "Red"
-		}
-	}
-	Write_Log "`r`n==================== Open_Selected_Lane/s_C_Path Function Completed ====================" "blue"
-}
-
-# ===================================================================================================
-#                           FUNCTION: Open_Selected_Scale/s_C_Path
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Prompts the user with a GUI dialog to select one or more scales and attempts to open the C$
-#   administrative share for each selected scale in Windows Explorer. It tries to connect as
-#   user 'bizuser' with password 'bizerba' first, then 'biyerba' if needed. Temporary network
-#   mappings are cleaned up after opening.
-# ---------------------------------------------------------------------------------------------------
-# Requirements:
-#   - The scale hostnames/IPs must resolve and allow SMB access.
-#   - Show_Scale_Selection_Form and Retrieve_Nodes must be run first to populate FunctionResults.
-# ===================================================================================================
-
-function Open_Selected_Scale/s_C_Path
-{
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber
-	)
-	
-	Write_Log "`r`n==================== Starting Open_Selected_Scale/s_C_Path Function ====================`r`n" "blue"
-	
-	# --- Get scale selection, only BIZERBA ---
-	$scaleIPTable = $script:FunctionResults['ScaleIPNetworks']
-	if (-not $scaleIPTable)
-	{
-		Write_Log "No scale IP mapping available. Please run Retrieve_Nodes first." "Yellow"
-		return
-	}
-	# Filter for only BIZERBA
-	$bizerbaScales = $scaleIPTable.Values | Where-Object { $_.ScaleBrand -eq "BIZERBA" }
-	if (-not $bizerbaScales -or $bizerbaScales.Count -eq 0)
-	{
-		Write_Log "No BIZERBA scales found for this store." "Yellow"
-		Write_Log "`r`n==================== Open_Selected_Scale/s_C_Path Function Completed ====================" "blue"
-		return
-	}
-	# Custom picker: just show BIZERBA scales
-	$scaleSelection = Show_Scale_Selection_Form -BizerbaScales $bizerbaScales
-	if (-not $scaleSelection -or -not $scaleSelection.Scales -or $scaleSelection.Scales.Count -eq 0)
-	{
-		Write_Log "No BIZERBA scales selected. Exiting." "Yellow"
-		Write_Log "`r`n==================== Open_Selected_Scale/s_C_Path Function Completed ====================" "blue"
-		return
 	}
 	
-	foreach ($scaleObj in $scaleSelection.Scales)
+	# Handle Scales (Bizerba only, from selection)
+	if ($selection.Scales -and $selection.Scales.Count -gt 0)
 	{
-		# Get the best host name or IP
-		$scaleHost = if ($scaleObj.FullIP -and $scaleObj.FullIP -ne "")
+		foreach ($scaleObj in $selection.Scales)
 		{
-			$scaleObj.FullIP
-		}
-		elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice)
-		{
-			"$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
-		}
-		elseif ($scaleObj.ScaleName)
-		{
-			$scaleObj.ScaleName
-		}
-		if (-not $scaleHost) { Write_Log "Could not determine host for $($scaleObj.ScaleCode)." "Red"; continue }
-		
-		$sharePath = "\\$scaleHost\c$"
-		$opened = $false
-		
-		# Try bizerba password first
-		cmdkey /add:$scaleHost /user:bizuser /pass:bizerba | Out-Null
-		Start-Process "explorer.exe" $sharePath
-		Start-Sleep -Seconds 2 # Give Explorer a moment to attempt connection
-		
-		# Test if the path is accessible
-		if (Test-Path $sharePath)
-		{
-			Write_Log "Opened $sharePath as bizuser using password 'bizerba'." "Green"
-			$opened = $true
-		}
-		else
-		{
-			# Remove previous credential and try 'biyerba'
-			cmdkey /delete:$scaleHost | Out-Null
-			cmdkey /add:$scaleHost /user:bizuser /pass:biyerba | Out-Null
+			$scaleHost = if ($scaleObj.FullIP -and $scaleObj.FullIP -ne "")
+			{
+				$scaleObj.FullIP
+			}
+			elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice)
+			{
+				"$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
+			}
+			elseif ($scaleObj.ScaleName)
+			{
+				$scaleObj.ScaleName
+			}
+			if (-not $scaleHost) { Write_Log "Could not determine host for $($scaleObj.ScaleCode)." "Red"; continue }
+			
+			$sharePath = "\\$scaleHost\c$"
+			$opened = $false
+			
+			# Try bizerba password first
+			cmdkey /add:$scaleHost /user:bizuser /pass:bizerba | Out-Null
 			Start-Process "explorer.exe" $sharePath
 			Start-Sleep -Seconds 2
+			
 			if (Test-Path $sharePath)
 			{
-				Write_Log "Opened $sharePath as bizuser using password 'biyerba'." "Green"
+				Write_Log "Opened $sharePath as bizuser using password 'bizerba'." "Green"
 				$opened = $true
 			}
 			else
 			{
-				Write_Log "Could not open $sharePath as bizuser with either password." "Red"
+				# Remove previous credential and try 'biyerba'
+				cmdkey /delete:$scaleHost | Out-Null
+				cmdkey /add:$scaleHost /user:bizuser /pass:biyerba | Out-Null
+				Start-Process "explorer.exe" $sharePath
+				Start-Sleep -Seconds 2
+				if (Test-Path $sharePath)
+				{
+					Write_Log "Opened $sharePath as bizuser using password 'biyerba'." "Green"
+					$opened = $true
+				}
+				else
+				{
+					Write_Log "Could not open $sharePath as bizuser with either password." "Red"
+				}
 			}
+			# Clean up credentials (optional, uncomment if needed)
+			# cmdkey /delete:$scaleHost | Out-Null
 		}
-		# Optional: Clean up after (remove credential)
-		# cmdkey /delete:$scaleHost | Out-Null
 	}
-	Write_Log "`r`n==================== Open_Selected_Scale/s_C_Path Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Open_Selected_Node_C_Path Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -10329,7 +10059,7 @@ function Export_VNC_Files_For_All_Nodes
 	if (-not $AllVNCPasswords -or $AllVNCPasswords.Count -eq 0)
 	{
 		Write_Log "Gathering VNC passwords for all machines`r`n" "magenta"
-		$AllVNCPasswords = Get_All_VNC_Passwords -LaneMachines $LaneMachines
+		$AllVNCPasswords = Get_All_VNC_Passwords -LaneMachines $LaneMachines -ScaleIPNetworks $ScaleIPNetworks -BackofficeMachines $BackofficeMachines
 	}
 	
 	# --- Shared VNC file content with token ---
@@ -10523,14 +10253,19 @@ PreemptiveUpdates=0
 			$parent = Split-Path $filePath -Parent
 			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
 			# Set AllowUntrustedServers=1 for Ishida, else use template as-is
+			$VNCPassword = $DefaultVNCPassword
+			if ($AllVNCPasswords -and $AllVNCPasswords.ContainsKey($ip) -and $AllVNCPasswords[$ip])
+			{
+				$VNCPassword = $AllVNCPasswords[$ip]
+			}
 			if ($brand -like '*Ishida*')
 			{
-				$content = $vncTemplate.Replace('%%HOST%%', $ip).Replace('%%PASSWORD%%', $DefaultVNCPassword)
+				$content = $vncTemplate.Replace('%%HOST%%', $ip).Replace('%%PASSWORD%%', $VNCPassword)
 				$content = $content -replace 'AllowUntrustedServers=0', 'AllowUntrustedServers=1'
 			}
 			else
 			{
-				$content = $vncTemplate.Replace('%%HOST%%', $ip).Replace('%%PASSWORD%%', $DefaultVNCPassword)
+				$content = $vncTemplate.Replace('%%HOST%%', $ip).Replace('%%PASSWORD%%', $VNCPassword)
 			}
 			[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
 			Write_Log "Created: $filePath" "green"
@@ -10566,280 +10301,257 @@ PreemptiveUpdates=0
 }
 
 # ===================================================================================================
-#                                FUNCTION: Show_Lane_Selection_Form
+#                             FUNCTION: Show_Node_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Presents a GUI dialog for the user to select lanes (registers) to process within a store.
-#   Returns a hashtable with the selection type and the list of selected lanes.
-# ---------------------------------------------------------------------------------------------------
-# Parameters:
-#   - StoreNumber: The 3-digit store number to fetch available lanes.
-#   - LaneType (Optional): Lane type to display (e.g., "POS" or "SCO"). Default is "POS".
+#   Shows a node selector dialog for Lanes, Scales, Backoffices, or any combination.
+#   Usage:
+#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
+#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale"
+#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes @("Lane","Scale","Backoffice")
+#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale" -OnlyBizerbaScales
+#   Returns: hashtable with keys matching selected node types (Lanes, Scales, Backoffices)
 # ===================================================================================================
 
-function Show_Lane_Selection_Form
+function Show_Node_Selection_Form
 {
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber,
-		[string]$LaneType = "POS"
-	)
-	
-	# Load necessary assemblies
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
-	
-	# Create and configure the form
-	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Select Lanes to Process"
-	$form.Size = New-Object System.Drawing.Size(330, 350)
-	$form.StartPosition = "CenterScreen"
-	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-	$form.MaximizeBox = $false
-	$form.MinimizeBox = $false
-	
-	# Lane selection list
-	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
-	$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
-	$checkedListBox.Size = New-Object System.Drawing.Size(295, 200)
-	$checkedListBox.CheckOnClick = $true
-	$form.Controls.Add($checkedListBox)
-	
-	# Retrieve available lanes (use LaneContents from globals or scan directory)
-	$allLanes = @()
-	if ($script:FunctionResults.ContainsKey('LaneContents') -and $script:FunctionResults['LaneContents'].Count -gt 0)
-	{
-		$allLanes = $script:FunctionResults['LaneContents']
-	}
-	else
-	{
-		if (-not (Test-Path -Path $OfficePath))
-		{
-			[System.Windows.Forms.MessageBox]::Show("The path '$OfficePath' does not exist.", "Error",
-				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-			return $null
-		}
-		$laneFolders = Get-ChildItem -Path $OfficePath -Directory -Filter "XF${StoreNumber}0*"
-		if ($laneFolders)
-		{
-			$allLanes = $laneFolders | ForEach-Object { $_.Name.Substring($_.Name.Length - 3, 3) }
-		}
-	}
-	
-	# Populate the CheckedListBox
-	$sortedLanes = $allLanes | Sort-Object
-	foreach ($lane in $sortedLanes)
-	{
-		if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'].ContainsKey($lane))
-		{
-			$friendlyName = $script:FunctionResults['LaneMachines'][$lane]
-			$displayName = "$friendlyName"
-		}
-		else
-		{
-			$displayName = "$LaneType $lane"
-		}
-		$laneObj = New-Object PSObject -Property @{
-			DisplayName = $displayName
-			LaneNumber  = $lane
-		}
-		$laneObj | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
-		$checkedListBox.Items.Add($laneObj) | Out-Null
-	}
-	
-	# "Select All" button
-	$btnSelectAll = New-Object System.Windows.Forms.Button
-	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 220)
-	$btnSelectAll.Size = New-Object System.Drawing.Size(150, 30)
-	$btnSelectAll.Text = "Select All"
-	$btnSelectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $true)
-			}
-		})
-	$form.Controls.Add($btnSelectAll)
-	
-	# "Deselect All" button
-	$btnDeselectAll = New-Object System.Windows.Forms.Button
-	$btnDeselectAll.Location = New-Object System.Drawing.Point(160, 220)
-	$btnDeselectAll.Size = New-Object System.Drawing.Size(150, 30)
-	$btnDeselectAll.Text = "Deselect All"
-	$btnDeselectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $false)
-			}
-		})
-	$form.Controls.Add($btnDeselectAll)
-	
-	# OK and Cancel buttons
-	$buttonOK = New-Object System.Windows.Forms.Button
-	$buttonOK.Text = "OK"
-	$buttonOK.Location = New-Object System.Drawing.Point(20, 270)
-	$buttonOK.Size = New-Object System.Drawing.Size(100, 30)
-	$buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$form.Controls.Add($buttonOK)
-	
-	$buttonCancel = New-Object System.Windows.Forms.Button
-	$buttonCancel.Text = "Cancel"
-	$buttonCancel.Location = New-Object System.Drawing.Point(200, 270)
-	$buttonCancel.Size = New-Object System.Drawing.Size(100, 30)
-	$buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$form.Controls.Add($buttonCancel)
-	
-	$form.AcceptButton = $buttonOK
-	$form.CancelButton = $buttonCancel
-	
-	$dialogResult = $form.ShowDialog()
-	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
-	{
-		return $null
-	}
-	
-	# Gather selected lanes
-	$selectedLanes = @()
-	for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-	{
-		if ($checkedListBox.GetItemChecked($i))
-		{
-			$selectedLanes += $checkedListBox.Items[$i].LaneNumber
-		}
-	}
-	if ($selectedLanes.Count -eq 0)
-	{
-		[System.Windows.Forms.MessageBox]::Show("No lanes selected.", "Information",
-			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-		return $null
-	}
-	return @{
-		Type  = 'Specific'
-		Lanes = $selectedLanes
-	}
-}
-
-# ===================================================================================================
-#                             FUNCTION: Show_Scale_Selection_Form
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Presents a GUI dialog for the user to select scales to process within a store.
-#   Returns a hashtable with the selection type and the list of selected scale codes.
-# ---------------------------------------------------------------------------------------------------
-# Parameters:
-#   - StoreNumber: The 3-digit store number to filter scales (optional, set to "" for all).
-# ===================================================================================================
-
-function Show_Scale_Selection_Form
-{
-	param (
-		[Parameter(Mandatory = $true)]
-		[array]$BizerbaScales
+		[Parameter()]
+		[ValidateSet("Lane", "Scale", "Backoffice")]
+		[string[]]$NodeTypes = @("Lane", "Scale", "Backoffice"),
+		[switch]$OnlyBizerbaScales,
+		[string]$Title = "Select Nodes to Process"
 	)
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
 	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Select BIZERBA Scales to Process"
-	$form.Size = New-Object System.Drawing.Size(330, 350)
+	$form.Text = $Title
+	$form.Size = New-Object System.Drawing.Size(430, 450)
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
 	
-	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
-	$checkedListBox.Location = New-Object System.Drawing.Point(10, 10)
-	$checkedListBox.Size = New-Object System.Drawing.Size(295, 200)
-	$checkedListBox.CheckOnClick = $true
-	$form.Controls.Add($checkedListBox)
+	$tabs = New-Object System.Windows.Forms.TabControl
+	$tabs.Location = New-Object System.Drawing.Point(10, 10)
+	$tabs.Size = New-Object System.Drawing.Size(390, 320)
+	$form.Controls.Add($tabs)
 	
-	$sortedScales = $BizerbaScales | Sort-Object { [int]($_.ScaleCode) }
-	foreach ($scale in $sortedScales)
+	$tabControls = @{ }
+	
+	# ----- Lanes Tab -----
+	if ("Lane" -in $NodeTypes)
 	{
-		$ip = if ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
-		else { "" }
-		$displayName = "$($scale.ScaleName) [$ip]"
-		$scaleObj = New-Object PSObject -Property @{
-			DisplayName = $displayName
-			ScaleCode   = $scale.ScaleCode
-			ScaleName   = $scale.ScaleName
-			IPAddress   = $ip
-			Vendor	    = $scale.Vendor
-			FullIP	    = $scale.FullIP
-			IPNetwork   = $scale.IPNetwork
-			IPDevice    = $scale.IPDevice
+		$tabLanes = New-Object System.Windows.Forms.TabPage
+		$tabLanes.Text = "Lanes"
+		$clbLanes = New-Object System.Windows.Forms.CheckedListBox
+		$clbLanes.Location = New-Object System.Drawing.Point(10, 10)
+		$clbLanes.Size = New-Object System.Drawing.Size(350, 270)
+		$clbLanes.CheckOnClick = $true
+		$tabLanes.Controls.Add($clbLanes)
+		$tabs.TabPages.Add($tabLanes)
+		$tabControls["Lanes"] = $clbLanes
+		
+		$allLanes = @()
+		if ($script:FunctionResults.ContainsKey('LaneContents') -and $script:FunctionResults['LaneContents'].Count -gt 0)
+		{
+			$allLanes = $script:FunctionResults['LaneContents']
 		}
-		$scaleObj | Add-Member -MemberType ScriptMethod -Name ToString -Value { return $this.DisplayName } -Force
-		$checkedListBox.Items.Add($scaleObj) | Out-Null
+		elseif (Test-Path -Path $OfficePath)
+		{
+			$laneFolders = Get-ChildItem -Path $OfficePath -Directory -Filter "XF${StoreNumber}0*"
+			if ($laneFolders)
+			{
+				$allLanes = $laneFolders | ForEach-Object { $_.Name.Substring($_.Name.Length - 3, 3) }
+			}
+		}
+		$sortedLanes = $allLanes | Sort-Object
+		foreach ($lane in $sortedLanes)
+		{
+			$displayName = if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'].ContainsKey($lane))
+			{
+				$script:FunctionResults['LaneMachines'][$lane]
+			}
+			else
+			{
+				"POS $lane"
+			}
+			$obj = New-Object PSObject -Property @{
+				DisplayName = $displayName
+				LaneNumber  = $lane
+			}
+			$obj | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.DisplayName } -Force
+			$clbLanes.Items.Add($obj) | Out-Null
+		}
 	}
 	
-	# Select All
+	# ------------------ Scales Tab ------------------
+	if ("Scale" -in $NodeTypes)
+	{
+		$tabScales = New-Object System.Windows.Forms.TabPage
+		$tabScales.Text = "Scales"
+		$clbScales = New-Object System.Windows.Forms.CheckedListBox
+		$clbScales.Location = New-Object System.Drawing.Point(10, 10)
+		$clbScales.Size = New-Object System.Drawing.Size(350, 270)
+		$clbScales.CheckOnClick = $true
+		$tabScales.Controls.Add($clbScales)
+		$tabs.TabPages.Add($tabScales)
+		$tabControls["Scales"] = $clbScales
+		
+		# Get scale objects (not keys)
+		$allScales = @()
+		if ($script:FunctionResults.ContainsKey('ScaleIPNetworks'))
+		{
+			$allScales = $script:FunctionResults['ScaleIPNetworks'].Values
+			# Only show Bizerba if flag set
+			if ($OnlyBizerbaScales)
+			{
+				$allScales = $allScales | Where-Object { $_.ScaleBrand -match 'bizerba' }
+			}
+		}
+		$sortedScales = $allScales | Sort-Object { [int]($_.ScaleCode) }
+		foreach ($scale in $sortedScales)
+		{
+			$ip = if ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
+			else { "" }
+			$displayName = "$($scale.ScaleName) [$ip]"
+			$scaleObj = New-Object PSObject -Property @{
+				DisplayName = $displayName
+				ScaleCode   = $scale.ScaleCode
+				ScaleName   = $scale.ScaleName
+				IPAddress   = $ip
+				Vendor	    = $scale.Vendor
+				FullIP	    = $scale.FullIP
+				IPNetwork   = $scale.IPNetwork
+				IPDevice    = $scale.IPDevice
+				ScaleBrand  = $scale.ScaleBrand
+			}
+			$scaleObj | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.DisplayName } -Force
+			$clbScales.Items.Add($scaleObj) | Out-Null
+		}
+	}
+	
+	# ----- Backoffices Tab -----
+	if ("Backoffice" -in $NodeTypes)
+	{
+		$tabBO = New-Object System.Windows.Forms.TabPage
+		$tabBO.Text = "Backoffices"
+		$clbBO = New-Object System.Windows.Forms.CheckedListBox
+		$clbBO.Location = New-Object System.Drawing.Point(10, 10)
+		$clbBO.Size = New-Object System.Drawing.Size(350, 270)
+		$clbBO.CheckOnClick = $true
+		$tabBO.Controls.Add($clbBO)
+		$tabs.TabPages.Add($tabBO)
+		$tabControls["Backoffices"] = $clbBO
+		
+		$boDict = if ($script:FunctionResults.ContainsKey('BackofficeMachines'))
+		{
+			$script:FunctionResults['BackofficeMachines']
+		}
+		else { @{ } }
+		$boNums = $boDict.Keys | Sort-Object
+		foreach ($boNum in $boNums)
+		{
+			$boName = $boDict[$boNum]
+			$display = if ($boName) { "$boName ($boNum)" }
+			else { "Unknown ($boNum)" }
+			$obj = New-Object PSObject -Property @{
+				DisplayName = $display
+				BONumber    = $boNum
+			}
+			$obj | Add-Member ScriptMethod ToString { $this.DisplayName } -Force
+			$clbBO.Items.Add($obj) | Out-Null
+		}
+	}
+	
+	# ----- Select/Deselect All Buttons -----
 	$btnSelectAll = New-Object System.Windows.Forms.Button
-	$btnSelectAll.Location = New-Object System.Drawing.Point(10, 220)
-	$btnSelectAll.Size = New-Object System.Drawing.Size(150, 30)
+	$btnSelectAll.Location = New-Object System.Drawing.Point(20, 340)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
 	$btnSelectAll.Text = "Select All"
 	$btnSelectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			foreach ($clb in $tabControls.Values)
 			{
-				$checkedListBox.SetItemChecked($i, $true)
+				for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $true) }
 			}
 		})
 	$form.Controls.Add($btnSelectAll)
 	
-	# Deselect All
 	$btnDeselectAll = New-Object System.Windows.Forms.Button
-	$btnDeselectAll.Location = New-Object System.Drawing.Point(160, 220)
-	$btnDeselectAll.Size = New-Object System.Drawing.Size(150, 30)
+	$btnDeselectAll.Location = New-Object System.Drawing.Point(220, 340)
+	$btnDeselectAll.Size = New-Object System.Drawing.Size(180, 32)
 	$btnDeselectAll.Text = "Deselect All"
 	$btnDeselectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+			foreach ($clb in $tabControls.Values)
 			{
-				$checkedListBox.SetItemChecked($i, $false)
+				for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $false) }
 			}
 		})
 	$form.Controls.Add($btnDeselectAll)
 	
-	# OK/Cancel
-	$buttonOK = New-Object System.Windows.Forms.Button
-	$buttonOK.Text = "OK"
-	$buttonOK.Location = New-Object System.Drawing.Point(20, 270)
-	$buttonOK.Size = New-Object System.Drawing.Size(100, 30)
-	$buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$form.Controls.Add($buttonOK)
+	# ----- OK/Cancel Buttons -----
+	$btnOK = New-Object System.Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Location = New-Object System.Drawing.Point(50, 380)
+	$btnOK.Size = New-Object System.Drawing.Size(140, 32)
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $btnOK
+	$form.Controls.Add($btnOK)
 	
-	$buttonCancel = New-Object System.Windows.Forms.Button
-	$buttonCancel.Text = "Cancel"
-	$buttonCancel.Location = New-Object System.Drawing.Point(200, 270)
-	$buttonCancel.Size = New-Object System.Drawing.Size(100, 30)
-	$buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$form.Controls.Add($buttonCancel)
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(220, 380)
+	$btnCancel.Size = New-Object System.Drawing.Size(140, 32)
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.CancelButton = $btnCancel
+	$form.Controls.Add($btnCancel)
 	
-	$form.AcceptButton = $buttonOK
-	$form.CancelButton = $buttonCancel
-	
+	# ----- Show form & collect selections -----
 	$dialogResult = $form.ShowDialog()
-	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
-	{
-		return $null
-	}
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
 	
-	$selectedScales = @()
-	for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
+	$result = @{ }
+	if ("Lane" -in $NodeTypes)
 	{
-		if ($checkedListBox.GetItemChecked($i))
+		$clb = $tabControls["Lanes"]
+		$selectedLanes = @()
+		for ($i = 0; $i -lt $clb.Items.Count; $i++)
 		{
-			$selectedScales += $checkedListBox.Items[$i]
+			if ($clb.GetItemChecked($i)) { $selectedLanes += $clb.Items[$i].LaneNumber }
 		}
+		$result.Lanes = $selectedLanes
 	}
-	if ($selectedScales.Count -eq 0)
+	if ("Scale" -in $NodeTypes)
 	{
-		[System.Windows.Forms.MessageBox]::Show("No BIZERBA scales selected.", "Information",
+		$clb = $tabControls["Scales"]
+		$selectedScales = @()
+		for ($i = 0; $i -lt $clb.Items.Count; $i++)
+		{
+			if ($clb.GetItemChecked($i)) { $selectedScales += $clb.Items[$i] }
+		}
+		$result.Scales = $selectedScales
+	}
+	if ("Backoffice" -in $NodeTypes)
+	{
+		$clb = $tabControls["Backoffices"]
+		$selectedBOs = @()
+		for ($i = 0; $i -lt $clb.Items.Count; $i++)
+		{
+			if ($clb.GetItemChecked($i)) { $selectedBOs += $clb.Items[$i].BONumber }
+		}
+		$result.Backoffices = $selectedBOs
+	}
+	# Basic validation
+	if ($result.Keys.Count -eq 0 -or ($result.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum -eq 0)
+	{
+		[System.Windows.Forms.MessageBox]::Show("No nodes selected.", "Information",
 			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 		return $null
 	}
-	return @{
-		Type   = 'Specific'
-		Scales = $selectedScales
-	}
+	return $result
 }
 
 # ===================================================================================================
@@ -11148,7 +10860,7 @@ if (-not $form)
 			else
 			{
 				# Existing cleanup...
-				$protocolTimer.Stop(); $protocolTimer.Dispose()
+				if ($global:ProtocolFormTimer) { $global:ProtocolFormTimer.Stop(); $global:ProtocolFormTimer.Dispose() }
 				foreach ($job in $script:LaneProtocolJobs.Values)
 				{
 					try { Stop-Job $job -Force }
@@ -11163,7 +10875,7 @@ if (-not $form)
 	# Create a Clear Log button
 	$clearLogButton = New-Object System.Windows.Forms.Button
 	$clearLogButton.Text = "Clear Log"
-	$clearLogButton.Location = New-Object System.Drawing.Point(951, 70)
+	$clearLogButton.Location = New-Object System.Drawing.Point(950, 70)
 	$clearLogButton.Size = New-Object System.Drawing.Size(39, 34)
 	$clearLogButton.add_Click({
 			$logBox.Clear()
@@ -11171,6 +10883,97 @@ if (-not $form)
 		})
 	$form.Controls.Add($clearLogButton)
 	$toolTip.SetToolTip($clearLogButton, "Clears the log display area.")
+	
+	# Protocol Table Popup Form and Timer	
+	$rowHeight = 19
+	$rowCount = 25
+	$gridHeight = ($rowCount * $rowHeight) + 28
+	
+	if (-not $global:ProtocolForm)
+	{
+		$global:ProtocolForm = New-Object System.Windows.Forms.Form
+		$global:ProtocolForm.Text = "Lane PS"
+		$global:ProtocolForm.Size = New-Object System.Drawing.Size(257, 500)
+		$global:ProtocolForm.StartPosition = "CenterScreen"
+		$global:ProtocolForm.Topmost = $true
+		
+		$global:ProtocolGrid = New-Object System.Windows.Forms.DataGridView
+		$global:ProtocolGrid.Location = New-Object System.Drawing.Point(10, 10)
+		$global:ProtocolGrid.Size = New-Object System.Drawing.Size(222, 400)
+		$global:ProtocolGrid.ColumnCount = 2
+		$global:ProtocolGrid.Columns[0].Name = "Lane"
+		$global:ProtocolGrid.Columns[1].Name = "Protocol"
+		$global:ProtocolGrid.ReadOnly = $true
+		$global:ProtocolGrid.RowHeadersVisible = $false
+		$global:ProtocolGrid.AllowUserToAddRows = $false
+		$global:ProtocolGrid.AllowUserToDeleteRows = $false
+		$global:ProtocolGrid.AllowUserToResizeRows = $false
+		$global:ProtocolGrid.AllowUserToResizeColumns = $false
+		$global:ProtocolGrid.SelectionMode = "FullRowSelect"
+		$global:ProtocolGrid.Font = New-Object System.Drawing.Font("Consolas", 10)
+		$global:ProtocolForm.Controls.Add($global:ProtocolGrid)
+		
+		$closeBtn = New-Object System.Windows.Forms.Button
+		$closeBtn.Text = "Hide"
+		$closeBtn.Location = New-Object System.Drawing.Point(60, 420)
+		$closeBtn.Size = New-Object System.Drawing.Size(120, 30)
+		$closeBtn.Add_Click({ $global:ProtocolForm.Hide() })
+		$global:ProtocolForm.Controls.Add($closeBtn)
+	}
+	
+	if (-not $global:ProtocolFormTimer)
+	{
+		$global:ProtocolFormTimer = New-Object System.Windows.Forms.Timer
+		$global:ProtocolFormTimer.Interval = 1000
+		$global:ProtocolFormTimer.add_Tick({
+				if ($global:ProtocolForm.Visible)
+				{
+					$scrollIndex = 0
+					if ($global:ProtocolGrid.Rows.Count -gt 0)
+					{
+						$scrollIndex = $global:ProtocolGrid.FirstDisplayedScrollingRowIndex
+					}
+					$selIndex = $null
+					if ($global:ProtocolGrid.SelectedRows.Count -gt 0)
+					{
+						$selIndex = $global:ProtocolGrid.SelectedRows[0].Index
+					}
+					$global:ProtocolGrid.Rows.Clear()
+					$script:ProtocolResults |
+					Sort-Object Lane |
+					ForEach-Object {
+						$row = $global:ProtocolGrid.Rows.Add()
+						$global:ProtocolGrid.Rows[$row].Cells[0].Value = $_.Lane.PadLeft(3, '0')
+						$global:ProtocolGrid.Rows[$row].Cells[1].Value = $_.Protocol
+					}
+					if ($global:ProtocolGrid.Rows.Count -gt $scrollIndex)
+					{
+						$global:ProtocolGrid.FirstDisplayedScrollingRowIndex = $scrollIndex
+					}
+					elseif ($global:ProtocolGrid.Rows.Count -gt 0)
+					{
+						$global:ProtocolGrid.FirstDisplayedScrollingRowIndex = 0
+					}
+					if ($selIndex -ne $null -and $global:ProtocolGrid.Rows.Count -gt $selIndex)
+					{
+						$global:ProtocolGrid.Rows[$selIndex].Selected = $true
+					}
+				}
+			})
+		$global:ProtocolFormTimer.Start()
+	}
+	
+	# Show/Hide Protocol Table Button
+	$showProtocolBtn = New-Object System.Windows.Forms.Button
+	$showProtocolBtn.Text = "Protocols"
+	$showProtocolBtn.Size = New-Object System.Drawing.Size(40, 34)
+	$showProtocolBtn.Location = New-Object System.Drawing.Point(950, 105) # top-right, next to Clear Log
+	$showProtocolBtn.Add_Click({
+			$global:ProtocolForm.Show()
+			$global:ProtocolForm.BringToFront()
+		})
+	$form.Controls.Add($showProtocolBtn)
+	$toolTip.SetToolTip($showProtocolBtn, "Show/hide the live lane protocol status table.")
 	
 	######################################################################################################################
 	# 																													 #
@@ -11388,7 +11191,7 @@ if (-not $form)
 	$LaneDBMaintenanceItem = New-Object System.Windows.Forms.ToolStripMenuItem("Lane DB Maintenance")
 	$LaneDBMaintenanceItem.ToolTipText = "Runs maintenance at the lane(s) databases for the selected lane(s)."
 	$LaneDBMaintenanceItem.Add_Click({
-			Process_Lanes -LanesqlFilePath $LanesqlFilePath -StoreNumber $StoreNumber
+			Process_Lanes -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($LaneDBMaintenanceItem)
 	
@@ -11438,7 +11241,7 @@ if (-not $form)
 	$PingLanesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Lanes")
 	$PingLanesItem.ToolTipText = "Ping all lane devices to check connectivity."
 	$PingLanesItem.Add_Click({
-			Ping_All_Lanes -StoreNumber "$StoreNumber"
+			Ping_All_Nodes -NodeType "Lane" -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($PingLanesItem)
 	
@@ -11448,7 +11251,7 @@ if (-not $form)
 	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
 	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
 	$OpenLaneCShareItem.Add_Click({
-			Open_Selected_Lane/s_C_Path -StoreNumber $storeNumber
+			Open_Selected_Node_C_Path -StoreNumber $StoreNumber -NodeTypes Lane
 		})
 	[void]$ContextMenuLane.Items.Add($OpenLaneCShareItem)
 	
@@ -11536,7 +11339,7 @@ if (-not $form)
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
 	$RebootLaneItem.Add_Click({
-			Reboot_Lanes -StoreNumber $StoreNumber
+			Reboot_Nodes -StoreNumber "$StoreNumber" -NodeTypes Lane
 		})
 	[void]$ContextMenuLane.Items.Add($RebootLaneItem)
 	
@@ -11571,7 +11374,7 @@ if (-not $form)
 	$PingScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Scales")
 	$PingScalesItem.ToolTipText = "Ping all scale devices to check connectivity."
 	$PingScalesItem.Add_Click({
-			Ping_All_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
+			Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuScale.Items.Add($PingScalesItem)
 	
@@ -11591,8 +11394,8 @@ if (-not $form)
 	$Reboot_ScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Scales")
 	$Reboot_ScalesItem.ToolTipText = "Reboot Scale/s."
 	$Reboot_ScalesItem.Add_Click({
-			Reboot_Scales -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks']
-		})
+			Reboot_Nodes -StoreNumber "$StoreNumber" -NodeTypes Scale
+			})
 	[void]$ContextMenuScale.Items.Add($Reboot_ScalesItem)
 	
 	############################################################################
@@ -11601,7 +11404,7 @@ if (-not $form)
 	$OpenScaleCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Scale C$ Share(s)")
 	$OpenScaleCShareItem.ToolTipText = "Select scales and open their C$ administrative shares as 'bizuser' (bizerba/biyerba)."
 	$OpenScaleCShareItem.Add_Click({
-			Open_Selected_Scale/s_C_Path -StoreNumber $storeNumber
+			Open_Selected_Node_C_Path -StoreNumber $StoreNumber -NodeTypes Scale
 		})
 	[void]$ContextMenuScale.Items.Add($OpenScaleCShareItem)
 	
@@ -11718,12 +11521,22 @@ if (-not $form)
 	$PingBackofficesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Backoffices")
 	$PingBackofficesItem.ToolTipText = "Ping all backoffice devices to check connectivity."
 	$PingBackofficesItem.Add_Click({
-			Ping_All_Backoffices -StoreNumber $StoreNumber
+			Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
 		})
 	[void]$contextMenuGeneral.Items.Add($PingBackofficesItem)
 	
 	############################################################################
-	# 8) Export All VNC Files
+	# 8) Reboot selected Backoffices
+	############################################################################
+	$RebootBackofficesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Backoffices")
+	$RebootBackofficesItem.ToolTipText = "Reboot the selected Backoffice/s."
+	$RebootBackofficesItem.Add_Click({
+			Reboot_Nodes -StoreNumber $StoreNumber -NodeTypes Backoffice 
+		})
+	[void]$contextMenuGeneral.Items.Add($RebootBackofficesItem)
+	
+	############################################################################
+	# 9) Export All VNC Files
 	############################################################################
 	$ExportVNCFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export All VNC Files")
 	$ExportVNCFilesItem.ToolTipText = "Generate UltraVNC (.vnc) connection files for all lanes, scales, and backoffices."
@@ -11737,7 +11550,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
 	
 	############################################################################
-	# 9) Export Machines Hardware Info
+	# 10) Export Machines Hardware Info
 	############################################################################
 	$ExportMachineHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Machines Hardware Info")
 	$ExportMachineHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all machines"
@@ -11751,7 +11564,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($ExportMachineHardwareInfoItem)
 	
 	############################################################################
-	# 10) Remove Archive Bit
+	# 11) Remove Archive Bit
 	############################################################################
 	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
 	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
@@ -11761,7 +11574,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
 	
 	############################################################################
-	# 11) Insert Test Item
+	# 12) Insert Test Item
 	############################################################################
 	$InsertTestItem = New-Object System.Windows.Forms.ToolStripMenuItem("Insert Test Item")
 	$InsertTestItem.ToolTipText = "Inserts or updates a test item (PLU 0020077700000 or alternatives) in the database."
@@ -11771,7 +11584,7 @@ if (-not $form)
 	[void]$ContextMenuGeneral.Items.Add($InsertTestItem)
 	
 	############################################################################
-	# 12) Fix Deploy CHG
+	# 13) Fix Deploy CHG
 	############################################################################
 	$FixDeployCHGItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Deploy_CHG")
 	$FixDeployCHGItem.ToolTipText = "Restores the deploy line to DEPLOY_CHG.sql for scale management."
@@ -11960,19 +11773,6 @@ $protocolTimer.add_Tick({
 				$script:LaneProtocolJobs.Remove($lane)
 			}
 		}
-		# Always show live table
-		Clear-Host
-		Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
-		Write-Host "Selected (storeman) folder: '$BasePath'" -ForegroundColor Magenta
-		Write-Host "Script started" -ForegroundColor Green
-		Write-Host ("{0,-6} {1,-15}" -f "Lane", "Protocol") -ForegroundColor Cyan
-		Write-Host ("{0,-6} {1,-15}" -f "-----", "--------") -ForegroundColor Cyan
-		$script:ProtocolResults |
-		Sort-Object Lane |
-		ForEach-Object {
-			Write-Host ("{0,-6} {1,-15}" -f $_.Lane.PadLeft(3, '0'), $_.Protocol)
-		}
-		# If all jobs done, keep showing table-don't stop polling (Ctrl+C to exit)
 	})
 $protocolTimer.Start()
 
