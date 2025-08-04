@@ -2631,7 +2631,7 @@ VALUES
 #
 # Improvements:
 #   - Added restoration of Remote Registry service state (query before, restore after).
-#   - Improved error handling with specific messages (e.g., for non-Windows scales).
+#   - Impr oved error handling with specific messages (e.g., for non-Windows scales).
 #   - Added progress feedback via Write_Log as jobs complete.
 #   - Enhanced fallbacks: Added CIM for RAM/CPU if WMI fails but PSRemoting possible.
 #   - Sorted output numerically if machine names are numeric (e.g., IPs for scales).
@@ -2649,47 +2649,34 @@ function Get_Remote_Machine_Info
 {
 	Write_Log "`r`n==================== Starting Get_Remote_Machine_Info ====================`r`n" "blue"
 	
-	# Set up concurrent job and timeout parameters
 	$maxConcurrentJobs = 10
 	$wmiTimeoutSeconds = 5
 	$cimTimeoutSeconds = 10
 	$regTimeoutSeconds = 30
 	
-	# Clear previous results
 	$script:LaneHardwareInfo = $null
 	$script:ScaleHardwareInfo = $null
 	$script:BackofficeHardwareInfo = $null
 	
-	# ============================
-	# MAPPING FROM FUNCTIONRESULTS
-	# ============================
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-	$MachineNameToLaneNum = $script:FunctionResults['MachineNameToLaneNum']
 	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
 	$BackofficeNumToMachineName = $script:FunctionResults['BackofficeNumToMachineName']
-	$MachineNameToBackofficeNum = $script:FunctionResults['MachineNameToBackofficeNum']
 	$StoreNumber = $script:FunctionResults['StoreNumber']
 	$DbsPath = $script:DbsPath
 	
-	# ===========================
-	# NODE SELECTION
-	# ===========================
 	$nodeSelection = Show_Node_Selection_Form -StoreNumber $StoreNumber `
 											  -NodeTypes @("Lane", "Scale", "Backoffice") `
-											  -Title "Select Nodes to Pull Hardware Info" `
-											  -OnlyBizerbaScales
+											  -Title "Select Nodes to Pull Hardware Info"
 	
 	if (-not $nodeSelection)
 	{
 		Write_Log "Get_Remote_Machine_Info cancelled by user." "yellow"
 		return $false
 	}
-	
 	$selectedLanes = $nodeSelection.Lanes
 	$selectedScales = $nodeSelection.Scales
 	$selectedBOs = $nodeSelection.Backoffices
 	
-	# Validation: No selections
 	if ((-not $selectedLanes -or $selectedLanes.Count -eq 0) -and
 		(-not $selectedScales -or $selectedScales.Count -eq 0) -and
 		(-not $selectedBOs -or $selectedBOs.Count -eq 0))
@@ -2698,7 +2685,6 @@ function Get_Remote_Machine_Info
 		return $false
 	}
 	
-	# Prepare export directories
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
 	$scalesDir = Join-Path $desktop "Scales"
@@ -2708,121 +2694,83 @@ function Get_Remote_Machine_Info
 		if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory | Out-Null }
 	}
 	
-	# Collect all unique scale IPs/machine names only for TrustedHosts update
-	$scaleRemotes = @()
-	foreach ($sel in $selectedScales)
-	{
-		if ($sel.ScaleBrand -and $sel.ScaleBrand -match 'bizerba' -and $sel.FullIP)
-		{
-			$scaleRemotes += $sel.FullIP
-		}
-	}
-	$scaleRemotes = $scaleRemotes | Sort-Object -Unique
-	
-	# Add scale remotes to TrustedHosts only
-	if ($scaleRemotes.Count -gt 0)
-	{
-		$currentTrusted = (Get-Item WSMan:\localhost\Client\TrustedHosts).Value
-		$currentList = if ([string]::IsNullOrEmpty($currentTrusted)) { @() }
-		else { $currentTrusted.Split(',') | ForEach-Object { $_.Trim() } }
-		$toAdd = $scaleRemotes | Where-Object { $_ -and ($currentList -notcontains $_) }
-		if ($toAdd.Count -gt 0)
-		{
-			$newList = $currentList + $toAdd
-			$newTrusted = ($newList | Sort-Object -Unique) -join ','
-			Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newTrusted -Force
-			Write_Log "Updated TrustedHosts with scales: $($toAdd -join ', ')" "cyan"
-		}
-	}
-	
-	# Deduplicate Backoffices by BONumber first
-	if ($selectedBOs -and $selectedBOs.Count -gt 1)
-	{
-		$selectedBOs = $selectedBOs | Sort-Object BONumber -Unique
-	}
-	
-	# Optional final deduplication by MachineName to prevent any target duplicates
-	$uniqueTargets = @{ }
-	$dedupedBackoffices = @()
-	foreach ($bo in $selectedBOs)
-	{
-		if (-not $uniqueTargets.ContainsKey($bo.MachineName))
-		{
-			$uniqueTargets[$bo.MachineName] = $true
-			$dedupedBackoffices += $bo
-		}
-	}
-	$selectedBOs = $dedupedBackoffices
-	
 	foreach ($section in @(
-			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt'; IsWindows = $true },
-			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt'; IsWindows = $null },
-			@{ Name = 'BackOffices'; Selected = $selectedBOs; Dir = $backofficesDir; ScriptVar = 'BackofficeHardwareInfo'; InfoLinesVar = 'BOInfoLines'; ResultsVar = 'BOResults'; FileName = 'Backoffices_Info.txt'; IsWindows = $true }
+			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt' },
+			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt' },
+			@{ Name = 'BackOffices'; Selected = $selectedBOs; Dir = $backofficesDir; ScriptVar = 'BackofficeHardwareInfo'; InfoLinesVar = 'BOInfoLines'; ResultsVar = 'BOResults'; FileName = 'Backoffices_Info.txt' }
 		))
 	{
 		if (-not $section.Selected -or $section.Selected.Count -eq 0) { continue }
 		Write_Log "Processing $($section.Name) nodes..." "yellow"
 		Set-Variable -Name $($section.ResultsVar) -Value @{ }
 		Set-Variable -Name $($section.InfoLinesVar) -Value @()
-		$jobs = @()
-		$pending = @{ }
-		
-		foreach ($sel in ($section.Selected | Sort-Object {
-					if ($section.Name -eq 'Lanes' -and $_.PSObject.Properties.Name -contains 'LaneNumber') { [int]$_.LaneNumber }
-					elseif ($section.Name -eq 'Scales' -and $_.PSObject.Properties.Name -contains 'ScaleCode') { [int]$_.ScaleCode }
-					elseif ($section.Name -eq 'BackOffices' -and $_.PSObject.Properties.Name -contains 'BONumber') { [int]$_.BONumber }
-					else { $_ }
-				}))
+		$jobs = @(); $pending = @{ }
+		foreach ($sel in $section.Selected)
 		{
-			# Canonical mappings for all node types using Retrieve_Nodes logic!
+			
+			# Canonical mapping for ALL: always use $NodeNumber and $NodeName (no other lookup)
+			$NodeNumber = $null; $NodeName = $null
+			
 			if ($section.Name -eq 'Lanes')
 			{
-				# $sel is a PSCustomObject with LaneNumber (3-digit) and MachineName (POSnnn)
-				$laneNum = $sel.LaneNumber
-				$machineName = $sel.MachineName
-				$resolvedRemote = $machineName
-				$nodeNumOrCode = $laneNum
+				# Lane: NodeNumber = 3-digit string, NodeName from mapping
+				if ($sel.PSObject.Properties.Name -contains 'LaneNumber' -and $sel.LaneNumber)
+				{
+					$NodeNumber = "{0:D3}" -f [int]$sel.LaneNumber
+				}
+				else
+				{
+					$NodeNumber = $sel
+				}
+				$NodeName = $LaneNumToMachineName[$NodeNumber]
 			}
 			elseif ($section.Name -eq 'Scales')
 			{
-				# $sel is a PSCustomObject with ScaleCode and FullIP
-				$scaleCode = $sel.ScaleCode
-				$scaleFullIP = $sel.FullIP
-				$resolvedRemote = $scaleFullIP
-				$nodeNumOrCode = $scaleCode
+				# Scale: NodeNumber = scale code (string), NodeName = .FullIP from mapping
+				$NodeNumber = $sel
+				if ($ScaleCodeToIPInfo.ContainsKey($NodeNumber) -and $ScaleCodeToIPInfo[$NodeNumber].PSObject.Properties.Name -contains 'FullIP')
+				{
+					$NodeName = $ScaleCodeToIPInfo[$NodeNumber].FullIP
+				}
+				else
+				{
+					$NodeName = $null
+				}
 			}
 			elseif ($section.Name -eq 'BackOffices')
 			{
-				# $sel is a PSCustomObject with BONumber (3-digit) and MachineName (BOxxx)
-				$boNum = $sel.BONumber
-				$boName = $sel.MachineName
-				$resolvedRemote = $boName
-				$nodeNumOrCode = $boNum
-			}
-			else
-			{
-				$resolvedRemote = $sel
-				$nodeNumOrCode = $sel
+				# Backoffice: NodeNumber = 3-digit string, NodeName from mapping
+				if ($sel.PSObject.Properties.Name -contains 'BONumber' -and $sel.BONumber)
+				{
+					$NodeNumber = "{0:D3}" -f [int]$sel.BONumber
+				}
+				else
+				{
+					$NodeNumber = $sel
+				}
+				$NodeName = $BackofficeNumToMachineName[$NodeNumber]
 			}
 			
-			# You can pass both $resolvedRemote (for connect/UNC) and $nodeNumOrCode (for INI fallback/logging)
-			$job = Start-Job -ArgumentList $resolvedRemote, $nodeNumOrCode, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $DbsPath, $StoreNumber, $section, $BackofficeNumToMachineName, $credBizerba, $credBiyerba `
+			# Validate mapping before processing
+			if (-not $NodeName)
+			{
+				Write_Log "Skipping $($section.Name) $NodeNumber (no NodeName/mapping found)" "red"
+				continue
+			}
+			
+			$iniPattern = "INFO_${StoreNumber}${NodeNumber}_SMSStart.ini"
+			$iniPath = if ($section.Name -eq 'Lanes') { Join-Path "\\$NodeName\storeman\office\dbs" $iniPattern }
+			elseif ($section.Name -eq 'BackOffices') { Join-Path $DbsPath $iniPattern }
+			else { $null }
+			
+			$job = Start-Job -ArgumentList $NodeName, $NodeNumber, $iniPath, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds `
 							 -ScriptBlock {
-				param (
-					$resolvedRemote,
-					# For connect/UNC
-					$nodeNumOrCode,
-					# For INI fallback/logging
+				param ($NodeName,
+					$NodeNumber,
+					$iniPath,
 					$wmiTimeoutSeconds,
 					$cimTimeoutSeconds,
-					$regTimeoutSeconds,
-					$DbsPath,
-					$StoreNumber,
-					$section,
-					$boDict,
-					$credBizerba,
-					$credBiyerba
-				)
+					$regTimeoutSeconds)
 				$info = [PSCustomObject]@{
 					Success			    = $false
 					SystemManufacturer  = $null
@@ -2834,58 +2782,30 @@ function Get_Remote_Machine_Info
 					Error			    = $null
 					MachineNameOverride = $null
 				}
-				$isBackoffice = ($section.Name -eq 'BackOffices')
 				
-				# Inline: Get original RemoteRegistry state
 				$originalState = $null
 				try
 				{
-					$stateOutput = sc.exe "\\$resolvedRemote" query RemoteRegistry 2>$null | Select-String "STATE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
-					$startTypeOutput = sc.exe "\\$resolvedRemote" qc RemoteRegistry 2>$null | Select-String "START_TYPE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
+					$stateOutput = sc.exe "\\$NodeName" query RemoteRegistry 2>$null | Select-String "STATE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
+					$startTypeOutput = sc.exe "\\$NodeName" qc RemoteRegistry 2>$null | Select-String "START_TYPE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
 					$originalState = @{ State = $stateOutput; StartType = $startTypeOutput }
 				}
 				catch { }
 				
-				# -- WMI Method -- (timeout enforced)
-				if (-not $isBackoffice -and -not (Test-Connection -ComputerName $resolvedRemote -Count 1 -Quiet -ErrorAction SilentlyContinue))
+				# -- WMI Method
+				if (-not (Test-Connection -ComputerName $NodeName -Count 1 -Quiet -ErrorAction SilentlyContinue))
 				{
-					$info.Error = "Offline or unreachable."
-					$info.Method = "Offline"
+					$info.Error = "Offline or unreachable."; $info.Method = "Offline"
 				}
 				else
 				{
 					$wmiJob = Start-Job -ScriptBlock {
-						param ($resolvedRemote,
-							$credBizerba,
-							$credBiyerba,
-							$isScale)
+						param ($NodeName)
 						try
 						{
-							# Use credentials if scale; otherwise default call
-							if ($isScale)
-							{
-								$sys = $null
-								try
-								{
-									$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $resolvedRemote -Credential $credBizerba -ErrorAction SilentlyContinue
-								}
-								catch { }
-								if (-not $sys)
-								{
-									$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $resolvedRemote -Credential $credBiyerba -ErrorAction SilentlyContinue
-								}
-								if ($sys)
-								{
-									$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $resolvedRemote -Credential $sys.PSComputerName -ErrorAction SilentlyContinue | Select-Object -First 1
-									$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $resolvedRemote -Credential $sys.PSComputerName -ErrorAction SilentlyContinue
-								}
-							}
-							else
-							{
-								$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $resolvedRemote -ErrorAction SilentlyContinue
-								$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $resolvedRemote -ErrorAction SilentlyContinue | Select-Object -First 1
-								$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $resolvedRemote -ErrorAction SilentlyContinue
-							}
+							$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $NodeName -ErrorAction SilentlyContinue
+							$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $NodeName -ErrorAction SilentlyContinue | Select-Object -First 1
+							$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $NodeName -ErrorAction SilentlyContinue
 							if ($sys -and $sys.Manufacturer -and $sys.Model)
 							{
 								[PSCustomObject]@{
@@ -2900,7 +2820,7 @@ function Get_Remote_Machine_Info
 							else { $null }
 						}
 						catch { $null }
-					} -ArgumentList $resolvedRemote, $credBizerba, $credBiyerba, ($section.Name -eq 'Scales')
+					} -ArgumentList $NodeName
 					
 					if (Wait-Job $wmiJob -Timeout $wmiTimeoutSeconds)
 					{
@@ -2925,37 +2845,18 @@ function Get_Remote_Machine_Info
 					}
 					else
 					{
-						$info.Error = "WMI failed (credential or access issue)"
+						$info.Error = "WMI failed (access issue or null)"
 					}
 				}
 				
-				# -- CIM Method -- (timeout enforced)
+				# CIM Method (if WMI fails)
 				if (-not $info.Success)
 				{
 					$cimJob = Start-Job -ScriptBlock {
-						param ($resolvedRemote,
-							$credBizerba,
-							$credBiyerba,
-							$isScale)
+						param ($NodeName)
 						try
 						{
-							$session = $null
-							if ($isScale)
-							{
-								try
-								{
-									$session = New-CimSession -ComputerName $resolvedRemote -Credential $credBizerba -ErrorAction SilentlyContinue
-								}
-								catch { }
-								if (-not $session)
-								{
-									$session = New-CimSession -ComputerName $resolvedRemote -Credential $credBiyerba -ErrorAction SilentlyContinue
-								}
-							}
-							else
-							{
-								$session = New-CimSession -ComputerName $resolvedRemote -ErrorAction SilentlyContinue
-							}
+							$session = New-CimSession -ComputerName $NodeName -ErrorAction SilentlyContinue
 							if ($session)
 							{
 								$sys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem 2>$null
@@ -2978,7 +2879,7 @@ function Get_Remote_Machine_Info
 							else { $null }
 						}
 						catch { $null }
-					} -ArgumentList $resolvedRemote, $credBizerba, $credBiyerba, ($section.Name -eq 'Scales')
+					} -ArgumentList $NodeName
 					
 					if (Wait-Job $cimJob -Timeout $cimTimeoutSeconds)
 					{
@@ -3003,52 +2904,21 @@ function Get_Remote_Machine_Info
 					}
 					else
 					{
-						$info.Error = "CIM failed (credential or access issue)"
+						$info.Error = "CIM failed (access issue or null)"
 					}
 				}
 				
-				# -- REG Method (wrapped for timeout and try/catch) --
+				# REG Method (if WMI/CIM fail)
 				if (-not $info.Success)
 				{
 					$regResult = $null
 					try
 					{
 						$regJob = Start-Job -ScriptBlock {
-							param ($resolvedRemote,
-								$originalState,
-								$credBizerba,
-								$credBiyerba,
-								$isScale)
-							
-							# Ensure RemoteRegistry service is running
-							if ($originalState.StartType -ne "AUTO_START" -and $originalState.StartType -ne "DEMAND_START")
-							{
-								sc.exe "\\$resolvedRemote" config RemoteRegistry start= demand | Out-Null
-							}
-							if ($originalState.State -ne "RUNNING")
-							{
-								sc.exe "\\$resolvedRemote" start RemoteRegistry | Out-Null
-								Start-Sleep -Milliseconds 500
-							}
-							
+							param ($NodeName)
 							try
 							{
-								if ($isScale)
-								{
-									try
-									{
-										$session = New-PSSession -ComputerName $resolvedRemote -Credential $credBizerba -ErrorAction SilentlyContinue
-									}
-									catch { }
-									if (-not $session)
-									{
-										$session = New-PSSession -ComputerName $resolvedRemote -Credential $credBiyerba -ErrorAction SilentlyContinue
-									}
-								}
-								else
-								{
-									$session = New-PSSession -ComputerName $resolvedRemote -ErrorAction SilentlyContinue
-								}
+								$session = New-PSSession -ComputerName $NodeName -ErrorAction SilentlyContinue
 								if ($session)
 								{
 									$result = Invoke-Command -Session $session -ScriptBlock {
@@ -3061,7 +2931,6 @@ function Get_Remote_Machine_Info
 											$osName = Get-ItemProperty -Path $osKey -Name ProductName -ErrorAction SilentlyContinue
 											$osVer = Get-ItemProperty -Path $osKey -Name CurrentVersion -ErrorAction SilentlyContinue
 											$osBuild = Get-ItemProperty -Path $osKey -Name DisplayVersion -ErrorAction SilentlyContinue
-											
 											[PSCustomObject]@{
 												SystemManufacturer = $manuf.SystemManufacturer
 												SystemProductName  = $prod.SystemProductName
@@ -3075,46 +2944,21 @@ function Get_Remote_Machine_Info
 										catch
 										{
 											[PSCustomObject]@{
-												SystemManufacturer = $null
-												SystemProductName  = $null
-												CPU			       = $null
-												OSInfo			   = $null
-												Method			   = "REG"
-												Success		       = $false
-												Error			   = $_.Exception.Message
+												SystemManufacturer = $null; SystemProductName = $null; CPU = $null; OSInfo = $null
+												Method			   = "REG"; Success = $false; Error = $_.Exception.Message
 											}
 										}
 									} 2>$null
-									
 									Remove-PSSession $session -ErrorAction SilentlyContinue
 									return $result
 								}
 								else
 								{
-									[PSCustomObject]@{
-										SystemManufacturer = $null
-										SystemProductName  = $null
-										CPU			       = $null
-										OSInfo			   = $null
-										Method			   = "REG"
-										Success		       = $false
-										Error			   = "Session creation failed (credential or access issue)"
-									}
+									[PSCustomObject]@{ SystemManufacturer = $null; SystemProductName = $null; CPU = $null; OSInfo = $null; Method = "REG"; Success = $false; Error = "Session creation failed" }
 								}
 							}
-							catch
-							{
-								[PSCustomObject]@{
-									SystemManufacturer = $null
-									SystemProductName  = $null
-									CPU			       = $null
-									OSInfo			   = $null
-									Method			   = "REG"
-									Success		       = $false
-									Error			   = "REG fallback failed silently"
-								}
-							}
-						} -ArgumentList $resolvedRemote, $originalState, $credBizerba, $credBiyerba, ($section.Name -eq 'Scales')
+							catch { [PSCustomObject]@{ SystemManufacturer = $null; SystemProductName = $null; CPU = $null; OSInfo = $null; Method = "REG"; Success = $false; Error = "REG fallback failed" } }
+						} -ArgumentList $NodeName
 						
 						if (Wait-Job $regJob -Timeout $regTimeoutSeconds)
 						{
@@ -3125,31 +2969,13 @@ function Get_Remote_Machine_Info
 						{
 							Stop-Job $regJob -ErrorAction SilentlyContinue
 							Remove-Job $regJob -Force -ErrorAction SilentlyContinue
-							$regResult = [PSCustomObject]@{
-								SystemManufacturer = $null
-								SystemProductName  = $null
-								CPU			       = $null
-								OSInfo			   = $null
-								Method			   = "REG"
-								Success		       = $false
-								Error			   = "REG query timed out after $regTimeoutSeconds seconds."
-							}
+							$regResult = [PSCustomObject]@{ SystemManufacturer = $null; SystemProductName = $null; CPU = $null; OSInfo = $null; Method = "REG"; Success = $false; Error = "REG query timed out" }
 						}
 					}
 					catch
 					{
-						$regResult = [PSCustomObject]@{
-							SystemManufacturer = $null
-							SystemProductName  = $null
-							CPU			       = $null
-							OSInfo			   = $null
-							Method			   = "REG"
-							Success		       = $false
-							Error			   = "REG method failed silently"
-						}
+						$regResult = [PSCustomObject]@{ SystemManufacturer = $null; SystemProductName = $null; CPU = $null; OSInfo = $null; Method = "REG"; Success = $false; Error = "REG method failed" }
 					}
-					
-					# Set info from regResult no matter what
 					$info.SystemManufacturer = $regResult.SystemManufacturer
 					$info.SystemProductName = $regResult.SystemProductName
 					$info.CPU = $regResult.CPU
@@ -3160,36 +2986,23 @@ function Get_Remote_Machine_Info
 					$info.Success = $regResult.Success
 				}
 				
-				# --- INI Block (for Lanes/BackOffices), ALWAYS RUN ---
+				# INI Block (for Lanes/BackOffices), ALWAYS RUN
 				$returnInfo = [PSCustomObject]@{
-					Machine			    = $resolvedRemote
-					MachineNameOverride = $info.MachineNameOverride
-					Info			    = $info
-					IniFound		    = $false
-					IniPath			    = $null
+					Machine    = $NodeName
+					NodeNumber = $NodeNumber
+					Info	   = $info
+					IniFound   = $false
+					IniPath    = $null
 				}
-				
 				try
 				{
-					if ($section.Name -in @('Lanes', 'BackOffices'))
+					if ($iniPath)
 					{
-						if ($section.Name -eq 'Lanes')
-						{
-							$pattern = "INFO_${StoreNumber}${nodeNumOrCode}_SMSStart.ini"
-							$iniPath = Join-Path "\\$resolvedRemote\storeman\office\dbs" $pattern
-						}
-						else
-						{
-							$pattern = "INFO_${StoreNumber}${nodeNumOrCode}_SMSStart.ini"
-							$iniPath = Join-Path $DbsPath $pattern
-						}
-						
-						$iniFile = Get-ChildItem -Path (Split-Path $iniPath) -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+						$iniFile = Get-ChildItem -Path (Split-Path $iniPath) -Filter (Split-Path $iniPath -Leaf) -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 						if ($iniFile -and (Test-Path $iniFile.FullName))
 						{
 							$returnInfo.IniFound = $true
 							$returnInfo.IniPath = $iniFile.FullName
-							
 							$iniLines = Get-Content $iniFile.FullName -Encoding UTF8 -ErrorAction SilentlyContinue
 							$sections = @{ }
 							$curSec = ""
@@ -3197,15 +3010,13 @@ function Get_Remote_Machine_Info
 							{
 								if ($line -match '^\[(.+)\]$')
 								{
-									$curSec = $matches[1]
-									$sections[$curSec] = @{ }
+									$curSec = $matches[1]; $sections[$curSec] = @{ }
 								}
 								elseif ($line -match '^\s*([^=]+?)\s*=\s*(.*)$' -and $curSec)
 								{
 									$sections[$curSec][$matches[1].Trim()] = $matches[2].Trim()
 								}
 							}
-							
 							if ($info.CPU -eq "Unknown" -and $sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores'))
 							{
 								$cores = $sections['PROCESSOR']['Cores']
@@ -3223,21 +3034,14 @@ function Get_Remote_Machine_Info
 							{
 								$info.OSInfo = $sections['OperatingSystem']['ProductName']
 							}
-							if ($sections.ContainsKey('ORIGIN') -and $sections['ORIGIN'].ContainsKey('ComputerName'))
-							{
-								$info.MachineNameOverride = $sections['ORIGIN']['ComputerName']
-							}
 						}
 					}
 				}
 				catch { }
-				
 				return $returnInfo
 			}
 			$jobs += $job
-			$pending[$job.Id] = $resolvedRemote
-			
-			# Throttle background jobs for max parallelism
+			$pending[$job.Id] = $NodeName
 			while ($jobs.Count -ge $maxConcurrentJobs)
 			{
 				$done = Wait-Job -Job $jobs -Any -Timeout 60
@@ -3248,66 +3052,7 @@ function Get_Remote_Machine_Info
 						$result = Receive-Job $j 2>$null
 						$remoteName = $pending[$j.Id]
 						$info = $result.Info
-						# --- INI Debug output ---
-						if ($result.PSObject.Properties.Name -contains 'IniFound')
-						{
-							if ($section.Name -in @('Lanes', 'BackOffices'))
-							{
-								if ($result.IniFound)
-								{
-									Write_Log "[INI] Found INI for $($section.Name) $remoteName at $($result.IniPath)" "cyan"
-								}
-								else
-								{
-									Write_Log "[INI] No INI found for $($section.Name) $remoteName" "darkyellow"
-								}
-							}
-						}
-						# Inline: Restore if not done in job (edge case)
-						$originalState = $result.OriginalState
-						if ($originalState)
-						{
-							if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null 2>$null }
-							if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null 2>$null }
-						}
-						# Determine display name (MachineNameOverride logic, supports serialization)
-						if ($section.Name -eq 'BackOffices')
-						{
-							$boNum = $remoteName
-							$boName = $null
-							if ($result.PSObject.Properties.Name -contains "MachineNameOverride" -and $result.MachineNameOverride)
-							{
-								$boName = $result.MachineNameOverride
-							}
-							elseif ($info.PSObject.Properties.Name -contains "MachineNameOverride" -and $info.MachineNameOverride)
-							{
-								$boName = $info.MachineNameOverride
-							}
-							elseif ($boDict -and $boDict.ContainsKey($boNum) -and $boDict[$boNum])
-							{
-								$boName = $boDict[$boNum]
-							}
-							else
-							{
-								$boName = $boNum
-							}
-							$displayName = "$boName ($boNum)"
-						}
-						else
-						{
-							if ($result.PSObject.Properties.Name -contains "MachineNameOverride" -and $result.MachineNameOverride)
-							{
-								$displayName = $result.MachineNameOverride
-							}
-							elseif ($info.PSObject.Properties.Name -contains "MachineNameOverride" -and $info.MachineNameOverride)
-							{
-								$displayName = $info.MachineNameOverride
-							}
-							else
-							{
-								$displayName = $remoteName
-							}
-						}
+						$displayName = $remoteName
 						$line = "Machine Name: $displayName |"
 						if ($info.Success)
 						{
@@ -3339,7 +3084,6 @@ function Get_Remote_Machine_Info
 				}
 			}
 		}
-		
 		# Wait for all jobs to finish and collect results
 		if ($jobs.Count -gt 0)
 		{
@@ -3349,65 +3093,7 @@ function Get_Remote_Machine_Info
 				$remoteName = $pending[$j.Id]
 				$result = Receive-Job $j 2>$null
 				$info = $result.Info
-				# --- INI Debug output ---
-				if ($result.PSObject.Properties.Name -contains 'IniFound')
-				{
-					if ($section.Name -in @('Lanes', 'BackOffices'))
-					{
-						if ($result.IniFound)
-						{
-							Write_Log "[INI] Found INI for $($section.Name) $remoteName at $($result.IniPath)" "cyan"
-						}
-						else
-						{
-							Write_Log "[INI] No INI found for $($section.Name) $remoteName" "darkyellow"
-						}
-					}
-				}
-				# --- Restore RemoteRegistry state if needed ---
-				$originalState = $result.OriginalState
-				if ($originalState)
-				{
-					if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null 2>$null }
-					if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null 2>$null }
-				}
-				if ($section.Name -eq 'BackOffices')
-				{
-					$boNum = $remoteName
-					$boName = $null
-					if ($result.PSObject.Properties.Name -contains "MachineNameOverride" -and $result.MachineNameOverride)
-					{
-						$boName = $result.MachineNameOverride
-					}
-					elseif ($info.PSObject.Properties.Name -contains "MachineNameOverride" -and $info.MachineNameOverride)
-					{
-						$boName = $info.MachineNameOverride
-					}
-					elseif ($BackofficeNumToMachineName -and $BackofficeNumToMachineName.ContainsKey($boNum) -and $BackofficeNumToMachineName[$boNum])
-					{
-						$boName = $BackofficeNumToMachineName[$boNum]
-					}
-					else
-					{
-						$boName = $boNum
-					}
-					$displayName = "$boName ($boNum)"
-				}
-				else
-				{
-					if ($result.PSObject.Properties.Name -contains "MachineNameOverride" -and $result.MachineNameOverride)
-					{
-						$displayName = $result.MachineNameOverride
-					}
-					elseif ($info.PSObject.Properties.Name -contains "MachineNameOverride" -and $info.MachineNameOverride)
-					{
-						$displayName = $info.MachineNameOverride
-					}
-					else
-					{
-						$displayName = $remoteName
-					}
-				}
+				$displayName = $remoteName
 				$line = "Machine Name: $displayName |"
 				if ($info.Success)
 				{
@@ -3435,10 +3121,7 @@ function Get_Remote_Machine_Info
 				Remove-Job $j -Force -ErrorAction SilentlyContinue
 			}
 		}
-		
-		Set-Variable -Name ("script:" + $section.ScriptVar) -Value (Get-Variable -Name $($section.ResultsVar) -ValueOnly) -Scope Script
 		$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-		# Write sorted output
 		if ($infolines.Count)
 		{
 			$sortedLines = $infolines | Sort-Object {
@@ -3456,14 +3139,6 @@ function Get_Remote_Machine_Info
 		}
 		Write_Log "Completed processing $($section.Name).`r`n" "green"
 	}
-	
-	# Safely retrieve info lines
-	if (Get-Variable -Name LaneInfoLines -Scope Local -ErrorAction SilentlyContinue) { $laneLines = Get-Variable -Name LaneInfoLines -ValueOnly }
-	else { $laneLines = @() }
-	if (Get-Variable -Name ScaleInfoLines -Scope Local -ErrorAction SilentlyContinue) { $scaleLines = Get-Variable -Name ScaleInfoLines -ValueOnly }
-	else { $scaleLines = @() }
-	if (Get-Variable -Name BOInfoLines -Scope Local -ErrorAction SilentlyContinue) { $boLines = Get-Variable -Name BOInfoLines -ValueOnly }
-	else { $boLines = @() }
 	
 	Write_Log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
 }
