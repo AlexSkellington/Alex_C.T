@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.3.8"
-$VersionDate = "2025-08-2"
+$VersionNumber = "2.3.7"
+$VersionDate = "2025-07-30"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -79,16 +79,6 @@ $script:ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252) # Windows-125
 $script:utf8NoBOM = New-Object System.Text.UTF8Encoding($false) # UTF-8 no BOM (for output)
 $script:utf8NoBOM = $utf8NoBOM
 $script:ansiPcEncoding = $ansiPcEncoding
-
-# ---------------------------------------------------------------------------------------------------
-# Passwords for Bizerba Scales
-# ---------------------------------------------------------------------------------------------------
-$bizuser = "bizuser"
-$passwordBizerba = ConvertTo-SecureString "bizerba" -AsPlainText -Force
-$passwordBiyerba = ConvertTo-SecureString "biyerba" -AsPlainText -Force
-
-$script:credBizerba = New-Object System.Management.Automation.PSCredential ($bizuser, $passwordBizerba)
-$script:credBiyerba = New-Object System.Management.Automation.PSCredential ($bizuser, $passwordBiyerba)
 
 # ---------------------------------------------------------------------------------------------------
 # Locate Base Path: Storeman Folder Detection (case-insensitive)
@@ -644,11 +634,11 @@ function Get_All_Lanes_Database_Info
 	}
 	$LaneDatabaseInfo = $script:FunctionResults['LaneDatabaseInfo']
 	
-	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-	if (-not $LaneNumToMachineName) { return $null }
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	if (-not $LaneMachines) { return $null }
 	
 	$lanesToProcess = if ($LaneNumber) { @($LaneNumber) }
-	else { $LaneNumToMachineName.Keys }
+	else { $LaneMachines.Keys }
 	
 	foreach ($laneNumber in $lanesToProcess)
 	{
@@ -660,7 +650,7 @@ function Get_All_Lanes_Database_Info
 		# Skip unwanted lanes for full mode
 		if (-not $LaneNumber -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
 		
-		$machineName = $LaneNumToMachineName[$laneNumber]
+		$machineName = $LaneMachines[$laneNumber]
 		if (-not $machineName) { continue }
 		
 		# ---------- 1. Try LOCAL Startup file (INI\STARTUP.###) ----------
@@ -812,9 +802,9 @@ function Get_All_Lanes_Database_Info
 #   - **Initialization Variables:**
 #       - `$HostPath`: Base directory path where store and host directories are located.
 #       - `$NumberOfLanes`, `$NumberOfStores`, `$NumberOfHosts`, `$NumberOfServers`, `$NumberOfScales`: Counters initialized to `0`.
-#       - `$LaneMachineNames`: Array to hold lane identifiers.
-#       - `$LaneNumToMachineName`: Hashtable to map lane numbers to machine names.
-#       - `$ScaleCodeToIPInfo`: Hashtable to map scale identifiers to their IPNetwork values.
+#       - `$LaneContents`: Array to hold lane identifiers.
+#       - `$LaneMachines`: Hashtable to map lane numbers to machine names.
+#       - `$ScaleIPNetworks`: Hashtable to map scale identifiers to their IPNetwork values.
 #   - **Database Connection Variables:**
 #       - `$ConnectionString`: Retrieves the database connection string from the `FunctionResults` hashtable.
 #       - `$NodesFromDatabase`: Boolean flag indicating whether to retrieve counts from the database.
@@ -880,35 +870,48 @@ function Retrieve_Nodes
 	
 	# -------------------- Init --------------------
 	$HostPath = "$OfficePath"
-	$LaneMachineNames = @() # It's a list of the machine names for lanes.
-	$LaneNumToMachineName = @{ } # Map from lane number to machine name (or just machine name if no number).
-	$LaneMachineLabels = @{ } # Map machine name to GUI label.
-	$LaneMachinePath = @{ } # Map machine name to UNC/physical path.
-	$LaneMachineToServerPath = @{ } # Map machine name to associated server path.
-	$ScaleCodes = @() # List of scale codes (like 800, 801, etc).
-	$ScaleLabels = @{ } # Map scale code to label.
-	$ScaleExePaths = @{ } # Map scale code to executable path.
-	$ScaleCodeToIPInfo = @{ } # Map scale code to IP info object.
-	$BackofficeNumToMachineName = @{ } # Map backoffice terminal # to machine name.
-	$BackofficeNumToLabel = @{ } # Map backoffice terminal # to label.
-	$BackofficeNumToPath = @{ } # Map backoffice terminal # to path.
-	$ServerMachineName = $null
+	$LaneContents = @()
+	$LaneMachines = @{ } # Key: LaneNum or MachineName, Value: MachineName
+	$LaneLabels = @{ }
+	$LanePaths = @{ }
+	$LaneHostPaths = @{ }
+	$ScaleContents = @()
+	$ScaleTerLabels = @{ }
+	$ScalePaths = @{ }
+	$ScaleIPNetworks = @{ }
+	$BackofficeMachines = @{ }
+	$BackofficeLabels = @{ }
+	$BackofficePaths = @{ }
+	$ServerMachine = $null
 	$ServerLabel = $null
 	$ServerPath = $null
 	$TerLoadSqlPath = Join-Path $LoadPath 'Ter_Load.sql'
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$NodesFromDatabase = $false
 	$SqlModule = $script:FunctionResults['SqlModuleName']
-	$server = $script:FunctionResults['DBSERVER']
-	$database = $script:FunctionResults['DBNAME']
 	
 	# Detect SQL Module if needed
-	if (-not $SqlModule -or $SqlModule -eq 'None')
+	if (-not $SqlModule -or $SqlModule -eq 'N/A')
+	{
+		if (Get-Module -ListAvailable -Name SqlServer) { $SqlModule = "SqlServer" }
+		elseif (Get-Module -ListAvailable -Name SQLPS) { $SqlModule = "SQLPS" }
+		else { $SqlModule = "None" }
+		$script:FunctionResults['SqlModuleName'] = $SqlModule
+	}
+	
+	if ($SqlModule -eq "SqlServer" -or $SqlModule -eq "SQLPS")
+	{
+		Import-Module $SqlModule -ErrorAction Stop
+	}
+	else
 	{
 		Write_Log "No SQL PowerShell module found! Cannot query database for node info." "red"
 		$ConnectionString = $null
 	}
-			
+	
+	$server = $script:FunctionResults['DBSERVER']
+	$database = $script:FunctionResults['DBNAME']
+	
 	# -------------------- 1. Database --------------------
 	if ($ConnectionString)
 	{
@@ -966,28 +969,24 @@ WHERE F1056 = '$StoreNumber'
 						$machineName = $terminal
 					}
 					
-					$LaneMachineNames += $machineName
-					if ($terminal -match '^0\d\d$')
-					{
-						$LaneNumToMachineName[$terminal] = $machineName # key: '008', value: 'POS008'
-					}
-					$LaneNumToMachineName[$machineName] = $machineName
-					$LaneMachineLabels[$machineName] = $label
-					$LaneMachinePath[$machineName] = $path
-					$LaneMachineToServerPath[$machineName] = $hostPath
+					$LaneContents += $machineName
+					$LaneMachines[$machineName] = $machineName
+					$LaneLabels[$machineName] = $label
+					$LanePaths[$machineName] = $path
+					$LaneHostPaths[$machineName] = $hostPath
 				}
 				
 				# Scales: 8xx (not 0xx or 9xx), path like c:\...XchScale.exe (case insensitive)
 				elseif ($terminal -match '^8\d\d$' -and $terminal -notmatch '^0' -and $terminal -notmatch '^9' -and $path -match '(?i)^[cC]:\\.*XchScale\\XchScale\.exe$')
 				{
-					$ScaleCodes += $terminal
-					$ScaleLabels[$terminal] = $label
-					$ScaleExePaths[$terminal] = $path
+					$ScaleContents += $terminal
+					$ScaleTerLabels[$terminal] = $label
+					$ScalePaths[$terminal] = $path
 				}
 				# Server: exactly 901, path like @MACHINE
 				elseif ($terminal -eq '901' -and $path -match '^@[^@]+$')
 				{
-					$ServerMachineName = $path -replace '^@', ''
+					$ServerMachine = $path -replace '^@', ''
 					$ServerLabel = $label
 					$ServerPath = $path
 				}
@@ -995,17 +994,17 @@ WHERE F1056 = '$StoreNumber'
 				elseif ($terminal -match '^9(0[2-9]|[1-8]\d|9[0-8])$' -and $path -match '^@[^@]+$')
 				{
 					$machineName = $path -replace '^@', ''
-					$BackofficeNumToMachineName[$terminal] = $machineName
-					$BackofficeNumToLabel[$terminal] = $label
-					$BackofficeNumToPath[$terminal] = $path
+					$BackofficeMachines[$terminal] = $machineName
+					$BackofficeLabels[$terminal] = $label
+					$BackofficePaths[$terminal] = $path
 				}
 			}
 			
-			$NumberOfLanes = $LaneMachineNames.Count
-			$NumberOfScales = $ScaleCodes.Count
-			$NumberOfServers = if ($ServerMachineName) { 1 }
+			$NumberOfLanes = $LaneContents.Count
+			$NumberOfScales = $ScaleContents.Count
+			$NumberOfServers = if ($ServerMachine) { 1 }
 			else { 0 }
-			$NumberOfBackoffices = $BackofficeNumToMachineName.Count
+			$NumberOfBackoffices = $BackofficeMachines.Count
 			
 			# -- Extra scales: TBS_SCL_ver520
 			$queryTbsSclScales = @"
@@ -1053,7 +1052,7 @@ WHERE Active = 'Y'
 						ScaleBrand    = $row.ScaleBrand
 						ScaleModel    = $row.ScaleModel
 					}
-					$ScaleCodeToIPInfo[$row.ScaleCode] = $scaleObj
+					$ScaleIPNetworks[$row.ScaleCode] = $scaleObj
 				}
 			}
 		}
@@ -1101,66 +1100,62 @@ WHERE Active = 'Y'
 						{
 							$machineName = $terminal
 						}
-						$LaneMachineNames += $machineName
-						if ($terminal -match '^0\d\d$')
-						{
-							$LaneNumToMachineName[$terminal] = $machineName # key: '008', value: 'POS008'
-						}
-						$LaneNumToMachineName[$machineName] = $machineName
-						$LaneMachineLabels[$machineName] = $label
-						$LaneMachinePath[$machineName] = $path
-						$LaneMachineToServerPath[$machineName] = $hostPath
+						$LaneContents += $machineName
+						$LaneMachines[$machineName] = $machineName
+						$LaneLabels[$machineName] = $label
+						$LanePaths[$machineName] = $path
+						$LaneHostPaths[$machineName] = $hostPath
 					}
 					elseif ($terminal -match '^8\d\d$' -and $terminal -notmatch '^0' -and $terminal -notmatch '^9' -and $path -match '(?i)^[cC]:\\.*XchScale\\XchScale\.exe$')
 					{
-						$ScaleCodes += $terminal
-						$ScaleLabels[$terminal] = $label
-						$ScaleExePaths[$terminal] = $path
+						$ScaleContents += $terminal
+						$ScaleTerLabels[$terminal] = $label
+						$ScalePaths[$terminal] = $path
 					}
 					elseif ($terminal -eq '901' -and $path -match '^@[^@]+$')
 					{
-						$ServerMachineName = $path -replace '^@', ''
+						$ServerMachine = $path -replace '^@', ''
 						$ServerLabel = $label
 						$ServerPath = $path
 					}
 					elseif ($terminal -match '^9(0[2-9]|[1-8]\d|9[0-8])$' -and $path -match '^@[^@]+$')
 					{
 						$machineName = $path -replace '^@', ''
-						$BackofficeNumToMachineName[$terminal] = $machineName
-						$BackofficeNumToLabel[$terminal] = $label
-						$BackofficeNumToPath[$terminal] = $path
+						$BackofficeMachines[$terminal] = $machineName
+						$BackofficeLabels[$terminal] = $label
+						$BackofficePaths[$terminal] = $path
 					}
 				}
 			}
 		}
-		$NumberOfLanes = $LaneMachineNames.Count
-		$NumberOfScales = $ScaleCodes.Count
-		$NumberOfServers = if ($ServerMachineName) { 1 }
+		$NumberOfLanes = $LaneContents.Count
+		$NumberOfScales = $ScaleContents.Count
+		$NumberOfServers = if ($ServerMachine) { 1 }
 		else { 0 }
-		$NumberOfBackoffices = $BackofficeNumToMachineName.Count
+		$NumberOfBackoffices = $BackofficeMachines.Count
 	}
 	
 	# -------------------- 3. Return Object & Store Results --------------------
 	$Nodes = [PSCustomObject]@{
-		NumberOfLanes	    		= $NumberOfLanes
-		NumberOfServers	    		= $NumberOfServers
-		NumberOfBackoffices 		= $NumberOfBackoffices
-		NumberOfScales	   			= $NumberOfScales
-		LaneMachineNames	    	= $LaneMachineNames
-		LaneNumToMachineName	    = $LaneNumToMachineName
-		LaneMachineLabels		    = $LaneMachineLabels
-		LaneMachinePath		    	= $LaneMachinePath
-		LaneMachineToServerPath	    = $LaneMachineToServerPath
-		ScaleCodes	    			= $ScaleCodes
-		ScaleLabels	    			= $ScaleLabels
-		ScaleExePaths		    	= $ScaleExePaths
-		ScaleCodeToIPInfo	    	= $ScaleCodeToIPInfo
-		BackofficeNumToMachineName  = $BackofficeNumToMachineName
-		BackofficeNumToLabel    	= $BackofficeNumToLabel
-		BackofficeNumToPath	   		= $BackofficeNumToPath
-		ServerMachineName	    	= $ServerMachineName
-		ServerLabel		    		= $ServerLabel
-		ServerPath		    		= $ServerPath
+		NumberOfLanes	    = $NumberOfLanes
+		NumberOfServers	    = $NumberOfServers
+		NumberOfBackoffices = $NumberOfBackoffices
+		NumberOfScales	    = $NumberOfScales
+		LaneContents	    = $LaneContents
+		LaneMachines	    = $LaneMachines
+		LaneLabels		    = $LaneLabels
+		LanePaths		    = $LanePaths
+		LaneHostPaths	    = $LaneHostPaths
+		ScaleContents	    = $ScaleContents
+		ScaleTerLabels	    = $ScaleTerLabels
+		ScalePaths		    = $ScalePaths
+		ScaleIPNetworks	    = $ScaleIPNetworks
+		BackofficeMachines  = $BackofficeMachines
+		BackofficeLabels    = $BackofficeLabels
+		BackofficePaths	    = $BackofficePaths
+		ServerMachine	    = $ServerMachine
+		ServerLabel		    = $ServerLabel
+		ServerPath		    = $ServerPath
 	}
 	
 	# Store in FunctionResults
@@ -1168,19 +1163,19 @@ WHERE Active = 'Y'
 	$script:FunctionResults['NumberOfServers'] = $NumberOfServers
 	$script:FunctionResults['NumberOfBackoffices'] = $NumberOfBackoffices
 	$script:FunctionResults['NumberOfScales'] = $NumberOfScales
-	$script:FunctionResults['LaneMachineNames'] = $LaneMachineNames
-	$script:FunctionResults['LaneNumToMachineName'] = $LaneNumToMachineName
-	$script:FunctionResults['LaneMachineLabels'] = $LaneMachineLabels
-	$script:FunctionResults['LaneMachinePath'] = $LaneMachinePath
-	$script:FunctionResults['LaneMachineToServerPath'] = $LaneMachineToServerPath
-	$script:FunctionResults['ScaleCodes'] = $ScaleCodes
-	$script:FunctionResults['ScaleLabels'] = $ScaleLabels
-	$script:FunctionResults['ScaleExePaths'] = $ScaleExePaths
-	$script:FunctionResults['ScaleCodeToIPInfo'] = $ScaleCodeToIPInfo
-	$script:FunctionResults['BackofficeNumToMachineName'] = $BackofficeNumToMachineName
-	$script:FunctionResults['BackofficeNumToLabel'] = $BackofficeNumToLabel
-	$script:FunctionResults['BackofficeNumToPath'] = $BackofficeNumToPath
-	$script:FunctionResults['ServerMachineName'] = $ServerMachineName
+	$script:FunctionResults['LaneContents'] = $LaneContents
+	$script:FunctionResults['LaneMachines'] = $LaneMachines
+	$script:FunctionResults['LaneLabels'] = $LaneLabels
+	$script:FunctionResults['LanePaths'] = $LanePaths
+	$script:FunctionResults['LaneHostPaths'] = $LaneHostPaths
+	$script:FunctionResults['ScaleContents'] = $ScaleContents
+	$script:FunctionResults['ScaleTerLabels'] = $ScaleTerLabels
+	$script:FunctionResults['ScalePaths'] = $ScalePaths
+	$script:FunctionResults['ScaleIPNetworks'] = $ScaleIPNetworks
+	$script:FunctionResults['BackofficeMachines'] = $BackofficeMachines
+	$script:FunctionResults['BackofficeLabels'] = $BackofficeLabels
+	$script:FunctionResults['BackofficePaths'] = $BackofficePaths
+	$script:FunctionResults['ServerMachine'] = $ServerMachine
 	$script:FunctionResults['ServerLabel'] = $ServerLabel
 	$script:FunctionResults['ServerPath'] = $ServerPath
 	$script:FunctionResults['Nodes'] = $Nodes
@@ -1189,29 +1184,15 @@ WHERE Active = 'Y'
 	# Collect only Windows scales (e.g., Bizerba)
 	# =============================================
 	$WindowsScales = @{ }
-	foreach ($code in $ScaleCodeToIPInfo.Keys)
+	foreach ($code in $ScaleIPNetworks.Keys)
 	{
-		$scale = $ScaleCodeToIPInfo[$code]
+		$scale = $ScaleIPNetworks[$code]
 		if ($scale.ScaleBrand -and $scale.ScaleBrand -match 'bizerba')
 		{
 			$WindowsScales[$code] = $scale
 		}
 	}
 	$script:FunctionResults['WindowsScales'] = $WindowsScales
-	
-	# ==================== Build Reverse Lane Mapping: MachineName → LaneNum ====================
-	$MachineNameToLaneNum = @{ }
-	foreach ($kv in $LaneNumToMachineName.GetEnumerator())
-	{
-		$laneNum = $kv.Key
-		$machineName = $kv.Value
-		# Only add if the lane number matches 3 digits and machineName is not null/empty
-		if ($laneNum -match '^\d{3}$' -and $machineName)
-		{
-			$MachineNameToLaneNum[$machineName] = $laneNum
-		}
-	}
-	$script:FunctionResults['MachineNameToLaneNum'] = $MachineNameToLaneNum
 	
 	# GUI Update
 	if ($NodesHost -ne $null) { $NodesHost.Text = "Number of Servers: $NumberOfServers" }
@@ -2087,7 +2068,7 @@ function Get_Table_Aliases
 #   variations. Designed for remote auditing of VNC password status across all lanes.
 #
 # Parameters:
-#   - LaneNumToMachineName   [hashtable]: LaneNumber => MachineName mapping.
+#   - LaneMachines   [hashtable]: LaneNumber => MachineName mapping.
 #
 # Details:
 #   - Searches for UltraVNC.ini with any capitalization in both standard install folders.
@@ -2097,7 +2078,7 @@ function Get_Table_Aliases
 #   - Uses Write_Log for status, progress, and error messages.
 #
 # Usage:
-#   $LanePasswords = Get-AllLaneVNCPasswords -LaneNumToMachineName $LaneNumToMachineName
+#   $LanePasswords = Get-AllLaneVNCPasswords -LaneMachines $LaneMachines
 #
 # Author: Alex_C.T
 # ===================================================================================================
@@ -2106,11 +2087,11 @@ function Get_All_VNC_Passwords
 {
 	param (
 		[Parameter(Mandatory = $false)]
-		[hashtable]$LaneNumToMachineName,
+		[hashtable]$LaneMachines,
 		[Parameter(Mandatory = $false)]
-		[hashtable]$ScaleCodeToIPInfo,
+		[hashtable]$ScaleIPNetworks,
 		[Parameter(Mandatory = $false)]
-		[hashtable]$BackofficeNumToMachineName
+		[hashtable]$BackofficeMachines
 	)
 	
 	# Default VNC password for lanes, backoffices, and scales with fixed passwords (e.g., Ishida)
@@ -2126,10 +2107,10 @@ function Get_All_VNC_Passwords
 	# 1. Build main node list and tag brands for scales
 	$NodeList = @()
 	$BizerbaScales = @()
-	if ($LaneNumToMachineName) { $NodeList += $LaneNumToMachineName.Values | Where-Object { $_ } }
-	if ($ScaleCodeToIPInfo)
+	if ($LaneMachines) { $NodeList += $LaneMachines.Values | Where-Object { $_ } }
+	if ($ScaleIPNetworks)
 	{
-		foreach ($kv in $ScaleCodeToIPInfo.GetEnumerator())
+		foreach ($kv in $ScaleIPNetworks.GetEnumerator())
 		{
 			$scaleObj = $kv.Value
 			$ip = $null
@@ -2168,7 +2149,7 @@ function Get_All_VNC_Passwords
 			}
 		}
 	}
-	if ($BackofficeNumToMachineName) { $NodeList += $BackofficeNumToMachineName.Values | Where-Object { $_ } }
+	if ($BackofficeMachines) { $NodeList += $BackofficeMachines.Values | Where-Object { $_ } }
 	$NodeList = $NodeList | Sort-Object -Unique
 	
 	if (($NodeList.Count -eq 0) -and ($BizerbaScales.Count -eq 0)) { throw "No machines provided for password extraction." }
@@ -2586,48 +2567,27 @@ function Get_Remote_Machine_Info
 	Write_Log "`r`n==================== Starting Get_Remote_Machine_Info ====================`r`n" "blue"
 	
 	# Set up concurrent job and timeout parameters
-	$maxConcurrentJobs = 10
-	$wmiTimeoutSeconds = 5
-	$cimTimeoutSeconds = 10
-	$regTimeoutSeconds = 30
+	$maxConcurrentJobs = 25
+	$wmiTimeoutSeconds = 5 # WMI should be fast
+	$cimTimeoutSeconds = 10 # CIM should be fast
+	$regTimeoutSeconds = 30 # REG.exe is slower
 	
 	# Clear previous results
 	$script:LaneHardwareInfo = $null
 	$script:ScaleHardwareInfo = $null
 	$script:BackofficeHardwareInfo = $null
 	
-	# ============================
-	# MAPPING FROM FUNCTIONRESULTS
-	# ============================
+	# Build lists from FunctionResults (populate with Retrieve_Nodes first!)
+	$laneNames = $script:FunctionResults['LaneMachines'].Values | Where-Object { $_ } | Select-Object -Unique
+	$scaleObjs = $script:FunctionResults['ScaleIPNetworks'].Values
+	$boDict = $script:FunctionResults['BackofficeMachines'] # Key = BO num, Value = machine name
+	$boNums = $boDict.Keys | Sort-Object
+	$StoreNumber = $script:FunctionResults['StoreNumber'] # 3-digit, zero-padded store number
 	
-	# --- Lane mappings (see Retrieve_Nodes) ---
-	$LaneMachineNames = $script:FunctionResults['LaneMachineNames'] # List of all lane machine names
-	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName'] # '008' -> 'POS008'
-	$MachineNameToLaneNum = $script:FunctionResults['MachineNameToLaneNum'] # 'POS008' -> '008'
-	
-	# --- Scale mappings ---
-	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo'] # '800' -> [scaleObj]
-	# Compose scale object list for GUI and filtering
-	$scaleObjs = $ScaleCodeToIPInfo.Values
-	
-	# --- Backoffice mappings ---
-	$BackofficeNumToMachineName = $script:FunctionResults['BackofficeNumToMachineName'] # '902' -> 'BO902'
-	
-	# --- Store number ---
-	$StoreNumber = $script:FunctionResults['StoreNumber'] # Always 3-digit
-	
-	# --- DBsPath, needed for INI fallback ---
-	$DbsPath = $script:DbsPath
-	
-	# ===============================
-	# WINDOWS SCALE FILTERING
-	# (Only Bizerba for hardware info)
-	# ===============================
+	# Only keep Bizerba scales (Windows)
 	$windowsScaleObjs = $scaleObjs | Where-Object { $_.ScaleBrand -and $_.ScaleBrand -match 'bizerba' } | Sort-Object FullIP -Unique
 	
-	# ==========================
-	# NODE SELECTION: Pass lane numbers, scale objects, and BO numbers just like GUI expects
-	# ==========================
+	# Selection form - pass in only Windows Scales for "Scales"
 	$nodeSelection = Show_Node_Selection_Form -StoreNumber $StoreNumber `
 											  -NodeTypes @("Lane", "Scale", "Backoffice") `
 											  -Title "Select Nodes to Pull Hardware Info" `
@@ -2638,22 +2598,18 @@ function Get_Remote_Machine_Info
 		Write_Log "Get_Remote_Machine_Info cancelled by user." "yellow"
 		return $false
 	}
-	
-	# ==========================
-	# MATCH THE GUI OBJECTS
-	# ==========================
-	$selectedLanes = $nodeSelection.Lanes # Array of **lane numbers** (e.g. '008')
-	$selectedScales = $nodeSelection.Scales # Array of **scale objects**
-	$selectedBOs = $nodeSelection.Backoffices # Array of **BO numbers** (e.g. '902')
+	$selectedLanes = $nodeSelection.Lanes # array of lane machine names
+	$selectedScales = $nodeSelection.Scales # array of scale objects
+	$selectedBOs = $nodeSelection.Backoffices # array of BO numbers
 	
 	# Validation: No selections
-	if (($selectedLanes.Count -eq 0) -and ($selectedScales.Count -eq 0) -and ($selectedBOs.Count -eq 0))
+	if ($selectedLanes.Count -eq 0 -and $selectedScales.Count -eq 0 -and $selectedBOs.Count -eq 0)
 	{
 		Write_Log "No nodes selected. Operation aborted." "yellow"
 		return $false
 	}
 	
-	# Prepare export directories (unchanged)
+	# Prepare export directories
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
 	$scalesDir = Join-Path $desktop "Scales"
@@ -2663,36 +2619,7 @@ function Get_Remote_Machine_Info
 		if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory | Out-Null }
 	}
 	
-	# Collect all unique scale IPs/machine names only
-	$scaleRemotes = @()
-	foreach ($sel in $selectedScales)
-	{
-		if ($sel.ScaleBrand -and $sel.ScaleBrand -match 'bizerba' -and $sel.FullIP)
-		{
-			$scaleRemotes += $sel.FullIP
-		}
-	}
-	$scaleRemotes = $scaleRemotes | Sort-Object -Unique
-	
-	# Add scale remotes to TrustedHosts only
-	if ($scaleRemotes.Count -gt 0)
-	{
-		$currentTrusted = (Get-Item WSMan:\localhost\Client\TrustedHosts).Value
-		$currentList = if ([string]::IsNullOrEmpty($currentTrusted)) { @() }
-		else { $currentTrusted.Split(',') | ForEach-Object { $_.Trim() } }
-		$toAdd = $scaleRemotes | Where-Object { $_ -and ($currentList -notcontains $_) }
-		if ($toAdd.Count -gt 0)
-		{
-			$newList = $currentList + $toAdd
-			$newTrusted = ($newList | Sort-Object -Unique) -join ','
-			Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newTrusted -Force
-			Write_Log "Updated TrustedHosts with scales: $($toAdd -join ', ')" "cyan"
-		}
-	}
-	
-	# ===========================
-	# MAIN HARDWARE INFO LOOP
-	# ===========================
+	# Main hardware info processing loop
 	foreach ($section in @(
 			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt'; IsWindows = $true },
 			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt'; IsWindows = $null },
@@ -2707,11 +2634,7 @@ function Get_Remote_Machine_Info
 		$jobs = @()
 		$pending = @{ }
 		
-		# -------------------------------------------
-		# SELECTION OBJECT MAPPING BLOCK
-		# -------------------------------------------
-		
-		# For Scales: deduplicate and filter only Bizerba/Windows
+		# For Scales: deduplicate by FullIP, only process Bizerba (Windows) scales
 		if ($section.Name -eq 'Scales')
 		{
 			$uniqueWindowsScales = $section.Selected | Where-Object { $_.ScaleBrand -and $_.ScaleBrand -match 'bizerba' } | Sort-Object FullIP -Unique
@@ -2719,30 +2642,16 @@ function Get_Remote_Machine_Info
 		}
 		
 		# ----------- MAIN NODE LOOP -----------
-		
-		foreach ($sel in ($section.Selected | Sort-Object {
+		foreach ($remoteObj in ($section.Selected | Sort-Object {
 					if ($section.Name -eq 'Scales') { $_.FullIP }
 					else { $_ }
 				}))
 		{
-			# ==============================
-			# 1. Determine "remote" name
-			# ==============================
-			if ($section.Name -eq 'Lanes')
+			# For scales, use the FullIP as "remote"; for lanes/backoffices use name/number
+			if ($section.Name -eq 'Scales')
 			{
-				# $sel is a lane number, get machine name for this lane:
-				$laneNum = $sel
-				$remote = $laneNum
-				if ($LaneNumToMachineName.ContainsKey($laneNum)) { $remote = $LaneNumToMachineName[$laneNum] }
-				$resolvedRemote = $remote
-			}
-			elseif ($section.Name -eq 'Scales')
-			{
-				# $sel is a scale object
-				$remote = $sel.FullIP
-				$resolvedRemote = $remote
-				# For non-Windows skip (like Ishida)
-				$isBizerba = $sel.ScaleBrand -and $sel.ScaleBrand -match 'bizerba'
+				$remote = $remoteObj.FullIP
+				$isBizerba = $remoteObj.ScaleBrand -and $remoteObj.ScaleBrand -match 'bizerba'
 				if (-not $isBizerba)
 				{
 					$info = @{
@@ -2759,29 +2668,30 @@ function Get_Remote_Machine_Info
 					$results[$remote] = $info
 					Set-Variable -Name $($section.ResultsVar) -Value $results
 					$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-					$displayName = if ($sel.ScaleName) { "$($sel.ScaleName) ($remote)" }
+					$displayName = if ($remoteObj.ScaleName) { "$($remoteObj.ScaleName) ($remote)" }
 					else { $remote }
-					$infolines += "Machine Name: $displayName | [Hardware info unavailable] Error: $($info.Error)"
+					$infolines += "Machine Name: $displayName | [Hardware info unavailable]  Error: $($info.Error)"
 					Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
 					Write_Log "Skipped $displayName ($($section.Name)): $($info.Error)" "yellow"
 					continue
 				}
 			}
-			elseif ($section.Name -eq 'BackOffices')
+			else
 			{
-				# $sel is a backoffice terminal number, get machine name
-				$boNum = $sel
-				$remote = $boNum
-				$resolvedRemote = $boNum
-				if ($BackofficeNumToMachineName.ContainsKey($boNum)) { $resolvedRemote = $BackofficeNumToMachineName[$boNum] }
+				$remote = $remoteObj
+			}
+			
+			# --------- FIX: RESOLVE REMOTE HOST FOR BOs (AND PASS IT AS PARAMETER) ---------
+			if ($section.Name -eq 'BackOffices' -and $boDict -and $boDict.ContainsKey($remote) -and $boDict[$remote])
+			{
+				$resolvedRemote = $boDict[$remote]
 			}
 			else
 			{
-				$remote = $sel
 				$resolvedRemote = $remote
 			}
 			
-			$job = Start-Job -ArgumentList $remote, $resolvedRemote, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $DbsPath, $StoreNumber, $section, $boDict, $credBizerba, $credBiyerba `
+			$job = Start-Job -ArgumentList $remote, $resolvedRemote, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $DbsPath, $StoreNumber, $section, $boDict `
 							 -ScriptBlock {
 				param (
 					$remote,
@@ -2792,9 +2702,7 @@ function Get_Remote_Machine_Info
 					$DbsPath,
 					$StoreNumber,
 					$section,
-					$boDict,
-					$credBizerba,
-					$credBiyerba
+					$boDict
 				)
 				$info = [PSCustomObject]@{
 					Success			    = $false
@@ -2828,56 +2736,27 @@ function Get_Remote_Machine_Info
 				else
 				{
 					$wmiJob = Start-Job -ScriptBlock {
-						param ($resolvedRemote,
-							$credBizerba,
-							$credBiyerba,
-							$isScale)
+						param ($resolvedRemote)
 						try
 						{
-							# Use credentials if scale; otherwise default call
-							if ($isScale)
-							{
-								$sys = $null
-								try
-								{
-									$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $resolvedRemote -Credential $credBizerba -ErrorAction SilentlyContinue
-								}
-								catch { }
-								if (-not $sys)
-								{
-									$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $resolvedRemote -Credential $credBiyerba -ErrorAction SilentlyContinue
-								}
-								if ($sys)
-								{
-									$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $resolvedRemote -Credential $sys.PSComputerName -ErrorAction SilentlyContinue | Select-Object -First 1
-									$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $resolvedRemote -Credential $sys.PSComputerName -ErrorAction SilentlyContinue
-								}
+							$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $resolvedRemote -ErrorAction Stop
+							$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $resolvedRemote -ErrorAction Stop | Select-Object -First 1
+							$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $resolvedRemote -ErrorAction Stop
+							[PSCustomObject]@{
+								SystemManufacturer = $sys.Manufacturer
+								SystemProductName  = $sys.Model
+								CPU			       = $cpu.Name
+								RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
+								OSInfo			   = "$($os.Caption) ($($os.Version))"
+								Method			   = "WMI"
 							}
-							else
-							{
-								$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $resolvedRemote -ErrorAction SilentlyContinue
-								$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $resolvedRemote -ErrorAction SilentlyContinue | Select-Object -First 1
-								$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $resolvedRemote -ErrorAction SilentlyContinue
-							}
-							if ($sys -and $sys.Manufacturer -and $sys.Model)
-							{
-								[PSCustomObject]@{
-									SystemManufacturer = $sys.Manufacturer
-									SystemProductName  = $sys.Model
-									CPU			       = $cpu.Name
-									RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
-									OSInfo			   = "$($os.Caption) ($($os.Version))"
-									Method			   = "WMI"
-								}
-							}
-							else { $null }
 						}
 						catch { $null }
-					} -ArgumentList $resolvedRemote, $credBizerba, $credBiyerba, ($section.Name -eq 'Scales')
+					} -ArgumentList $resolvedRemote
 					
 					if (Wait-Job $wmiJob -Timeout $wmiTimeoutSeconds)
 					{
-						$wmiResult = Receive-Job $wmiJob 2>$null
+						$wmiResult = Receive-Job $wmiJob
 						Remove-Job $wmiJob -Force -ErrorAction SilentlyContinue
 					}
 					else
@@ -2896,66 +2775,35 @@ function Get_Remote_Machine_Info
 						$info.Method = "WMI"
 						$info.Success = $true
 					}
-					else
-					{
-						$info.Error = "WMI failed (credential or access issue)"
-					}
 				}
 				
 				# -- CIM Method -- (timeout enforced)
 				if (-not $info.Success)
 				{
 					$cimJob = Start-Job -ScriptBlock {
-						param ($resolvedRemote,
-							$credBizerba,
-							$credBiyerba,
-							$isScale)
+						param ($resolvedRemote)
 						try
 						{
-							$session = $null
-							if ($isScale)
-							{
-								try
-								{
-									$session = New-CimSession -ComputerName $resolvedRemote -Credential $credBizerba -ErrorAction SilentlyContinue
-								}
-								catch { }
-								if (-not $session)
-								{
-									$session = New-CimSession -ComputerName $resolvedRemote -Credential $credBiyerba -ErrorAction SilentlyContinue
-								}
+							$session = New-CimSession -ComputerName $resolvedRemote -ErrorAction Stop
+							$sys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem
+							$cpu = Get-CimInstance -CimSession $session -ClassName Win32_Processor | Select-Object -First 1
+							$os = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem
+							Remove-CimSession $session
+							[PSCustomObject]@{
+								SystemManufacturer = $sys.Manufacturer
+								SystemProductName  = $sys.Model
+								CPU			       = $cpu.Name
+								RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
+								OSInfo			   = "$($os.Caption) ($($os.Version))"
+								Method			   = "CIM"
 							}
-							else
-							{
-								$session = New-CimSession -ComputerName $resolvedRemote -ErrorAction SilentlyContinue
-							}
-							if ($session)
-							{
-								$sys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem 2>$null
-								$cpu = Get-CimInstance -CimSession $session -ClassName Win32_Processor 2>$null | Select-Object -First 1
-								$os = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem 2>$null
-								Remove-CimSession $session 2>$null
-								if ($sys -and $sys.Manufacturer -and $sys.Model)
-								{
-									[PSCustomObject]@{
-										SystemManufacturer = $sys.Manufacturer
-										SystemProductName  = $sys.Model
-										CPU			       = $cpu.Name
-										RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
-										OSInfo			   = "$($os.Caption) ($($os.Version))"
-										Method			   = "CIM"
-									}
-								}
-								else { $null }
-							}
-							else { $null }
 						}
 						catch { $null }
-					} -ArgumentList $resolvedRemote, $credBizerba, $credBiyerba, ($section.Name -eq 'Scales')
+					} -ArgumentList $resolvedRemote
 					
 					if (Wait-Job $cimJob -Timeout $cimTimeoutSeconds)
 					{
-						$cimResult = Receive-Job $cimJob 2>$null
+						$cimResult = Receive-Job $cimJob
 						Remove-Job $cimJob -Force -ErrorAction SilentlyContinue
 					}
 					else
@@ -2974,26 +2822,16 @@ function Get_Remote_Machine_Info
 						$info.Method = "CIM"
 						$info.Success = $true
 					}
-					else
-					{
-						$info.Error = "CIM failed (credential or access issue)"
-					}
 				}
 				
-				# -- REG Method (wrapped for timeout and try/catch) --
+				# -- REG Method -- (timeout enforced)
 				if (-not $info.Success)
 				{
-					$regResult = $null
-					try
-					{
-						$regJob = Start-Job -ScriptBlock {
-							param ($resolvedRemote,
-								$originalState,
-								$credBizerba,
-								$credBiyerba,
-								$isScale)
-							
-							# Ensure RemoteRegistry service is running
+					$regJob = Start-Job -ScriptBlock {
+						param ($resolvedRemote,
+							$originalState)
+						try
+						{
 							if ($originalState.StartType -ne "AUTO_START" -and $originalState.StartType -ne "DEMAND_START")
 							{
 								sc.exe "\\$resolvedRemote" config RemoteRegistry start= demand | Out-Null
@@ -3003,116 +2841,66 @@ function Get_Remote_Machine_Info
 								sc.exe "\\$resolvedRemote" start RemoteRegistry | Out-Null
 								Start-Sleep -Milliseconds 500
 							}
-							
-							# Registry queries wrapped in try/catch
-							try
+							$manuf = reg.exe query "\\$resolvedRemote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer 2>&1
+							$manufMatch = [regex]::Match($manuf, 'SystemManufacturer\s+REG_SZ\s+(.+)$')
+							$prod = reg.exe query "\\$resolvedRemote\HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2>&1
+							$prodMatch = [regex]::Match($prod, 'SystemProductName\s+REG_SZ\s+(.+)$')
+							$cpu = reg.exe query "\\$resolvedRemote\HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2>&1
+							$cpuMatch = [regex]::Match($cpu, 'ProcessorNameString\s+REG_SZ\s+(.+)$')
+							$osKey = "\\$resolvedRemote\HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+							$osName = reg.exe query $osKey /v ProductName 2>&1
+							$osVer = reg.exe query $osKey /v CurrentVersion 2>&1
+							$osBuild = reg.exe query $osKey /v DisplayVersion 2>&1
+							$osNameMatch = [regex]::Match($osName, 'ProductName\s+REG_SZ\s+(.+)$')
+							$osVerMatch = [regex]::Match($osVer, 'CurrentVersion\s+REG_SZ\s+(.+)$')
+							$osBuildMatch = [regex]::Match($osBuild, 'DisplayVersion\s+REG_SZ\s+(.+)$')
+							$SystemManufacturer = if ($manufMatch.Success) { $manufMatch.Groups[1].Value.Trim() }
+							else { $null }
+							$SystemProductName = if ($prodMatch.Success) { $prodMatch.Groups[1].Value.Trim() }
+							else { $null }
+							$CPU = if ($cpuMatch.Success) { $cpuMatch.Groups[1].Value.Trim() }
+							else { $null }
+							if ($osNameMatch.Success)
 							{
-								# Use Invoke-Command with credential if scale, else normal call
-								if ($isScale)
-								{
-									try
-									{
-										$session = New-PSSession -ComputerName $resolvedRemote -Credential $credBizerba -ErrorAction SilentlyContinue
-									}
-									catch { }
-									if (-not $session)
-									{
-										$session = New-PSSession -ComputerName $resolvedRemote -Credential $credBiyerba -ErrorAction SilentlyContinue
-									}
-								}
-								else
-								{
-									$session = New-PSSession -ComputerName $resolvedRemote -ErrorAction SilentlyContinue
-								}
-								if ($session)
-								{
-									$result = Invoke-Command -Session $session -ScriptBlock {
-										try
-										{
-											$manuf = Get-ItemProperty -Path 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemManufacturer -ErrorAction SilentlyContinue
-											$prod = Get-ItemProperty -Path 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemProductName -ErrorAction SilentlyContinue
-											$cpu = Get-ItemProperty -Path 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction SilentlyContinue
-											$osKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
-											$osName = Get-ItemProperty -Path $osKey -Name ProductName -ErrorAction SilentlyContinue
-											$osVer = Get-ItemProperty -Path $osKey -Name CurrentVersion -ErrorAction SilentlyContinue
-											$osBuild = Get-ItemProperty -Path $osKey -Name DisplayVersion -ErrorAction SilentlyContinue
-											
-											[PSCustomObject]@{
-												SystemManufacturer = $manuf.SystemManufacturer
-												SystemProductName  = $prod.SystemProductName
-												CPU			       = $cpu.ProcessorNameString
-												OSInfo			   = "$($osName.ProductName) ($($osVer.CurrentVersion)" + (if ($osBuild) { ", $($osBuild.DisplayVersion))" } else { ")" })
-												Method			   = "REG"
-												Success		       = $true
-												Error			   = $null
-											}
-										}
-										catch
-										{
-											[PSCustomObject]@{
-												SystemManufacturer = $null
-												SystemProductName  = $null
-												CPU			       = $null
-												OSInfo			   = $null
-												Method			   = "REG"
-												Success		       = $false
-												Error			   = $_.Exception.Message
-											}
-										}
-									} 2>$null
-									
-									Remove-PSSession $session -ErrorAction SilentlyContinue
-									return $result
-								}
-								else
-								{
-									[PSCustomObject]@{
-										SystemManufacturer = $null
-										SystemProductName  = $null
-										CPU			       = $null
-										OSInfo			   = $null
-										Method			   = "REG"
-										Success		       = $false
-										Error			   = "Session creation failed (credential or access issue)"
-									}
-								}
+								$osString = $osNameMatch.Groups[1].Value.Trim()
+								if ($osVerMatch.Success) { $osString += " (" + $osVerMatch.Groups[1].Value.Trim() }
+								if ($osBuildMatch.Success) { $osString += ", " + $osBuildMatch.Groups[1].Value.Trim() + ")" }
+								elseif ($osVerMatch.Success) { $osString += ")" }
 							}
-							catch
-							{
-								[PSCustomObject]@{
-									SystemManufacturer = $null
-									SystemProductName  = $null
-									CPU			       = $null
-									OSInfo			   = $null
-									Method			   = "REG"
-									Success		       = $false
-									Error			   = "REG fallback failed silently"
-								}
+							else { $osString = $null }
+							[PSCustomObject]@{
+								SystemManufacturer = $SystemManufacturer
+								SystemProductName  = $SystemProductName
+								CPU			       = $CPU
+								OSInfo			   = $osString
+								Method			   = "REG"
+								Success		       = ($SystemManufacturer -and $SystemProductName) # Only true if BOTH are found!
+								Error			   = if (!($SystemManufacturer -and $SystemProductName)) { "REG query did not return complete info" } else { $null }
 							}
-						} -ArgumentList $resolvedRemote, $originalState, $credBizerba, $credBiyerba, ($section.Name -eq 'Scales')
-						
-						if (Wait-Job $regJob -Timeout $regTimeoutSeconds)
-						{
-							$regResult = Receive-Job $regJob 2>$null
-							Remove-Job $regJob -Force -ErrorAction SilentlyContinue
 						}
-						else
+						catch
 						{
-							Stop-Job $regJob -ErrorAction SilentlyContinue
-							Remove-Job $regJob -Force -ErrorAction SilentlyContinue
-							$regResult = [PSCustomObject]@{
+							[PSCustomObject]@{
 								SystemManufacturer = $null
 								SystemProductName  = $null
 								CPU			       = $null
 								OSInfo			   = $null
 								Method			   = "REG"
 								Success		       = $false
-								Error			   = "REG query timed out after $regTimeoutSeconds seconds."
+								Error			   = "REG fallback failed: $_"
 							}
 						}
-					}
-					catch
+					} -ArgumentList $resolvedRemote, $originalState
+					
+					if (Wait-Job $regJob -Timeout $regTimeoutSeconds)
 					{
+						$regResult = Receive-Job $regJob
+						Remove-Job $regJob -Force -ErrorAction SilentlyContinue
+					}
+					else
+					{
+						Stop-Job $regJob -ErrorAction SilentlyContinue
+						Remove-Job $regJob -Force -ErrorAction SilentlyContinue
 						$regResult = [PSCustomObject]@{
 							SystemManufacturer = $null
 							SystemProductName  = $null
@@ -3120,11 +2908,10 @@ function Get_Remote_Machine_Info
 							OSInfo			   = $null
 							Method			   = "REG"
 							Success		       = $false
-							Error			   = "REG method failed silently"
+							Error			   = "REG query timed out after $regTimeoutSeconds seconds."
 						}
 					}
-					
-					# Set info from regResult no matter what
+					# Set all info, including Success
 					$info.SystemManufacturer = $regResult.SystemManufacturer
 					$info.SystemProductName = $regResult.SystemProductName
 					$info.CPU = $regResult.CPU
@@ -3132,85 +2919,179 @@ function Get_Remote_Machine_Info
 					$info.OSInfo = $regResult.OSInfo
 					$info.Method = "REG"
 					$info.Error = $regResult.Error
-					$info.Success = $regResult.Success
+					$info.Success = $regResult.Success # <- CRITICAL
+					# Inline: Restore service state
+					if ($originalState.State -ne "RUNNING") { sc.exe "\\$resolvedRemote" stop RemoteRegistry | Out-Null }
+					if ($originalState.StartType) { sc.exe "\\$resolvedRemote" config RemoteRegistry start= $originalState.StartType | Out-Null }
 				}
-				
-				# --- INI Block (for Lanes/BackOffices), ALWAYS RUN ---
-				$returnInfo = [PSCustomObject]@{
-					Machine			    = $remote
-					MachineNameOverride = $info.MachineNameOverride
-					Info			    = $info
-					IniFound		    = $false
-					IniPath			    = $null
-				}
-				
-				try
+				$info.Error = "Entered Lane INI fallback" # Temporary; will overwrite if actual error
+				# -- INI Fallback for Lanes (remote share) --
+				if (-not $info.Success -and $section.Name -eq 'Lanes')
 				{
-					if ($section.Name -in @('Lanes', 'BackOffices'))
+					$info.Error = "Entered Lane INI fallback" # Temporary; will overwrite if actual error
+					try
 					{
-						if ($section.Name -eq 'Lanes')
+						# Robust: always extract the last 3 digits (e.g., "POS001", "Lane03", "001")
+						if ($remote -match '(\d{3})$') { $laneNum = $matches[1] }
+						else { $laneNum = $remote }
+						$pattern = "INFO_${StoreNumber}${laneNum}_SMSStart.ini"
+						$remoteDbsPath = "\\$resolvedRemote\storeman\office\dbs"
+						$iniFile = Get-ChildItem -Path $remoteDbsPath -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+						if ($iniFile)
 						{
-							if ($remote -match '(\d{3})$') { $laneNum = $matches[1] }
-							else { $laneNum = $remote }
-							$pattern = "INFO_${StoreNumber}${laneNum}_SMSStart.ini"
-							$iniPath = Join-Path "\\$resolvedRemote\storeman\office\dbs" $pattern
-						}
-						else
-						{
-							$pattern = "INFO_${StoreNumber}${remote}_SMSStart.ini"
-							$iniPath = Join-Path $DbsPath $pattern
-						}
-						
-						$iniFile = Get-ChildItem -Path (Split-Path $iniPath) -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-						if ($iniFile -and (Test-Path $iniFile.FullName))
-						{
-							$returnInfo.IniFound = $true
-							$returnInfo.IniPath = $iniFile.FullName
-							
-							$iniLines = Get-Content $iniFile.FullName -Encoding UTF8 -ErrorAction SilentlyContinue
+							$iniLines = Get-Content $iniFile.FullName
 							$sections = @{ }
-							$curSec = ""
+							$currentSection = ""
 							foreach ($line in $iniLines)
 							{
 								if ($line -match '^\[(.+)\]$')
 								{
-									$curSec = $matches[1]
-									$sections[$curSec] = @{ }
+									$currentSection = $matches[1]
+									$sections[$currentSection] = @{ }
 								}
-								elseif ($line -match '^\s*([^=]+?)\s*=\s*(.*)$' -and $curSec)
+								elseif ($line -match '^\s*([^=]+?)\s*=\s*(.*)$' -and $currentSection)
 								{
-									$sections[$curSec][$matches[1].Trim()] = $matches[2].Trim()
+									$key = $matches[1].Trim()
+									$val = $matches[2].Trim()
+									$sections[$currentSection][$key] = $val
 								}
 							}
-							
-							if ($info.CPU -eq "Unknown" -and $sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores'))
-							{
-								$cores = $sections['PROCESSOR']['Cores']
-								$arch = $sections['PROCESSOR']['Architecture']
-								$info.CPU = "$cores cores" + ($(if ($arch) { " ($arch)" }
-										else { "" }))
-							}
-							if ($info.RAM -eq "Unknown" -and $sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
-							{
-								$ramMb = $sections['Memory']['PhysicalMemory']
-								$info.RAM = $(if ($ramMb -match '^\d+$') { "{0:N1}" -f ([double]$ramMb / 1024) }
-									else { $ramMb })
-							}
-							if ($info.OSInfo -eq "Unknown" -and $sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
-							{
-								$info.OSInfo = $sections['OperatingSystem']['ProductName']
-							}
-							if ($sections.ContainsKey('ORIGIN') -and $sections['ORIGIN'].ContainsKey('ComputerName'))
+							if ($sections.ContainsKey('ORIGIN') -and $sections['ORIGIN'].ContainsKey('ComputerName') -and $sections['ORIGIN']['ComputerName'])
 							{
 								$info.MachineNameOverride = $sections['ORIGIN']['ComputerName']
 							}
+							else
+							{
+								$info.MachineNameOverride = $laneNum
+							}
+							$info.SystemManufacturer = "Unknown"
+							$info.SystemProductName = "Unknown"
+							if ($sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores') -and $sections['PROCESSOR'].ContainsKey('Architecture'))
+							{
+								$cores = $sections['PROCESSOR']['Cores']
+								$arch = $sections['PROCESSOR']['Architecture']
+								$info.CPU = "$cores cores ($arch)"
+							}
+							else { $info.CPU = "Unknown" }
+							if ($sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
+							{
+								$ramMb = $sections['Memory']['PhysicalMemory']
+								if ($ramMb -match '^\d+$') { $info.RAM = "{0:N1}" -f ([double]$ramMb / 1024) }
+								else { $info.RAM = "Unknown" }
+							}
+							else { $info.RAM = "Unknown" }
+							if ($sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
+							{
+								$info.OSInfo = $sections['OperatingSystem']['ProductName']
+							}
+							else { $info.OSInfo = "Unknown" }
+							$info.Method = "INI"
+							$info.Success = $true
+							$info.Error = "Read from $($iniFile.FullName)"
+						}
+						else
+						{
+							$info.Error = "No fallback INI file found for $remote ($pattern, path: $remoteDbsPath)"
+							$info.Method = "INI"
 						}
 					}
+					catch
+					{
+						$info.Error = "Lane INI fallback failed: $_"
+						$info.Method = "INI"
+					}
 				}
-				catch { }
-				
-				return $returnInfo
-			}
+				# -- INI Fallback for Backoffices (local share) --
+				if (-not $info.Success -and $section.Name -eq 'BackOffices')
+				{
+					try
+					{
+						$boNum = $remote
+						$pattern = "INFO_${StoreNumber}${boNum}_SMSStart.ini"
+						$searchPath = Join-Path $DbsPath $pattern
+						$iniFile = Get-ChildItem -Path $DbsPath -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+						if ($iniFile)
+						{
+							$iniLines = Get-Content $iniFile.FullName
+							$sections = @{ }
+							$currentSection = ""
+							foreach ($line in $iniLines)
+							{
+								if ($line -match '^\[(.+)\]$')
+								{
+									$currentSection = $matches[1]
+									$sections[$currentSection] = @{ }
+								}
+								elseif ($line -match '^\s*([^=]+?)\s*=\s*(.*)$' -and $currentSection)
+								{
+									$key = $matches[1].Trim()
+									$val = $matches[2].Trim()
+									$sections[$currentSection][$key] = $val
+								}
+							}
+							# Machine Name: Prefer ComputerName in ORIGIN, else boDict, else numeric
+							if ($sections.ContainsKey('ORIGIN') -and $sections['ORIGIN'].ContainsKey('ComputerName') -and $sections['ORIGIN']['ComputerName'])
+							{
+								$realMachineName = $sections['ORIGIN']['ComputerName']
+							}
+							elseif ($boDict -and $boDict.ContainsKey($boNum) -and $boDict[$boNum])
+							{
+								$realMachineName = $boDict[$boNum]
+							}
+							else
+							{
+								$realMachineName = $remote
+							}
+							$info.MachineNameOverride = $realMachineName
+							# Manufacturer/Model
+							$info.SystemManufacturer = "Unknown"
+							$info.SystemProductName = "Unknown"
+							# CPU
+							if ($sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores') -and $sections['PROCESSOR'].ContainsKey('Architecture'))
+							{
+								$cores = $sections['PROCESSOR']['Cores']
+								$arch = $sections['PROCESSOR']['Architecture']
+								$info.CPU = "$cores cores ($arch)"
+							}
+							else { $info.CPU = "Unknown" }
+							# RAM in GB, 1 decimal
+							if ($sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
+							{
+								$ramMb = $sections['Memory']['PhysicalMemory']
+								if ($ramMb -match '^\d+$') { $info.RAM = "{0:N1}" -f ([double]$ramMb / 1024) }
+								else { $info.RAM = "Unknown" }
+							}
+							else { $info.RAM = "Unknown" }
+							# OS -- ADDED: OSInfo from INI [OperatingSystem] section, ProductName key
+							if ($sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
+							{
+								$info.OSInfo = $sections['OperatingSystem']['ProductName']
+							}
+							else { $info.OSInfo = "Unknown" }
+							$info.Method = "INI"
+							$info.Success = $true
+							$info.Error = "Read from $($iniFile.FullName)"
+						}
+						else
+						{
+							$info.Error = "No fallback INI file found for $remote ($pattern, full path: $searchPath)"
+							$info.Method = "INI"
+						}
+					}
+					catch
+					{
+						$info.Error = "INI fallback failed: $_"
+						$info.Method = "INI"
+					}
+				}
+				# Always return as PSCustomObject and expose MachineNameOverride at the top
+				return [PSCustomObject]@{
+					Machine			    = $remote
+					MachineNameOverride = $info.MachineNameOverride
+					Info			    = $info
+				}
+			} # End ScriptBlock
+			
 			$jobs += $job
 			$pending[$job.Id] = $remote
 			
@@ -3222,30 +3103,15 @@ function Get_Remote_Machine_Info
 				{
 					foreach ($j in $done)
 					{
-						$result = Receive-Job $j 2>$null
+						$result = Receive-Job $j
 						$remoteName = $pending[$j.Id]
 						$info = $result.Info
-						# --- INI Debug output ---
-						if ($result.PSObject.Properties.Name -contains 'IniFound')
-						{
-							if ($section.Name -in @('Lanes', 'BackOffices'))
-							{
-								if ($result.IniFound)
-								{
-									Write_Log "[INI] Found INI for $($section.Name) $remoteName at $($result.IniPath)" "cyan"
-								}
-								else
-								{
-									Write_Log "[INI] No INI found for $($section.Name) $remoteName" "darkyellow"
-								}
-							}
-						}
 						# Inline: Restore if not done in job (edge case)
 						$originalState = $result.OriginalState
 						if ($originalState)
 						{
-							if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null 2>$null }
-							if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null 2>$null }
+							if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null }
+							if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null }
 						}
 						# Determine display name (MachineNameOverride logic, supports serialization)
 						if ($section.Name -eq 'BackOffices')
@@ -3260,9 +3126,9 @@ function Get_Remote_Machine_Info
 							{
 								$boName = $info.MachineNameOverride
 							}
-							elseif ($BackofficeNumToMachineName -and $BackofficeNumToMachineName.ContainsKey($boNum) -and $BackofficeNumToMachineName[$boNum])
+							elseif ($boDict -and $boDict.ContainsKey($boNum) -and $boDict[$boNum])
 							{
-								$boName = $BackofficeNumToMachineName[$boNum]
+								$boName = $boDict[$boNum]
 							}
 							else
 							{
@@ -3296,7 +3162,7 @@ function Get_Remote_Machine_Info
 						}
 						elseif ($info.Error)
 						{
-							$line += " [Hardware info unavailable] Error: $($info.Error)"
+							$line += " [Hardware info unavailable]  Error: $($info.Error)"
 							$line += " | Method: $($info.Method)"
 							Write_Log "Processed $displayName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
 						}
@@ -3324,29 +3190,14 @@ function Get_Remote_Machine_Info
 			foreach ($j in $jobs)
 			{
 				$remoteName = $pending[$j.Id]
-				$result = Receive-Job $j 2>$null
+				$result = Receive-Job $j
 				$info = $result.Info
-				# --- INI Debug output ---
-				if ($result.PSObject.Properties.Name -contains 'IniFound')
-				{
-					if ($section.Name -in @('Lanes', 'BackOffices'))
-					{
-						if ($result.IniFound)
-						{
-							Write_Log "[INI] Found INI for $($section.Name) $remoteName at $($result.IniPath)" "cyan"
-						}
-						else
-						{
-							Write_Log "[INI] No INI found for $($section.Name) $remoteName" "darkyellow"
-						}
-					}
-				}
 				# --- Restore RemoteRegistry state if needed ---
 				$originalState = $result.OriginalState
 				if ($originalState)
 				{
-					if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null 2>$null }
-					if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null 2>$null }
+					if ($originalState.StartType) { sc.exe "\\$remoteName" config RemoteRegistry start= $originalState.StartType | Out-Null }
+					if ($originalState.State -ne "RUNNING") { sc.exe "\\$remoteName" stop RemoteRegistry | Out-Null }
 				}
 				if ($section.Name -eq 'BackOffices')
 				{
@@ -3360,9 +3211,9 @@ function Get_Remote_Machine_Info
 					{
 						$boName = $info.MachineNameOverride
 					}
-					elseif ($BackofficeNumToMachineName -and $BackofficeNumToMachineName.ContainsKey($boNum) -and $BackofficeNumToMachineName[$boNum])
+					elseif ($boDict -and $boDict.ContainsKey($boNum) -and $boDict[$boNum])
 					{
-						$boName = $BackofficeNumToMachineName[$boNum]
+						$boName = $boDict[$boNum]
 					}
 					else
 					{
@@ -3396,7 +3247,7 @@ function Get_Remote_Machine_Info
 				}
 				elseif ($info.Error)
 				{
-					$line += " [Hardware info unavailable] Error: $($info.Error)"
+					$line += " [Hardware info unavailable]  Error: $($info.Error)"
 					$line += " | Method: $($info.Method)"
 					Write_Log "Processed $displayName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
 				}
@@ -3442,7 +3293,16 @@ function Get_Remote_Machine_Info
 	if (Get-Variable -Name BOInfoLines -Scope Local -ErrorAction SilentlyContinue) { $boLines = Get-Variable -Name BOInfoLines -ValueOnly }
 	else { $boLines = @() }
 	
-	Write_Log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
+	if (($laneLines.Count -gt 0) -or ($scaleLines.Count -gt 0) -or ($boLines.Count -gt 0))
+	{
+		Write_Log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
+		return $true
+	}
+	else
+	{
+		Write_Log "`r`n==================== Get_Remote_Machine_Info Completed (No Data) ====================" "blue"
+		return $false
+	}
 }
 
 # ===================================================================================================
@@ -4040,17 +3900,12 @@ function Process_Lanes
 	# ----------------------------------------
 	# Check for available Lane Machines
 	# ----------------------------------------
-	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-	if (-not $LaneNumToMachineName -or $LaneNumToMachineName.Count -eq 0)
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	if (-not $LaneMachines -or $LaneMachines.Count -eq 0)
 	{
 		Write_Log "No lanes available. Please retrieve nodes first." "red"
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
-	}
-	$MachineNameToLaneNum = $script:FunctionResults['MachineNameToLaneNum']
-	if (-not $MachineNameToLaneNum)
-	{
-		$MachineNameToLaneNum = @{ }
 	}
 	
 	# ----------------------------------------
@@ -4117,13 +3972,9 @@ function Process_Lanes
 				Write_Log "Could not get DB info for lane $LaneNumber. Skipping." "yellow"
 				continue
 			}
-			if ($MachineNameToLaneNum -and $MachineNameToLaneNum.ContainsKey($LaneNumber))
-			{
-				$laneNum = $MachineNameToLaneNum[$LaneNumber]
-			}
-			$LaneLocalPath = Join-Path $OfficePath ("XF" + $StoreNumber + $laneNum)
 			$machineName = $laneInfo['MachineName']
-			# Write_Log "Protocol not attempted (file-based fallback used for all lanes) on $machineName." "gray"
+			$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
+			Write_Log "Protocol not attempted (file-based fallback used for all lanes) on $machineName." "gray"
 			if (Test-Path $LaneLocalPath)
 			{
 				Write_Log "Writing Lane_Database_Maintenance.sqi to Lane $LaneNumber ($machineName)..." "blue"
@@ -4131,7 +3982,7 @@ function Process_Lanes
 				{
 					Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
 					Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-					Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file copy)" "green"
+					Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file fallback)" "green"
 					if (-not ($script:ProcessedLanes -contains $LaneNumber))
 					{
 						$script:ProcessedLanes += $LaneNumber
@@ -4163,11 +4014,7 @@ function Process_Lanes
 			$machineName = $laneInfo['MachineName']
 			$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
 			$tcpConnStr = $laneInfo['TcpConnStr']
-			if ($MachineNameToLaneNum -and $MachineNameToLaneNum.ContainsKey($LaneNumber))
-			{
-				$laneNum = $MachineNameToLaneNum[$LaneNumber]
-			}
-			$LaneLocalPath = Join-Path $OfficePath ("XF" + $StoreNumber + $laneNum)
+			$LaneLocalPath = "$OfficePath\XF${StoreNumber}${LaneNumber}"
 			
 			# Get protocol for this lane
 			$laneKey = $LaneNumber.PadLeft(3, '0')
@@ -4177,15 +4024,13 @@ function Process_Lanes
 			elseif ($protocolType -eq "TCP") { $workingConnStr = $tcpConnStr }
 			
 			# DEBUG: Show actual conn string to log for this lane
-			if ([string]::IsNullOrEmpty($protocolType)) { $protocolType = "File" }
-			if ([string]::IsNullOrEmpty($workingConnStr)) { $workingConnStr = "File" }
 			Write_Log "Lane $LaneNumber uses protocol: $protocolType" "gray"
 			Write_Log "Lane $LaneNumber connection string: $workingConnStr" "gray"
 			
 			# If protocol not ready, fallback to file
 			if (-not $protocolType -or $protocolType -eq "File" -or -not $workingConnStr)
 			{
-				Write_Log "Protocol not ready or unavailable for $machineName. Skipping protocol and using file copy." "yellow"
+				Write_Log "Protocol not ready or unavailable for $machineName. Skipping protocol and using file fallback." "yellow"
 				if (Test-Path $LaneLocalPath)
 				{
 					Write_Log "`r`nProcessing $machineName using file fallback..." "blue"
@@ -4195,7 +4040,7 @@ function Process_Lanes
 					{
 						Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
 						Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-						Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file copy)" "green"
+						Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file fallback)" "green"
 						if (-not ($script:ProcessedLanes -contains $LaneNumber))
 						{
 							$script:ProcessedLanes += $LaneNumber
@@ -4332,14 +4177,14 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 			# Fallback: Classic file-based method
 			if (Test-Path $LaneLocalPath)
 			{
-				Write_Log "`r`nProcessing $machineName using file copy..." "blue"
+				Write_Log "`r`nProcessing $machineName using file fallback..." "blue"
 				Write_Log "Lane path found: $LaneLocalPath" "blue"
 				Write_Log "Writing Lane_Database_Maintenance.sqi to Lane..." "blue"
 				try
 				{
 					Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
 					Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-					Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file copy)" "green"
+					Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file fallback)" "green"
 					if (-not ($script:ProcessedLanes -contains $LaneNumber))
 					{
 						$script:ProcessedLanes += $LaneNumber
@@ -4642,19 +4487,19 @@ function Update_Lane_Config
 	{
 		try
 		{
-			$LaneMachineNames = $script:FunctionResults['LaneMachineNames']
-			if ($LaneMachineNames -and $LaneMachineNames.Count -gt 0)
+			$LaneContents = $script:FunctionResults['LaneContents']
+			if ($LaneContents -and $LaneContents.Count -gt 0)
 			{
-				$Lanes = $LaneMachineNames
+				$Lanes = $LaneContents
 			}
 			else
 			{
-				throw "LaneMachineNames is empty or not available."
+				throw "LaneContents is empty or not available."
 			}
 		}
 		catch
 		{
-			Write_Log "Failed to retrieve LaneMachineNames: $_. Falling back to user-selected lanes." "yellow"
+			Write_Log "Failed to retrieve LaneContents: $_. Falling back to user-selected lanes." "yellow"
 			$processAllLanes = $false
 		}
 	}
@@ -4744,7 +4589,7 @@ DROP TABLE Ter_Load;
 		}
 		else
 		{
-			$MachineName = $script:FunctionResults['LaneNumToMachineName'][$laneNumber]
+			$MachineName = $script:FunctionResults['LaneMachines'][$laneNumber]
 			if (-not $MachineName) { $MachineName = "POS${laneNumber}" }
 			Write_Log "Lane #${laneNumber}: Fallback machine name '$MachineName'" "yellow"
 		}
@@ -5020,20 +4865,20 @@ function Pump_Tables
 	$Type = $selection.Type
 	$Lanes = $selection.Lanes
 	
-	# If "All Lanes" is selected, attempt to retrieve LaneMachineNames
+	# If "All Lanes" is selected, attempt to retrieve LaneContents
 	$processAllLanes = $Type -eq "All"
 	if ($processAllLanes)
 	{
 		try
 		{
-			$LaneMachineNames = $script:FunctionResults['LaneMachineNames']
-			if ($LaneMachineNames -and $LaneMachineNames.Count -gt 0)
+			$LaneContents = $script:FunctionResults['LaneContents']
+			if ($LaneContents -and $LaneContents.Count -gt 0)
 			{
-				$Lanes = $LaneMachineNames
+				$Lanes = $LaneContents
 			}
 			else
 			{
-				throw "LaneMachineNames is empty or not available."
+				throw "LaneContents is empty or not available."
 			}
 		}
 		catch
@@ -5453,7 +5298,7 @@ function Close_Open_Transactions
 										$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 										if ($nodes)
 										{
-											$machineName = $nodes.LaneNumToMachineName[$LaneNumber]
+											$machineName = $nodes.LaneMachines[$LaneNumber]
 											if ($machineName)
 											{
 												$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
@@ -5562,7 +5407,7 @@ function Close_Open_Transactions
 				$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 				if ($nodes)
 				{
-					$machineName = $nodes.LaneNumToMachineName[$LaneNumber]
+					$machineName = $nodes.LaneMachines[$LaneNumber]
 					if ($machineName)
 					{
 						$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
@@ -5627,23 +5472,23 @@ function Ping_All_Nodes
 		"Lane" {
 			$nodeLabel = "Lane"
 			$nodeSummary = "Lanes"
-			if (-not $script:FunctionResults.ContainsKey('LaneMachineNames') -or
-				-not $script:FunctionResults.ContainsKey('LaneNumToMachineName'))
+			if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
+				-not $script:FunctionResults.ContainsKey('LaneMachines'))
 			{
 				Write_Log "Lane information is not available. Please run Retrieve_Nodes first." "Red"
 				return
 			}
-			$LaneMachineNames = $script:FunctionResults['LaneMachineNames']
-			$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+			$LaneContents = $script:FunctionResults['LaneContents']
+			$LaneMachines = $script:FunctionResults['LaneMachines']
 			
-			if ($LaneMachineNames.Count -eq 0)
+			if ($LaneContents.Count -eq 0)
 			{
 				Write_Log "No lanes found for Store Number: $StoreNumber." "Yellow"
 				return
 			}
-			foreach ($lane in $LaneMachineNames)
+			foreach ($lane in $LaneContents)
 			{
-				$machineName = $LaneNumToMachineName[$lane]
+				$machineName = $LaneMachines[$lane]
 				$nodesToPing += [PSCustomObject]@{
 					Name   = $lane
 					Target = $machineName
@@ -5653,15 +5498,15 @@ function Ping_All_Nodes
 		"Scale" {
 			$nodeLabel = "Scale"
 			$nodeSummary = "Scales"
-			if (-not $script:FunctionResults.ContainsKey('ScaleCodeToIPInfo') -or $script:FunctionResults['ScaleCodeToIPInfo'].Count -eq 0)
+			if (-not $script:FunctionResults.ContainsKey('ScaleIPNetworks') -or $script:FunctionResults['ScaleIPNetworks'].Count -eq 0)
 			{
 				Write_Log "No scales found to ping." "Yellow"
 				return
 			}
-			$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
-			foreach ($scaleCode in $ScaleCodeToIPInfo.Keys | Sort-Object)
+			$ScaleIPNetworks = $script:FunctionResults['ScaleIPNetworks']
+			foreach ($scaleCode in $ScaleIPNetworks.Keys | Sort-Object)
 			{
-				$scaleObj = $ScaleCodeToIPInfo[$scaleCode]
+				$scaleObj = $ScaleIPNetworks[$scaleCode]
 				$ip = $scaleObj.FullIP
 				$nodesToPing += [PSCustomObject]@{
 					Name   = $scaleCode
@@ -5672,20 +5517,20 @@ function Ping_All_Nodes
 		"Backoffice" {
 			$nodeLabel = "Backoffice"
 			$nodeSummary = "Backoffices"
-			if (-not $script:FunctionResults.ContainsKey('BackofficeNumToMachineName'))
+			if (-not $script:FunctionResults.ContainsKey('BackofficeMachines'))
 			{
 				Write_Log "Backoffice information is not available. Please run Retrieve_Nodes first." "Red"
 				return
 			}
-			$BackofficeNumToMachineName = $script:FunctionResults['BackofficeNumToMachineName']
-			if ($BackofficeNumToMachineName.Count -eq 0)
+			$BackofficeMachines = $script:FunctionResults['BackofficeMachines']
+			if ($BackofficeMachines.Count -eq 0)
 			{
 				Write_Log "No backoffices found for Store Number: $StoreNumber." "Yellow"
 				return
 			}
-			foreach ($terminal in $BackofficeNumToMachineName.Keys | Sort-Object)
+			foreach ($terminal in $BackofficeMachines.Keys | Sort-Object)
 			{
-				$machineName = $BackofficeNumToMachineName[$terminal]
+				$machineName = $BackofficeMachines[$terminal]
 				$nodesToPing += [PSCustomObject]@{
 					Name   = $terminal
 					Target = $machineName
@@ -5792,18 +5637,18 @@ function Delete_DBS
 	}
 	
 	# Check if FunctionResults has the necessary data
-	if (-not $script:FunctionResults.ContainsKey('LaneMachineNames') -or
-		-not $script:FunctionResults.ContainsKey('LaneNumToMachineName'))
+	if (-not $script:FunctionResults.ContainsKey('LaneContents') -or
+		-not $script:FunctionResults.ContainsKey('LaneMachines'))
 	{
 		Write_Log "Lane information is not available. Please run Retrieve_Nodes first." "Red"
 		return
 	}
 	
 	# Retrieve lane information
-	$LaneMachineNames = $script:FunctionResults['LaneMachineNames']
-	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+	$LaneContents = $script:FunctionResults['LaneContents']
+	$LaneMachines = $script:FunctionResults['LaneMachines']
 	
-	if ($LaneMachineNames.Count -eq 0)
+	if ($LaneContents.Count -eq 0)
 	{
 		Write_Log "No lanes found for Store Number: $StoreNumber." "Yellow"
 		return
@@ -5894,9 +5739,9 @@ function Delete_DBS
 	
 	foreach ($lane in $selectedLanes)
 	{
-		if ($LaneNumToMachineName.ContainsKey($lane))
+		if ($LaneMachines.ContainsKey($lane))
 		{
-			$machineName = $LaneNumToMachineName[$lane]
+			$machineName = $LaneMachines[$lane]
 			
 			if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
 			{
@@ -6368,14 +6213,14 @@ function Refresh_PIN_Pad_Files
 	}
 	
 	# Ensure lane information is available
-	if (-not ($script:FunctionResults.ContainsKey('LaneMachineNames') -and $script:FunctionResults.ContainsKey('LaneNumToMachineName')))
+	if (-not ($script:FunctionResults.ContainsKey('LaneContents') -and $script:FunctionResults.ContainsKey('LaneMachines')))
 	{
 		Write_Log "No lane information found. Please ensure Retrieve_Nodes has been executed." "Red"
 		return
 	}
 	
-	$LaneMachineNames = $script:FunctionResults['LaneMachineNames']
-	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+	$LaneContents = $script:FunctionResults['LaneContents']
+	$LaneMachines = $script:FunctionResults['LaneMachines']
 	$NumberOfLanes = $script:FunctionResults['NumberOfLanes']
 	
 	# Get the user's selection
@@ -6406,9 +6251,9 @@ function Refresh_PIN_Pad_Files
 	
 	foreach ($lane in $Lanes)
 	{
-		if ($LaneNumToMachineName.ContainsKey($lane))
+		if ($LaneMachines.ContainsKey($lane))
 		{
-			$machineName = $LaneNumToMachineName[$lane]
+			$machineName = $LaneMachines[$lane]
 			
 			if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
 			{
@@ -6767,12 +6612,12 @@ function Schedule_Lane_DB_Maintenance
 		return
 	}
 	# --- ENSURE NODE MAPPING IS PRESENT ---
-	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-	if (-not $LaneNumToMachineName)
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	if (-not $LaneMachines)
 	{
 		$null = Retrieve_Nodes -StoreNumber $StoreNumber
-		$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-		if (-not $LaneNumToMachineName)
+		$LaneMachines = $script:FunctionResults['LaneMachines']
+		if (-not $LaneMachines)
 		{
 			Write_Log "Failed to retrieve lane-to-machine mapping for store $StoreNumber." "red"
 			return
@@ -6836,7 +6681,7 @@ function Schedule_Lane_DB_Maintenance
 	foreach ($LaneNumber in $selection.Lanes)
 	{
 		# ----------- USE MAPPING ----------
-		$LaneMachineName = $LaneNumToMachineName[$LaneNumber]
+		$LaneMachineName = $LaneMachines[$LaneNumber]
 		if (-not $LaneMachineName)
 		{
 			Write_Log "Could not resolve machine name for lane $LaneNumber. Skipping." "red"
@@ -7572,7 +7417,7 @@ function Send_Restart_All_Programs
 	
 	foreach ($lane in $lanes)
 	{
-		$machineName = $nodes.LaneNumToMachineName[$lane]
+		$machineName = $nodes.LaneMachines[$lane]
 		if (-not $machineName)
 		{
 			Write_Log "No machine found for lane $lane. Skipping." "yellow"
@@ -7731,7 +7576,7 @@ function Send_SERVER_time_to_Lanes
 		$laneNumberPadded = $laneNumber.PadLeft(3, '0')
 		
 		# Get lane machine name
-		$laneMachine = $script:FunctionResults['LaneNumToMachineName'][$laneNumberPadded]
+		$laneMachine = $script:FunctionResults['LaneMachines'][$laneNumberPadded]
 		if (-not $laneMachine)
 		{
 			Write_Log "No machine name found for lane $laneNumberPadded." "red"
@@ -8155,9 +8000,9 @@ function Reboot_Nodes
 	Write_Log "`r`n==================== Starting Reboot_Nodes Function ====================`r`n" "blue"
 	
 	# Load global node data
-	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
-	$BackofficeNumToMachineName = $script:FunctionResults['BackofficeNumToMachineName']
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	$ScaleIPNetworks = $script:FunctionResults['ScaleIPNetworks']
+	$BackofficeMachines = $script:FunctionResults['BackofficeMachines']
 	
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Reboot Nodes"
@@ -8187,9 +8032,9 @@ function Reboot_Nodes
 		$tabLanes.Controls.Add($clbLanes)
 		$tabs.TabPages.Add($tabLanes)
 		
-		foreach ($lane in $LaneNumToMachineName.Keys | Sort-Object)
+		foreach ($lane in $LaneMachines.Keys | Sort-Object)
 		{
-			$machine = $LaneNumToMachineName[$lane]
+			$machine = $LaneMachines[$lane]
 			$display = "Lane $lane [$machine]"
 			$obj = New-Object PSObject -Property @{
 				DisplayName = $display
@@ -8212,9 +8057,9 @@ function Reboot_Nodes
 		$tabScales.Controls.Add($clbScales)
 		$tabs.TabPages.Add($tabScales)
 		
-		foreach ($code in $ScaleCodeToIPInfo.Keys | Sort-Object)
+		foreach ($code in $ScaleIPNetworks.Keys | Sort-Object)
 		{
-			$scale = $ScaleCodeToIPInfo[$code]
+			$scale = $ScaleIPNetworks[$code]
 			$ip = $scale.FullIP
 			$name = $scale.ScaleName
 			$display = if ($name) { "$name [$ip]" }
@@ -8241,9 +8086,9 @@ function Reboot_Nodes
 		$tabBO.Controls.Add($clbBO)
 		$tabs.TabPages.Add($tabBO)
 		
-		foreach ($bonum in $BackofficeNumToMachineName.Keys | Sort-Object)
+		foreach ($bonum in $BackofficeMachines.Keys | Sort-Object)
 		{
-			$machine = $BackofficeNumToMachineName[$bonum]
+			$machine = $BackofficeMachines[$bonum]
 			$display = "BO $bonum [$machine]"
 			$obj = New-Object PSObject -Property @{
 				DisplayName = $display
@@ -8672,15 +8517,15 @@ exit /b
 	}
 	
 	# --- Use lane paths from Retrieve_Nodes ---
-	if (-not $script:FunctionResults.ContainsKey('LaneNumToMachineName') -or -not $script:FunctionResults['LaneNumToMachineName'])
+	if (-not $script:FunctionResults.ContainsKey('LaneMachines') -or -not $script:FunctionResults['LaneMachines'])
 	{
 		Write_Log "No lane machine paths found. Did you run Retrieve_Nodes?" "red"
 	}
 	else
 	{
-		foreach ($laneNum in $script:FunctionResults['LaneNumToMachineName'].Keys | Sort-Object { [int]$_ })
+		foreach ($laneNum in $script:FunctionResults['LaneMachines'].Keys | Sort-Object { [int]$_ })
 		{
-			$machine = $script:FunctionResults['LaneNumToMachineName'][$laneNum]
+			$machine = $script:FunctionResults['LaneMachines'][$laneNum]
 			if ($machine -and $machine -notlike '@SMSSERVER' -and $machine -ne '')
 			{
 				$path = "\\$machine\storeman\Office\XF${storeNumber}${laneNum}"
@@ -8751,7 +8596,7 @@ exit /b
 #
 # Notes:
 #   - RemoteRegistry and service control must be allowed on the remote machine.
-#   - $script:FunctionResults['LaneNumToMachineName'] must be defined and populated.
+#   - $script:FunctionResults['LaneMachines'] must be defined and populated.
 #   - Show_Lane_Selection_Form and Write_Log must be available.
 # ===================================================================================================
 
@@ -8766,8 +8611,8 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 	
 	Write_Log "`r`n==================== Starting Enable_SQL_Protocols_On_Selected_Lanes Function ====================`r`n" "blue"
 	
-	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-	if (-not $LaneNumToMachineName -or $LaneNumToMachineName.Count -eq 0)
+	$LaneMachines = $script:FunctionResults['LaneMachines']
+	if (-not $LaneMachines -or $LaneMachines.Count -eq 0)
 	{
 		Write_Log "No lanes available. Please retrieve nodes first." "red"
 		Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Function Completed ====================" "blue"
@@ -8795,7 +8640,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 	
 	foreach ($lane in $lanes)
 	{
-		$machine = $LaneNumToMachineName[$lane]
+		$machine = $LaneMachines[$lane]
 		if (-not $machine)
 		{
 			Write_Log "Machine name not found for lane $lane. Skipping." "yellow"
@@ -9358,12 +9203,12 @@ function Open_Selected_Node_C_Path
 	# Handle Lanes
 	if ($selection.Lanes -and $selection.Lanes.Count -gt 0)
 	{
-		$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+		$LaneMachines = $script:FunctionResults['LaneMachines']
 		foreach ($lane in $selection.Lanes)
 		{
-			if ($LaneNumToMachineName.ContainsKey($lane))
+			if ($LaneMachines.ContainsKey($lane))
 			{
-				$machine = $LaneNumToMachineName[$lane]
+				$machine = $LaneMachines[$lane]
 				$sharePath = "\\$machine\c$"
 				Write_Log "Opened $sharePath ..." "Green"
 				Start-Process "explorer.exe" $sharePath
@@ -10435,9 +10280,9 @@ function Manage_Sa_Account
 #   Designed for rapid remote support and streamlined access.
 #
 # Parameters:
-#   - LaneNumToMachineName      [hashtable]: LaneNumber => MachineName mapping.
-#   - ScaleCodeToIPInfo   [hashtable]: ScaleCode => Scale Object (includes IP).
-#   - BackofficeNumToMachineName[hashtable]: BackofficeTerminal => MachineName mapping.
+#   - LaneMachines      [hashtable]: LaneNumber => MachineName mapping.
+#   - ScaleIPNetworks   [hashtable]: ScaleCode => Scale Object (includes IP).
+#   - BackofficeMachines[hashtable]: BackofficeTerminal => MachineName mapping.
 #   - LaneVNCPasswords  [hashtable] (optional): MachineName => Password mapping.
 #
 # Details:
@@ -10450,7 +10295,7 @@ function Manage_Sa_Account
 #   - Creates Ishida_Wrapper_#.vnc for each Ishida scale found.
 #
 # Usage:
-#   Export-VNCFiles-ForAllNodes -LaneNumToMachineName $... -ScaleCodeToIPInfo $... -BackofficeNumToMachineName $... [-LaneVNCPasswords $...]
+#   Export-VNCFiles-ForAllNodes -LaneMachines $... -ScaleIPNetworks $... -BackofficeMachines $... [-LaneVNCPasswords $...]
 #
 # Author: Alex_C.T
 # ===================================================================================================
@@ -10459,11 +10304,11 @@ function Export_VNC_Files_For_All_Nodes
 {
 	param (
 		[Parameter(Mandatory = $true)]
-		[hashtable]$LaneNumToMachineName,
+		[hashtable]$LaneMachines,
 		[Parameter(Mandatory = $true)]
-		[hashtable]$ScaleCodeToIPInfo,
+		[hashtable]$ScaleIPNetworks,
 		[Parameter(Mandatory = $true)]
-		[hashtable]$BackofficeNumToMachineName,
+		[hashtable]$BackofficeMachines,
 		[Parameter(Mandatory = $false)]
 		[hashtable]$AllVNCPasswords
 	)
@@ -10479,7 +10324,7 @@ function Export_VNC_Files_For_All_Nodes
 	if (-not $AllVNCPasswords -or $AllVNCPasswords.Count -eq 0)
 	{
 		Write_Log "Gathering VNC passwords for all machines`r`n" "magenta"
-		$AllVNCPasswords = Get_All_VNC_Passwords -LaneNumToMachineName $LaneNumToMachineName -ScaleCodeToIPInfo $ScaleCodeToIPInfo -BackofficeNumToMachineName $BackofficeNumToMachineName
+		$AllVNCPasswords = Get_All_VNC_Passwords -LaneMachines $LaneMachines -ScaleIPNetworks $ScaleIPNetworks -BackofficeMachines $BackofficeMachines
 	}
 	
 	# --- Shared VNC file content with token ---
@@ -10593,7 +10438,7 @@ PreemptiveUpdates=0
 	$laneCount = 0
 	$laneInfoLines = @()
 	
-	foreach ($lane in $LaneNumToMachineName.GetEnumerator())
+	foreach ($lane in $LaneMachines.GetEnumerator())
 	{
 		$laneNumber = $lane.Key
 		$machineName = $lane.Value
@@ -10628,7 +10473,7 @@ PreemptiveUpdates=0
 	# ---- Scales ---- #
 	Write_Log "-------------------- Exporting Scale VNC Files --------------------" "blue"
 	$scaleCount = 0
-	foreach ($scale in $ScaleCodeToIPInfo.GetEnumerator())
+	foreach ($scale in $ScaleIPNetworks.GetEnumerator())
 	{
 		$scaleCode = $scale.Key
 		$scaleObj = $scale.Value
@@ -10701,7 +10546,7 @@ PreemptiveUpdates=0
 	# ---- Backoffices ---- #
 	Write_Log "-------------------- Exporting Backoffice VNC Files --------------------" "blue"
 	$boCount = 0
-	foreach ($bo in $BackofficeNumToMachineName.GetEnumerator())
+	foreach ($bo in $BackofficeMachines.GetEnumerator())
 	{
 		$terminal = $bo.Key
 		$boName = $bo.Value
@@ -10789,9 +10634,9 @@ function Show_Node_Selection_Form
 		$tabControls["Lanes"] = $clbLanes
 		
 		$allLanes = @()
-		if ($script:FunctionResults.ContainsKey('LaneMachineNames') -and $script:FunctionResults['LaneMachineNames'].Count -gt 0)
+		if ($script:FunctionResults.ContainsKey('LaneContents') -and $script:FunctionResults['LaneContents'].Count -gt 0)
 		{
-			$allLanes = $script:FunctionResults['LaneMachineNames']
+			$allLanes = $script:FunctionResults['LaneContents']
 		}
 		elseif (Test-Path -Path $OfficePath)
 		{
@@ -10804,9 +10649,9 @@ function Show_Node_Selection_Form
 		$sortedLanes = $allLanes | Sort-Object
 		foreach ($lane in $sortedLanes)
 		{
-			$displayName = if ($script:FunctionResults.ContainsKey('LaneNumToMachineName') -and $script:FunctionResults['LaneNumToMachineName'].ContainsKey($lane))
+			$displayName = if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'].ContainsKey($lane))
 			{
-				$script:FunctionResults['LaneNumToMachineName'][$lane]
+				$script:FunctionResults['LaneMachines'][$lane]
 			}
 			else
 			{
@@ -10834,9 +10679,9 @@ function Show_Node_Selection_Form
 		$tabControls["Scales"] = $clbScales
 		
 		$allScales = @()
-		if ($script:FunctionResults.ContainsKey('ScaleCodeToIPInfo'))
+		if ($script:FunctionResults.ContainsKey('ScaleIPNetworks'))
 		{
-			$allScales = $script:FunctionResults['ScaleCodeToIPInfo'].Values
+			$allScales = $script:FunctionResults['ScaleIPNetworks'].Values
 			if ($OnlyBizerbaScales)
 			{
 				$allScales = $allScales | Where-Object { $_.ScaleBrand -match 'bizerba' }
@@ -10876,9 +10721,9 @@ function Show_Node_Selection_Form
 		$tabs.TabPages.Add($tabBO)
 		$tabControls["Backoffices"] = $clbBO
 		
-		$boDict = if ($script:FunctionResults.ContainsKey('BackofficeNumToMachineName'))
+		$boDict = if ($script:FunctionResults.ContainsKey('BackofficeMachines'))
 		{
-			$script:FunctionResults['BackofficeNumToMachineName']
+			$script:FunctionResults['BackofficeMachines']
 		}
 		else { @{ } }
 		$boNums = $boDict.Keys | Sort-Object
@@ -12443,9 +12288,9 @@ if (-not $form)
 	$ExportVNCFilesItem.ToolTipText = "Generate UltraVNC (.vnc) connection files for all lanes, scales, and backoffices."
 	$ExportVNCFilesItem.Add_Click({
 			Export_VNC_Files_For_All_Nodes `
-										   -LaneNumToMachineName $script:FunctionResults['LaneNumToMachineName'] `
-										   -ScaleCodeToIPInfo $script:FunctionResults['ScaleCodeToIPInfo'] `
-										   -BackofficeNumToMachineName $script:FunctionResults['BackofficeNumToMachineName']`
+										   -LaneMachines $script:FunctionResults['LaneMachines'] `
+										   -ScaleIPNetworks $script:FunctionResults['ScaleIPNetworks'] `
+										   -BackofficeMachines $script:FunctionResults['BackofficeMachines']`
 										   -AllVNCPasswords $script:FunctionResults['AllVNCPasswords']
 		})
 	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
@@ -12579,7 +12424,7 @@ $Nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 $Nodes = $script:FunctionResults['Nodes']
 
 # Retrieve the list of machine names from the FunctionResults dictionary
-$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+$LaneMachines = $script:FunctionResults['LaneMachines']
 
 # Get the SQL connection string for all machines
 Get_All_Lanes_Database_Info | Out-Null
@@ -12589,9 +12434,9 @@ $script:LaneProtocolJobs = @{ }
 $script:LaneProtocols = @{ }
 $script:ProtocolResults = @()
 
-foreach ($lane in $LaneNumToMachineName.Keys)
+foreach ($lane in $LaneMachines.Keys)
 {
-	$machine = $LaneNumToMachineName[$lane]
+	$machine = $LaneMachines[$lane]
 	$script:LaneProtocolJobs[$lane] = Start-Job -ArgumentList $machine, $lane, $SqlModuleName -ScriptBlock {
 		param ($machine,
 			$lane,
