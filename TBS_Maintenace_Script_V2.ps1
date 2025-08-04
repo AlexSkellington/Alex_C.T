@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.3.8"
-$VersionDate = "2025-08-2"
+$VersionDate = "2025-08-4"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -11238,7 +11238,7 @@ WHEN NOT MATCHED BY TARGET THEN
 	{
 		$SqlQuery = @"
 UPDATE SCL_TAB
-SET $SCL_Field = NULL
+SET $SCL_Field = $POS_Default_F272_Value
 WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
   AND EXISTS (
         SELECT 1 FROM POS_TAB
