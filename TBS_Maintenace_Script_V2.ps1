@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.3.8"
-$VersionDate = "2025-08-04"
+$VersionDate = "2025-08-2"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -11045,28 +11045,32 @@ PreemptiveUpdates=0
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Prompts the user to choose the weighted item marking logic (SCL or POS).
-#   Updates all ScaleCommApp XML config files (ProdType_F272) in-place using robust XML logic.
+#   Updates all ScaleCommApp XML config files (ProdType_F272) robustly using XML.
 #   If the setting doesn't exist, it is inserted; if it exists, it is updated.
 #   Runs the correct SQL update/merge using your item key (default F01) for SCL_TAB and POS_TAB.
+#   When reverting to Default/POS mode, clears only F272 in SCL_TAB:
+#     - If the F272 field allows NULL, sets F272 to NULL.
+#     - If the F272 field does not allow NULL, sets F272 to a blank string ('').
+#     - Fields like F.1000 (NOT NULL) are **not** touched or updated in any way.
 #   Uses Write_Log for all progress, result, and error reporting.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
-#   Folder              Directory containing ScaleCommApp config files.           (default: C:\ScaleCommApp)
-#   MinItem             Lower bound of item code range.                           (default: 0020000100000)
-#   MaxItem             Upper bound of item code range.                           (default: 0029999900000)
-#   POS_Field           Field in POS_TAB for weighted flag.                       (default: F82)
-#   POS_Value           Value in POS_TAB.$POS_Field to trigger update.            (default: 1)
-#   SCL_Field           Field in SCL_TAB to set (usually F272).                   (default: F272)
-#   SCL_Value           Value to set in SCL_TAB when in SCL mode.                 (default: 3)
-#   POS_Default_F272_Value  Value to set in SCL_TAB when reverting to POS mode.   (default: 0)
-#   ItemKey             Column name for unique item code in both tables.          (default: F01)
+#   Folder                  Directory containing ScaleCommApp config files.       (default: C:\ScaleCommApp)
+#   MinItem                 Lower bound of item code range.                       (default: 0020000100000)
+#   MaxItem                 Upper bound of item code range.                       (default: 0029999900000)
+#   POS_Field               Field in POS_TAB for weighted flag.                   (default: F82)
+#   POS_Value               Value in POS_TAB.$POS_Field to trigger update.        (default: 0)
+#   SCL_Field               Field in SCL_TAB to set (usually F272).               (default: F272)
+#   SCL_Value               Value to set in SCL_TAB when in SCL mode.             (default: 3)
+#   SCL_Clear_As_Blank      Set to $true to use blank string ('') instead of NULL for F272 when reverting to POS mode.
+#   ItemKey                 Column name for unique item code in both tables.      (default: F01)
 # ---------------------------------------------------------------------------------------------------
 
 function Update_ScaleConfig_And_DB
 {
 	Write_Log "`r`n==================== Starting Update_ScaleConfig_And_DB Function ====================`r`n" "blue"
 	
-	# Set all defaults up front (edit as needed)
+	# ---- Set all defaults up front (edit as needed) ----
 	$Folder = 'C:\ScaleCommApp'
 	$MinItem = '0020000100000'
 	$MaxItem = '0029999900000'
@@ -11074,12 +11078,12 @@ function Update_ScaleConfig_And_DB
 	$POS_Value = 0
 	$SCL_Field = 'F272'
 	$SCL_Value = 3
-	$POS_Default_F272_Value = 1
+	$SCL_Clear = "NULL"
 	$ItemKey = 'F01'
 	
-	# -----------------------------------------------------------------------------
+	# ---------------------------------------------------------------------------
 	# Prompt the user for which mode to use (GUI)
-	# -----------------------------------------------------------------------------
+	# ---------------------------------------------------------------------------
 	Add-Type -AssemblyName System.Windows.Forms
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select Weighted Item Marking Method"
@@ -11101,7 +11105,7 @@ function Update_ScaleConfig_And_DB
 	$form.Controls.Add($radioSCL)
 	
 	$radioPOS = New-Object System.Windows.Forms.RadioButton
-	$radioPOS.Text = "Default / Old Way (POS.F82, config to POS, F272 = 0)"
+	$radioPOS.Text = "Default / Old Way (POS.F82, config to POS, F272 cleared)"
 	$radioPOS.Location = New-Object System.Drawing.Point(30, 75)
 	$radioPOS.Size = New-Object System.Drawing.Size(350, 20)
 	$form.Controls.Add($radioPOS)
@@ -11132,9 +11136,9 @@ function Update_ScaleConfig_And_DB
 	$Mode = if ($radioSCL.Checked) { "SCL" }
 	else { "POS" }
 	
-	# -----------------------------------------------------------------------------
+	# ---------------------------------------------------------------------------
 	# XML Config Update (robust, always update or insert key)
-	# -----------------------------------------------------------------------------
+	# ---------------------------------------------------------------------------
 	$Files = @(
 		'ScaleManagementApp.exe.config',
 		'ScaleManagementAppUpdateSpecials.exe.config',
@@ -11186,9 +11190,9 @@ function Update_ScaleConfig_And_DB
 		}
 	}
 	
-	# -----------------------------------------------------------------------------
-	# SQL Logic: run the appropriate update/merge
-	# -----------------------------------------------------------------------------
+	# ---------------------------------------------------------------------------
+	# SQL Logic: run the appropriate update/merge (ONLY F272 IS CLEARED)
+	# ---------------------------------------------------------------------------
 	$dbName = $script:FunctionResults['DBNAME']
 	$server = $script:FunctionResults['DBSERVER']
 	$ConnectionString = $script:FunctionResults['ConnectionString']
@@ -11222,30 +11226,48 @@ function Update_ScaleConfig_And_DB
 		$SqlQuery = @"
 MERGE INTO SCL_TAB AS Target
 USING (
-    SELECT $ItemKey
+    SELECT 
+        $ItemKey,
+        F1000,
+        CAST(SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) AS INT) AS F267,
+        $POS_Field -- e.g., F82
     FROM POS_TAB
     WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
-      AND $POS_Field = $POS_Value
 ) AS Source
 ON Target.$ItemKey = Source.$ItemKey
 WHEN MATCHED THEN
-    UPDATE SET $SCL_Field = $SCL_Value
+    UPDATE SET 
+        $SCL_Field = CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END,
+        F1000 = Source.F1000,
+        F267 = Source.F267
 WHEN NOT MATCHED BY TARGET THEN
-    INSERT ($ItemKey, $SCL_Field) VALUES (Source.$ItemKey, $SCL_Value);
+    INSERT ($ItemKey, F1000, $SCL_Field, F267)
+    VALUES (
+        Source.$ItemKey, 
+        Source.F1000, 
+        CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END, 
+        Source.F267
+    );
 "@
 	}
 	else
 	{
 		$SqlQuery = @"
 UPDATE SCL_TAB
-SET $SCL_Field = $POS_Default_F272_Value
+SET $SCL_Field = NULL
+WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
+AND F272 IS NOT NULL;
+"@
+	<#	$SqlQuery = @"
+UPDATE SCL_TAB
+SET $SCL_Field = $SCL_Clear
 WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
   AND EXISTS (
         SELECT 1 FROM POS_TAB
         WHERE POS_TAB.$ItemKey = SCL_TAB.$ItemKey
           AND POS_TAB.$POS_Field = $POS_Value
   );
-"@
+"@#>
 	}
 	
 	try
