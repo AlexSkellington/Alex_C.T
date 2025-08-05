@@ -13171,8 +13171,8 @@ if (-not $form)
 	############################################################################
 	# 11) Sync Hosts File for Selected Nodes
 	############################################################################
-	$SyncHostsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Sync Hosts File")
-	$SyncHostsItem.ToolTipText = "Update hosts file for selected lanes and backoffices, then copy to those nodes."
+	$SyncHostsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Sync Host Files")
+	$SyncHostsItem.ToolTipText = "Update the host file with the nodes selected, then copy the local host file to the selected node."
 	$SyncHostsItem.Add_Click({
 			Sync_Selected_Node_Hosts -StoreNumber $StoreNumber
 		})
