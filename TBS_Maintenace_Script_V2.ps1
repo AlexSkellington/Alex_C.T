@@ -12780,6 +12780,7 @@ $GeneralToolsButton.Anchor = 'Bottom,Right'
 $ServerToolsButton.Anchor = 'Bottom,Left'
 $LaneToolsButton.Anchor = 'Bottom'
 $ScaleToolsButton.Anchor = 'Bottom'
+$showProtocolBtn.Anchor = 'Top,Right'
 
 $form.add_Resize({
 		# Margin between logBox and Clear Log button
@@ -12801,6 +12802,10 @@ $form.add_Resize({
 		# Center store name label
 		$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
 		$NodesStore.Left = [math]::Max(0, ($form.ClientSize.Width - $NodesStore.Width) / 2)
+		
+		# Position Protocols button in top-right below Clear Log button
+		$showProtocolBtn.Left = $form.ClientSize.Width - $showProtocolBtn.Width - 15
+		$showProtocolBtn.Top = $clearLogButton.Bottom + 5
 		
 		# Space the bottom buttons evenly
 		$buttonWidth = 200
