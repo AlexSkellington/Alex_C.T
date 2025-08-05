@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.3.8"
-$VersionDate = "2025-08-04"
+$VersionNumber = "2.3.9"
+$VersionDate = "2025-08-05"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -8977,6 +8977,31 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $lane }
 					if ($null -eq $script:ProtocolResults -or $script:ProtocolResults -isnot [System.Collections.IEnumerable]) { $script:ProtocolResults = @() }
 					$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
+					# === Update protocol result file for this lane ===
+					$protocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
+					$laneStr = $result.Lane.ToString().PadLeft(3, '0')
+					$protocol = $result.Protocol
+					
+					if (-not (Test-Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile))))
+					{
+						New-Item -Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)) -ItemType Directory -Force | Out-Null
+					}
+					if (-not (Test-Path $protocolResultsFile))
+					{
+						New-Item -Path $protocolResultsFile -ItemType File -Force | Out-Null
+					}
+					$allLines = @()
+					if (Test-Path $protocolResultsFile)
+					{
+						$allLines = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' }
+					}
+					# Remove previous record(s) for this lane
+					$allLines = $allLines | Where-Object { -not ($_ -match "^\s*0*${laneStr}\s*,") }
+					# Add the new record
+					$allLines += "$laneStr,$protocol"
+					# Sort numerically by lane
+					$sortedLines = $allLines | Sort-Object { ($_ -split ',')[0] -as [int] }
+					[System.IO.File]::WriteAllLines($protocolResultsFile, $sortedLines, [System.Text.Encoding]::UTF8)
 					Write_Log "Protocol detected for $machine (Lane $lane): $protocol" "magenta"
 				}
 			}
@@ -9246,6 +9271,34 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 			$job = $jobMap[$lane]
 			Wait-Job $job | Out-Null
 			$result = Receive-Job $job
+			# === Update protocol result file for this lane ===
+			$protocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
+			$laneStr = $result.Lane.ToString().PadLeft(3, '0')
+			$protocol = $result.Protocol
+			
+			# Ensure the directory exists
+			if (-not (Test-Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile))))
+			{
+				New-Item -Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)) -ItemType Directory -Force | Out-Null
+			}
+			# Ensure the file exists
+			if (-not (Test-Path $protocolResultsFile))
+			{
+				New-Item -Path $protocolResultsFile -ItemType File -Force | Out-Null
+			}
+			# Read all existing lines
+			$allLines = @()
+			if (Test-Path $protocolResultsFile)
+			{
+				$allLines = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' }
+			}
+			# Remove any old record for this lane
+			$allLines = $allLines | Where-Object { -not ($_ -match "^\s*0*${laneStr}\s*,") }
+			# Add the new record
+			$allLines += "$laneStr,$protocol"
+			# Sort numerically by lane
+			$sortedLines = $allLines | Sort-Object { ($_ -split ',')[0] -as [int] }
+			[System.IO.File]::WriteAllLines($protocolResultsFile, $sortedLines, [System.Text.Encoding]::UTF8)
 			Remove-Job $job
 			foreach ($line in $result.Output) { Write_Log $line.Text $line.Color }
 			$script:LaneProtocols[$result.Lane] = $result.Protocol
@@ -9426,8 +9479,11 @@ function Remove_Duplicate_Files_From_toBizerba
 param([int]`$IntervalSeconds = 5)
 `$Path = '$TargetPath'
 `$LogPath = '$logPath'
-function Remove-DuplicateFilesByContent {
+
+function Remove-DuplicateFilesByContentAndLines {
     param([string]`$Path)
+
+    # --------- Remove exact duplicates (keep oldest) ----------
     `$files = Get-ChildItem -Path `$Path -File -ErrorAction SilentlyContinue
     `$hashTable = @{}
     foreach (`$file in `$files) {
@@ -9453,10 +9509,50 @@ function Remove-DuplicateFilesByContent {
             }
         }
     }
+
+    # --------- Remove files whose lines all exist in another file (any order) ----------
+    # Reload the file list after removing exact duplicates
+    `$files = Get-ChildItem -Path `$Path -File -ErrorAction SilentlyContinue
+
+    for (`$i = 0; `$i -lt `$files.Count; `$i++) {
+        `$fileA = `$files[`$i]
+        `$linesA = Get-Content -LiteralPath `$fileA.FullName -ErrorAction SilentlyContinue | Where-Object { `$_.Trim() -ne "" }
+        if (-not `$linesA -or `$linesA.Count -eq 0) { continue }
+        for (`$j = 0; `$j -lt `$files.Count; `$j++) {
+            if (`$i -eq `$j) { continue }
+            `$fileB = `$files[`$j]
+            `$linesB = Get-Content -LiteralPath `$fileB.FullName -ErrorAction SilentlyContinue | Where-Object { `$_.Trim() -ne "" }
+            if (`$linesB.Count -lt `$linesA.Count) { continue } # Only look for supersets
+            # Check if every line in A is in B (case-insensitive)
+            `$allFound = `$linesA | ForEach-Object { `$lineA = `$_.Trim(); `$linesB -contains `$lineA }
+            if (`$allFound -notcontains `$false) {
+                # Try to delete fileA (the smaller one)
+                `$canDelete = `$true
+                try {
+                    `$stream = [System.IO.File]::Open(`$fileA.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+                    `$stream.Close()
+                } catch { `$canDelete = `$false }
+                if (`$canDelete) {
+                    try {
+                        Remove-Item `$fileA.FullName -Force
+                        Add-Content -Path `$LogPath -Value "`$(Get-Date): Removed `$($fileA.FullName) (all lines found in `$($fileB.FullName))"
+                    } catch {
+                        Add-Content -Path `$LogPath -Value "`$(Get-Date): Failed to remove `$($fileA.FullName): `$_"
+                    }
+                } else {
+                    Add-Content -Path `$LogPath -Value "`$(Get-Date): `$($fileA.FullName) is in use, skipped deletion"
+                }
+                # After deleting, break both loops to avoid index issues
+                `$files = Get-ChildItem -Path `$Path -File -ErrorAction SilentlyContinue
+                `$i = -1; break
+            }
+        }
+    }
 }
+
 Add-Content -Path `$LogPath -Value "`$(Get-Date): Monitor started with interval `$IntervalSeconds seconds"
 while (`$true) {
-    Remove-DuplicateFilesByContent -Path `$Path
+    Remove-DuplicateFilesByContentAndLines -Path `$Path
     Start-Sleep -Seconds `$IntervalSeconds
 }
 "@
@@ -10856,7 +10952,7 @@ USING (
     SELECT
         $ItemKey,
         F1000,
-        CAST(SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) AS INT) AS F267,
+		TRY_CAST(FLOOR(CAST(SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) AS FLOAT)) AS INT) AS F267,
         $POS_Field -- e.g., F82
     FROM POS_TAB
     WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
@@ -10907,6 +11003,191 @@ SELECT @@ROWCOUNT AS RowsAffected;
 		Write_Log "Error executing SQL update for $Mode mode: $_" "red"
 	}
 	Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                                FUNCTION: Sync_Selected_Node_Hosts
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Lets the user pick any subset of lanes/backoffices (via node selector), resolves their IP/hostname
+#   mapping, ensures the local hosts file is updated (replacing old entries if IPs have changed),
+#   and then copies the finished hosts file to all selected nodes. 
+#   - Always includes the current machine.
+#   - Custom node mappings are appended after a blank line (for clarity/compatibility).
+#   - Shows a final Write_Log output as a table, sorted by IP, coloring changed rows yellow.
+#   - Ensures each IP is mapped to only one hostname (last selected wins if dupe).
+# Usage:
+#   Sync_Selected_Node_Hosts -StoreNumber "001"
+# Prerequisites:
+#   - Retrieve_Nodes and Show_Node_Selection_Form must be available and run.
+#   - The script must run as admin for hosts file writes/copies.
+# ===================================================================================================
+
+function Sync_Selected_Node_Hosts
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber
+	)
+	Write_Log "`r`n==================== Starting Sync_Selected_Node_Hosts ====================`r`n" "blue"
+	
+	if (-not $script:FunctionResults['LaneNumToMachineName'] -or -not $script:FunctionResults['BackofficeNumToMachineName'])
+	{
+		Write_Log "Node mappings not found. Please run Retrieve_Nodes first." "red"
+		return
+	}
+	
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes @("Lane", "Backoffice")
+	if (-not $selection)
+	{
+		Write_Log "Node selection cancelled." "yellow"
+		return
+	}
+	$lanes = $selection.Lanes
+	$backoffices = $selection.Backoffices
+	
+	$ipToHost = @{ }
+	$changedMappings = @()
+	$finalRows = @()
+	
+	# Get local machine details
+	$localHostname = $env:COMPUTERNAME
+	try { $localIp = (Test-Connection -ComputerName $localHostname -Count 1 -ErrorAction Stop | Select-Object -ExpandProperty IPV4Address | Select-Object -First 1) }
+	catch { $localIp = $null }
+	if (-not $localIp)
+	{
+		Write_Log "Could not resolve local IP address for $localHostname. Aborting." "red"
+		return
+	}
+	$ipToHost[$localIp] = $localHostname
+	
+	# Add lanes/backoffices
+	$nodes = @()
+	foreach ($lane in $lanes)
+	{
+		$hostname = $script:FunctionResults['LaneNumToMachineName'][$lane]
+		if ($hostname) { $nodes += @{ Hostname = $hostname; LaneNum = $lane; Type = 'Lane' } }
+	}
+	foreach ($bo in $backoffices)
+	{
+		$hostname = $script:FunctionResults['BackofficeNumToMachineName'][$bo]
+		if ($hostname) { $nodes += @{ Hostname = $hostname; LaneNum = $bo; Type = 'Backoffice' } }
+	}
+	foreach ($n in $nodes)
+	{
+		# Skip the local host if already included
+		if ($n.Hostname -eq $localHostname) { continue }
+		$ip = $null
+		try
+		{
+			$ip = (Test-Connection -ComputerName $n.Hostname -Count 1 -ErrorAction Stop | Select-Object -ExpandProperty IPV4Address | Select-Object -First 1)
+		}
+		catch { }
+		if (-not $ip)
+		{
+			Write_Log "$($n.Type) $($n.LaneNum): Could not resolve IP for $($n.Hostname). Skipping." "red"
+			continue
+		}
+		$ipToHost[$ip] = $n.Hostname
+	}
+	if ($ipToHost.Count -eq 0)
+	{
+		Write_Log "No valid IP/hostname mappings found for selected nodes." "yellow"
+		return
+	}
+	
+	# Load previous hosts file mappings
+	$hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+	$oldLines = if (Test-Path $hostsPath) { Get-Content $hostsPath -Raw }
+	else { "" }
+	$oldMappings = @{ }
+	foreach ($line in $oldLines -split "`r?`n")
+	{
+		if ($line -match '^\s*([0-9\.]+)\s+(\S+)\s*$') { $oldMappings[$matches[2].ToLower()] = $matches[1] }
+	}
+	# Preserve all lines before the first custom mapping
+	$defaultSection = @()
+	$customStart = $false
+	foreach ($line in $oldLines -split "`r?`n")
+	{
+		if (-not $customStart -and $line -notmatch '^\s*[0-9\.]+\s+\S+\s*$')
+		{
+			$defaultSection += $line
+		}
+		elseif (-not $customStart -and $line -match '^\s*[0-9\.]+\s+\S+\s*$')
+		{
+			$customStart = $true
+		}
+	}
+	while ($defaultSection.Count -gt 0 -and [string]::IsNullOrWhiteSpace($defaultSection[-1]))
+	{
+		$defaultSection = $defaultSection[0 .. ($defaultSection.Count - 2)]
+	}
+	$outputLines = @($defaultSection + '', '') # Always 1 blank line after defaults
+	
+	# Custom mappings, always start with the local host, then others sorted by IP
+	$orderedMappings = @()
+	$orderedMappings += @{ IP = $localIp; Hostname = $localHostname }
+	foreach ($ip in ($ipToHost.Keys | Sort-Object))
+	{
+		if ($ip -eq $localIp) { continue } # Already first
+		$orderedMappings += @{ IP = $ip; Hostname = $ipToHost[$ip] }
+	}
+	foreach ($entry in $orderedMappings)
+	{
+		$hn = $entry.Hostname
+		$ip = $entry.IP
+		$oldIp = $oldMappings[$hn.ToLower()]
+		$rowColor = if ($oldIp -and $oldIp -ne $ip) { "yellow" }
+		else { "green" }
+		$finalRows += @{ IP = $ip; Hostname = $hn; Color = $rowColor }
+		$outputLines += "$ip`t$hn"
+		if ($rowColor -eq "yellow") { $changedMappings += "$hn ($oldIp => $ip)" }
+	}
+	
+	# Write hosts file (locally)
+	Set-Content -Path $hostsPath -Value $outputLines -Encoding ascii
+	
+	# Copy hosts file to selected nodes (SKIP local host)
+	foreach ($entry in $orderedMappings)
+	{
+		$hn = $entry.Hostname
+		$ip = $entry.IP
+		if ($hn -eq $localHostname) { continue } # Don't network-copy to self
+		$targetPath = "\\$hn\C$\Windows\System32\drivers\etc\hosts"
+		try
+		{
+			Copy-Item -Path $hostsPath -Destination $targetPath -Force
+			Write_Log "Copied hosts file to $hn [$ip]" "cyan"
+		}
+		catch
+		{
+			Write_Log "Failed to copy hosts file to $hn [$ip]: $_" "red"
+		}
+	}
+	
+	# Table Output
+	Write_Log "`r`nHost file mappings (sorted by IP, local host first):" "blue"
+	# Find max lengths for alignment
+	$maxIpLen = ($finalRows | ForEach-Object { "$($_.IP)".Length } | Measure-Object -Maximum).Maximum
+	$maxHostLen = ($finalRows | ForEach-Object { "$($_.Hostname)".Length } | Measure-Object -Maximum).Maximum
+	Write_Log ("IP".PadRight($maxIpLen + 2) + "Hostname".PadRight($maxHostLen + 2) + "Changed") "blue"
+	foreach ($r in $finalRows)
+	{
+		$line = "$($r.IP)".PadRight($maxIpLen + 2) + "$($r.Hostname)".PadRight($maxHostLen + 2)
+		if ($r.Color -eq "yellow") { $line += "<CHANGED>" }
+		Write_Log $line $r.Color
+	}
+	if ($changedMappings.Count)
+	{
+		Write_Log "Updated the following mappings:" "yellow"
+		foreach ($chg in $changedMappings) { Write_Log "  $chg" "yellow" }
+	}
+	else
+	{
+		Write_Log "No mappings changed from previous hosts file." "green"
+	}
+	Write_Log "`r`n==================== Sync_Selected_Node_Hosts Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -11930,6 +12211,180 @@ function Show_Section_Selection_Form
 	}
 }
 
+# ===================================================================================================
+#                                FUNCTION: Start_Lane_Protocol_Jobs
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Launches parallel background jobs (PS5-compatible) to check the SQL protocol connectivity 
+#   (TCP, Named Pipes, or File) for each lane. Results are stored in the global variables:
+#   $script:LaneProtocolJobs, $script:LaneProtocols, and $script:ProtocolResults. The function also 
+#   initializes a live-polling timer to collect and cache results for the GUI, and writes the latest
+#   results to a persistent file for faster reload at startup.
+#
+#   Results file: C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt
+#
+# Parameters:
+#   - LaneNumToMachineName: Hashtable mapping lane numbers to machine names. (Required)
+#   - SqlModuleName: The SQL Server PowerShell module name (for Import-Module). (Required)
+#
+# Returns:
+#   None
+# ===================================================================================================
+
+function Start_Lane_Protocol_Jobs
+{
+	param (
+		[Parameter(Mandatory)]
+		[hashtable]$LaneNumToMachineName,
+		[Parameter(Mandatory)]
+		[string]$SqlModuleName
+	)
+	
+	$script:ProtocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
+	$resultsDir = [System.IO.Path]::GetDirectoryName($script:ProtocolResultsFile)
+	if (-not (Test-Path $resultsDir)) { New-Item -Path $resultsDir -ItemType Directory -Force | Out-Null }
+	if (-not (Test-Path $script:ProtocolResultsFile)) { New-Item -Path $script:ProtocolResultsFile -ItemType File -Force | Out-Null }
+	
+	# --- Load previous results if file exists and is not empty ---
+	$script:LaneProtocolJobs = @{ }
+	$script:LaneProtocols = @{ }
+	$script:ProtocolResults = @()
+	if (Test-Path $script:ProtocolResultsFile)
+	{
+		$rawContent = (Get-Content -LiteralPath $script:ProtocolResultsFile -Raw) -as [string]
+		if ($rawContent -and $rawContent.Trim().Length -gt 0)
+		{
+			$lines = Get-Content -LiteralPath $script:ProtocolResultsFile -Encoding UTF8
+			foreach ($line in $lines)
+			{
+				if ($line -match '^\s*([^,]+),\s*([^,]+)\s*$')
+				{
+					$lane = $matches[1].Trim()
+					$protocol = $matches[2].Trim()
+					$script:LaneProtocols[$lane] = $protocol
+					$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
+				}
+			}
+		}
+	}
+	
+	foreach ($laneNum in $LaneNumToMachineName.Keys | Where-Object { $_ -match '^\d{3}$' } | Sort-Object)
+	{
+		$machine = $LaneNumToMachineName[$laneNum]
+		$script:LaneProtocolJobs[$laneNum] = Start-Job -ArgumentList $machine, $laneNum, $SqlModuleName -ScriptBlock {
+			param ($machine,
+				$laneNum,
+				$SqlModuleName)
+			$protocol = "File"
+			$tcpConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=DBMSSOCN"
+			$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
+			$tcpPortOpen = $false
+			try
+			{
+				$tcpClient = New-Object System.Net.Sockets.TcpClient
+				$connectTask = $tcpClient.ConnectAsync($machine, 1433)
+				if ($connectTask.Wait(500) -and $tcpClient.Connected)
+				{
+					$tcpPortOpen = $true
+					$tcpClient.Close()
+				}
+			}
+			catch { }
+			if ($tcpPortOpen)
+			{
+				try
+				{
+					Import-Module $SqlModuleName -ErrorAction Stop
+					Invoke-Sqlcmd -ConnectionString $tcpConn -Query "SELECT 1" -QueryTimeout 1 -ErrorAction Stop | Out-Null
+					$protocol = "TCP"
+				}
+				catch { }
+			}
+			if ($protocol -eq "File")
+			{
+				try
+				{
+					Import-Module $SqlModuleName -ErrorAction Stop
+					Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 1 -ErrorAction Stop | Out-Null
+					$protocol = "Named Pipes"
+				}
+				catch { }
+			}
+			[PSCustomObject]@{ Lane = $laneNum; Protocol = $protocol }
+		}
+	}
+	
+	if (-not $script:protocolTimer)
+	{
+		$script:protocolTimer = New-Object System.Windows.Forms.Timer
+		$script:protocolTimer.Interval = 1000
+		$script:protocolTimer.add_Tick({
+				$updated = $false
+				$keysCopy = @($script:LaneProtocolJobs.Keys)
+				foreach ($lane in $keysCopy)
+				{
+					$job = $script:LaneProtocolJobs[$lane]
+					if ($job.State -eq 'Completed')
+					{
+						$result = Receive-Job $job -ErrorAction SilentlyContinue
+						if ($result -and $result.Lane -and $result.Protocol)
+						{
+							$rawLane = $result.Lane
+							$numericLane = ($rawLane -replace '[^\d]', '').PadLeft(3, '0')
+							$script:LaneProtocols[$numericLane] = $result.Protocol
+							$script:LaneProtocols[$rawLane] = $result.Protocol
+							if ($script:FunctionResults -and $script:FunctionResults['LaneNumToMachineName'])
+							{
+								$machineName = $script:FunctionResults['LaneNumToMachineName'][$numericLane]
+								if ($machineName) { $script:LaneProtocols[$machineName] = $result.Protocol }
+								if ($machineName) { $script:LaneProtocols[$machineName.ToLower()] = $result.Protocol }
+							}
+							# --- Always replace previous result for this lane ---
+							$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $rawLane }
+							$script:ProtocolResults += $result
+							$updated = $true
+						}
+						Remove-Job $job -Force
+						$script:LaneProtocolJobs.Remove($lane)
+					}
+					elseif ($job.State -eq 'Failed')
+					{
+						Write-Host "`r`nJob for Lane $lane failed: $($job.ChildJobs[0].JobStateInfo.Reason)" -ForegroundColor Red
+						$rawLane = $lane
+						$numericLane = ($rawLane -replace '[^\d]', '').PadLeft(3, '0')
+						$protocol = "File"
+						$script:LaneProtocols[$numericLane] = $protocol
+						$script:LaneProtocols[$rawLane] = $protocol
+						if ($script:FunctionResults -and $script:FunctionResults['LaneNumToMachineName'])
+						{
+							$machineName = $script:FunctionResults['LaneNumToMachineName'][$numericLane]
+							if ($machineName) { $script:LaneProtocols[$machineName] = $protocol }
+							if ($machineName) { $script:LaneProtocols[$machineName.ToLower()] = $protocol }
+						}
+						# --- Always replace previous result for this lane ---
+						$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $rawLane }
+						$script:ProtocolResults += [PSCustomObject]@{ Lane = $rawLane; Protocol = $protocol }
+						$updated = $true
+						Remove-Job $job -Force
+						$script:LaneProtocolJobs.Remove($lane)
+					}
+				}
+				# Write to file if updated or file doesn't exist
+				if ($updated -or (-not (Test-Path $script:ProtocolResultsFile)))
+				{
+					$sortedResults = $script:ProtocolResults | Sort-Object { ($_.Lane -replace '[^\d]', '') -as [int] }
+					$lines = @()
+					foreach ($row in $sortedResults)
+					{
+						$lines += "$($row.Lane),$($row.Protocol)"
+					}
+					[System.IO.File]::WriteAllLines($script:ProtocolResultsFile, $lines, [System.Text.Encoding]::UTF8)
+				}
+			})
+		$script:protocolTimer.Start()
+	}
+}
+
 # =================================================================================================== 
 #                                       SECTION: Initialize GUI
 # ---------------------------------------------------------------------------------------------------
@@ -12168,6 +12623,10 @@ if (-not $form)
 	$NodesBackoffices.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$NodesBackoffices.AutoSize = $false
 	$form.Controls.Add($NodesBackoffices)
+	$NodesBackoffices.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$NodesBackoffices.Add_Click({
+			Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
+		})
 	
 	# Nodes Store Label (Number of Lanes)
 	$script:NodesStore = New-Object System.Windows.Forms.Label
@@ -12177,6 +12636,10 @@ if (-not $form)
 	$NodesStore.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$NodesStore.AutoSize = $false
 	$form.Controls.Add($NodesStore)
+	$NodesStore.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$NodesStore.Add_Click({
+			Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber
+		})
 	
 	# Scales Label
 	$script:scalesLabel = New-Object System.Windows.Forms.Label
@@ -12185,6 +12648,10 @@ if (-not $form)
 	$scalesLabel.Size = New-Object System.Drawing.Size(200, 20)
 	$scalesLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($scalesLabel)
+	$scalesLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$scalesLabel.Add_Click({
+			Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
+		})
 	
 	# Create a RichTextBox for log output
 	$logBox = New-Object System.Windows.Forms.RichTextBox
@@ -12384,17 +12851,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
 	
 	############################################################################
-	# 6) Ping Lanes Menu Item
-	############################################################################
-	$PingLanesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Lanes")
-	$PingLanesItem.ToolTipText = "Ping all lane devices to check connectivity."
-	$PingLanesItem.Add_Click({
-			Ping_All_Nodes -NodeType "Lane" -StoreNumber "$StoreNumber"
-		})
-	[void]$ContextMenuLane.Items.Add($PingLanesItem)
-	
-	############################################################################
-	# 7) Open Lane C$ Share(s)
+	# 6) Open Lane C$ Share(s)
 	############################################################################
 	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
 	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
@@ -12404,7 +12861,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($OpenLaneCShareItem)
 	
 	############################################################################
-	# 8) Delete DBS Menu Item
+	# 7) Delete DBS Menu Item
 	############################################################################
 	$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
 	$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
@@ -12414,7 +12871,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
 	
 	############################################################################
-	# 9) Refresh PIN Pad Files Menu Item
+	# 10) Refresh PIN Pad Files Menu Item
 	############################################################################
 	$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
 	$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
@@ -12424,7 +12881,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 	
 	############################################################################
-	# 10) Drawer Control Item
+	# 11) Drawer Control Item
 	############################################################################
 	$DrawerControlItem = New-Object System.Windows.Forms.ToolStripMenuItem("Drawer Control")
 	$DrawerControlItem.ToolTipText = "Set the Drawer Control for a lane for testing"
@@ -12434,7 +12891,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($DrawerControlItem)
 	
 	############################################################################
-	# 11) Refresh Database
+	# 12) Refresh Database
 	############################################################################
 	$RefreshDatabaseItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh Database")
 	$RefreshDatabaseItem.ToolTipText = "Refresh the database at the lane/s"
@@ -12444,7 +12901,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 	
 	############################################################################
-	# 12) Send Restart Command Menu Item
+	# 13) Send Restart Command Menu Item
 	############################################################################
 	$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 	$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
@@ -12454,7 +12911,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 	
 	############################################################################
-	# 13) Enable SQL Protocols Menu Item
+	# 14) Enable SQL Protocols Menu Item
 	############################################################################
 	$EnableSQLProtocolsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Enable SQL Protocols")
 	$EnableSQLProtocolsItem.ToolTipText = "Enable TCP/IP, Named Pipes, and set static port for SQL Server on selected lane(s)."
@@ -12464,7 +12921,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($EnableSQLProtocolsItem)
 	
 	############################################################################
-	# 14) Set the time on the lanes
+	# 15) Set the time on the lanes
 	############################################################################
 	$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set/Schedule Time on Lanes")
 	$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize or schedule time sync for selected lanes."
@@ -12482,7 +12939,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 	
 	############################################################################
-	# 15) Reboot Lane Menu Item
+	# 16) Reboot Lane Menu Item
 	############################################################################
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
@@ -12515,19 +12972,9 @@ if (-not $form)
 	$ScaleToolsButton.Size = New-Object System.Drawing.Size(200, 50)
 	$ContextMenuScale = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuScale.ShowItemToolTips = $true
-	
+		
 	############################################################################
-	# 1) Ping Scales Menu Item
-	############################################################################
-	$PingScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Scales")
-	$PingScalesItem.ToolTipText = "Ping all scale devices to check connectivity."
-	$PingScalesItem.Add_Click({
-			Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
-		})
-	[void]$ContextMenuScale.Items.Add($PingScalesItem)
-	
-	############################################################################
-	# 2) Repair BMS Service
+	# 1) Repair BMS Service
 	############################################################################
 	$repairBMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair BMS Service")
 	$repairBMSItem.ToolTipText = "Repairs the BMS service for scale deployment."
@@ -12537,7 +12984,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($repairBMSItem)
 	
 	############################################################################
-	# 3) Reboot Scales
+	# 2) Reboot Scales
 	############################################################################
 	$Reboot_ScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Scales")
 	$Reboot_ScalesItem.ToolTipText = "Reboot Scale/s."
@@ -12547,7 +12994,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($Reboot_ScalesItem)
 	
 	############################################################################
-	# 4) Open Scale C$ Share(s)
+	# 3) Open Scale C$ Share(s)
 	############################################################################
 	$OpenScaleCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Scale C$ Share(s)")
 	$OpenScaleCShareItem.ToolTipText = "Select scales and open their C$ administrative shares as 'bizuser' (bizerba/biyerba)."
@@ -12557,7 +13004,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($OpenScaleCShareItem)
 	
 	############################################################################
-	# 5) Update Scales Specials
+	# 4) Update Scales Specials
 	############################################################################
 	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
 	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
@@ -12567,7 +13014,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($UpdateScalesSpecialsItem)
 	
 	############################################################################
-	# 6) Update Scale Config and DB (F272 Upsert)
+	# 5) Update Scale Config and DB (F272 Upsert)
 	############################################################################
 	$UpdateScaleConfigAndDBItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scale Config && DB (F272 Upsert)")
 	$UpdateScaleConfigAndDBItem.ToolTipText = "Updates ScaleCommApp configs and upserts F272 in SCL_TAB for POS_TAB F82=1 in item range."
@@ -12577,7 +13024,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($UpdateScaleConfigAndDBItem)
 	
 	############################################################################
-	# 7) Schedule Duplicate File Monitor
+	# 6) Schedule Duplicate File Monitor
 	############################################################################
 	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove duplicate files from (toBizerba)")
 	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in (toBizerba). Run now or schedule as SYSTEM."
@@ -12672,19 +13119,9 @@ if (-not $form)
 			Fix_Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
 	[void]$contextMenuGeneral.Items.Add($fixJournalItem)
-	
+		
 	############################################################################
-	# 7) Ping Backoffices Menu Item
-	############################################################################
-	$PingBackofficesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Ping Backoffices")
-	$PingBackofficesItem.ToolTipText = "Ping all backoffice devices to check connectivity."
-	$PingBackofficesItem.Add_Click({
-			Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
-		})
-	[void]$contextMenuGeneral.Items.Add($PingBackofficesItem)
-	
-	############################################################################
-	# 8) Reboot selected Backoffices
+	# 7) Reboot selected Backoffices
 	############################################################################
 	$RebootBackofficesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Backoffices")
 	$RebootBackofficesItem.ToolTipText = "Reboot the selected Backoffice/s."
@@ -12694,7 +13131,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($RebootBackofficesItem)
 	
 	############################################################################
-	# 9) Export All VNC Files
+	# 8) Export All VNC Files
 	############################################################################
 	$ExportVNCFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export All VNC Files")
 	$ExportVNCFilesItem.ToolTipText = "Generate UltraVNC (.vnc) connection files for all lanes, scales, and backoffices."
@@ -12708,7 +13145,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
 	
 	############################################################################
-	# 10) Export Machines Hardware Info
+	# 9) Export Machines Hardware Info
 	############################################################################
 	$ExportMachineHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Machines Hardware Info")
 	$ExportMachineHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all machines"
@@ -12722,7 +13159,7 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($ExportMachineHardwareInfoItem)
 	
 	############################################################################
-	# 11) Remove Archive Bit
+	# 10) Remove Archive Bit
 	############################################################################
 	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
 	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
@@ -12730,6 +13167,16 @@ if (-not $form)
 			Remove_ArchiveBit_Interactive
 		})
 	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
+	
+	############################################################################
+	# 11) Sync Hosts File for Selected Nodes
+	############################################################################
+	$SyncHostsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Sync Hosts File")
+	$SyncHostsItem.ToolTipText = "Update hosts file for selected lanes and backoffices, then copy to those nodes."
+	$SyncHostsItem.Add_Click({
+			Sync_Selected_Node_Hosts -StoreNumber $StoreNumber
+		})
+	[void]$contextMenuGeneral.Items.Add($SyncHostsItem)
 	
 	############################################################################
 	# 12) Insert Test Item
@@ -12846,127 +13293,8 @@ $LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 # Get the SQL connection string for all machines
 Get_All_Lanes_Database_Info | Out-Null
 
-# Start per-lane jobs for protocol checks (PS5-compatible parallelism via multiple jobs)
-$script:LaneProtocolJobs = @{ }
-$script:LaneProtocols = @{ }
-$script:ProtocolResults = @()
-
-foreach ($laneNum in $LaneNumToMachineName.Keys | Where-Object { $_ -match '^\d{3}$' } | Sort-Object)
-{
-	$machine = $LaneNumToMachineName[$laneNum]
-	# Launch job with ($machine, $laneNum, ...) and use $machine for connections, $laneNum for reference
-	$script:LaneProtocolJobs[$laneNum] = Start-Job -ArgumentList $machine, $laneNum, $SqlModuleName -ScriptBlock {
-		param ($machine,
-			$laneNum,
-			$SqlModuleName)
-		
-		$protocol = "File"
-		$tcpConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=DBMSSOCN"
-		$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
-		
-		# Step 1: Fast TCP port check
-		$tcpPortOpen = $false
-		try
-		{
-			$tcpClient = New-Object System.Net.Sockets.TcpClient
-			$connectTask = $tcpClient.ConnectAsync($machine, 1433)
-			if ($connectTask.Wait(500) -and $tcpClient.Connected)
-			{
-				$tcpPortOpen = $true
-				$tcpClient.Close()
-			}
-		}
-		catch { }
-		
-		# Step 2: If TCP port is open, try SQL query over TCP
-		if ($tcpPortOpen)
-		{
-			try
-			{
-				Import-Module $SqlModuleName -ErrorAction Stop
-				Invoke-Sqlcmd -ConnectionString $tcpConn -Query "SELECT 1" -QueryTimeout 1 -ErrorAction Stop | Out-Null
-				$protocol = "TCP"
-			}
-			catch { }
-		}
-		
-		# Step 3: If not TCP, try Named Pipes SQL query
-		if ($protocol -eq "File")
-		{
-			try
-			{
-				Import-Module $SqlModuleName -ErrorAction Stop
-				Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 1 -ErrorAction Stop | Out-Null
-				$protocol = "Named Pipes"
-			}
-			catch { }
-		}
-		
-		# Step 4: If neither works, protocol remains "File"
-		[PSCustomObject]@{ Lane = $laneNum; Protocol = $protocol }
-	}
-}
-
-# Live-poll table view (keeps running, shows table as long as PowerShell window is open)
-$protocolTimer = New-Object System.Windows.Forms.Timer
-$protocolTimer.Interval = 1000
-$protocolTimer.add_Tick({
-		$keysCopy = @($script:LaneProtocolJobs.Keys)
-		foreach ($lane in $keysCopy)
-		{
-			$job = $script:LaneProtocolJobs[$lane]
-			if ($job.State -eq 'Completed')
-			{
-				$result = Receive-Job $job -ErrorAction SilentlyContinue
-				if ($result -and $result.Lane -and $result.Protocol)
-				{
-					$rawLane = $result.Lane
-					$numericLane = ($rawLane -replace '[^\d]', '').PadLeft(3, '0')
-					# Add all possible key forms
-					$script:LaneProtocols[$numericLane] = $result.Protocol
-					$script:LaneProtocols[$rawLane] = $result.Protocol					
-					# If you have LaneNumToMachineName mapping loaded, add machine name as key
-					if ($script:FunctionResults -and $script:FunctionResults['LaneNumToMachineName'])
-					{
-						$machineName = $script:FunctionResults['LaneNumToMachineName'][$numericLane]
-						if ($machineName) { $script:LaneProtocols[$machineName] = $result.Protocol }
-					}
-					
-					# Also cache with lowercased machine name just in case
-					if ($machineName) { $script:LaneProtocols[$machineName.ToLower()] = $result.Protocol }
-					$already = $script:ProtocolResults | Where-Object { $_.Lane -eq $rawLane }
-					if (-not $already) { $script:ProtocolResults += $result }
-				}
-				Remove-Job $job -Force
-				$script:LaneProtocolJobs.Remove($lane)
-			}
-			elseif ($job.State -eq 'Failed')
-			{
-				Write-Host "`r`nJob for Lane $lane failed: $($job.ChildJobs[0].JobStateInfo.Reason)" -ForegroundColor Red
-				
-				# --- Same as above, add all key forms ---
-				$rawLane = $lane
-				$numericLane = ($rawLane -replace '[^\d]', '').PadLeft(3, '0')
-				$script:LaneProtocols[$numericLane] = "File"
-				$script:LaneProtocols[$rawLane] = "File"
-				if ($script:FunctionResults -and $script:FunctionResults['LaneNumToMachineName'])
-				{
-					$machineName = $script:FunctionResults['LaneNumToMachineName'][$numericLane]
-					if ($machineName) { $script:LaneProtocols[$machineName] = "File" }
-				}
-				if ($machineName) { $script:LaneProtocols[$machineName.ToLower()] = "File" }
-				
-				$already = $script:ProtocolResults | Where-Object { $_.Lane -eq $lane }
-				if (-not $already)
-				{
-					$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = "File" }
-				}
-				Remove-Job $job -Force
-				$script:LaneProtocolJobs.Remove($lane)
-			}
-		}
-	})
-$protocolTimer.Start()
+# Get the Lanes protocol info if it doesnt exist
+Start_Lane_Protocol_Jobs -LaneNumToMachineName $LaneNumToMachineName -SqlModuleName $SqlModuleName
 
 # Populate the hash table with results from various functions
 $AliasToTable = Get_Table_Aliases
