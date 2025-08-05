@@ -10753,7 +10753,6 @@ function Update_ScaleConfig_And_DB
 	$POS_Value = 0
 	$SCL_Field = 'F272'
 	$SCL_Value = 3
-	$SCL_Clear = "NULL"
 	$ItemKey = 'F01'
 	
 	# ---------------------------------------------------------------------------
@@ -10765,43 +10764,36 @@ function Update_ScaleConfig_And_DB
 	$form.Size = New-Object System.Drawing.Size(420, 170)
 	$form.StartPosition = "CenterScreen"
 	$form.Topmost = $true
-	
 	$label = New-Object System.Windows.Forms.Label
 	$label.Text = "Which marking method do you want to implement for weighted items?"
 	$label.Size = New-Object System.Drawing.Size(390, 40)
 	$label.Location = New-Object System.Drawing.Point(10, 10)
 	$form.Controls.Add($label)
-	
 	$radioSCL = New-Object System.Windows.Forms.RadioButton
 	$radioSCL.Text = "New Way (SCL.F272 = 3, config to SCL)"
 	$radioSCL.Location = New-Object System.Drawing.Point(30, 50)
 	$radioSCL.Size = New-Object System.Drawing.Size(350, 20)
 	$radioSCL.Checked = $true
 	$form.Controls.Add($radioSCL)
-	
 	$radioPOS = New-Object System.Windows.Forms.RadioButton
 	$radioPOS.Text = "Default / Old Way (POS.F82, config to POS, F272 cleared)"
 	$radioPOS.Location = New-Object System.Drawing.Point(30, 75)
 	$radioPOS.Size = New-Object System.Drawing.Size(350, 20)
 	$form.Controls.Add($radioPOS)
-	
 	$okButton = New-Object System.Windows.Forms.Button
 	$okButton.Text = "OK"
 	$okButton.Location = New-Object System.Drawing.Point(220, 110)
 	$okButton.Add_Click({ $form.Tag = "OK"; $form.Close() })
 	$form.Controls.Add($okButton)
-	
 	$cancelButton = New-Object System.Windows.Forms.Button
 	$cancelButton.Text = "Cancel"
 	$cancelButton.Location = New-Object System.Drawing.Point(310, 110)
 	$cancelButton.Add_Click({ $form.Tag = "Cancel"; $form.Close() })
 	$form.Controls.Add($cancelButton)
-	
 	$form.AcceptButton = $okButton
 	$form.CancelButton = $cancelButton
 	$form.Tag = $null
 	$form.ShowDialog() | Out-Null
-	
 	if ($form.Tag -ne "OK")
 	{
 		Write_Log "User canceled Update_ScaleConfig_And_DB." "yellow"
@@ -10823,7 +10815,6 @@ function Update_ScaleConfig_And_DB
 	$ProdTypeKey = "ProdType_F272"
 	$ProdTypeValue = if ($Mode -eq "SCL") { "SCL.F272" }
 	else { "POS.F82" }
-	
 	foreach ($file in $Files)
 	{
 		$FullPath = Join-Path $Folder $file
@@ -10872,7 +10863,6 @@ function Update_ScaleConfig_And_DB
 	$server = $script:FunctionResults['DBSERVER']
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-	
 	if (-not $ConnectionString -or -not $server -or -not $dbName)
 	{
 		Write_Log "DB server, DB name, or connection string not found. Cannot execute SQL update." "red"
@@ -10895,13 +10885,12 @@ function Update_ScaleConfig_And_DB
 	{
 		$supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString'
 	}
-	
 	if ($Mode -eq "SCL")
 	{
 		$SqlQuery = @"
 MERGE INTO SCL_TAB AS Target
 USING (
-    SELECT 
+    SELECT
         $ItemKey,
         F1000,
         CAST(SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) AS INT) AS F267,
@@ -10911,18 +10900,19 @@ USING (
 ) AS Source
 ON Target.$ItemKey = Source.$ItemKey
 WHEN MATCHED THEN
-    UPDATE SET 
+    UPDATE SET
         $SCL_Field = CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END,
         F1000 = Source.F1000,
         F267 = Source.F267
 WHEN NOT MATCHED BY TARGET THEN
     INSERT ($ItemKey, F1000, $SCL_Field, F267)
     VALUES (
-        Source.$ItemKey, 
-        Source.F1000, 
-        CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END, 
+        Source.$ItemKey,
+        Source.F1000,
+        CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END,
         Source.F267
     );
+SELECT @@ROWCOUNT AS RowsAffected;
 "@
 	}
 	else
@@ -10932,36 +10922,27 @@ UPDATE SCL_TAB
 SET $SCL_Field = NULL
 WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
 AND F272 IS NOT NULL;
+SELECT @@ROWCOUNT AS RowsAffected;
 "@
-	<#	$SqlQuery = @"
-UPDATE SCL_TAB
-SET $SCL_Field = $SCL_Clear
-WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
-  AND EXISTS (
-        SELECT 1 FROM POS_TAB
-        WHERE POS_TAB.$ItemKey = SCL_TAB.$ItemKey
-          AND POS_TAB.$POS_Field = $POS_Value
-  );
-"@#>
 	}
-	
 	try
 	{
 		if ($supportsConnectionString)
 		{
-			& $InvokeSqlCmd -ConnectionString $ConnectionString -Query $SqlQuery -ErrorAction Stop -QueryTimeout 0
+			$result = & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $SqlQuery -ErrorAction Stop -QueryTimeout 0
 		}
 		else
 		{
-			& $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $SqlQuery -ErrorAction Stop -QueryTimeout 0
+			$result = & $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $SqlQuery -ErrorAction Stop -QueryTimeout 0
 		}
-		Write_Log "Database updated for $Mode mode." "green"
+		$rowsAffected = if ($result -and $result.RowsAffected) { $result.RowsAffected }
+		else { 0 }
+		Write_Log "Database updated for $Mode mode. ($rowsAffected) items changed." "green"
 	}
 	catch
 	{
 		Write_Log "Error executing SQL update for $Mode mode: $_" "red"
 	}
-	
 	Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
 }
 
