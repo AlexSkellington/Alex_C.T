@@ -1138,78 +1138,88 @@ WHERE Active = 'Y'
 	}
 	
 	# ====================================================================================
-	# 3. EXPAND ALL LOOKUPS: MAKE REVERSE AND FLEXIBLE KEYS FOR ALL NODES
+	# 3. CLEAN 1:1 MAPPINGS FOR ALL NODES (NO ALIASES, INCLUDE PATHS)
 	# ====================================================================================
+	
 	# ---- LANES ----
-	$ExpandedLaneNumToMachineName = @{ }
-	$ExpandedMachineNameToLaneNum = @{ }
+	$CleanLaneNumToMachineName = @{ }
+	$CleanMachineNameToLaneNum = @{ }
+	$CleanLaneNumToPath = @{ }
+	$CleanMachineNameToPath = @{ }
+	$CleanLaneNumToServerPath = @{ }
+	$CleanMachineNameToServerPath = @{ }
+	
 	foreach ($kv in $LaneNumToMachineName.GetEnumerator())
 	{
-		$key = $kv.Key
+		$laneNum = $kv.Key
 		$machine = $kv.Value
-		if ($key -match '(\d{3})')
+		$CleanLaneNumToMachineName[$laneNum] = $machine
+		$CleanMachineNameToLaneNum[$machine] = $laneNum
+		# Paths
+		if ($LaneMachinePath.ContainsKey($machine))
 		{
-			$laneNum = $matches[1]
-			$ExpandedLaneNumToMachineName[$laneNum] = $machine
-			$ExpandedLaneNumToMachineName["POS$laneNum"] = $machine
-			$ExpandedLaneNumToMachineName["pos$laneNum"] = $machine
-			$ExpandedLaneNumToMachineName[$machine.ToUpper()] = $machine
-			$ExpandedLaneNumToMachineName[$machine.ToLower()] = $machine
-			$ExpandedMachineNameToLaneNum[$machine.ToUpper()] = $laneNum
-			$ExpandedMachineNameToLaneNum[$machine.ToLower()] = $laneNum
-			$ExpandedMachineNameToLaneNum["POS$laneNum"] = $laneNum
-			$ExpandedMachineNameToLaneNum["pos$laneNum"] = $laneNum
+			$CleanLaneNumToPath[$laneNum] = $LaneMachinePath[$machine]
+			$CleanMachineNameToPath[$machine] = $LaneMachinePath[$machine]
+		}
+		if ($LaneMachineToServerPath.ContainsKey($machine))
+		{
+			$CleanLaneNumToServerPath[$laneNum] = $LaneMachineToServerPath[$machine]
+			$CleanMachineNameToServerPath[$machine] = $LaneMachineToServerPath[$machine]
 		}
 	}
-	$LaneNumToMachineName = $ExpandedLaneNumToMachineName
-	$MachineNameToLaneNum = $ExpandedMachineNameToLaneNum
+	$LaneNumToMachineName = $CleanLaneNumToMachineName
+	$MachineNameToLaneNum = $CleanMachineNameToLaneNum
+	$LaneNumToPath = $CleanLaneNumToPath
+	$MachineNameToPath = $CleanMachineNameToPath
+	$LaneNumToServerPath = $CleanLaneNumToServerPath
+	$MachineNameToServerPath = $CleanMachineNameToServerPath
 	
 	# ---- SCALES ----
-	$ExpandedScaleCodeToInfo = @{ }
-	$ExpandedScaleNameToCode = @{ }
+	$CleanScaleCodeToIPInfo = @{ }
+	$CleanScaleNameToCode = @{ }
+	$CleanScaleCodeToPath = @{ }
+	$CleanScaleNameToPath = @{ }
+	
 	foreach ($kv in $ScaleCodeToIPInfo.GetEnumerator())
 	{
-		$code = $kv.Key
+		$scaleCode = $kv.Key
 		$scale = $kv.Value
-		if ($code -match '(\d{1,3})')
+		$CleanScaleCodeToIPInfo[$scaleCode] = $scale
+		if ($scale.ScaleName)
 		{
-			$ExpandedScaleCodeToInfo[$code] = $scale
-			$ExpandedScaleCodeToInfo["SC$code"] = $scale
-			$ExpandedScaleCodeToInfo["sc$code"] = $scale
-			if ($scale.ScaleName)
-			{
-				$ExpandedScaleCodeToInfo[$scale.ScaleName.ToUpper()] = $scale
-				$ExpandedScaleCodeToInfo[$scale.ScaleName.ToLower()] = $scale
-				$ExpandedScaleNameToCode[$scale.ScaleName.ToUpper()] = $code
-				$ExpandedScaleNameToCode[$scale.ScaleName.ToLower()] = $code
-			}
+			$CleanScaleNameToCode[$scale.ScaleName] = $scaleCode
+			$CleanScaleNameToPath[$scale.ScaleName] = $scale.Path
 		}
+		$CleanScaleCodeToPath[$scaleCode] = $scale.Path
 	}
-	$ScaleCodeToIPInfo = $ExpandedScaleCodeToInfo
+	$ScaleCodeToIPInfo = $CleanScaleCodeToIPInfo
+	$ScaleNameToCode = $CleanScaleNameToCode
+	$ScaleCodeToPath = $CleanScaleCodeToPath
+	$ScaleNameToPath = $CleanScaleNameToPath
 	
 	# ---- BACKOFFICES ----
-	$ExpandedBackofficeNumToMachineName = @{ }
-	$ExpandedMachineNameToBackofficeNum = @{ }
+	$CleanBackofficeNumToMachineName = @{ }
+	$CleanMachineNameToBackofficeNum = @{ }
+	$CleanBackofficeNumToPath = @{ }
+	$CleanMachineNameToBOPath = @{ }
+	
 	foreach ($kv in $BackofficeNumToMachineName.GetEnumerator())
 	{
-		$key = $kv.Key
+		$boNum = $kv.Key
 		$machine = $kv.Value
-		if ($key -match '(\d{3})')
+		$CleanBackofficeNumToMachineName[$boNum] = $machine
+		$CleanMachineNameToBackofficeNum[$machine] = $boNum
+		# Paths
+		if ($BackofficeNumToPath.ContainsKey($boNum))
 		{
-			$boNum = $matches[1]
-			$ExpandedBackofficeNumToMachineName[$boNum] = $machine
-			$ExpandedBackofficeNumToMachineName["BO$boNum"] = $machine
-			$ExpandedBackofficeNumToMachineName["bo$boNum"] = $machine
-			$ExpandedBackofficeNumToMachineName[$machine.ToUpper()] = $machine
-			$ExpandedBackofficeNumToMachineName[$machine.ToLower()] = $machine
-			$ExpandedMachineNameToBackofficeNum[$machine.ToUpper()] = $boNum
-			$ExpandedMachineNameToBackofficeNum[$machine.ToLower()] = $boNum
-			$ExpandedMachineNameToBackofficeNum["BO$boNum"] = $boNum
-			$ExpandedMachineNameToBackofficeNum["bo$boNum"] = $boNum
+			$CleanBackofficeNumToPath[$boNum] = $BackofficeNumToPath[$boNum]
+			$CleanMachineNameToBOPath[$machine] = $BackofficeNumToPath[$boNum]
 		}
 	}
-	$BackofficeNumToMachineName = $ExpandedBackofficeNumToMachineName
-	$MachineNameToBackofficeNum = $ExpandedMachineNameToBackofficeNum
+	$BackofficeNumToMachineName = $CleanBackofficeNumToMachineName
+	$MachineNameToBackofficeNum = $CleanMachineNameToBackofficeNum
+	$BackofficeNumToPath = $CleanBackofficeNumToPath
+	$MachineNameToBackofficePath = $CleanMachineNameToBOPath
 	
 	# ====================================================================================
 	# 4. BUILD RETURN OBJECT & STORE TO GLOBAL FUNCTIONRESULTS
@@ -2193,9 +2203,23 @@ function Get_All_VNC_Passwords
 	if ($LaneNumToMachineName) { $NodeList += $LaneNumToMachineName.Values | Where-Object { $_ } }
 	if ($ScaleCodeToIPInfo)
 	{
+		$uniqueScaleObjs = @{ }
 		foreach ($kv in $ScaleCodeToIPInfo.GetEnumerator())
 		{
 			$scaleObj = $kv.Value
+			# Compute a unique identifier, e.g., IP or some combination
+			$ip = $null
+			if ($scaleObj.FullIP) { $ip = $scaleObj.FullIP }
+			elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice) { $ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)" }
+			# Add only once!
+			if ($ip -and -not $uniqueScaleObjs.ContainsKey($ip))
+			{
+				$uniqueScaleObjs[$ip] = $scaleObj
+			}
+		}
+		foreach ($ip in $uniqueScaleObjs.Keys)
+		{
+			$scaleObj = $uniqueScaleObjs[$ip]
 			$ip = $null
 			$isIshida = $false
 			$isBizerba = $false
@@ -10645,71 +10669,59 @@ PreemptiveUpdates=0
 	# ---- Lanes ---- #
 	Write_Log "-------------------- Exporting Lane VNC Files --------------------" "blue"
 	$laneCount = 0
-	$laneInfoLines = @()
-	
-	foreach ($lane in $LaneNumToMachineName.GetEnumerator())
+	$dedupedLanes = @{ }
+	foreach ($kv in $LaneNumToMachineName.GetEnumerator())
 	{
-		$laneNumber = $lane.Key
-		$machineName = $lane.Value
-		
-		# File name logic
-		if ($machineName -and $machineName.ToUpper() -match '^(POS|SCO)\d+$')
+		# Only write one file per machine name
+		$machineName = $kv.Value
+		if ($machineName -and -not $dedupedLanes.ContainsKey($machineName))
 		{
-			$fileName = "$($machineName.ToUpper()).vnc"
+			$dedupedLanes[$machineName] = $true
+			if ($machineName.ToUpper() -match '^(POS|SCO)\d+$')
+			{
+				$fileName = "$($machineName.ToUpper()).vnc"
+			}
+			else
+			{
+				$fileName = "Lane_$($kv.Key).vnc"
+			}
+			$filePath = Join-Path $lanesDir $fileName
+			$parent = Split-Path $filePath -Parent
+			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
+			$VNCPassword = $DefaultVNCPassword
+			if ($AllVNCPasswords -and $AllVNCPasswords.ContainsKey($machineName) -and $AllVNCPasswords[$machineName])
+			{
+				$VNCPassword = $AllVNCPasswords[$machineName]
+			}
+			$content = $vncTemplate.Replace('%%HOST%%', $machineName).Replace('%%PASSWORD%%', $VNCPassword)
+			[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
+			Write_Log "Created: $filePath" "green"
+			$laneCount++
 		}
-		else
-		{
-			$fileName = "Lane_${laneNumber}.vnc"
-		}
-		
-		$filePath = Join-Path $lanesDir $fileName
-		$parent = Split-Path $filePath -Parent
-		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-		
-		# Use custom password if available, else default
-		$VNCPassword = $DefaultVNCPassword
-		if ($AllVNCPasswords -and $AllVNCPasswords.ContainsKey($machineName) -and $AllVNCPasswords[$machineName])
-		{
-			$VNCPassword = $AllVNCPasswords[$machineName]
-		}
-		$content = $vncTemplate.Replace('%%HOST%%', $machineName).Replace('%%PASSWORD%%', $VNCPassword)
-		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
-		Write_Log "Created: $filePath" "green"
-		$laneCount++
 	}
 	Write_Log "$laneCount lane VNC files written to $lanesDir`r`n" "blue"
 	
 	# ---- Scales ---- #
 	Write_Log "-------------------- Exporting Scale VNC Files --------------------" "blue"
 	$scaleCount = 0
-	foreach ($scale in $ScaleCodeToIPInfo.GetEnumerator())
+	$dedupedScales = @{ }
+	foreach ($kv in $ScaleCodeToIPInfo.GetEnumerator())
 	{
-		$scaleCode = $scale.Key
-		$scaleObj = $scale.Value
+		$scaleObj = $kv.Value
+		# Make sure to dedupe by IP address
 		$ip = if ($scaleObj.FullIP) { $scaleObj.FullIP }
 		elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice) { "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)" }
 		else { $null }
-		
-		if ($ip)
+		if ($ip -and -not $dedupedScales.ContainsKey($ip))
 		{
+			$dedupedScales[$ip] = $true
 			$octets = $ip -split '\.'
 			$lastOctet = $octets[-1]
-			
-			# Normalize Brand/Model
 			$brandRaw = ($scaleObj.ScaleBrand -as [string]).Trim()
 			$model = ($scaleObj.ScaleModel -as [string]).Trim()
-			
-			# Capitalize every word in the brand
-			$brand = if ($brandRaw)
-			{
-				($brandRaw -split ' ' | ForEach-Object {
-						if ($_.Length -gt 0) { $_.Substring(0, 1).ToUpper() + $_.Substring(1).ToLower() }
-						else { $_ }
-					}) -join ' '
-			}
+			$brand = if ($brandRaw) { ($brandRaw -split ' ' | ForEach-Object { if ($_.Length -gt 0) { $_.Substring(0, 1).ToUpper() + $_.Substring(1).ToLower() }
+						else { $_ } }) -join ' ' }
 			else { "" }
-			
-			# Naming decision
 			if ($brand -and $model)
 			{
 				$fileName = "$brand($model)_${lastOctet}.vnc"
@@ -10722,11 +10734,9 @@ PreemptiveUpdates=0
 			{
 				$fileName = "Scale_${lastOctet}.vnc"
 			}
-			
 			$filePath = Join-Path $scalesDir $fileName
 			$parent = Split-Path $filePath -Parent
 			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-			# Set AllowUntrustedServers=1 for Ishida, else use template as-is
 			$VNCPassword = $DefaultVNCPassword
 			if ($AllVNCPasswords -and $AllVNCPasswords.ContainsKey($ip) -and $AllVNCPasswords[$ip])
 			{
@@ -10745,35 +10755,35 @@ PreemptiveUpdates=0
 			Write_Log "Created: $filePath" "green"
 			$scaleCount++
 		}
-		else
-		{
-			Write_Log "Skipped scale $scaleCode (missing IP)" "yellow"
-		}
 	}
 	Write_Log "$scaleCount scale VNC files written to $scalesDir`r`n" "blue"
 	
 	# ---- Backoffices ---- #
 	Write_Log "-------------------- Exporting Backoffice VNC Files --------------------" "blue"
 	$boCount = 0
-	foreach ($bo in $BackofficeNumToMachineName.GetEnumerator())
+	$dedupedBOs = @{ }
+	foreach ($kv in $BackofficeNumToMachineName.GetEnumerator())
 	{
-		$terminal = $bo.Key
-		$boName = $bo.Value
-		$fileName = "Backoffice_${terminal}.vnc"
-		$filePath = Join-Path $backofficesDir $fileName
-		$parent = Split-Path $filePath -Parent
-		if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
-		$content = $vncTemplate.Replace('%%HOST%%', $boName).Replace('%%PASSWORD%%', $DefaultVNCPassword)
-		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
-		Write_Log "Created: $filePath" "green"
-		$boCount++
+		$boName = $kv.Value
+		$terminal = $kv.Key
+		if ($boName -and -not $dedupedBOs.ContainsKey($boName))
+		{
+			$dedupedBOs[$boName] = $true
+			$fileName = "Backoffice_${terminal}.vnc"
+			$filePath = Join-Path $backofficesDir $fileName
+			$parent = Split-Path $filePath -Parent
+			if (-not (Test-Path $parent)) { New-Item -Path $parent -ItemType Directory | Out-Null }
+			$content = $vncTemplate.Replace('%%HOST%%', $boName).Replace('%%PASSWORD%%', $DefaultVNCPassword)
+			[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
+			Write_Log "Created: $filePath" "green"
+			$boCount++
+		}
 	}
 	Write_Log "$boCount backoffice VNC files written to $backofficesDir`r`n" "blue"
 	
 	Write_Log "VNC file export complete!" "green"
 	Write_Log "`r`n==================== Export_VNCFiles_ForAllNodes Completed ====================" "blue"
 }
-
 # ===================================================================================================
 #                               FUNCTION: Update_ScaleConfig_And_DB
 # ---------------------------------------------------------------------------------------------------
@@ -12340,7 +12350,7 @@ function Start_Lane_Protocol_Jobs
 								if ($machineName) { $script:LaneProtocols[$machineName.ToLower()] = $result.Protocol }
 							}
 							# --- Always replace previous result for this lane ---
-							$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $rawLane }
+							$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $rawLane })
 							$script:ProtocolResults += $result
 							$updated = $true
 						}
@@ -12362,8 +12372,8 @@ function Start_Lane_Protocol_Jobs
 							if ($machineName) { $script:LaneProtocols[$machineName.ToLower()] = $protocol }
 						}
 						# --- Always replace previous result for this lane ---
-						$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $rawLane }
-						$script:ProtocolResults += [PSCustomObject]@{ Lane = $rawLane; Protocol = $protocol }
+						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $rawLane })
+						$script:ProtocolResults += $result
 						$updated = $true
 						Remove-Job $job -Force
 						$script:LaneProtocolJobs.Remove($lane)
