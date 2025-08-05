@@ -5779,17 +5779,7 @@ function Delete_DBS
 	)
 	
 	Write_Log "`r`n==================== Starting Delete_DBS Function ====================`r`n" "blue"
-	
-	# Ensure necessary functions are available
-	foreach ($func in @('Show_Lane_Selection_Form', 'Delete_Files', 'Write_Log'))
-	{
-		if (-not (Get-Command -Name $func -ErrorAction SilentlyContinue))
-		{
-			Write-Error "Function '$func' is not available. Please ensure it is loaded."
-			return
-		}
-	}
-	
+		
 	# Check if FunctionResults has the necessary data
 	if (-not $script:FunctionResults.ContainsKey('LaneMachineNames') -or
 		-not $script:FunctionResults.ContainsKey('LaneNumToMachineName'))
@@ -5878,12 +5868,20 @@ function Delete_DBS
 		return
 	}
 	
-	# Get the list of lanes to process (store mode: only 'Specific' type possible)
-	$selectedLanes = $selection.Lanes
+	# Accept all supported forms (lane number, machine name, POSxxx, etc)
+	$selectedLanes = $selection.Lanes | ForEach-Object {
+		if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber }
+		elseif ($_ -match '^\d{3}$') { $_ }
+		elseif ($LaneMachineNames.ContainsKey($_)) { $_ }
+		elseif ($LaneNumToMachineName.ContainsKey($_)) { $_ }
+		else { $_ }
+	}
+	# Make sure only valid 3-digit lane numbers that are in the mapping
+	$selectedLanes = $selectedLanes | Where-Object { $LaneNumToMachineName.ContainsKey($_) }
 	
-	if ($selectedLanes.Count -eq 0)
+	if (-not $selectedLanes -or $selectedLanes.Count -eq 0)
 	{
-		Write_Log "No lanes selected for processing." "Yellow"
+		Write_Log "No valid lanes selected for processing." "Yellow"
 		return
 	}
 	
@@ -7932,40 +7930,57 @@ function Drawer_Control
 	
 	Write_Log "`r`n==================== Starting Drawer_Control ====================`r`n" "blue"
 	
-	# Prompt for drawer state (Enable/Disable)
+	# --------------------------------------------------
+	# STEP 1: Prompt for Drawer State using Enable/Disable radio buttons
+	# --------------------------------------------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
 	$stateForm = New-Object System.Windows.Forms.Form
 	$stateForm.Text = "Select Drawer State"
-	$stateForm.Size = New-Object System.Drawing.Size(400, 180)
+	$stateForm.Size = New-Object System.Drawing.Size(400, 200)
 	$stateForm.StartPosition = "CenterScreen"
+	
 	$stateLabel = New-Object System.Windows.Forms.Label
 	$stateLabel.Text = "Select Drawer State:"
 	$stateLabel.Location = New-Object System.Drawing.Point(10, 20)
 	$stateLabel.AutoSize = $true
 	$stateForm.Controls.Add($stateLabel)
+	
+	# Radio button for Enable (value = 1)
 	$radioEnable = New-Object System.Windows.Forms.RadioButton
 	$radioEnable.Text = "Enable"
 	$radioEnable.Location = New-Object System.Drawing.Point(10, 50)
 	$radioEnable.AutoSize = $true
-	$radioEnable.Checked = $true
+	$radioEnable.Checked = $true # default selection
 	$stateForm.Controls.Add($radioEnable)
+	
+	# Radio button for Disable (value = 0)
 	$radioDisable = New-Object System.Windows.Forms.RadioButton
 	$radioDisable.Text = "Disable"
 	$radioDisable.Location = New-Object System.Drawing.Point(10, 80)
 	$radioDisable.AutoSize = $true
 	$stateForm.Controls.Add($radioDisable)
+	
+	# OK Button
 	$okButton = New-Object System.Windows.Forms.Button
 	$okButton.Text = "OK"
 	$okButton.Location = New-Object System.Drawing.Point(80, 120)
 	$okButton.Add_Click({
-			$stateForm.Tag = if ($radioEnable.Checked) { "1" }
-			else { "0" }
+			if ($radioEnable.Checked)
+			{
+				$stateForm.Tag = "1"
+			}
+			elseif ($radioDisable.Checked)
+			{
+				$stateForm.Tag = "0"
+			}
 			$stateForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
 			$stateForm.Close()
 		})
 	$stateForm.Controls.Add($okButton)
+	
+	# Cancel Button
 	$cancelButton = New-Object System.Windows.Forms.Button
 	$cancelButton.Text = "Cancel"
 	$cancelButton.Location = New-Object System.Drawing.Point(180, 120)
@@ -7975,20 +7990,23 @@ function Drawer_Control
 			$stateForm.Close()
 		})
 	$stateForm.Controls.Add($cancelButton)
+	
 	$stateForm.AcceptButton = $okButton
 	$stateForm.CancelButton = $cancelButton
 	
 	$resultState = $stateForm.ShowDialog()
 	if ($stateForm.Tag -eq "Cancelled" -or $resultState -eq [System.Windows.Forms.DialogResult]::Cancel)
 	{
-		Write_Log "User cancelled at drawer state selection." "yellow"
+		Write_Log "User cancelled the operation at drawer state selection." "yellow"
 		Write_Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 		return
 	}
 	$DrawerState = $stateForm.Tag
 	Write_Log "Drawer state selected: $DrawerState" "green"
 	
-	# Select lanes with unified picker
+	# --------------------------------------------------
+	# STEP 2: Use Show_Lane_Selection_Form to select lanes (Store mode)
+	# --------------------------------------------------
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 	{
@@ -7996,34 +8014,35 @@ function Drawer_Control
 		Write_Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 		return
 	}
-	
-	# Node mapping for machine names if needed
+	# Normalize to 3-digit lane numbers (always as strings)
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-	
-	$lanes = $selection.Lanes
-	$successCount = 0
-	
-	foreach ($laneObj in $lanes)
+	$lanesToProcess = $selection.Lanes | ForEach-Object {
+		if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber }
+		elseif ($_ -match '^\d{3}$') { $_ }
+		elseif ($LaneNumToMachineName.ContainsKey($_)) { $_ }
+		else { $_ }
+	}
+	$lanesToProcess = $lanesToProcess | Where-Object { $LaneNumToMachineName.ContainsKey($_) }
+	if (-not $lanesToProcess -or $lanesToProcess.Count -eq 0)
 	{
-		# Support all output shapes from picker (object/string/int)
-		$laneNum = $null; $machineName = $null
-		if ($laneObj -is [pscustomobject])
-		{
-			$laneNum = if ($laneObj.PSObject.Properties.Name -contains "LaneNumber") { $laneObj.LaneNumber }
-			else { $laneObj.ToString() }
-			$machineName = if ($laneObj.PSObject.Properties.Name -contains "MachineName") { $laneObj.MachineName }
-		}
-		else { $laneNum = $laneObj.ToString() }
-		$laneNum = $laneNum.PadLeft(3, '0')
-		if (-not $machineName -and $LaneNumToMachineName.ContainsKey($laneNum)) { $machineName = $LaneNumToMachineName[$laneNum] }
-		
-		$LaneDirectory = "$OfficePath\XF${StoreNumber}${laneNum}"
+		Write_Log "No valid lanes selected for processing." "yellow"
+		return
+	}
+	
+	# --------------------------------------------------
+	# STEP 3: For each selected lane, deploy the SQI command file in ANSI (PC) format and send restart command.
+	# --------------------------------------------------
+	foreach ($lane in $lanesToProcess)
+	{
+		# Construct the lane directory path (assumes folder naming: XF<StoreNumber><Lane>)
+		$LaneDirectory = "$OfficePath\XF${StoreNumber}${lane}"
 		if (-not (Test-Path $LaneDirectory))
 		{
-			Write_Log "Lane directory $LaneDirectory not found. Skipping lane $laneNum." "yellow"
+			Write_Log "Lane directory $LaneDirectory not found. Skipping lane $lane." "yellow"
 			continue
 		}
 		
+		# Define the SQI content with the chosen drawer state
 		$SQIContent = @"
 CREATE VIEW Fct_Load AS SELECT F1063,F1000,F81,F85,F96,F97,F98,F99,F100,F101,F102,F125,F172,F239,F240,F241,F242,F1042,F1043,F1044,F1045,F1046,F1047,F1050,F1051,F1052,F1053,F1054,F1055,F1064,F1081,F1082,F1083,F1084,F1085,F1086,F1088,F1089,F1090,F1091,F1092,F1147,F1817,F1818,F1895,F1897,F1965,F1966 FROM FCT_TAB;
 
@@ -8040,42 +8059,19 @@ DROP TABLE Fct_Load;
 @EXEC(SQM=exe_activate_accept_sys);
 "@
 		
+		# Ensure the SQI content uses CRLF line endings (ANSI PC format)
 		$SQIContent = $SQIContent -replace "`n", "`r`n"
-		$SQIFilePath = Join-Path -Path $LaneDirectory -ChildPath "DrawerControl.sqi"
-		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
-		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Deployed DrawerControl.sqi to lane $laneNum ($machineName) with state '$DrawerState' in $LaneDirectory." "green"
 		
-		# Send Restart All Programs
-		try
-		{
-			if ($machineName)
-			{
-				$mailslot = "\\$machineName\mailslot\SMSStart_${StoreNumber}${laneNum}"
-				$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
-				$result = $null
-				if ($global:MailslotSender -or ([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetTypes() -match 'MailslotSender' }))
-				{
-					$result = [MailslotSender]::SendMailslotCommand($mailslot, $commandMessage)
-				}
-				if ($result)
-				{
-					Write_Log "Restart All Programs sent to $machineName (Lane $laneNum)" "cyan"
-				}
-				else
-				{
-					Write_Log "Could not send restart command to $machineName (Lane $laneNum)" "yellow"
-				}
-			}
-		}
-		catch
-		{
-			Write_Log "Error sending restart command to $machineName (Lane $laneNum): $_" "red"
-		}
-		$successCount++
+		# Define the full path to the SQI file (named "DrawerControl.sqi")
+		$SQIFilePath = Join-Path -Path $LaneDirectory -ChildPath "DrawerControl.sqi"
+		
+		# Write the SQI file using ASCII encoding (ANSI PC)
+		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
+		
+		# Remove the Archive attribute (set file attributes to Normal)
+		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write_Log "Deployed Drawer_Control.sqi command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
 	}
-	
-	Write_Log "$successCount lanes processed for Drawer_Control." "blue"
 	Write_Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 }
 
@@ -8104,106 +8100,73 @@ DROP TABLE Fct_Load;
 
 function Refresh_Database
 {
+	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
 	
-	Write_Log "`r`n==================== Starting Refresh_Database Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Refresh_Database ====================`r`n" "blue"
 	
-	if (-not $OfficePath)
-	{
-		Write_Log "OfficePath variable not defined. Aborting." "red"
-		return
-	}
-	if (-not $script:FunctionResults.ContainsKey('LaneNumToMachineName'))
-	{
-		Write_Log "Lane mapping not available. Please run Retrieve_Nodes first." "red"
-		return
-	}
-	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-	
-	# Lane picker (compatible with objects or string output)
+	# --------------------------------------------------
+	# STEP 1: Use Show_Node_Selection_Form to select registers/lanes
+	# --------------------------------------------------
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 	{
-		Write_Log "No lanes selected. Exiting." "yellow"
+		Write_Log "No registers selected or selection cancelled." "yellow"
+		Write_Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
 		return
 	}
 	
-	$lanes = $selection.Lanes
-	$refreshedCount = 0
-	
-	foreach ($laneObj in $lanes)
+	# Normalize to 3-digit lane/register numbers (always as strings)
+	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+	$registersToProcess = $selection.Lanes | ForEach-Object {
+		if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber }
+		elseif ($_ -match '^\d{3}$') { $_ }
+		elseif ($LaneNumToMachineName.ContainsKey($_)) { $_ }
+		else { $_ }
+	}
+	$registersToProcess = $registersToProcess | Where-Object { $LaneNumToMachineName.ContainsKey($_) }
+	if (-not $registersToProcess -or $registersToProcess.Count -eq 0)
 	{
-		# Support either [pscustomobject] or plain lane number/string
-		$laneNum = $null
-		$machineName = $null
-		
-		if ($laneObj -is [pscustomobject])
-		{
-			if ($laneObj.PSObject.Properties.Name -contains "LaneNumber") { $laneNum = $laneObj.LaneNumber }
-			elseif ($laneObj.PSObject.Properties.Name -contains "Key") { $laneNum = $laneObj.Key }
-			else { $laneNum = $laneObj.ToString() }
-			if ($laneObj.PSObject.Properties.Name -contains "MachineName") { $machineName = $laneObj.MachineName }
-		}
-		else
-		{
-			$laneNum = $laneObj.ToString()
-		}
-		
-		# Always 3-digit padded
-		$laneNum = $laneNum.PadLeft(3, '0')
-		if (-not $machineName -and $LaneNumToMachineName.ContainsKey($laneNum))
-		{
-			$machineName = $LaneNumToMachineName[$laneNum]
-		}
-		if (-not $machineName)
-		{
-			Write_Log "No machine mapping for lane $laneNum. Skipping." "yellow"
-			continue
-		}
-		
-		$regDir = Join-Path $OfficePath "XF${StoreNumber}${laneNum}"
-		if (-not (Test-Path $regDir))
-		{
-			Write_Log "Directory not found for lane ${laneNum}: $regDir. Skipping." "yellow"
-			continue
-		}
-		
-		$filePath = Join-Path $regDir "db_refresh.sqi"
-		$content = "@WIZSET(TARGET=@TER);`r`n@EXEC(SQM=exe_activate_accept_sys);`r`n"
-		if (-not $script:ansiPcEncoding) { $script:ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252) }
-		[System.IO.File]::WriteAllText($filePath, $content, $script:ansiPcEncoding)
-		Write_Log "Deployed db_refresh.sqi to $regDir (Lane $laneNum, $machineName)" "green"
-		$refreshedCount++
-		
-		# --- Restart All Programs after file drop ---
-		try
-		{
-			$mailslot = "\\$machineName\mailslot\SMSStart_${StoreNumber}${laneNum}"
-			$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
-			$result = $null
-			if ($global:MailslotSender -or ([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetTypes() -match 'MailslotSender' }))
-			{
-				$result = [MailslotSender]::SendMailslotCommand($mailslot, $commandMessage)
-			}
-			if ($result)
-			{
-				Write_Log "Restart All Programs sent to $machineName (Lane $laneNum)" "cyan"
-			}
-			else
-			{
-				Write_Log "Could not send restart command to $machineName (Lane $laneNum)" "yellow"
-			}
-		}
-		catch
-		{
-			Write_Log "Error sending restart command to $machineName (Lane $laneNum): $_" "red"
-		}
+		Write_Log "No valid registers selected for processing." "yellow"
+		return
 	}
 	
-	Write_Log "$refreshedCount registers refreshed for Store $StoreNumber." "blue"
+	# --------------------------------------------------
+	# STEP 2: Define the SQI content to refresh the database
+	# --------------------------------------------------
+	$SQIContent = @"
+@WIZSET(TARGET=@TER);
+@EXEC(SQM=exe_activate_accept_sys);
+"@
+	# Ensure the SQI content uses CRLF line endings (ANSI PC format)
+	$SQIContent = $SQIContent -replace "`n", "`r`n"
+	
+	# --------------------------------------------------
+	# STEP 3: For each selected register, deploy the SQI file
+	# --------------------------------------------------
+	foreach ($register in $registersToProcess)
+	{
+		# Construct the register directory path (assumes folder naming: XF<StoreNumber><Register>)
+		$RegisterDirectory = "$OfficePath\XF${StoreNumber}${register}"
+		if (-not (Test-Path $RegisterDirectory))
+		{
+			Write_Log "Register directory $RegisterDirectory not found. Skipping register $register." "yellow"
+			continue
+		}
+		
+		# Define the full path to the SQI file (named "Refresh_Database.sqi")
+		$SQIFilePath = Join-Path -Path $RegisterDirectory -ChildPath "Refresh_Database.sqi"
+		
+		# Write the SQI file in ANSI (PC) format (using ASCII encoding)
+		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
+		
+		# Remove the Archive attribute (set file attributes to Normal)
+		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write_Log "Deployed Refresh_Database.sqi command to register $register in directory $RegisterDirectory." "green"
+	}
 	Write_Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
 }
 
