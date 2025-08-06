@@ -90,6 +90,14 @@ $passwordBiyerba = ConvertTo-SecureString "biyerba" -AsPlainText -Force
 $script:credBizerba = New-Object System.Management.Automation.PSCredential ($bizuser, $passwordBizerba)
 $script:credBiyerba = New-Object System.Management.Automation.PSCredential ($bizuser, $passwordBiyerba)
 
+# === Directories for Backups and Scripts ===
+$script:BackupRoot = "C:\Tecnica_Systems\Alex_C.T\Backups\"
+$script:ScriptsFolder = "C:\Tecnica_Systems\Alex_C.T\Scripts\"
+
+# === SQL Backup/Automation Credentials ===
+$script:BackupSqlUser = "Tecnica"
+$script:BackupSqlPass = "TB`$upp0rT"
+
 # ---------------------------------------------------------------------------------------------------
 # Locate Base Path: Storeman Folder Detection (case-insensitive)
 # ---------------------------------------------------------------------------------------------------
@@ -1462,7 +1470,8 @@ function Generate_SQL_Scripts
 	# Initialize default database names
 	$defaultStoreDbName = "STORESQL"
 	$defaultLaneDbName = "LANESQL"
-	
+	$dbServer = $script:FunctionResults['DBSERVER']
+		
 	# Retrive the DB name
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
@@ -1475,6 +1484,10 @@ function Generate_SQL_Scripts
 		Write_Log "No 'Database' in $script:FunctionResults. Defaulting to '$defaultStoreDbName'." "yellow"
 		$storeDbName = $defaultStoreDbName
 	}
+	
+	#Always Enforce the Slash
+	$BackupRoot = ($BackupRoot.TrimEnd('\') + '\')
+	$ScriptsFolder = ($ScriptsFolder.TrimEnd('\') + '\')
 	
 	# Define replacements for SQL scripts
 	# $storeDbName is now either the retrieved DBNAME or the default 'STORESQL'
@@ -1680,6 +1693,65 @@ EXEC sp_configure 'max server memory (MB)', @Memory25PercentMB;
 RECONFIGURE;
 EXEC sp_configure 'show advanced options', 0;
 RECONFIGURE;
+
+/* Create "$BackupSqlUser" user in the database */
+-- Create SQL Login if not exists
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$BackupSqlUser')
+    CREATE LOGIN [$BackupSqlUser] WITH PASSWORD = '$BackupSqlPass', CHECK_POLICY = OFF;
+-- Create User in DB if not exists, grant backup rights
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$BackupSqlUser')
+    CREATE USER [$BackupSqlUser] FOR LOGIN [$BackupSqlUser];
+IF IS_ROLEMEMBER('db_owner', '$BackupSqlUser') = 0
+    EXEC sp_addrolemember 'db_owner', '$BackupSqlUser';
+
+/* Schedule daily backup of the main database */
+IF OBJECT_ID('dbo.Server_DB_Backup', 'P') IS NOT NULL DROP PROCEDURE dbo.Server_DB_Backup;
+EXEC('
+CREATE PROCEDURE dbo.Server_DB_Backup
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @DbName varchar(128) = ''$storeDbName'';
+    DECLARE @machine varchar(128) = CAST(SERVERPROPERTY(''MachineName'') AS varchar(128));
+    DECLARE @backupRoot varchar(4000) = ''$BackupRoot'';
+    DECLARE @scriptPath varchar(4000) = ''$ScriptsFolder'';
+	DECLARE @backupPath varchar(4000);
+    DECLARE @filePattern varchar(255);
+    DECLARE @backupFile varchar(4000);
+    DECLARE @cmd varchar(8000);         
+    DECLARE @psCmd varchar(8000); 
+    DECLARE @schtask varchar(8000);
+    DECLARE @bat varchar(8000);
+    DECLARE @sqlBackup nvarchar(max);
+
+    SET @backupPath = @backupRoot + @machine + ''\'';
+    SET @cmd = ''IF NOT EXIST "'' + @backupPath + ''" mkdir "'' + @backupPath + ''" >nul 2>&1'';
+    EXEC xp_cmdshell @cmd, NO_OUTPUT;
+    SET @cmd = ''IF NOT EXIST "'' + @scriptPath + ''" mkdir "'' + @scriptPath + ''" >nul 2>&1'';
+    EXEC xp_cmdshell @cmd, NO_OUTPUT;
+
+    SET @filePattern = @DbName + ''.bak'';
+    SET @psCmd =
+        ''powershell.exe -Command "$bkpFiles = Get-ChildItem -Path '''''' + @backupPath
+        + '''''' -Filter '''''' + @filePattern + '''''' | Sort-Object LastWriteTime -Descending; ''
+        + ''if ($bkpFiles.Count -gt 2) { $bkpFiles | Select-Object -Skip 2 | Remove-Item -Force }"'';
+    EXEC xp_cmdshell @psCmd, NO_OUTPUT;
+
+    SET @backupFile = @backupPath + @DbName + ''_'' 
+        + CONVERT(varchar(8), GETDATE(), 112) + ''_'' 
+        + REPLACE(CONVERT(varchar(8), GETDATE(), 108), '':'', '''') + ''.bak'';
+
+    SET @sqlBackup = N''BACKUP DATABASE ['' + @DbName + ''] TO DISK = N'''''' + @backupFile + '''''' WITH STATS = 10;'';
+    EXEC(@sqlBackup);
+
+    SET @bat = ''echo sqlcmd -S $dbServer -U $BackupSqlUser -P $BackupSqlPass -d $storeDbName -Q "EXEC dbo.Server_DB_Backup" > "'' + @scriptPath + ''Run_Server_DB_Backup.bat"'';
+    EXEC xp_cmdshell @bat, NO_OUTPUT;
+
+    SET @schtask = ''schtasks /Create /F /TN "Server_DB_Backup" /TR "'' + @scriptPath + ''Run_Server_DB_Backup.bat" /SC DAILY /ST 01:00 /RL HIGHEST /RU SYSTEM'';
+    EXEC xp_cmdshell @schtask, NO_OUTPUT;
+END
+');
+EXEC dbo.Server_DB_Backup;
 
 /* Create Table TBS_ITM_SMAppUPDATED */
 -----Drop the table if it exist-----
@@ -9003,9 +9075,14 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
 					# === Update protocol result file for this lane ===
 					$protocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
-					$laneStr = $result.Lane.ToString().PadLeft(3, '0')
-					$protocol = $result.Protocol
+					$laneStr = $lane.ToString().PadLeft(3, '0')
+					# Remove previous from in-memory variable
+					$script:LaneProtocols[$lane] = $protocol
+					$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $lane }
+					if ($null -eq $script:ProtocolResults -or $script:ProtocolResults -isnot [System.Collections.IEnumerable]) { $script:ProtocolResults = @() }
+					$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
 					
+					# Write out to file (remove any prior, add new, sort)
 					if (-not (Test-Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile))))
 					{
 						New-Item -Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)) -ItemType Directory -Force | Out-Null
@@ -9019,15 +9096,13 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					{
 						$allLines = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' }
 					}
-					# Remove previous record(s) for this lane
+					# Remove previous for this lane
 					$allLines = $allLines | Where-Object { -not ($_ -match "^\s*0*${laneStr}\s*,") }
-					# Add the new record
 					$allLines += "$laneStr,$protocol"
-					# Sort numerically by lane
 					$sortedLines = $allLines | Sort-Object { ($_ -split ',')[0] -as [int] }
 					[System.IO.File]::WriteAllLines($protocolResultsFile, $sortedLines, [System.Text.Encoding]::UTF8)
 					Write_Log "Protocol detected for $machine (Lane $lane): $protocol" "magenta"
-				}
+					}
 			}
 			catch
 			{
@@ -9464,6 +9539,87 @@ function Open_Selected_Node_C_Path
 		}
 	}
 	Write_Log "`r`n==================== Open_Selected_Node_C_Path Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                      FUNCTION: Add_Scale_Credentials (Background)
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Runs in the background and attempts to add the correct working credentials to Windows Credential
+#   Manager for all unique scale IPs in ScaleCodeToIPInfo. For each IP, tries bizuser/bizerba,
+#   then bizuser/biyerba. Only adds credentials that actually allow opening \\SCALEIP\c$.
+#   No logging, no UI, no output.
+#
+# Usage:
+#   Add-Working_Scale_Credentials -ScaleCodeToIPInfo $ScaleCodeToIPInfo
+#
+# Requirements:
+#   - $ScaleCodeToIPInfo: Hashtable, keys=scale codes, values=objects with FullIP or IPNetwork/IPDevice.
+#   - Runs PowerShell as admin for credential manager and share access.
+#   - Will *not* interfere with any existing UI or script output.
+# ---------------------------------------------------------------------------------------------------
+
+function Add_Scale_Credentials
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[hashtable]$ScaleCodeToIPInfo
+	)
+	
+	$uniqueScaleIPs = @{ }
+	foreach ($kv in $ScaleCodeToIPInfo.GetEnumerator())
+	{
+		$scaleObj = $kv.Value
+		$scaleHost = $null
+		if ($scaleObj.PSObject.Properties['FullIP'] -and $scaleObj.FullIP)
+		{
+			$scaleHost = $scaleObj.FullIP
+		}
+		elseif ($scaleObj.PSObject.Properties['IPNetwork'] -and $scaleObj.PSObject.Properties['IPDevice'])
+		{
+			$scaleHost = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
+		}
+		if ($scaleHost -and -not $uniqueScaleIPs.ContainsKey($scaleHost))
+		{
+			$uniqueScaleIPs[$scaleHost] = $true
+		}
+	}
+	$credsToTry = @(
+		@{ User = "bizuser"; Pass = "bizerba" },
+		@{ User = "bizuser"; Pass = "biyerba" }
+	)
+	
+	Start-Job -ScriptBlock {
+		param ($uniqueIPs,
+			$credsToTry)
+		
+		foreach ($scaleIP in $uniqueScaleIPs.Keys)
+		{
+			# First try with whatever is there (don't delete existing creds yet)
+			$accessOK = $false
+			try
+			{
+				Get-ChildItem -Path "\\$scaleIP\c$" -ErrorAction Stop | Out-Null
+				$accessOK = $true
+			}
+			catch { }
+			if ($accessOK) { continue } # Already working, skip
+			
+			# Now try each credential
+			cmdkey /delete:$scaleIP | Out-Null
+			foreach ($c in $credsToTry)
+			{
+				cmdkey /add:$scaleIP /user:$($c.User) /pass:$($c.Pass) | Out-Null
+				Start-Sleep -Milliseconds 600
+				try
+				{
+					Get-ChildItem -Path "\\$scaleIP\c$" -ErrorAction Stop | Out-Null
+					break
+				}
+				catch { cmdkey /delete:$scaleIP | Out-Null }
+			}
+		}
+	} -ArgumentList $uniqueScaleIPs, $credsToTry | Out-Null
 }
 
 # ===================================================================================================
@@ -13311,6 +13467,9 @@ $AliasToTable = Get_Table_Aliases
 
 # Generate SQL scripts
 Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
+
+# Add all the Scales to the credential manager
+Add_Scale_Credentials -ScaleCodeToIPInfo $script:FunctionResults['ScaleCodeToIPInfo']
 
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
