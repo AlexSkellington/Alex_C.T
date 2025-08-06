@@ -177,6 +177,9 @@ if ($SmsStartIniMatch) { $SmsStartIniPath = $SmsStartIniMatch.FullName }
 $LanesqlFilePath = Join-Path $TempDir "Lane_Database_Maintenance.sqi"
 $StoresqlFilePath = Join-Path $TempDir "Server_Database_Maintenance.sqi"
 
+# Local machine name
+$script:LocalHost = $env:COMPUTERNAME
+
 # ---------------------------------------------------------------------------------------------------
 # (Optional) Script Name Extraction
 # ---------------------------------------------------------------------------------------------------
@@ -10940,6 +10943,457 @@ PreemptiveUpdates=0
 	Write_Log "VNC file export complete!" "green"
 	Write_Log "`r`n==================== Export_VNCFiles_ForAllNodes Completed ====================" "blue"
 }
+
+# ===================================================================================================
+#                           FUNCTION: Schedule_LocalDB_Backup
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Interactive GUI tool to configure, schedule, and maintain automated SQL Server database backups
+#   for the local store server. Prompts user for preferred time, frequency, and retention policy.
+#   Generates and schedules a PowerShell script that:
+#     - Backs up the local database to a dated .bak file
+#     - Deletes oldest backups, keeping only the specified number
+#     - Uses Write_Log for all logging and status messages
+#   Schedules as a SYSTEM task for maximum reliability.
+#
+# Parameters:
+#   None (uses environment and $script:FunctionResults for database info)
+#
+# Usage:
+#   Schedule_LocalDB_Backup
+#
+# Author: Alex_C.T
+# ===================================================================================================
+
+function Schedule_LocalDB_Backup
+{
+	Write_Log "`r`n==================== Starting Schedule_LocalDB_Backup ====================`r`n" "blue"
+	
+	try
+	{
+		# --- Validate FunctionResults for DB and Paths
+		$dbName = $script:FunctionResults['DBNAME']
+		$dbServer = $script:FunctionResults['DBSERVER']
+		$backupDir = $script:BackupRoot
+		$scriptsDir = $script:ScriptsFolder
+		$serverFolder = Join-Path $backupDir $LocalHost
+		
+		if (-not $dbName -or -not $dbServer)
+		{
+			Write_Log "DBNAME or DBSERVER not found in FunctionResults. Aborting." "red"
+			return
+		}
+		if (-not $backupDir) { $backupDir = "C:\Tecnica_Systems\Backups\" }
+		if (-not $scriptsDir) { $scriptsDir = "C:\Tecnica_Systems\Alex_C.T\Scripts" }
+		
+		# --- Prompt User: Backup Time, Freq, Retention
+		Add-Type -AssemblyName System.Windows.Forms
+		Add-Type -AssemblyName System.Drawing
+		
+		$form = New-Object System.Windows.Forms.Form
+		$form.Text = "Configure Local DB Backup Scheduler"
+		$form.Size = New-Object System.Drawing.Size(375, 245)
+		$form.StartPosition = "CenterScreen"
+		$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+		$form.MaximizeBox = $false
+		$form.MinimizeBox = $false
+		
+		$lblTime = New-Object System.Windows.Forms.Label
+		$lblTime.Text = "Time to run backup (24h, HH:mm):"
+		$lblTime.Location = New-Object System.Drawing.Point(10, 18)
+		$lblTime.Size = New-Object System.Drawing.Size(210, 20)
+		$form.Controls.Add($lblTime)
+		
+		$txtTime = New-Object System.Windows.Forms.MaskedTextBox
+		$txtTime.Mask = "00:00"
+		$txtTime.Text = "01:00"
+		$txtTime.Location = New-Object System.Drawing.Point(220, 16)
+		$txtTime.Size = New-Object System.Drawing.Size(60, 20)
+		$form.Controls.Add($txtTime)
+		
+		$lblFreq = New-Object System.Windows.Forms.Label
+		$lblFreq.Text = "Frequency (every X days):"
+		$lblFreq.Location = New-Object System.Drawing.Point(10, 58)
+		$lblFreq.Size = New-Object System.Drawing.Size(210, 20)
+		$form.Controls.Add($lblFreq)
+		
+		$numFreq = New-Object System.Windows.Forms.NumericUpDown
+		$numFreq.Minimum = 1
+		$numFreq.Maximum = 31
+		$numFreq.Value = 1
+		$numFreq.Location = New-Object System.Drawing.Point(220, 56)
+		$numFreq.Size = New-Object System.Drawing.Size(60, 20)
+		$form.Controls.Add($numFreq)
+		
+		$lblKeep = New-Object System.Windows.Forms.Label
+		$lblKeep.Text = "How many backups to keep:"
+		$lblKeep.Location = New-Object System.Drawing.Point(10, 98)
+		$lblKeep.Size = New-Object System.Drawing.Size(210, 20)
+		$form.Controls.Add($lblKeep)
+		
+		$numKeep = New-Object System.Windows.Forms.NumericUpDown
+		$numKeep.Minimum = 1
+		$numKeep.Maximum = 99
+		$numKeep.Value = 3
+		$numKeep.Location = New-Object System.Drawing.Point(220, 96)
+		$numKeep.Size = New-Object System.Drawing.Size(60, 20)
+		$form.Controls.Add($numKeep)
+		
+		$btnOK = New-Object System.Windows.Forms.Button
+		$btnOK.Text = "OK"
+		$btnOK.Location = New-Object System.Drawing.Point(70, 150)
+		$btnOK.Size = New-Object System.Drawing.Size(90, 30)
+		$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+		$form.AcceptButton = $btnOK
+		$form.Controls.Add($btnOK)
+		
+		$btnCancel = New-Object System.Windows.Forms.Button
+		$btnCancel.Text = "Cancel"
+		$btnCancel.Location = New-Object System.Drawing.Point(185, 150)
+		$btnCancel.Size = New-Object System.Drawing.Size(90, 30)
+		$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+		$form.CancelButton = $btnCancel
+		$form.Controls.Add($btnCancel)
+		
+		$result = $form.ShowDialog()
+		if ($result -ne [System.Windows.Forms.DialogResult]::OK)
+		{
+			Write_Log "Backup scheduling cancelled by user." "yellow"
+			Write_Log "`r`n==================== Schedule_LocalDB_Backup Completed ====================" "blue"
+			return
+		}
+		
+		$timeInput = $txtTime.Text
+		$freqInput = [int]$numFreq.Value
+		$keepInput = [int]$numKeep.Value
+		
+		if ($timeInput -notmatch '^\d{2}:\d{2}$')
+		{
+			[System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
+			Write_Log "Invalid time format entered." "red"
+			return
+		}
+		$hours, $minutes = $timeInput.Split(":")
+		if ([int]$hours -gt 23 -or [int]$minutes -gt 59)
+		{
+			[System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
+			Write_Log "Invalid time (out of range)." "red"
+			return
+		}
+		
+		# --- Compose the backup script (no nested here-string)
+		$backupScript = @"
+# Auto-generated by Schedule_${LocalHost}_DB_Backup (Alex_C.T)
+`$ErrorActionPreference = 'Stop'
+`$BackupRoot = `"$serverFolder`"
+`$Database = `"$dbName`"
+`$SqlInstance = `"$dbServer`"
+`$MaxBackups = $keepInput
+
+# Compose backup file path with timestamp
+`$timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+`$backupFile = Join-Path `$BackupRoot ("{0}_{1}.bak" -f `$Database, `$timestamp)
+
+# Ensure folder exists
+if (-not (Test-Path `$BackupRoot)) {
+    New-Item -Path `$BackupRoot -ItemType Directory -Force | Out-Null
+}
+
+# Delete oldest backups if needed
+`$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
+while (`$bakFiles.Count -ge `$MaxBackups) {
+    Remove-Item -Path `$bakFiles[0].FullName -Force
+    `$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
+}
+
+# Run the backup
+`$tsql = "BACKUP DATABASE [`$Database] TO DISK = N'`$backupFile' WITH NOFORMAT, NOINIT, NAME = N'`$Database-FullBackup-`$timestamp', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
+& sqlcmd -S `"$dbServer`" -Q `$tsql -b
+`$exitCode = `$LASTEXITCODE
+
+if (`$exitCode -eq 0) {
+    # Success log
+    "[`$(Get-Date)] Backup complete: `$backupFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+}
+else {
+    # Failure log 
+    "[`$(Get-Date)] Backup FAILED for [`$Database] on [`$SqlInstance] (exit code: `$exitCode)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+}
+"@
+		
+		# --- Write the backup script to the scripts folder
+		$scriptName = "Run_${LocalHost}_DB_Backup.ps1"
+		$backupScriptPath = Join-Path $scriptsDir $scriptName
+		if (-not (Test-Path $scriptsDir))
+		{
+			New-Item -Path $scriptsDir -ItemType Directory -Force | Out-Null
+		}
+		Set-Content -Path $backupScriptPath -Value $backupScript -Encoding UTF8
+		
+		# --- Build Task Scheduler arguments ---
+		$hour = "{0:D2}" -f [int]$hours
+		$min = "{0:D2}" -f [int]$minutes
+		$startTime = "$hour`:$min"
+		
+		$freqArg = "/SC DAILY"
+		if ($freqInput -gt 1)
+		{
+			$freqArg = "/SC DAILY /MO $freqInput"
+		}
+		
+		$taskName = "${LocalHost}_DB_Backup_Schedule"
+		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$backupScriptPath`"`""
+		
+		# --- Remove existing task if present ---
+		schtasks.exe /Delete /TN "$taskName" /F 2>$null | Out-Null
+		
+		# --- Create scheduled task ---
+		$cmd = "schtasks.exe /Create /RU SYSTEM /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
+		Write_Log "Creating scheduled task with command:" "yellow"
+		Write_Log $cmd "gray"
+		Invoke-Expression $cmd
+		
+		if ($LASTEXITCODE -eq 0)
+		{
+			Write_Log "Backup task scheduled successfully (`"$taskName`") at $startTime every $freqInput day(s)." "green"
+			[System.Windows.Forms.MessageBox]::Show("Backup task scheduled successfully.`nScript: $backupScriptPath", "Scheduled!", 0, 64)
+		}
+		else
+		{
+			Write_Log "Failed to schedule backup task. Check permissions or path." "red"
+			[System.Windows.Forms.MessageBox]::Show("Failed to schedule backup task.`nCheck permissions or path.", "Error", 0, 16)
+		}
+	}
+	catch
+	{
+		Write_Log "Fatal error in Schedule_LocalDB_Backup: $($_.Exception.Message)" "red"
+		[System.Windows.Forms.MessageBox]::Show("Fatal error: $($_.Exception.Message)", "Error", 0, 16)
+	}
+	Write_Log "`r`n==================== Schedule_LocalDB_Backup Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                      FUNCTION: Schedule_LaneDB_Backup
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Lets the user select one or more lanes (via Show_Node_Selection_Form in Lane mode).
+#   Only lanes with valid ProtocolResults are allowed.
+#   Prompts user for backup schedule details (time, frequency, retention).
+#   For each lane, creates a backup script at $ScriptsFolder\$MachineName\Run_${MachineName}DB_Backup.ps1.
+#   Schedules a task for each lane using that script.
+#   Each backup goes to $BackupRoot\$MachineName\STORESQL_{timestamp}.bak (etc).
+# Author: Alex_C.T
+# ===================================================================================================
+
+function Schedule_LaneDB_Backup
+{
+	Write_Log "`r`n==================== Starting Schedule_LaneDB_Backup ====================`r`n" "blue"
+	
+	# 1. Node selection (lanes only)
+	$StoreNumber = $script:FunctionResults['StoreNumber']
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Lanes for DB Backup"
+	if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
+	{
+		Write_Log "No lanes selected for backup." "yellow"
+		return
+	}
+	
+	# 2. Check ProtocolResults for connectivity
+	$goodLanes = @()
+	foreach ($lane in $selection.Lanes)
+	{
+		$protocol = $script:LaneProtocols[$lane]
+		if ($protocol -and $protocol -ne "File") { $goodLanes += $lane }
+		else { Write_Log "Lane $lane not available in ProtocolResults or protocol not valid. Skipping." "yellow" }
+	}
+	if (-not $goodLanes -or $goodLanes.Count -eq 0)
+	{
+		Write_Log "No selected lanes are available for DB backup." "red"
+		return
+	}
+	
+	# 3. Prompt once for backup options
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	$form = New-Object Windows.Forms.Form
+	$form.Text = "Configure Lane DB Backup Scheduler"
+	$form.Size = [Drawing.Size]::new(375, 245)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = 'FixedDialog'
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	$lblTime = New-Object Windows.Forms.Label
+	$lblTime.Text = "Time to run backup (24h, HH:mm):"
+	$lblTime.Location = [Drawing.Point]::new(10, 18)
+	$lblTime.Size = [Drawing.Size]::new(210, 20)
+	$form.Controls.Add($lblTime)
+	$txtTime = New-Object Windows.Forms.MaskedTextBox
+	$txtTime.Mask = "00:00"
+	$txtTime.Text = "01:00"
+	$txtTime.Location = [Drawing.Point]::new(220, 16)
+	$txtTime.Size = [Drawing.Size]::new(60, 20)
+	$form.Controls.Add($txtTime)
+	$lblFreq = New-Object Windows.Forms.Label
+	$lblFreq.Text = "Frequency (every X days):"
+	$lblFreq.Location = [Drawing.Point]::new(10, 58)
+	$lblFreq.Size = [Drawing.Size]::new(210, 20)
+	$form.Controls.Add($lblFreq)
+	$numFreq = New-Object Windows.Forms.NumericUpDown
+	$numFreq.Minimum = 1
+	$numFreq.Maximum = 31
+	$numFreq.Value = 1
+	$numFreq.Location = [Drawing.Point]::new(220, 56)
+	$numFreq.Size = [Drawing.Size]::new(60, 20)
+	$form.Controls.Add($numFreq)
+	$lblKeep = New-Object Windows.Forms.Label
+	$lblKeep.Text = "How many backups to keep:"
+	$lblKeep.Location = New-Object System.Drawing.Point(10, 98)
+	$lblKeep.Size = New-Object System.Drawing.Size(210, 20)
+	$form.Controls.Add($lblKeep)
+	$numKeep = New-Object Windows.Forms.NumericUpDown
+	$numKeep.Minimum = 1
+	$numKeep.Maximum = 99
+	$numKeep.Value = 3
+	$numKeep.Location = New-Object System.Drawing.Point(220, 96)
+	$numKeep.Size = New-Object System.Drawing.Size(60, 20)
+	$form.Controls.Add($numKeep)
+	$btnOK = New-Object Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Location = [Drawing.Point]::new(70, 150)
+	$btnOK.Size = [Drawing.Size]::new(90, 30)
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $btnOK
+	$form.Controls.Add($btnOK)
+	$btnCancel = New-Object Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = [Drawing.Point]::new(185, 150)
+	$btnCancel.Size = New-Object System.Drawing.Size(90, 30)
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.CancelButton = $btnCancel
+	$form.Controls.Add($btnCancel)
+	$result = $form.ShowDialog()
+	if ($result -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write_Log "Lane backup scheduling cancelled by user." "yellow"
+		return
+	}
+	$timeInput = $txtTime.Text
+	$freqInput = [int]$numFreq.Value
+	$keepInput = [int]$numKeep.Value
+	if ($timeInput -notmatch '^\d{2}:\d{2}$')
+	{
+		[System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
+		Write_Log "Invalid time format entered." "red"
+		return
+	}
+	$hours, $minutes = $timeInput.Split(":")
+	if ([int]$hours -gt 23 -or [int]$minutes -gt 59)
+	{
+		[System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
+		Write_Log "Invalid time (out of range)." "red"
+		return
+	}
+	
+	# 4. Loop over each lane and schedule backup
+	foreach ($lane in $goodLanes)
+	{
+		$laneInfo = $script:FunctionResults['LaneDatabaseInfo'][$lane]
+		if (-not $laneInfo)
+		{
+			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $lane
+			if ($laneInfo) { $script:FunctionResults['LaneDatabaseInfo'][$lane] = $laneInfo }
+			else
+			{
+				Write_Log "Could not get DB info for lane $lane. Skipping." "yellow"
+				continue
+			}
+		}
+		$machine = $laneInfo.MachineName
+		$dbName = $laneInfo.DBName
+		$dbServer = $laneInfo.DBServer
+		
+		# Set backup and script directories (per-lane)
+		$backupDir = $script:BackupRoot
+		$scriptsDir = $script:ScriptsFolder
+		$machineFolder = Join-Path $backupDir $machine
+		
+		# ----> KEY: name backup script exactly as Run_${MachineName}DB_Backup.ps1
+		$scriptName = "Run_${machine}_DB_Backup.ps1"
+		$backupScriptPath = Join-Path $scriptsDir $scriptName
+		
+		# Compose the backup script for this lane (matches server style)
+		$backupScript = @"
+# Auto-generated by Schedule_Lane_DB_Backup (Alex_C.T)
+`$ErrorActionPreference = 'Stop'
+`$BackupRoot = `"$machineFolder`"
+`$Database = `"$dbName`"
+`$SqlInstance = `"$dbServer`"
+`$MaxBackups = $keepInput
+
+# Compose backup file path with timestamp
+`$timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+`$backupFile = Join-Path `$BackupRoot ("{0}_{1}.bak" -f `$Database, `$timestamp)
+
+# Ensure folder exists
+if (-not (Test-Path `$BackupRoot)) {
+    New-Item -Path `$BackupRoot -ItemType Directory -Force | Out-Null
+}
+
+# Delete oldest backups if needed
+`$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
+while (`$bakFiles.Count -ge `$MaxBackups) {
+    Remove-Item -Path `$bakFiles[0].FullName -Force
+    `$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
+}
+
+# Run the backup
+`$tsql = "BACKUP DATABASE [`$Database] TO DISK = N'`$backupFile' WITH NOFORMAT, NOINIT, NAME = N'`$Database-FullBackup-`$timestamp', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
+& sqlcmd -S `"$dbServer`" -Q `$tsql -b
+`$exitCode = `$LASTEXITCODE
+
+if (`$exitCode -eq 0) {
+    # Success log
+    "[`$(Get-Date)] Backup complete: `$backupFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+}
+else {
+    # Failure log
+    "[`$(Get-Date)] Backup FAILED for [`$Database] on [`$SqlInstance] (exit code: `$exitCode)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+}
+"@
+		
+		# Write the script to scripts folder under machine folder
+		Set-Content -Path $backupScriptPath -Value $backupScript -Encoding UTF8
+		
+		# Build Task Scheduler arguments
+		$hour = "{0:D2}" -f [int]$hours
+		$min = "{0:D2}" -f [int]$minutes
+		$startTime = "$hour`:$min"
+		$freqArg = "/SC DAILY"
+		if ($freqInput -gt 1) { $freqArg = "/SC DAILY /MO $freqInput" }
+		$taskName = "${machine}_DB_Backup_Schedule"
+		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$backupScriptPath`"`""
+		
+		# Remove existing task if present
+		schtasks.exe /Delete /TN "$taskName" /F 2>$null | Out-Null
+		
+		# Create scheduled task
+		$cmd = "schtasks.exe /Create /RU SYSTEM /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
+		Write_Log "Scheduling Lane $lane ($machine): $cmd" "cyan"
+		Invoke-Expression $cmd
+		if ($LASTEXITCODE -eq 0)
+		{
+			Write_Log "Backup task scheduled for $machine ($dbName) at $startTime every $freqInput day(s)." "green"
+		}
+		else
+		{
+			Write_Log "Failed to schedule backup for $machine." "red"
+		}
+	}
+	
+	Write_Log "`r`n==================== Schedule_LaneDB_Backup Completed ====================" "blue"
+}
+
+
 # ===================================================================================================
 #                               FUNCTION: Update_ScaleConfig_And_DB
 # ---------------------------------------------------------------------------------------------------
@@ -12884,7 +13338,17 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($ServerScheduleRepairItem)
 	
 	############################################################################
-	# 3) Organize_TBS_SCL_ver520 Menu Item
+	# 3) Schedule the local DB backup on the server
+	############################################################################
+	$ServerScheduleBackupItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Local DB Backup")
+	$ServerScheduleBackupItem.ToolTipText = "Schedule a task to run database backup on the server."
+	$ServerScheduleBackupItem.Add_Click({
+			Schedule_LocalDB_Backup
+		})
+	[void]$ContextMenuServer.Items.Add($ServerScheduleBackupItem)
+		
+	############################################################################
+	# 4) Organize_TBS_SCL_ver520 Menu Item
 	############################################################################
 	$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize_TBS_SCL_ver520")
 	$OrganizeScaleTableItem.ToolTipText = "Organize the Scale SQL table (TBS_SCL_ver520)."
@@ -12894,7 +13358,7 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($OrganizeScaleTableItem)
 	
 	############################################################################
-	# 4) Manage SQL 'sa' Account Menu Item
+	# 5) Manage SQL 'sa' Account Menu Item
 	############################################################################
 	$ManageSaAccountItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manage SQL 'sa' Account")
 	$ManageSaAccountItem.ToolTipText = "Enable or disable the 'sa' account on the local SQL Server with a predefined password."
@@ -12904,7 +13368,7 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
 	
 	############################################################################
-	# 5) Repair Windows Menu Item
+	# 6) Repair Windows Menu Item
 	############################################################################
 	$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
 	$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
@@ -12914,7 +13378,7 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
 	
 	############################################################################
-	# 6) Configure System Settings Menu Item
+	# 7) Configure System Settings Menu Item
 	############################################################################
 	$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
 	$ConfigureSystemSettingsItem.ToolTipText = "Organize the desktop, set power plan to maximize performance and make sure necessary services are running."
@@ -12987,7 +13451,17 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($LaneScheduleMaintenanceItem)
 	
 	############################################################################
-	# 3) Pump Table to Lane Menu Item
+	# 3) Schedule DB backup of the lanes
+	############################################################################
+	$LaneScheduleBackupItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane DB Backups")
+	$LaneScheduleBackupItem.ToolTipText = "Schedule a task to run backups of the selected lanes' databases."
+	$LaneScheduleBackupItem.Add_Click({
+			Schedule_LaneDB_Backup
+		})
+	[void]$ContextMenuLane.Items.Add($LaneScheduleBackupItem)
+		
+	############################################################################
+	# 4) Pump Table to Lane Menu Item
 	############################################################################
 	$PumpTableToLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Pump Table to Lane")
 	$PumpTableToLaneItem.ToolTipText = "Pump the selected tables to the lane/s databases."
@@ -12997,7 +13471,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
 	
 	############################################################################
-	# 4) Update Lane Configuration Menu Item
+	# 5) Update Lane Configuration Menu Item
 	############################################################################
 	$UpdateLaneConfigItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Lane Configuration")
 	$UpdateLaneConfigItem.ToolTipText = "Update the configuration files for the lanes. Fixes connectivity errors and mistakes made during lane ghosting."
@@ -13007,7 +13481,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($UpdateLaneConfigItem)
 	
 	############################################################################
-	# 5) Close Open Transactions Menu Item
+	# 6) Close Open Transactions Menu Item
 	############################################################################
 	$CloseOpenTransItem = New-Object System.Windows.Forms.ToolStripMenuItem("Close Open Transactions")
 	$CloseOpenTransItem.ToolTipText = "Close any open transactions at the lane/s."
@@ -13017,7 +13491,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
 	
 	############################################################################
-	# 6) Open Lane C$ Share(s)
+	# 7) Open Lane C$ Share(s)
 	############################################################################
 	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
 	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
@@ -13027,7 +13501,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($OpenLaneCShareItem)
 	
 	############################################################################
-	# 7) Delete DBS Menu Item
+	# 8) Delete DBS Menu Item
 	############################################################################
 	$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
 	$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
@@ -13037,7 +13511,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
 	
 	############################################################################
-	# 10) Refresh PIN Pad Files Menu Item
+	# 9) Refresh PIN Pad Files Menu Item
 	############################################################################
 	$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
 	$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
@@ -13047,7 +13521,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
 	
 	############################################################################
-	# 11) Drawer Control Item
+	# 10) Drawer Control Item
 	############################################################################
 	$DrawerControlItem = New-Object System.Windows.Forms.ToolStripMenuItem("Drawer Control")
 	$DrawerControlItem.ToolTipText = "Set the Drawer Control for a lane for testing"
@@ -13057,7 +13531,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($DrawerControlItem)
 	
 	############################################################################
-	# 12) Refresh Database
+	# 11) Refresh Database
 	############################################################################
 	$RefreshDatabaseItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh Database")
 	$RefreshDatabaseItem.ToolTipText = "Refresh the database at the lane/s"
@@ -13067,7 +13541,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 	
 	############################################################################
-	# 13) Send Restart Command Menu Item
+	# 12) Send Restart Command Menu Item
 	############################################################################
 	$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 	$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
@@ -13077,7 +13551,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
 	
 	############################################################################
-	# 14) Enable SQL Protocols Menu Item
+	# 13) Enable SQL Protocols Menu Item
 	############################################################################
 	$EnableSQLProtocolsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Enable SQL Protocols")
 	$EnableSQLProtocolsItem.ToolTipText = "Enable TCP/IP, Named Pipes, and set static port for SQL Server on selected lane(s)."
@@ -13087,7 +13561,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($EnableSQLProtocolsItem)
 	
 	############################################################################
-	# 15) Set the time on the lanes
+	# 14) Set the time on the lanes
 	############################################################################
 	$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set/Schedule Time on Lanes")
 	$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize or schedule time sync for selected lanes."
@@ -13105,7 +13579,7 @@ if (-not $form)
 	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 	
 	############################################################################
-	# 16) Reboot Lane Menu Item
+	# 15) Reboot Lane Menu Item
 	############################################################################
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
