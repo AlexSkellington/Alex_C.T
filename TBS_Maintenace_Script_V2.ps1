@@ -11702,18 +11702,6 @@ SELECT @@ROWCOUNT AS RowsAffected;
 #   Reports detailed status per scale.
 # ===================================================================================================
 
-# ===================================================================================================
-#                          FUNCTION: Deploy_Scale_Currency_Files
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Prompts the user to select one or more scales (via Show_Node_Selection_Form).
-#   Prompts for the currency symbol to be used in the currency text files (defaults to "$").
-#   Copies the required .txt and .properties files (with correct currency) to each selected scale:
-#     \\<ScaleIP>\c$\bizstorecard\bizerba\_fileIO\generic_data\in
-#   Uses shared mappings and writes all file contents inline (no external dependencies).
-#   Reports detailed status per scale.
-# ===================================================================================================
-
 function Deploy_Scale_Currency_Files
 {
 	Write_Log "`r`n==================== Starting Deploy_Scale_Currency_Files ====================`r`n" "blue"
