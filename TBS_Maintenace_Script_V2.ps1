@@ -6515,8 +6515,54 @@ function Refresh_PIN_Pad_Files
 			continue
 		}
 	}
-	
 	Write_Log "Refresh Summary for Store Number: $StoreNumber - Total Files Refreshed: $totalRefreshed, Total Failures: $totalFailed." "green"
+	# ==== Prompt to Restart All Programs on successful lanes ====
+	if ($totalRefreshed -gt 0)
+	{
+		# Build $refreshedLanes (only add a lane if any file was actually refreshed)
+		$refreshedLanes = @()
+		foreach ($laneObj in $Lanes)
+		{
+			$laneNum = if ($laneObj -is [pscustomobject] -and $laneObj.LaneNumber) { $laneObj.LaneNumber }
+			else { $laneObj }
+			$laneNum = $laneNum.PadLeft(3, '0')
+			if ($LaneNumToMachineName.ContainsKey($laneNum))
+			{
+				$machineName = $LaneNumToMachineName[$laneNum]
+				$targetPath = "\\$machineName\Storeman\XchDev\EMVConfig\"
+				foreach ($file in $fileExtensions)
+				{
+					$filePath = Join-Path -Path $targetPath -ChildPath $file
+					if (Test-Path -Path $filePath)
+					{
+						$lastWrite = (Get-Item -Path $filePath).LastWriteTime
+						if ($lastWrite -ge (Get-Date).AddMinutes(-5))
+						{
+							$refreshedLanes += $laneNum
+							break
+						}
+					}
+				}
+			}
+		}
+		$refreshedLanes = $refreshedLanes | Select-Object -Unique
+		if ($refreshedLanes.Count -gt 0)
+		{
+			Add-Type -AssemblyName System.Windows.Forms
+			$laneListStr = ($refreshedLanes | Sort-Object) -join ", "
+			$msg = "Do you want to send 'Restart All Programs' to the following lanes?`nStore $StoreNumber Lanes: $laneListStr"
+			$result = [System.Windows.Forms.MessageBox]::Show($msg, "Restart All Programs?", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+			if ($result -eq [System.Windows.Forms.DialogResult]::Yes)
+			{
+				Write_Log "User chose to send 'Restart All Programs' to lanes: $laneListStr" "cyan"
+				Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers $refreshedLanes
+			}
+			else
+			{
+				Write_Log "User cancelled 'Restart All Programs' action." "yellow"
+			}
+		}
+	}
 	Write_Log "`r`n==================== Refresh_PIN_Pad_Files Function Completed ====================" "blue"
 }
 
@@ -6540,6 +6586,9 @@ function Install_ONE_FUNCTION_Into_SMS
 	
 	Write_Log "`r`n==================== Starting Install_ONE_FUNCTION_Into_SMS Function ====================`r`n" "blue"
 	
+	# Define the registered trademark symbol using Unicode code point for encoding safety
+	$reg = [char]0x00AE
+	
 	# --------------------------------------------------------------------------------------------
 	# Define Destination Paths
 	# --------------------------------------------------------------------------------------------
@@ -6553,7 +6602,7 @@ function Install_ONE_FUNCTION_Into_SMS
 	$DeployOneFctDestinationPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_ONE_FCT.sqm"
 	
 	# --------------------------------------------------------------------------------------------
-	# Define File Contents
+	# Define File Contents (using $reg for ® to ensure it works in any script encoding)
 	# --------------------------------------------------------------------------------------------
 	
 	# Define the content for Pump_all_items_tables.sql
@@ -6571,10 +6620,10 @@ VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPL
 	
 	# Define the content for DEPLOY_SYS.sql
 	$DeploySysContent = @"
-@FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,®WIZRPL(UD_RUN=0));
-@FMT(CMP,@WIZGET(UD_RUN)=,'®EXEC(SQL=UD_DEPLOY_SYS)®FMT(CHR,27)');
+@FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,$($reg)WIZRPL(UD_RUN=0));
+@FMT(CMP,@WIZGET(UD_RUN)=,'$($reg)EXEC(SQL=UD_DEPLOY_SYS)$($reg)FMT(CHR,27)');
 
-@FMT(CMP,@TOOLS(MESSAGEDLG,"!TO KEEP THE LANE'S REFERENCE SAMPLE UP TO DATE YOU SHOULD USE THE "REFERENCE SAMPLE MECHANISM". DO YOU WANT TO CONTINUE?",,NO,YES)=1,'®FMT(CHR,27)');
+@FMT(CMP,@TOOLS(MESSAGEDLG,"!TO KEEP THE LANE'S REFERENCE SAMPLE UP TO DATE YOU SHOULD USE THE "REFERENCE SAMPLE MECHANISM". DO YOU WANT TO CONTINUE?",,NO,YES)=1,'$($reg)FMT(CHR,27)');
 
 @EXEC(INI=HOST_OFFICE[DEPLOY_SYS]);
 
@@ -6604,7 +6653,7 @@ WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST
 ORDER BY STO.F1000"));
 @WIZDISPLAY;
 
-@FMT(CMP,@dbSelect(select distinct 1 from lnk_tab where F1000='@Wizget(Target)' and f1056='999')=,,"®EXEC(msg=!*****_can_not_deploy_system_tables_to_a_host_****);®FMT(CHR,27);")
+@FMT(CMP,@dbSelect(select distinct 1 from lnk_tab where F1000='@Wizget(Target)' and f1056='999')=,,"$($reg)EXEC(msg=!*****_can_not_deploy_system_tables_to_a_host_****);$($reg)FMT(CHR,27);")
 
 @WIZINIT;
 @WIZMENU(ACTION=Action on the target database,Add or replace=ADDRPL,Add only=ADD,Replace only=UPDATE,Clean and load=LOAD);
@@ -6612,23 +6661,23 @@ ORDER BY STO.F1000"));
 
 /* SEND ONLY ONE TABLE */
 
-@FMT(CMP,@wizget(ONESQM)=tlz_load,®EXEC(SQM=tlz_load));
-@FMT(CMP,@wizget(ONESQM)=fcz_load,®EXEC(SQM=fcz_load));
-@FMT(CMP,@wizget(ONESQM)=fct_load,®EXEC(SQM=fct_load));
-@FMT(CMP,@wizget(ONESQM)=dril_file_load,®EXEC(SQM=DRIL_FILE_LOAD));
-@FMT(CMP,@wizget(ONESQM)=dril_page_load,®EXEC(SQM=DRIL_PAGE_LOAD));
-@FMT(CMP,@wizget(ONESQM)=DEPLOY_ONE_FCT,®EXEC(SQM=DEPLOY_ONE_FCT));
+@FMT(CMP,@wizget(ONESQM)=tlz_load,$($reg)EXEC(SQM=tlz_load));
+@FMT(CMP,@wizget(ONESQM)=fcz_load,$($reg)EXEC(SQM=fcz_load));
+@FMT(CMP,@wizget(ONESQM)=fct_load,$($reg)EXEC(SQM=fct_load));
+@FMT(CMP,@wizget(ONESQM)=dril_file_load,$($reg)EXEC(SQM=DRIL_FILE_LOAD));
+@FMT(CMP,@wizget(ONESQM)=dril_page_load,$($reg)EXEC(SQM=DRIL_PAGE_LOAD));
+@FMT(CMP,@wizget(ONESQM)=DEPLOY_ONE_FCT,$($reg)EXEC(SQM=DEPLOY_ONE_FCT));
 
-@FMT(CMP,@WIZGET(ONESQM)=ALL,,'®EXEC(SQM=exe_activate_accept_sys)®fmt(chr,27)');
+@FMT(CMP,@WIZGET(ONESQM)=ALL,,'$($reg)EXEC(SQM=exe_activate_accept_sys)$($reg)fmt(chr,27)');
 
-@FMT(CMP,@wizget(tlz_load)=0,,®EXEC(SQM=tlz_load));
-@FMT(CMP,@wizget(fcz_load)=0,,®EXEC(SQM=fcz_load));
-@FMT(CMP,@wizget(fct_load)=0,,®EXEC(SQM=fct_load));
-@FMT(CMP,@wizget(DRIL_FILE_LOAD)=0,,®EXEC(SQM=DRIL_FILE_LOAD));
-@FMT(CMP,@wizget(DRIL_PAGE_LOAD)=0,,®EXEC(SQM=DRIL_PAGE_LOAD));
+@FMT(CMP,@wizget(tlz_load)=0,,$($reg)EXEC(SQM=tlz_load));
+@FMT(CMP,@wizget(fcz_load)=0,,$($reg)EXEC(SQM=fcz_load));
+@FMT(CMP,@wizget(fct_load)=0,,$($reg)EXEC(SQM=fct_load));
+@FMT(CMP,@wizget(DRIL_FILE_LOAD)=0,,$($reg)EXEC(SQM=DRIL_FILE_LOAD));
+@FMT(CMP,@wizget(DRIL_PAGE_LOAD)=0,,$($reg)EXEC(SQM=DRIL_PAGE_LOAD));
 
-@FMT(CMP,@wizget(exe_activate_accept_all)=0,,®EXEC(SQM=exe_activate_accept_sys));
-@FMT(CMP,@wizget(exe_refresh_menu)=1,®EXEC(SQM=exe_refresh_menu));
+@FMT(CMP,@wizget(exe_activate_accept_all)=0,,$($reg)EXEC(SQM=exe_activate_accept_sys));
+@FMT(CMP,@wizget(exe_refresh_menu)=1,$($reg)EXEC(SQM=exe_refresh_menu));
 
 @EXEC(sqi=USERE_DEPLOY_SYS);
 "@
@@ -6639,25 +6688,23 @@ INSERT INTO HEADER_DCT VALUES
 ('HC','00000001','001901','001001',,,1997001,0000,1997001,0001,,'LOAD','CREATE DCT',,,,,,'1/1.0','V1.0',,);
 
 CREATE TABLE FCT_DCT(@MAP_FROM_QUERY);
-
 INSERT INTO HEADER_DCT VALUES
 ('HM','00000001','001901','001001',,,1997001,0000,1997001,0001,,'@WIZGET(ACTION)','@WIZGET(ACTION) ALL FUNCTIONS',,,,,,'1/1.0','V1.0','F1063',);
 
 CREATE VIEW FCT_CHG AS SELECT @FIELDS_FROM_QUERY FROM FCT_DCT;
-
 INSERT INTO FCT_CHG VALUES
 
 /* EXTRACT SECTION */
 
 @DBHOT(HOT_WIZ,PARAMTOLINE,PARAMSAV_FCT_LOAD);
 @FMT(CMP,'@WIZGET(TARGET)<>','®WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
-
 @WIZINIT;
+
 @WIZTARGET(TARGET_FILTER=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
 SELECT F1000,F1018 FROM STO_TAB WHERE F1181=1","
-SELECT DISTINCT STO.F1000,STO.F1018 
+SELECT DISTINCT STO.F1000,STO.F1018
 FROM LNK_TAB LN2 JOIN LNK_TAB LNK ON LN2.F1056=LNK.F1056 AND LN2.F1057=LNK.F1057
-JOIN STO_TAB STO ON STO.F1000=LNK.F1000 
+JOIN STO_TAB STO ON STO.F1000=LNK.F1000
 WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'"));
 @WIZDISPLAY;
 
@@ -6672,27 +6719,26 @@ WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST
 @WIZINIT;
 @WIZEDIT(FCT=,Enter the function number);
 @WIZDISPLAY;
-
 @WIZSET(TARGET_FILTER=@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE));
 @WIZSET(F1063=@WIZGET(FCT));
 @WIZSET(STYLE=SIL);
 
 @MAP_DEPLOY
-SELECT FCT.F1056,FCT.F1056+FCT.F1057 AS F1000,@dbFld(FCT_TAB,FCT.,F1000) FROM 
-	(SELECT LNI.F1056,LNI.F1057,FCT.*,ROW_NUMBER() OVER (PARTITION BY FCT.F1063,LNI.F1056,LNI.F1057 ORDER BY CASE WHEN FCT.F1000='PAL' THEN 1 ELSE 2 END DESC) AS F1301 
-	FROM FCT_TAB FCT
-	JOIN LNK_TAB LNI ON FCT.F1000=LNI.F1000
-	JOIN LNK_TAB LNO ON LNI.F1056=LNO.F1056 AND LNI.F1057=LNO.F1057
-	WHERE LNO.F1000 = '@WIZGET(TARGET_FILTER)' AND FCT.F1063 = '@WIZGET(FCT)') FCT
+SELECT FCT.F1056,FCT.F1056+FCT.F1057 AS F1000,@dbFld(FCT_TAB,FCT.,F1000) FROM
+    (SELECT LNI.F1056,LNI.F1057,FCT.*,ROW_NUMBER() OVER (PARTITION BY FCT.F1063,LNI.F1056,LNI.F1057 ORDER BY CASE WHEN FCT.F1000='PAL' THEN 1 ELSE 2 END DESC) AS F1301
+    FROM FCT_TAB FCT
+    JOIN LNK_TAB LNI ON FCT.F1000=LNI.F1000
+    JOIN LNK_TAB LNO ON LNI.F1056=LNO.F1056 AND LNI.F1057=LNO.F1057
+    WHERE LNO.F1000 = '@WIZGET(TARGET_FILTER)' AND FCT.F1063 = '@WIZGET(FCT)') FCT
 WHERE FCT.F1301=1
 ORDER BY F1000,F1063;
 
 /* RESTORE INITITAL PARAMETER POOL */
-@WIZRESET; 
+
+@WIZRESET;
 @DBHOT(HOT_WIZ,LINETOPARAM,PARAMSAV_FCT_LOAD);
 @DBHOT(HOT_WIZ,CLR,PARAMSAV_FCT_LOAD);
 "@
-	
 	# --------------------------------------------------------------------------------------------
 	# Prepare File Contents
 	# --------------------------------------------------------------------------------------------
@@ -8241,7 +8287,8 @@ function Reboot_Nodes
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber,
-		[Parameter()]
+		[Parameter(Mandatory = $false)]
+		$Selection,
 		[ValidateSet("Lane", "Scale", "Backoffice")]
 		[string[]]$NodeTypes = @("Lane", "Scale", "Backoffice")
 	)
@@ -8253,9 +8300,15 @@ function Reboot_Nodes
 	$BackofficeNumToMachineName = $script:FunctionResults['BackofficeNumToMachineName']
 	
 	# --- Use the shared selection dialog ---
-	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes $NodeTypes
-	if (-not $selection)
+	if ($Selection)
 	{
+		$selection = $Selection
+	}
+	else
+	{
+		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes $NodeTypes
+	}
+	if (-not $selection)	{
 		Write_Log "No nodes selected or dialog cancelled." "yellow"
 		Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
 		return
@@ -11116,6 +11169,279 @@ else {
 	Write_Log "`r`n==================== Schedule_LocalDB_Backup Completed ====================" "blue"
 }
 
+# ===================================================================================================
+#                           FUNCTION: Schedule_Storeman_Zip_Backup
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Interactive GUI tool to configure, schedule, and maintain automated ZIP backups of the Storeman
+#   folder. Prompts user for preferred time, frequency, and retention policy.
+#   Generates and schedules a PowerShell script that:
+#     - Zips the Storeman folder to a dated .zip file
+#     - Deletes oldest backups, keeping only the specified number
+#     - Uses Write_Log for all logging and status messages
+#   Schedules as a SYSTEM task for maximum reliability.
+#
+# Parameters:
+#   None (uses $BasePath as detected Storeman folder)
+#
+# Usage:
+#   Schedule_Storeman_Zip_Backup
+#
+# Author: Alex_C.T
+# ===================================================================================================
+
+function Schedule_Storeman_Zip_Backup
+{
+	Write_Log "`r`n==================== Starting Schedule_Storeman_Zip_Backup ====================`r`n" "blue"
+	
+	try
+	{
+		# --- Use detected Storeman folder ---
+		$storemanPath = $BasePath
+		if (-not (Test-Path $storemanPath))
+		{
+			Write_Log "Storeman path ($storemanPath) not found. Aborting." "red"
+			return
+		}
+		$LocalHost = $env:COMPUTERNAME
+		$backupRoot = "${script:BackupRoot}${LocalHost}"
+		$scriptsDir = $script:ScriptsFolder
+		$backupScriptName = "Run_${LocalHost}_Storeman_Zip_Backup.ps1"
+		$taskName = "${LocalHost}_Storeman_Zip_Backup"
+		
+		# --- Prompt User: Backup Time, Frequency, Retention (defaults set for weekly) ---
+		Add-Type -AssemblyName System.Windows.Forms
+		Add-Type -AssemblyName System.Drawing
+		
+		$form = New-Object System.Windows.Forms.Form
+		$form.Text = "Configure Storeman ZIP Backup Scheduler"
+		$form.Size = New-Object System.Drawing.Size(385, 245)
+		$form.StartPosition = "CenterScreen"
+		$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+		$form.MaximizeBox = $false
+		$form.MinimizeBox = $false
+		
+		$lblTime = New-Object System.Windows.Forms.Label
+		$lblTime.Text = "Time to run backup (24h, HH:mm):"
+		$lblTime.Location = New-Object System.Drawing.Point(10, 18)
+		$lblTime.Size = New-Object System.Drawing.Size(210, 20)
+		$form.Controls.Add($lblTime)
+		
+		$txtTime = New-Object System.Windows.Forms.MaskedTextBox
+		$txtTime.Mask = "00:00"
+		$txtTime.Text = "02:00"
+		$txtTime.Location = New-Object System.Drawing.Point(220, 16)
+		$txtTime.Size = New-Object System.Drawing.Size(60, 20)
+		$form.Controls.Add($txtTime)
+		
+		$lblFreq = New-Object System.Windows.Forms.Label
+		$lblFreq.Text = "Frequency (every X days):"
+		$lblFreq.Location = New-Object System.Drawing.Point(10, 58)
+		$lblFreq.Size = New-Object System.Drawing.Size(210, 20)
+		$form.Controls.Add($lblFreq)
+		
+		$numFreq = New-Object System.Windows.Forms.NumericUpDown
+		$numFreq.Minimum = 1
+		$numFreq.Maximum = 31
+		$numFreq.Value = 7 # Default = once a week
+		$numFreq.Location = New-Object System.Drawing.Point(220, 56)
+		$numFreq.Size = New-Object System.Drawing.Size(60, 20)
+		$form.Controls.Add($numFreq)
+		
+		$lblKeep = New-Object System.Windows.Forms.Label
+		$lblKeep.Text = "How many backups to keep:"
+		$lblKeep.Location = New-Object System.Drawing.Point(10, 98)
+		$lblKeep.Size = New-Object System.Drawing.Size(210, 20)
+		$form.Controls.Add($lblKeep)
+		
+		$numKeep = New-Object System.Windows.Forms.NumericUpDown
+		$numKeep.Minimum = 1
+		$numKeep.Maximum = 99
+		$numKeep.Value = 1
+		$numKeep.Location = New-Object System.Drawing.Point(220, 96)
+		$numKeep.Size = New-Object System.Drawing.Size(60, 20)
+		$form.Controls.Add($numKeep)
+		
+		$btnOK = New-Object System.Windows.Forms.Button
+		$btnOK.Text = "OK"
+		$btnOK.Location = New-Object System.Drawing.Point(80, 150)
+		$btnOK.Size = New-Object System.Drawing.Size(90, 30)
+		$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+		$form.AcceptButton = $btnOK
+		$form.Controls.Add($btnOK)
+		
+		$btnCancel = New-Object System.Windows.Forms.Button
+		$btnCancel.Text = "Cancel"
+		$btnCancel.Location = New-Object System.Drawing.Point(195, 150)
+		$btnCancel.Size = New-Object System.Drawing.Size(90, 30)
+		$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+		$form.CancelButton = $btnCancel
+		$form.Controls.Add($btnCancel)
+		
+		$result = $form.ShowDialog()
+		if ($result -ne [System.Windows.Forms.DialogResult]::OK)
+		{
+			Write_Log "Storeman ZIP backup scheduling cancelled by user." "yellow"
+			Write_Log "`r`n==================== Schedule_Storeman_Zip_Backup Completed ====================" "blue"
+			return
+		}
+		
+		$timeInput = $txtTime.Text
+		$freqInput = [int]$numFreq.Value
+		$keepInput = [int]$numKeep.Value
+		
+		if ($timeInput -notmatch '^\d{2}:\d{2}$')
+		{
+			[System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
+			Write_Log "Invalid time format entered." "red"
+			return
+		}
+		$hours, $minutes = $timeInput.Split(":")
+		if ([int]$hours -gt 23 -or [int]$minutes -gt 59)
+		{
+			[System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
+			Write_Log "Invalid time (out of range)." "red"
+			return
+		}
+		
+		# --- Compose the backup script ---
+		$backupScript = @"
+# Auto-generated by Schedule_${LocalHost}_Storeman_Zip_Backup (Alex_C.T)
+`$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+`$storemanPath = `"$storemanPath`"
+`$backupRoot = `"$backupRoot`"
+if (-not (Test-Path `$storemanPath)) {
+    Write-Host "Storeman path (`$storemanPath) not found. Aborting." -ForegroundColor Red
+    exit 1
+}
+if (-not (Test-Path `$backupRoot)) {
+    New-Item -Path `$backupRoot -ItemType Directory -Force | Out-Null
+}
+
+# Compose backup ZIP filename with timestamp
+`$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+`$backupZipPath = Join-Path `$backupRoot ("Storeman_Backup_`$timestamp.zip")
+
+# Delete oldest backups if needed
+`$oldZips = Get-ChildItem -Path `$backupRoot -Filter "Storeman_Backup_*.zip" | Sort-Object LastWriteTime -Descending
+if (`$oldZips.Count -ge $keepInput) {
+    `$oldZips | Select-Object -Skip ($keepInput - 1) | ForEach-Object {
+        try {
+            Remove-Item `$_.FullName -Force
+        } catch {
+            Write-Host "Failed to delete old backup: `$_.FullName" -ForegroundColor Yellow
+        }
+    }
+}
+
+# Run the backup
+try {
+    `$zip = [System.IO.Compression.ZipFile]::Open(`$backupZipPath, 1)  # 1 = Create
+
+    # Gather all root directories starting with "install" (case-insensitive)
+    `$rootDirs = Get-ChildItem -Path `$storemanPath -Directory | Select-Object -ExpandProperty FullName
+    `$installDirs = `$rootDirs | Where-Object { `$_ -match '(?i)\\install' }
+
+    `$backupFullPathU = [System.IO.Path]::GetFullPath((Join-Path `$storemanPath "BACKUP"))
+    `$backupFullPathL = [System.IO.Path]::GetFullPath((Join-Path `$storemanPath "backup"))
+    `$logFullPath     = [System.IO.Path]::GetFullPath((Join-Path `$storemanPath "log"))
+
+    `$files = Get-ChildItem -Path `$storemanPath -Recurse -File
+    `$countAdded = 0
+
+    foreach (`$file in `$files) {
+        `$filePath = [System.IO.Path]::GetFullPath(`$file.FullName)
+
+        # Skip files under any install* folder
+        `$skipInstall = `$false
+        foreach (`$dir in `$installDirs) {
+            if (`$filePath -like "`$dir*") {
+                `$skipInstall = `$true
+                break
+            }
+        }
+        if (`$skipInstall) {
+            continue
+        }
+
+        # Skip other excluded folders and log files
+        if (
+            (`$filePath -like "`$backupFullPathU*") -or
+            (`$filePath -like "`$backupFullPathL*") -or
+            (`$filePath -like "`$logFullPath*") -or
+            (`$file.Extension -eq ".log")
+        ) {
+            continue
+        }
+
+        `$relativePath = `$filePath.Substring(`$storemanPath.Length).TrimStart('\','/')
+        try {
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(`$zip, `$file.FullName, `$relativePath) | Out-Null
+            `$countAdded++
+        }
+        catch {
+            continue
+        }
+    }
+    `$zip.Dispose()
+    "`$([DateTime]::Now) Backup complete: `$backupZipPath (`$countAdded files)" | Out-File -FilePath (Join-Path `$backupRoot "backup.log") -Append -Encoding utf8
+    Write-Host "Backup complete: `$backupZipPath (`$countAdded files)" -ForegroundColor Green
+}
+catch {
+    if (`$zip) { `$zip.Dispose() }
+    "`$([DateTime]::Now) Backup FAILED for `$storemanPath - `$(`$_.Exception.Message)" | Out-File -FilePath (Join-Path `$backupRoot "backup.log") -Append -Encoding utf8
+    Write-Host "Backup FAILED: `$(`$_.Exception.Message)" -ForegroundColor Red
+}
+"@
+		
+		# --- Write the backup script to the scripts folder
+		$backupScriptPath = Join-Path $scriptsDir $backupScriptName
+		if (-not (Test-Path $scriptsDir))
+		{
+			New-Item -Path $scriptsDir -ItemType Directory -Force | Out-Null
+		}
+		Set-Content -Path $backupScriptPath -Value $backupScript -Encoding UTF8
+		
+		# --- Build Task Scheduler arguments ---
+		$hour = "{0:D2}" -f [int]$hours
+		$min = "{0:D2}" -f [int]$minutes
+		$startTime = "$hour`:$min"
+		$freqArg = "/SC DAILY"
+		if ($freqInput -gt 1)
+		{
+			$freqArg = "/SC DAILY /MO $freqInput"
+		}
+		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$backupScriptPath`"`""
+		
+		# --- Remove existing task if present ---
+		schtasks.exe /Delete /TN "$taskName" /F 2>$null | Out-Null
+		
+		# --- Create scheduled task ---
+		$cmd = "schtasks.exe /Create /RU SYSTEM /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
+		Write_Log "Creating scheduled task with command:" "yellow"
+		Write_Log $cmd "gray"
+		Invoke-Expression $cmd
+		
+		if ($LASTEXITCODE -eq 0)
+		{
+			Write_Log "Storeman ZIP backup task scheduled successfully (`"$taskName`") at $startTime every $freqInput day(s)." "green"
+			[System.Windows.Forms.MessageBox]::Show("Storeman ZIP backup scheduled successfully.`nScript: $backupScriptPath", "Scheduled!", 0, 64)
+		}
+		else
+		{
+			Write_Log "Failed to schedule Storeman ZIP backup task. Check permissions or path." "red"
+			[System.Windows.Forms.MessageBox]::Show("Failed to schedule Storeman ZIP backup task.`nCheck permissions or path.", "Error", 0, 16)
+		}
+	}
+	catch
+	{
+		Write_Log "Fatal error in Schedule_Storeman_Zip_Backup: $($_.Exception.Message)" "red"
+		[System.Windows.Forms.MessageBox]::Show("Fatal error: $($_.Exception.Message)", "Error", 0, 16)
+	}
+	Write_Log "`r`n==================== Schedule_Storeman_Zip_Backup Completed ====================" "blue"
+}
 
 # ===================================================================================================
 #                      FUNCTION: Schedule_LaneDB_Backup
@@ -11715,49 +12041,79 @@ function Deploy_Scale_Currency_Files
 		return
 	}
 	
-	# ---- Prompt for currency symbol ----
+	# ---- Load Assemblies ----
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
 	# ---- Create Form ----
 	$form = New-Object Windows.Forms.Form
 	$form.Text = "Set Currency Symbol"
-	$form.Size = [System.Drawing.Size]::new(420, 210)
+	$form.Size = [System.Drawing.Size]::new(420, 250) # Taller to accommodate preview label
 	$form.FormBorderStyle = 'FixedDialog'
 	$form.StartPosition = 'CenterScreen'
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
-	$form.BackColor = [System.Drawing.Color]::FromArgb(248, 248, 250)
+	$form.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 252) # Softer light gray for modern feel
+	$form.Icon = [System.Drawing.SystemIcons]::Information # Add a simple info icon (or load a custom one)
 	
 	# ---- Centered, bold, wrapped label ----
 	$lbl = New-Object Windows.Forms.Label
 	$lbl.Text = "Please enter the currency symbol to use`nfor all scale price files:"
 	$lbl.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
 	$lbl.Width = $form.ClientSize.Width - 40
-	$lbl.Height = 48 # Allows for 2 lines of text comfortably
+	$lbl.Height = 50 # Adjusted for better line spacing
 	$lbl.Location = New-Object System.Drawing.Point(20, 20)
 	$lbl.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$lbl.AutoSize = $false
-	$lbl.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 40)
+	$lbl.ForeColor = [System.Drawing.Color]::FromArgb(33, 33, 33) # Darker text for contrast
 	$form.Controls.Add($lbl)
 	
-	# ---- Centered textbox below label ----
-	$txtCurrency = New-Object Windows.Forms.TextBox
-	$txtCurrency.Text = '$'
-	$txtCurrency.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Regular)
-	$txtCurrency.MaxLength = 3
-	$txtCurrency.Width = 60
-	$txtCurrency.Height = 30
-	# Center textbox horizontally below label (at 80px from top)
-	$txtCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $txtCurrency.Width)/2), 78)
-	$txtCurrency.TextAlign = 'Center'
-	$form.Controls.Add($txtCurrency)
+	# ---- ComboBox for common symbols (improved from TextBox: allows dropdown + custom input) ----
+	$cmbCurrency = New-Object Windows.Forms.ComboBox
+	$cmbCurrency.Items.AddRange(@('$', [char]0x20AC, [char]0x00A3, [char]0x00A5, [char]0x20B9, [char]0x20BD, [char]0x20A9, [char]0x20BA, [char]0x20AA)) # Encoding-safe symbols
+	$cmbCurrency.Text = '$' # Default
+	$cmbCurrency.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Regular)
+	$cmbCurrency.DropDownStyle = 'DropDown' # Allows typing custom values
+	$cmbCurrency.MaxLength = 3
+	$cmbCurrency.Width = 100 # Wider for visibility
+	$cmbCurrency.Height = 30
+	$cmbCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $cmbCurrency.Width)/2), 80) # Centered below label
+	$cmbCurrency.FlatStyle = 'Flat' # Cleaner look
+	$form.Controls.Add($cmbCurrency)
+	
+	# ---- Tooltip for ComboBox (accessibility) ----
+	$toolTip = New-Object System.Windows.Forms.ToolTip
+	$toolTip.SetToolTip($cmbCurrency, "Select a common symbol or type a custom one (up to 3 characters).")
+	
+	# ---- Preview Label (updates in real-time) ----
+	$previewLabel = New-Object Windows.Forms.Label
+	$previewLabel.Text = "Preview: $1.99" # Initial preview with default
+	$previewLabel.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Italic)
+	$previewLabel.Width = $form.ClientSize.Width - 40
+	$previewLabel.Height = 30
+	$previewLabel.Location = New-Object System.Drawing.Point(20, 120) # Below ComboBox
+	$previewLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$previewLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 100) # Muted gray for subtlety
+	$form.Controls.Add($previewLabel)
+	
+	# ---- Event: Update preview in real-time on text change ----
+	$cmbCurrency.Add_TextChanged({
+			$symbol = $this.Text
+			if ([string]::IsNullOrEmpty($symbol))
+			{
+				$previewLabel.Text = "Preview: 1.99" # No symbol if empty
+			}
+			else
+			{
+				$previewLabel.Text = "Preview: $($symbol)1.99"
+			}
+		})
 	
 	# ---- OK and Cancel buttons, spaced and centered at the bottom ----
 	$btnWidth = 100
-	$btnHeight = 34
+	$btnHeight = 36 # Slightly taller for touch-friendliness
 	$btnSpacing = 24
-	$btnY = 135
+	$btnY = 170 # Adjusted for taller form with preview
 	$totalBtnWidth = $btnWidth * 2 + $btnSpacing
 	$startX = [Math]::Floor(($form.ClientSize.Width - $totalBtnWidth)/2)
 	
@@ -11766,11 +12122,21 @@ function Deploy_Scale_Currency_Files
 	$btnOK.Size = [System.Drawing.Size]::new($btnWidth, $btnHeight)
 	$btnOK.Location = [System.Drawing.Point]::new($startX, $btnY)
 	$btnOK.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-	$btnOK.BackColor = [System.Drawing.Color]::FromArgb(18, 130, 86)
+	$btnOK.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204) # Modern blue (Windows accent)
 	$btnOK.ForeColor = [System.Drawing.Color]::White
 	$btnOK.FlatStyle = 'Flat'
 	$btnOK.FlatAppearance.BorderSize = 0
-	$btnOK.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::OK; $form.Close() })
+	# Add hover effect
+	$btnOK.Add_MouseEnter({ $this.BackColor = [System.Drawing.Color]::FromArgb(0, 103, 173) }) # Darker on hover
+	$btnOK.Add_MouseLeave({ $this.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204) })
+	$btnOK.Add_Click({
+			if ([string]::IsNullOrWhiteSpace($cmbCurrency.Text))
+			{
+				[System.Windows.Forms.MessageBox]::Show("Please enter a currency symbol.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+				return
+			}
+			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK; $form.Close()
+		})
 	$form.AcceptButton = $btnOK
 	$form.Controls.Add($btnOK)
 	
@@ -11779,18 +12145,22 @@ function Deploy_Scale_Currency_Files
 	$btnCancel.Size = [System.Drawing.Size]::new($btnWidth, $btnHeight)
 	$btnCancel.Location = [System.Drawing.Point]::new($startX + $btnWidth + $btnSpacing, $btnY)
 	$btnCancel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-	$btnCancel.BackColor = [System.Drawing.Color]::FromArgb(232, 54, 54)
+	$btnCancel.BackColor = [System.Drawing.Color]::FromArgb(232, 72, 85) # Softer red
 	$btnCancel.ForeColor = [System.Drawing.Color]::White
 	$btnCancel.FlatStyle = 'Flat'
 	$btnCancel.FlatAppearance.BorderSize = 0
+	# Add hover effect
+	$btnCancel.Add_MouseEnter({ $this.BackColor = [System.Drawing.Color]::FromArgb(196, 61, 72) }) # Darker on hover
+	$btnCancel.Add_MouseLeave({ $this.BackColor = [System.Drawing.Color]::FromArgb(232, 72, 85) })
 	$btnCancel.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $form.Close() })
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
 	
-	# ---- Responsive reposition on resize (if ever made resizable) ----
+	# ---- Responsive reposition on resize (future-proof if made resizable) ----
 	$form.Add_Resize({
 			$lbl.Width = $form.ClientSize.Width - 40
-			$txtCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $txtCurrency.Width)/2), 78)
+			$cmbCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $cmbCurrency.Width)/2), 80)
+			$previewLabel.Width = $form.ClientSize.Width - 40
 			$totalBtnWidth = $btnWidth * 2 + $btnSpacing
 			$startX = [Math]::Floor(($form.ClientSize.Width - $totalBtnWidth)/2)
 			$btnOK.Location = [System.Drawing.Point]::new($startX, $btnY)
@@ -11804,8 +12174,9 @@ function Deploy_Scale_Currency_Files
 		Write_Log "Cancelled by user." "yellow"
 		return
 	}
-	$currency = $txtCurrency.Text
-	if (-not $currency) { $currency = '$' }
+	$currency = $cmbCurrency.Text.Trim()
+	if (-not $currency) { $currency = '$' } # Fallback if somehow empty after validation
+	# Use $currency in your script (e.g., Write_Log "Selected currency: $currency" "green")
 	
 	# ---- Inline file content templates ----
 	$totalprice_txt = "=$%$ BT20 =`"$currency *#.##`""
@@ -11828,23 +12199,28 @@ function Deploy_Scale_Currency_Files
     </source>
 </properties>
 "@
+		
 	# ---- Push files to each selected scale ----
 	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
-	$results = @()
+	$results = @() # Correct: array, not hashtable
+	
 	foreach ($scaleCode in $selection.Scales)
 	{
 		$scaleObj = $ScaleCodeToIPInfo[$scaleCode]
 		$scaleIP = $scaleObj.FullIP
 		$scaleLabel = $scaleObj.ScaleName
 		$targetPath = "\\$scaleIP\c$\bizstorecard\bizerba\_fileIO\generic_data\in"
-		$result = @{
+		
+		# Prepare a result object as PSCustomObject
+		$result = [PSCustomObject]@{
 			Scale = "$scaleLabel [$scaleIP]"
+			ScaleCode = $scaleCode
+			ScaleIP = $scaleIP
 			Result = "Success"
 			Details = @()
 		}
 		
 		$isAccessible = $false
-		# -- 1. Test if target path exists (online & permissible) --
 		try
 		{
 			if (Test-Path $targetPath -ErrorAction Stop)
@@ -11856,12 +12232,12 @@ function Deploy_Scale_Currency_Files
 		{
 			Write_Log "Scale $scaleLabel [$scaleIP] is offline or share inaccessible. Skipping." "yellow"
 			$result.Result = "Failed"
-			$result.Details += "Share not reachable"
-			$results += $result
+			$result.Details = @("Share not reachable")
+			$results += ,$result
 			continue
 		}
 		
-		# -- 2. Create folder if missing --
+		# Create folder if missing
 		if (-not $isAccessible)
 		{
 			try
@@ -11873,13 +12249,13 @@ function Deploy_Scale_Currency_Files
 			{
 				Write_Log "Could not create remote folder on $scaleLabel [$scaleIP]. Skipping." "yellow"
 				$result.Result = "Failed"
-				$result.Details += "Failed to create share folder"
-				$results += $result
+				$result.Details = @("Failed to create share folder")
+				$results += ,$result
 				continue
 			}
 		}
 		
-		# -- 3. Attempt file deployment --
+		# Attempt file deployment
 		try
 		{
 			Set-Content -Path (Join-Path $targetPath 'na_f_totalprice.txt') -Value $totalprice_txt -Encoding UTF8 -ErrorAction Stop
@@ -11892,10 +12268,10 @@ function Deploy_Scale_Currency_Files
 		catch
 		{
 			$result.Result = "Failed"
-			$result.Details += "File write failed (network/permission)."
+			$result.Details = @("File write failed (network/permission).")
 			Write_Log "Could not deploy price files to $($scaleLabel) [$scaleIP]. File write failed or network/permission denied." "yellow"
 		}
-		$results += $result
+		$results += ,$result
 	}
 	
 	# ---- Show summary ----
@@ -11912,7 +12288,43 @@ function Deploy_Scale_Currency_Files
 			Write_Log $msg "red"
 		}
 	}
-	Write_Log "`r`n==================== Deploy_Scale_Currency_Files Completed ====================" "blue"
+	
+	# ===== After summary, prompt for reboot of only SUCCESSFUL scales =====
+	
+	# Build list of successfully deployed scales (ScaleCodes) for reboot
+	$successScales = $results | Where-Object { $_.Result -eq "Success" -and $_.PSObject.Properties.Match('ScaleCode') } | Select-Object -ExpandProperty ScaleCode
+	$successScalesLabels = $results | Where-Object { $_.Result -eq "Success" } | ForEach-Object { $_.Scale }
+	
+	if ($successScales.Count -gt 0)
+	{
+		# Ask user with Windows prompt if they want to reboot now
+		$scaleListText = ($successScalesLabels -join "`n")
+		$rebootMsg = "Do you want to reboot the following successfully deployed scales now to apply changes?`n`n$scaleListText"
+		$dialogResult = [System.Windows.Forms.MessageBox]::Show($rebootMsg, "Reboot Scales?", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+		
+		if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Yes)
+		{
+			# Call Reboot_Nodes for just these scales (without UI)
+			Write_Log "User chose to reboot all successfully deployed scales." "cyan"
+			# Build fake selection object for direct call
+			$rebootSelection = [PSCustomObject]@{
+				Lanes	    = @()
+				Scales	    = $successScales
+				Backoffices = @()
+			}
+			# Call Reboot_Nodes with this selection; modify Reboot_Nodes to accept -Selection if not present
+			Reboot_Nodes -StoreNumber $StoreNumber -NodeTypes Scale -Selection $rebootSelection
+		}
+		else
+		{
+			Write_Log "User chose not to reboot. The following scales will need to be rebooted to apply changes:" "yellow"
+			foreach ($s in $successScalesLabels)
+			{
+				Write_Log "$s" "yellow"
+			}
+		}
+	}
+Write_Log "`r`n==================== Deploy_Scale_Currency_Files Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -13691,9 +14103,19 @@ if (-not $form)
 			Schedule_LocalDB_Backup
 		})
 	[void]$ContextMenuServer.Items.Add($ServerScheduleBackupItem)
+	
+	############################################################################
+	# 4) Schedule the Storeman ZIP backup on the server
+	############################################################################
+	$ServerScheduleStoremanZipBackupItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Storeman ZIP Backup")
+	$ServerScheduleStoremanZipBackupItem.ToolTipText = "Schedule a task to back up the Storeman folder to a weekly ZIP archive."
+	$ServerScheduleStoremanZipBackupItem.Add_Click({
+			Schedule_Storeman_Zip_Backup
+		})
+	[void]$ContextMenuServer.Items.Add($ServerScheduleStoremanZipBackupItem)
 		
 	############################################################################
-	# 4) Organize_TBS_SCL_ver520 Menu Item
+	# 5) Organize_TBS_SCL_ver520 Menu Item
 	############################################################################
 	$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize_TBS_SCL_ver520")
 	$OrganizeScaleTableItem.ToolTipText = "Organize the Scale SQL table (TBS_SCL_ver520)."
@@ -13703,7 +14125,7 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($OrganizeScaleTableItem)
 	
 	############################################################################
-	# 5) Manage SQL 'sa' Account Menu Item
+	# 6) Manage SQL 'sa' Account Menu Item
 	############################################################################
 	$ManageSaAccountItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manage SQL 'sa' Account")
 	$ManageSaAccountItem.ToolTipText = "Enable or disable the 'sa' account on the local SQL Server with a predefined password."
@@ -13713,7 +14135,7 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
 	
 	############################################################################
-	# 6) Repair Windows Menu Item
+	# 7) Repair Windows Menu Item
 	############################################################################
 	$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
 	$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
@@ -13723,7 +14145,7 @@ if (-not $form)
 	[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
 	
 	############################################################################
-	# 7) Configure System Settings Menu Item
+	# 8) Configure System Settings Menu Item
 	############################################################################
 	$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
 	$ConfigureSystemSettingsItem.ToolTipText = "Organize the desktop, set power plan to maximize performance and make sure necessary services are running."
