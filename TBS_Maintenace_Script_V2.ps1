@@ -11729,43 +11729,87 @@ function Deploy_Scale_Currency_Files
 	
 	# ---- Prompt for currency symbol ----
 	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	# ---- Create Form ----
 	$form = New-Object Windows.Forms.Form
-	$form.Text = "Set Currency for Scale Price Files"
-	$form.Size = [System.Drawing.Size]::new(400, 180)
-	$form.StartPosition = "CenterScreen"
+	$form.Text = "Set Currency Symbol"
+	$form.Size = [System.Drawing.Size]::new(420, 210)
 	$form.FormBorderStyle = 'FixedDialog'
+	$form.StartPosition = 'CenterScreen'
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
+	$form.BackColor = [System.Drawing.Color]::FromArgb(248, 248, 250)
 	
+	# ---- Centered, bold, wrapped label ----
 	$lbl = New-Object Windows.Forms.Label
-	$lbl.Text = "Enter currency symbol for scale price files:"
-	$lbl.Location = [System.Drawing.Point]::new(15, 25)
-	$lbl.Size = [System.Drawing.Size]::new(320, 22)
+	$lbl.Text = "Please enter the currency symbol to use`nfor all scale price files:"
+	$lbl.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+	$lbl.Width = $form.ClientSize.Width - 40
+	$lbl.Height = 48 # Allows for 2 lines of text comfortably
+	$lbl.Location = New-Object System.Drawing.Point(20, 20)
+	$lbl.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$lbl.AutoSize = $false
+	$lbl.ForeColor = [System.Drawing.Color]::FromArgb(40, 40, 40)
 	$form.Controls.Add($lbl)
 	
+	# ---- Centered textbox below label ----
 	$txtCurrency = New-Object Windows.Forms.TextBox
 	$txtCurrency.Text = '$'
-	$txtCurrency.Location = [System.Drawing.Point]::new(15, 55)
-	$txtCurrency.Size = [System.Drawing.Size]::new(40, 25)
+	$txtCurrency.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Regular)
 	$txtCurrency.MaxLength = 3
+	$txtCurrency.Width = 60
+	$txtCurrency.Height = 30
+	# Center textbox horizontally below label (at 80px from top)
+	$txtCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $txtCurrency.Width)/2), 78)
+	$txtCurrency.TextAlign = 'Center'
 	$form.Controls.Add($txtCurrency)
+	
+	# ---- OK and Cancel buttons, spaced and centered at the bottom ----
+	$btnWidth = 100
+	$btnHeight = 34
+	$btnSpacing = 24
+	$btnY = 135
+	$totalBtnWidth = $btnWidth * 2 + $btnSpacing
+	$startX = [Math]::Floor(($form.ClientSize.Width - $totalBtnWidth)/2)
 	
 	$btnOK = New-Object Windows.Forms.Button
 	$btnOK.Text = "OK"
-	$btnOK.Location = [System.Drawing.Point]::new(70, 100)
-	$btnOK.Size = [System.Drawing.Size]::new(90, 32)
+	$btnOK.Size = [System.Drawing.Size]::new($btnWidth, $btnHeight)
+	$btnOK.Location = [System.Drawing.Point]::new($startX, $btnY)
+	$btnOK.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+	$btnOK.BackColor = [System.Drawing.Color]::FromArgb(18, 130, 86)
+	$btnOK.ForeColor = [System.Drawing.Color]::White
+	$btnOK.FlatStyle = 'Flat'
+	$btnOK.FlatAppearance.BorderSize = 0
 	$btnOK.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::OK; $form.Close() })
 	$form.AcceptButton = $btnOK
 	$form.Controls.Add($btnOK)
 	
 	$btnCancel = New-Object Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = [System.Drawing.Point]::new(180, 100)
-	$btnCancel.Size = [System.Drawing.Size]::new(90, 32)
+	$btnCancel.Size = [System.Drawing.Size]::new($btnWidth, $btnHeight)
+	$btnCancel.Location = [System.Drawing.Point]::new($startX + $btnWidth + $btnSpacing, $btnY)
+	$btnCancel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+	$btnCancel.BackColor = [System.Drawing.Color]::FromArgb(232, 54, 54)
+	$btnCancel.ForeColor = [System.Drawing.Color]::White
+	$btnCancel.FlatStyle = 'Flat'
+	$btnCancel.FlatAppearance.BorderSize = 0
 	$btnCancel.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $form.Close() })
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
 	
+	# ---- Responsive reposition on resize (if ever made resizable) ----
+	$form.Add_Resize({
+			$lbl.Width = $form.ClientSize.Width - 40
+			$txtCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $txtCurrency.Width)/2), 78)
+			$totalBtnWidth = $btnWidth * 2 + $btnSpacing
+			$startX = [Math]::Floor(($form.ClientSize.Width - $totalBtnWidth)/2)
+			$btnOK.Location = [System.Drawing.Point]::new($startX, $btnY)
+			$btnCancel.Location = [System.Drawing.Point]::new($startX + $btnWidth + $btnSpacing, $btnY)
+		})
+	
+	# ---- Show the form and return the result ----
 	$res = $form.ShowDialog()
 	if ($res -ne [System.Windows.Forms.DialogResult]::OK)
 	{
