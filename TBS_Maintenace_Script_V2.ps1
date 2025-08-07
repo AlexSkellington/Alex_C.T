@@ -11720,7 +11720,7 @@ function Deploy_Scale_Currency_Files
 	
 	# ---- Node selection for scales (show tabbed GUI) ----
 	$StoreNumber = $script:FunctionResults['StoreNumber']
-	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale"
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale" -OnlyBizerbaScales
 	if (-not $selection -or -not $selection.Scales -or $selection.Scales.Count -eq 0)
 	{
 		Write_Log "No scales selected for deployment." "yellow"
@@ -14305,7 +14305,7 @@ $AliasToTable = Get_Table_Aliases
 Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
 
 # Add all the Scales to the credential manager
-Add_Scale_Credentials -ScaleCodeToIPInfo $script:FunctionResults['ScaleCodeToIPInfo']
+Add_Scale_Credentials -ScaleCodeToIPInfo $script:FunctionResults['WindowsScales']
 
 # Clearing XE (Urgent Messages) folder.
 $ClearXEJob = Clear_XE_Folder
