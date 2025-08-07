@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.3.9"
-$VersionDate = "2025-08-05"
+$VersionNumber = "2.4.0"
+$VersionDate = "2025-08-06"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1706,55 +1706,6 @@ IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$BackupSqlUse
     CREATE USER [$BackupSqlUser] FOR LOGIN [$BackupSqlUser];
 IF IS_ROLEMEMBER('db_owner', '$BackupSqlUser') = 0
     EXEC sp_addrolemember 'db_owner', '$BackupSqlUser';
-
-/* Schedule daily backup of the main database */
-IF OBJECT_ID('dbo.Server_DB_Backup', 'P') IS NOT NULL DROP PROCEDURE dbo.Server_DB_Backup;
-EXEC('
-CREATE PROCEDURE dbo.Server_DB_Backup
-AS
-BEGIN
-    SET NOCOUNT ON;
-    DECLARE @DbName varchar(128) = ''$storeDbName'';
-    DECLARE @machine varchar(128) = CAST(SERVERPROPERTY(''MachineName'') AS varchar(128));
-    DECLARE @backupRoot varchar(4000) = ''$BackupRoot'';
-    DECLARE @scriptPath varchar(4000) = ''$ScriptsFolder'';
-	DECLARE @backupPath varchar(4000);
-    DECLARE @filePattern varchar(255);
-    DECLARE @backupFile varchar(4000);
-    DECLARE @cmd varchar(8000);         
-    DECLARE @psCmd varchar(8000); 
-    DECLARE @schtask varchar(8000);
-    DECLARE @bat varchar(8000);
-    DECLARE @sqlBackup nvarchar(max);
-
-    SET @backupPath = @backupRoot + @machine + ''\'';
-    SET @cmd = ''IF NOT EXIST "'' + @backupPath + ''" mkdir "'' + @backupPath + ''" >nul 2>&1'';
-    EXEC xp_cmdshell @cmd, NO_OUTPUT;
-    SET @cmd = ''IF NOT EXIST "'' + @scriptPath + ''" mkdir "'' + @scriptPath + ''" >nul 2>&1'';
-    EXEC xp_cmdshell @cmd, NO_OUTPUT;
-
-    SET @filePattern = @DbName + ''.bak'';
-    SET @psCmd =
-        ''powershell.exe -Command "$bkpFiles = Get-ChildItem -Path '''''' + @backupPath
-        + '''''' -Filter '''''' + @filePattern + '''''' | Sort-Object LastWriteTime -Descending; ''
-        + ''if ($bkpFiles.Count -gt 2) { $bkpFiles | Select-Object -Skip 2 | Remove-Item -Force }"'';
-    EXEC xp_cmdshell @psCmd, NO_OUTPUT;
-
-    SET @backupFile = @backupPath + @DbName + ''_'' 
-        + CONVERT(varchar(8), GETDATE(), 112) + ''_'' 
-        + REPLACE(CONVERT(varchar(8), GETDATE(), 108), '':'', '''') + ''.bak'';
-
-    SET @sqlBackup = N''BACKUP DATABASE ['' + @DbName + ''] TO DISK = N'''''' + @backupFile + '''''' WITH STATS = 10;'';
-    EXEC(@sqlBackup);
-
-    SET @bat = ''echo sqlcmd -S $dbServer -U $BackupSqlUser -P $BackupSqlPass -d $storeDbName -Q "EXEC dbo.Server_DB_Backup" > "'' + @scriptPath + ''Run_Server_DB_Backup.bat"'';
-    EXEC xp_cmdshell @bat, NO_OUTPUT;
-
-    SET @schtask = ''schtasks /Create /F /TN "Server_DB_Backup" /TR "'' + @scriptPath + ''Run_Server_DB_Backup.bat" /SC DAILY /ST 01:00 /RL HIGHEST /RU SYSTEM'';
-    EXEC xp_cmdshell @schtask, NO_OUTPUT;
-END
-');
-EXEC dbo.Server_DB_Backup;
 
 /* Create Table TBS_ITM_SMAppUPDATED */
 -----Drop the table if it exist-----
@@ -9564,65 +9515,58 @@ function Open_Selected_Node_C_Path
 
 function Add_Scale_Credentials
 {
-	param (
-		[Parameter(Mandatory = $true)]
-		[hashtable]$ScaleCodeToIPInfo
-	)
+	param ([hashtable]$ScaleCodeToIPInfo)
 	
-	$uniqueScaleIPs = @{ }
-	foreach ($kv in $ScaleCodeToIPInfo.GetEnumerator())
-	{
-		$scaleObj = $kv.Value
-		$scaleHost = $null
-		if ($scaleObj.PSObject.Properties['FullIP'] -and $scaleObj.FullIP)
-		{
-			$scaleHost = $scaleObj.FullIP
-		}
-		elseif ($scaleObj.PSObject.Properties['IPNetwork'] -and $scaleObj.PSObject.Properties['IPDevice'])
-		{
-			$scaleHost = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
-		}
-		if ($scaleHost -and -not $uniqueScaleIPs.ContainsKey($scaleHost))
-		{
-			$uniqueScaleIPs[$scaleHost] = $true
-		}
-	}
-	$credsToTry = @(
-		@{ User = "bizuser"; Pass = "bizerba" },
-		@{ User = "bizuser"; Pass = "biyerba" }
-	)
+	$scaleIPs = $ScaleCodeToIPInfo.Values | ForEach-Object {
+		if ($_.FullIP) { $_.FullIP }
+		elseif ($_.IPNetwork -and $_.IPDevice) { "$($_.IPNetwork)$($_.IPDevice)" }
+	} | Where-Object { $_ } | Select-Object -Unique
 	
-	Start-Job -ScriptBlock {
-		param ($uniqueIPs,
-			$credsToTry)
-		
-		foreach ($scaleIP in $uniqueScaleIPs.Keys)
-		{
-			# First try with whatever is there (don't delete existing creds yet)
-			$accessOK = $false
-			try
-			{
-				Get-ChildItem -Path "\\$scaleIP\c$" -ErrorAction Stop | Out-Null
-				$accessOK = $true
-			}
-			catch { }
-			if ($accessOK) { continue } # Already working, skip
-			
-			# Now try each credential
-			cmdkey /delete:$scaleIP | Out-Null
-			foreach ($c in $credsToTry)
-			{
-				cmdkey /add:$scaleIP /user:$($c.User) /pass:$($c.Pass) | Out-Null
-				Start-Sleep -Milliseconds 600
-				try
-				{
-					Get-ChildItem -Path "\\$scaleIP\c$" -ErrorAction Stop | Out-Null
-					break
-				}
-				catch { cmdkey /delete:$scaleIP | Out-Null }
-			}
-		}
-	} -ArgumentList $uniqueScaleIPs, $credsToTry | Out-Null
+	# Write-Host "Will attempt to add credentials to these Scale IPs:" -ForegroundColor Yellow
+	# $scaleIPs | ForEach-Object { Write-Host "  $_" -ForegroundColor Cyan }
+	$scaleIpStr = "@(" + (($scaleIPs | ForEach-Object { "'$_'" }) -join ",") + ")"
+	
+	$psScript = @"
+`$credsToTry = @(
+    @{ User = 'bizuser'; Pass = 'bizerba' },
+    @{ User = 'bizuser'; Pass = 'biyerba' }
+)
+`$scaleIPs = $scaleIpStr
+Write-Host '==== SCALE CREDENTIALS TEST (EXTERNAL PROCESS) ====' -ForegroundColor Yellow
+Write-Host 'IPs:' -ForegroundColor Cyan
+`$scaleIPs | ForEach-Object { Write-Host " `$_" -ForegroundColor Green }
+foreach (`$scaleIP in `$scaleIPs) {
+    `$connected = `$false
+    try {
+        Get-ChildItem -Path "\\`$scaleIP\c$" -ErrorAction Stop | Out-Null
+        Write-Host "`${scaleIP}: Already accessible, skipping." -ForegroundColor Green
+        `$connected = `$true
+    } catch {
+        Write-Host "`${scaleIP}: Not accessible, will try credentials..." -ForegroundColor Yellow
+    }
+    if (`$connected) { continue }
+    cmdkey /delete:`$scaleIP | Out-Null
+    foreach (`$c in `$credsToTry) {
+        Write-Host " Trying `$(`$c.User)/`$(`$c.Pass)..." -NoNewline
+        cmdkey /add:`$scaleIP /user:`$(`$c.User) /pass:`$(`$c.Pass) | Out-Null
+        Start-Sleep -Milliseconds 600
+        try {
+            Get-ChildItem -Path "\\`$scaleIP\c$" -ErrorAction Stop | Out-Null
+            Write-Host " [SUCCESS]" -ForegroundColor Green
+            `$connected = `$true
+            break
+        } catch {
+            Write-Host " [FAIL]" -ForegroundColor Red
+            cmdkey /delete:`$scaleIP | Out-Null
+        }
+    }
+    if (-not `$connected) { Write-Host "`${scaleIP}: All credentials failed." -ForegroundColor Red }
+}
+Write-Host '==== CREDENTIALS TEST END ====' -ForegroundColor Yellow
+"@
+	
+	# Launch in a new PowerShell window so output is visible
+	Start-Process powershell -ArgumentList "-NoProfile -WindowStyle Hidden -Command $psScript" -WindowStyle Hidden
 }
 
 # ===================================================================================================
@@ -11172,6 +11116,7 @@ else {
 	Write_Log "`r`n==================== Schedule_LocalDB_Backup Completed ====================" "blue"
 }
 
+
 # ===================================================================================================
 #                      FUNCTION: Schedule_LaneDB_Backup
 # ---------------------------------------------------------------------------------------------------
@@ -11182,6 +11127,8 @@ else {
 #   For each lane, creates a backup script at $ScriptsFolder\$MachineName\Run_${MachineName}DB_Backup.ps1.
 #   Schedules a task for each lane using that script.
 #   Each backup goes to $BackupRoot\$MachineName\STORESQL_{timestamp}.bak (etc).
+#   Always uses the detected protocol (TCP/Named Pipes) for sqlcmd.
+
 # Author: Alex_C.T
 # ===================================================================================================
 
@@ -11212,65 +11159,118 @@ function Schedule_LaneDB_Backup
 		return
 	}
 	
-	# 3. Prompt once for backup options
+	# 3. Prompt for backup options, user and password (all in one form, more spacing)
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
+	
 	$form = New-Object Windows.Forms.Form
 	$form.Text = "Configure Lane DB Backup Scheduler"
-	$form.Size = [Drawing.Size]::new(375, 245)
+	$form.Size = [Drawing.Size]::new(500, 380) # Larger form
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = 'FixedDialog'
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
+	
+	# -- Backup Settings GroupBox --
+	$grpBackup = New-Object Windows.Forms.GroupBox
+	$grpBackup.Text = "Backup Settings"
+	$grpBackup.Location = [Drawing.Point]::new(20, 15)
+	$grpBackup.Size = [Drawing.Size]::new(450, 140)
+	$form.Controls.Add($grpBackup)
+	
+	# Time
 	$lblTime = New-Object Windows.Forms.Label
 	$lblTime.Text = "Time to run backup (24h, HH:mm):"
-	$lblTime.Location = [Drawing.Point]::new(10, 18)
-	$lblTime.Size = [Drawing.Size]::new(210, 20)
-	$form.Controls.Add($lblTime)
+	$lblTime.Location = [Drawing.Point]::new(25, 35)
+	$lblTime.Size = [Drawing.Size]::new(200, 20)
+	$grpBackup.Controls.Add($lblTime)
 	$txtTime = New-Object Windows.Forms.MaskedTextBox
 	$txtTime.Mask = "00:00"
 	$txtTime.Text = "01:00"
-	$txtTime.Location = [Drawing.Point]::new(220, 16)
-	$txtTime.Size = [Drawing.Size]::new(60, 20)
-	$form.Controls.Add($txtTime)
+	$txtTime.Location = [Drawing.Point]::new(260, 33)
+	$txtTime.Size = [Drawing.Size]::new(80, 24)
+	$grpBackup.Controls.Add($txtTime)
+	
+	# Frequency
 	$lblFreq = New-Object Windows.Forms.Label
 	$lblFreq.Text = "Frequency (every X days):"
-	$lblFreq.Location = [Drawing.Point]::new(10, 58)
-	$lblFreq.Size = [Drawing.Size]::new(210, 20)
-	$form.Controls.Add($lblFreq)
+	$lblFreq.Location = [Drawing.Point]::new(25, 70)
+	$lblFreq.Size = [Drawing.Size]::new(200, 20)
+	$grpBackup.Controls.Add($lblFreq)
 	$numFreq = New-Object Windows.Forms.NumericUpDown
 	$numFreq.Minimum = 1
 	$numFreq.Maximum = 31
 	$numFreq.Value = 1
-	$numFreq.Location = [Drawing.Point]::new(220, 56)
-	$numFreq.Size = [Drawing.Size]::new(60, 20)
-	$form.Controls.Add($numFreq)
+	$numFreq.Location = [Drawing.Point]::new(260, 68)
+	$numFreq.Size = [Drawing.Size]::new(80, 24)
+	$grpBackup.Controls.Add($numFreq)
+	
+	# Retention
 	$lblKeep = New-Object Windows.Forms.Label
 	$lblKeep.Text = "How many backups to keep:"
-	$lblKeep.Location = New-Object System.Drawing.Point(10, 98)
-	$lblKeep.Size = New-Object System.Drawing.Size(210, 20)
-	$form.Controls.Add($lblKeep)
+	$lblKeep.Location = [Drawing.Point]::new(25, 105)
+	$lblKeep.Size = [Drawing.Size]::new(200, 20)
+	$grpBackup.Controls.Add($lblKeep)
 	$numKeep = New-Object Windows.Forms.NumericUpDown
 	$numKeep.Minimum = 1
 	$numKeep.Maximum = 99
-	$numKeep.Value = 3
-	$numKeep.Location = New-Object System.Drawing.Point(220, 96)
-	$numKeep.Size = New-Object System.Drawing.Size(60, 20)
-	$form.Controls.Add($numKeep)
+	$numKeep.Value = 1
+	$numKeep.Location = [Drawing.Point]::new(260, 103)
+	$numKeep.Size = [Drawing.Size]::new(80, 24)
+	$grpBackup.Controls.Add($numKeep)
+	
+	# -- Task User/Password GroupBox --
+	$grpUser = New-Object Windows.Forms.GroupBox
+	$grpUser.Text = "Scheduled Task Credentials"
+	$grpUser.Location = [Drawing.Point]::new(20, 165)
+	$grpUser.Size = [Drawing.Size]::new(450, 100)
+	$form.Controls.Add($grpUser)
+	
+	# Username (default Administrator)
+	$lblUser = New-Object Windows.Forms.Label
+	$lblUser.Text = "Task user (default: Administrator):"
+	$lblUser.Location = [Drawing.Point]::new(25, 35)
+	$lblUser.Size = [Drawing.Size]::new(200, 18)
+	$grpUser.Controls.Add($lblUser)
+	$txtUser = New-Object Windows.Forms.TextBox
+	$txtUser.Text = "Administrator"
+	$txtUser.Location = [Drawing.Point]::new(260, 33)
+	$txtUser.Size = [Drawing.Size]::new(130, 24)
+	$grpUser.Controls.Add($txtUser)
+	
+	# Password (masked)
+	$lblPwd = New-Object Windows.Forms.Label
+	$lblPwd.Text = "Task password (blank = only when user logged in):"
+	$lblPwd.Location = [Drawing.Point]::new(25, 65)
+	$lblPwd.Size = [Drawing.Size]::new(270, 18)
+	$grpUser.Controls.Add($lblPwd)
+	$txtPwd = New-Object Windows.Forms.TextBox
+	$txtPwd.Text = ""
+	$txtPwd.Location = [Drawing.Point]::new(305, 63)
+	$txtPwd.Size = [Drawing.Size]::new(120, 24)
+	$txtPwd.UseSystemPasswordChar = $true
+	$grpUser.Controls.Add($txtPwd)
+	
+	# OK/Cancel
 	$btnOK = New-Object Windows.Forms.Button
 	$btnOK.Text = "OK"
-	$btnOK.Location = [Drawing.Point]::new(70, 150)
-	$btnOK.Size = [Drawing.Size]::new(90, 30)
+	$btnOK.Location = [Drawing.Point]::new(120, 285)
+	$btnOK.Size = [Drawing.Size]::new(110, 38)
+	$btnOK.Font = [System.Drawing.Font]::new("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 	$form.AcceptButton = $btnOK
 	$form.Controls.Add($btnOK)
+	
 	$btnCancel = New-Object Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = [Drawing.Point]::new(185, 150)
-	$btnCancel.Size = New-Object System.Drawing.Size(90, 30)
+	$btnCancel.Location = [Drawing.Point]::new(260, 285)
+	$btnCancel.Size = [Drawing.Size]::new(110, 38)
+	$btnCancel.Font = [System.Drawing.Font]::new("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
 	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
+	
+	# Show dialog and handle input
 	$result = $form.ShowDialog()
 	if ($result -ne [System.Windows.Forms.DialogResult]::OK)
 	{
@@ -11280,6 +11280,11 @@ function Schedule_LaneDB_Backup
 	$timeInput = $txtTime.Text
 	$freqInput = [int]$numFreq.Value
 	$keepInput = [int]$numKeep.Value
+	$taskUser = $txtUser.Text.Trim()
+	if (-not $taskUser) { $taskUser = "Administrator" }
+	$taskPwd = $txtPwd.Text
+	
+	# Validate time
 	if ($timeInput -notmatch '^\d{2}:\d{2}$')
 	{
 		[System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
@@ -11310,58 +11315,107 @@ function Schedule_LaneDB_Backup
 		}
 		$machine = $laneInfo.MachineName
 		$dbName = $laneInfo.DBName
-		$dbServer = $laneInfo.DBServer
+		
+		# Determine protocol and sqlcmd -S string
+		$protocol = $script:LaneProtocols[$lane]
+		switch ($protocol)
+		{
+			"TCP"         { $sqlcmdS = $laneInfo.TcpServer }
+			"Named Pipes" { $sqlcmdS = $laneInfo.NamedPipes }
+			default       { Write_Log "Unknown/unsupported protocol for $machine, skipping." "yellow"; continue }
+		}
 		
 		# Set backup and script directories (per-lane)
 		$backupDir = $script:BackupRoot
 		$scriptsDir = $script:ScriptsFolder
+		if (-not $backupDir) { $backupDir = $script:BackupRoot }
+		if (-not $scriptsDir) { $scriptsDir = $script:ScriptsFolder }
 		$machineFolder = Join-Path $backupDir $machine
 		
-		# ----> KEY: name backup script exactly as Run_${MachineName}DB_Backup.ps1
+		# ----> KEY: name backup script exactly as Run_${MachineName}_DB_Backup.ps1
 		$scriptName = "Run_${machine}_DB_Backup.ps1"
 		$backupScriptPath = Join-Path $scriptsDir $scriptName
 		
 		# Compose the backup script for this lane (matches server style)
 		$backupScript = @"
-# Auto-generated by Schedule_Lane_DB_Backup (Alex_C.T)
+# Auto-generated by Schedule_${machine}_DB_Backup (Alex_C.T)
 `$ErrorActionPreference = 'Stop'
 `$BackupRoot = `"$machineFolder`"
 `$Database = `"$dbName`"
-`$SqlInstance = `"$dbServer`"
+`$SqlcmdS = `"$sqlcmdS`"
+`$RemoteBackupFolder = "\\$machine\C$\Tecnica_Systems\Alex_C.T\Backups\$machine"
 `$MaxBackups = $keepInput
+`$MaxRemoteBackups = 3
 
-# Compose backup file path with timestamp
+# Compose backup file name
 `$timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-`$backupFile = Join-Path `$BackupRoot ("{0}_{1}.bak" -f `$Database, `$timestamp)
+`$bakName = ("{0}_{1}.bak" -f `$Database, `$timestamp)
+`$remoteBakFile = Join-Path `$RemoteBackupFolder `$bakName
+`$localBakFile  = Join-Path `$BackupRoot `$bakName
 
-# Ensure folder exists
-if (-not (Test-Path `$BackupRoot)) {
-    New-Item -Path `$BackupRoot -ItemType Directory -Force | Out-Null
-}
+# Ensure backup root exists (server)
+if (-not (Test-Path `$BackupRoot)) { New-Item -Path `$BackupRoot -ItemType Directory -Force | Out-Null }
+# Ensure backup root exists (remote/lane)
+if (-not (Test-Path `$RemoteBackupFolder)) { New-Item -Path `$RemoteBackupFolder -ItemType Directory -Force | Out-Null }
 
-# Delete oldest backups if needed
-`$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-while (`$bakFiles.Count -ge `$MaxBackups) {
-    Remove-Item -Path `$bakFiles[0].FullName -Force
+# Clean up old remote lane backups (always keep 3)
+try {
+    `$remoteBakFiles = Get-ChildItem -Path `$RemoteBackupFolder -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
+    while (`$remoteBakFiles.Count -ge `$MaxRemoteBackups) {
+        Remove-Item -Path `$remoteBakFiles[0].FullName -Force
+        `$remoteBakFiles = Get-ChildItem -Path `$RemoteBackupFolder -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
+    }
+} catch { }
+
+# Clean up old local server backups (per user)
+try {
     `$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-}
+    while (`$bakFiles.Count -ge `$MaxBackups) {
+        Remove-Item -Path `$bakFiles[0].FullName -Force
+        `$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
+    }
+} catch { }
 
-# Run the backup
-`$tsql = "BACKUP DATABASE [`$Database] TO DISK = N'`$backupFile' WITH NOFORMAT, NOINIT, NAME = N'`$Database-FullBackup-`$timestamp', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
-& sqlcmd -S `"$dbServer`" -Q `$tsql -b
+# Run the backup on the lane via UNC SQL backup path
+`$tsql = "BACKUP DATABASE [`$Database] TO DISK = N'`$remoteBakFile' WITH NOFORMAT, NOINIT, NAME = N'`$Database-FullBackup-`$timestamp', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
+& sqlcmd -S `"$SqlcmdS`" -Q `$tsql -b
 `$exitCode = `$LASTEXITCODE
 
 if (`$exitCode -eq 0) {
-    # Success log
-    "[`$(Get-Date)] Backup complete: `$backupFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
-}
-else {
-    # Failure log
-    "[`$(Get-Date)] Backup FAILED for [`$Database] on [`$SqlInstance] (exit code: `$exitCode)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+    # Wait for backup to finish (file to appear and not be locked)
+    `$waitSec = 0
+    while (-not (Test-Path `$remoteBakFile) -and `$waitSec -lt 120) {
+        Start-Sleep -Seconds 1; `$waitSec++
+    }
+    # Optionally, wait until file is not locked (ready for copy)
+    `$ready = `$false; `$tries = 0
+    while (-not `$ready -and `$tries -lt 60) {
+        try {
+            `$s = [System.IO.File]::Open(`$remoteBakFile, 'Open', 'Read', 'None')
+            `$s.Close(); `$ready = `$true
+        } catch { Start-Sleep -Milliseconds 500; `$tries++ }
+    }
+
+    if ((Test-Path `$remoteBakFile) -and `$ready) {
+        try {
+            Copy-Item -Path `$remoteBakFile -Destination `$localBakFile -Force
+            "[`$(Get-Date)] Backup complete: `$localBakFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+        } catch {
+            "[`$(Get-Date)] Backup succeeded but copy failed: $($_.Exception.Message)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+        }
+    } else {
+        "[`$(Get-Date)] Backup file not found or not ready for copy after backup." | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+    }
+} else {
+    # Remove failed/partial file from lane backup folder if exists
+    if (Test-Path `$remoteBakFile) { Remove-Item -Path `$remoteBakFile -Force }
+    "[`$(Get-Date)] Backup FAILED for [`$Database] on [`$SqlcmdS] (exit code: `$exitCode)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
 }
 "@
 		
 		# Write the script to scripts folder under machine folder
+		$parentDir = Split-Path $backupScriptPath -Parent
+		if (-not (Test-Path $parentDir)) { New-Item -Path $parentDir -ItemType Directory -Force | Out-Null }
 		Set-Content -Path $backupScriptPath -Value $backupScript -Encoding UTF8
 		
 		# Build Task Scheduler arguments
@@ -11373,11 +11427,23 @@ else {
 		$taskName = "${machine}_DB_Backup_Schedule"
 		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$backupScriptPath`"`""
 		
-		# Remove existing task if present
-		schtasks.exe /Delete /TN "$taskName" /F 2>$null | Out-Null
+		# Task Scheduler command: Default is Administrator, with /IT if no password (interactive, user logged in required)
+		if ($taskUser -eq "" -or $taskUser -eq "SYSTEM")
+		{
+			# Run as SYSTEM
+			$cmd = "schtasks.exe /Create /RU SYSTEM /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
+		}
+		elseif ($taskPwd -eq "")
+		{
+			# Run as Administrator (or user) INTERACTIVE only (must be logged in), use /IT
+			$cmd = "schtasks.exe /Create /RU `"$taskUser`" /IT /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
+		}
+		else
+		{
+			# Run as user with password (runs in background even if user not logged in)
+			$cmd = "schtasks.exe /Create /RU `"$taskUser`" /RP `"$taskPwd`" /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
+		}
 		
-		# Create scheduled task
-		$cmd = "schtasks.exe /Create /RU SYSTEM /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
 		Write_Log "Scheduling Lane $lane ($machine): $cmd" "cyan"
 		Invoke-Expression $cmd
 		if ($LASTEXITCODE -eq 0)
@@ -11392,7 +11458,6 @@ else {
 	
 	Write_Log "`r`n==================== Schedule_LaneDB_Backup Completed ====================" "blue"
 }
-
 
 # ===================================================================================================
 #                               FUNCTION: Update_ScaleConfig_And_DB
@@ -11623,6 +11688,199 @@ SELECT @@ROWCOUNT AS RowsAffected;
 		Write_Log "Error executing SQL update for $Mode mode: $_" "red"
 	}
 	Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                          FUNCTION: Deploy_Scale_Currency_Files
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Prompts the user to select one or more scales (via Show_Node_Selection_Form).
+#   Prompts for the currency symbol to be used in the currency text files (defaults to "$").
+#   Copies the required .txt and .properties files (with correct currency) to each selected scale:
+#     \\<ScaleIP>\c$\bizstorecard\bizerba\_fileIO\generic_data\in
+#   Uses shared mappings and writes all file contents inline (no external dependencies).
+#   Reports detailed status per scale.
+# ===================================================================================================
+
+# ===================================================================================================
+#                          FUNCTION: Deploy_Scale_Currency_Files
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Prompts the user to select one or more scales (via Show_Node_Selection_Form).
+#   Prompts for the currency symbol to be used in the currency text files (defaults to "$").
+#   Copies the required .txt and .properties files (with correct currency) to each selected scale:
+#     \\<ScaleIP>\c$\bizstorecard\bizerba\_fileIO\generic_data\in
+#   Uses shared mappings and writes all file contents inline (no external dependencies).
+#   Reports detailed status per scale.
+# ===================================================================================================
+
+function Deploy_Scale_Currency_Files
+{
+	Write_Log "`r`n==================== Starting Deploy_Scale_Currency_Files ====================`r`n" "blue"
+	
+	# ---- Node selection for scales (show tabbed GUI) ----
+	$StoreNumber = $script:FunctionResults['StoreNumber']
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale"
+	if (-not $selection -or -not $selection.Scales -or $selection.Scales.Count -eq 0)
+	{
+		Write_Log "No scales selected for deployment." "yellow"
+		return
+	}
+	
+	# ---- Prompt for currency symbol ----
+	Add-Type -AssemblyName System.Windows.Forms
+	$form = New-Object Windows.Forms.Form
+	$form.Text = "Set Currency for Scale Price Files"
+	$form.Size = [System.Drawing.Size]::new(400, 180)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = 'FixedDialog'
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	$lbl = New-Object Windows.Forms.Label
+	$lbl.Text = "Enter currency symbol for scale price files:"
+	$lbl.Location = [System.Drawing.Point]::new(15, 25)
+	$lbl.Size = [System.Drawing.Size]::new(320, 22)
+	$form.Controls.Add($lbl)
+	
+	$txtCurrency = New-Object Windows.Forms.TextBox
+	$txtCurrency.Text = '$'
+	$txtCurrency.Location = [System.Drawing.Point]::new(15, 55)
+	$txtCurrency.Size = [System.Drawing.Size]::new(40, 25)
+	$txtCurrency.MaxLength = 3
+	$form.Controls.Add($txtCurrency)
+	
+	$btnOK = New-Object Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Location = [System.Drawing.Point]::new(70, 100)
+	$btnOK.Size = [System.Drawing.Size]::new(90, 32)
+	$btnOK.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::OK; $form.Close() })
+	$form.AcceptButton = $btnOK
+	$form.Controls.Add($btnOK)
+	
+	$btnCancel = New-Object Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = [System.Drawing.Point]::new(180, 100)
+	$btnCancel.Size = [System.Drawing.Size]::new(90, 32)
+	$btnCancel.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $form.Close() })
+	$form.CancelButton = $btnCancel
+	$form.Controls.Add($btnCancel)
+	
+	$res = $form.ShowDialog()
+	if ($res -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write_Log "Cancelled by user." "yellow"
+		return
+	}
+	$currency = $txtCurrency.Text
+	if (-not $currency) { $currency = '$' }
+	
+	# ---- Inline file content templates ----
+	$totalprice_txt = "=$%$ BT20 =`"$currency *#.##`""
+	$totalprice_properties = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<properties>
+    <source type="FILE">
+        <path>C:\bizstorecard\bizerba\_fileIO\generic_data\in\na_f_totalprice.txt</path>
+        <result>VALUE</result>
+    </source>
+</properties>
+"@
+	$unitprice_txt = "=$%$ BT10 =`"$currency *#.##`""
+	$unitprice_properties = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<properties>
+    <source type="FILE">
+        <path>C:\bizstorecard\bizerba\_fileIO\generic_data\in\na_f_unitprice.txt</path>
+        <result>VALUE</result>
+    </source>
+</properties>
+"@
+	# ---- Push files to each selected scale ----
+	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
+	$results = @()
+	foreach ($scaleCode in $selection.Scales)
+	{
+		$scaleObj = $ScaleCodeToIPInfo[$scaleCode]
+		$scaleIP = $scaleObj.FullIP
+		$scaleLabel = $scaleObj.ScaleName
+		$targetPath = "\\$scaleIP\c$\bizstorecard\bizerba\_fileIO\generic_data\in"
+		$result = @{
+			Scale = "$scaleLabel [$scaleIP]"
+			Result = "Success"
+			Details = @()
+		}
+		
+		$isAccessible = $false
+		# -- 1. Test if target path exists (online & permissible) --
+		try
+		{
+			if (Test-Path $targetPath -ErrorAction Stop)
+			{
+				$isAccessible = $true
+			}
+		}
+		catch
+		{
+			Write_Log "Scale $scaleLabel [$scaleIP] is offline or share inaccessible. Skipping." "yellow"
+			$result.Result = "Failed"
+			$result.Details += "Share not reachable"
+			$results += $result
+			continue
+		}
+		
+		# -- 2. Create folder if missing --
+		if (-not $isAccessible)
+		{
+			try
+			{
+				New-Item -Path $targetPath -ItemType Directory -Force -ErrorAction Stop | Out-Null
+				$isAccessible = $true
+			}
+			catch
+			{
+				Write_Log "Could not create remote folder on $scaleLabel [$scaleIP]. Skipping." "yellow"
+				$result.Result = "Failed"
+				$result.Details += "Failed to create share folder"
+				$results += $result
+				continue
+			}
+		}
+		
+		# -- 3. Attempt file deployment --
+		try
+		{
+			Set-Content -Path (Join-Path $targetPath 'na_f_totalprice.txt') -Value $totalprice_txt -Encoding UTF8 -ErrorAction Stop
+			Set-Content -Path (Join-Path $targetPath 'na_f_totalprice.properties') -Value $totalprice_properties -Encoding UTF8 -ErrorAction Stop
+			Set-Content -Path (Join-Path $targetPath 'na_f_unitprice.txt') -Value $unitprice_txt -Encoding UTF8 -ErrorAction Stop
+			Set-Content -Path (Join-Path $targetPath 'na_f_unitprice.properties') -Value $unitprice_properties -Encoding UTF8 -ErrorAction Stop
+			$result.Details += "Files copied successfully."
+			Write_Log "Deployed price files to $($scaleLabel) [$scaleIP] with Currency ($currency)" "green"
+		}
+		catch
+		{
+			$result.Result = "Failed"
+			$result.Details += "File write failed (network/permission)."
+			Write_Log "Could not deploy price files to $($scaleLabel) [$scaleIP]. File write failed or network/permission denied." "yellow"
+		}
+		$results += $result
+	}
+	
+	# ---- Show summary ----
+	Write_Log "Deployment summary:" "Magenta"
+	foreach ($r in $results)
+	{
+		$msg = "$($r.Scale): $($r.Result) - $($r.Details -join '; ')"
+		if ($r.Result -eq "Success")
+		{
+			Write_Log $msg "green"
+		}
+		else
+		{
+			Write_Log $msg "red"
+		}
+	}
+	Write_Log "`r`n==================== Deploy_Scale_Currency_Files Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -13073,18 +13331,6 @@ if (-not $form)
 			}
 		})
 	
-	# Create a Clear Log button
-	$clearLogButton = New-Object System.Windows.Forms.Button
-	$clearLogButton.Text = "Clear Log"
-	$clearLogButton.Location = New-Object System.Drawing.Point(950, 70)
-	$clearLogButton.Size = New-Object System.Drawing.Size(39, 34)
-	$clearLogButton.add_Click({
-			$logBox.Clear()
-			Write_Log "Log Cleared"
-		})
-	$form.Controls.Add($clearLogButton)
-	$toolTip.SetToolTip($clearLogButton, "Clears the log display area.")
-	
 	# Protocol Table Popup Form and Timer	
 	$rowHeight = 19
 	$rowCount = 25
@@ -13097,6 +13343,16 @@ if (-not $form)
 		$global:ProtocolForm.Size = New-Object System.Drawing.Size(257, 500)
 		$global:ProtocolForm.StartPosition = "CenterScreen"
 		$global:ProtocolForm.Topmost = $true
+		
+		# Remove minimize/maximize buttons
+		$global:ProtocolForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+		$global:ProtocolForm.MaximizeBox = $false
+		$global:ProtocolForm.MinimizeBox = $false
+		
+		# Hide when clicking anywhere outside the popup
+		$global:ProtocolForm.add_Deactivate({
+				$global:ProtocolForm.Hide()
+			})
 		
 		$global:ProtocolGrid = New-Object System.Windows.Forms.DataGridView
 		$global:ProtocolGrid.Location = New-Object System.Drawing.Point(10, 10)
@@ -13190,7 +13446,7 @@ if (-not $form)
 	$showProtocolBtn = New-Object System.Windows.Forms.Button
 	$showProtocolBtn.Text = "Protocols"
 	$showProtocolBtn.Size = New-Object System.Drawing.Size(40, 34)
-	$showProtocolBtn.Location = New-Object System.Drawing.Point(950, 105) # top-right, next to Clear Log
+	$showProtocolBtn.Location = New-Object System.Drawing.Point(950, 70)
 	$showProtocolBtn.Add_Click({
 			$global:ProtocolForm.Show()
 			$global:ProtocolForm.BringToFront()
@@ -13226,7 +13482,25 @@ if (-not $form)
 			$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
 			$storeNameLabel.Top = 30
 		})
-	
+	# Make Store Name label clickable and ping all nodes on click
+	$storeNameLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$storeNameLabel.Add_Click({
+			# Optionally, you can change the label color to indicate action
+			$storeNameLabel.ForeColor = 'DodgerBlue'
+			try
+			{
+				# Ping all node types in order: Lanes, Scales, Backoffices
+				Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber
+				Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
+				Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
+			}
+			finally
+			{
+				# Restore label color
+				$storeNameLabel.ForeColor = 'Black'
+			}
+		})
+		
 	# Store Number Label
 	$script:storeNumberLabel = New-Object System.Windows.Forms.Label
 	$storeNumberLabel.Text = "Store Number: N/A"
@@ -13245,7 +13519,16 @@ if (-not $form)
 	$form.Controls.Add($NodesBackoffices)
 	$NodesBackoffices.Cursor = [System.Windows.Forms.Cursors]::Hand
 	$NodesBackoffices.Add_Click({
-			Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
+			# Color feedback: Blue during ping, Black after
+			$NodesBackoffices.ForeColor = 'DodgerBlue'
+			try
+			{
+				Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
+			}
+			finally
+			{
+				$NodesBackoffices.ForeColor = 'Black'
+			}
 		})
 	
 	# Nodes Store Label (Number of Lanes)
@@ -13258,7 +13541,16 @@ if (-not $form)
 	$form.Controls.Add($NodesStore)
 	$NodesStore.Cursor = [System.Windows.Forms.Cursors]::Hand
 	$NodesStore.Add_Click({
-			Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber
+			# Color feedback: Blue during ping, Black after
+			$NodesStore.ForeColor = 'DodgerBlue'
+			try
+			{
+				Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber
+			}
+			finally
+			{
+				$NodesStore.ForeColor = 'Black'
+			}
 		})
 	
 	# Scales Label
@@ -13270,7 +13562,16 @@ if (-not $form)
 	$form.Controls.Add($scalesLabel)
 	$scalesLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
 	$scalesLabel.Add_Click({
-			Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
+			# Color feedback: Blue during ping, Black after
+			$scalesLabel.ForeColor = 'DodgerBlue'
+			try
+			{
+				Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
+			}
+			finally
+			{
+				$scalesLabel.ForeColor = 'Black'
+			}
 		})
 	
 	# Create a RichTextBox for log output
@@ -13282,6 +13583,18 @@ if (-not $form)
 	
 	# Add the RichTextBox to the form
 	$form.Controls.Add($logBox)
+	
+	# Add right-click clear functionality to the log box
+	$logBox.Add_MouseUp({
+			param ($sender,
+				$eventArgs)
+			# MouseButtons.Right is 2
+			if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Right)
+			{
+				$logBox.Clear()
+				Write_Log "Log Cleared"
+			}
+		})
 	
 	######################################################################################################################
 	# 
@@ -13644,7 +13957,17 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($OpenScaleCShareItem)
 	
 	############################################################################
-	# 4) Update Scales Specials
+	# 4) Deploy Scale Currency Files
+	############################################################################
+	$DeployScaleCurrencyFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Deploy Scale Currency Files")
+	$DeployScaleCurrencyFilesItem.ToolTipText = "Push currency-configured price files (.txt, .properties) to selected scales (Bizerba only)."
+	$DeployScaleCurrencyFilesItem.Add_Click({
+			Deploy_Scale_Currency_Files
+		})
+	[void]$ContextMenuScale.Items.Add($DeployScaleCurrencyFilesItem)
+		
+	############################################################################
+	# 5) Update Scales Specials
 	############################################################################
 	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
 	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
@@ -13654,7 +13977,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($UpdateScalesSpecialsItem)
 	
 	############################################################################
-	# 5) Update Scale Config and DB (F272 Upsert)
+	# 6) Update Scale Config and DB (F272 Upsert)
 	############################################################################
 	$UpdateScaleConfigAndDBItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scale Config && DB (F272 Upsert)")
 	$UpdateScaleConfigAndDBItem.ToolTipText = "Updates ScaleCommApp configs and upserts F272 in SCL_TAB for POS_TAB F82=1 in item range."
@@ -13664,7 +13987,7 @@ if (-not $form)
 	[void]$ContextMenuScale.Items.Add($UpdateScaleConfigAndDBItem)
 	
 	############################################################################
-	# 6) Schedule Duplicate File Monitor
+	# 7) Schedule Duplicate File Monitor
 	############################################################################
 	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove duplicate files from (toBizerba)")
 	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in (toBizerba). Run now or schedule as SYSTEM."
@@ -13862,7 +14185,6 @@ $NodesBackoffices.Anchor = 'Top,Left'
 $NodesStore.Anchor = 'Top'
 $scalesLabel.Anchor = 'Top,Right'
 $logBox.Anchor = 'Top,Left,Right,Bottom'
-$clearLogButton.Anchor = 'Top,Right'
 $GeneralToolsButton.Anchor = 'Bottom,Right'
 $ServerToolsButton.Anchor = 'Bottom,Left'
 $LaneToolsButton.Anchor = 'Bottom'
@@ -13873,12 +14195,12 @@ $form.add_Resize({
 		# Margin between logBox and Clear Log button
 		$buttonMargin = 10
 		
-		# Position Clear Log button in top-right
-		$clearLogButton.Left = $form.ClientSize.Width - $clearLogButton.Width - 15
-		$clearLogButton.Top = 70 # or wherever you want it (70 is your original)
+		# Position Protocols button in top-right below Clear Log button
+		$showProtocolBtn.Left = $form.ClientSize.Width - $showProtocolBtn.Width - 15
+		$showProtocolBtn.Top = 70 # or wherever you want it (70 is your original)
 		
 		# Calculate the rightmost edge the logBox should go to
-		$logBoxRightEdge = $clearLogButton.Left - $buttonMargin
+		$logBoxRightEdge = $showProtocolBtn.Left - $buttonMargin
 		
 		# Make logBox fill to just before the Clear Log button
 		$logBox.Left = 50
@@ -13889,11 +14211,7 @@ $form.add_Resize({
 		# Center store name label
 		$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
 		$NodesStore.Left = [math]::Max(0, ($form.ClientSize.Width - $NodesStore.Width) / 2)
-		
-		# Position Protocols button in top-right below Clear Log button
-		$showProtocolBtn.Left = $form.ClientSize.Width - $showProtocolBtn.Width - 15
-		$showProtocolBtn.Top = $clearLogButton.Bottom + 5
-		
+				
 		# Space the bottom buttons evenly
 		$buttonWidth = 200
 		$buttonHeight = 50
