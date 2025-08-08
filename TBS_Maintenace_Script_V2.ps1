@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.4.0"
-$VersionDate = "2025-08-06"
+$VersionNumber = "2.4.1"
+$VersionDate = "2025-08-07"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -9312,7 +9312,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 								sc.exe "\\$machine" stop $svcName | Out-Null
 								Start-Sleep -Seconds 10
 								sc.exe "\\$machine" start $svcName | Out-Null
-								Start-Sleep -Seconds 3
+								Start-Sleep -Seconds 5
 								$output += @{ Text = "SQL Service $svcName restarted successfully on $machine."; Color = "green" }
 								$laneNeedsRestart = $true
 							}
@@ -12096,17 +12096,25 @@ function Deploy_Scale_Currency_Files
 	$previewLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 100) # Muted gray for subtlety
 	$form.Controls.Add($previewLabel)
 	
-	# ---- Event: Update preview in real-time on text change ----
+	# ---- Event: Update preview in real-time on text change (DEFAULTS TO $) ----
+	# CHANGED: Normalize empty/whitespace to '$' so preview never goes blank.
 	$cmbCurrency.Add_TextChanged({
-			$symbol = $this.Text
-			if ([string]::IsNullOrEmpty($symbol))
-			{
-				$previewLabel.Text = "Preview: 1.99" # No symbol if empty
-			}
-			else
-			{
-				$previewLabel.Text = "Preview: $($symbol)1.99"
-			}
+			$symbol = ($this.Text).Trim()
+			if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = '$' } # <-- DEFAULT
+			$previewLabel.Text = "Preview: $($symbol)1.99"
+		})
+	
+	# OPTIONAL HARDENING: Ensure the control itself shows '$' if left empty.
+	# NEW: On leave, force '$' if user cleared it.
+	$cmbCurrency.Add_Leave({
+			if ([string]::IsNullOrWhiteSpace($cmbCurrency.Text)) { $cmbCurrency.Text = '$' }
+		})
+	
+	# OPTIONAL: On form shown, re-sync preview and ensure default is set.
+	# NEW: Guarantees correct preview even if order of events shifts.
+	$form.Add_Shown({
+			if ([string]::IsNullOrWhiteSpace($cmbCurrency.Text)) { $cmbCurrency.Text = '$' }
+			$previewLabel.Text = "Preview: $($cmbCurrency.Text.Trim())1.99"
 		})
 	
 	# ---- OK and Cancel buttons, spaced and centered at the bottom ----
