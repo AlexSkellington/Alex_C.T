@@ -13718,6 +13718,10 @@ function Start_Lane_Protocol_Jobs
 # Ensure $form is only initialized once
 if (-not $form)
 {
+	# High DPI awareness (for scaling on modern displays)
+	[System.Windows.Forms.Application]::EnableVisualStyles()
+	[System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
+	
 	# Create a timer to refresh the GUI every second
 	$refreshTimer = New-Object System.Windows.Forms.Timer
 	$refreshTimer.Interval = 1000 # 1 second
@@ -13727,18 +13731,25 @@ if (-not $form)
 		})
 	$refreshTimer.Start()
 	
-	# Initialize ToolTip
+	# Initialize ToolTip with professional delay
 	$toolTip = New-Object System.Windows.Forms.ToolTip
-	$toolTip.AutoPopDelay = 5000
-	$toolTip.InitialDelay = 500
+	$toolTip.AutoPopDelay = 10000
+	$toolTip.InitialDelay = 300
 	$toolTip.ReshowDelay = 500
 	$toolTip.ShowAlways = $true
+	$toolTip.BackColor = [System.Drawing.Color]::LightYellow
 	
 	# Create the main form
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Created by: Alex_C.T   |   Version: $VersionNumber   |   Revised: $VersionDate   |   Powershell Version: $PowerShellVersion"
 	$form.Size = New-Object System.Drawing.Size(1006, 570)
+	$form.MinimumSize = New-Object System.Drawing.Size(800, 500)
 	$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+	$form.BackColor = [System.Drawing.SystemColors]::ControlLight # Light gray background
+	$form.Font = New-Object System.Drawing.Font("Segoe UI", 9) # Modern font
+	
+	# Form icon (replace with your icon path if available)
+	# $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon("C:\Path\To\Icon.ico")
 	
 	# Banner Label
 	$bannerLabel = New-Object System.Windows.Forms.Label
@@ -13763,7 +13774,7 @@ if (-not $form)
 			else
 			{
 				# Existing cleanup...
-				if ($global:ProtocolFormTimer) { $global:ProtocolFormTimer.Stop(); $global:ProtocolFormTimer.Dispose() }
+				$protocolTimer.Stop(); $protocolTimer.Dispose()
 				foreach ($job in $script:LaneProtocolJobs.Values)
 				{
 					try { Stop-Job $job -Force }
@@ -13886,18 +13897,6 @@ if (-not $form)
 		$global:ProtocolFormTimer.Start()
 	}
 	
-	# Show/Hide Protocol Table Button
-	$showProtocolBtn = New-Object System.Windows.Forms.Button
-	$showProtocolBtn.Text = "Protocols"
-	$showProtocolBtn.Size = New-Object System.Drawing.Size(40, 34)
-	$showProtocolBtn.Location = New-Object System.Drawing.Point(950, 70)
-	$showProtocolBtn.Add_Click({
-			$global:ProtocolForm.Show()
-			$global:ProtocolForm.BringToFront()
-		})
-	$form.Controls.Add($showProtocolBtn)
-	$toolTip.SetToolTip($showProtocolBtn, "Show/hide the live lane protocol status table.")
-	
 	######################################################################################################################
 	# 																													 #
 	# 												Labels																 #
@@ -13919,6 +13918,7 @@ if (-not $form)
 	$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$form.Controls.Add($storeNameLabel)
+	
 	# Center label initially and on resize
 	$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
 	$storeNameLabel.Top = 30
@@ -14196,6 +14196,20 @@ if (-not $form)
 	$LaneToolsButton.Size = New-Object System.Drawing.Size(200, 50)
 	$ContextMenuLane = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuLane.ShowItemToolTips = $true
+	# Left-click: Show context menu
+	$LaneToolsButton.Add_Click({
+			$ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height)
+		})
+	# Right-click: Show protocol window
+	$LaneToolsButton.Add_MouseDown({
+			param ($sender,
+				$e)
+			if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
+			{
+				$global:ProtocolForm.Show()
+				$global:ProtocolForm.BringToFront()
+			}
+		})
 	
 	############################################################################
 	# 1) Lane DB Maintenance Button
@@ -14628,7 +14642,7 @@ if (-not $form)
 
 
 ######################################################################################################################
-# 
+#
 # Anchor all controls for resize (PowerShell WinForms)
 #
 ######################################################################################################################
@@ -14643,29 +14657,23 @@ $GeneralToolsButton.Anchor = 'Bottom,Right'
 $ServerToolsButton.Anchor = 'Bottom,Left'
 $LaneToolsButton.Anchor = 'Bottom'
 $ScaleToolsButton.Anchor = 'Bottom'
-$showProtocolBtn.Anchor = 'Top,Right'
 
 $form.add_Resize({
-		# Margin between logBox and Clear Log button
-		$buttonMargin = 10
+		# Margin around logBox (since no buttons on the right anymore)
+		$sideMargin = 50 # Left and right margin for logBox
 		
-		# Position Protocols button in top-right below Clear Log button
-		$showProtocolBtn.Left = $form.ClientSize.Width - $showProtocolBtn.Width - 15
-		$showProtocolBtn.Top = 70 # or wherever you want it (70 is your original)
-		
-		# Calculate the rightmost edge the logBox should go to
-		$logBoxRightEdge = $showProtocolBtn.Left - $buttonMargin
-		
-		# Make logBox fill to just before the Clear Log button
-		$logBox.Left = 50
+		# Set logBox position and size to fill full width
+		$logBox.Left = $sideMargin
 		$logBox.Top = 70
-		$logBox.Width = [math]::Max(100, $logBoxRightEdge - $logBox.Left)
-		$logBox.Height = $form.ClientSize.Height - 170
+		$logBox.Width = [math]::Max(100, $form.ClientSize.Width - (2 * $sideMargin)) # Full width minus margins
+		$logBox.Height = $form.ClientSize.Height - 170 # Leave space for bottom buttons
 		
 		# Center store name label
 		$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
+		
+		# Center NodesStore label
 		$NodesStore.Left = [math]::Max(0, ($form.ClientSize.Width - $NodesStore.Width) / 2)
-				
+		
 		# Space the bottom buttons evenly
 		$buttonWidth = 200
 		$buttonHeight = 50
@@ -14676,7 +14684,7 @@ $form.add_Resize({
 		$LaneToolsButton.Left = $ServerToolsButton.Left + $buttonWidth + $gap
 		$ScaleToolsButton.Left = $LaneToolsButton.Left + $buttonWidth + $gap
 		$GeneralToolsButton.Left = $ScaleToolsButton.Left + $buttonWidth + $gap
-		$ServerToolsButton.Top = $LaneToolsButton.Top = $ScaleToolsButton.Top = $GeneralToolsButton.Top = $form.ClientSize.Height - ($buttonHeight + $buttonHeight)
+		$ServerToolsButton.Top = $LaneToolsButton.Top = $ScaleToolsButton.Top = $GeneralToolsButton.Top = $form.ClientSize.Height - $buttonHeight - 10 # Padding from bottom
 	})
 
 # ===================================================================================================
