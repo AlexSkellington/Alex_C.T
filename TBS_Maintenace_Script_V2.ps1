@@ -7330,7 +7330,8 @@ function Edit_INIs
 		SourceLane	   = $null
 		FullPath	   = $null
 		IniObj		   = $null
-		IsDirty	       = $false
+		DidSave	       = $false
+		DidDeploy	   = $false
 	}
 	
 	$loadSectionFromCombo = {
@@ -7465,6 +7466,7 @@ function Edit_INIs
 				[System.Windows.Forms.MessageBox]::Show("Saved section [$secActual] to:`r`n$($state.FullPath)", "Saved",
 					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 				
+				$state.DidSave = $true
 				$state.IsDirty = $false
 				$btnCopy.Enabled = $true
 			}
@@ -7635,10 +7637,26 @@ function Edit_INIs
 					else { Write_Log "Copy to $m OK (robocopy $code)" "green"; $ok++ }
 				}
 			}
-			
+			if ($ok -gt 0) { $state.DidDeploy = $true } # <- at least one target updated OK
 			[System.Windows.Forms.MessageBox]::Show("Deploy complete.`r`nOK: $ok   Fail: $fail", "Done",
 				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 		})
+	
+			# run no-op/activity log when the form actually closes (covers X, Alt+F4, Close button)	$btnClose.Add_Click({
+			$frm.Add_FormClosed({
+					if (-not $state.DidSave -and -not $state.DidDeploy)
+					{
+						Write_Log "[No operations] Editor closed without saving or deploying." "gray"
+					}
+					else
+					{
+						# Optional: a tiny summary
+						$acts = @()
+						if ($state.DidSave) { $acts += "save" }
+						if ($state.DidDeploy) { $acts += "deploy" }
+						Write_Log "[Activity] Completed: $($acts -join ', ')." "gray"
+					}
+				})
 	
 	$btnClose.Add_Click({ $frm.Close() })
 	
