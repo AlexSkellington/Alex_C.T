@@ -6768,14 +6768,18 @@ ORDER BY F1000,F1063;
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Generic INI editor for files under \storeman\<RelativeIniPath>. Pick Server/Lane as source,
-#   load the INI, select/TYPE any section, edit ALL keys (add/edit/delete), save, then optionally
-#   deploy to other lanes as either:
+#   load the INI, select/TYPE any section, edit ALL keys (add/edit/delete/reorder), save, then
+#   optionally deploy to other lanes as either:
 #      • Merge only your changes (update just the selected section's keys), or
 #      • Replace the whole INI file.
 #
-# Parameters:
-#   -RelativeIniPath     : Default INI under \storeman\ to open (UI is still editable).
-#   -PredefinedIniPaths  : Items shown in the INI dropdown; you can still type anything custom.
+# UX changes in this build:
+#   - INI row (label + path + Load INI) is forced onto one line using a FlowLayoutPanel that resizes
+#     the combo so the button never wraps.
+#   - More compact top area (tighter margins/padding), so the grid is larger without enlarging the form.
+#   - Copy-to-lanes is disabled until you Save; any edit/add/delete/reorder marks the form dirty and
+#     re-disables Copy.
+#   - Reordering is smoother; Saved file preserves the on-screen key order; no stray blank line added.
 # ---------------------------------------------------------------------------------------------------
 
 function Edit_INIs
@@ -6787,42 +6791,48 @@ function Edit_INIs
 	
 	Write_Log "`r`n==================== Starting Edit_INIs ====================`r`n" "blue"
 	
-	# ------------------------- Helper scriptblocks (unchanged logic) -------------------------
+	# ==============================================================================================
+	#                                    HELPERS: paths, parse, write
+	# ==============================================================================================
+	
 	$getKnownLanes = {
 		$known = @()
 		if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'])
-		{
-			$known = $script:FunctionResults['LaneMachines'].Values | Where-Object { $_ } | Select-Object -Unique
-		}
+		{ $known = $script:FunctionResults['LaneMachines'].Values | Where-Object { $_ } | Select-Object -Unique }
 		elseif ($script:FunctionResults.ContainsKey('LaneNumToMachineName') -and $script:FunctionResults['LaneNumToMachineName'])
-		{
-			$known = $script:FunctionResults['LaneNumToMachineName'].Values | Where-Object { $_ } | Select-Object -Unique
-		}
+		{ $known = $script:FunctionResults['LaneNumToMachineName'].Values | Where-Object { $_ } | Select-Object -Unique }
 		return, ($known | Sort-Object)
 	}
+	
 	$getLaneRoot = {
 		param ([string]$ComputerName)
 		$s1 = "\\$ComputerName\Storeman"; if (Test-Path -LiteralPath $s1) { return $s1 }
 		$s2 = "\\$ComputerName\c$\storeman"; if (Test-Path -LiteralPath $s2) { return $s2 }
 		return $null
 	}
+	
 	$getServerRoot = {
 		if (Test-Path -LiteralPath 'C:\storeman') { return 'C:\storeman' }
 		if (Test-Path -LiteralPath 'D:\storeman') { return 'D:\storeman' }
 		return "$($env:SystemDrive)\storeman"
 	}
+	
 	$buildFullPath = {
 		param ([string]$Root,
 			[string]$Rel)
 		$r = ($Rel -as [string]).Trim().TrimStart('\', '/')
 		return (Join-Path $Root $r)
 	}
+	
+	# ---------- INI reader (keeps order of sections and keys in memory) ----------
 	$readIni = {
 		param ([string]$Path)
 		if (-not (Test-Path -LiteralPath $Path)) { return $null }
+		
 		$raw = Get-Content -LiteralPath $Path -Encoding ASCII
 		$sections = New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Specialized.OrderedDictionary]'
 		$current = $null
+		
 		foreach ($line in $raw)
 		{
 			$t = $line.Trim()
@@ -6848,27 +6858,45 @@ function Edit_INIs
 		}
 		return @{ RawLines = $raw; Sections = $sections }
 	}
+	
+	# ---------- INI section writer (no extra blank line; preserves key order from OrderedDictionary) ----------
 	$writeIniSection = {
-		param ([string[]]$RawLines,
+		param (
+			[string[]]$RawLines,
 			[string]$SectionName,
-			[hashtable]$NewKeyValues)
+			[System.Collections.Specialized.OrderedDictionary]$NewKeyValues
+		)
 		$lines = New-Object System.Collections.Generic.List[string]; $lines.AddRange($RawLines)
 		$start = -1; $end = $lines.Count
+		
 		for ($i = 0; $i -lt $lines.Count; $i++)
 		{
 			if ($lines[$i] -match "^\s*\[$([regex]::Escape($SectionName))\]\s*$") { $start = $i; break }
 		}
+		
 		if ($start -lt 0)
 		{
-			if ($lines.Count -gt 0 -and $lines[$lines.Count - 1].Trim() -ne '') { $lines.Add('') } # NEW: keep one blank before new section for readability
+			if ($lines.Count -gt 0 -and $lines[$lines.Count - 1].Trim() -ne '') { $lines.Add('') }
 			$lines.Add("[$SectionName]")
 			foreach ($k in $NewKeyValues.Keys) { $lines.Add("$k=$($NewKeyValues[$k])") }
 			return, $lines.ToArray()
 		}
+		
 		for ($i = $start + 1; $i -lt $lines.Count; $i++)
 		{
 			if ($lines[$i] -match '^\s*\[.+\]\s*$') { $end = $i; break }
 		}
+		
+		# find last nonblank/noncomment inside section
+		$lastContent = $start
+		for ($i = [Math]::Min($end, $lines.Count) - 1; $i -gt $start; $i--)
+		{
+			$t = $lines[$i].Trim()
+			if ($t -ne '' -and $t -notmatch '^[;#]') { $lastContent = $i; break }
+		}
+		$insertAt = $lastContent + 1
+		
+		# update existing keys
 		$updated = @{ }
 		for ($i = $start + 1; $i -lt $end; $i++)
 		{
@@ -6882,15 +6910,18 @@ function Edit_INIs
 				if ($targetKey) { $lines[$i] = "$currKey=$($NewKeyValues[$targetKey])"; $updated[$targetKey] = $true }
 			}
 		}
+		
+		# add new keys (preserve order from $NewKeyValues)
 		$pending = @()
 		foreach ($k in $NewKeyValues.Keys) { if (-not $updated.ContainsKey($k)) { $pending += "$k=$($NewKeyValues[$k])" } }
 		if ($pending.Count -gt 0)
 		{
-			if ($end -ge $lines.Count) { $lines.AddRange($pending) }
-			else { $offset = 0; foreach ($nl in $pending) { $lines.Insert($end + $offset, $nl); $offset++ } }
+			$offset = 0
+			foreach ($nl in $pending) { $lines.Insert($insertAt + $offset, $nl); $offset++ }
 		}
 		return, $lines.ToArray()
 	}
+	
 	$lanesToMachines = {
 		param ($LaneNums)
 		$out = @()
@@ -6917,145 +6948,154 @@ function Edit_INIs
 		return, (@($out | Where-Object { $_ } | Select-Object -Unique))
 	}
 	
-	# ------------------------- UI (polish & alignment) -------------------------
+	# ==============================================================================================
+	#                                           UI LAYOUT
+	# ==============================================================================================
+	
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	[void][System.Windows.Forms.Application]::EnableVisualStyles()
 	
 	$frm = New-Object System.Windows.Forms.Form
 	$frm.Text = "Edit INIs  -  dynamic section/key editor"
-	$frm.Size = New-Object System.Drawing.Size(940, 740) # CHG: a bit wider/taller for breathing room
+	$frm.Size = New-Object System.Drawing.Size(820, 600) # keep size modest; we'll give the grid more room
 	$frm.StartPosition = 'CenterScreen'
 	$frm.FormBorderStyle = 'FixedDialog'
 	$frm.MaximizeBox = $false
 	$frm.MinimizeBox = $false
-	$frm.BackColor = [System.Drawing.Color]::FromArgb(248, 249, 251) # CHG: soft background to look less "Win2000"
+	$frm.BackColor = [System.Drawing.Color]::FromArgb(248, 249, 251)
 	
+	# Root: 1 column; make grid take the most space (Percent=100 row at the end)
 	$root = New-Object System.Windows.Forms.TableLayoutPanel
 	$root.Dock = 'Fill'
-	$root.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8) # CHG: consistent outer padding
+	$root.Padding = New-Object System.Windows.Forms.Padding(8)
 	$root.ColumnCount = 1
 	$root.RowCount = 6
-	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
-	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
-	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
-	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
-	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) # header
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) # source group
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) # INI row (flow)
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) # Section row
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) # GRID gets the rest
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) # bottom buttons
 	$frm.Controls.Add($root)
 	
+	# ---------- Header (small + tight margins so the grid gains space) ----------
 	$hdr = New-Object System.Windows.Forms.Label
-	$hdr.Text = "Pick Server/Lane, choose a predefined INI or type a custom path, load, select/TYPE a section, edit keys, save, then copy to other lanes (merge just your section's keys or replace whole file)."
-	$hdr.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+	$hdr.Text = "Pick Server/Lane, load an INI, choose/TYPE a section, edit keys, Save, then optionally deploy."
+	$hdr.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 	$hdr.AutoSize = $true
-	$hdr.MaximumSize = New-Object System.Drawing.Size(($frm.ClientSize.Width - 32), 0) # CHG: force wrap to avoid clipping
-	$hdr.Margin = New-Object System.Windows.Forms.Padding(4, 4, 4, 6) # CHG: tighter margins
+	$hdr.Margin = New-Object System.Windows.Forms.Padding(4, 2, 4, 4)
 	$root.Controls.Add($hdr, 0, 0)
 	
-	# --- Source group (two rows; prevents clipping on any DPI) ---
+	# ---------- Source group (compacted) ----------
 	$grpSrc = New-Object System.Windows.Forms.GroupBox
 	$grpSrc.Text = "Source"
-	$grpSrc.Padding = New-Object System.Windows.Forms.Padding(10, 10, 10, 6)
+	$grpSrc.Padding = New-Object System.Windows.Forms.Padding(10, 6, 10, 6)
 	$grpSrc.Dock = 'Top'
 	$root.Controls.Add($grpSrc, 0, 1)
 	
-	# 2 columns: col0 = radios (autosize), col1 = lane label+combo container (fills)
 	$srcGrid = New-Object System.Windows.Forms.TableLayoutPanel
 	$srcGrid.Dock = 'Top'
 	$srcGrid.ColumnCount = 2
 	$srcGrid.RowCount = 2
-	$srcGrid.ColumnStyles.Clear()
-	[void]$srcGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize))) # col0
-	[void]$srcGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100))) # col1
+	[void]$srcGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	[void]$srcGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 	[void]$srcGrid.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	[void]$srcGrid.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	$grpSrc.Controls.Add($srcGrid)
 	
-	# Row 0: Server radio spans both columns
 	$rbSrv = New-Object System.Windows.Forms.RadioButton
 	$rbSrv.Text = "Server (this computer)"
 	$rbSrv.Checked = $true
 	$rbSrv.AutoSize = $true
-	$rbSrv.Margin = New-Object System.Windows.Forms.Padding(0, 3, 20, 3)
+	$rbSrv.Margin = New-Object System.Windows.Forms.Padding(0, 0, 16, 2)
 	$srcGrid.Controls.Add($rbSrv, 0, 0)
-	$srcGrid.SetColumnSpan($rbSrv, 2) # span both cols
+	$srcGrid.SetColumnSpan($rbSrv, 2)
 	
-	# Row 1, col0: Lane radio
 	$rbLane = New-Object System.Windows.Forms.RadioButton
 	$rbLane.Text = "Lane (source)"
 	$rbLane.AutoSize = $true
-	$rbLane.Margin = New-Object System.Windows.Forms.Padding(0, 8, 8, 3)
+	$rbLane.Margin = New-Object System.Windows.Forms.Padding(0, 4, 8, 2)
 	$srcGrid.Controls.Add($rbLane, 0, 1)
 	
-	# Row 1, col1: inline panel with "Select lane:" + ComboBox (keeps them on same line)
 	$laneInline = New-Object System.Windows.Forms.FlowLayoutPanel
 	$laneInline.FlowDirection = 'LeftToRight'
 	$laneInline.WrapContents = $false
 	$laneInline.AutoSize = $true
 	$laneInline.AutoSizeMode = 'GrowAndShrink'
 	$laneInline.Dock = 'Fill'
-	$laneInline.Margin = New-Object System.Windows.Forms.Padding(0, 4, 0, 0)
+	$laneInline.Margin = New-Object System.Windows.Forms.Padding(0, 2, 0, 0)
 	$srcGrid.Controls.Add($laneInline, 1, 1)
 	
 	$lblLane = New-Object System.Windows.Forms.Label
 	$lblLane.Text = "Select lane:"
 	$lblLane.AutoSize = $true
-	$lblLane.Margin = New-Object System.Windows.Forms.Padding(0, 6, 4, 3) # tiny gap before combo
+	$lblLane.Margin = New-Object System.Windows.Forms.Padding(0, 5, 4, 2)
 	$laneInline.Controls.Add($lblLane)
 	
 	$cboLane = New-Object System.Windows.Forms.ComboBox
 	$cboLane.DropDownStyle = 'DropDownList'
 	$cboLane.Enabled = $false
-	$cboLane.Width = 300 # fixed width looks tidy; change if you want it wider
-	$cboLane.Margin = New-Object System.Windows.Forms.Padding(0, 3, 0, 3)
+	$cboLane.Width = 260
+	$cboLane.Margin = New-Object System.Windows.Forms.Padding(0, 2, 0, 2)
 	$laneInline.Controls.Add($cboLane)
 	
 	(& $getKnownLanes) | ForEach-Object { [void]$cboLane.Items.Add($_) }
-	
 	$rbLane.Add_CheckedChanged({
 			$cboLane.Enabled = $rbLane.Checked
 			if ($rbLane.Checked -and $cboLane.Items.Count -gt 0 -and -not $cboLane.SelectedItem) { $cboLane.SelectedIndex = 0 }
 		})
 	
-	# --- INI path row (predefined + custom) ---
-	$rowIni = New-Object System.Windows.Forms.TableLayoutPanel
-	$rowIni.Dock = 'Top'
-	$rowIni.ColumnCount = 3
-	[void]$rowIni.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
-	[void]$rowIni.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-	[void]$rowIni.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
-	$rowIni.Margin = New-Object System.Windows.Forms.Padding(0, 4, 0, 0) # CHG: tighten vertical spacing
-	$root.Controls.Add($rowIni, 0, 2)
+	# ---------- INI path row (ONE ROW via FlowLayoutPanel; resizes combo so the button never wraps) ----------
+	$iniFlow = New-Object System.Windows.Forms.FlowLayoutPanel
+	$iniFlow.FlowDirection = 'LeftToRight'
+	$iniFlow.WrapContents = $false
+	$iniFlow.Dock = 'Top'
+	$iniFlow.AutoSize = $false
+	$iniFlow.Height = 30
+	$iniFlow.Margin = New-Object System.Windows.Forms.Padding(0, 4, 0, 0)
+	$root.Controls.Add($iniFlow, 0, 2)
 	
 	$lblRel = New-Object System.Windows.Forms.Label
 	$lblRel.Text = "INI path under \storeman\"
 	$lblRel.AutoSize = $true
 	$lblRel.Margin = New-Object System.Windows.Forms.Padding(6, 6, 6, 6)
-	$rowIni.Controls.Add($lblRel, 0, 0)
+	$iniFlow.Controls.Add($lblRel)
 	
 	$cboRel = New-Object System.Windows.Forms.ComboBox
 	$cboRel.DropDownStyle = 'DropDown' # editable
-	$cboRel.Anchor = 'Left,Right' # CHG: stretch to available space
 	$cboRel.Margin = New-Object System.Windows.Forms.Padding(6, 3, 6, 3)
+	$cboRel.Width = 520
 	foreach ($p in ($PredefinedIniPaths | Select-Object -Unique)) { [void]$cboRel.Items.Add($p) }
 	if ($RelativeIniPath -and -not ($cboRel.Items -contains $RelativeIniPath)) { [void]$cboRel.Items.Add($RelativeIniPath) }
 	$cboRel.Text = $RelativeIniPath
-	$rowIni.Controls.Add($cboRel, 1, 0)
+	$iniFlow.Controls.Add($cboRel)
 	
 	$btnLoad = New-Object System.Windows.Forms.Button
 	$btnLoad.Text = "Load INI"
 	$btnLoad.Width = 100
-	$rowIni.Controls.Add($btnLoad, 2, 0)
+	$btnLoad.Margin = New-Object System.Windows.Forms.Padding(0, 3, 0, 3)
+	$iniFlow.Controls.Add($btnLoad)
 	
-	# --- Section row (wider, aligned) ---
+	# Resize handler to keep all three controls on ONE line
+	$iniFlow.Add_Resize({
+			$total = $iniFlow.ClientSize.Width
+			$wLabel = $lblRel.PreferredSize.Width
+			$wBtn = $btnLoad.Width
+			$pad = 24 # rough margins between controls
+			$newW = [Math]::Max(220, $total - $wLabel - $wBtn - $pad)
+			$cboRel.Width = $newW
+		})
+	
+	# ---------- Section row (tight) ----------
 	$rowSec = New-Object System.Windows.Forms.TableLayoutPanel
 	$rowSec.Dock = 'Top'
 	$rowSec.ColumnCount = 4
 	[void]$rowSec.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
-	[void]$rowSec.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 320))) # CHG: wider section dropdown
+	[void]$rowSec.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 320)))
 	[void]$rowSec.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 	[void]$rowSec.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
-	$rowSec.Margin = New-Object System.Windows.Forms.Padding(0, 6, 0, 2) # CHG: consistent spacing
+	$rowSec.Margin = New-Object System.Windows.Forms.Padding(0, 6, 0, 2)
 	$root.Controls.Add($rowSec, 0, 3)
 	
 	$lblSec = New-Object System.Windows.Forms.Label
@@ -7065,8 +7105,9 @@ function Edit_INIs
 	$rowSec.Controls.Add($lblSec, 0, 0)
 	
 	$cboSection = New-Object System.Windows.Forms.ComboBox
-	$cboSection.DropDownStyle = 'DropDown' # editable
+	$cboSection.DropDownStyle = 'DropDown'
 	$cboSection.Width = 320
+	$cboSection.Margin = New-Object System.Windows.Forms.Padding(0, 3, 6, 3)
 	$rowSec.Controls.Add($cboSection, 1, 0)
 	
 	$lblPath = New-Object System.Windows.Forms.Label
@@ -7079,33 +7120,38 @@ function Edit_INIs
 	$btnReload = New-Object System.Windows.Forms.Button
 	$btnReload.Text = "Reload"
 	$btnReload.Width = 90
+	$btnReload.Margin = New-Object System.Windows.Forms.Padding(6, 3, 6, 3)
 	$rowSec.Controls.Add($btnReload, 3, 0)
 	
-	# --- Grid (subtle styling) ---
+	# ---------- Grid (make it take the space) ----------
 	$grid = New-Object System.Windows.Forms.DataGridView
 	$grid.Dock = 'Fill'
-	$grid.AllowUserToAddRows = $true
+	$grid.AllowUserToAddRows = $false
 	$grid.AllowUserToDeleteRows = $true
+	$grid.AllowDrop = $true
 	$grid.AutoSizeColumnsMode = 'Fill'
 	$grid.RowHeadersVisible = $false
 	$grid.SelectionMode = 'CellSelect'
 	$grid.MultiSelect = $false
-	$grid.BackgroundColor = [System.Drawing.Color]::White # CHG: white grid against light form
-	$grid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(242, 243, 245) # CHG: soft header bg
-	$grid.EnableHeadersVisualStyles = $false # CHG: apply custom header style
+	$grid.BackgroundColor = [System.Drawing.Color]::White
+	$grid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(242, 243, 245)
+	$grid.EnableHeadersVisualStyles = $false
 	$root.Controls.Add($grid, 0, 4)
 	
 	$dt = New-Object System.Data.DataTable
 	[void]$dt.Columns.Add('Key', [string])
 	[void]$dt.Columns.Add('Value', [string])
 	$grid.DataSource = $dt
+	$grid.EditMode = 'EditOnEnter'
+	$grid.Columns['Key'].SortMode = 'NotSortable'
+	$grid.Columns['Value'].SortMode = 'NotSortable'
 	
-	# --- Bottom buttons (ellipsis fixed) ---
+	# ---------- Bottom buttons ----------
 	$btnRow = New-Object System.Windows.Forms.FlowLayoutPanel
 	$btnRow.FlowDirection = 'RightToLeft'
 	$btnRow.Dock = 'Bottom'
 	$btnRow.AutoSize = $true
-	$btnRow.Padding = New-Object System.Windows.Forms.Padding(0, 10, 6, 8) # CHG: balanced padding
+	$btnRow.Padding = New-Object System.Windows.Forms.Padding(0, 6, 6, 6)
 	$frm.Controls.Add($btnRow)
 	
 	$btnClose = New-Object System.Windows.Forms.Button
@@ -7114,9 +7160,9 @@ function Edit_INIs
 	$btnRow.Controls.Add($btnClose)
 	
 	$btnCopy = New-Object System.Windows.Forms.Button
-	$btnCopy.Text = "Copy to other lanes..." # CHG: ASCII "..." to avoid â€¦ mojibake
+	$btnCopy.Text = "Copy to other lanes..."
 	$btnCopy.Width = 170
-	$btnCopy.Enabled = $false
+	$btnCopy.Enabled = $false # stays off until a successful Save
 	$btnRow.Controls.Add($btnCopy)
 	
 	$btnSave = New-Object System.Windows.Forms.Button
@@ -7127,13 +7173,15 @@ function Edit_INIs
 	$frm.AcceptButton = $btnSave
 	$frm.CancelButton = $btnClose
 	
-	# --- Right-click context menu for Add/Delete key rows ---
+	# ==============================================================================================
+	#                                   CONTEXT MENU: Add/Delete
+	# ==============================================================================================
+	
 	$ctx = New-Object System.Windows.Forms.ContextMenuStrip
 	$miAdd = $ctx.Items.Add("Add key")
 	$miDel = $ctx.Items.Add("Delete key")
 	$grid.ContextMenuStrip = $ctx
 	
-	# Track the row the user right-clicked
 	$script:_ctxRow = -1
 	$grid.Add_CellMouseDown({
 			param ($sender,
@@ -7149,90 +7197,142 @@ function Edit_INIs
 					$grid.CurrentCell = $grid.Rows[$e.RowIndex].Cells[$col]
 					$grid.Rows[$e.RowIndex].Selected = $true
 				}
-				else
-				{
-					$script:_ctxRow = -1
-				}
+				else { $script:_ctxRow = -1 }
 			}
 		})
 	
-	# Add key -> insert a new row and start editing the Key cell
+	# Add key at END; start editing; mark dirty (Copy disabled)
 	$miAdd.Add_Click({
-			# Decide where to insert
-			$insertAt = if ($script:_ctxRow -ge 0 -and $script:_ctxRow -lt $dt.Rows.Count)
-			{
-				$script:_ctxRow
-			}
-			else
-			{
-				$dt.Rows.Count
-			}
-			
-			# Create & insert new DataRow
+			$insertAt = $dt.Rows.Count
 			$newRow = $dt.NewRow()
 			$newRow['Key'] = ''
 			$newRow['Value'] = ''
-			if ($insertAt -lt $dt.Rows.Count)
-			{
-				$dt.Rows.InsertAt($newRow, $insertAt)
-			}
-			else
-			{
-				[void]$dt.Rows.Add($newRow)
-				$insertAt = $dt.Rows.Count - 1
-			}
+			[void]$dt.Rows.Add($newRow)
 			
-			# Put caret in the new Key cell and begin editing
 			$grid.Focus()
-			# Make sure it's visible
-			try { $grid.FirstDisplayedScrollingRowIndex = $insertAt }
+			try { $grid.FirstDisplayedScrollingRowIndex = [Math]::Max(0, $insertAt) }
 			catch { }
-			$grid.CurrentCell = $grid.Rows[$insertAt].Cells[0] # 0 = 'Key' column
+			$grid.CurrentCell = $grid.Rows[$insertAt].Cells[0]
 			$grid.BeginEdit($true)
 			
-			# Allow deploying unsaved grid edits via Merge
-			$btnCopy.Enabled = $true
+			$state.IsDirty = $true
+			$btnCopy.Enabled = $false
 		})
 	
-	# Delete key -> remove the selected (or context) row
 	$miDel.Add_Click({
-			# Choose target row: current cell first, fall back to last right-click row
 			$rowIdx = -1
 			if ($grid.CurrentCell) { $rowIdx = $grid.CurrentCell.RowIndex }
 			if ($rowIdx -lt 0 -and $script:_ctxRow -ge 0) { $rowIdx = $script:_ctxRow }
-			
-			# Validate row
 			if ($rowIdx -lt 0 -or $rowIdx -ge $grid.Rows.Count) { return }
-			if ($grid.Rows[$rowIdx].IsNewRow) { return } # don't delete the placeholder
-			if ($rowIdx -ge $dt.Rows.Count) { return }
 			
 			$ans = [System.Windows.Forms.MessageBox]::Show(
 				"Delete key '" + [string]$dt.Rows[$rowIdx]['Key'] + "'?",
 				"Confirm delete", [System.Windows.Forms.MessageBoxButtons]::YesNo,
-				[System.Windows.Forms.MessageBoxIcon]::Question
-			)
+				[System.Windows.Forms.MessageBoxIcon]::Question)
 			if ($ans -ne [System.Windows.Forms.DialogResult]::Yes) { return }
 			
 			$dt.Rows.RemoveAt($rowIdx)
 			
-			# Enable deploy (Merge) since we have changes in the grid
-			$btnCopy.Enabled = $true
+			$state.IsDirty = $true
+			$btnCopy.Enabled = $false
 		})
 	
-	# If user edits any cell, enable Copy (so Merge can use unsaved changes)
-	$grid.Add_CellValueChanged({ $btnCopy.Enabled = $true })
-	$grid.Add_UserAddedRow({ $btnCopy.Enabled = $true })
-	$grid.Add_UserDeletedRow({ $btnCopy.Enabled = $true })
+	# Any edit => dirty => Copy disabled
+	$grid.Add_CellValueChanged({ $state.IsDirty = $true; $btnCopy.Enabled = $false })
+	$grid.Add_UserDeletedRow({ $state.IsDirty = $true; $btnCopy.Enabled = $false })
 	
-	# ------------------------- State -------------------------
+	# ==============================================================================================
+	#                               DRAG & DROP ROW REORDERING
+	# ==============================================================================================
+	
+	$script:_dragRow = -1
+	$script:_dragging = $false
+	$script:_dragStart = [System.Drawing.Point]::Empty
+	
+	$grid.Add_MouseDown({
+			param ($s,
+				$e)
+			$script:_dragStart = [System.Drawing.Point]::new($e.X, $e.Y)
+			$hit = $grid.HitTest($e.X, $e.Y)
+			if ($hit.RowIndex -ge 0 -and $hit.RowIndex -lt $dt.Rows.Count) { $script:_dragRow = $hit.RowIndex }
+			else { $script:_dragRow = -1 }
+		})
+	
+	$grid.Add_MouseMove({
+			param ($s,
+				$e)
+			if ($e.Button -band [System.Windows.Forms.MouseButtons]::Left -and $script:_dragRow -ge 0 -and -not $script:_dragging)
+			{
+				$dx = [Math]::Abs($e.X - $script:_dragStart.X)
+				$dy = [Math]::Abs($e.Y - $script:_dragStart.Y)
+				if ($dx -gt 4 -or $dy -gt 4)
+				{
+					$script:_dragging = $true
+					$null = $grid.DoDragDrop("row-move", [System.Windows.Forms.DragDropEffects]::Move)
+					$script:_dragging = $false
+				}
+			}
+		})
+	
+	$grid.Add_DragOver({
+			param ($s,
+				$e)
+			if ($script:_dragRow -lt 0) { $e.Effect = [System.Windows.Forms.DragDropEffects]::None; return }
+			$pt = $grid.PointToClient([System.Drawing.Point]::new($e.X, $e.Y))
+			$hit = $grid.HitTest($pt.X, $pt.Y)
+			$target = if ($hit.RowIndex -lt 0) { $dt.Rows.Count - 1 }
+			else { $hit.RowIndex }
+			$e.Effect = if ($target -ne $script:_dragRow) { [System.Windows.Forms.DragDropEffects]::Move }
+			else { [System.Windows.Forms.DragDropEffects]::None }
+		})
+	
+	$grid.Add_DragDrop({
+			param ($s,
+				$e)
+			if ($script:_dragRow -lt 0) { return }
+			$source = $script:_dragRow
+			$script:_dragRow = -1
+			
+			$pt = $grid.PointToClient([System.Drawing.Point]::new($e.X, $e.Y))
+			$hit = $grid.HitTest($pt.X, $pt.Y)
+			$target = $hit.RowIndex
+			if ($target -lt 0) { $target = $dt.Rows.Count - 1 }
+			if ($target -gt $dt.Rows.Count - 1) { $target = $dt.Rows.Count - 1 }
+			if ($target -eq $source) { return }
+			
+			$keyVal = [string]$dt.Rows[$source]['Key']
+			$valueVal = [string]$dt.Rows[$source]['Value']
+			
+			$dt.Rows.RemoveAt($source)
+			if ($target -gt $source) { $target-- }
+			
+			$newRow = $dt.NewRow()
+			$newRow['Key'] = $keyVal
+			$newRow['Value'] = $valueVal
+			if ($target -ge 0 -and $target -lt $dt.Rows.Count) { $dt.Rows.InsertAt($newRow, $target) }
+			else { [void]$dt.Rows.Add($newRow); $target = $dt.Rows.Count - 1 }
+			
+			try { $grid.FirstDisplayedScrollingRowIndex = [Math]::Max(0, $target) }
+			catch { }
+			$grid.CurrentCell = $grid.Rows[$target].Cells[0]
+			$grid.Rows[$target].Selected = $true
+			
+			$state.IsDirty = $true
+			$btnCopy.Enabled = $false
+		})
+	
+	# ==============================================================================================
+	#                                STATE + LOAD / SAVE / COPY
+	# ==============================================================================================
+	
 	$state = @{
 		SourceIsServer = $true
 		SourceLane	   = $null
 		FullPath	   = $null
 		IniObj		   = $null
+		IsDirty	       = $false
 	}
 	
-	# ------------------------- Behaviors (logic unchanged) -------------------------
 	$loadSectionFromCombo = {
 		$dt.Rows.Clear()
 		if (-not $state.IniObj) { return }
@@ -7243,6 +7343,8 @@ function Edit_INIs
 		if (-not $secActual) { return }
 		$od = $state.IniObj.Sections[$secActual]
 		foreach ($k in $od.Keys) { [void]$dt.Rows.Add($k, [string]$od[$k]) }
+		$state.IsDirty = $false
+		$btnCopy.Enabled = $false
 	}
 	
 	$doLoad = {
@@ -7253,6 +7355,7 @@ function Edit_INIs
 				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
 			return
 		}
+		
 		if ($rbSrv.Checked)
 		{
 			$state.SourceIsServer = $true
@@ -7279,6 +7382,7 @@ function Edit_INIs
 			}
 			$full = & $buildFullPath $rootLane $rel
 		}
+		
 		$state.FullPath = $full
 		$lblPath.Text = $state.FullPath
 		
@@ -7297,8 +7401,8 @@ function Edit_INIs
 		foreach ($secName in $state.IniObj.Sections.Keys) { [void]$cboSection.Items.Add($secName) }
 		if ($cboSection.Items.Count -gt 0) { $cboSection.SelectedIndex = 0 }
 		else { $cboSection.Text = "" }
+		
 		$loadSectionFromCombo.Invoke()
-		$btnCopy.Enabled = $false
 	}
 	
 	$btnLoad.Add_Click({ & $doLoad })
@@ -7306,6 +7410,7 @@ function Edit_INIs
 	$cboSection.Add_SelectedIndexChanged({ $loadSectionFromCombo.Invoke() })
 	$cboSection.Add_TextChanged({ $loadSectionFromCombo.Invoke() })
 	
+	# ---------- Save ----------
 	$btnSave.Add_Click({
 			if (-not $state.FullPath)
 			{
@@ -7314,6 +7419,7 @@ function Edit_INIs
 				return
 			}
 			if (-not $state.IniObj) { return }
+			
 			$secRequested = ($cboSection.Text -as [string]).Trim()
 			if (-not $secRequested)
 			{
@@ -7321,13 +7427,16 @@ function Edit_INIs
 					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 				return
 			}
-			$kv = @{ }
+			
+			$kv = New-Object System.Collections.Specialized.OrderedDictionary
 			foreach ($row in $dt.Rows)
 			{
 				$k = [string]$row['Key']; $v = [string]$row['Value']
 				if ([string]::IsNullOrWhiteSpace($k)) { continue }
-				$kv[$k] = $v
+				if ($kv.Contains($k)) { $kv.Remove($k) } # last one wins
+				$kv.Add($k, $v)
 			}
+			
 			$secActual = $null
 			foreach ($k in $state.IniObj.Sections.Keys) { if ($k -ieq $secRequested) { $secActual = $k; break } }
 			if (-not $secActual)
@@ -7343,15 +7452,20 @@ function Edit_INIs
 				foreach ($k in @($od.Keys)) { $od.Remove($k) }
 				foreach ($k in $kv.Keys) { $od.Add($k, $kv[$k]) }
 			}
+			
 			$state.IniObj.RawLines = & $writeIniSection $state.IniObj.RawLines $secActual $kv
+			
 			try
 			{
 				$dir = Split-Path -Parent $state.FullPath
 				if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 				Set-Content -LiteralPath $state.FullPath -Value $state.IniObj.RawLines -Encoding ASCII -Force
+				
 				Write_Log "Saved [$secActual] to $($state.FullPath)" "green"
 				[System.Windows.Forms.MessageBox]::Show("Saved section [$secActual] to:`r`n$($state.FullPath)", "Saved",
 					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				
+				$state.IsDirty = $false
 				$btnCopy.Enabled = $true
 			}
 			catch
@@ -7362,25 +7476,32 @@ function Edit_INIs
 			}
 		})
 	
+	# ---------- Copy (blocked if dirty or not saved) ----------
 	$btnCopy.Add_Click({
+			if ($state.IsDirty)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Please Save first. Copy is disabled until the INI is saved.", "Save required",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				return
+			}
 			if (-not $state.FullPath -or -not (Test-Path -LiteralPath $state.FullPath))
 			{
 				[System.Windows.Forms.MessageBox]::Show("Nothing to copy. Save the INI first.", "No file",
 					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 				return
 			}
-			# --- custom 3-button dialog: Merge / Copy / Cancel (PS 5.1-safe) ---
+			
 			$secRequested = ($cboSection.Text -as [string]).Trim()
 			
+			# deploy dialog
 			$dlg = New-Object System.Windows.Forms.Form
 			$dlg.Text = "Deploy options"
 			$dlg.StartPosition = 'CenterParent'
 			$dlg.FormBorderStyle = 'FixedDialog'
 			$dlg.MaximizeBox = $false
 			$dlg.MinimizeBox = $false
-			$dlg.ClientSize = New-Object System.Drawing.Size(460, 160) # compact, no DPI drama
+			$dlg.ClientSize = New-Object System.Drawing.Size(460, 160)
 			
-			# Explanatory text (wraps nicely)
 			$lbl = New-Object System.Windows.Forms.Label
 			$lbl.AutoSize = $true
 			$lbl.MaximumSize = New-Object System.Drawing.Size(440, 0)
@@ -7390,34 +7511,28 @@ function Edit_INIs
 			"* Copy  - replace the entire INI file on targets."
 			$dlg.Controls.Add($lbl)
 			
-			# Buttons (mapped so your existing code can keep using DialogResult)
 			$btnMerge = New-Object System.Windows.Forms.Button
-			$btnMerge.Text = "Merge"
-			$btnMerge.Size = New-Object System.Drawing.Size(90, 28)
+			$btnMerge.Text = "Merge"; $btnMerge.Size = New-Object System.Drawing.Size(90, 28)
 			$btnMerge.Location = New-Object System.Drawing.Point(140, 110)
-			$btnMerge.DialogResult = [System.Windows.Forms.DialogResult]::Yes # MERGE => Yes
+			$btnMerge.DialogResult = [System.Windows.Forms.DialogResult]::Yes
 			
 			$btnCopyAll = New-Object System.Windows.Forms.Button
-			$btnCopyAll.Text = "Copy"
-			$btnCopyAll.Size = New-Object System.Drawing.Size(90, 28)
+			$btnCopyAll.Text = "Copy"; $btnCopyAll.Size = New-Object System.Drawing.Size(90, 28)
 			$btnCopyAll.Location = New-Object System.Drawing.Point(240, 110)
-			$btnCopyAll.DialogResult = [System.Windows.Forms.DialogResult]::No # COPY  => No
+			$btnCopyAll.DialogResult = [System.Windows.Forms.DialogResult]::No
 			
 			$btnCancel = New-Object System.Windows.Forms.Button
-			$btnCancel.Text = "Cancel"
-			$btnCancel.Size = New-Object System.Drawing.Size(90, 28)
+			$btnCancel.Text = "Cancel"; $btnCancel.Size = New-Object System.Drawing.Size(90, 28)
 			$btnCancel.Location = New-Object System.Drawing.Point(340, 110)
 			$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 			
 			$dlg.Controls.AddRange(@($btnMerge, $btnCopyAll, $btnCancel))
-			$dlg.AcceptButton = $btnMerge # Enter = Merge
-			$dlg.CancelButton = $btnCancel # Esc   = Cancel
+			$dlg.AcceptButton = $btnMerge
+			$dlg.CancelButton = $btnCancel
 			
 			$choice = $dlg.ShowDialog()
 			if ($choice -eq [System.Windows.Forms.DialogResult]::Cancel) { return }
-			
-			# Keep your original flag semantics:
-			$mergeOnly = ($choice -eq [System.Windows.Forms.DialogResult]::Yes) # Yes==Merge, No==Copy
+			$mergeOnly = ($choice -eq [System.Windows.Forms.DialogResult]::Yes)
 			
 			$excluded = @()
 			if (-not $state.SourceIsServer -and $state.SourceLane) { $excluded = @($state.SourceLane) }
@@ -7429,8 +7544,11 @@ function Edit_INIs
 			if (-not $sel) { Write_Log "Copy aborted: no lanes selected." "yellow"; return }
 			
 			$laneNums = @()
-			if ($sel -is [System.Collections.IDictionary]) { if ($sel.Contains('Lanes') -and $sel['Lanes']) { $laneNums = @($sel['Lanes']) }
-				elseif ($sel.Contains('LaneNumbers') -and $sel['LaneNumbers']) { $laneNums = @($sel['LaneNumbers']) } }
+			if ($sel -is [System.Collections.IDictionary])
+			{
+				if ($sel.Contains('Lanes') -and $sel['Lanes']) { $laneNums = @($sel['Lanes']) }
+				elseif ($sel.Contains('LaneNumbers') -and $sel['LaneNumbers']) { $laneNums = @($sel['LaneNumbers']) }
+			}
 			elseif ($sel -is [System.Collections.IEnumerable] -and -not ($sel -is [string])) { $laneNums = @($sel) }
 			elseif ($sel -is [string]) { $laneNums = @($sel -split '[,\s]+' | Where-Object { $_ }) }
 			$laneNums = @($laneNums | ForEach-Object { try { "{0:D3}" -f ([int]$_) }
@@ -7459,13 +7577,15 @@ function Edit_INIs
 			
 			if ($mergeOnly)
 			{
-				$kv = @{ }
+				$kv = New-Object System.Collections.Specialized.OrderedDictionary
 				foreach ($row in $dt.Rows)
 				{
 					$k = [string]$row['Key']; $v = [string]$row['Value']
 					if ([string]::IsNullOrWhiteSpace($k)) { continue }
-					$kv[$k] = $v
+					if ($kv.Contains($k)) { $kv.Remove($k) }
+					$kv.Add($k, $v)
 				}
+				
 				foreach ($m in $destMachines)
 				{
 					$rootLane = & $getLaneRoot $m
@@ -7483,13 +7603,17 @@ function Edit_INIs
 					$secActual = $null
 					foreach ($k in $destIni.Sections.Keys) { if ($k -ieq $secRequested) { $secActual = $k; break } }
 					if (-not $secActual) { $secActual = $secRequested }
+					
 					$destIni.RawLines = & $writeIniSection $destIni.RawLines $secActual $kv
 					try
 					{
 						Set-Content -LiteralPath $dstFull -Value $destIni.RawLines -Encoding ASCII -Force
 						Write_Log "Merged [$secActual] into $dstFull on $m" "green"; $ok++
 					}
-					catch { Write_Log "Merge failed on $m ($dstFull): $($_.Exception.Message)" "red"; $fail++ }
+					catch
+					{
+						Write_Log "Merge failed on $m ($dstFull): $($_.Exception.Message)" "red"; $fail++
+					}
 				}
 			}
 			else
@@ -7518,8 +7642,11 @@ function Edit_INIs
 	
 	$btnClose.Add_Click({ $frm.Close() })
 	
-	# Initial load
+	# ==============================================================================================
+	#                                         STARTUP
+	# ==============================================================================================
 	& $doLoad
+	$iniFlow.PerformLayout() # ensure combo gets sized on first draw
 	[void]$frm.ShowDialog()
 	
 	Write_Log "`r`n==================== Edit_INIs Completed ====================`r`n" "blue"
