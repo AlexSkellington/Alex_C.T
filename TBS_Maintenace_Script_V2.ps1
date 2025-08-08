@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.4.1"
-$VersionDate = "2025-08-07"
+$VersionNumber = "2.4.2"
+$VersionDate = "2025-08-08"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -6782,7 +6782,7 @@ function Edit_INIs
 {
 	param (
 		[string]$RelativeIniPath = 'office\Setup.ini',
-		[string[]]$PredefinedIniPaths = @('office\Setup.ini', 'office\Settings.ini', 'office\System.ini')
+		[string[]]$PredefinedIniPaths = @('office\Setup.ini', 'office\Setting.ini', 'office\System.ini', 'XchDev\ApiVerifoneMX.ini')
 	)
 	
 	Write_Log "`r`n==================== Starting Edit_INIs ====================`r`n" "blue"
@@ -7126,6 +7126,103 @@ function Edit_INIs
 	
 	$frm.AcceptButton = $btnSave
 	$frm.CancelButton = $btnClose
+	
+	# --- Right-click context menu for Add/Delete key rows ---
+	$ctx = New-Object System.Windows.Forms.ContextMenuStrip
+	$miAdd = $ctx.Items.Add("Add key")
+	$miDel = $ctx.Items.Add("Delete key")
+	$grid.ContextMenuStrip = $ctx
+	
+	# Track the row the user right-clicked
+	$script:_ctxRow = -1
+	$grid.Add_CellMouseDown({
+			param ($sender,
+				$e)
+			if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
+			{
+				if ($e.RowIndex -ge 0)
+				{
+					$grid.ClearSelection()
+					$script:_ctxRow = $e.RowIndex
+					$col = if ($e.ColumnIndex -ge 0) { $e.ColumnIndex }
+					else { 0 }
+					$grid.CurrentCell = $grid.Rows[$e.RowIndex].Cells[$col]
+					$grid.Rows[$e.RowIndex].Selected = $true
+				}
+				else
+				{
+					$script:_ctxRow = -1
+				}
+			}
+		})
+	
+	# Add key -> insert a new row and start editing the Key cell
+	$miAdd.Add_Click({
+			# Decide where to insert
+			$insertAt = if ($script:_ctxRow -ge 0 -and $script:_ctxRow -lt $dt.Rows.Count)
+			{
+				$script:_ctxRow
+			}
+			else
+			{
+				$dt.Rows.Count
+			}
+			
+			# Create & insert new DataRow
+			$newRow = $dt.NewRow()
+			$newRow['Key'] = ''
+			$newRow['Value'] = ''
+			if ($insertAt -lt $dt.Rows.Count)
+			{
+				$dt.Rows.InsertAt($newRow, $insertAt)
+			}
+			else
+			{
+				[void]$dt.Rows.Add($newRow)
+				$insertAt = $dt.Rows.Count - 1
+			}
+			
+			# Put caret in the new Key cell and begin editing
+			$grid.Focus()
+			# Make sure it's visible
+			try { $grid.FirstDisplayedScrollingRowIndex = $insertAt }
+			catch { }
+			$grid.CurrentCell = $grid.Rows[$insertAt].Cells[0] # 0 = 'Key' column
+			$grid.BeginEdit($true)
+			
+			# Allow deploying unsaved grid edits via Merge
+			$btnCopy.Enabled = $true
+		})
+	
+	# Delete key -> remove the selected (or context) row
+	$miDel.Add_Click({
+			# Choose target row: current cell first, fall back to last right-click row
+			$rowIdx = -1
+			if ($grid.CurrentCell) { $rowIdx = $grid.CurrentCell.RowIndex }
+			if ($rowIdx -lt 0 -and $script:_ctxRow -ge 0) { $rowIdx = $script:_ctxRow }
+			
+			# Validate row
+			if ($rowIdx -lt 0 -or $rowIdx -ge $grid.Rows.Count) { return }
+			if ($grid.Rows[$rowIdx].IsNewRow) { return } # don't delete the placeholder
+			if ($rowIdx -ge $dt.Rows.Count) { return }
+			
+			$ans = [System.Windows.Forms.MessageBox]::Show(
+				"Delete key '" + [string]$dt.Rows[$rowIdx]['Key'] + "'?",
+				"Confirm delete", [System.Windows.Forms.MessageBoxButtons]::YesNo,
+				[System.Windows.Forms.MessageBoxIcon]::Question
+			)
+			if ($ans -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+			
+			$dt.Rows.RemoveAt($rowIdx)
+			
+			# Enable deploy (Merge) since we have changes in the grid
+			$btnCopy.Enabled = $true
+		})
+	
+	# If user edits any cell, enable Copy (so Merge can use unsaved changes)
+	$grid.Add_CellValueChanged({ $btnCopy.Enabled = $true })
+	$grid.Add_UserAddedRow({ $btnCopy.Enabled = $true })
+	$grid.Add_UserDeletedRow({ $btnCopy.Enabled = $true })
 	
 	# ------------------------- State -------------------------
 	$state = @{
