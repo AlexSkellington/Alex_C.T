@@ -6194,7 +6194,7 @@ function Configure_System_Settings
 		$UnorganizedFolder = Join-Path -Path $DesktopPath -ChildPath $UnorganizedFolderName
 		
 		# Define system icons and excluded folders
-		$systemIcons = @("This PC.lnk", "Network.lnk", "Control Panel.lnk", "Recycle Bin.lnk", "User's Files.lnk", "Execute(TBS_Maintenance_Script).bat", "Execute(MiniGhost).bat", "$scriptName")
+		$systemIcons = @("This PC.lnk", "Network.lnk", "Control Panel.lnk", "Recycle Bin.lnk", "User's Files.lnk", "Execute(TBS_Maintenance_Script).bat", "Execute(MiniGhost).bat", "TBS_Maintenance_Script.exe", "MiniGhost.exe", $scriptName)
 		$excludedFolders = @("Lanes", "Scales", "BackOffices", "Unorganized Items")
 		
 		# Create Unorganized Items folder if it doesn't exist
@@ -6592,11 +6592,7 @@ function Install_ONE_FUNCTION_Into_SMS
 	# --------------------------------------------------------------------------------------------
 	# Define Destination Paths
 	# --------------------------------------------------------------------------------------------
-	
-	# Destination folder for Pump_all_items_tables.sql
-	$PumpAllItemsTablesDestinationFolder = Join-Path -Path $OfficePath -ChildPath "XF${StoreNumber}901"
-	$PumpAllItemsTablesFilePath = Join-Path -Path $PumpAllItemsTablesDestinationFolder -ChildPath "Pump_all_items_tables.sql"
-	
+		
 	# Destination paths for DEPLOY_SYS.sql and DEPLOY_ONE_FCT.sqm
 	$DeploySysDestinationPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_SYS.sql"
 	$DeployOneFctDestinationPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_ONE_FCT.sqm"
@@ -6604,20 +6600,7 @@ function Install_ONE_FUNCTION_Into_SMS
 	# --------------------------------------------------------------------------------------------
 	# Define File Contents (using $reg for ® to ensure it works in any script encoding)
 	# --------------------------------------------------------------------------------------------
-	
-	# Define the content for Pump_all_items_tables.sql
-	$PumpAllItemsTablesContent = @"
-/* First delete the record if it exist */
-DELETE FROM FCT_TAB WHERE F1063 = 11899 AND F1000 = 'PAL';
-
-/* Insert the new function */
-INSERT INTO FCT_TAB (F1063,F1000,F1047,F1050,F1051,F1052,F1053,F1064,F1081) 
-VALUES (11899,'PAL',9,'','SKU','Preference','1','Pump all item tables','sql=DEPLOY_LOAD');
-
-/* Activate the new function right away */
-@EXEC(SQL=ACTIVATE_ACCEPT_SYS);
-"@
-	
+		
 	# Define the content for DEPLOY_SYS.sql
 	$DeploySysContent = @"
 @FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,$($reg)WIZRPL(UD_RUN=0));
@@ -6744,7 +6727,6 @@ ORDER BY F1000,F1063;
 	# --------------------------------------------------------------------------------------------
 	
 	# Ensure content strings have Windows-style line endings
-	$PumpAllItemsTablesContent = $PumpAllItemsTablesContent -replace "`n", "`r`n"
 	$DeploySysContent = $DeploySysContent -replace "`n", "`r`n"
 	$DeployOneFctContent = $DeployOneFctContent -replace "`n", "`r`n"
 	
@@ -6752,37 +6734,8 @@ ORDER BY F1000,F1063;
 	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
 	
 	# --------------------------------------------------------------------------------------------
-	# Ensure Destination Directories Exist
-	# --------------------------------------------------------------------------------------------
-	try
-	{
-		if (-not (Test-Path $PumpAllItemsTablesDestinationFolder))
-		{
-			New-Item -Path $PumpAllItemsTablesDestinationFolder -ItemType Directory -Force | Out-Null
-			Write_Log "Created directory '$PumpAllItemsTablesDestinationFolder'." "yellow"
-		}
-	}
-	catch
-	{
-		Write_Log "Failed to create directory '$PumpAllItemsTablesDestinationFolder'. Error: $_" "red"
-		return
-	}
-	
-	# --------------------------------------------------------------------------------------------
 	# Write Files Directly to Destination Paths
 	# --------------------------------------------------------------------------------------------
-	try
-	{
-		# Write Pump_all_items_tables.sql
-		[System.IO.File]::WriteAllText($PumpAllItemsTablesFilePath, $PumpAllItemsTablesContent, $ansiEncoding)
-		Set-ItemProperty -Path $PumpAllItemsTablesFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Successfully wrote 'Pump_all_items_tables.sql' to '$PumpAllItemsTablesDestinationFolder'." "green"
-	}
-	catch
-	{
-		Write_Log "Failed to write 'Pump_all_items_tables.sql'. Error: $_" "red"
-	}
-	
 	try
 	{
 		# Write DEPLOY_SYS.sql
@@ -6806,36 +6759,1248 @@ ORDER BY F1000,F1063;
 	{
 		Write_Log "Failed to write 'DEPLOY_ONE_FCT.sqm'. Error: $_" "red"
 	}
+		
+	Write_Log "`r`n==================== Install_ONE_FUNCTION_Into_SMS Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                                           FUNCTION: Edit_INIs
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Generic INI editor for files under \storeman\<RelativeIniPath>. Pick Server/Lane as source,
+#   load the INI, select/TYPE any section, edit ALL keys (add/edit/delete), save, then optionally
+#   deploy to other lanes as either:
+#      • Merge only your changes (update just the selected section's keys), or
+#      • Replace the whole INI file.
+#
+# Parameters:
+#   -RelativeIniPath     : Default INI under \storeman\ to open (UI is still editable).
+#   -PredefinedIniPaths  : Items shown in the INI dropdown; you can still type anything custom.
+# ---------------------------------------------------------------------------------------------------
+
+function Edit_INIs
+{
+	param (
+		[string]$RelativeIniPath = 'office\Setup.ini',
+		[string[]]$PredefinedIniPaths = @('office\Setup.ini', 'office\Settings.ini', 'office\System.ini')
+	)
 	
-	# --------------------------------------------------------------------------------------------
-	# Remove Archive Bit from Pump_all_items_tables.sql Only If the File Exists
-	# --------------------------------------------------------------------------------------------
-	try
-	{
-		if (Test-Path $PumpAllItemsTablesFilePath)
+	Write_Log "`r`n==================== Starting Edit_INIs ====================`r`n" "blue"
+	
+	# ------------------------- Helper scriptblocks (unchanged logic) -------------------------
+	$getKnownLanes = {
+		$known = @()
+		if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'])
 		{
-			$file = Get-Item -Path $PumpAllItemsTablesFilePath
-			if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
+			$known = $script:FunctionResults['LaneMachines'].Values | Where-Object { $_ } | Select-Object -Unique
+		}
+		elseif ($script:FunctionResults.ContainsKey('LaneNumToMachineName') -and $script:FunctionResults['LaneNumToMachineName'])
+		{
+			$known = $script:FunctionResults['LaneNumToMachineName'].Values | Where-Object { $_ } | Select-Object -Unique
+		}
+		return, ($known | Sort-Object)
+	}
+	$getLaneRoot = {
+		param ([string]$ComputerName)
+		$s1 = "\\$ComputerName\Storeman"; if (Test-Path -LiteralPath $s1) { return $s1 }
+		$s2 = "\\$ComputerName\c$\storeman"; if (Test-Path -LiteralPath $s2) { return $s2 }
+		return $null
+	}
+	$getServerRoot = {
+		if (Test-Path -LiteralPath 'C:\storeman') { return 'C:\storeman' }
+		if (Test-Path -LiteralPath 'D:\storeman') { return 'D:\storeman' }
+		return "$($env:SystemDrive)\storeman"
+	}
+	$buildFullPath = {
+		param ([string]$Root,
+			[string]$Rel)
+		$r = ($Rel -as [string]).Trim().TrimStart('\', '/')
+		return (Join-Path $Root $r)
+	}
+	$readIni = {
+		param ([string]$Path)
+		if (-not (Test-Path -LiteralPath $Path)) { return $null }
+		$raw = Get-Content -LiteralPath $Path -Encoding ASCII
+		$sections = New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Specialized.OrderedDictionary]'
+		$current = $null
+		foreach ($line in $raw)
+		{
+			$t = $line.Trim()
+			if ($t -match '^\s*[;#]') { continue }
+			if ($t -match '^\[(?<sec>[^\]]+)\]\s*$')
 			{
-				$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
-				Write_Log "Removed the archive bit from '$PumpAllItemsTablesFilePath'." "green"
+				$sec = $matches['sec']
+				if (-not $sections.ContainsKey($sec))
+				{
+					$od = New-Object System.Collections.Specialized.OrderedDictionary
+					$sections.Add($sec, $od)
+				}
+				$current = $sec
+				continue
 			}
-			else
+			if ($current -and $t -match '^(?<k>[^=]+?)\s*=\s*(?<v>.*)$')
 			{
-				#	Write_Log "Archive bit was not set for '$PumpAllItemsTablesFilePath'." "yellow"
+				$k = $matches['k'].Trim()
+				$v = $matches['v']
+				if (-not $sections[$current].Contains($k)) { $sections[$current].Add($k, $v) }
+				else { $sections[$current][$k] = $v }
 			}
+		}
+		return @{ RawLines = $raw; Sections = $sections }
+	}
+	$writeIniSection = {
+		param ([string[]]$RawLines,
+			[string]$SectionName,
+			[hashtable]$NewKeyValues)
+		$lines = New-Object System.Collections.Generic.List[string]; $lines.AddRange($RawLines)
+		$start = -1; $end = $lines.Count
+		for ($i = 0; $i -lt $lines.Count; $i++)
+		{
+			if ($lines[$i] -match "^\s*\[$([regex]::Escape($SectionName))\]\s*$") { $start = $i; break }
+		}
+		if ($start -lt 0)
+		{
+			if ($lines.Count -gt 0 -and $lines[$lines.Count - 1].Trim() -ne '') { $lines.Add('') } # NEW: keep one blank before new section for readability
+			$lines.Add("[$SectionName]")
+			foreach ($k in $NewKeyValues.Keys) { $lines.Add("$k=$($NewKeyValues[$k])") }
+			return, $lines.ToArray()
+		}
+		for ($i = $start + 1; $i -lt $lines.Count; $i++)
+		{
+			if ($lines[$i] -match '^\s*\[.+\]\s*$') { $end = $i; break }
+		}
+		$updated = @{ }
+		for ($i = $start + 1; $i -lt $end; $i++)
+		{
+			$L = $lines[$i]
+			if ($L.Trim() -match '^[;#]') { continue }
+			if ($L -match '^(?<k>[^=]+?)\s*=\s*(?<v>.*)$')
+			{
+				$currKey = $matches['k'].Trim()
+				$targetKey = $null
+				foreach ($nk in $NewKeyValues.Keys) { if ($nk -ieq $currKey) { $targetKey = $nk; break } }
+				if ($targetKey) { $lines[$i] = "$currKey=$($NewKeyValues[$targetKey])"; $updated[$targetKey] = $true }
+			}
+		}
+		$pending = @()
+		foreach ($k in $NewKeyValues.Keys) { if (-not $updated.ContainsKey($k)) { $pending += "$k=$($NewKeyValues[$k])" } }
+		if ($pending.Count -gt 0)
+		{
+			if ($end -ge $lines.Count) { $lines.AddRange($pending) }
+			else { $offset = 0; foreach ($nl in $pending) { $lines.Insert($end + $offset, $nl); $offset++ } }
+		}
+		return, $lines.ToArray()
+	}
+	$lanesToMachines = {
+		param ($LaneNums)
+		$out = @()
+		$map = $script:FunctionResults['LaneNumToMachineName']
+		$known = & $getKnownLanes
+		foreach ($ln in $LaneNums)
+		{
+			$pad = $null; try { $pad = "{0:D3}" -f ([int]$ln) }
+			catch { $pad = "$ln" }
+			$m = $null
+			if ($map)
+			{
+				if ($map.ContainsKey($pad)) { $m = $map[$pad] }
+				elseif ($map.ContainsKey([int]$ln)) { $m = $map[[int]$ln] }
+				elseif ($map.ContainsKey("$([int]$ln)")) { $m = $map["$([int]$ln)"] }
+			}
+			if (-not $m)
+			{
+				$guess = $known | Where-Object { "$_" -like "*$pad" }
+				if ($guess) { $m = $guess[0] }
+			}
+			if ($m) { $out += $m }
+		}
+		return, (@($out | Where-Object { $_ } | Select-Object -Unique))
+	}
+	
+	# ------------------------- UI (polish & alignment) -------------------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	[void][System.Windows.Forms.Application]::EnableVisualStyles()
+	
+	$frm = New-Object System.Windows.Forms.Form
+	$frm.Text = "Edit INIs  -  dynamic section/key editor"
+	$frm.Size = New-Object System.Drawing.Size(940, 740) # CHG: a bit wider/taller for breathing room
+	$frm.StartPosition = 'CenterScreen'
+	$frm.FormBorderStyle = 'FixedDialog'
+	$frm.MaximizeBox = $false
+	$frm.MinimizeBox = $false
+	$frm.BackColor = [System.Drawing.Color]::FromArgb(248, 249, 251) # CHG: soft background to look less "Win2000"
+	
+	$root = New-Object System.Windows.Forms.TableLayoutPanel
+	$root.Dock = 'Fill'
+	$root.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8) # CHG: consistent outer padding
+	$root.ColumnCount = 1
+	$root.RowCount = 6
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+	$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$frm.Controls.Add($root)
+	
+	$hdr = New-Object System.Windows.Forms.Label
+	$hdr.Text = "Pick Server/Lane, choose a predefined INI or type a custom path, load, select/TYPE a section, edit keys, save, then copy to other lanes (merge just your section's keys or replace whole file)."
+	$hdr.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+	$hdr.AutoSize = $true
+	$hdr.MaximumSize = New-Object System.Drawing.Size(($frm.ClientSize.Width - 32), 0) # CHG: force wrap to avoid clipping
+	$hdr.Margin = New-Object System.Windows.Forms.Padding(4, 4, 4, 6) # CHG: tighter margins
+	$root.Controls.Add($hdr, 0, 0)
+	
+	# --- Source group (two rows; prevents clipping on any DPI) ---
+	$grpSrc = New-Object System.Windows.Forms.GroupBox
+	$grpSrc.Text = "Source"
+	$grpSrc.Padding = New-Object System.Windows.Forms.Padding(10, 10, 10, 6)
+	$grpSrc.Dock = 'Top'
+	$root.Controls.Add($grpSrc, 0, 1)
+	
+	# 2 columns: col0 = radios (autosize), col1 = lane label+combo container (fills)
+	$srcGrid = New-Object System.Windows.Forms.TableLayoutPanel
+	$srcGrid.Dock = 'Top'
+	$srcGrid.ColumnCount = 2
+	$srcGrid.RowCount = 2
+	$srcGrid.ColumnStyles.Clear()
+	[void]$srcGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize))) # col0
+	[void]$srcGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100))) # col1
+	[void]$srcGrid.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	[void]$srcGrid.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$grpSrc.Controls.Add($srcGrid)
+	
+	# Row 0: Server radio spans both columns
+	$rbSrv = New-Object System.Windows.Forms.RadioButton
+	$rbSrv.Text = "Server (this computer)"
+	$rbSrv.Checked = $true
+	$rbSrv.AutoSize = $true
+	$rbSrv.Margin = New-Object System.Windows.Forms.Padding(0, 3, 20, 3)
+	$srcGrid.Controls.Add($rbSrv, 0, 0)
+	$srcGrid.SetColumnSpan($rbSrv, 2) # span both cols
+	
+	# Row 1, col0: Lane radio
+	$rbLane = New-Object System.Windows.Forms.RadioButton
+	$rbLane.Text = "Lane (source)"
+	$rbLane.AutoSize = $true
+	$rbLane.Margin = New-Object System.Windows.Forms.Padding(0, 8, 8, 3)
+	$srcGrid.Controls.Add($rbLane, 0, 1)
+	
+	# Row 1, col1: inline panel with "Select lane:" + ComboBox (keeps them on same line)
+	$laneInline = New-Object System.Windows.Forms.FlowLayoutPanel
+	$laneInline.FlowDirection = 'LeftToRight'
+	$laneInline.WrapContents = $false
+	$laneInline.AutoSize = $true
+	$laneInline.AutoSizeMode = 'GrowAndShrink'
+	$laneInline.Dock = 'Fill'
+	$laneInline.Margin = New-Object System.Windows.Forms.Padding(0, 4, 0, 0)
+	$srcGrid.Controls.Add($laneInline, 1, 1)
+	
+	$lblLane = New-Object System.Windows.Forms.Label
+	$lblLane.Text = "Select lane:"
+	$lblLane.AutoSize = $true
+	$lblLane.Margin = New-Object System.Windows.Forms.Padding(0, 6, 4, 3) # tiny gap before combo
+	$laneInline.Controls.Add($lblLane)
+	
+	$cboLane = New-Object System.Windows.Forms.ComboBox
+	$cboLane.DropDownStyle = 'DropDownList'
+	$cboLane.Enabled = $false
+	$cboLane.Width = 300 # fixed width looks tidy; change if you want it wider
+	$cboLane.Margin = New-Object System.Windows.Forms.Padding(0, 3, 0, 3)
+	$laneInline.Controls.Add($cboLane)
+	
+	(& $getKnownLanes) | ForEach-Object { [void]$cboLane.Items.Add($_) }
+	
+	$rbLane.Add_CheckedChanged({
+			$cboLane.Enabled = $rbLane.Checked
+			if ($rbLane.Checked -and $cboLane.Items.Count -gt 0 -and -not $cboLane.SelectedItem) { $cboLane.SelectedIndex = 0 }
+		})
+	
+	# --- INI path row (predefined + custom) ---
+	$rowIni = New-Object System.Windows.Forms.TableLayoutPanel
+	$rowIni.Dock = 'Top'
+	$rowIni.ColumnCount = 3
+	[void]$rowIni.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	[void]$rowIni.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+	[void]$rowIni.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$rowIni.Margin = New-Object System.Windows.Forms.Padding(0, 4, 0, 0) # CHG: tighten vertical spacing
+	$root.Controls.Add($rowIni, 0, 2)
+	
+	$lblRel = New-Object System.Windows.Forms.Label
+	$lblRel.Text = "INI path under \storeman\"
+	$lblRel.AutoSize = $true
+	$lblRel.Margin = New-Object System.Windows.Forms.Padding(6, 6, 6, 6)
+	$rowIni.Controls.Add($lblRel, 0, 0)
+	
+	$cboRel = New-Object System.Windows.Forms.ComboBox
+	$cboRel.DropDownStyle = 'DropDown' # editable
+	$cboRel.Anchor = 'Left,Right' # CHG: stretch to available space
+	$cboRel.Margin = New-Object System.Windows.Forms.Padding(6, 3, 6, 3)
+	foreach ($p in ($PredefinedIniPaths | Select-Object -Unique)) { [void]$cboRel.Items.Add($p) }
+	if ($RelativeIniPath -and -not ($cboRel.Items -contains $RelativeIniPath)) { [void]$cboRel.Items.Add($RelativeIniPath) }
+	$cboRel.Text = $RelativeIniPath
+	$rowIni.Controls.Add($cboRel, 1, 0)
+	
+	$btnLoad = New-Object System.Windows.Forms.Button
+	$btnLoad.Text = "Load INI"
+	$btnLoad.Width = 100
+	$rowIni.Controls.Add($btnLoad, 2, 0)
+	
+	# --- Section row (wider, aligned) ---
+	$rowSec = New-Object System.Windows.Forms.TableLayoutPanel
+	$rowSec.Dock = 'Top'
+	$rowSec.ColumnCount = 4
+	[void]$rowSec.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	[void]$rowSec.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 320))) # CHG: wider section dropdown
+	[void]$rowSec.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+	[void]$rowSec.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$rowSec.Margin = New-Object System.Windows.Forms.Padding(0, 6, 0, 2) # CHG: consistent spacing
+	$root.Controls.Add($rowSec, 0, 3)
+	
+	$lblSec = New-Object System.Windows.Forms.Label
+	$lblSec.Text = "Section:"
+	$lblSec.AutoSize = $true
+	$lblSec.Margin = New-Object System.Windows.Forms.Padding(6, 6, 6, 0)
+	$rowSec.Controls.Add($lblSec, 0, 0)
+	
+	$cboSection = New-Object System.Windows.Forms.ComboBox
+	$cboSection.DropDownStyle = 'DropDown' # editable
+	$cboSection.Width = 320
+	$rowSec.Controls.Add($cboSection, 1, 0)
+	
+	$lblPath = New-Object System.Windows.Forms.Label
+	$lblPath.Text = ""
+	$lblPath.AutoSize = $true
+	$lblPath.ForeColor = [System.Drawing.Color]::DimGray
+	$lblPath.Margin = New-Object System.Windows.Forms.Padding(12, 6, 6, 0)
+	$rowSec.Controls.Add($lblPath, 2, 0)
+	
+	$btnReload = New-Object System.Windows.Forms.Button
+	$btnReload.Text = "Reload"
+	$btnReload.Width = 90
+	$rowSec.Controls.Add($btnReload, 3, 0)
+	
+	# --- Grid (subtle styling) ---
+	$grid = New-Object System.Windows.Forms.DataGridView
+	$grid.Dock = 'Fill'
+	$grid.AllowUserToAddRows = $true
+	$grid.AllowUserToDeleteRows = $true
+	$grid.AutoSizeColumnsMode = 'Fill'
+	$grid.RowHeadersVisible = $false
+	$grid.SelectionMode = 'CellSelect'
+	$grid.MultiSelect = $false
+	$grid.BackgroundColor = [System.Drawing.Color]::White # CHG: white grid against light form
+	$grid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(242, 243, 245) # CHG: soft header bg
+	$grid.EnableHeadersVisualStyles = $false # CHG: apply custom header style
+	$root.Controls.Add($grid, 0, 4)
+	
+	$dt = New-Object System.Data.DataTable
+	[void]$dt.Columns.Add('Key', [string])
+	[void]$dt.Columns.Add('Value', [string])
+	$grid.DataSource = $dt
+	
+	# --- Bottom buttons (ellipsis fixed) ---
+	$btnRow = New-Object System.Windows.Forms.FlowLayoutPanel
+	$btnRow.FlowDirection = 'RightToLeft'
+	$btnRow.Dock = 'Bottom'
+	$btnRow.AutoSize = $true
+	$btnRow.Padding = New-Object System.Windows.Forms.Padding(0, 10, 6, 8) # CHG: balanced padding
+	$frm.Controls.Add($btnRow)
+	
+	$btnClose = New-Object System.Windows.Forms.Button
+	$btnClose.Text = "Close"
+	$btnClose.Width = 90
+	$btnRow.Controls.Add($btnClose)
+	
+	$btnCopy = New-Object System.Windows.Forms.Button
+	$btnCopy.Text = "Copy to other lanes..." # CHG: ASCII "..." to avoid â€¦ mojibake
+	$btnCopy.Width = 170
+	$btnCopy.Enabled = $false
+	$btnRow.Controls.Add($btnCopy)
+	
+	$btnSave = New-Object System.Windows.Forms.Button
+	$btnSave.Text = "Save to source"
+	$btnSave.Width = 130
+	$btnRow.Controls.Add($btnSave)
+	
+	$frm.AcceptButton = $btnSave
+	$frm.CancelButton = $btnClose
+	
+	# ------------------------- State -------------------------
+	$state = @{
+		SourceIsServer = $true
+		SourceLane	   = $null
+		FullPath	   = $null
+		IniObj		   = $null
+	}
+	
+	# ------------------------- Behaviors (logic unchanged) -------------------------
+	$loadSectionFromCombo = {
+		$dt.Rows.Clear()
+		if (-not $state.IniObj) { return }
+		$secRequested = ($cboSection.Text -as [string]).Trim()
+		if (-not $secRequested) { return }
+		$secActual = $null
+		foreach ($k in $state.IniObj.Sections.Keys) { if ($k -ieq $secRequested) { $secActual = $k; break } }
+		if (-not $secActual) { return }
+		$od = $state.IniObj.Sections[$secActual]
+		foreach ($k in $od.Keys) { [void]$dt.Rows.Add($k, [string]$od[$k]) }
+	}
+	
+	$doLoad = {
+		$rel = ($cboRel.Text -as [string]).Trim()
+		if (-not $rel)
+		{
+			[System.Windows.Forms.MessageBox]::Show("Enter or select a relative INI path (e.g. office\Setup.ini).", "Missing path",
+				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+			return
+		}
+		if ($rbSrv.Checked)
+		{
+			$state.SourceIsServer = $true
+			$state.SourceLane = $null
+			$rootSrv = & $getServerRoot
+			$full = & $buildFullPath $rootSrv $rel
 		}
 		else
 		{
-			Write_Log "File '$PumpAllItemsTablesFilePath' does not exist. Cannot remove archive bit." "red"
+			if (-not $cboLane.SelectedItem)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Select a lane.", "Missing lane",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+				return
+			}
+			$state.SourceIsServer = $false
+			$state.SourceLane = [string]$cboLane.SelectedItem
+			$rootLane = & $getLaneRoot $state.SourceLane
+			if (-not $rootLane)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Lane storeman root not accessible (\\$($state.SourceLane)\Storeman or \\$($state.SourceLane)\C$\storeman).", "Path error",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+				return
+			}
+			$full = & $buildFullPath $rootLane $rel
 		}
+		$state.FullPath = $full
+		$lblPath.Text = $state.FullPath
+		
+		$ini = & $readIni $state.FullPath
+		if (-not $ini)
+		{
+			Write_Log "[Info] INI not found, will be created on save: $($state.FullPath)" "yellow"
+			$ini = @{
+				RawLines = @("; Created by Edit_INIs", "")
+				Sections = (New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Specialized.OrderedDictionary]')
+			}
+		}
+		$state.IniObj = $ini
+		
+		$cboSection.Items.Clear()
+		foreach ($secName in $state.IniObj.Sections.Keys) { [void]$cboSection.Items.Add($secName) }
+		if ($cboSection.Items.Count -gt 0) { $cboSection.SelectedIndex = 0 }
+		else { $cboSection.Text = "" }
+		$loadSectionFromCombo.Invoke()
+		$btnCopy.Enabled = $false
+	}
+	
+	$btnLoad.Add_Click({ & $doLoad })
+	$btnReload.Add_Click({ & $doLoad })
+	$cboSection.Add_SelectedIndexChanged({ $loadSectionFromCombo.Invoke() })
+	$cboSection.Add_TextChanged({ $loadSectionFromCombo.Invoke() })
+	
+	$btnSave.Add_Click({
+			if (-not $state.FullPath)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Load an INI first.", "No file",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				return
+			}
+			if (-not $state.IniObj) { return }
+			$secRequested = ($cboSection.Text -as [string]).Trim()
+			if (-not $secRequested)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Enter or select a section name first.", "No section",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				return
+			}
+			$kv = @{ }
+			foreach ($row in $dt.Rows)
+			{
+				$k = [string]$row['Key']; $v = [string]$row['Value']
+				if ([string]::IsNullOrWhiteSpace($k)) { continue }
+				$kv[$k] = $v
+			}
+			$secActual = $null
+			foreach ($k in $state.IniObj.Sections.Keys) { if ($k -ieq $secRequested) { $secActual = $k; break } }
+			if (-not $secActual)
+			{
+				$secActual = $secRequested
+				$od = New-Object System.Collections.Specialized.OrderedDictionary
+				foreach ($k in $kv.Keys) { $od.Add($k, $kv[$k]) }
+				$state.IniObj.Sections.Add($secActual, $od)
+			}
+			else
+			{
+				$od = $state.IniObj.Sections[$secActual]
+				foreach ($k in @($od.Keys)) { $od.Remove($k) }
+				foreach ($k in $kv.Keys) { $od.Add($k, $kv[$k]) }
+			}
+			$state.IniObj.RawLines = & $writeIniSection $state.IniObj.RawLines $secActual $kv
+			try
+			{
+				$dir = Split-Path -Parent $state.FullPath
+				if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+				Set-Content -LiteralPath $state.FullPath -Value $state.IniObj.RawLines -Encoding ASCII -Force
+				Write_Log "Saved [$secActual] to $($state.FullPath)" "green"
+				[System.Windows.Forms.MessageBox]::Show("Saved section [$secActual] to:`r`n$($state.FullPath)", "Saved",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				$btnCopy.Enabled = $true
+			}
+			catch
+			{
+				Write_Log "Save failed for $($state.FullPath): $($_.Exception.Message)" "red"
+				[System.Windows.Forms.MessageBox]::Show("Save failed:`r`n$($_.Exception.Message)", "Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+			}
+		})
+	
+	$btnCopy.Add_Click({
+			if (-not $state.FullPath -or -not (Test-Path -LiteralPath $state.FullPath))
+			{
+				[System.Windows.Forms.MessageBox]::Show("Nothing to copy. Save the INI first.", "No file",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				return
+			}
+			# --- custom 3-button dialog: Merge / Copy / Cancel (PS 5.1-safe) ---
+			$secRequested = ($cboSection.Text -as [string]).Trim()
+			
+			$dlg = New-Object System.Windows.Forms.Form
+			$dlg.Text = "Deploy options"
+			$dlg.StartPosition = 'CenterParent'
+			$dlg.FormBorderStyle = 'FixedDialog'
+			$dlg.MaximizeBox = $false
+			$dlg.MinimizeBox = $false
+			$dlg.ClientSize = New-Object System.Drawing.Size(460, 160) # compact, no DPI drama
+			
+			# Explanatory text (wraps nicely)
+			$lbl = New-Object System.Windows.Forms.Label
+			$lbl.AutoSize = $true
+			$lbl.MaximumSize = New-Object System.Drawing.Size(440, 0)
+			$lbl.Location = New-Object System.Drawing.Point(10, 10)
+			$lbl.Text = "How would you like to deploy to other lanes?`r`n`r`n" +
+			"* Merge - update only section [$secRequested] keys on targets.`r`n" +
+			"* Copy  - replace the entire INI file on targets."
+			$dlg.Controls.Add($lbl)
+			
+			# Buttons (mapped so your existing code can keep using DialogResult)
+			$btnMerge = New-Object System.Windows.Forms.Button
+			$btnMerge.Text = "Merge"
+			$btnMerge.Size = New-Object System.Drawing.Size(90, 28)
+			$btnMerge.Location = New-Object System.Drawing.Point(140, 110)
+			$btnMerge.DialogResult = [System.Windows.Forms.DialogResult]::Yes # MERGE => Yes
+			
+			$btnCopyAll = New-Object System.Windows.Forms.Button
+			$btnCopyAll.Text = "Copy"
+			$btnCopyAll.Size = New-Object System.Drawing.Size(90, 28)
+			$btnCopyAll.Location = New-Object System.Drawing.Point(240, 110)
+			$btnCopyAll.DialogResult = [System.Windows.Forms.DialogResult]::No # COPY  => No
+			
+			$btnCancel = New-Object System.Windows.Forms.Button
+			$btnCancel.Text = "Cancel"
+			$btnCancel.Size = New-Object System.Drawing.Size(90, 28)
+			$btnCancel.Location = New-Object System.Drawing.Point(340, 110)
+			$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+			
+			$dlg.Controls.AddRange(@($btnMerge, $btnCopyAll, $btnCancel))
+			$dlg.AcceptButton = $btnMerge # Enter = Merge
+			$dlg.CancelButton = $btnCancel # Esc   = Cancel
+			
+			$choice = $dlg.ShowDialog()
+			if ($choice -eq [System.Windows.Forms.DialogResult]::Cancel) { return }
+			
+			# Keep your original flag semantics:
+			$mergeOnly = ($choice -eq [System.Windows.Forms.DialogResult]::Yes) # Yes==Merge, No==Copy
+			
+			$excluded = @()
+			if (-not $state.SourceIsServer -and $state.SourceLane) { $excluded = @($state.SourceLane) }
+			
+			$StoreNumber = $script:FunctionResults['StoreNumber']
+			$sel = $null
+			try { $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select destination lanes" -ExcludedNodes $excluded }
+			catch { $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select destination lanes" }
+			if (-not $sel) { Write_Log "Copy aborted: no lanes selected." "yellow"; return }
+			
+			$laneNums = @()
+			if ($sel -is [System.Collections.IDictionary]) { if ($sel.Contains('Lanes') -and $sel['Lanes']) { $laneNums = @($sel['Lanes']) }
+				elseif ($sel.Contains('LaneNumbers') -and $sel['LaneNumbers']) { $laneNums = @($sel['LaneNumbers']) } }
+			elseif ($sel -is [System.Collections.IEnumerable] -and -not ($sel -is [string])) { $laneNums = @($sel) }
+			elseif ($sel -is [string]) { $laneNums = @($sel -split '[,\s]+' | Where-Object { $_ }) }
+			$laneNums = @($laneNums | ForEach-Object { try { "{0:D3}" -f ([int]$_) }
+					catch { "$_" } }) | Where-Object { $_ -match '^\d{3}$' }
+			if (-not $laneNums -or $laneNums.Count -eq 0)
+			{
+				[System.Windows.Forms.MessageBox]::Show("No destination lanes selected.", "No selection",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				return
+			}
+			
+			$destMachines = & $lanesToMachines $laneNums
+			if (-not $state.SourceIsServer -and $state.SourceLane) { $destMachines = $destMachines | Where-Object { $_ -ne $state.SourceLane } }
+			$destMachines = $destMachines | Select-Object -Unique
+			if ($destMachines.Count -eq 0)
+			{
+				[System.Windows.Forms.MessageBox]::Show("No valid destination machines resolved.", "No destinations",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				return
+			}
+			
+			$relPath = ($cboRel.Text -as [string]).Trim()
+			$srcDir = Split-Path -Parent $state.FullPath
+			$srcFile = Split-Path -Leaf $state.FullPath
+			$ok = 0; $fail = 0
+			
+			if ($mergeOnly)
+			{
+				$kv = @{ }
+				foreach ($row in $dt.Rows)
+				{
+					$k = [string]$row['Key']; $v = [string]$row['Value']
+					if ([string]::IsNullOrWhiteSpace($k)) { continue }
+					$kv[$k] = $v
+				}
+				foreach ($m in $destMachines)
+				{
+					$rootLane = & $getLaneRoot $m
+					if (-not $rootLane) { Write_Log "[Dest Unreachable] $m has no \\Storeman nor \\C$\storeman." "red"; $fail++; continue }
+					$dstFull = & $buildFullPath $rootLane $relPath
+					$dstDir = Split-Path -Parent $dstFull
+					try { if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null } }
+					catch { Write_Log "[Create Failed] $dstDir : $($_.Exception.Message)" "red"; $fail++; continue }
+					
+					$destIni = & $readIni $dstFull
+					if (-not $destIni)
+					{
+						$destIni = @{ RawLines = @("; Created by Edit_INIs (merge)", ""); Sections = (New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Specialized.OrderedDictionary]') }
+					}
+					$secActual = $null
+					foreach ($k in $destIni.Sections.Keys) { if ($k -ieq $secRequested) { $secActual = $k; break } }
+					if (-not $secActual) { $secActual = $secRequested }
+					$destIni.RawLines = & $writeIniSection $destIni.RawLines $secActual $kv
+					try
+					{
+						Set-Content -LiteralPath $dstFull -Value $destIni.RawLines -Encoding ASCII -Force
+						Write_Log "Merged [$secActual] into $dstFull on $m" "green"; $ok++
+					}
+					catch { Write_Log "Merge failed on $m ($dstFull): $($_.Exception.Message)" "red"; $fail++ }
+				}
+			}
+			else
+			{
+				foreach ($m in $destMachines)
+				{
+					$rootLane = & $getLaneRoot $m
+					if (-not $rootLane) { Write_Log "[Dest Unreachable] $m has no \\Storeman nor \\C$\storeman." "red"; $fail++; continue }
+					$dstFull = & $buildFullPath $rootLane $relPath
+					$dstDir = Split-Path -Parent $dstFull
+					try { if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null } }
+					catch { Write_Log "[Create Failed] $dstDir : $($_.Exception.Message)" "red"; $fail++; continue }
+					
+					Write_Log "Replacing INI on $m ($dstDir\$srcFile)" "gray"
+					$args = @($srcDir, $dstDir, $srcFile, '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
+					$null = & robocopy @args
+					$code = $LASTEXITCODE
+					if ($code -ge 8) { Write_Log "Copy to $m FAILED (robocopy $code)" "red"; $fail++ }
+					else { Write_Log "Copy to $m OK (robocopy $code)" "green"; $ok++ }
+				}
+			}
+			
+			[System.Windows.Forms.MessageBox]::Show("Deploy complete.`r`nOK: $ok   Fail: $fail", "Done",
+				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+		})
+	
+	$btnClose.Add_Click({ $frm.Close() })
+	
+	# Initial load
+	& $doLoad
+	[void]$frm.ShowDialog()
+	
+	Write_Log "`r`n==================== Edit_INIs Completed ====================`r`n" "blue"
+}
+
+# ===================================================================================================
+#                                FUNCTION: Copy_Files_Between_Nodes
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Copy one or more \storeman\ folders/files from a chosen source (Server or Lane) to selected lanes.
+#   - Polished, DPI-safe WinForms layout (TableLayoutPanel/FlowLayoutPanel) -> no clipping at high DPI.
+#   - "Quick…" menu: \storeman\office\Htm, \storeman\BitMaps (folders),
+#                    \storeman\office\Settings.ini, \storeman\office\System.ini (files; lane-only)
+#   - Lane root resolution: \\<Lane>\Storeman -> fallback to \\<Lane>\C$\storeman.
+#   - Destination picker parsing matches Process_Lanes (names or 3-digit lane numbers).
+#   - Files and folders supported. /MIR ignored for single-file operations (safety).
+#   - No nested functions, PS 5.1 safe.
+# ---------------------------------------------------------------------------------------------------
+
+function Copy_Files_Between_Nodes
+{
+	Write_Log "`r`n==================== Starting Copy_Files_Between_Nodes ====================`r`n" "blue"
+	
+	# ---------------- Known lanes for combo (kept inline) ----------------
+	$knownLanes = @()
+	if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'])
+	{
+		$knownLanes = $script:FunctionResults['LaneMachines'].Values | Where-Object { $_ } | Select-Object -Unique
+	}
+	elseif ($script:FunctionResults.ContainsKey('LaneNumToMachineName') -and $script:FunctionResults['LaneNumToMachineName'])
+	{
+		$knownLanes = $script:FunctionResults['LaneNumToMachineName'].Values | Where-Object { $_ } | Select-Object -Unique
+	}
+	
+	# ========================= UI - Professional layout (DPI-safe) =========================
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	[void][System.Windows.Forms.Application]::EnableVisualStyles()
+	
+	# Form
+	$frm = New-Object System.Windows.Forms.Form
+	$frm.Text = "Copy Files Between Nodes - Pick Source and Folders"
+	$frm.StartPosition = 'CenterScreen'
+	$frm.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Font # DPI-friendly
+	$frm.Font = New-Object System.Drawing.Font('Segoe UI', 9) # Consistent font
+	$frm.MinimizeBox = $false
+	$frm.MaximizeBox = $false
+	$frm.FormBorderStyle = 'FixedDialog'
+	$frm.Size = New-Object System.Drawing.Size(760, 560) # Roomy default
+	$frm.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 252)
+	
+	# Main layout (header, source, folders, buttons)
+	$layoutMain = New-Object System.Windows.Forms.TableLayoutPanel
+	$layoutMain.Dock = 'Fill'
+	$layoutMain.Padding = New-Object System.Windows.Forms.Padding(12)
+	$layoutMain.ColumnCount = 1
+	$layoutMain.RowCount = 4
+	[void]$layoutMain.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	[void]$layoutMain.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	[void]$layoutMain.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+	[void]$layoutMain.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$frm.Controls.Add($layoutMain)
+	
+	# Header
+	$lbl = New-Object System.Windows.Forms.Label
+	$lbl.Text = "Choose the source and which folder(s)/file(s) to copy to the selected lanes:"
+	$lbl.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+	$lbl.Dock = 'Top'
+	$lbl.AutoSize = $true
+	$lbl.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
+	$layoutMain.Controls.Add($lbl, 0, 0)
+	
+	# Source group
+	$grpSrc = New-Object System.Windows.Forms.GroupBox
+	$grpSrc.Text = "Source"
+	$grpSrc.Dock = 'Top'
+	$grpSrc.AutoSize = $true
+	$grpSrc.AutoSizeMode = 'GrowAndShrink'
+	$grpSrc.Padding = New-Object System.Windows.Forms.Padding(12)
+	$grpSrc.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
+	$layoutMain.Controls.Add($grpSrc, 0, 1)
+	
+	# --- Source inner layout (2 rows) ---
+	# Row 0:  [Server (this computer)]                (spans both columns)
+	# Row 1:  [Lane (source)]  [   <combo right here>   ]
+	$layoutSrc = New-Object System.Windows.Forms.TableLayoutPanel
+	$layoutSrc.Dock = 'Top'
+	$layoutSrc.AutoSize = $true
+	$layoutSrc.AutoSizeMode = 'GrowAndShrink'
+	$layoutSrc.ColumnCount = 2
+	$layoutSrc.RowCount = 2
+	# Col 0 = Auto (radios), Col 1 = Fill (combobox)
+	[void]$layoutSrc.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	[void]$layoutSrc.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+	# Both rows auto-height
+	[void]$layoutSrc.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	[void]$layoutSrc.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$grpSrc.Controls.Add($layoutSrc)
+	
+	$pnlRadios = New-Object System.Windows.Forms.FlowLayoutPanel
+	$pnlRadios.FlowDirection = 'TopDown'
+	$pnlRadios.WrapContents = $false
+	$pnlRadios.AutoSize = $true
+	$pnlRadios.Margin = New-Object System.Windows.Forms.Padding(0, 0, 12, 0)
+	$layoutSrc.Controls.Add($pnlRadios, 0, 0)
+	
+	
+	# Server radio on row 0, spanning both columns (so it sits alone)
+	$rbServer = New-Object System.Windows.Forms.RadioButton
+	$rbServer.Text = "Server (this computer)"
+	$rbServer.Checked = $true
+	$rbServer.AutoSize = $true
+	$layoutSrc.Controls.Add($rbServer, 0, 0)
+	$layoutSrc.SetColumnSpan($rbServer, 2) # <-- span both columns
+	
+	# Lane radio on row 1, col 0
+	$rbLane = New-Object System.Windows.Forms.RadioButton
+	$rbLane.Text = "Lane (source)"
+	$rbLane.AutoSize = $true
+	$layoutSrc.Controls.Add($rbLane, 0, 1)
+	
+	$lblLane = New-Object System.Windows.Forms.Label
+	$lblLane.Text = "Select lane:"
+	$lblLane.Anchor = 'Left'
+	$lblLane.AutoSize = $true
+	$lblLane.Margin = New-Object System.Windows.Forms.Padding(0, 6, 6, 0)
+	$layoutSrc.Controls.Add($lblLane, 1, 0)
+	
+	
+	# Combo on row 1, col 1 (RIGHT NEXT to the Lane radio)
+	$cboLane = New-Object System.Windows.Forms.ComboBox
+	$cboLane.DropDownStyle = 'DropDownList'
+	$cboLane.Enabled = $false
+	$cboLane.Dock = 'Top'
+	$cboLane.Margin = New-Object System.Windows.Forms.Padding(8, 0, 0, 0) # small gap from the radio
+	$layoutSrc.Controls.Add($cboLane, 1, 1)
+	
+	# Populate combo
+	$knownLanes | Sort-Object | ForEach-Object { [void]$cboLane.Items.Add($_) }
+	
+	# Toggle combo with the Lane radio
+	$rbLane.Add_CheckedChanged({
+			$cboLane.Enabled = $rbLane.Checked
+			if ($rbLane.Checked -and $cboLane.Items.Count -gt 0 -and -not $cboLane.SelectedItem) { $cboLane.SelectedIndex = 0 }
+		})
+	
+	# Folders group
+	$grpFolders = New-Object System.Windows.Forms.GroupBox
+	$grpFolders.Text = "Folder(s)/File(s) to Copy"
+	$grpFolders.Dock = 'Fill'
+	$grpFolders.Padding = New-Object System.Windows.Forms.Padding(12)
+	$grpFolders.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
+	$layoutMain.Controls.Add($grpFolders, 0, 2)
+	
+	$layoutFolders = New-Object System.Windows.Forms.TableLayoutPanel
+	$layoutFolders.Dock = 'Fill'
+	$layoutFolders.ColumnCount = 2
+	$layoutFolders.RowCount = 2
+	[void]$layoutFolders.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+	[void]$layoutFolders.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	[void]$layoutFolders.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+	[void]$layoutFolders.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$grpFolders.Controls.Add($layoutFolders)
+	
+	$clb = New-Object System.Windows.Forms.CheckedListBox
+	$clb.CheckOnClick = $true
+	$clb.Dock = 'Fill'
+	$layoutFolders.Controls.Add($clb, 0, 0)
+	
+	$pnlFolderBtns = New-Object System.Windows.Forms.FlowLayoutPanel
+	$pnlFolderBtns.FlowDirection = 'TopDown'
+	$pnlFolderBtns.WrapContents = $false
+	$pnlFolderBtns.AutoSize = $true
+	$pnlFolderBtns.Dock = 'Top'
+	$pnlFolderBtns.Padding = New-Object System.Windows.Forms.Padding(0)
+	$pnlFolderBtns.Margin = New-Object System.Windows.Forms.Padding(12, 0, 0, 0)
+	$layoutFolders.Controls.Add($pnlFolderBtns, 1, 0)
+	
+	$btnAdd = New-Object System.Windows.Forms.Button
+	$btnAdd.Text = "Add Folder..."
+	$btnAdd.Width = 160; $btnAdd.Height = 30
+	$pnlFolderBtns.Controls.Add($btnAdd)
+	
+	$btnQuick = New-Object System.Windows.Forms.Button
+	$btnQuick.Text = "Quick..."
+	$btnQuick.Width = 160; $btnQuick.Height = 30
+	$btnQuick.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
+	$pnlFolderBtns.Controls.Add($btnQuick)
+	
+	$btnRemove = New-Object System.Windows.Forms.Button
+	$btnRemove.Text = "Remove"
+	$btnRemove.Width = 160; $btnRemove.Height = 30
+	$btnRemove.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
+	$pnlFolderBtns.Controls.Add($btnRemove)
+	
+	$chkMirror = New-Object System.Windows.Forms.CheckBox
+	$chkMirror.Text = "Mirror (delete extras on targets)"
+	$chkMirror.AutoSize = $true
+	$chkMirror.Margin = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
+	$layoutFolders.Controls.Add($chkMirror, 0, 1)
+	
+	$toolTip = New-Object System.Windows.Forms.ToolTip
+	$toolTip.SetToolTip($chkMirror, "Robocopy /MIR will delete files on the destination that are not present in the source.")
+	
+	# --- Bottom buttons (OK / Cancel aligned bottom-right) ---
+	$pnlBottom = New-Object System.Windows.Forms.TableLayoutPanel
+	$pnlBottom.AutoSize = $true
+	$pnlBottom.ColumnCount = 2
+	$pnlBottom.RowCount = 1
+	[void]$pnlBottom.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	[void]$pnlBottom.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+	$pnlBottom.Dock = 'Right' # stick to the right edge
+	$layoutMain.Controls.Add($pnlBottom, 0, 3)
+	
+	$btnOK = New-Object System.Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Width = 110; $btnOK.Height = 32
+	$btnOK.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0) # spacing before Cancel
+	$pnlBottom.Controls.Add($btnOK, 0, 0)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Width = 110; $btnCancel.Height = 32
+	$btnCancel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
+	$pnlBottom.Controls.Add($btnCancel, 1, 0)
+	
+	# Make Enter/Esc work
+	$frm.AcceptButton = $btnOK
+	$frm.CancelButton = $btnCancel
+	
+	# ---------------- Quick selections menu ----------------
+	$cmsQuick = New-Object System.Windows.Forms.ContextMenuStrip
+	$miHtm = $cmsQuick.Items.Add("\storeman\office\Htm") # folder
+	$miBitmaps = $cmsQuick.Items.Add("\storeman\BitMaps") # folder
+	$cmsQuick.Items.Add("-") | Out-Null
+	$miSetIni = $cmsQuick.Items.Add("\storeman\office\Settings.ini") # file (lane-only)
+	$miSysIni = $cmsQuick.Items.Add("\storeman\office\System.ini") # file (lane-only)
+	
+	# Show menu; toggle lane-only items based on source selection
+	$btnQuick.Add_Click({
+			$miSetIni.Enabled = $rbLane.Checked
+			$miSysIni.Enabled = $rbLane.Checked
+			$cmsQuick.Show($btnQuick, 0, $btnQuick.Height)
+		})
+	
+	# Resolve a storeman root based on Server/Lane selection (inline, not a nested func)
+	# Used by quick item click handlers and Add Folder button.
+	# Returns a string path or $null (and shows a message).
+	$script:_resolveRoot_last = $null # just for debugging if needed
+	$getRoot = {
+		param ([string]$laneName)
+		if ($rbServer.Checked)
+		{
+			if (Test-Path -LiteralPath 'C:\storeman') { $script:_resolveRoot_last = 'C:\storeman'; return 'C:\storeman' }
+			elseif (Test-Path -LiteralPath 'D:\storeman') { $script:_resolveRoot_last = 'D:\storeman'; return 'D:\storeman' }
+			else { $script:_resolveRoot_last = 'C:\storeman'; return 'C:\storeman' } # fall back textual
+		}
+		else
+		{
+			if (-not $cboLane.SelectedItem)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Pick a lane as source first.", "Missing Lane",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+				return $null
+			}
+			$ln = if ($laneName) { $laneName }
+			else { [string]$cboLane.SelectedItem }
+			$try1 = "\\$ln\Storeman"; if (Test-Path -LiteralPath $try1) { $script:_resolveRoot_last = $try1; return $try1 }
+			$try2 = "\\$ln\c$\storeman"; if (Test-Path -LiteralPath $try2) { $script:_resolveRoot_last = $try2; return $try2 }
+			[System.Windows.Forms.MessageBox]::Show("\\$ln\Storeman and \\$ln\C$\storeman are not accessible.",
+				"Source Unreachable", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+			return $null
+		}
+	}
+	
+	# Quick handlers (compute full path and add to list if not present)
+	$miHtm.Add_Click({
+			$root = & $getRoot
+			if ($root) { $p = Join-Path $root 'office\Htm'; if (-not ($clb.Items -contains $p)) { [void]$clb.Items.Add($p, $true) } }
+		})
+	$miBitmaps.Add_Click({
+			$root = & $getRoot
+			if ($root) { $p = Join-Path $root 'BitMaps'; if (-not ($clb.Items -contains $p)) { [void]$clb.Items.Add($p, $true) } }
+		})
+	$miSetIni.Add_Click({
+			$root = & $getRoot
+			if ($root) { $p = Join-Path $root 'office\Settings.ini'; if (-not ($clb.Items -contains $p)) { [void]$clb.Items.Add($p, $true) } }
+		})
+	$miSysIni.Add_Click({
+			$root = & $getRoot
+			if ($root) { $p = Join-Path $root 'office\System.ini'; if (-not ($clb.Items -contains $p)) { [void]$clb.Items.Add($p, $true) } }
+		})
+	
+	# Add folder
+	$btnAdd.Add_Click({
+			$initialPath = & $getRoot
+			if (-not $initialPath) { return }
+			$fd = New-Object System.Windows.Forms.FolderBrowserDialog
+			$fd.Description = "Pick a folder under \storeman\ (initial path based on your selected source)."
+			$fd.ShowNewFolderButton = $false
+			$fd.RootFolder = [System.Environment+SpecialFolder]::Desktop
+			$fd.SelectedPath = $initialPath
+			$res = $fd.ShowDialog()
+			if ($res -eq [System.Windows.Forms.DialogResult]::OK -and $fd.SelectedPath)
+			{
+				if ($fd.SelectedPath -notmatch '(?i)[\\/](storeman)[\\/]')
+				{
+					[System.Windows.Forms.MessageBox]::Show("Please choose a folder under \storeman\.", "Not Allowed",
+						[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+				}
+				else
+				{
+					if (-not ($clb.Items -contains $fd.SelectedPath)) { [void]$clb.Items.Add($fd.SelectedPath, $true) }
+				}
+			}
+		})
+	
+	# Remove entries
+	$btnRemove.Add_Click({
+			$toRemove = @()
+			foreach ($idx in $clb.CheckedIndices) { $toRemove += $idx }
+			if (-not $toRemove -and $clb.SelectedIndex -ge 0) { $toRemove = @($clb.SelectedIndex) }
+			$toRemove | Sort-Object -Descending | ForEach-Object { $clb.Items.RemoveAt($_) }
+		})
+	
+	# OK / Cancel logic
+	$btnOK.Add_Click({
+			$formValid = $true
+			if ($rbLane.Checked -and (-not $cboLane.SelectedItem))
+			{
+				[System.Windows.Forms.MessageBox]::Show("Pick a lane as the source.", "Missing Source",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+				$formValid = $false
+			}
+			if ($clb.CheckedItems.Count -eq 0)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Select at least one folder/file to copy.", "Missing Selection",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+				$formValid = $false
+			}
+			if ($formValid -and $chkMirror.Checked)
+			{
+				$warn = [System.Windows.Forms.MessageBox]::Show(
+					"MIRROR mode will delete files in the destination that are not in the source. Continue?",
+					"Confirm Mirror",
+					[System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+				if ($warn -ne [System.Windows.Forms.DialogResult]::Yes) { $formValid = $false }
+			}
+			if ($formValid) { $script:__CopyMaps_DialogResult = 'OK'; $frm.Close() }
+		})
+	$btnCancel.Add_Click({ $script:__CopyMaps_DialogResult = 'Cancel'; $frm.Close() })
+	
+	[void]$frm.ShowDialog()
+	$dialogResult = $script:__CopyMaps_DialogResult
+	Remove-Variable -Name __CopyMaps_DialogResult -Scope Script -ErrorAction SilentlyContinue
+	if ($dialogResult -ne 'OK') { Write_Log "User cancelled source/folder selection." "yellow"; return }
+	
+	# ---------------- Gather choices ----------------
+	$useServerAsSource = $rbServer.Checked
+	$sourceMachine = if ($useServerAsSource) { $env:COMPUTERNAME }
+	else { [string]$cboLane.SelectedItem }
+	$foldersToCopy = @(); foreach ($item in $clb.CheckedItems) { $foldersToCopy += [string]$item }
+	$doMirror = [bool]$chkMirror.Checked
+	Write_Log "Source machine: $sourceMachine  |  Mirror: $doMirror" "cyan"
+	Write_Log "Selected item(s): $($foldersToCopy -join ' | ')" "cyan"
+	
+	# ---------------- Destination selection (mirror Process_Lanes parsing) ----------------
+	$StoreNumber = $script:FunctionResults['StoreNumber']
+	$selection = $null; $triedExclude = $false
+	try
+	{
+		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Destination Lanes for Copy" -ExcludedNodes @($sourceMachine)
+		$triedExclude = $true
 	}
 	catch
 	{
-		Write_Log "Failed to remove the archive bit from '$PumpAllItemsTablesFilePath'. Error: $_" "red"
+		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Destination Lanes for Copy"
+	}
+	if ($selection -eq $null) { Write_Log "Destination selection canceled by user." "yellow"; return }
+	
+	$Lanes = @()
+	if ($selection.Lanes -and $selection.Lanes.Count -gt 0)
+	{
+		if ($selection.Lanes[0] -is [PSCustomObject] -and $selection.Lanes[0].PSObject.Properties.Name -contains 'LaneNumber')
+		{
+			$Lanes = $selection.Lanes | ForEach-Object { $_.LaneNumber }
+		}
+		else
+		{
+			$Lanes = $selection.Lanes
+		}
+	}
+	elseif ($selection -is [System.Collections.IEnumerable] -and -not ($selection -is [string]))
+	{
+		$Lanes = @($selection)
+	}
+	elseif ($selection -is [string])
+	{
+		$Lanes = @($selection -split '[,\s]+' | Where-Object { $_ })
+	}
+	else
+	{
+		Write_Log "No destination lanes selected." "yellow"; return
 	}
 	
-	Write_Log "`r`n==================== Install_ONE_FUNCTION_Into_SMS Function Completed ====================" "blue"
+	# Map lane numbers -> machine names
+	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+	if (-not $LaneNumToMachineName -or $LaneNumToMachineName.Count -eq 0)
+	{
+		Write_Log "[Mapping Missing] LaneNumToMachineName not available; cannot map lanes to machines." "red"; return
+	}
+	$destMachines = @()
+	foreach ($ln in $Lanes)
+	{
+		$s = ("$ln").Trim()
+		if ($s -match '[A-Za-z]')
+		{
+			if ($s -match '^(.*?)[\s]*\(\d{3}\)\s*$') { $s = $matches[1].Trim() } # strip "POS001 (001)"
+			$destMachines += $s
+			continue
+		}
+		if ($s -match '^\d+$')
+		{
+			$pad3 = ('{0:D3}' -f ([int]$s))
+			if ($LaneNumToMachineName.ContainsKey($pad3)) { $destMachines += $LaneNumToMachineName[$pad3] }
+			elseif ($LaneNumToMachineName.ContainsKey($s)) { $destMachines += $LaneNumToMachineName[$s] }
+			else
+			{
+				$guess = $knownLanes | Where-Object { "$_" -like "*$pad3" } | Select-Object -First 1
+				if ($guess) { $destMachines += $guess }
+				else { Write_Log "[Unmapped Lane] No machine for lane number $pad3." "yellow" }
+			}
+			continue
+		}
+		if ($s -match '\((\d{3})\)$' -or $s -match '(\d{3})$')
+		{
+			$code = $matches[1]
+			if ($LaneNumToMachineName.ContainsKey($code)) { $destMachines += $LaneNumToMachineName[$code] }
+			else
+			{
+				$guess = $knownLanes | Where-Object { "$_" -like "*$code" } | Select-Object -First 1
+				if ($guess) { $destMachines += $guess }
+				else { Write_Log "[Unmapped Lane] No machine for lane number $code." "yellow" }
+			}
+			continue
+		}
+		Write_Log "[Parse Warning] Could not interpret destination entry: '$s'." "yellow"
+	}
+	$destMachines = $destMachines | Where-Object { $_ -and ($_ -ne $sourceMachine) } | Select-Object -Unique
+	if (-not $destMachines -or $destMachines.Count -eq 0)
+	{
+		$msg = if ($triedExclude) { "No non-source lanes selected. Pick at least one destination lane." }
+		else { "No non-source lanes selected (picker may not support -ExcludedNodes). Pick at least one lane." }
+		[System.Windows.Forms.MessageBox]::Show($msg, "No Destinations",
+			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+		Write_Log "No destination lanes selected." "yellow"; return
+	}
+	Write_Log "Destinations ($($destMachines.Count)): $($destMachines -join ', ')" "gray"
+	
+	# ---------------- Validate destination roots (\\Lane\Storeman → \\Lane\C$\storeman) ----------------
+	$destRootMap = @{ }
+	$unreachable = @()
+	foreach ($d in $destMachines)
+	{
+		$root = $null
+		$try1 = "\\$d\Storeman"; if (Test-Path -LiteralPath $try1) { $root = $try1 }
+		if (-not $root) { $try2 = "\\$d\c$\storeman"; if (Test-Path -LiteralPath $try2) { $root = $try2 } }
+		if ($root) { $destRootMap[$d] = $root }
+		else { $unreachable += $d }
+	}
+	if ($unreachable.Count -gt 0)
+	{
+		Write_Log "Unreachable lane roots (no \\Storeman or \\C$\storeman): $($unreachable -join ', ')" "red"
+		$destMachines = $destMachines | Where-Object { $destRootMap.ContainsKey($_) }
+		if (-not $destMachines -or $destMachines.Count -eq 0) { Write_Log "No reachable destinations remain. Aborting." "red"; return }
+	}
+	
+	# ---------------- Copy loop (supports folder OR single file) ----------------
+	$failList = New-Object System.Collections.Generic.List[string]
+	$okCount = 0
+	
+	foreach ($picked in $foldersToCopy)
+	{
+		# relative path under \storeman\
+		$rel = $null
+		$m = [regex]::Match($picked, '(?i)[\\/](storeman)[\\/](?<sub>.*)$')
+		if ($m.Success) { $rel = $m.Groups['sub'].Value }
+		else
+		{
+			Write_Log "[Invalid Path] '$picked' is not under \storeman\." "red"
+			$failList.Add("$sourceMachine :: $picked (not under \storeman\)")
+			continue
+		}
+		
+		# resolve source full path
+		if ($useServerAsSource)
+		{
+			if (-not (Test-Path -LiteralPath $picked)) { Write_Log "[Source Missing] $picked not found on server." "red"; $failList.Add("$sourceMachine :: $picked (missing)"); continue }
+			$srcFull = $picked
+		}
+		else
+		{
+			$srcRoot = $null
+			$tryS1 = "\\$sourceMachine\Storeman"; if (Test-Path -LiteralPath $tryS1) { $srcRoot = $tryS1 }
+			if (-not $srcRoot) { $tryS2 = "\\$sourceMachine\c$\storeman"; if (Test-Path -LiteralPath $tryS2) { $srcRoot = $tryS2 } }
+			if (-not $srcRoot) { Write_Log "[Source Root Missing] No accessible storeman root on $sourceMachine." "red"; $failList.Add("$sourceMachine :: (no root)"); continue }
+			$srcFull = Join-Path $srcRoot $rel
+			if (-not (Test-Path -LiteralPath $srcFull)) { Write_Log "[Source Missing] $srcFull not found on lane." "red"; $failList.Add("$sourceMachine :: $srcFull (missing)"); continue }
+		}
+		
+		$isFile = $false
+		try { $isFile = Test-Path -LiteralPath $srcFull -PathType Leaf }
+		catch { $isFile = $false }
+		
+		foreach ($dest in $destMachines)
+		{
+			$dstRoot = $destRootMap[$dest]
+			if (-not $dstRoot) { $failList.Add("$dest :: (no root)"); continue }
+			
+			if ($isFile)
+			{
+				# Single file copy (no /MIR)
+				$dstFull = Join-Path $dstRoot $rel
+				$dstDir = Split-Path -Path $dstFull -Parent
+				try { if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null } }
+				catch { Write_Log "[Create Failed] $dstDir : $($_.Exception.Message)" "red"; $failList.Add("$dest :: $dstDir (create failed)"); continue }
+				
+				$srcDir = Split-Path -Path $srcFull -Parent
+				$fileName = Split-Path -Path $srcFull -Leaf
+				$args = @($srcDir, $dstDir, $fileName, '/R:2', '/W:2', '/NFL', '/NDL', '/NP')
+				$null = & robocopy @args
+				$exit = $LASTEXITCODE
+				$failed = ($exit -ge 8)
+				$status = if ($failed) { "FAIL ($exit)" }
+				elseif ($exit -ge 4) { "OK* ($exit)" }
+				else { "OK ($exit)" }
+				if ($failed) { Write_Log "Copy file to $dest FAILED: $status" "red"; $failList.Add("$dest :: $rel (robocopy $exit)") }
+				else { Write_Log "Copied file '$rel' to $dest $status" "green"; $okCount++ }
+				if ($doMirror) { Write_Log "Note: Mirror ignored for single-file item '$rel'." "gray" }
+			}
+			else
+			{
+				# Directory copy
+				$dstFull = Join-Path $dstRoot $rel
+				try { if (-not (Test-Path -LiteralPath $dstFull)) { New-Item -ItemType Directory -Path $dstFull -Force | Out-Null } }
+				catch { Write_Log "[Create Failed] $dstFull : $($_.Exception.Message)" "red"; $failList.Add("$dest :: $dstFull (create failed)"); continue }
+				
+				$args = @($srcFull, $dstFull, '/E', '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
+				if ($doMirror) { $args += '/MIR' }
+				$null = & robocopy @args
+				$exit = $LASTEXITCODE
+				$failed = ($exit -ge 8)
+				$status = if ($failed) { "FAIL ($exit)" }
+				elseif ($exit -ge 4) { "OK* ($exit)" }
+				else { "OK ($exit)" }
+				if ($failed) { Write_Log "Copy to $dest FAILED: $status" "red"; $failList.Add("$dest :: $rel (robocopy $exit)") }
+				else { Write_Log "Copy to $dest $status" "green"; $okCount++ }
+			}
+		}
+	}
+	
+	# ---------------- Summary ----------------
+	$totalOps = ($foldersToCopy.Count) * ($destMachines.Count)
+	$failCount = $failList.Count
+	Write_Log "`r`n-------------------- Copy Files Summary --------------------" "blue"
+	Write_Log "Operations attempted : $totalOps" "gray"
+	Write_Log "Successful           : $okCount" "green"
+	if ($failCount -gt 0)
+	{
+		Write_Log "Failed               : $failCount" "red"
+		foreach ($f in $failList) { Write_Log "  - $f" "red" }
+	}
+	else
+	{
+		Write_Log "Failed               : 0" "green"
+	}
+	Write_Log "------------------------------------------------------------" "blue"
+	Write_Log "`r`n==================== Copy_Files_Between_Nodes Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -12531,6 +13696,10 @@ function Sync_Selected_Node_Hosts
 #      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes @("Lane","Scale","Backoffice")
 #      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale" -OnlyBizerbaScales
 #   Returns: hashtable with keys matching selected node types (Lanes, Scales, Backoffices)
+#   Extras:
+#      -ExcludedNodes         : hide specific nodes (machine names like POS001 and/or 3-digit lane numbers like 001)
+#      -SingleLaneOnly        : limit lane selection to exactly one (not required; just a cap)
+#      -LaneSelectionLimit <n>: limit lane selection to at most n (not required; just a cap)
 # ===================================================================================================
 
 function Show_Node_Selection_Form
@@ -12542,11 +13711,34 @@ function Show_Node_Selection_Form
 		[ValidateSet("Lane", "Scale", "Backoffice")]
 		[string[]]$NodeTypes = @("Lane", "Scale", "Backoffice"),
 		[switch]$OnlyBizerbaScales,
-		[string]$Title = "Select Nodes to Process"
+		[string]$Title = "Select Nodes to Process",
+		[string[]]$ExcludedNodes,
+		[switch]$SingleLaneOnly,
+		# NEW: cap lane selection at 1 (optional)
+		[int]$LaneSelectionLimit = 0 # NEW: cap lane selection at N (0 = unlimited)
 	)
 	
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
+	
+	# Normalize exclusions (names lowercased; lanes as 3-digit)
+	$__ex_names = @()
+	$__ex_lanes = @()
+	if ($ExcludedNodes)
+	{
+		foreach ($e in $ExcludedNodes)
+		{
+			if ($null -ne $e -and "$e".Trim())
+			{
+				$s = "$e".Trim()
+				if ($s -match '(\d{1,3})$') { try { $__ex_lanes += ('{0:D3}' -f ([int]$matches[1])) }
+					catch { } }
+				$__ex_names += $s.ToLower()
+			}
+		}
+		$__ex_names = $__ex_names | Select-Object -Unique
+		$__ex_lanes = $__ex_lanes | Select-Object -Unique
+	}
 	
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = $Title
@@ -12581,6 +13773,7 @@ function Show_Node_Selection_Form
 		$LaneMachineLabels = $script:FunctionResults['LaneMachineLabels']
 		$LaneMachinePath = $script:FunctionResults['LaneMachinePath']
 		$LaneMachineToServerPath = $script:FunctionResults['LaneMachineToServerPath']
+		
 		$allLanes = @()
 		if ($script:FunctionResults.ContainsKey('LaneMachineNames') -and $script:FunctionResults['LaneMachineNames'].Count -gt 0)
 		{
@@ -12589,11 +13782,9 @@ function Show_Node_Selection_Form
 		elseif (Test-Path -Path $OfficePath)
 		{
 			$laneFolders = Get-ChildItem -Path $OfficePath -Directory -Filter "XF${StoreNumber}0*"
-			if ($laneFolders)
-			{
-				$allLanes = $laneFolders | ForEach-Object { $_.Name.Substring($_.Name.Length - 3, 3) }
-			}
+			if ($laneFolders) { $allLanes = $laneFolders | ForEach-Object { $_.Name.Substring($_.Name.Length - 3, 3) } }
 		}
+		
 		$sortedLanes = $allLanes | Sort-Object
 		foreach ($laneMachine in $sortedLanes)
 		{
@@ -12603,7 +13794,14 @@ function Show_Node_Selection_Form
 			{
 				if ($LaneNumToMachineName[$key] -eq $laneMachine -and $key -match '^\d{3}$') { $laneNum = $key; break }
 			}
-			# Compose object for each lane, store all mapping info
+			
+			# Skip excluded by machine name or lane number
+			$__skip = $false
+			if ($laneMachine -and ($__ex_names -contains $laneMachine.ToLower())) { $__skip = $true }
+			elseif ($laneNum -and ($__ex_lanes -contains $laneNum)) { $__skip = $true }
+			if ($__skip) { continue }
+			
+			# Add item
 			$obj = [PSCustomObject]@{
 				LaneNumber  = $laneNum
 				MachineName = $laneMachine
@@ -12614,6 +13812,34 @@ function Show_Node_Selection_Form
 			}
 			$obj | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.DisplayName } -Force
 			$clbLanes.Items.Add($obj) | Out-Null
+		}
+		
+		# --- Enforce optional selection cap for lanes (single or N) ---
+		$__laneCap = if ($SingleLaneOnly) { 1 }
+		elseif ($LaneSelectionLimit -gt 0) { [int]$LaneSelectionLimit }
+		else { 0 }
+		if ($__laneCap -gt 0)
+		{
+			$clbLanes.Add_ItemCheck({
+					# If trying to check and it would exceed the cap, cancel the check.
+					if ($_.NewValue -ne [System.Windows.Forms.CheckState]::Checked) { return }
+					$idx = $_.Index
+					$checkedCount = 0
+					for ($i = 0; $i -lt $clbLanes.Items.Count; $i++)
+					{
+						if ($i -ne $idx -and $clbLanes.GetItemChecked($i)) { $checkedCount++ }
+					}
+					if (($checkedCount + 1) -gt $__laneCap)
+					{
+						$_.NewValue = [System.Windows.Forms.CheckState]::Unchecked
+						if (-not $script:__laneLimitWarned)
+						{
+							[System.Windows.Forms.MessageBox]::Show("You can select at most $__laneCap lane(s).", "Selection limit",
+								[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+							$script:__laneLimitWarned = $true
+						}
+					}
+				})
 		}
 	}
 	
@@ -12634,19 +13860,14 @@ function Show_Node_Selection_Form
 		if ($script:FunctionResults.ContainsKey('ScaleCodeToIPInfo'))
 		{
 			$allScales = $script:FunctionResults['ScaleCodeToIPInfo'].Values
-			if ($OnlyBizerbaScales)
-			{
-				$allScales = $allScales | Where-Object { $_.ScaleBrand -match 'bizerba' }
-			}
+			if ($OnlyBizerbaScales) { $allScales = $allScales | Where-Object { $_.ScaleBrand -match 'bizerba' } }
 		}
 		$sortedScales = $allScales | Sort-Object { [int]($_.ScaleCode) }
 		
-		# --- Deduplicate by FullIP (show only one entry per unique scale IP) ---
 		$uniqueScaleIPs = @{ }
 		$dedupedScales = @()
 		foreach ($scale in $sortedScales)
 		{
-			# Use .FullIP, fallback to .IPAddress if not present
 			$ipKey = if ($scale.FullIP) { $scale.FullIP }
 			elseif ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
 			else { $null }
@@ -12659,6 +13880,12 @@ function Show_Node_Selection_Form
 		
 		foreach ($scale in $dedupedScales)
 		{
+			# Skip excluded by name/code
+			$__skip = $false
+			if ($scale.ScaleName -and ($__ex_names -contains ($scale.ScaleName.ToLower()))) { $__skip = $true }
+			elseif ($scale.ScaleCode -and ($__ex_lanes -contains ('{0:D3}' -f ([int]$scale.ScaleCode)))) { $__skip = $true }
+			if ($__skip) { continue }
+			
 			$ip = if ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
 			else { "" }
 			$displayName = "$($scale.ScaleName) [$ip]"
@@ -12691,28 +13918,28 @@ function Show_Node_Selection_Form
 		$tabs.TabPages.Add($tabBO)
 		$tabControls["Backoffices"] = $clbBO
 		
-		$boDict = if ($script:FunctionResults.ContainsKey('BackofficeNumToMachineName'))
-		{
-			$script:FunctionResults['BackofficeNumToMachineName']
-		}
+		$boDict = if ($script:FunctionResults.ContainsKey('BackofficeNumToMachineName')) { $script:FunctionResults['BackofficeNumToMachineName'] }
 		else { @{ } }
 		$boLabels = $script:FunctionResults['BackofficeNumToLabel']
 		$boPaths = $script:FunctionResults['BackofficeNumToPath']
 		
-		# Deduplicate Backoffices by numeric BONumber only (extract 3-digit number)
 		$seenBonumbers = @{ }
 		foreach ($boNumKey in $boDict.Keys | Sort-Object)
 		{
-			# Extract numeric part only (3 digits)
 			if ($boNumKey -match '(\d{3})')
 			{
 				$bonum = $matches[1]
+				
+				# Skip excluded by machine name or BO number
+				$__skip = $false
+				$machineName = $boDict[$boNumKey]
+				if ($machineName -and ($__ex_names -contains $machineName.ToLower())) { $__skip = $true }
+				elseif ($__ex_lanes -contains $bonum) { $__skip = $true }
+				if ($__skip) { continue }
+				
 				if (-not $seenBonumbers.ContainsKey($bonum))
 				{
 					$seenBonumbers[$bonum] = $true
-					
-					# Compose display name from MachineName & bonum
-					$machineName = $boDict[$boNumKey]
 					$label = $boLabels[$boNumKey]
 					$path = $boPaths[$boNumKey]
 					
@@ -12742,7 +13969,6 @@ function Show_Node_Selection_Form
 	$btnDeselectAll.Text = "Deselect All"
 	$btnDeselectAll.BackColor = [System.Drawing.SystemColors]::Control
 	
-	# Utility: Set button color (no nested function)
 	$setBtnColor = {
 		param ($btn,
 			$state)
@@ -12761,36 +13987,23 @@ function Show_Node_Selection_Form
 	{
 		$clb = $tabControls[$tabs.TabPages[0].Text]
 		$isAllChecked = {
-			for ($i = 0; $i -lt $clb.Items.Count; $i++)
-			{
-				if (-not $clb.GetItemChecked($i)) { return $false }
-			}
+			for ($i = 0; $i -lt $clb.Items.Count; $i++) { if (-not $clb.GetItemChecked($i)) { return $false } }
 			return $clb.Items.Count -gt 0
 		}
 		$isAnyChecked = {
-			for ($i = 0; $i -lt $clb.Items.Count; $i++)
-			{
-				if ($clb.GetItemChecked($i)) { return $true }
-			}
+			for ($i = 0; $i -lt $clb.Items.Count; $i++) { if ($clb.GetItemChecked($i)) { return $true } }
 			return $false
 		}
 		$btnSelectAll.Add_Click({
 				$allChecked = & $isAllChecked
 				if (-not $allChecked)
 				{
-					for ($i = 0; $i -lt $clb.Items.Count; $i++)
-					{
-						$clb.SetItemChecked($i, $true)
-					}
+					for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $true) }
 					& $setBtnColor $btnSelectAll 2
 				}
-				# If already all checked, do nothing
 			})
 		$btnDeselectAll.Add_Click({
-				for ($i = 0; $i -lt $clb.Items.Count; $i++)
-				{
-					$clb.SetItemChecked($i, $false)
-				}
+				for ($i = 0; $i -lt $clb.Items.Count; $i++) { $clb.SetItemChecked($i, $false) }
 				& $setBtnColor $btnSelectAll 0
 				& $setBtnColor $btnDeselectAll 0
 			})
@@ -12800,18 +14013,9 @@ function Show_Node_Selection_Form
 					Start-Sleep -Milliseconds 30
 					$allChecked = & $isAllChecked
 					$anyChecked = & $isAnyChecked
-					if ($allChecked)
-					{
-						& $setBtnColor $btnSelectAll 2
-					}
-					elseif ($anyChecked)
-					{
-						& $setBtnColor $btnSelectAll 1
-					}
-					else
-					{
-						& $setBtnColor $btnSelectAll 0
-					}
+					if ($allChecked) { & $setBtnColor $btnSelectAll 2 }
+					elseif ($anyChecked) { & $setBtnColor $btnSelectAll 1 }
+					else { & $setBtnColor $btnSelectAll 0 }
 				})
 		}
 	}
@@ -12827,27 +14031,18 @@ function Show_Node_Selection_Form
 				$clb = $tabControls[$tabName]
 				$tabIndex = $tabs.SelectedIndex
 				$currentTabAllChecked = $true
-				for ($i = 0; $i -lt $clb.Items.Count; $i++)
-				{
-					if (-not $clb.GetItemChecked($i)) { $currentTabAllChecked = $false; break }
-				}
+				for ($i = 0; $i -lt $clb.Items.Count; $i++) { if (-not $clb.GetItemChecked($i)) { $currentTabAllChecked = $false; break } }
 				$allTabsChecked = $true
 				foreach ($clbTest in $tabControls.Values)
 				{
-					for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
-					{
-						if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
-					}
+					for ($i = 0; $i -lt $clbTest.Items.Count; $i++) { if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break } }
 				}
 				if ($allTabsChecked)
 				{
 					foreach ($k in $tabControls.Keys)
 					{
 						$tabIndex2 = -1
-						for ($t = 0; $t -lt $tabs.TabPages.Count; $t++)
-						{
-							if ($tabs.TabPages[$t].Text -eq $k) { $tabIndex2 = $t; break }
-						}
+						for ($t = 0; $t -lt $tabs.TabPages.Count; $t++) { if ($tabs.TabPages[$t].Text -eq $k) { $tabIndex2 = $t; break } }
 						if ($tabIndex2 -eq -1) { continue }
 						$tabSelectState[$tabIndex2] = 0
 					}
@@ -12863,10 +14058,7 @@ function Show_Node_Selection_Form
 						$list = $tabControls[$k]
 						for ($i = 0; $i -lt $list.Items.Count; $i++) { $list.SetItemChecked($i, $true) }
 						$tabIndex2 = -1
-						for ($t = 0; $t -lt $tabs.TabPages.Count; $t++)
-						{
-							if ($tabs.TabPages[$t].Text -eq $k) { $tabIndex2 = $t; break }
-						}
+						for ($t = 0; $t -lt $tabs.TabPages.Count; $t++) { if ($tabs.TabPages[$t].Text -eq $k) { $tabIndex2 = $t; break } }
 						if ($tabIndex2 -eq -1) { continue }
 						$tabSelectState[$tabIndex2] = 2
 					}
@@ -12881,40 +14073,24 @@ function Show_Node_Selection_Form
 				$allTabsChecked = $true
 				foreach ($clbTest in $tabControls.Values)
 				{
-					for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
-					{
-						if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
-					}
+					for ($i = 0; $i -lt $clbTest.Items.Count; $i++) { if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break } }
 				}
-				if ($allTabsChecked)
-				{
-					&$setBtnColor $btnSelectAll 2
-					$selectAllYellowTabIndex = $null
-				}
-				else
-				{
-					&$setBtnColor $btnSelectAll 1
-				}
+				if ($allTabsChecked) { & $setBtnColor $btnSelectAll 2; $selectAllYellowTabIndex = $null }
+				else { & $setBtnColor $btnSelectAll 1 }
 			})
 		$btnDeselectAll.Add_Click({
 				$tabName = $tabs.SelectedTab.Text
 				$clb = $tabControls[$tabName]
 				$tabIndex = $tabs.SelectedIndex
 				$noneChecked = $true
-				for ($i = 0; $i -lt $clb.Items.Count; $i++)
-				{
-					if ($clb.GetItemChecked($i)) { $noneChecked = $false; break }
-				}
+				for ($i = 0; $i -lt $clb.Items.Count; $i++) { if ($clb.GetItemChecked($i)) { $noneChecked = $false; break } }
 				if ($noneChecked)
 				{
 					$originalTab = $tabs.SelectedTab
 					foreach ($k in $tabControls.Keys)
 					{
 						$tabIndex2 = -1
-						for ($t = 0; $t -lt $tabs.TabPages.Count; $t++)
-						{
-							if ($tabs.TabPages[$t].Text -eq $k) { $tabIndex2 = $t; break }
-						}
+						for ($t = 0; $t -lt $tabs.TabPages.Count; $t++) { if ($tabs.TabPages[$t].Text -eq $k) { $tabIndex2 = $t; break } }
 						if ($tabIndex2 -eq -1) { continue }
 						$tabs.SelectedTab = $tabs.TabPages[$tabIndex2]
 						$list = $tabControls[$k]
@@ -12940,105 +14116,51 @@ function Show_Node_Selection_Form
 					$allTabsChecked = $true
 					foreach ($clbTest in $tabControls.Values)
 					{
-						for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
-						{
-							if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
-						}
+						for ($i = 0; $i -lt $clbTest.Items.Count; $i++) { if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break } }
 					}
-					if ($allTabsChecked)
-					{
-						&$setBtnColor $btnSelectAll 2
-						$selectAllYellowTabIndex = $null
-					}
+					if ($allTabsChecked) { & $setBtnColor $btnSelectAll 2; $selectAllYellowTabIndex = $null }
 					else
 					{
 						$tabIndex = $tabs.SelectedIndex
 						$clbLocal = $tabControls[$tabs.SelectedTab.Text]
 						$allChecked = $true
-						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++)
-						{
-							if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break }
-						}
-						if ($allChecked -and $clbLocal.Items.Count -gt 0)
-						{
-							&$setBtnColor $btnSelectAll 1
-							$selectAllYellowTabIndex = $tabIndex
-						}
-						else
-						{
-							&$setBtnColor $btnSelectAll 0
-							$selectAllYellowTabIndex = $null
-						}
+						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++) { if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break } }
+						if ($allChecked -and $clbLocal.Items.Count -gt 0) { & $setBtnColor $btnSelectAll 1; $selectAllYellowTabIndex = $tabIndex }
+						else { & $setBtnColor $btnSelectAll 0; $selectAllYellowTabIndex = $null }
 					}
 				})
 			$clb.Add_MouseUp({
 					$allTabsChecked = $true
 					foreach ($clbTest in $tabControls.Values)
 					{
-						for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
-						{
-							if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
-						}
+						for ($i = 0; $i -lt $clbTest.Items.Count; $i++) { if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break } }
 					}
-					if ($allTabsChecked)
-					{
-						&$setBtnColor $btnSelectAll 2
-						$selectAllYellowTabIndex = $null
-					}
+					if ($allTabsChecked) { & $setBtnColor $btnSelectAll 2; $selectAllYellowTabIndex = $null }
 					else
 					{
 						$tabIndex = $tabs.SelectedIndex
 						$clbLocal = $tabControls[$tabs.SelectedTab.Text]
 						$allChecked = $true
-						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++)
-						{
-							if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break }
-						}
-						if ($allChecked -and $clbLocal.Items.Count -gt 0)
-						{
-							&$setBtnColor $btnSelectAll 1
-							$selectAllYellowTabIndex = $tabIndex
-						}
-						else
-						{
-							&$setBtnColor $btnSelectAll 0
-							$selectAllYellowTabIndex = $null
-						}
+						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++) { if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break } }
+						if ($allChecked -and $clbLocal.Items.Count -gt 0) { & $setBtnColor $btnSelectAll 1; $selectAllYellowTabIndex = $tabIndex }
+						else { & $setBtnColor $btnSelectAll 0; $selectAllYellowTabIndex = $null }
 					}
 				})
 			$clb.Add_KeyUp({
 					$allTabsChecked = $true
 					foreach ($clbTest in $tabControls.Values)
 					{
-						for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
-						{
-							if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
-						}
+						for ($i = 0; $i -lt $clbTest.Items.Count; $i++) { if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break } }
 					}
-					if ($allTabsChecked)
-					{
-						&$setBtnColor $btnSelectAll 2
-						$selectAllYellowTabIndex = $null
-					}
+					if ($allTabsChecked) { & $setBtnColor $btnSelectAll 2; $selectAllYellowTabIndex = $null }
 					else
 					{
 						$tabIndex = $tabs.SelectedIndex
 						$clbLocal = $tabControls[$tabs.SelectedTab.Text]
 						$allChecked = $true
-						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++)
-						{
-							if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break }
-						}
-						if ($allChecked -and $clbLocal.Items.Count -gt 0)
-						{
-							&$setBtnColor $btnSelectAll 1
-							$selectAllYellowTabIndex = $tabIndex
-						}
-						else
-						{
-							&$setBtnColor $btnSelectAll 0
-							$selectAllYellowTabIndex = $null
-						}
+						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++) { if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break } }
+						if ($allChecked -and $clbLocal.Items.Count -gt 0) { & $setBtnColor $btnSelectAll 1; $selectAllYellowTabIndex = $tabIndex }
+						else { & $setBtnColor $btnSelectAll 0; $selectAllYellowTabIndex = $null }
 					}
 				})
 		}
@@ -13048,33 +14170,15 @@ function Show_Node_Selection_Form
 				$allTabsChecked = $true
 				foreach ($clbTest in $tabControls.Values)
 				{
-					for ($i = 0; $i -lt $clbTest.Items.Count; $i++)
-					{
-						if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break }
-					}
+					for ($i = 0; $i -lt $clbTest.Items.Count; $i++) { if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break } }
 				}
-				if ($allTabsChecked)
-				{
-					&$setBtnColor $btnSelectAll 2
-					$selectAllYellowTabIndex = $null
-				}
+				if ($allTabsChecked) { & $setBtnColor $btnSelectAll 2; $selectAllYellowTabIndex = $null }
 				else
 				{
 					$allChecked = $true
-					for ($i = 0; $i -lt $clb.Items.Count; $i++)
-					{
-						if (-not $clb.GetItemChecked($i)) { $allChecked = $false; break }
-					}
-					if ($allChecked -and $clb.Items.Count -gt 0)
-					{
-						&$setBtnColor $btnSelectAll 1
-						$selectAllYellowTabIndex = $tabIndex
-					}
-					else
-					{
-						&$setBtnColor $btnSelectAll 0
-						$selectAllYellowTabIndex = $null
-					}
+					for ($i = 0; $i -lt $clb.Items.Count; $i++) { if (-not $clb.GetItemChecked($i)) { $allChecked = $false; break } }
+					if ($allChecked -and $clb.Items.Count -gt 0) { & $setBtnColor $btnSelectAll 1; $selectAllYellowTabIndex = $tabIndex }
+					else { & $setBtnColor $btnSelectAll 0; $selectAllYellowTabIndex = $null }
 				}
 				&$setBtnColor $btnDeselectAll 0
 			})
@@ -13163,8 +14267,11 @@ function Show_Node_Selection_Form
 	{
 		[System.Windows.Forms.MessageBox]::Show("No nodes selected.", "Information",
 			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+		Remove-Variable -Name __laneLimitWarned -Scope Script -ErrorAction SilentlyContinue
 		return $null
 	}
+	
+	Remove-Variable -Name __laneLimitWarned -Scope Script -ErrorAction SilentlyContinue
 	return $result
 }
 
@@ -14538,6 +15645,26 @@ if (-not $form)
 			Install_ONE_FUNCTION_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
 	[void]$contextMenuGeneral.Items.Add($Install_ONE_FUNCTION_Into_SMSItem)
+	
+	############################################################################
+	# 3b) Context menu item: Copy Files Between Nodes
+	############################################################################
+	$Copy_Files_Between_NodesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Copy Files Between Nodes")
+	$Copy_Files_Between_NodesItem.ToolTipText = "Copy \\storeman\\ subfolders from Server or a Lane to selected lanes."
+	$Copy_Files_Between_NodesItem.Add_Click({
+			Copy_Files_Between_Nodes
+		})
+	[void]$contextMenuGeneral.Items.Add($Copy_Files_Between_NodesItem)
+	
+	############################################################################
+	# 3c) Context menu item: Edit INIs (Setup.ini and others)
+	############################################################################
+	$Edit_INIsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Edit INIs")
+	$Edit_INIsItem.ToolTipText = "Edit \storeman\<relative>\*.ini (default: office\Setup.ini) on Server or a Lane, then optionally copy to other lanes."
+	$Edit_INIsItem.Add_Click({
+			Edit_INIs
+		})
+	[void]$contextMenuGeneral.Items.Add($Edit_INIsItem)
 	
 	############################################################################
 	# 5) Manual Repair
