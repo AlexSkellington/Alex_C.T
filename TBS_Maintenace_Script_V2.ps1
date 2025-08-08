@@ -7900,7 +7900,7 @@ function Copy_Files_Between_Nodes
 	$miHtm = $cmsQuick.Items.Add("\storeman\office\Htm") # folder
 	$miBitmaps = $cmsQuick.Items.Add("\storeman\BitMaps") # folder
 	$cmsQuick.Items.Add("-") | Out-Null
-	$miSetIni = $cmsQuick.Items.Add("\storeman\office\Settings.ini") # file (lane-only)
+	$miSetIni = $cmsQuick.Items.Add("\storeman\office\Setting.ini") # file (lane-only)
 	$miSysIni = $cmsQuick.Items.Add("\storeman\office\System.ini") # file (lane-only)
 	
 	# Show menu; toggle lane-only items based on source selection
