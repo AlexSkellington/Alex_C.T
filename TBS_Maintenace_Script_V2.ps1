@@ -2672,48 +2672,49 @@ VALUES
 #                              FUNCTION: Get_Remote_Machine_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Displays a Windows Form with tabs for Lanes, Scales, and Backoffices, allowing selection via checkboxes.
-#   For selected nodes, enables and starts Remote Registry if necessary, queries hardware info (manufacturer, model, CPU, RAM)
-#   using WMI (preferred) or REG.exe (fallback), and restores Remote Registry state.
-#   Writes sorted Info.txt files to Desktop\Lanes, Desktop\Scales, Desktop\BackOffices.
-#   Stores results in $script:LaneHardwareInfo, $script:ScaleHardwareInfo, $script:BackofficeHardwareInfo.
-#   (Assumes variables populated by Retrieve_Nodes; handles non-Windows devices gracefully.)
+#   Windows Form picker -> run concurrent probes -> write per-group text files and expose results.
 #
-# Improvements:
-#   - Added restoration of Remote Registry service state (query before, restore after).
-#   - Impr oved error handling with specific messages (e.g., for non-Windows scales).
-#   - Added progress feedback via Write_Log as jobs complete.
-#   - Enhanced fallbacks: Added CIM for RAM/CPU if WMI fails but PSRemoting possible.
-#   - Sorted output numerically if machine names are numeric (e.g., IPs for scales).
-#   - Validation: Skip if no selections; better user feedback.
-#   - Granular timeout handling: More detailed logging.
-#   - Code cleanup: Reduced duplication; inlined all logic without helpers.
-#   - Compatibility: Removed ternary operators for PS5 support; used if-else instead.
-#   - For scales: Process Bizerba (Windows) with WMI/CIM/REG; skip Ishida (non-Windows) with message.
-#   - For Backoffices: Added INI fallback method after all others fail.
+# Key behavior (PS 5.1-safe):
+#   • Selection UI is provided by your Show_Node_Selection_Form (not modified here).
+#   • For each selected node:
+#       WMI  →  CIM  →  (optional) PS-Session/Registry  →  REG.EXE (starts RemoteRegistry, then restores it)
+#   • INI-based fallback augments fields when present (for Lanes/BackOffices).
+#   • Writes Info files to Desktop\Lanes|Scales|BackOffices; logs incremental progress.
+#   • Populates:
+#         $script:LaneHardwareInfo, $script:ScaleHardwareInfo, $script:BackofficeHardwareInfo
+#   • Throttles concurrency via $maxConcurrentJobs.
 #
-# Author: Alex_C.T (original)
+# Notes:
+#   - Assumes these script vars already exist elsewhere in your toolchain:
+#       $script:FunctionResults (LaneNumToMachineName, ScaleCodeToIPInfo, BackofficeNumToMachineName, StoreNumber)
+#       $script:DbsPath  (server Office\Dbs path for BackOffice INIs)
+#   - Requires admin rights on remotes for WMI/CIM/REG/SC operations.
 # ===================================================================================================
 
 function Get_Remote_Machine_Info
 {
 	Write_Log "`r`n==================== Starting Get_Remote_Machine_Info ====================`r`n" "blue"
 	
+	# --------------------------- Tunables ---------------------------
 	$maxConcurrentJobs = 10
 	$wmiTimeoutSeconds = 5
 	$cimTimeoutSeconds = 10
 	$regTimeoutSeconds = 30
+	$usePSRemotingFallback = $false # set $true to try PS-Session registry read before REG.EXE
 	
+	# --------------------------- Outputs (reset) ---------------------------
 	$script:LaneHardwareInfo = $null
 	$script:ScaleHardwareInfo = $null
 	$script:BackofficeHardwareInfo = $null
 	
+	# --------------------------- Inputs from your environment ---------------------------
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
 	$BackofficeNumToMachineName = $script:FunctionResults['BackofficeNumToMachineName']
 	$StoreNumber = $script:FunctionResults['StoreNumber']
 	$DbsPath = $script:DbsPath
 	
+	# --------------------------- Let user pick nodes ---------------------------
 	$nodeSelection = Show_Node_Selection_Form -StoreNumber $StoreNumber `
 											  -NodeTypes @("Lane", "Scale", "Backoffice") `
 											  -Title "Select Nodes to Pull Hardware Info"
@@ -2721,8 +2722,10 @@ function Get_Remote_Machine_Info
 	if (-not $nodeSelection)
 	{
 		Write_Log "Get_Remote_Machine_Info cancelled by user." "yellow"
+		Write_Log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
 		return $false
 	}
+	
 	$selectedLanes = $nodeSelection.Lanes
 	$selectedScales = $nodeSelection.Scales
 	$selectedBOs = $nodeSelection.Backoffices
@@ -2732,9 +2735,11 @@ function Get_Remote_Machine_Info
 		(-not $selectedBOs -or $selectedBOs.Count -eq 0))
 	{
 		Write_Log "No nodes selected. Operation aborted." "yellow"
+		Write_Log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
 		return $false
 	}
 	
+	# --------------------------- Output folders ---------------------------
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
 	$scalesDir = Join-Path $desktop "Scales"
@@ -2744,6 +2749,7 @@ function Get_Remote_Machine_Info
 		if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory | Out-Null }
 	}
 	
+	# --------------------------- Process 3 categories uniformly ---------------------------
 	foreach ($section in @(
 			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt' },
 			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt' },
@@ -2751,76 +2757,74 @@ function Get_Remote_Machine_Info
 		))
 	{
 		if (-not $section.Selected -or $section.Selected.Count -eq 0) { continue }
+		
 		Write_Log "Processing $($section.Name) nodes..." "yellow"
 		Set-Variable -Name $($section.ResultsVar) -Value @{ }
 		Set-Variable -Name $($section.InfoLinesVar) -Value @()
-		$jobs = @(); $pending = @{ }
+		
+		$jobs = @()
+		$pending = @{ }
+		
 		foreach ($sel in $section.Selected)
 		{
-			
-			# Canonical mapping for ALL: always use $NodeNumber and $NodeName (no other lookup)
-			$NodeNumber = $null; $NodeName = $null
+			# -------- Canonical per-node identity: $NodeNumber (code) + $NodeName (machine/IP) --------
+			$NodeNumber = $null
+			$NodeName = $null
 			
 			if ($section.Name -eq 'Lanes')
 			{
-				# Lane: NodeNumber = 3-digit string, NodeName from mapping
 				if ($sel.PSObject.Properties.Name -contains 'LaneNumber' -and $sel.LaneNumber)
 				{
 					$NodeNumber = "{0:D3}" -f [int]$sel.LaneNumber
 				}
-				else
-				{
-					$NodeNumber = $sel
-				}
+				else { $NodeNumber = "$sel" }
 				$NodeName = $LaneNumToMachineName[$NodeNumber]
 			}
 			elseif ($section.Name -eq 'Scales')
 			{
-				# Scale: NodeNumber = scale code (string), NodeName = .FullIP from mapping
-				$NodeNumber = $sel
-				if ($ScaleCodeToIPInfo.ContainsKey($NodeNumber) -and $ScaleCodeToIPInfo[$NodeNumber].PSObject.Properties.Name -contains 'FullIP')
+				$NodeNumber = "$sel"
+				if ($ScaleCodeToIPInfo.ContainsKey($NodeNumber) -and
+					$ScaleCodeToIPInfo[$NodeNumber].PSObject.Properties.Name -contains 'FullIP')
 				{
 					$NodeName = $ScaleCodeToIPInfo[$NodeNumber].FullIP
-				}
-				else
-				{
-					$NodeName = $null
 				}
 			}
 			elseif ($section.Name -eq 'BackOffices')
 			{
-				# Backoffice: NodeNumber = 3-digit string, NodeName from mapping
 				if ($sel.PSObject.Properties.Name -contains 'BONumber' -and $sel.BONumber)
 				{
 					$NodeNumber = "{0:D3}" -f [int]$sel.BONumber
 				}
-				else
-				{
-					$NodeNumber = $sel
-				}
+				else { $NodeNumber = "$sel" }
 				$NodeName = $BackofficeNumToMachineName[$NodeNumber]
 			}
 			
-			# Validate mapping before processing
 			if (-not $NodeName)
 			{
 				Write_Log "Skipping $($section.Name) $NodeNumber (no NodeName/mapping found)" "red"
 				continue
 			}
 			
+			# -------- Optional INI path (used to augment fields) --------
 			$iniPattern = "INFO_${StoreNumber}${NodeNumber}_SMSStart.ini"
-			$iniPath = if ($section.Name -eq 'Lanes') { Join-Path "\\$NodeName\storeman\office\dbs" $iniPattern }
-			elseif ($section.Name -eq 'BackOffices') { Join-Path $DbsPath $iniPattern }
-			else { $null }
+			if ($section.Name -eq 'Lanes') { $iniPath = Join-Path "\\$NodeName\storeman\office\dbs" $iniPattern }
+			elseif ($section.Name -eq 'BackOffices') { $iniPath = Join-Path $DbsPath                         $iniPattern }
+			else { $iniPath = $null }
 			
-			$job = Start-Job -ArgumentList $NodeName, $NodeNumber, $iniPath, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds `
+			# -------- Per-node job (throttled outside) --------
+			$job = Start-Job -ArgumentList $NodeName, $NodeNumber, $iniPath, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $usePSRemotingFallback `
 							 -ScriptBlock {
-				param ($NodeName,
+				param (
+					$NodeName,
 					$NodeNumber,
 					$iniPath,
 					$wmiTimeoutSeconds,
 					$cimTimeoutSeconds,
-					$regTimeoutSeconds)
+					$regTimeoutSeconds,
+					$usePSRemotingFallback
+				)
+				
+				# --- 0) Result object scaffold ---
 				$info = [PSCustomObject]@{
 					Success			    = $false
 					SystemManufacturer  = $null
@@ -2828,24 +2832,27 @@ function Get_Remote_Machine_Info
 					CPU				    = $null
 					RAM				    = $null
 					OSInfo			    = $null
+					BIOS			    = $null
 					Method			    = $null
 					Error			    = $null
 					MachineNameOverride = $null
 				}
 				
+				# --- 0.1) Remember RemoteRegistry state up-front (so we can restore) ---
 				$originalState = $null
 				try
 				{
-					$stateOutput = sc.exe "\\$NodeName" query RemoteRegistry 2>$null | Select-String "STATE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
-					$startTypeOutput = sc.exe "\\$NodeName" qc RemoteRegistry 2>$null | Select-String "START_TYPE" | ForEach-Object { $_.Line.Split(":")[1].Trim() }
-					$originalState = @{ State = $stateOutput; StartType = $startTypeOutput }
+					$stateLine = sc.exe "\\$NodeName" query RemoteRegistry 2>$null | Select-String "STATE" | ForEach-Object { $_.Line }
+					$startTypeLine = sc.exe "\\$NodeName" qc    RemoteRegistry 2>$null | Select-String "START_TYPE" | ForEach-Object { $_.Line }
+					$originalState = @{ StateLine = $stateLine; StartTypeLine = $startTypeLine }
 				}
 				catch { }
 				
-				# -- WMI Method
+				# --- 1) WMI (fast) ---
 				if (-not (Test-Connection -ComputerName $NodeName -Count 1 -Quiet -ErrorAction SilentlyContinue))
 				{
-					$info.Error = "Offline or unreachable."; $info.Method = "Offline"
+					$info.Error = "Offline or unreachable."
+					$info.Method = "Offline"
 				}
 				else
 				{
@@ -2856,6 +2863,34 @@ function Get_Remote_Machine_Info
 							$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $NodeName -ErrorAction SilentlyContinue
 							$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $NodeName -ErrorAction SilentlyContinue | Select-Object -First 1
 							$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $NodeName -ErrorAction SilentlyContinue
+							
+							# BIOS
+							$biosVerOut = $null
+							try
+							{
+								$bios = Get-WmiObject -Class Win32_BIOS -ComputerName $NodeName -ErrorAction SilentlyContinue
+								if ($bios)
+								{
+									if ($bios.SMBIOSBIOSVersion) { $biosVerOut = $bios.SMBIOSBIOSVersion }
+									elseif ($bios.BIOSVersion) { $biosVerOut = ($bios.BIOSVersion | Where-Object { $_ } | Select-Object -First 1) }
+									elseif ($bios.Version) { $biosVerOut = $bios.Version }
+									if ($bios.ReleaseDate)
+									{
+										try
+										{
+											$dt = [System.Management.ManagementDateTimeConverter]::ToDateTime($bios.ReleaseDate)
+											if ($dt)
+											{
+												if ($biosVerOut) { $biosVerOut = "$biosVerOut ($($dt.ToString('yyyy-MM-dd')))" }
+												else { $biosVerOut = $dt.ToString('yyyy-MM-dd') }
+											}
+										}
+										catch { }
+									}
+								}
+							}
+							catch { }
+							
 							if ($sys -and $sys.Manufacturer -and $sys.Model)
 							{
 								[PSCustomObject]@{
@@ -2864,6 +2899,7 @@ function Get_Remote_Machine_Info
 									CPU			       = $cpu.Name
 									RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
 									OSInfo			   = "$($os.Caption) ($($os.Version))"
+									BIOS			   = $biosVerOut
 									Method			   = "WMI"
 								}
 							}
@@ -2875,14 +2911,15 @@ function Get_Remote_Machine_Info
 					if (Wait-Job $wmiJob -Timeout $wmiTimeoutSeconds)
 					{
 						$wmiResult = Receive-Job $wmiJob 2>$null
-						Remove-Job $wmiJob -Force -ErrorAction SilentlyContinue
+						Remove-Job  $wmiJob -Force -ErrorAction SilentlyContinue
 					}
 					else
 					{
-						Stop-Job $wmiJob -ErrorAction SilentlyContinue
-						Remove-Job $wmiJob -Force -ErrorAction SilentlyContinue
+						Stop-Job    $wmiJob -ErrorAction SilentlyContinue
+						Remove-Job  $wmiJob -Force -ErrorAction SilentlyContinue
 						$wmiResult = $null
 					}
+					
 					if ($wmiResult -and $wmiResult.SystemManufacturer -and $wmiResult.SystemProductName)
 					{
 						$info.SystemManufacturer = $wmiResult.SystemManufacturer
@@ -2890,6 +2927,7 @@ function Get_Remote_Machine_Info
 						$info.CPU = $wmiResult.CPU
 						$info.RAM = $wmiResult.RAM
 						$info.OSInfo = $wmiResult.OSInfo
+						if ($wmiResult.BIOS) { $info.BIOS = $wmiResult.BIOS }
 						$info.Method = "WMI"
 						$info.Success = $true
 					}
@@ -2899,7 +2937,7 @@ function Get_Remote_Machine_Info
 					}
 				}
 				
-				# CIM Method (if WMI fails)
+				# --- 2) CIM (if WMI failed) ---
 				if (-not $info.Success)
 				{
 					$cimJob = Start-Job -ScriptBlock {
@@ -2909,9 +2947,37 @@ function Get_Remote_Machine_Info
 							$session = New-CimSession -ComputerName $NodeName -ErrorAction SilentlyContinue
 							if ($session)
 							{
-								$sys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem 2>$null
-								$cpu = Get-CimInstance -CimSession $session -ClassName Win32_Processor 2>$null | Select-Object -First 1
-								$os = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem 2>$null
+								$sys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem  2>$null
+								$cpu = Get-CimInstance -CimSession $session -ClassName Win32_Processor       2>$null | Select-Object -First 1
+								$os = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem  2>$null
+								
+								# BIOS
+								$biosVerOut = $null
+								try
+								{
+									$bios = Get-CimInstance -CimSession $session -ClassName Win32_BIOS 2>$null
+									if ($bios)
+									{
+										if ($bios.SMBIOSBIOSVersion) { $biosVerOut = $bios.SMBIOSBIOSVersion }
+										elseif ($bios.BIOSVersion) { $biosVerOut = ($bios.BIOSVersion | Where-Object { $_ } | Select-Object -First 1) }
+										elseif ($bios.Version) { $biosVerOut = $bios.Version }
+										if ($bios.ReleaseDate)
+										{
+											try
+											{
+												$dt = [System.Management.ManagementDateTimeConverter]::ToDateTime($bios.ReleaseDate)
+												if ($dt)
+												{
+													if ($biosVerOut) { $biosVerOut = "$biosVerOut ($($dt.ToString('yyyy-MM-dd')))" }
+													else { $biosVerOut = $dt.ToString('yyyy-MM-dd') }
+												}
+											}
+											catch { }
+										}
+									}
+								}
+								catch { }
+								
 								Remove-CimSession $session 2>$null
 								if ($sys -and $sys.Manufacturer -and $sys.Model)
 								{
@@ -2921,6 +2987,7 @@ function Get_Remote_Machine_Info
 										CPU			       = $cpu.Name
 										RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
 										OSInfo			   = "$($os.Caption) ($($os.Version))"
+										BIOS			   = $biosVerOut
 										Method			   = "CIM"
 									}
 								}
@@ -2934,14 +3001,15 @@ function Get_Remote_Machine_Info
 					if (Wait-Job $cimJob -Timeout $cimTimeoutSeconds)
 					{
 						$cimResult = Receive-Job $cimJob 2>$null
-						Remove-Job $cimJob -Force -ErrorAction SilentlyContinue
+						Remove-Job  $cimJob -Force -ErrorAction SilentlyContinue
 					}
 					else
 					{
-						Stop-Job $cimJob -ErrorAction SilentlyContinue
-						Remove-Job $cimJob -Force -ErrorAction SilentlyContinue
+						Stop-Job    $cimJob -ErrorAction SilentlyContinue
+						Remove-Job  $cimJob -Force -ErrorAction SilentlyContinue
 						$cimResult = $null
 					}
+					
 					if ($cimResult -and $cimResult.SystemManufacturer -and $cimResult.SystemProductName)
 					{
 						$info.SystemManufacturer = $cimResult.SystemManufacturer
@@ -2949,6 +3017,7 @@ function Get_Remote_Machine_Info
 						$info.CPU = $cimResult.CPU
 						$info.RAM = $cimResult.RAM
 						$info.OSInfo = $cimResult.OSInfo
+						if ($cimResult.BIOS) { $info.BIOS = $cimResult.BIOS }
 						$info.Method = "CIM"
 						$info.Success = $true
 					}
@@ -2958,85 +3027,223 @@ function Get_Remote_Machine_Info
 					}
 				}
 				
-				# REG Method (if WMI/CIM fail)
-				if (-not $info.Success)
+				# --- 3) PS-Remoting Registry (optional middle step) ---
+				if (-not $info.Success -and $usePSRemotingFallback)
 				{
 					$regResult = $null
 					try
 					{
-						$regJob = Start-Job -ScriptBlock {
-							param ($NodeName)
-							try
-							{
-								$session = New-PSSession -ComputerName $NodeName -ErrorAction SilentlyContinue
-								if ($session)
-								{
-									$result = Invoke-Command -Session $session -ScriptBlock {
-										try
-										{
-											$manuf = Get-ItemProperty -Path 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemManufacturer -ErrorAction SilentlyContinue
-											$prod = Get-ItemProperty -Path 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemProductName -ErrorAction SilentlyContinue
-											$cpu = Get-ItemProperty -Path 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction SilentlyContinue
-											$osKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
-											$osName = Get-ItemProperty -Path $osKey -Name ProductName -ErrorAction SilentlyContinue
-											$osVer = Get-ItemProperty -Path $osKey -Name CurrentVersion -ErrorAction SilentlyContinue
-											$osBuild = Get-ItemProperty -Path $osKey -Name DisplayVersion -ErrorAction SilentlyContinue
-											[PSCustomObject]@{
-												SystemManufacturer = $manuf.SystemManufacturer
-												SystemProductName  = $prod.SystemProductName
-												CPU			       = $cpu.ProcessorNameString
-												OSInfo			   = "$($osName.ProductName) ($($osVer.CurrentVersion)" + (if ($osBuild) { ", $($osBuild.DisplayVersion))" } else { ")" })
-												Method			   = "REG"
-												Success		       = $true
-												Error			   = $null
-											}
-										}
-										catch
-										{
-											[PSCustomObject]@{
-												SystemManufacturer = $null; SystemProductName = $null; CPU = $null; OSInfo = $null
-												Method			   = "REG"; Success = $false; Error = $_.Exception.Message
-											}
-										}
-									} 2>$null
-									Remove-PSSession $session -ErrorAction SilentlyContinue
-									return $result
-								}
-								else
-								{
-									[PSCustomObject]@{ SystemManufacturer = $null; SystemProductName = $null; CPU = $null; OSInfo = $null; Method = "REG"; Success = $false; Error = "Session creation failed" }
-								}
-							}
-							catch { [PSCustomObject]@{ SystemManufacturer = $null; SystemProductName = $null; CPU = $null; OSInfo = $null; Method = "REG"; Success = $false; Error = "REG fallback failed" } }
-						} -ArgumentList $NodeName
-						
-						if (Wait-Job $regJob -Timeout $regTimeoutSeconds)
+						$session = New-PSSession -ComputerName $NodeName -ErrorAction SilentlyContinue
+						if ($session)
 						{
-							$regResult = Receive-Job $regJob 2>$null
-							Remove-Job $regJob -Force -ErrorAction SilentlyContinue
-						}
-						else
-						{
-							Stop-Job $regJob -ErrorAction SilentlyContinue
-							Remove-Job $regJob -Force -ErrorAction SilentlyContinue
-							$regResult = [PSCustomObject]@{ SystemManufacturer = $null; SystemProductName = $null; CPU = $null; OSInfo = $null; Method = "REG"; Success = $false; Error = "REG query timed out" }
+							$regResult = Invoke-Command -Session $session -ScriptBlock {
+								$out = [PSCustomObject]@{
+									SystemManufacturer = $null
+									SystemProductName  = $null
+									CPU			       = $null
+									OSInfo			   = $null
+									BIOS			   = $null
+									Success		       = $false
+									Error			   = $null
+									Method			   = 'REG(PSRemoting)'
+								}
+								try
+								{
+									$manuf = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemManufacturer -ErrorAction SilentlyContinue
+									$prod = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemProductName -ErrorAction SilentlyContinue
+									$cpu = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction SilentlyContinue
+									$os = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
+									
+									# BIOS pieces
+									$biosVendor = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSVendor -ErrorAction SilentlyContinue).BIOSVendor
+									$biosVerStr = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSVersion -ErrorAction SilentlyContinue).BIOSVersion
+									if (-not $biosVerStr)
+									{
+										$biosVerStr = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemBiosVersion -ErrorAction SilentlyContinue).SystemBiosVersion
+									}
+									$biosDate = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSReleaseDate -ErrorAction SilentlyContinue).BIOSReleaseDate
+									
+									# Build OSInfo
+									$osInfo = $null
+									if ($os -and $os.ProductName) { $osInfo = $os.ProductName }
+									if ($os -and $os.DisplayVersion)
+									{
+										if ($osInfo) { $osInfo = "$osInfo ($($os.DisplayVersion))" }
+										else { $osInfo = $os.DisplayVersion }
+									}
+									elseif ($os -and $os.CurrentBuild)
+									{
+										if ($osInfo) { $osInfo = "$osInfo (Build $($os.CurrentBuild))" }
+										else { $osInfo = "Build $($os.CurrentBuild)" }
+									}
+									
+									# BIOS assemble
+									$biosOut = $null
+									if ($biosVendor -and $biosVerStr) { $biosOut = "$biosVendor $biosVerStr" }
+									elseif ($biosVerStr) { $biosOut = $biosVerStr }
+									elseif ($biosVendor) { $biosOut = $biosVendor }
+									if ($biosDate)
+									{
+										if ($biosOut) { $biosOut = "$biosOut ($biosDate)" }
+										else { $biosOut = $biosDate }
+									}
+									
+									$out.SystemManufacturer = $manuf.SystemManufacturer
+									$out.SystemProductName = $prod.SystemProductName
+									$out.CPU = $cpu.ProcessorNameString
+									$out.OSInfo = $osInfo
+									$out.BIOS = $biosOut
+									$out.Success = $true
+								}
+								catch { $out.Error = $_.Exception.Message }
+								return $out
+							} 2>$null
+							Remove-PSSession $session -ErrorAction SilentlyContinue
 						}
 					}
 					catch
 					{
-						$regResult = [PSCustomObject]@{ SystemManufacturer = $null; SystemProductName = $null; CPU = $null; OSInfo = $null; Method = "REG"; Success = $false; Error = "REG method failed" }
+						$regResult = [PSCustomObject]@{
+							SystemManufacturer = $null
+							SystemProductName  = $null
+							CPU			       = $null
+							OSInfo			   = $null
+							BIOS			   = $null
+							Success		       = $false
+							Error			   = "PS-Remoting registry query failed"
+							Method			   = 'REG(PSRemoting)'
+						}
 					}
-					$info.SystemManufacturer = $regResult.SystemManufacturer
-					$info.SystemProductName = $regResult.SystemProductName
-					$info.CPU = $regResult.CPU
-					$info.RAM = $null
-					$info.OSInfo = $regResult.OSInfo
-					$info.Method = "REG"
-					$info.Error = $regResult.Error
-					$info.Success = $regResult.Success
+					
+					if ($regResult -and $regResult.Success)
+					{
+						if (-not $info.SystemManufacturer) { $info.SystemManufacturer = $regResult.SystemManufacturer }
+						if (-not $info.SystemProductName) { $info.SystemProductName = $regResult.SystemProductName }
+						if (-not $info.CPU) { $info.CPU = $regResult.CPU }
+						if (-not $info.OSInfo) { $info.OSInfo = $regResult.OSInfo }
+						if (-not $info.BIOS -and $regResult.BIOS) { $info.BIOS = $regResult.BIOS }
+						$info.Method = $regResult.Method
+						$info.Success = $true
+						$info.Error = $null
+					}
+					elseif (-not $info.Error)
+					{
+						if ($regResult) { $info.Error = $regResult.Error; $info.Method = 'REG(PSRemoting)' }
+					}
 				}
 				
-				# INI Block (for Lanes/BackOffices), ALWAYS RUN
+				# --- 4) REG.EXE (starts RemoteRegistry if needed, then restores) ---
+				if (-not $info.Success)
+				{
+					$wasRunning = $false
+					$wasDisabled = $false
+					try
+					{
+						$state = sc.exe "\\$NodeName" query RemoteRegistry 2>$null | Select-String 'STATE'
+						$start = sc.exe "\\$NodeName" qc    RemoteRegistry 2>$null | Select-String 'START_TYPE'
+						if ($state -and $state.Line -match 'RUNNING') { $wasRunning = $true }
+						if ($start -and $start.Line -match 'DISABLED') { $wasDisabled = $true }
+						if ($wasDisabled) { sc.exe "\\$NodeName" config RemoteRegistry start= demand 2>$null | Out-Null }
+						if (-not $wasRunning) { sc.exe "\\$NodeName" start  RemoteRegistry 2>$null | Out-Null }
+						
+						# tiny inline getter: returns only the DATA (no "REG_SZ")
+						$getVal = {
+							param ($hive,
+								$path,
+								$name)
+							$patternName = [regex]::Escape($name)
+							$raw = reg.exe QUERY "\\$NodeName\$hive\$path" /v $name 2>$null
+							if (-not $raw) { return $null }
+							$line = $raw | Select-String -Pattern "^\s*$patternName\s+REG_\w+\s+.+$" | Select-Object -First 1
+							if (-not $line) { return $null }
+							$data = $line.Line -replace "^\s*$patternName\s+REG_\w+\s+", ""
+							$data.Trim()
+						}
+						
+						$manuf = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS'               'SystemManufacturer'
+						$prod = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS'               'SystemProductName'
+						$cpu = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\CentralProcessor\0' 'ProcessorNameString'
+						$osN = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'ProductName'
+						$osB = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'DisplayVersion'
+						$osV = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'CurrentBuild'
+						
+						# BIOS from REG.EXE
+						$biosVendor = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSVendor'
+						$biosVerStr = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSVersion'
+						if (-not $biosVerStr)
+						{
+							$biosVerStr = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'SystemBiosVersion'
+						}
+						$biosDate = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSReleaseDate'
+						if ($biosVerStr)
+						{
+							$biosVerStr = $biosVerStr -replace '\x00', ' '
+							$biosVerStr = ($biosVerStr -split '\s{2,}' | Where-Object { $_ }) -join ' '
+							$biosVerStr = $biosVerStr.Trim()
+						}
+						$biosOut = $null
+						if ($biosVendor -and $biosVerStr) { $biosOut = "$biosVendor $biosVerStr" }
+						elseif ($biosVerStr) { $biosOut = $biosVerStr }
+						elseif ($biosVendor) { $biosOut = $biosVendor }
+						if ($biosDate)
+						{
+							if ($biosOut) { $biosOut = "$biosOut ($biosDate)" }
+							else { $biosOut = $biosDate }
+						}
+						
+						# If CurrentBuild came as "0x... (7601)" keep the number in parentheses
+						if ($osV -and $osV -match '\((\d+)\)') { $osV = $matches[1] }
+						
+						# build a clean OS string
+						$osInfo = $null
+						if ($osN) { $osInfo = $osN }
+						if ($osB)
+						{
+							if ($osInfo) { $osInfo = "$osInfo ($osB)" }
+							else { $osInfo = $osB }
+						}
+						elseif ($osV)
+						{
+							if ($osInfo) { $osInfo = "$osInfo (Build $osV)" }
+							else { $osInfo = "Build $osV" }
+						}
+						
+						if ($manuf -or $prod -or $cpu -or $osInfo -or $biosOut)
+						{
+							if (-not $info.SystemManufacturer) { $info.SystemManufacturer = $manuf }
+							if (-not $info.SystemProductName) { $info.SystemProductName = $prod }
+							if (-not $info.CPU) { $info.CPU = $cpu }
+							if (-not $info.OSInfo) { $info.OSInfo = $osInfo }
+							if (-not $info.BIOS -and $biosOut) { $info.BIOS = $biosOut }
+							$info.Method = "REG.EXE"
+							$info.Success = $true
+							$info.Error = $null
+						}
+						else
+						{
+							$info.Method = "REG.EXE"
+							$info.Success = $false
+							$info.Error = "REG queries returned no data"
+						}
+					}
+					catch
+					{
+						$info.Method = "REG.EXE"
+						$info.Success = $false
+						$info.Error = "REG queries failed"
+					}
+					finally
+					{
+						try
+						{
+							if (-not $wasRunning) { sc.exe "\\$NodeName" stop RemoteRegistry 2>$null | Out-Null }
+							if ($wasDisabled) { sc.exe "\\$NodeName" config RemoteRegistry start= disabled 2>$null | Out-Null }
+						}
+						catch { }
+					}
+				}
+				
+				# --- 5) INI augmentation (optional; fills gaps if any fields still null) ---
 				$returnInfo = [PSCustomObject]@{
 					Machine    = $NodeName
 					NodeNumber = $NodeNumber
@@ -3048,12 +3255,18 @@ function Get_Remote_Machine_Info
 				{
 					if ($iniPath)
 					{
-						$iniFile = Get-ChildItem -Path (Split-Path $iniPath) -Filter (Split-Path $iniPath -Leaf) -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+						$iniFolder = Split-Path $iniPath -Parent
+						$iniLeaf = Split-Path $iniPath -Leaf
+						$iniFile = Get-ChildItem -Path $iniFolder -Filter $iniLeaf -ErrorAction SilentlyContinue |
+						Sort-Object LastWriteTime -Descending |
+						Select-Object -First 1
 						if ($iniFile -and (Test-Path $iniFile.FullName))
 						{
 							$returnInfo.IniFound = $true
 							$returnInfo.IniPath = $iniFile.FullName
 							$iniLines = Get-Content $iniFile.FullName -Encoding UTF8 -ErrorAction SilentlyContinue
+							
+							# tiny parser
 							$sections = @{ }
 							$curSec = ""
 							foreach ($line in $iniLines)
@@ -3067,20 +3280,20 @@ function Get_Remote_Machine_Info
 									$sections[$curSec][$matches[1].Trim()] = $matches[2].Trim()
 								}
 							}
-							if ($info.CPU -eq "Unknown" -and $sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores'))
+							if (-not $info.CPU -and $sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores'))
 							{
 								$cores = $sections['PROCESSOR']['Cores']
 								$arch = $sections['PROCESSOR']['Architecture']
-								$info.CPU = "$cores cores" + ($(if ($arch) { " ($arch)" }
-										else { "" }))
+								if ($arch) { $info.CPU = "$cores cores ($arch)" }
+								else { $info.CPU = "$cores cores" }
 							}
-							if ($info.RAM -eq "Unknown" -and $sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
+							if ($info.RAM -eq $null -and $sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
 							{
 								$ramMb = $sections['Memory']['PhysicalMemory']
-								$info.RAM = $(if ($ramMb -match '^\d+$') { "{0:N1}" -f ([double]$ramMb / 1024) }
-									else { $ramMb })
+								if ($ramMb -match '^\d+$') { $info.RAM = [math]::Round([double]$ramMb/1024, 1) }
+								else { $info.RAM = $ramMb }
 							}
-							if ($info.OSInfo -eq "Unknown" -and $sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
+							if (-not $info.OSInfo -and $sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
 							{
 								$info.OSInfo = $sections['OperatingSystem']['ProductName']
 							}
@@ -3088,10 +3301,14 @@ function Get_Remote_Machine_Info
 					}
 				}
 				catch { }
+				
 				return $returnInfo
 			}
+			
 			$jobs += $job
 			$pending[$job.Id] = $NodeName
+			
+			# Throttle
 			while ($jobs.Count -ge $maxConcurrentJobs)
 			{
 				$done = Wait-Job -Job $jobs -Any -Timeout 60
@@ -3102,39 +3319,58 @@ function Get_Remote_Machine_Info
 						$result = Receive-Job $j 2>$null
 						$remoteName = $pending[$j.Id]
 						$info = $result.Info
-						$displayName = $remoteName
-						$line = "Machine Name: $displayName |"
+						
+						# Build display line
+						$line = "Machine Name: $remoteName |"
 						if ($info.Success)
 						{
 							$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 							if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
 							if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
+							$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
+							$line += " | BIOS: $biosText"
 							$line += " | Method: $($info.Method)"
-							Write_Log "Processed $displayName ($($section.Name)): Success [$($info.Method)]" "green"
+							Write_Log "Processed $remoteName ($($section.Name)): Success [$($info.Method)]" "green"
 						}
 						elseif ($info.Error)
 						{
 							$line += " [Hardware info unavailable] Error: $($info.Error)"
+							$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
+							$line += " | BIOS: $biosText"
 							$line += " | Method: $($info.Method)"
-							Write_Log "Processed $displayName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
+							Write_Log "Processed $remoteName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
 						}
 						else
 						{
-							$line += " [No hardware info found] | Method: $($info.Method)"
-							Write_Log "Processed $displayName ($($section.Name)): No info [$($info.Method)]" "yellow"
+							$line += " [No hardware info found]"
+							$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
+							$line += " | BIOS: $biosText"
+							$line += " | Method: $($info.Method)"
+							Write_Log "Processed $remoteName ($($section.Name)): No info [$($info.Method)]" "yellow"
 						}
+						
+						# Append to info-lines
 						$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 						$infolines += $line
 						Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
+						
+						# Store rich info for programmatic use
+						$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
+						$results[$remoteName] = $info
+						Set-Variable -Name $($section.ResultsVar) -Value $results
+						
+						# Cleanup
 						Stop-Job $j -ErrorAction SilentlyContinue
 						Remove-Job $j -Force -ErrorAction SilentlyContinue
 						$jobs = $jobs | Where-Object { $_.Id -ne $j.Id }
 						$pending.Remove($j.Id)
 					}
 				}
+				else { break }
 			}
-		}
-		# Wait for all jobs to finish and collect results
+		} # end foreach selected
+		
+		# Drain remaining jobs
 		if ($jobs.Count -gt 0)
 		{
 			Wait-Job -Job $jobs -Timeout 60 | Out-Null
@@ -3143,42 +3379,61 @@ function Get_Remote_Machine_Info
 				$remoteName = $pending[$j.Id]
 				$result = Receive-Job $j 2>$null
 				$info = $result.Info
-				$displayName = $remoteName
-				$line = "Machine Name: $displayName |"
+				
+				$line = "Machine Name: $remoteName |"
 				if ($info.Success)
 				{
 					$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
 					if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
 					if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
+					$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
+					$line += " | BIOS: $biosText"
 					$line += " | Method: $($info.Method)"
-					Write_Log "Processed $displayName ($($section.Name)): Success [$($info.Method)]" "green"
+					Write_Log "Processed $remoteName ($($section.Name)): Success [$($info.Method)]" "green"
 				}
 				elseif ($info.Error)
 				{
 					$line += " [Hardware info unavailable] Error: $($info.Error)"
+					$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
+					$line += " | BIOS: $biosText"
 					$line += " | Method: $($info.Method)"
-					Write_Log "Processed $displayName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
+					Write_Log "Processed $remoteName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
 				}
 				else
 				{
-					$line += " [No hardware info found] | Method: $($info.Method)"
-					Write_Log "Processed $displayName ($($section.Name)): No info [$($info.Method)]" "yellow"
+					$line += " [No hardware info found]"
+					$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
+					$line += " | BIOS: $biosText"
+					$line += " | Method: $($info.Method)"
+					Write_Log "Processed $remoteName ($($section.Name)): No info [$($info.Method)]" "yellow"
 				}
+				
 				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 				$infolines += $line
 				Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
+				
+				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
+				$results[$remoteName] = $info
+				Set-Variable -Name $($section.ResultsVar) -Value $results
+				
 				Stop-Job $j -ErrorAction SilentlyContinue
 				Remove-Job $j -Force -ErrorAction SilentlyContinue
 			}
 		}
+		
+		# Write file (stable sorting: IPs zero-padded; otherwise lexical)
 		$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 		if ($infolines.Count)
 		{
 			$sortedLines = $infolines | Sort-Object {
 				if ($_ -match "^Machine Name: ([^|]+)")
 				{
-					$name = $matches[1]
-					if ($name -match '^\d+$' -or $name -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') { [int]$name.Split('.')[-1] }
+					$name = $matches[1].Trim()
+					if ($name -match '^\d{1,3}(\.\d{1,3}){3}$')
+					{
+						$oct = $name -split '\.'
+						'{0:D3}.{1:D3}.{2:D3}.{3:D3}' -f [int]$oct[0], [int]$oct[1], [int]$oct[2], [int]$oct[3]
+					}
 					else { $name }
 				}
 				else { $_ }
@@ -3187,8 +3442,15 @@ function Get_Remote_Machine_Info
 			$sortedLines -join "`r`n" | Set-Content -Path $filePath -Encoding Default
 			Write_Log "Exported $($section.Name) info to $filePath" "green"
 		}
+		
+		# Publish programmatic map
+		$mapOut = Get-Variable -Name $($section.ResultsVar) -ValueOnly
+		if ($section.Name -eq 'Lanes') { $script:LaneHardwareInfo = $mapOut }
+		elseif ($section.Name -eq 'Scales') { $script:ScaleHardwareInfo = $mapOut }
+		elseif ($section.Name -eq 'BackOffices') { $script:BackofficeHardwareInfo = $mapOut }
+		
 		Write_Log "Completed processing $($section.Name).`r`n" "green"
-	}
+	} # end sections
 	
 	Write_Log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
 }
@@ -3610,131 +3872,103 @@ function Delete_Files
 {
 	[CmdletBinding()]
 	param (
-		[Parameter(Mandatory = $true, Position = 0, HelpMessage = "The directory path where files and folders will be deleted.")]
+		[Parameter(Mandatory, Position = 0, HelpMessage = "The directory path where files and folders will be deleted.")]
 		[ValidateNotNullOrEmpty()]
 		[string]$Path,
-		[Parameter(Mandatory = $false, HelpMessage = "Specific file or folder patterns to delete within the specified directory. Wildcards supported.")]
+		[Parameter(HelpMessage = "Specific file/folder patterns to delete. Wildcards supported.")]
 		[string[]]$SpecifiedFiles,
-		[Parameter(Mandatory = $false, HelpMessage = "File or folder patterns to exclude from deletion. Wildcards supported.")]
+		[Parameter(HelpMessage = "Patterns to exclude from deletion. Wildcards supported.")]
 		[string[]]$Exclusions,
-		[Parameter(Mandatory = $false, HelpMessage = "Run the deletion as a background job.")]
+		[Parameter(HelpMessage = "Run the deletion as a background job.")]
 		[switch]$AsJob
 	)
 	
 	if ($AsJob)
 	{
-		# Define the script block that performs the deletion
 		$scriptBlock = {
 			param ($Path,
 				$SpecifiedFiles,
 				$Exclusions)
 			
-			# Initialize counter for deleted items
 			$deletedCount = 0
-			
-			# Resolve the full path
-			$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
-			if (-not $resolvedPath)
-			{
-				# Write_Log "The specified path '$Path' does not exist." "Red"
-				return
-			}
-			$targetPath = $resolvedPath.ProviderPath
+			$rp = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
+			if (-not $rp) { return 0 }
+			$targetPath = $rp.Path
+			$gciBase = Join-Path $targetPath '*'
 			
 			try
 			{
-				if ($SpecifiedFiles)
-				{
-					# Use -Include and -Exclude for efficient batch deletion
-					$matchedItems = Get-ChildItem -Path $targetPath -Include $SpecifiedFiles -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
-					
-					if ($matchedItems)
-					{
-						$matchedItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
-						$deletedCount = $matchedItems.Count # Approximate count (assumes most succeed)
-					}
-					else
-					{
-						# Write_Log "No items matched the specified patterns in '$targetPath'." "Yellow"
-					}
-				}
-				else
-				{
-					# Delete all except exclusions
-					$allItems = Get-ChildItem -Path $targetPath -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
-					
-					if ($allItems)
-					{
-						$allItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
-						$deletedCount = $allItems.Count # Approximate
-					}
-				}
+				# Build Get-ChildItem params safely
+				$gciParams = @{ Path = $gciBase; Recurse = $true; Force = $true; ErrorAction = 'SilentlyContinue' }
+				if ($SpecifiedFiles -and $SpecifiedFiles.Count -gt 0) { $gciParams['Include'] = $SpecifiedFiles }
+				if ($Exclusions -and $Exclusions.Count -gt 0) { $gciParams['Exclude'] = $Exclusions }
 				
-				# Write_Log "Total items deleted: $deletedCount" "Blue"
+				$items = Get-ChildItem @gciParams
+				if ($items)
+				{
+					foreach ($it in $items)
+					{
+						try
+						{
+							Remove-Item -LiteralPath $it.FullName -Force -Recurse -ErrorAction Stop
+							$deletedCount++
+						}
+						catch { }
+					}
+				}
 				return $deletedCount
 			}
 			catch
 			{
-				# Write_Log "An error occurred during the deletion process. Error: $_" "Red"
 				return $deletedCount
 			}
 		}
 		
-		# Start the background job
-		Start-Job -ScriptBlock $scriptBlock -ArgumentList $Path, $SpecifiedFiles, $Exclusions
+		return Start-Job -ScriptBlock $scriptBlock -ArgumentList $Path, $SpecifiedFiles, $Exclusions
 	}
-	else
+	
+	# -------- Synchronous path --------
+	$deletedCount = 0
+	$rp = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
+	if (-not $rp)
 	{
-		# Synchronous execution
-		# Initialize counter for deleted items
-		$deletedCount = 0
+		Write_Log "The specified path '$Path' does not exist." "red"
+		return 0
+	}
+	$targetPath = $rp.Path
+	$gciBase = Join-Path $targetPath '*'
+	
+	try
+	{
+		$gciParams = @{ Path = $gciBase; Recurse = $true; Force = $true; ErrorAction = 'SilentlyContinue' }
+		if ($SpecifiedFiles -and $SpecifiedFiles.Count -gt 0) { $gciParams['Include'] = $SpecifiedFiles }
+		if ($Exclusions -and $Exclusions.Count -gt 0) { $gciParams['Exclude'] = $Exclusions }
 		
-		# Resolve the full path
-		$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
-		if (-not $resolvedPath)
+		$items = Get-ChildItem @gciParams
+		if ($items)
 		{
-			Write_Log "The specified path '$Path' does not exist." "Red"
-			return
+			foreach ($it in $items)
+			{
+				try
+				{
+					Remove-Item -LiteralPath $it.FullName -Force -Recurse -ErrorAction Stop
+					$deletedCount++
+				}
+				catch { }
+			}
 		}
-		$targetPath = $resolvedPath.ProviderPath
+		else
+		{
+			Write_Log "No items matched in '$targetPath'." "yellow"
+		}
 		
-		try
-		{
-			if ($SpecifiedFiles)
-			{
-				# Use -Include and -Exclude for efficient batch deletion
-				$matchedItems = Get-ChildItem -Path $targetPath -Include $SpecifiedFiles -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
-				
-				if ($matchedItems)
-				{
-					$matchedItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
-					$deletedCount = $matchedItems.Count # Approximate count (assumes most succeed)
-				}
-				else
-				{
-					Write_Log "No items matched the specified patterns in '$targetPath'." "Yellow"
-				}
-			}
-			else
-			{
-				# Delete all except exclusions
-				$allItems = Get-ChildItem -Path $targetPath -Exclude $Exclusions -Recurse -Force -ErrorAction SilentlyContinue
-				
-				if ($allItems)
-				{
-					$allItems | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
-					$deletedCount = $allItems.Count # Approximate
-				}
-			}
-			
-			Write_Log "Total items deleted: $deletedCount" "Blue"
-			return $deletedCount
-		}
-		catch
-		{
-			Write_Log "An error occurred during the deletion process. Error: $_" "Red"
-			return $deletedCount
-		}
+		Write_Log "Total items deleted: $deletedCount" "blue"
+		return $deletedCount
+	}
+	catch
+	{
+		Write_Log "An error occurred during deletion. $_" "red"
+		return $deletedCount
 	}
 }
 
@@ -5829,7 +6063,7 @@ function Delete_DBS
 	)
 	
 	Write_Log "`r`n==================== Starting Delete_DBS Function ====================`r`n" "blue"
-		
+	
 	# Check if FunctionResults has the necessary data
 	if (-not $script:FunctionResults.ContainsKey('LaneMachineNames') -or
 		-not $script:FunctionResults.ContainsKey('LaneNumToMachineName'))
@@ -6567,41 +6801,69 @@ function Refresh_PIN_Pad_Files
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Install_ONE_FUNCTION_Into_SMS
+#                                   FUNCTION: Install_FUNCTIONS_Into_SMS
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Generates and deploys specific SQL and SQM files required for SMS installation.
-#   The files are written directly to their respective destinations in ANSI (Windows-1252) encoding
-#   with CRLF line endings and no BOM.
+#   Always installs BOTH single-function and multi-function deploy artifacts for SMS:
+#     - DEPLOY_SYS.sql            (includes "Multiple Functions" menu entry)
+#     - DEPLOY_ONE_FCT.sqm        (single function deployment)
+#     - DEPLOY_MULTI_FCT.sqm      (CSV / ranges like 123,234,300-305)
+#
+# Encoding/format:
+#   - Writes files as ANSI (Windows-1252), CRLF line endings, NO BOM.
+#
+# Parameters:
+#   - StoreNumber  [string] : Optional (kept for signature compatibility; not used in content).
+#   - OfficePath   [string] : Optional; if omitted tries $script:BasePath, then $BasePath.
+#
+# Changes in this revision:
+#   - CHANGE: Removed nested helper function; write logic is inlined per file (no nested function).
+#   - CHANGE: Always includes "Multiple Functions" option in DEPLOY_SYS.sql.
+#   - CHANGE: Ensures ® macro marker is injected via $($reg) everywhere it must evaluate.
+#   - CHANGE: Normalizes line endings to CRLF before each write.
 # ===================================================================================================
 
-function Install_ONE_FUNCTION_Into_SMS
+function Install_FUNCTIONS_Into_SMS
 {
+	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $false)]
 		[string]$StoreNumber,
+		# kept for compatibility / future use
 		[Parameter(Mandatory = $false)]
-		[string]$OfficePath
+		[string]$OfficePath # if not provided, we try common script-scoped fallbacks
 	)
 	
-	Write_Log "`r`n==================== Starting Install_ONE_FUNCTION_Into_SMS Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Install_FUNCTIONS_Into_SMS (Always Both) ====================`r`n" "blue"
 	
-	# Define the registered trademark symbol using Unicode code point for encoding safety
+	# Registered macro marker (®) as a safe char literal; we always inject via $($reg) to avoid encoding surprises.
 	$reg = [char]0x00AE
 	
-	# --------------------------------------------------------------------------------------------
-	# Define Destination Paths
-	# --------------------------------------------------------------------------------------------
-		
-	# Destination paths for DEPLOY_SYS.sql and DEPLOY_ONE_FCT.sqm
-	$DeploySysDestinationPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_SYS.sql"
-	$DeployOneFctDestinationPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_ONE_FCT.sqm"
+	# --------------------------------------------------------------------------------------------------------------
+	# Resolve/validate OfficePath (prefer explicit param; fallback to common script-scoped variables)
+	# --------------------------------------------------------------------------------------------------------------
+	if (-not $OfficePath -or [string]::IsNullOrWhiteSpace($OfficePath))
+	{
+		if ($script:BasePath) { $OfficePath = $script:BasePath } # Prefer script-scoped base path
+		elseif ($BasePath) { $OfficePath = $BasePath } # Fallback to legacy/global base path
+	}
+	if (-not $OfficePath -or -not (Test-Path -LiteralPath $OfficePath))
+	{
+		Write_Log "Office path not found or not provided: '$OfficePath'." "red"
+		return
+	}
 	
-	# --------------------------------------------------------------------------------------------
-	# Define File Contents (using $reg for ® to ensure it works in any script encoding)
-	# --------------------------------------------------------------------------------------------
-		
-	# Define the content for DEPLOY_SYS.sql
+	# --- Destination paths (always three files) ---
+	$DeploySysPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_SYS.sql"
+	$DeployOneFctPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_ONE_FCT.sqm"
+	$DeployMultiFctPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_MULTI_FCT.sqm"
+	
+	# --- Encoding: ANSI (Windows-1252), no BOM ---
+	$ansi = [System.Text.Encoding]::GetEncoding(1252)
+	
+	# ===============================================================================================================
+	#                                             DEPLOY_SYS.sql (ALWAYS includes "Multiple Functions")
+	# ===============================================================================================================
 	$DeploySysContent = @"
 @FMT(CMP,@dbHot(FINDFIRST,UD_DEPLOY_SYS.SQL)=,$($reg)WIZRPL(UD_RUN=0));
 @FMT(CMP,@WIZGET(UD_RUN)=,'$($reg)EXEC(SQL=UD_DEPLOY_SYS)$($reg)FMT(CHR,27)');
@@ -6618,6 +6880,7 @@ function Install_ONE_FUNCTION_Into_SMS
 @WIZINIT;
 @WIZMENU(ONESQM=What do you want to send,
     One Function=DEPLOY_ONE_FCT,
+    Multiple Functions=DEPLOY_MULTI_FCT,
     All Functions=fct_load,      
     Function link=fcz_load,
     Totalizer=tlz_load,
@@ -6642,7 +6905,7 @@ ORDER BY STO.F1000"));
 @WIZMENU(ACTION=Action on the target database,Add or replace=ADDRPL,Add only=ADD,Replace only=UPDATE,Clean and load=LOAD);
 @WIZDISPLAY;
 
-/* SEND ONLY ONE TABLE */
+/* SEND ONLY ONE / MULTI / OR OTHERS */
 
 @FMT(CMP,@wizget(ONESQM)=tlz_load,$($reg)EXEC(SQM=tlz_load));
 @FMT(CMP,@wizget(ONESQM)=fcz_load,$($reg)EXEC(SQM=fcz_load));
@@ -6650,6 +6913,7 @@ ORDER BY STO.F1000"));
 @FMT(CMP,@wizget(ONESQM)=dril_file_load,$($reg)EXEC(SQM=DRIL_FILE_LOAD));
 @FMT(CMP,@wizget(ONESQM)=dril_page_load,$($reg)EXEC(SQM=DRIL_PAGE_LOAD));
 @FMT(CMP,@wizget(ONESQM)=DEPLOY_ONE_FCT,$($reg)EXEC(SQM=DEPLOY_ONE_FCT));
+@FMT(CMP,@wizget(ONESQM)=DEPLOY_MULTI_FCT,$($reg)EXEC(SQM=DEPLOY_MULTI_FCT));
 
 @FMT(CMP,@WIZGET(ONESQM)=ALL,,'$($reg)EXEC(SQM=exe_activate_accept_sys)$($reg)fmt(chr,27)');
 
@@ -6665,7 +6929,9 @@ ORDER BY STO.F1000"));
 @EXEC(sqi=USERE_DEPLOY_SYS);
 "@
 	
-	# Define the content for DEPLOY_ONE_FCT.sqm
+	# ===============================================================================================================
+	#                                         DEPLOY_ONE_FCT.sqm (template)
+	# ===============================================================================================================
 	$DeployOneFctContent = @"
 INSERT INTO HEADER_DCT VALUES
 ('HC','00000001','001901','001001',,,1997001,0000,1997001,0001,,'LOAD','CREATE DCT',,,,,,'1/1.0','V1.0',,);
@@ -6680,7 +6946,7 @@ INSERT INTO FCT_CHG VALUES
 /* EXTRACT SECTION */
 
 @DBHOT(HOT_WIZ,PARAMTOLINE,PARAMSAV_FCT_LOAD);
-@FMT(CMP,'@WIZGET(TARGET)<>','®WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
+@FMT(CMP,'@WIZGET(TARGET)<>','$($reg)WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
 @WIZINIT;
 
 @WIZTARGET(TARGET_FILTER=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
@@ -6708,11 +6974,11 @@ WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST
 
 @MAP_DEPLOY
 SELECT FCT.F1056,FCT.F1056+FCT.F1057 AS F1000,@dbFld(FCT_TAB,FCT.,F1000) FROM
-    (SELECT LNI.F1056,LNI.F1057,FCT.*,ROW_NUMBER() OVER (PARTITION BY FCT.F1063,LNI.F1056,LNI.F1057 ORDER BY CASE WHEN FCT.F1000='PAL' THEN 1 ELSE 2 END DESC) AS F1301
-    FROM FCT_TAB FCT
-    JOIN LNK_TAB LNI ON FCT.F1000=LNI.F1000
-    JOIN LNK_TAB LNO ON LNI.F1056=LNO.F1056 AND LNI.F1057=LNO.F1057
-    WHERE LNO.F1000 = '@WIZGET(TARGET_FILTER)' AND FCT.F1063 = '@WIZGET(FCT)') FCT
+    (SELECT LNI.F1056,LNI.F1057,FCT.*,ROW_NUMBER() OVER (PARTITION BY FCT.F1063,LNI.F1056,LNI.F1057 ORDER BY CASE WHEN FCT.F1000='PAL' THEN 1 ELSE 2 END DESC) AS F1301
+    FROM FCT_TAB FCT
+    JOIN LNK_TAB LNI ON FCT.F1000=LNI.F1000
+    JOIN LNK_TAB LNO ON LNI.F1056=LNO.F1056 AND LNI.F1057=LNO.F1057
+    WHERE LNO.F1000 = '@WIZGET(TARGET_FILTER)' AND FCT.F1063 = '@WIZGET(FCT)') FCT
 WHERE FCT.F1301=1
 ORDER BY F1000,F1063;
 
@@ -6722,45 +6988,148 @@ ORDER BY F1000,F1063;
 @DBHOT(HOT_WIZ,LINETOPARAM,PARAMSAV_FCT_LOAD);
 @DBHOT(HOT_WIZ,CLR,PARAMSAV_FCT_LOAD);
 "@
-	# --------------------------------------------------------------------------------------------
-	# Prepare File Contents
-	# --------------------------------------------------------------------------------------------
 	
-	# Ensure content strings have Windows-style line endings
-	$DeploySysContent = $DeploySysContent -replace "`n", "`r`n"
-	$DeployOneFctContent = $DeployOneFctContent -replace "`n", "`r`n"
+	# ===============================================================================================================
+	#                                      DEPLOY_MULTI_FCT.sqm (template)
+	#   Keeps @dbEXEC SET options (required by your environment for computed/indexed features).
+	#   Supports CSV and ranges (e.g., 123,234,300-305).
+	# ===============================================================================================================
+	$DeployMultiFctContent = @"
+INSERT INTO HEADER_DCT VALUES
+('HC','00000001','001901','001001',,,1997001,0000,1997001,0001,,'LOAD','CREATE DCT',,,,,,'1/1.0','V1.0',,);
+
+CREATE TABLE FCT_DCT(@MAP_FROM_QUERY);
+INSERT INTO HEADER_DCT VALUES
+('HM','00000001','001901','001001',,,1997001,0000,1997001,0001,,'@WIZGET(ACTION)','@WIZGET(ACTION) SELECTED FUNCTIONS',,,,,,'1/1.0','V1.0','F1063',);
+
+CREATE VIEW FCT_CHG AS SELECT @FIELDS_FROM_QUERY FROM FCT_DCT;
+INSERT INTO FCT_CHG VALUES
+
+/* EXTRACT SECTION */
+
+@DBHOT(HOT_WIZ,PARAMTOLINE,PARAMSAV_FCT_LOAD);
+@FMT(CMP,'@WIZGET(TARGET)<>','$($reg)WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
+@WIZINIT;
+
+@WIZTARGET(TARGET_FILTER=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
+SELECT F1000,F1018 FROM STO_TAB WHERE F1181=1","
+SELECT DISTINCT STO.F1000,STO.F1018
+FROM LNK_TAB LN2 JOIN LNK_TAB LNK ON LN2.F1056=LNK.F1056 AND LN2.F1057=LNK.F1057
+JOIN STO_TAB STO ON STO.F1000=LNK.F1000
+WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'"));
+@WIZDISPLAY;
+
+@WIZINIT;
+@WIZMENU(ACTION=Action on the target database,Add or replace=ADDRPL,Add only=ADD,Replace only=UPDATE,Create and load=LOAD);
+@WIZDISPLAY;
+
+@WIZSET(STYLE=SIL);
+@WIZCLR(TARGET);
+@WIZSET(FORCE_F1000=@F1056);
+
+@WIZINIT;
+@WIZEDIT(FCT_LIST=,Enter functions list/range.);
+@WIZDISPLAY;
+@WIZSET(TARGET_FILTER=@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE));
+@WIZSET(STYLE=SIL);
+
+@dbEXEC(SET ANSI_NULLS ON)
+@dbEXEC(SET QUOTED_IDENTIFIER ON)
+@dbEXEC(SET ANSI_PADDING ON)
+@dbEXEC(SET ANSI_WARNINGS ON)
+@dbEXEC(SET CONCAT_NULL_YIELDS_NULL ON)
+@dbEXEC(SET NUMERIC_ROUNDABORT OFF)
+@dbEXEC(SET ARITHABORT ON)
+
+@MAP_DEPLOY
+SELECT FCT.F1056,FCT.F1056+FCT.F1057 AS F1000,@dbFld(FCT_TAB,FCT.,F1000) FROM
+    (SELECT LNI.F1056,LNI.F1057,FCT.*,ROW_NUMBER() OVER (PARTITION BY FCT.F1063,LNI.F1056,LNI.F1057 ORDER BY CASE WHEN FCT.F1000='PAL' THEN 1 ELSE 2 END DESC) AS F1301
+    FROM FCT_TAB FCT
+    JOIN LNK_TAB LNI ON FCT.F1000=LNI.F1000
+    JOIN LNK_TAB LNO ON LNI.F1056=LNO.F1056 AND LNI.F1057=LNO.F1057
+    WHERE LNO.F1000='@WIZGET(TARGET_FILTER)' AND (
+          LTRIM(RTRIM('@WIZGET(FCT_LIST)'))=''
+          OR EXISTS
+          (
+            SELECT 1
+            FROM
+            (
+              SELECT
+                CASE WHEN CHARINDEX('-',token)=0 AND token IS NOT NULL AND PATINDEX('%[^0-9]%',token)=0 THEN CAST(token AS INT) ELSE NULL END AS SingleNum,
+                CASE WHEN CHARINDEX('-',token)>0 AND PATINDEX('%[^0-9]%',LEFT(token,CHARINDEX('-',token)-1))=0 AND PATINDEX('%[^0-9]%',SUBSTRING(token,CHARINDEX('-',token)+1,8000))=0 THEN CAST(LEFT(token,CHARINDEX('-',token)-1) AS INT) ELSE NULL END AS StartNum,
+                CASE WHEN CHARINDEX('-',token)>0 AND PATINDEX('%[^0-9]%',LEFT(token,CHARINDEX('-',token)-1))=0 AND PATINDEX('%[^0-9]%',SUBSTRING(token,CHARINDEX('-',token)+1,8000))=0 THEN CAST(SUBSTRING(token,CHARINDEX('-',token)+1,8000) AS INT) ELSE NULL END AS EndNum
+              FROM
+              (
+                SELECT T.N.value('.','nvarchar(100)') AS token
+                FROM
+                (
+                  SELECT CAST('<i>'+REPLACE(REPLACE(REPLACE(REPLACE('@WIZGET(FCT_LIST)',CHAR(13),''),CHAR(10),''),' ',''),',','</i><i>')+'</i>' AS XML) AS xdoc
+                ) X
+                CROSS APPLY xdoc.nodes('/i') AS T(N)
+              ) S
+              WHERE ISNULL(token,'')<>''
+            ) FF
+            WHERE
+                   (FF.SingleNum IS NOT NULL AND FCT.F1063 IS NOT NULL AND ISNUMERIC(CONVERT(VARCHAR(50),FCT.F1063))=1 AND CAST(CONVERT(VARCHAR(50),FCT.F1063) AS INT)=FF.SingleNum)
+                OR (FF.StartNum IS NOT NULL AND FF.EndNum IS NOT NULL AND FF.EndNum>=FF.StartNum AND FCT.F1063 IS NOT NULL AND ISNUMERIC(CONVERT(VARCHAR(50),FCT.F1063))=1 AND CAST(CONVERT(VARCHAR(50),FCT.F1063) AS INT) BETWEEN FF.StartNum AND FF.EndNum)
+          )
+        )
+    ) FCT
+WHERE FCT.F1301=1
+ORDER BY F1000,F1063;
+
+/* RESTORE INITITAL PARAMETER POOL */
+
+@WIZRESET;
+@DBHOT(HOT_WIZ,LINETOPARAM,PARAMSAV_FCT_LOAD);
+@DBHOT(HOT_WIZ,CLR,PARAMSAV_FCT_LOAD);
+"@
 	
-	# Define encoding as ANSI (Windows-1252) without BOM
-	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
+	# ===============================================================================================================
+	#                                                  WRITE FILES (Always three)
+	#   CHANGE: No nested helper; inline: normalize to CRLF → write ANSI → clear attributes → log.
+	# ===============================================================================================================
 	
-	# --------------------------------------------------------------------------------------------
-	# Write Files Directly to Destination Paths
-	# --------------------------------------------------------------------------------------------
+	# -- DEPLOY_SYS.sql --
 	try
 	{
-		# Write DEPLOY_SYS.sql
-		[System.IO.File]::WriteAllText($DeploySysDestinationPath, $DeploySysContent, $ansiEncoding)
-		Set-ItemProperty -Path $DeploySysDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Successfully wrote 'DEPLOY_SYS.sql' to '$OfficePath'." "green"
+		$norm = [regex]::Replace($DeploySysContent, "(`r)?`n", "`r`n") # normalize to CRLF
+		[System.IO.File]::WriteAllText($DeploySysPath, $norm, $ansi) # write as ANSI, no BOM
+		Set-ItemProperty -LiteralPath $DeploySysPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write_Log "Updated 'DEPLOY_SYS.sql' (includes 'Multiple Functions') in '$OfficePath'." "green"
 	}
 	catch
 	{
 		Write_Log "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
 	}
 	
+	# -- DEPLOY_ONE_FCT.sqm --
 	try
 	{
-		# Write DEPLOY_ONE_FCT.sqm
-		[System.IO.File]::WriteAllText($DeployOneFctDestinationPath, $DeployOneFctContent, $ansiEncoding)
-		Set-ItemProperty -Path $DeployOneFctDestinationPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Successfully wrote 'DEPLOY_ONE_FCT.sqm' to '$OfficePath'." "green"
+		$norm = [regex]::Replace($DeployOneFctContent, "(`r)?`n", "`r`n") # normalize to CRLF
+		[System.IO.File]::WriteAllText($DeployOneFctPath, $norm, $ansi) # write as ANSI, no BOM
+		Set-ItemProperty -LiteralPath $DeployOneFctPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write_Log "Wrote 'DEPLOY_ONE_FCT.sqm' to '$OfficePath'." "green"
 	}
 	catch
 	{
 		Write_Log "Failed to write 'DEPLOY_ONE_FCT.sqm'. Error: $_" "red"
 	}
-		
-	Write_Log "`r`n==================== Install_ONE_FUNCTION_Into_SMS Function Completed ====================" "blue"
+	
+	# -- DEPLOY_MULTI_FCT.sqm --
+	try
+	{
+		$norm = [regex]::Replace($DeployMultiFctContent, "(`r)?`n", "`r`n") # normalize to CRLF
+		[System.IO.File]::WriteAllText($DeployMultiFctPath, $norm, $ansi) # write as ANSI, no BOM
+		Set-ItemProperty -LiteralPath $DeployMultiFctPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		Write_Log "Wrote 'DEPLOY_MULTI_FCT.sqm' (CSV + ranges) to '$OfficePath'." "green"
+	}
+	catch
+	{
+		Write_Log "Failed to write 'DEPLOY_MULTI_FCT.sqm'. Error: $_" "red"
+	}
+	
+	Write_Log "`r`n==================== Install_FUNCTIONS_Into_SMS Completed (Both Installed) ====================`r`n" "blue"
 }
 
 # ===================================================================================================
@@ -11076,78 +11445,118 @@ function Open_Selected_Node_C_Path
 	Write_Log "`r`n==================== Open_Selected_Node_C_Path Function Completed ====================" "blue"
 }
 
-# ===================================================================================================
-#                      FUNCTION: Add_Scale_Credentials (Background)
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Runs in the background and attempts to add the correct working credentials to Windows Credential
-#   Manager for all unique scale IPs in ScaleCodeToIPInfo. For each IP, tries bizuser/bizerba,
-#   then bizuser/biyerba. Only adds credentials that actually allow opening \\SCALEIP\c$.
-#   No logging, no UI, no output.
-#
-# Usage:
-#   Add-Working_Scale_Credentials -ScaleCodeToIPInfo $ScaleCodeToIPInfo
-#
-# Requirements:
-#   - $ScaleCodeToIPInfo: Hashtable, keys=scale codes, values=objects with FullIP or IPNetwork/IPDevice.
-#   - Runs PowerShell as admin for credential manager and share access.
-#   - Will *not* interfere with any existing UI or script output.
-# ---------------------------------------------------------------------------------------------------
+# =========================================================================================
+# FUNCTION: Add_Scale_Credentials  (fast, parallel, silent; PS 5.1 compatible)
+# -----------------------------------------------------------------------------------------
+# - Gathers unique scale IPs from ScaleCodeToIPInfo (uses .FullIP or IPNetwork+IPDevice).
+# - For each IP, in parallel:
+#     * Quick preflight: TCP 445 reachable? If not, skip.
+#     * If \\IP\c$ already accessible, skip (no creds needed).
+#     * Try creds in order: bizuser/bizerba, then bizuser/biyerba using "net use".
+#       On success: remove that mapping and persist creds with CMDKEY.
+# - No output, no logging, returns immediately (background runspaces).
+# - Keeps handles in $script:ScaleCredTasks so they don't get GC'd; you can clean them later.
+# =========================================================================================
 
 function Add_Scale_Credentials
 {
-	param ([hashtable]$ScaleCodeToIPInfo)
+	param (
+		[Parameter(Mandatory = $true)]
+		[hashtable]$ScaleCodeToIPInfo,
+		[int]$MaxParallel = 16
+	)
 	
+	# Collect unique IPs
 	$scaleIPs = $ScaleCodeToIPInfo.Values | ForEach-Object {
 		if ($_.FullIP) { $_.FullIP }
 		elseif ($_.IPNetwork -and $_.IPDevice) { "$($_.IPNetwork)$($_.IPDevice)" }
 	} | Where-Object { $_ } | Select-Object -Unique
 	
-	# Write-Host "Will attempt to add credentials to these Scale IPs:" -ForegroundColor Yellow
-	# $scaleIPs | ForEach-Object { Write-Host "  $_" -ForegroundColor Cyan }
-	$scaleIpStr = "@(" + (($scaleIPs | ForEach-Object { "'$_'" }) -join ",") + ")"
+	if (-not $scaleIPs -or $scaleIPs.Count -eq 0) { return }
 	
-	$psScript = @"
-`$credsToTry = @(
-    @{ User = 'bizuser'; Pass = 'bizerba' },
-    @{ User = 'bizuser'; Pass = 'biyerba' }
-)
-`$scaleIPs = $scaleIpStr
-Write-Host '==== SCALE CREDENTIALS TEST (EXTERNAL PROCESS) ====' -ForegroundColor Yellow
-Write-Host 'IPs:' -ForegroundColor Cyan
-`$scaleIPs | ForEach-Object { Write-Host " `$_" -ForegroundColor Green }
-foreach (`$scaleIP in `$scaleIPs) {
-    `$connected = `$false
-    try {
-        Get-ChildItem -Path "\\`$scaleIP\c$" -ErrorAction Stop | Out-Null
-        Write-Host "`${scaleIP}: Already accessible, skipping." -ForegroundColor Green
-        `$connected = `$true
-    } catch {
-        Write-Host "`${scaleIP}: Not accessible, will try credentials..." -ForegroundColor Yellow
-    }
-    if (`$connected) { continue }
-    cmdkey /delete:`$scaleIP | Out-Null
-    foreach (`$c in `$credsToTry) {
-        Write-Host " Trying `$(`$c.User)/`$(`$c.Pass)..." -NoNewline
-        cmdkey /add:`$scaleIP /user:`$(`$c.User) /pass:`$(`$c.Pass) | Out-Null
-        Start-Sleep -Milliseconds 600
-        try {
-            Get-ChildItem -Path "\\`$scaleIP\c$" -ErrorAction Stop | Out-Null
-            Write-Host " [SUCCESS]" -ForegroundColor Green
-            `$connected = `$true
-            break
-        } catch {
-            Write-Host " [FAIL]" -ForegroundColor Red
-            cmdkey /delete:`$scaleIP | Out-Null
-        }
-    }
-    if (-not `$connected) { Write-Host "`${scaleIP}: All credentials failed." -ForegroundColor Red }
-}
-Write-Host '==== CREDENTIALS TEST END ====' -ForegroundColor Yellow
-"@
+	# Runspace pool
+	$min = 1
+	if ($MaxParallel -lt 1) { $MaxParallel = 1 }
+	$pool = [runspacefactory]::CreateRunspacePool($min, $MaxParallel)
+	$pool.ApartmentState = 'MTA'
+	$pool.Open()
 	
-	# Launch in a new PowerShell window so output is visible
-	Start-Process powershell -ArgumentList "-NoProfile -WindowStyle Hidden -Command $psScript" -WindowStyle Hidden
+	if (-not $script:ScaleCredTasks) { $script:ScaleCredTasks = @{ } }
+	
+	foreach ($ip in $scaleIPs)
+	{
+		$ps = [powershell]::Create()
+		$null = $ps.AddScript({
+				param ($ip)
+				
+				# ---- quick SMB reachability (port 445) ----
+				$smbOk = $false
+				try
+				{
+					$client = New-Object System.Net.Sockets.TcpClient
+					$ar = $client.BeginConnect($ip, 445, $null, $null)
+					if ($ar.AsyncWaitHandle.WaitOne(400))
+					{
+						try { $client.EndConnect($ar) }
+						catch { }
+						if ($client.Connected) { $smbOk = $true }
+					}
+					$client.Close()
+				}
+				catch { }
+				
+				if (-not $smbOk) { return }
+				
+				# ---- already accessible without creds? ----
+				$already = $false
+				try
+				{
+					if (Test-Path "\\$ip\c$") { $already = $true }
+				}
+				catch { }
+				
+				if ($already) { return }
+				
+				# ---- try credentials quickly via NET USE (no persistence) ----
+				$tryCreds = @(
+					@{ User = 'bizuser'; Pass = 'bizerba' },
+					@{ User = 'bizuser'; Pass = 'biyerba' }
+				)
+				
+				foreach ($c in $tryCreds)
+				{
+					# map attempt (non-persistent)
+					$cmd = "net use \\$ip\c$ /user:$($c.User) $($c.Pass) /persistent:no"
+					$null = & cmd.exe /c $cmd 2>$null
+					$rc = $LASTEXITCODE
+					
+					if ($rc -eq 0)
+					{
+						# we proved credentials work; tear down mapping then persist with cmdkey
+						$null = & cmd.exe /c "net use \\$ip\c$ /delete /y" 2>$null
+						$null = & cmdkey.exe /add:$ip /user:$($c.User) /pass:$($c.Pass) 2>$null
+						return
+					}
+					else
+					{
+						# ensure no lingering mapping before next attempt
+						$null = & cmd.exe /c "net use \\$ip\c$ /delete /y" 2>$null
+					}
+				}
+			}).AddArgument($ip)
+		
+		$ps.RunspacePool = $pool
+		$handle = $ps.BeginInvoke()
+		
+		# Stash to prevent GC and allow later cleanup if you want
+		$script:ScaleCredTasks[$ip] = @{ PS = $ps; Handle = $handle }
+	}
+	
+	# Note: We do not wait. This function returns immediately while tasks run in background.
+	# Optional: You can later clean completed entries like this:
+	# foreach ($k in @($script:ScaleCredTasks.Keys)) {
+	#   $st = $script:ScaleCredTasks[$k]; if ($st.Handle.IsCompleted) { $st.PS.EndInvoke($st.Handle); $st.PS.Dispose(); $script:ScaleCredTasks.Remove($k) }
+	# }
 }
 
 # ===================================================================================================
@@ -13491,17 +13900,27 @@ USING (
     SELECT
         $ItemKey,
         F1000,
-		TRY_CAST(FLOOR(CAST(SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) AS FLOAT)) AS INT) AS F267,
-        $POS_Field -- e.g., F82
+        TRY_CAST(FLOOR(CAST(SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) AS FLOAT)) AS INT) AS F267,
+        $POS_Field
     FROM POS_TAB
     WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
 ) AS Source
 ON Target.$ItemKey = Source.$ItemKey
-WHEN MATCHED THEN
+
+-- Update F272 only when it's NOT already one of the preserved values
+WHEN MATCHED AND (Target.$SCL_Field NOT IN (0,1,3,4,9,10) OR Target.$SCL_Field IS NULL) THEN
     UPDATE SET
         $SCL_Field = CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END,
+        F1000      = Source.F1000,
+        F267       = Source.F267
+
+-- Still refresh F1000/F267, but leave F272 as-is if it's already a preserved value
+WHEN MATCHED AND Target.$SCL_Field IN (0,1,3,4,9,10) THEN
+    UPDATE SET
         F1000 = Source.F1000,
-        F267 = Source.F267
+        F267  = Source.F267
+
+-- New rows: insert with computed F272
 WHEN NOT MATCHED BY TARGET THEN
     INSERT ($ItemKey, F1000, $SCL_Field, F267)
     VALUES (
@@ -13510,6 +13929,7 @@ WHEN NOT MATCHED BY TARGET THEN
         CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END,
         Source.F267
     );
+
 SELECT @@ROWCOUNT AS RowsAffected;
 "@
 	}
@@ -13519,7 +13939,9 @@ SELECT @@ROWCOUNT AS RowsAffected;
 UPDATE SCL_TAB
 SET $SCL_Field = NULL
 WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
-AND F272 IS NOT NULL;
+  AND $SCL_Field IS NOT NULL
+  AND $SCL_Field NOT IN (0,1,3,4,9,10);
+
 SELECT @@ROWCOUNT AS RowsAffected;
 "@
 	}
@@ -15012,24 +15434,15 @@ function Show_Section_Selection_Form
 }
 
 # ===================================================================================================
-#                                FUNCTION: Start_Lane_Protocol_Jobs
+#                                FUNCTION: Start_Lane_Protocol_Jobs (Runspaces + Polling)
 # ---------------------------------------------------------------------------------------------------
-# Description:
-#   Launches parallel background jobs (PS5-compatible) to check the SQL protocol connectivity 
-#   (TCP, Named Pipes, or File) for each lane. Results are stored in the global variables:
-#   $script:LaneProtocolJobs, $script:LaneProtocols, and $script:ProtocolResults. The function also 
-#   initializes a live-polling timer to collect and cache results for the GUI, and writes the latest
-#   results to a persistent file for faster reload at startup.
-#
-#   Results file: C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt
-#
-# Parameters:
-#   - LaneNumToMachineName: Hashtable mapping lane numbers to machine names. (Required)
-#   - SqlModuleName: The SQL Server PowerShell module name (for Import-Module). (Required)
-#
-# Returns:
-#   None
-# ===================================================================================================
+# Parallel SQL protocol detector (PS 5.1):
+#   - Tries SqlClient to tcp:<lane> then np:<lane>, else "File"
+#   - Connect Timeout=1 (fast)
+#   - Results cached to: C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt
+#   - Updates $script:LaneProtocolJobs, $script:LaneProtocols, $script:ProtocolResults
+#   - Polling loop keeps WinForms UI responsive (Application.DoEvents)
+# ---------------------------------------------------------------------------------------------------.
 
 function Start_Lane_Protocol_Jobs
 {
@@ -15037,152 +15450,170 @@ function Start_Lane_Protocol_Jobs
 		[Parameter(Mandatory)]
 		[hashtable]$LaneNumToMachineName,
 		[Parameter(Mandatory)]
-		[string]$SqlModuleName
+		[string]$SqlModuleName # kept for signature compatibility, not used inside workers
 	)
 	
+	# -------- Paths / setup ----------
 	$script:ProtocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
 	$resultsDir = [System.IO.Path]::GetDirectoryName($script:ProtocolResultsFile)
 	if (-not (Test-Path $resultsDir)) { New-Item -Path $resultsDir -ItemType Directory -Force | Out-Null }
 	if (-not (Test-Path $script:ProtocolResultsFile)) { New-Item -Path $script:ProtocolResultsFile -ItemType File -Force | Out-Null }
 	
-	# --- Load previous results if file exists and is not empty ---
+	try { Add-Type -AssemblyName System.Data }
+	catch { }
+	
+	# -------- Globals ----------
 	$script:LaneProtocolJobs = @{ }
-	$script:LaneProtocols = @{ }
-	$script:ProtocolResults = @()
-	if (Test-Path $script:ProtocolResultsFile)
+	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{ } }
+	if (-not $script:ProtocolResults) { $script:ProtocolResults = @() }
+	
+	# Warm cache from file (if any)
+	$existing = (Get-Content -LiteralPath $script:ProtocolResultsFile -ErrorAction SilentlyContinue)
+	if ($existing)
 	{
-		$rawContent = (Get-Content -LiteralPath $script:ProtocolResultsFile -Raw) -as [string]
-		if ($rawContent -and $rawContent.Trim().Length -gt 0)
+		foreach ($line in $existing)
 		{
-			$lines = Get-Content -LiteralPath $script:ProtocolResultsFile -Encoding UTF8
-			foreach ($line in $lines)
+			if ($line -match '^\s*([^,]+),\s*([^,]+)\s*$')
 			{
-				if ($line -match '^\s*([^,]+),\s*([^,]+)\s*$')
-				{
-					$lane = $matches[1].Trim()
-					$protocol = $matches[2].Trim()
-					$script:LaneProtocols[$lane] = $protocol
-					$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
-				}
+				$lane = $matches[1].Trim()
+				$protocol = $matches[2].Trim()
+				$script:LaneProtocols[$lane] = $protocol
+				$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $lane })
+				$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
 			}
 		}
 	}
 	
-	foreach ($laneNum in $LaneNumToMachineName.Keys | Where-Object { $_ -match '^\d{3}$' } | Sort-Object)
+	# -------- RunspacePool ----------
+	$minThreads = 1
+	$maxThreads = [Math]::Max(8, [Environment]::ProcessorCount * 2)
+	$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+	$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($minThreads, $maxThreads, $iss, $Host)
+	try { $pool.ApartmentState = 'MTA' }
+	catch { }
+	$pool.Open()
+	
+	# -------- Worker script (single-quoted; no outer $ expansion) ----------
+	$worker = @'
+param([string]$machine,[string]$lane)
+
+Add-Type -AssemblyName System.Data 2>$null
+
+function Test-SqlConn([string]$dataSource) {
+    $cs = 'Data Source=' + $dataSource + ';Initial Catalog=master;Integrated Security=True;Connect Timeout=1'
+    $cn = New-Object System.Data.SqlClient.SqlConnection $cs
+    try { $cn.Open(); $cn.Close(); return $true }
+    catch { return $false }
+    finally { $cn.Dispose() }
+}
+
+$protocol = 'File'
+if (Test-SqlConn ('tcp:' + $machine)) {
+    $protocol = 'TCP'
+}
+elseif (Test-SqlConn ('np:' + $machine)) {
+    $protocol = 'Named Pipes'
+}
+
+[PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
+'@
+	
+	# -------- Queue workers ----------
+	$pending = @{ }
+	foreach ($k in $LaneNumToMachineName.Keys)
 	{
-		$machine = $LaneNumToMachineName[$laneNum]
-		$script:LaneProtocolJobs[$laneNum] = Start-Job -ArgumentList $machine, $laneNum, $SqlModuleName -ScriptBlock {
-			param ($machine,
-				$laneNum,
-				$SqlModuleName)
-			$protocol = "File"
-			$tcpConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=DBMSSOCN"
-			$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
-			$tcpPortOpen = $false
-			try
-			{
-				$tcpClient = New-Object System.Net.Sockets.TcpClient
-				$connectTask = $tcpClient.ConnectAsync($machine, 1433)
-				if ($connectTask.Wait(500) -and $tcpClient.Connected)
-				{
-					$tcpPortOpen = $true
-					$tcpClient.Close()
-				}
-			}
-			catch { }
-			if ($tcpPortOpen)
-			{
-				try
-				{
-					Import-Module $SqlModuleName -ErrorAction Stop
-					Invoke-Sqlcmd -ConnectionString $tcpConn -Query "SELECT 1" -QueryTimeout 1 -ErrorAction Stop | Out-Null
-					$protocol = "TCP"
-				}
-				catch { }
-			}
-			if ($protocol -eq "File")
-			{
-				try
-				{
-					Import-Module $SqlModuleName -ErrorAction Stop
-					Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 1 -ErrorAction Stop | Out-Null
-					$protocol = "Named Pipes"
-				}
-				catch { }
-			}
-			[PSCustomObject]@{ Lane = $laneNum; Protocol = $protocol }
-		}
+		$numStr = ($k -replace '[^\d]', '')
+		if (-not $numStr) { continue }
+		$laneNum = $numStr.PadLeft(3, '0')
+		$machine = $LaneNumToMachineName[$k]
+		if (-not $machine) { continue }
+		
+		$ps = [System.Management.Automation.PowerShell]::Create()
+		$ps.RunspacePool = $pool
+		$null = $ps.AddScript($worker).AddArgument([string]$machine).AddArgument([string]$laneNum)
+		$handle = $ps.BeginInvoke()
+		$script:LaneProtocolJobs[$laneNum] = @{ PS = $ps; Handle = $handle }
+		$pending[$laneNum] = @{ PS = $ps; Handle = $handle }
 	}
 	
-	if (-not $script:protocolTimer)
+	# -------- Poll until done; update file as results come in ----------
+	$lastWriteCount = -1
+	while ($pending.Count -gt 0)
 	{
-		$script:protocolTimer = New-Object System.Windows.Forms.Timer
-		$script:protocolTimer.Interval = 1000
-		$script:protocolTimer.add_Tick({
-				$updated = $false
-				$keysCopy = @($script:LaneProtocolJobs.Keys)
-				foreach ($lane in $keysCopy)
+		
+		$lanesDone = @()
+		foreach ($lane in $pending.Keys)
+		{
+			$task = $pending[$lane]
+			$handle = $task.Handle
+			if ($handle -and $handle.IsCompleted)
+			{
+				$ps = $task.PS
+				$resultList = $null
+				try { $resultList = $ps.EndInvoke($handle) }
+				catch { $resultList = $null }
+				finally { try { $ps.Dispose() }
+					catch { } }
+				
+				$result = $null
+				if ($resultList -and $resultList.Count -ge 1) { $result = $resultList[0] }
+				if (-not $result) { $result = [PSCustomObject]@{ Lane = $lane; Protocol = 'File' } }
+				
+				$rawLane = [string]$result.Lane
+				$numericLane = ($rawLane -replace '[^\d]', '').PadLeft(3, '0')
+				$protocol = [string]$result.Protocol
+				
+				# Update caches (multiple keys for convenience)
+				$script:LaneProtocols[$numericLane] = $protocol
+				$script:LaneProtocols[$rawLane] = $protocol
+				if ($script:FunctionResults -and $script:FunctionResults['LaneNumToMachineName'])
 				{
-					$job = $script:LaneProtocolJobs[$lane]
-					if ($job.State -eq 'Completed')
+					$machineName = $script:FunctionResults['LaneNumToMachineName'][$numericLane]
+					if ($machineName)
 					{
-						$result = Receive-Job $job -ErrorAction SilentlyContinue
-						if ($result -and $result.Lane -and $result.Protocol)
-						{
-							$rawLane = $result.Lane
-							$numericLane = ($rawLane -replace '[^\d]', '').PadLeft(3, '0')
-							$script:LaneProtocols[$numericLane] = $result.Protocol
-							$script:LaneProtocols[$rawLane] = $result.Protocol
-							if ($script:FunctionResults -and $script:FunctionResults['LaneNumToMachineName'])
-							{
-								$machineName = $script:FunctionResults['LaneNumToMachineName'][$numericLane]
-								if ($machineName) { $script:LaneProtocols[$machineName] = $result.Protocol }
-								if ($machineName) { $script:LaneProtocols[$machineName.ToLower()] = $result.Protocol }
-							}
-							# --- Always replace previous result for this lane ---
-							$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $rawLane })
-							$script:ProtocolResults += $result
-							$updated = $true
-						}
-						Remove-Job $job -Force
-						$script:LaneProtocolJobs.Remove($lane)
-					}
-					elseif ($job.State -eq 'Failed')
-					{
-						Write-Host "`r`nJob for Lane $lane failed: $($job.ChildJobs[0].JobStateInfo.Reason)" -ForegroundColor Red
-						$rawLane = $lane
-						$numericLane = ($rawLane -replace '[^\d]', '').PadLeft(3, '0')
-						$protocol = "File"
-						$script:LaneProtocols[$numericLane] = $protocol
-						$script:LaneProtocols[$rawLane] = $protocol
-						if ($script:FunctionResults -and $script:FunctionResults['LaneNumToMachineName'])
-						{
-							$machineName = $script:FunctionResults['LaneNumToMachineName'][$numericLane]
-							if ($machineName) { $script:LaneProtocols[$machineName] = $protocol }
-							if ($machineName) { $script:LaneProtocols[$machineName.ToLower()] = $protocol }
-						}
-						# --- Always replace previous result for this lane ---
-						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $rawLane })
-						$script:ProtocolResults += $result
-						$updated = $true
-						Remove-Job $job -Force
-						$script:LaneProtocolJobs.Remove($lane)
+						$script:LaneProtocols[$machineName] = $protocol
+						$script:LaneProtocols[$machineName.ToLower()] = $protocol
 					}
 				}
-				# Write to file if updated or file doesn't exist
-				if ($updated -or (-not (Test-Path $script:ProtocolResultsFile)))
-				{
-					$sortedResults = $script:ProtocolResults | Sort-Object { ($_.Lane -replace '[^\d]', '') -as [int] }
-					$lines = @()
-					foreach ($row in $sortedResults)
-					{
-						$lines += "$($row.Lane),$($row.Protocol)"
-					}
-					[System.IO.File]::WriteAllLines($script:ProtocolResultsFile, $lines, [System.Text.Encoding]::UTF8)
-				}
-			})
-		$script:protocolTimer.Start()
+				
+				$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $rawLane })
+				$script:ProtocolResults += [PSCustomObject]@{ Lane = $rawLane; Protocol = $protocol }
+				
+				$lanesDone += $lane
+			}
+		}
+		
+		if ($lanesDone.Count -gt 0)
+		{
+			foreach ($d in $lanesDone)
+			{
+				$pending.Remove($d) | Out-Null
+				$script:LaneProtocolJobs.Remove($d) | Out-Null
+			}
+			
+			# Write results (sorted by numeric lane)
+			$sorted = $script:ProtocolResults | Sort-Object { ($_.Lane -replace '[^\d]', '') -as [int] }
+			$lines = foreach ($row in $sorted) { '{0},{1}' -f $row.Lane, $row.Protocol }
+			[System.IO.File]::WriteAllLines($script:ProtocolResultsFile, $lines, [System.Text.Encoding]::UTF8)
+			$lastWriteCount = $script:ProtocolResults.Count
+		}
+		
+		# Keep UI responsive if WinForms is around
+		try
+		{
+			if ([System.Windows.Forms.Application]::MessageLoop)
+			{
+				[System.Windows.Forms.Application]::DoEvents()
+			}
+		}
+		catch { }
+		
+		Start-Sleep -Milliseconds 150
 	}
+	
+	# Done; close pool
+	try { $pool.Close(); $pool.Dispose() }
+	catch { }
 }
 
 # =================================================================================================== 
@@ -15237,7 +15668,7 @@ if (-not $form)
 	$bannerLabel.Dock = 'Top'
 	$form.Controls.Add($bannerLabel)
 	
-	# Handle form closing event (X button)
+	# ========================= Form Closing (X) =========================
 	$form.add_FormClosing({
 			$confirmResult = [System.Windows.Forms.MessageBox]::Show(
 				"Are you sure you want to exit?",
@@ -15248,23 +15679,142 @@ if (-not $form)
 			if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes)
 			{
 				$_.Cancel = $true
+				return
 			}
-			else
+			
+			# ---- Timers ----
+			try
 			{
-				# Existing cleanup...
-				$protocolTimer.Stop(); $protocolTimer.Dispose()
-				foreach ($job in $script:LaneProtocolJobs.Values)
+				if ($script:protocolTimer)
 				{
-					try { Stop-Job $job -Force }
+					try { $script:protocolTimer.Stop() }
+					catch { }
+					try { $script:protocolTimer.Dispose() }
+					catch { }
+					$script:protocolTimer = $null
+				}
+			}
+			catch { }
+			try
+			{
+				if ($global:ProtocolFormTimer)
+				{
+					try { $global:ProtocolFormTimer.Stop() }
+					catch { }
+					try { $global:ProtocolFormTimer.Dispose() }
+					catch { }
+					$global:ProtocolFormTimer = $null
+				}
+			}
+			catch { }
+			
+			# ---- Popup form (optional) ----
+			try
+			{
+				if ($global:ProtocolForm)
+				{
+					try { $global:ProtocolForm.Hide() }
+					catch { }
+					try { $global:ProtocolForm.Dispose() }
+					catch { }
+					$global:ProtocolForm = $null
+				}
+			}
+			catch { }
+			
+			# ---- Lane protocol runspaces ----
+			try
+			{
+				if ($script:LaneProtocolJobs)
+				{
+					foreach ($kv in @($script:LaneProtocolJobs.GetEnumerator()))
+					{
+						$state = $kv.Value
+						if ($state)
+						{
+							try
+							{
+								if ($state.Handle -and (-not $state.Handle.IsCompleted))
+								{
+									try
+									{
+										if ($state.PS) { $null = $state.PS.Stop() }
+									}
+									catch { }
+								}
+							}
+							catch { }
+							try { if ($state.PS) { $state.PS.Dispose() } }
+							catch { }
+						}
+						[void]$script:LaneProtocolJobs.Remove($kv.Key)
+					}
+				}
+			}
+			catch { }
+			try
+			{
+				if ($script:LaneProtocolPool)
+				{
+					try { $script:LaneProtocolPool.Close() }
+					catch { }
+					try { $script:LaneProtocolPool.Dispose() }
+					catch { }
+					$script:LaneProtocolPool = $null
+				}
+			}
+			catch { }
+			
+			# ---- Scale credential runspaces (if you used the background cred helper) ----
+			try
+			{
+				if ($script:ScaleCredReaper)
+				{
+					try { $script:ScaleCredReaper.Stop() }
+					catch { }
+					try { $script:ScaleCredReaper.Dispose() }
+					catch { }
+					$script:ScaleCredReaper = $null
+				}
+			}
+			catch { }
+			try
+			{
+				if ($script:ScaleCredTasks)
+				{
+					foreach ($k in @($script:ScaleCredTasks.Keys))
+					{
+						$st = $script:ScaleCredTasks[$k]
+						if ($st)
+						{
+							try { if ($st.Handle -and $st.PS) { $st.PS.EndInvoke($st.Handle) } }
+							catch { }
+							try { if ($st.PS) { $st.PS.Dispose() } }
+							catch { }
+						}
+						[void]$script:ScaleCredTasks.Remove($k)
+					}
+				}
+			}
+			catch { }
+			
+			# --- Any lingering job from earlier versions (defensive) ---
+			try
+			{
+				Get-Job -Name 'ClearXEFolderJob' -ErrorAction SilentlyContinue | ForEach-Object {
+					try { Stop-Job $_ -Force -ErrorAction SilentlyContinue }
+					catch { }
+					try { Remove-Job $_ -Force -ErrorAction SilentlyContinue }
 					catch { }
 				}
-				$script:LaneProtocolJobs.Clear()
-				Write_Log "Form is closing. Performing cleanup." "green"
-				Delete_Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql"
 			}
+			catch { }
+			
+			Write_Log "Form is closing. Performing cleanup." "green"
+			Delete_Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql"
 		})
 	
-	# Protocol Table Popup Form and Timer	
+	# ========================= Protocol Table Popup =========================
 	$rowHeight = 19
 	$rowCount = 25
 	$gridHeight = ($rowCount * $rowHeight) + 28
@@ -15277,15 +15827,13 @@ if (-not $form)
 		$global:ProtocolForm.StartPosition = "CenterScreen"
 		$global:ProtocolForm.Topmost = $true
 		
-		# Remove minimize/maximize buttons
+		# No minimize/maximize
 		$global:ProtocolForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 		$global:ProtocolForm.MaximizeBox = $false
 		$global:ProtocolForm.MinimizeBox = $false
 		
-		# Hide when clicking anywhere outside the popup
-		$global:ProtocolForm.add_Deactivate({
-				$global:ProtocolForm.Hide()
-			})
+		# Hide when focus leaves
+		$global:ProtocolForm.add_Deactivate({ $global:ProtocolForm.Hide() })
 		
 		$global:ProtocolGrid = New-Object System.Windows.Forms.DataGridView
 		$global:ProtocolGrid.Location = New-Object System.Drawing.Point(10, 10)
@@ -15309,47 +15857,59 @@ if (-not $form)
 		$closeBtn.Size = New-Object System.Drawing.Size(120, 30)
 		$closeBtn.Add_Click({ $global:ProtocolForm.Hide() })
 		$global:ProtocolForm.Controls.Add($closeBtn)
+		
+		# Prevent disposal on X; just hide
 		$global:ProtocolForm.add_FormClosing({
 				$_.Cancel = $true
 				$global:ProtocolForm.Hide()
 			})
 	}
+	
 	if (-not $global:ProtocolFormTimer)
 	{
 		$global:ProtocolFormTimer = New-Object System.Windows.Forms.Timer
 		$global:ProtocolFormTimer.Interval = 500
 		$global:ProtocolFormTimer.add_Tick({
-				$global:ProtocolGrid.Rows.Clear()
-				$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-				
-				# Before populating, store old scroll and selection index if available
+				# Save scroll & selection BEFORE clearing rows
+				$prevRowCount = $global:ProtocolGrid.Rows.Count
 				$scrollIndex = 0
-				if ($global:ProtocolGrid.Rows.Count -gt 0)
+				if ($prevRowCount -gt 0)
 				{
-					$scrollIndex = $global:ProtocolGrid.FirstDisplayedScrollingRowIndex
+					try { $scrollIndex = $global:ProtocolGrid.FirstDisplayedScrollingRowIndex }
+					catch { $scrollIndex = 0 }
 				}
 				$selIndex = $null
 				if ($global:ProtocolGrid.SelectedRows.Count -gt 0)
 				{
-					$selIndex = $global:ProtocolGrid.SelectedRows[0].Index
+					try { $selIndex = $global:ProtocolGrid.SelectedRows[0].Index }
+					catch { $selIndex = $null }
 				}
 				
-				$script:ProtocolResults | Sort-Object Lane | ForEach-Object {
-					$row = $global:ProtocolGrid.Rows.Add()
-					$machineName = $LaneNumToMachineName[$_.Lane]
-					if (-not $machineName) { $machineName = $_.Lane } # Fallback if mapping is missing
-					$global:ProtocolGrid.Rows[$row].Cells[0].Value = $machineName
-					$global:ProtocolGrid.Rows[$row].Cells[1].Value = $_.Protocol
+				# Refresh grid
+				$global:ProtocolGrid.Rows.Clear()
+				
+				$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+				if ($script:ProtocolResults)
+				{
+					# Sort by lane number if numeric, otherwise lexical
+					$sorted = $script:ProtocolResults | Sort-Object {
+						($_.Lane -replace '[^\d]', '') -as [int]
+					}
+					foreach ($rowObj in $sorted)
+					{
+						$r = $global:ProtocolGrid.Rows.Add()
+						$machineName = $null
+						if ($LaneNumToMachineName) { $machineName = $LaneNumToMachineName[$rowObj.Lane] }
+						if (-not $machineName) { $machineName = $rowObj.Lane }
+						$global:ProtocolGrid.Rows[$r].Cells[0].Value = $machineName
+						$global:ProtocolGrid.Rows[$r].Cells[1].Value = $rowObj.Protocol
+					}
 				}
 				
-				# --- Auto-resize Protocol column based on scroll bar presence ---
+				# Column widths (Lane fixed, Protocol fills; account for scrollbar)
+				$global:ProtocolGrid.Columns[0].Width = 60
 				$visibleRowCount = [math]::Floor($global:ProtocolGrid.DisplayRectangle.Height / $global:ProtocolGrid.RowTemplate.Height)
 				$scrollBarVisible = $global:ProtocolGrid.Rows.Count -gt $visibleRowCount
-				
-				# Set Lane column width (fixed)
-				$global:ProtocolGrid.Columns[0].Width = 60
-				
-				# Set Protocol column width (auto)
 				if ($scrollBarVisible)
 				{
 					$global:ProtocolGrid.Columns[1].Width = $global:ProtocolGrid.Width - 60 - 4 - [System.Windows.Forms.SystemInformation]::VerticalScrollBarWidth
@@ -15359,17 +15919,19 @@ if (-not $form)
 					$global:ProtocolGrid.Columns[1].Width = $global:ProtocolGrid.Width - 60 - 4
 				}
 				
-				# Restore scroll and selection safely
+				# Restore scroll & selection safely
 				$rowCount = $global:ProtocolGrid.Rows.Count
 				if ($rowCount -gt 0)
 				{
 					if ($scrollIndex -lt 0) { $scrollIndex = 0 }
 					if ($scrollIndex -ge $rowCount) { $scrollIndex = $rowCount - 1 }
-					$global:ProtocolGrid.FirstDisplayedScrollingRowIndex = $scrollIndex
+					try { $global:ProtocolGrid.FirstDisplayedScrollingRowIndex = $scrollIndex }
+					catch { }
 				}
-				if ($selIndex -ne $null -and $global:ProtocolGrid.Rows.Count -gt $selIndex -and $selIndex -ge 0)
+				if ($selIndex -ne $null -and $rowCount -gt $selIndex -and $selIndex -ge 0)
 				{
-					$global:ProtocolGrid.Rows[$selIndex].Selected = $true
+					try { $global:ProtocolGrid.Rows[$selIndex].Selected = $true }
+					catch { }
 				}
 			})
 		$global:ProtocolFormTimer.Start()
@@ -16000,12 +16562,12 @@ if (-not $form)
 	[void]$contextMenuGeneral.Items.Add($rebootItem)
 	
 	############################################################################
-	# 3) Install Function in SMS
+	# 3) Install Functions in SMS (One + Multi)  -- UPDATED
 	############################################################################
-	$Install_ONE_FUNCTION_Into_SMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install Function in SMS")
-	$Install_ONE_FUNCTION_Into_SMSItem.ToolTipText = "Installs 'Deploy_ONE_FCT' & 'Pump_All_Items_Tables' into the SMS system."
+	$Install_ONE_FUNCTION_Into_SMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install Functions in SMS (One + Multi)")
+	$Install_ONE_FUNCTION_Into_SMSItem.ToolTipText = "Installs DEPLOY_SYS.sql (with 'Multiple Functions' menu), DEPLOY_ONE_FCT.sqm, and DEPLOY_MULTI_FCT.sqm into SMS."
 	$Install_ONE_FUNCTION_Into_SMSItem.Add_Click({
-			Install_ONE_FUNCTION_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
+			Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
 	[void]$contextMenuGeneral.Items.Add($Install_ONE_FUNCTION_Into_SMSItem)
 	
