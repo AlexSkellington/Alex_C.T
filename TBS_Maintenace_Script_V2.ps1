@@ -6764,7 +6764,7 @@ ORDER BY F1000,F1063;
 }
 
 # ===================================================================================================
-#                                           FUNCTION: Edit_INIs
+#                                           FUNCTION: INI_Editor
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Generic INI editor for files under \storeman\<RelativeIniPath>. Pick Server/Lane as source,
@@ -6782,14 +6782,14 @@ ORDER BY F1000,F1063;
 #   - Reordering is smoother; Saved file preserves the on-screen key order; no stray blank line added.
 # ---------------------------------------------------------------------------------------------------
 
-function Edit_INIs
+function INI_Editor
 {
 	param (
 		[string]$RelativeIniPath = 'office\Setup.ini',
 		[string[]]$PredefinedIniPaths = @('office\Setup.ini', 'office\Setting.ini', 'office\System.ini', 'XchDev\ApiVerifoneMX.ini')
 	)
 	
-	Write_Log "`r`n==================== Starting Edit_INIs ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting INI_Editor ====================`r`n" "blue"
 	
 	# ==============================================================================================
 	#                                    HELPERS: paths, parse, write
@@ -6957,7 +6957,7 @@ function Edit_INIs
 	[void][System.Windows.Forms.Application]::EnableVisualStyles()
 	
 	$frm = New-Object System.Windows.Forms.Form
-	$frm.Text = "Edit INIs  -  dynamic section/key editor"
+	$frm.Text = "INI_Editor  -  dynamic section/key editor"
 	$frm.Size = New-Object System.Drawing.Size(820, 600) # keep size modest; we'll give the grid more room
 	$frm.StartPosition = 'CenterScreen'
 	$frm.FormBorderStyle = 'FixedDialog'
@@ -7392,7 +7392,7 @@ function Edit_INIs
 		{
 			Write_Log "[Info] INI not found, will be created on save: $($state.FullPath)" "yellow"
 			$ini = @{
-				RawLines = @("; Created by Edit_INIs", "")
+				RawLines = @("; Created by INI_Editor", "")
 				Sections = (New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Specialized.OrderedDictionary]')
 			}
 		}
@@ -7600,7 +7600,7 @@ function Edit_INIs
 					$destIni = & $readIni $dstFull
 					if (-not $destIni)
 					{
-						$destIni = @{ RawLines = @("; Created by Edit_INIs (merge)", ""); Sections = (New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Specialized.OrderedDictionary]') }
+						$destIni = @{ RawLines = @("; Created by INI_Editor (merge)", ""); Sections = (New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Specialized.OrderedDictionary]') }
 					}
 					$secActual = $null
 					foreach ($k in $destIni.Sections.Keys) { if ($k -ieq $secRequested) { $secActual = $k; break } }
@@ -7667,7 +7667,7 @@ function Edit_INIs
 	$iniFlow.PerformLayout() # ensure combo gets sized on first draw
 	[void]$frm.ShowDialog()
 	
-	Write_Log "`r`n==================== Edit_INIs Completed ====================`r`n" "blue"
+	Write_Log "`r`n==================== INI_Editor Completed ====================`r`n" "blue"
 }
 
 # ===================================================================================================
@@ -16022,12 +16022,12 @@ if (-not $form)
 	############################################################################
 	# 3c) Context menu item: Edit INIs (Setup.ini and others)
 	############################################################################
-	$Edit_INIsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Edit INIs")
-	$Edit_INIsItem.ToolTipText = "Edit \storeman\<relative>\*.ini (default: office\Setup.ini) on Server or a Lane, then optionally copy to other lanes."
-	$Edit_INIsItem.Add_Click({
-			Edit_INIs
+	$INI_EditorItem = New-Object System.Windows.Forms.ToolStripMenuItem("INI_Editor")
+	$INI_EditorItem.ToolTipText = "Edit \storeman\<relative>\*.ini (default: office\Setup.ini) on Server or a Lane, then optionally copy to other lanes."
+	$INI_EditorItem.Add_Click({
+			INI_Editor
 		})
-	[void]$contextMenuGeneral.Items.Add($Edit_INIsItem)
+	[void]$contextMenuGeneral.Items.Add($INI_EditorItem)
 	
 	############################################################################
 	# 5) Manual Repair
