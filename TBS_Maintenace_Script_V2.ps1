@@ -6834,7 +6834,7 @@ function Install_FUNCTIONS_Into_SMS
 		[string]$OfficePath # if not provided, we try common script-scoped fallbacks
 	)
 	
-	Write_Log "`r`n==================== Starting Install_FUNCTIONS_Into_SMS (Always Both) ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Install_FUNCTIONS_Into_SMS ====================`r`n" "blue"
 	
 	# Registered macro marker (®) as a safe char literal; we always inject via $($reg) to avoid encoding surprises.
 	$reg = [char]0x00AE
@@ -6855,7 +6855,6 @@ function Install_FUNCTIONS_Into_SMS
 	
 	# --- Destination paths (always three files) ---
 	$DeploySysPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_SYS.sql"
-	$DeployOneFctPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_ONE_FCT.sqm"
 	$DeployMultiFctPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_MULTI_FCT.sqm"
 	
 	# --- Encoding: ANSI (Windows-1252), no BOM ---
@@ -6879,9 +6878,7 @@ function Install_FUNCTIONS_Into_SMS
 
 @WIZINIT;
 @WIZMENU(ONESQM=What do you want to send,
-    One Function=DEPLOY_ONE_FCT,
-    Multiple Functions=DEPLOY_MULTI_FCT,
-    All Functions=fct_load,      
+    Functions=DEPLOY_MULTI_FCT,
     Function link=fcz_load,
     Totalizer=tlz_load,
     Drill down pages=dril_page_load,
@@ -6928,70 +6925,9 @@ ORDER BY STO.F1000"));
 
 @EXEC(sqi=USERE_DEPLOY_SYS);
 "@
-	
+		
 	# ===============================================================================================================
-	#                                         DEPLOY_ONE_FCT.sqm (template)
-	# ===============================================================================================================
-	$DeployOneFctContent = @"
-INSERT INTO HEADER_DCT VALUES
-('HC','00000001','001901','001001',,,1997001,0000,1997001,0001,,'LOAD','CREATE DCT',,,,,,'1/1.0','V1.0',,);
-
-CREATE TABLE FCT_DCT(@MAP_FROM_QUERY);
-INSERT INTO HEADER_DCT VALUES
-('HM','00000001','001901','001001',,,1997001,0000,1997001,0001,,'@WIZGET(ACTION)','@WIZGET(ACTION) ALL FUNCTIONS',,,,,,'1/1.0','V1.0','F1063',);
-
-CREATE VIEW FCT_CHG AS SELECT @FIELDS_FROM_QUERY FROM FCT_DCT;
-INSERT INTO FCT_CHG VALUES
-
-/* EXTRACT SECTION */
-
-@DBHOT(HOT_WIZ,PARAMTOLINE,PARAMSAV_FCT_LOAD);
-@FMT(CMP,'@WIZGET(TARGET)<>','$($reg)WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
-@WIZINIT;
-
-@WIZTARGET(TARGET_FILTER=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
-SELECT F1000,F1018 FROM STO_TAB WHERE F1181=1","
-SELECT DISTINCT STO.F1000,STO.F1018
-FROM LNK_TAB LN2 JOIN LNK_TAB LNK ON LN2.F1056=LNK.F1056 AND LN2.F1057=LNK.F1057
-JOIN STO_TAB STO ON STO.F1000=LNK.F1000
-WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)'"));
-@WIZDISPLAY;
-
-@WIZINIT;
-@WIZMENU(ACTION=Action on the target database,Add or replace=ADDRPL,Add only=ADD,Replace only=UPDATE,Create and load=LOAD);
-@WIZDISPLAY;
-
-@WIZSET(STYLE=SIL);
-@WIZCLR(TARGET);
-@WIZSET(FORCE_F1000=@F1056);
-
-@WIZINIT;
-@WIZEDIT(FCT=,Enter the function number);
-@WIZDISPLAY;
-@WIZSET(TARGET_FILTER=@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE));
-@WIZSET(F1063=@WIZGET(FCT));
-@WIZSET(STYLE=SIL);
-
-@MAP_DEPLOY
-SELECT FCT.F1056,FCT.F1056+FCT.F1057 AS F1000,@dbFld(FCT_TAB,FCT.,F1000) FROM
-    (SELECT LNI.F1056,LNI.F1057,FCT.*,ROW_NUMBER() OVER (PARTITION BY FCT.F1063,LNI.F1056,LNI.F1057 ORDER BY CASE WHEN FCT.F1000='PAL' THEN 1 ELSE 2 END DESC) AS F1301
-    FROM FCT_TAB FCT
-    JOIN LNK_TAB LNI ON FCT.F1000=LNI.F1000
-    JOIN LNK_TAB LNO ON LNI.F1056=LNO.F1056 AND LNI.F1057=LNO.F1057
-    WHERE LNO.F1000 = '@WIZGET(TARGET_FILTER)' AND FCT.F1063 = '@WIZGET(FCT)') FCT
-WHERE FCT.F1301=1
-ORDER BY F1000,F1063;
-
-/* RESTORE INITITAL PARAMETER POOL */
-
-@WIZRESET;
-@DBHOT(HOT_WIZ,LINETOPARAM,PARAMSAV_FCT_LOAD);
-@DBHOT(HOT_WIZ,CLR,PARAMSAV_FCT_LOAD);
-"@
-	
-	# ===============================================================================================================
-	#                                      DEPLOY_MULTI_FCT.sqm (template)
-	#   Keeps @dbEXEC SET options (required by your environment for computed/indexed features).
+	#                                      DEPLOY_FCT.sqm (template)
 	#   Supports CSV and ranges (e.g., 123,234,300-305).
 	# ===============================================================================================================
 	$DeployMultiFctContent = @"
@@ -6999,17 +6935,18 @@ INSERT INTO HEADER_DCT VALUES
 ('HC','00000001','001901','001001',,,1997001,0000,1997001,0001,,'LOAD','CREATE DCT',,,,,,'1/1.0','V1.0',,);
 
 CREATE TABLE FCT_DCT(@MAP_FROM_QUERY);
+
 INSERT INTO HEADER_DCT VALUES
 ('HM','00000001','001901','001001',,,1997001,0000,1997001,0001,,'@WIZGET(ACTION)','@WIZGET(ACTION) SELECTED FUNCTIONS',,,,,,'1/1.0','V1.0','F1063',);
 
 CREATE VIEW FCT_CHG AS SELECT @FIELDS_FROM_QUERY FROM FCT_DCT;
+
 INSERT INTO FCT_CHG VALUES
 
 /* EXTRACT SECTION */
 
 @DBHOT(HOT_WIZ,PARAMTOLINE,PARAMSAV_FCT_LOAD);
 @FMT(CMP,'@WIZGET(TARGET)<>','$($reg)WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
-@WIZINIT;
 
 @WIZTARGET(TARGET_FILTER=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
 SELECT F1000,F1018 FROM STO_TAB WHERE F1181=1","
@@ -7028,7 +6965,7 @@ WHERE STO.F1181='1' AND LN2.F1000='@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST
 @WIZSET(FORCE_F1000=@F1056);
 
 @WIZINIT;
-@WIZEDIT(FCT_LIST=,Enter functions list/range.);
+@WIZEDIT(FCT_LIST=All functions will be deployed if left blank,Enter functions list/range.);
 @WIZDISPLAY;
 @WIZSET(TARGET_FILTER=@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE));
 @WIZSET(STYLE=SIL);
@@ -7079,7 +7016,6 @@ WHERE FCT.F1301=1
 ORDER BY F1000,F1063;
 
 /* RESTORE INITITAL PARAMETER POOL */
-
 @WIZRESET;
 @DBHOT(HOT_WIZ,LINETOPARAM,PARAMSAV_FCT_LOAD);
 @DBHOT(HOT_WIZ,CLR,PARAMSAV_FCT_LOAD);
@@ -7102,34 +7038,21 @@ ORDER BY F1000,F1063;
 	{
 		Write_Log "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
 	}
-	
-	# -- DEPLOY_ONE_FCT.sqm --
-	try
-	{
-		$norm = [regex]::Replace($DeployOneFctContent, "(`r)?`n", "`r`n") # normalize to CRLF
-		[System.IO.File]::WriteAllText($DeployOneFctPath, $norm, $ansi) # write as ANSI, no BOM
-		Set-ItemProperty -LiteralPath $DeployOneFctPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Wrote 'DEPLOY_ONE_FCT.sqm' to '$OfficePath'." "green"
-	}
-	catch
-	{
-		Write_Log "Failed to write 'DEPLOY_ONE_FCT.sqm'. Error: $_" "red"
-	}
-	
+		
 	# -- DEPLOY_MULTI_FCT.sqm --
 	try
 	{
 		$norm = [regex]::Replace($DeployMultiFctContent, "(`r)?`n", "`r`n") # normalize to CRLF
 		[System.IO.File]::WriteAllText($DeployMultiFctPath, $norm, $ansi) # write as ANSI, no BOM
 		Set-ItemProperty -LiteralPath $DeployMultiFctPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Wrote 'DEPLOY_MULTI_FCT.sqm' (CSV + ranges) to '$OfficePath'." "green"
+		Write_Log "Wrote 'DEPLOY_FCT.sqm' (CSV + ranges) to '$OfficePath'." "green"
 	}
 	catch
 	{
-		Write_Log "Failed to write 'DEPLOY_MULTI_FCT.sqm'. Error: $_" "red"
+		Write_Log "Failed to write 'DEPLOY_FCT.sqm'. Error: $_" "red"
 	}
 	
-	Write_Log "`r`n==================== Install_FUNCTIONS_Into_SMS Completed (Both Installed) ====================`r`n" "blue"
+	Write_Log "`r`n==================== Install_FUNCTIONS_Into_SMS Completed ====================`r`n" "blue"
 }
 
 # ===================================================================================================
