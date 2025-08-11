@@ -6947,6 +6947,7 @@ INSERT INTO FCT_CHG VALUES
 
 @DBHOT(HOT_WIZ,PARAMTOLINE,PARAMSAV_FCT_LOAD);
 @FMT(CMP,'@WIZGET(TARGET)<>','$($reg)WIZRPL(TARGET_FILTER=@WIZGET(TARGET))');
+@WIZINIT;
 
 @WIZTARGET(TARGET_FILTER=,@FMT(CMP,"@DbHot(INI,APPLICATION.INI,DEPLOY_TARGET,HOST_OFFICE)=","
 SELECT F1000,F1018 FROM STO_TAB WHERE F1181=1","
@@ -7045,7 +7046,7 @@ ORDER BY F1000,F1063;
 		$norm = [regex]::Replace($DeployMultiFctContent, "(`r)?`n", "`r`n") # normalize to CRLF
 		[System.IO.File]::WriteAllText($DeployMultiFctPath, $norm, $ansi) # write as ANSI, no BOM
 		Set-ItemProperty -LiteralPath $DeployMultiFctPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Wrote 'DEPLOY_FCT.sqm' (CSV + ranges) to '$OfficePath'." "green"
+		Write_Log "Wrote 'DEPLOY_MULTI_FCT.sqm' (CSV + ranges) to '$OfficePath'." "green"
 	}
 	catch
 	{
