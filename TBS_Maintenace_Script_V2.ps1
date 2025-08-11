@@ -7843,8 +7843,9 @@ function Copy_Files_Between_Nodes
 	$pnlBtns.Margin = New-Object System.Windows.Forms.Padding(12, 0, 0, 0)
 	$layoutItems.Controls.Add($pnlBtns, 1, 0)
 	
+	# ---- Add button now says "Add Folder/Files..." and shows a small context menu ----
 	$btnAdd = New-Object System.Windows.Forms.Button
-	$btnAdd.Text = "Add Folder..."
+	$btnAdd.Text = "Add Folder/Files..."
 	$btnAdd.Width = 160; $btnAdd.Height = 30
 	$pnlBtns.Controls.Add($btnAdd)
 	
@@ -7867,7 +7868,7 @@ function Copy_Files_Between_Nodes
 	$layoutItems.Controls.Add($chkMirror, 0, 1)
 	
 	$toolTip = New-Object System.Windows.Forms.ToolTip
-	$toolTip.SetToolTip($chkMirror, "Robocopy /MIR will delete files in the destination that are not present in the source.")
+	$toolTip.SetToolTip($chkMirror, "Robocopy /MIR will delete files on the destination that are not present in the source.")
 	
 	# ---------------- Bottom buttons ----------------
 	$pnlBottom = New-Object System.Windows.Forms.TableLayoutPanel
@@ -7896,7 +7897,6 @@ function Copy_Files_Between_Nodes
 	
 	# ===================== QUICK CONTEXT MENU (built once; no auto-reopen) =====================
 	$cmsQuick = New-Object System.Windows.Forms.ContextMenuStrip
-	
 	foreach ($qi in $QuickItems)
 	{
 		if (-not $qi) { continue }
@@ -7982,59 +7982,69 @@ function Copy_Files_Between_Nodes
 				if ($mi -is [System.Windows.Forms.ToolStripMenuItem])
 				{
 					$meta = $mi.Tag
-					if ($meta -and $meta.ContainsKey('LaneOnly') -and $meta.LaneOnly)
-					{
-						$mi.Enabled = $rbLane.Checked
-					}
-					else
-					{
-						$mi.Enabled = $true
-					}
+					if ($meta -and $meta.ContainsKey('LaneOnly') -and $meta.LaneOnly) { $mi.Enabled = $rbLane.Checked }
+					else { $mi.Enabled = $true }
 				}
 			}
 			$cmsQuick.Show($btnQuick, 0, $btnQuick.Height)
 		})
 	
-	# ===================== Manual Add (folder picker, still validates) =====================
-	$btnAdd.Add_Click({
-			# Resolve initial root based on source selection
-			$initialPath = $null
-			if ($rbServer.Checked)
+	# ===================== "Add Folder/Files..." context menu =====================
+	$cmsAdd = New-Object System.Windows.Forms.ContextMenuStrip
+	$miAddFolder = New-Object System.Windows.Forms.ToolStripMenuItem
+	$miAddFolder.Text = "Add Folder..."
+	[void]$cmsAdd.Items.Add($miAddFolder)
+	
+	$miAddFiles = New-Object System.Windows.Forms.ToolStripMenuItem
+	$miAddFiles.Text = "Add File(s)..."
+	[void]$cmsAdd.Items.Add($miAddFiles)
+	
+	# Helper (inline): resolve initial root based on selected source
+	$resolveInitialRoot = {
+		$initialPath = $null
+		if ($rbServer.Checked)
+		{
+			$candidates = @($script:BasePath, $global:BasePath, $BasePath) + $ExtraServerRoots
+			foreach ($cand in ($candidates | Where-Object { $_ } | Select-Object -Unique))
 			{
-				$candidates = @($script:BasePath, $global:BasePath, $BasePath) + $ExtraServerRoots
-				foreach ($cand in ($candidates | Where-Object { $_ } | Select-Object -Unique))
-				{
-					if (Test-Path -LiteralPath $cand) { $initialPath = $cand; break }
-				}
-				if (-not $initialPath)
-				{
-					[System.Windows.Forms.MessageBox]::Show(
-						"Server storeman root not found using `$BasePath (or extras).",
-						"Source Unreachable", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error
-					) | Out-Null
-					Write_Log "[Source Unreachable] Server storeman root not found via `$BasePath or extras." "red"
-					return
-				}
+				if (Test-Path -LiteralPath $cand) { $initialPath = $cand; break }
 			}
-			else
+			if (-not $initialPath)
 			{
-				if (-not $cboLane.SelectedItem)
-				{
-					[System.Windows.Forms.MessageBox]::Show("Pick a lane as source first.", "Missing Lane",
-						[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
-					return
-				}
-				$ln = [string]$cboLane.SelectedItem
-				$try1 = "\\$ln\Storeman"; if (Test-Path -LiteralPath $try1) { $initialPath = $try1 }
-				if (-not $initialPath) { $try2 = "\\$ln\c$\storeman"; if (Test-Path -LiteralPath $try2) { $initialPath = $try2 } }
-				if (-not $initialPath)
-				{
-					[System.Windows.Forms.MessageBox]::Show("\\$ln\Storeman and \\$ln\C$\storeman are not accessible.",
-						"Source Unreachable", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
-					Write_Log "[Source Unreachable] $ln has no \\Storeman or \\C$\storeman." "red"
-					return
-				}
+				[System.Windows.Forms.MessageBox]::Show(
+					"Server storeman root not found using `$BasePath (or extras).",
+					"Source Unreachable", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error
+				) | Out-Null
+				Write_Log "[Source Unreachable] Server storeman root not found via `$BasePath or extras." "red"
+				return $null
 			}
+		}
+		else
+		{
+			if (-not $cboLane.SelectedItem)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Pick a lane as source first.", "Missing Lane",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+				return $null
+			}
+			$ln = [string]$cboLane.SelectedItem
+			$try1 = "\\$ln\Storeman"; if (Test-Path -LiteralPath $try1) { $initialPath = $try1 }
+			if (-not $initialPath) { $try2 = "\\$ln\c$\storeman"; if (Test-Path -LiteralPath $try2) { $initialPath = $try2 } }
+			if (-not $initialPath)
+			{
+				[System.Windows.Forms.MessageBox]::Show("\\$ln\Storeman and \\$ln\C$\storeman are not accessible.",
+					"Source Unreachable", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+				Write_Log "[Source Unreachable] $ln has no \\Storeman or \\C$\storeman." "red"
+				return $null
+			}
+		}
+		return $initialPath
+	}
+	
+	# --- Add Folder... (keeps your old logic, just under the new menu) ---
+	$miAddFolder.Add_Click({
+			$initialPath = & $resolveInitialRoot
+			if (-not $initialPath) { return }
 			
 			$fd = New-Object System.Windows.Forms.FolderBrowserDialog
 			$fd.Description = "Pick a folder under \storeman\ (based on your selected source)."
@@ -8064,6 +8074,46 @@ function Copy_Files_Between_Nodes
 				Write_Log "Added item: $($fd.SelectedPath)" "gray"
 			}
 		})
+	
+	# --- Add File(s)... (new) ---
+	$miAddFiles.Add_Click({
+			$initialPath = & $resolveInitialRoot
+			if (-not $initialPath) { return }
+			
+			$ofd = New-Object System.Windows.Forms.OpenFileDialog
+			$ofd.Title = "Pick file(s) under \storeman\ (based on your selected source)"
+			$ofd.InitialDirectory = $initialPath
+			$ofd.Multiselect = $true
+			$ofd.Filter = "All files (*.*)|*.*"
+			
+			$res = $ofd.ShowDialog()
+			if ($res -ne [System.Windows.Forms.DialogResult]::OK -or -not $ofd.FileNames -or $ofd.FileNames.Count -eq 0) { return }
+			
+			foreach ($f in $ofd.FileNames)
+			{
+				if ($f -notmatch '(?i)[\\/](storeman)[\\/]')
+				{
+					[System.Windows.Forms.MessageBox]::Show("Only items under \storeman\ are allowed:`r`n$f",
+						"Not Allowed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+					continue
+				}
+				if (-not (Test-Path -LiteralPath $f))
+				{
+					[System.Windows.Forms.MessageBox]::Show("That file no longer exists on the selected source:`r`n$f",
+						"Not Found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Exclamation) | Out-Null
+					Write_Log "[Source Missing] $f not found; not added to list." "yellow"
+					continue
+				}
+				if (-not ($clb.Items -contains $f))
+				{
+					[void]$clb.Items.Add($f, $true)
+					Write_Log "Added item: $f" "gray"
+				}
+			}
+		})
+	
+	# Show the mini menu when clicking "Add Folder/Files..." (no re-open behavior)
+	$btnAdd.Add_Click({ $cmsAdd.Show($btnAdd, 0, $btnAdd.Height) })
 	
 	# Remove entries
 	$btnRemove.Add_Click({
@@ -8104,7 +8154,12 @@ function Copy_Files_Between_Nodes
 	[void]$frm.ShowDialog()
 	$dialogResult = $script:__CopyMaps_DialogResult
 	Remove-Variable -Name __CopyMaps_DialogResult -Scope Script -ErrorAction SilentlyContinue
-	if ($dialogResult -ne 'OK') { Write_Log "User cancelled source/folder selection." "yellow"; Write_Log "`r`n==================== Copy_Files_Between_Nodes Function Completed ====================" "blue"; return }
+	if ($dialogResult -ne 'OK')
+	{
+		Write_Log "User cancelled source/folder selection." "yellow"
+		Write_Log "`r`n==================== Copy_Files_Between_Nodes Function Completed ====================" "blue"
+		return
+	}
 	
 	# ===================== Gather choices =====================
 	$useServerAsSource = $rbServer.Checked
