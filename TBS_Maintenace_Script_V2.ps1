@@ -7031,7 +7031,7 @@ ORDER BY F1000,F1063;
 		$norm = [regex]::Replace($DeploySysContent, "(`r)?`n", "`r`n") # normalize to CRLF
 		[System.IO.File]::WriteAllText($DeploySysPath, $norm, $ansi) # write as ANSI, no BOM
 		Set-ItemProperty -LiteralPath $DeploySysPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Updated 'DEPLOY_SYS.sql' (includes 'Multiple Functions') in '$OfficePath'." "green"
+		Write_Log "Updated 'DEPLOY_SYS.sql' in '$OfficePath'." "green"
 	}
 	catch
 	{
@@ -7044,7 +7044,7 @@ ORDER BY F1000,F1063;
 		$norm = [regex]::Replace($DeployMultiFctContent, "(`r)?`n", "`r`n") # normalize to CRLF
 		[System.IO.File]::WriteAllText($DeployMultiFctPath, $norm, $ansi) # write as ANSI, no BOM
 		Set-ItemProperty -LiteralPath $DeployMultiFctPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Wrote 'DEPLOY_MULTI_FCT.sqm' (CSV + ranges) to '$OfficePath'." "green"
+		Write_Log "Wrote 'DEPLOY_MULTI_FCT.sqm' (All + CSV + ranges) to '$OfficePath'." "green"
 	}
 	catch
 	{
@@ -16486,8 +16486,8 @@ if (-not $form)
 	############################################################################
 	# 3) Install Functions in SMS (One + Multi)  -- UPDATED
 	############################################################################
-	$Install_ONE_FUNCTION_Into_SMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install Functions in SMS (One + Multi)")
-	$Install_ONE_FUNCTION_Into_SMSItem.ToolTipText = "Installs DEPLOY_SYS.sql (with 'Multiple Functions' menu), DEPLOY_ONE_FCT.sqm, and DEPLOY_MULTI_FCT.sqm into SMS."
+	$Install_ONE_FUNCTION_Into_SMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install 'DEPLOY_MULTI_FCT' in SMS")
+	$Install_ONE_FUNCTION_Into_SMSItem.ToolTipText = "Updates DEPLOY_SYS.sql and installs DEPLOY_MULTI_FCT.sqm into SMS."
 	$Install_ONE_FUNCTION_Into_SMSItem.Add_Click({
 			Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
@@ -16497,7 +16497,7 @@ if (-not $form)
 	# 3b) Context menu item: Copy Files Between Nodes
 	############################################################################
 	$Copy_Files_Between_NodesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Copy Files Between Nodes")
-	$Copy_Files_Between_NodesItem.ToolTipText = "Copy \\storeman\\ subfolders from Server or a Lane to selected lanes."
+	$Copy_Files_Between_NodesItem.ToolTipText = "Copy (storeman) subfolders/files from Server or a Lane to selected lanes."
 	$Copy_Files_Between_NodesItem.Add_Click({
 			Copy_Files_Between_Nodes
 		})
@@ -16564,10 +16564,6 @@ if (-not $form)
 	$ExportMachineHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all machines"
 	$ExportMachineHardwareInfoItem.Add_Click({
 			$didExport = Get_Remote_Machine_Info
-			if ($didExport)
-			{
-				[System.Windows.Forms.MessageBox]::Show("Machine hardware info exported", "Export Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-			}
 		})
 	[void]$contextMenuGeneral.Items.Add($ExportMachineHardwareInfoItem)
 	
