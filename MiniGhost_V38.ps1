@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "1.2.5"
-$VersionDate = "2025-07-09"
+$VersionDate = "2025-08-14"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -1096,7 +1096,7 @@ function Get-ValidMachineName
 		
 		# Create and add the label
 		$label = New-Object System.Windows.Forms.Label
-		$label.Text = "New Machine Name (POS/SCO + 3 digits):"
+		$label.Text = "New Machine Name (Prefix + 3 digits, e.g. LANE003):"
 		$label.Location = New-Object System.Drawing.Point(10, 20)
 		$label.Size = New-Object System.Drawing.Size(320, 20)
 		$label.AutoSize = $true
@@ -1128,6 +1128,9 @@ function Get-ValidMachineName
 		# Show the form and get the result
 		$dialogResult = $machineNameForm.ShowDialog()
 		
+		# Machine name variable
+		$newMachineNameInput = $newMachineNameInput.ToUpper()
+		
 		# If user presses OK
 		if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
 		{
@@ -1141,7 +1144,7 @@ function Get-ValidMachineName
 			}
 			
 			# Validate the format of the machine name
-			if ($newMachineNameInput -match "^(POS|SCO)\d{3}$")
+			if ($newMachineNameInput -match '^[A-Z]{2,8}\d{3}$')
 			{
 				
 				# Check if the machine name is already in use
@@ -1156,7 +1159,7 @@ function Get-ValidMachineName
 			}
 			else
 			{
-				[System.Windows.Forms.MessageBox]::Show("Invalid machine name. Please enter a name in the format POS or SCO followed by exactly 3 digits.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				[System.Windows.Forms.MessageBox]::Show("Invalid machine name. Please enter a name in the format Prefix + 3 digits.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 			}
 			
 		}
