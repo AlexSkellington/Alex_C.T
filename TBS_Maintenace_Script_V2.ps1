@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.4.4"
-$VersionDate = "2025-08-14"
+$VersionDate = "2025-08-15"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -12071,41 +12071,35 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 		return
 	}
 	
-	# Local SQL instance (from Get_Store_And_Database_Info)
+	# Local SQL instance to create linked servers on (from your Get_Store_And_Database_Info)
 	$localInstance = $script:FunctionResults['DBSERVER']
 	if ([string]::IsNullOrWhiteSpace($localInstance) -or $localInstance -eq 'N/A') { $localInstance = 'localhost' }
 	
-	# Can we run Invoke-Sqlcmd?
-	$canSqlCmd = $false
-	if ($CreateLinkedServers)
+	# Try to enable Invoke-Sqlcmd in this session (single-lane path)
+	$haveSqlCmdHere = $false
+	try
 	{
-		try
+		if ($script:FunctionResults['SqlModuleName'] -eq 'SqlServer')
 		{
-			if ($script:FunctionResults['SqlModuleName'] -eq 'SqlServer')
+			Import-Module SqlServer -ErrorAction Stop; $haveSqlCmdHere = $true
+		}
+		elseif ($script:FunctionResults['SqlModuleName'] -eq 'SQLPS')
+		{
+			Import-Module SQLPS -DisableNameChecking -ErrorAction Stop; $haveSqlCmdHere = $true
+		}
+		else
+		{
+			try { Import-Module SqlServer -ErrorAction Stop; $haveSqlCmdHere = $true }
+			catch
 			{
-				Import-Module SqlServer -ErrorAction Stop
-				$canSqlCmd = $true
-			}
-			elseif ($script:FunctionResults['SqlModuleName'] -eq 'SQLPS')
-			{
-				Import-Module SQLPS -DisableNameChecking -ErrorAction Stop
-				$canSqlCmd = $true
-			}
-			else
-			{
-				try { Import-Module SqlServer -ErrorAction Stop; $canSqlCmd = $true }
-				catch
-				{
-					try { Import-Module SQLPS -DisableNameChecking -ErrorAction Stop; $canSqlCmd = $true }
-					catch { $canSqlCmd = $false }
-				}
+				try { Import-Module SQLPS -DisableNameChecking -ErrorAction Stop; $haveSqlCmdHere = $true }
+				catch { $haveSqlCmdHere = $false }
 			}
 		}
-		catch { $canSqlCmd = $false }
-		if (-not $canSqlCmd) { Write_Log "SqlServer/SQLPS module not available; Linked Server creation will be skipped." "yellow" }
 	}
+	catch { $haveSqlCmdHere = $false }
 	
-	# Select lanes
+	# Lane selection (keep your existing picker)
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 	{
@@ -12130,11 +12124,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 	foreach ($lane in $lanes)
 	{
 		$machine = $LaneNumToMachineName[$lane]
-		if (-not $machine)
-		{
-			Write_Log "Machine name not found for lane $lane. Skipping." "yellow"
-			continue
-		}
+		if (-not $machine) { Write_Log "Machine name not found for lane $lane. Skipping." "yellow"; continue }
 		
 		if ($isSingle)
 		{
@@ -12146,6 +12136,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				sc.exe "\\$machine" start RemoteRegistry | Out-Null
 				$reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $machine)
 				
+				# Find all instances
 				$instanceRootPaths = @(
 					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL",
 					"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL"
@@ -12164,6 +12155,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						$instKey.Close()
 					}
 				}
+				
 				if ($allInstances.Count -eq 0)
 				{
 					Write_Log "No SQL instances found on $machine." "yellow"
@@ -12172,6 +12164,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				else
 				{
 					$laneNeedsRestart = $false
+					
 					foreach ($instanceName in $allInstances.Keys)
 					{
 						$instanceID = $allInstances[$instanceName]
@@ -12189,24 +12182,19 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							$authKey = $reg.OpenSubKey($authPath, $true)
 							if ($authKey)
 							{
-								$loginMode = $authKey.GetValue("LoginMode", 1)
-								if ($loginMode -ne 2)
+								if ($authKey.GetValue("LoginMode", 1) -ne 2)
 								{
 									$authKey.SetValue("LoginMode", 2, [Microsoft.Win32.RegistryValueKind]::DWord)
 									Write_Log "Mixed Mode Authentication enabled at $authPath." "green"
 									$needsRestart = $true
 								}
-								else
-								{
-									Write_Log "Mixed Mode Authentication already enabled at $authPath." "gray"
-								}
-								$authKey.Close()
-								$authSet = $true; break
+								else { Write_Log "Mixed Mode Authentication already enabled at $authPath." "gray" }
+								$authKey.Close(); $authSet = $true; break
 							}
 						}
 						if (-not $authSet) { Write_Log "LoginMode registry path not found for $instanceName." "yellow" }
 						
-						# TCP/IP
+						# TCP
 						$tcpPaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
 							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp"
@@ -12293,7 +12281,6 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							}
 						}
 						
-						# Service restart if needed
 						if ($needsRestart)
 						{
 							$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
@@ -12319,7 +12306,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						Write_Log "Restart All Programs sent to $machine (Lane $lane) after protocol update." "green"
 					}
 					
-					# Detect protocol
+					# Decide working protocol (TCP first, then NP). We'll LOG it last.
 					$protocol = "File"
 					try
 					{
@@ -12333,15 +12320,105 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						{
 							try
 							{
-								Import-Module SqlServer -ErrorAction Stop
-								$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
-								Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 2 -ErrorAction Stop | Out-Null
-								$protocol = "Named Pipes"
+								if ($haveSqlCmdHere)
+								{
+									$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
+									Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 2 -ErrorAction Stop | Out-Null
+									$protocol = "Named Pipes"
+								}
 							}
 							catch { }
 						}
 					}
 					catch { }
+					
+					# Create Linked Server (inside single-lane flow) BEFORE we log protocol line
+					if ($CreateLinkedServers -and $protocol -ne 'File')
+					{
+						$providers = @('MSOLEDBSQL', 'SQLNCLI11', 'SQLNCLI', 'SQLOLEDB')
+						$linkName = $machine
+						
+						$created = $false
+						foreach ($prov in $providers)
+						{
+							try
+							{
+								# Build T-SQL: drop if exists, add with TCP or NP
+								if ($protocol -eq 'TCP')
+								{
+									$datasrc = "tcp:$machine,$tcpPort"
+									$tsql = @"
+IF EXISTS(SELECT 1 FROM sys.servers WHERE name=N'$linkName') EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
+EXEC master.dbo.sp_addlinkedserver @server=N'$linkName', @srvproduct=N'', @provider=N'$prov', @datasrc=N'$datasrc';
+EXEC master.dbo.sp_serveroption N'$linkName', N'data access', N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'use remote collation', N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'rpc out', N'true';
+IF NOT EXISTS (SELECT 1 FROM sys.linked_logins ll JOIN sys.servers s ON s.server_id=ll.server_id WHERE s.name=N'$linkName')
+    EXEC master.dbo.sp_addlinkedsrvlogin @rmtsrvname=N'$linkName', @useself='TRUE';
+"@
+								}
+								else
+								{
+									# Named Pipes: use provstr to force NP
+									$datasrc = $machine
+									$tsql = @"
+IF EXISTS(SELECT 1 FROM sys.servers WHERE name=N'$linkName') EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
+DECLARE @sql nvarchar(max) = N'EXEC master.dbo.sp_addlinkedserver @server=N''' + REPLACE(N'$linkName','''','''''') + N''', @srvproduct=N'''', @provider=N''' + REPLACE(N'$prov','''','''''') + N''', @datasrc=N''' + REPLACE(N'$datasrc','''','''''') + N''', @provstr=N''Network Library=dbnmpntw'';';
+EXEC(@sql);
+EXEC master.dbo.sp_serveroption N'$linkName', N'data access', N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'use remote collation', N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'rpc out', N'true';
+IF NOT EXISTS (SELECT 1 FROM sys.linked_logins ll JOIN sys.servers s ON s.server_id=ll.server_id WHERE s.name=N'$linkName')
+    EXEC master.dbo.sp_addlinkedsrvlogin @rmtsrvname=N'$linkName', @useself='TRUE';
+"@
+								}
+								
+								if ($haveSqlCmdHere)
+								{
+									Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query $tsql -QueryTimeout 30 -ErrorAction Stop | Out-Null
+								}
+								else
+								{
+									# Fallback using .NET if SqlServer/SQLPS is not available
+									$cs = "Server=$localInstance;Database=master;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
+									$cn = New-Object System.Data.SqlClient.SqlConnection $cs
+									$cn.Open()
+									$cmd = $cn.CreateCommand()
+									$cmd.CommandTimeout = 30
+									$cmd.CommandText = $tsql
+									[void]$cmd.ExecuteNonQuery()
+									$cn.Close()
+								}
+								
+								# Optional smoke test (don't log after the protocol line)
+								try
+								{
+									if ($haveSqlCmdHere)
+									{
+										Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query "SELECT TOP 1 name FROM [$linkName].master.sys.databases" -QueryTimeout 8 -ErrorAction Stop | Out-Null
+										Write_Log "Linked Server [$linkName] created via $prov ($protocol) and test OK." "green"
+									}
+									else
+									{
+										Write_Log "Linked Server [$linkName] created via $prov ($protocol)." "green"
+									}
+								}
+								catch
+								{
+									Write_Log "Linked Server [$linkName] created via $prov ($protocol); test query failed (likely delegation). Map a SQL login if needed." "yellow"
+								}
+								
+								$created = $true; break
+							}
+							catch
+							{
+								Write_Log "Provider '$prov' failed creating Linked Server [$linkName] ($protocol). Trying next provider..." "gray"
+							}
+						}
+						if (-not $created) { Write_Log "All provider attempts failed creating Linked Server [$linkName] ($protocol)." "red" }
+					}
+					
+					# NOW log protocol as the final message for the lane
 					$script:LaneProtocols[$lane] = $protocol
 					$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $lane }
 					if ($null -eq $script:ProtocolResults -or $script:ProtocolResults -isnot [System.Collections.IEnumerable]) { $script:ProtocolResults = @() }
@@ -12350,101 +12427,16 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					# Persist to file
 					$protocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
 					$laneStr = $lane.ToString().PadLeft(3, '0')
-					if (-not (Test-Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile))))
-					{
-						New-Item -Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)) -ItemType Directory -Force | Out-Null
-					}
-					if (-not (Test-Path $protocolResultsFile))
-					{
-						New-Item -Path $protocolResultsFile -ItemType File -Force | Out-Null
-					}
+					if (-not (Test-Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)))) { New-Item -Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)) -ItemType Directory -Force | Out-Null }
+					if (-not (Test-Path $protocolResultsFile)) { New-Item -Path $protocolResultsFile -ItemType File -Force | Out-Null }
 					$allLines = @()
-					if (Test-Path $protocolResultsFile)
-					{
-						$allLines = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' }
-					}
+					if (Test-Path $protocolResultsFile) { $allLines = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' } }
 					$allLines = $allLines | Where-Object { -not ($_ -match "^\s*0*${laneStr}\s*,") }
 					$allLines += "$laneStr,$protocol"
 					$sortedLines = $allLines | Sort-Object { ($_ -split ',')[0] -as [int] }
 					[System.IO.File]::WriteAllLines($protocolResultsFile, $sortedLines, [System.Text.Encoding]::UTF8)
-					Write_Log "Protocol detected for $machine (Lane $lane): $protocol" "magenta"
 					
-					# Create/Update Linked Server named as the MACHINE, if requested and we can SQLCMD
-					if ($CreateLinkedServers -and $canSqlCmd -and $protocol -ne 'File')
-					{
-						$providers = @('MSOLEDBSQL', 'SQLNCLI11', 'SQLNCLI', 'SQLOLEDB')
-						$datasrc = "tcp:$machine,$tcpPort"
-						$linkName = $machine # <-- linked server NAME equals machine name
-						
-						$created = $false
-						foreach ($prov in $providers)
-						{
-							try
-							{
-								$tsql = @"
-DECLARE @exists bit = CASE WHEN EXISTS(SELECT 1 FROM sys.servers WHERE name = N'$linkName') THEN 1 ELSE 0 END;
-
-IF @exists = 1
-BEGIN
-    DECLARE @curProv sysname = (SELECT provider FROM sys.servers WHERE name = N'$linkName');
-    DECLARE @curDS   nvarchar(4000) = (SELECT data_source FROM sys.servers WHERE name = N'$linkName');
-    IF (ISNULL(@curProv,N'') <> N'$prov') OR (ISNULL(@curDS,N'') <> N'$datasrc')
-    BEGIN
-        EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
-        SET @exists = 0;
-    END
-END
-
-IF @exists = 0
-BEGIN
-    EXEC master.dbo.sp_addlinkedserver
-        @server    = N'$linkName',
-        @srvproduct= N'',
-        @provider  = N'$prov',
-        @datasrc   = N'$datasrc';
-END
-
--- Options (idempotent)
-EXEC master.dbo.sp_serveroption N'$linkName', N'data access',         N'true';
-EXEC master.dbo.sp_serveroption N'$linkName', N'collation compatible', N'false';
-EXEC master.dbo.sp_serveroption N'$linkName', N'use remote collation', N'true';
-EXEC master.dbo.sp_serveroption N'$linkName', N'rpc out',              N'true';
-
--- Default mapping: use caller's security context
-IF NOT EXISTS (
-    SELECT 1
-    FROM sys.linked_logins ll
-    JOIN sys.servers s ON s.server_id = ll.server_id
-    WHERE s.name = N'$linkName'
-)
-BEGIN
-    EXEC master.dbo.sp_addlinkedsrvlogin @rmtsrvname=N'$linkName', @useself='TRUE';
-END
-"@
-								Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query $tsql -QueryTimeout 30 -ErrorAction Stop | Out-Null
-								
-								# Smoke test (may fail if delegation not allowed; not fatal)
-								try
-								{
-									Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query "SELECT TOP 1 name FROM [$linkName].master.sys.databases" -QueryTimeout 10 -ErrorAction Stop | Out-Null
-									Write_Log "Linked Server [$linkName] → $datasrc ($prov) created and tested OK." "green"
-								}
-								catch
-								{
-									Write_Log "Linked Server [$linkName] created with provider '$prov', but test query failed (likely delegation). Add explicit SQL login mapping if needed." "yellow"
-								}
-								$created = $true; break
-							}
-							catch
-							{
-								Write_Log "Provider '$prov' failed creating Linked Server [$linkName] → $datasrc. Trying next provider..." "gray"
-							}
-						}
-						if (-not $created)
-						{
-							Write_Log "All provider attempts failed creating Linked Server [$linkName] → $datasrc." "red"
-						}
-					}
+					Write_Log "Protocol detected for $machine (Lane $lane): $protocol" "magenta"
 				}
 			}
 			catch
@@ -12453,19 +12445,43 @@ END
 				$script:LaneProtocols[$lane] = "File"
 				$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $lane }
 				$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = "File" }
+				Write_Log "Protocol detected for $machine (Lane $lane): File" "magenta"
 			}
 		}
 		else
 		{
-			# Multi-lane: do enablement in jobs; we'll create linked servers on the main thread after
-			$job = Start-Job -ArgumentList $machine, $lane, $StoreNumber, $tcpPort -ScriptBlock {
+			# Multi-lane: Do everything (including Linked Server creation) inside the job.
+			$job = Start-Job -ArgumentList $machine, $lane, $StoreNumber, $tcpPort, $CreateLinkedServers, $localInstance, $script:FunctionResults['SqlModuleName'] -ScriptBlock {
 				param ($machine,
 					$lane,
 					$StoreNumber,
-					$tcpPort)
+					$tcpPort,
+					$CreateLinkedServers,
+					$localInstance,
+					$sqlModuleName)
+				
 				$output = @()
 				$laneNeedsRestart = $false
 				$protocol = "File"
+				$haveSqlCmd = $false
+				
+				# Try to enable Invoke-Sqlcmd inside this job
+				try
+				{
+					if ($sqlModuleName -eq 'SqlServer') { Import-Module SqlServer -ErrorAction Stop; $haveSqlCmd = $true }
+					elseif ($sqlModuleName -eq 'SQLPS') { Import-Module SQLPS -DisableNameChecking -ErrorAction Stop; $haveSqlCmd = $true }
+					else
+					{
+						try { Import-Module SqlServer -ErrorAction Stop; $haveSqlCmd = $true }
+						catch
+						{
+							try { Import-Module SQLPS -DisableNameChecking -ErrorAction Stop; $haveSqlCmd = $true }
+							catch { $haveSqlCmd = $false }
+						}
+					}
+				}
+				catch { $haveSqlCmd = $false }
+				
 				try
 				{
 					$output += @{ Text = "`r`n--- Processing Machine: $machine (Store $StoreNumber, Lane $lane) ---"; Color = "blue" }
@@ -12474,6 +12490,7 @@ END
 					$null = sc.exe "\\$machine" start RemoteRegistry
 					$reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $machine)
 					
+					# Instances
 					$instanceRootPaths = @(
 						"SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL",
 						"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL"
@@ -12492,6 +12509,7 @@ END
 							$instKey.Close()
 						}
 					}
+					
 					if ($allInstances.Count -eq 0)
 					{
 						$output += @{ Text = "No SQL instances found on $machine."; Color = "yellow" }
@@ -12516,24 +12534,19 @@ END
 								$authKey = $reg.OpenSubKey($authPath, $true)
 								if ($authKey)
 								{
-									$loginMode = $authKey.GetValue("LoginMode", 1)
-									if ($loginMode -ne 2)
+									if ($authKey.GetValue("LoginMode", 1) -ne 2)
 									{
 										$authKey.SetValue("LoginMode", 2, [Microsoft.Win32.RegistryValueKind]::DWord)
 										$output += @{ Text = "Mixed Mode Authentication enabled at $authPath."; Color = "green" }
 										$needsRestart = $true
 									}
-									else
-									{
-										$output += @{ Text = "Mixed Mode Authentication already enabled at $authPath."; Color = "gray" }
-									}
-									$authKey.Close()
-									$authSet = $true; break
+									else { $output += @{ Text = "Mixed Mode Authentication already enabled at $authPath."; Color = "gray" } }
+									$authKey.Close(); $authSet = $true; break
 								}
 							}
 							if (-not $authSet) { $output += @{ Text = "LoginMode registry path not found for $instanceName."; Color = "yellow" } }
 							
-							# TCP/IP
+							# TCP
 							$tcpPaths = @(
 								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
 								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp"
@@ -12620,7 +12633,6 @@ END
 								}
 							}
 							
-							# Restart if needed
 							if ($needsRestart)
 							{
 								$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
@@ -12641,35 +12653,120 @@ END
 						$reg.Close()
 					}
 					
-					# Detect protocol
+					# Decide working protocol (TCP then NP), use it to create LS now; LOG protocol last.
 					try
 					{
 						$tcpClient = New-Object System.Net.Sockets.TcpClient
 						$connectTask = $tcpClient.ConnectAsync($machine, [int]$tcpPort)
 						if ($connectTask.Wait(800) -and $tcpClient.Connected)
 						{
-							$tcpClient.Close()
-							$protocol = "TCP"
+							$tcpClient.Close(); $protocol = "TCP"
 						}
 						else
 						{
 							try
 							{
-								Import-Module SqlServer -ErrorAction Stop
-								$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
-								Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 2 -ErrorAction Stop | Out-Null
-								$protocol = "Named Pipes"
+								if ($haveSqlCmd)
+								{
+									$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
+									Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 2 -ErrorAction Stop | Out-Null
+									$protocol = "Named Pipes"
+								}
 							}
 							catch { }
 						}
 					}
 					catch { }
+					
+					if ($CreateLinkedServers -and $protocol -ne 'File')
+					{
+						$providers = @('MSOLEDBSQL', 'SQLNCLI11', 'SQLNCLI', 'SQLOLEDB')
+						$linkName = $machine
+						$created = $false
+						
+						foreach ($prov in $providers)
+						{
+							try
+							{
+								if ($protocol -eq 'TCP')
+								{
+									$datasrc = "tcp:$machine,$tcpPort"
+									$tsql = @"
+IF EXISTS(SELECT 1 FROM sys.servers WHERE name=N'$linkName') EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
+EXEC master.dbo.sp_addlinkedserver @server=N'$linkName', @srvproduct=N'', @provider=N'$prov', @datasrc=N'$datasrc';
+EXEC master.dbo.sp_serveroption N'$linkName', N'data access', N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'use remote collation', N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'rpc out', N'true';
+IF NOT EXISTS (SELECT 1 FROM sys.linked_logins ll JOIN sys.servers s ON s.server_id=ll.server_id WHERE s.name=N'$linkName')
+    EXEC master.dbo.sp_addlinkedsrvlogin @rmtsrvname=N'$linkName', @useself='TRUE';
+"@
+								}
+								else
+								{
+									$datasrc = $machine
+									$tsql = @"
+IF EXISTS(SELECT 1 FROM sys.servers WHERE name=N'$linkName') EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
+DECLARE @sql nvarchar(max) = N'EXEC master.dbo.sp_addlinkedserver @server=N''' + REPLACE(N'$linkName','''','''''') + N''', @srvproduct=N'''', @provider=N''' + REPLACE(N'$prov','''','''''') + N''', @datasrc=N''' + REPLACE(N'$datasrc','''','''''') + N''', @provstr=N''Network Library=dbnmpntw'';';
+EXEC(@sql);
+EXEC master.dbo.sp_serveroption N'$linkName', N'data access', N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'use remote collation', N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'rpc out', N'true';
+IF NOT EXISTS (SELECT 1 FROM sys.linked_logins ll JOIN sys.servers s ON s.server_id=ll.server_id WHERE s.name=N'$linkName')
+    EXEC master.dbo.sp_addlinkedsrvlogin @rmtsrvname=N'$linkName', @useself='TRUE';
+"@
+								}
+								
+								if ($haveSqlCmd)
+								{
+									Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query $tsql -QueryTimeout 30 -ErrorAction Stop | Out-Null
+								}
+								else
+								{
+									$cs = "Server=$localInstance;Database=master;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
+									$cn = New-Object System.Data.SqlClient.SqlConnection $cs
+									$cn.Open()
+									$cmd = $cn.CreateCommand()
+									$cmd.CommandTimeout = 30
+									$cmd.CommandText = $tsql
+									[void]$cmd.ExecuteNonQuery()
+									$cn.Close()
+								}
+								
+								try
+								{
+									if ($haveSqlCmd)
+									{
+										Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query "SELECT TOP 1 name FROM [$linkName].master.sys.databases" -QueryTimeout 8 -ErrorAction Stop | Out-Null
+										$output += @{ Text = "Linked Server [$linkName] created via $prov ($protocol) and test OK."; Color = "green" }
+									}
+									else
+									{
+										$output += @{ Text = "Linked Server [$linkName] created via $prov ($protocol)."; Color = "green" }
+									}
+								}
+								catch
+								{
+									$output += @{ Text = "Linked Server [$linkName] created via $prov ($protocol); test failed (likely delegation). Map a SQL login if needed."; Color = "yellow" }
+								}
+								
+								$created = $true; break
+							}
+							catch
+							{
+								$output += @{ Text = "Provider '$prov' failed creating Linked Server [$linkName] ($protocol). Trying next provider..."; Color = "gray" }
+							}
+						}
+						if (-not $created) { $output += @{ Text = "All provider attempts failed creating Linked Server [$linkName] ($protocol)."; Color = "red" } }
+					}
+					
 				}
 				catch
 				{
 					$output += @{ Text = "Failed to process [$machine]: $_"; Color = "red" }
 					$protocol = "File"
 				}
+				
+				# Return; caller writes logs. Protocol line is intended to be LAST.
 				[PSCustomObject]@{
 					Output    = $output
 					Protocol  = $protocol
@@ -12682,7 +12779,6 @@ END
 		}
 	}
 	
-	# Collate multi-lane results, create Linked Servers (named as machine) here
 	if (-not $isSingle)
 	{
 		$laneOrder = $lanes | Sort-Object
@@ -12707,90 +12803,17 @@ END
 			$protocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
 			$laneStr = $result.Lane.ToString().PadLeft(3, '0')
 			$protocol = $result.Protocol
-			if (-not (Test-Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile))))
-			{
-				New-Item -Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)) -ItemType Directory -Force | Out-Null
-			}
+			if (-not (Test-Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)))) { New-Item -Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)) -ItemType Directory -Force | Out-Null }
 			if (-not (Test-Path $protocolResultsFile)) { New-Item -Path $protocolResultsFile -ItemType File -Force | Out-Null }
 			$allLines = @()
-			if (Test-Path $protocolResultsFile)
-			{
-				$allLines = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' }
-			}
+			if (Test-Path $protocolResultsFile) { $allLines = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' } }
 			$allLines = $allLines | Where-Object { -not ($_ -match "^\s*0*${laneStr}\s*,") }
 			$allLines += "$laneStr,$protocol"
 			$sortedLines = $allLines | Sort-Object { ($_ -split ',')[0] -as [int] }
 			[System.IO.File]::WriteAllLines($protocolResultsFile, $sortedLines, [System.Text.Encoding]::UTF8)
 			
-			# Create/Update Linked Server named as the MACHINE
-			if ($CreateLinkedServers -and $canSqlCmd -and $protocol -ne 'File')
-			{
-				$machine = $result.Machine
-				$linkName = $machine # <-- NAME equals machine
-				$datasrc = "tcp:$machine,$tcpPort"
-				$providers = @('MSOLEDBSQL', 'SQLNCLI11', 'SQLNCLI', 'SQLOLEDB')
-				$created = $false
-				foreach ($prov in $providers)
-				{
-					try
-					{
-						$tsql = @"
-DECLARE @exists bit = CASE WHEN EXISTS(SELECT 1 FROM sys.servers WHERE name = N'$linkName') THEN 1 ELSE 0 END;
-
-IF @exists = 1
-BEGIN
-    DECLARE @curProv sysname = (SELECT provider FROM sys.servers WHERE name = N'$linkName');
-    DECLARE @curDS   nvarchar(4000) = (SELECT data_source FROM sys.servers WHERE name = N'$linkName');
-    IF (ISNULL(@curProv,N'') <> N'$prov') OR (ISNULL(@curDS,N'') <> N'$datasrc')
-    BEGIN
-        EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
-        SET @exists = 0;
-    END
-END
-
-IF @exists = 0
-BEGIN
-    EXEC master.dbo.sp_addlinkedserver
-        @server    = N'$linkName',
-        @srvproduct= N'',
-        @provider  = N'$prov',
-        @datasrc   = N'$datasrc';
-END
-
-EXEC master.dbo.sp_serveroption N'$linkName', N'data access',         N'true';
-EXEC master.dbo.sp_serveroption N'$linkName', N'collation compatible', N'false';
-EXEC master.dbo.sp_serveroption N'$linkName', N'use remote collation', N'true';
-EXEC master.dbo.sp_serveroption N'$linkName', N'rpc out',              N'true';
-
-IF NOT EXISTS (
-    SELECT 1
-    FROM sys.linked_logins ll
-    JOIN sys.servers s ON s.server_id = ll.server_id
-    WHERE s.name = N'$linkName'
-)
-BEGIN
-    EXEC master.dbo.sp_addlinkedsrvlogin @rmtsrvname=N'$linkName', @useself='TRUE';
-END
-"@
-						Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query $tsql -QueryTimeout 30 -ErrorAction Stop | Out-Null
-						try
-						{
-							Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query "SELECT TOP 1 name FROM [$linkName].master.sys.databases" -QueryTimeout 10 -ErrorAction Stop | Out-Null
-							Write_Log "Linked Server [$linkName] → $datasrc ($prov) created and tested OK." "green"
-						}
-						catch
-						{
-							Write_Log "Linked Server [$linkName] created with provider '$prov', but test query failed (possibly no delegation). Map a SQL login if needed." "yellow"
-						}
-						$created = $true; break
-					}
-					catch
-					{
-						Write_Log "Provider '$prov' failed creating Linked Server [$linkName] → $datasrc. Trying next provider..." "gray"
-					}
-				}
-				if (-not $created) { Write_Log "All provider attempts failed creating Linked Server [$linkName] → $datasrc." "red" }
-			}
+			# Final line LAST
+			Write_Log "Protocol detected for $($result.Machine) (Lane $lane): $protocol" "magenta"
 		}
 		
 		if ($restartedLanes.Count -gt 0)
@@ -18060,7 +18083,7 @@ public static class NativeWin {
 	$EnableSQLProtocolsItem.ToolTipText = "Enable TCP/IP, Named Pipes, and set static port for SQL Server on selected lane(s)."
 	$EnableSQLProtocolsItem.Add_Click({
 			$script:LastActivity = Get-Date
-			Enable_SQL_Protocols_On_Selected_Lanes -StoreNumber $StoreNumber -CreateLinkedServers
+			Enable_SQL_Protocols_On_Selected_Lanes -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($EnableSQLProtocolsItem)
 	
