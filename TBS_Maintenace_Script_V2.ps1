@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.4.4"
-$VersionDate = "2025-08-15"
+$VersionDate = "2025-08-14"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -811,11 +811,13 @@ function Get_All_Lanes_Database_Info
 # Description:
 #   Pick lane(s), then choose repair level (Audit / Quick / Deep) in a dialog.
 #   Uses Get_All_Lanes_Database_Info to resolve DB server/name per lane.
-#   **Only runs** on lanes that already have a cached protocol in $script:LaneProtocols
-#   (from Start_Lane_Protocol_Jobs): TCP or Named Pipes. If no cache entry, inform and skip.
-#   Executes DBCC CHECKDB from master (so SUSPECT DBs can be targeted).
-#   Logging matches Process_Lanes (banners/colors).
-#   PS 5.1, no nested functions, no ternary, only Write_Log.
+#   Only runs on lanes with cached protocol in $script:LaneProtocols (TCP or Named Pipes).
+#   Connects to master; repairs ONLY the lane DB from Startup.ini.
+#   NEW: If a system DB (master/model/msdb/tempdb) is NOT ONLINE:
+#        • tempdb -> offer to restart SQL service on the lane, then re-probe.
+#        • model/msdb -> offer deep repair with explicit confirmation; else skip with guidance.
+#        • master -> log guidance (restore/rebuild), skip lane (not automated).
+#   Logging matches Process_Lanes; PS 5.1; no nested functions; no ternary; only Write_Log.
 # ===================================================================================================
 
 function Repair_LOC_Databases_On_Lanes
@@ -1070,6 +1072,7 @@ function Repair_LOC_Databases_On_Lanes
 		
 		$dbName = $dbInfo['DBName']
 		$dbServer = $dbInfo['DBServer']
+		$instanceName = $dbInfo['InstanceName']
 		$csNamedPipes = $dbInfo['NamedPipesConnStr']
 		$csTcp = $dbInfo['TcpConnStr']
 		
@@ -1115,10 +1118,7 @@ function Repair_LOC_Databases_On_Lanes
 			& $InvokeSqlCmd -ConnectionString $connStr -Query "SELECT 1 AS ok;" -QueryTimeout 8 -ErrorAction Stop | Out-Null
 			$probeOK = $true
 		}
-		catch
-		{
-			$probeOK = $false
-		}
+		catch { $probeOK = $false }
 		
 		if (-not $probeOK)
 		{
@@ -1127,13 +1127,346 @@ function Repair_LOC_Databases_On_Lanes
 			continue
 		}
 		
-		# Prepare T-SQL bits
+		# ----------------------------------------
+		# System DB health gate with ACTIONS
+		# ----------------------------------------
+		$sysRows = $null
+		try
+		{
+			$sysRows = & $InvokeSqlCmd -ConnectionString $connStr `
+									   -Query "SELECT name, state_desc FROM sys.databases WHERE name IN ('master','model','msdb','tempdb');" `
+									   -QueryTimeout 10 -ErrorAction Stop
+		}
+		catch
+		{
+			Write_Log ("Lane {0} ({1}): WARN: could not query system DB states: {2}" -f $laneKeyP, $machineName, $_.Exception.Message) "yellow"
+			$laneSummary.Add([pscustomobject]@{
+					Lane	    = $laneKeyP
+					Machine	    = $machineName
+					Protocol    = $proto
+					DBServer    = $dbServer
+					DBName	    = $dbName
+					Level	    = $Level
+					QuickRepair = $false
+					DeepRepair  = $false
+					Result	    = 'SystemDbStateUnknown'
+				})
+			continue
+		}
+		
+		$badSystemDbs = @()
+		foreach ($r in $sysRows)
+		{
+			if ($r -and $r.state_desc -and ($r.state_desc.ToString() -ne 'ONLINE'))
+			{
+				$badSystemDbs += [pscustomobject]@{ Name = [string]$r.name; State = [string]$r.state_desc }
+			}
+		}
+		
+		if ($badSystemDbs.Count -gt 0)
+		{
+			Write_Log ("Lane {0} ({1}): System DBs not ONLINE detected." -f $laneKeyP, $machineName) "yellow"
+			foreach ($b in $badSystemDbs) { Write_Log ("  - {0}: {1}" -f $b.Name, $b.State) "yellow" }
+			
+			# Determine SQL service name on the remote machine
+			$svcName = "MSSQLSERVER"
+			if ($instanceName -and ($instanceName.ToUpper() -ne "MSSQLSERVER")) { $svcName = "MSSQL`$$instanceName" }
+			
+			# Handle tempdb specifically: offer restart of the SQL service on the lane
+			$hasTempdbIssue = $false
+			foreach ($b in $badSystemDbs) { if ($b.Name -eq 'tempdb') { $hasTempdbIssue = $true } }
+			
+			if ($hasTempdbIssue)
+			{
+				$msg = "Lane $laneKeyP ($machineName): tempdb is not ONLINE (`"$($badSystemDbs | Where-Object { $_.Name -eq 'tempdb' } | Select-Object -First 1).State`").`r`n`r`n" +
+				"Would you like to restart the SQL Server service ($svcName) on $machineName now? This will drop connections and recreate tempdb."
+				$resp = [System.Windows.Forms.MessageBox]::Show($msg, "Restart SQL Service for tempdb", `
+					[System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+				
+				if ($resp -eq [System.Windows.Forms.DialogResult]::Yes)
+				{
+					Write_Log ("Attempting to restart service {0} on {1}..." -f $svcName, $machineName) "gray"
+					
+					# stop
+					try
+					{
+						& sc.exe "\\$machineName" stop $svcName | Out-Null
+					}
+					catch { }
+					# wait for stop up to ~60s
+					$stopped = $false
+					for ($i = 0; $i -lt 30; $i++)
+					{
+						Start-Sleep -Milliseconds 2000
+						try
+						{
+							$chk = sc.exe "\\$machineName" query $svcName 2>$null
+							$txt = if ($chk) { $chk | Out-String }
+							else { "" }
+							if ($txt -match 'STATE\s*:\s*\d+\s*STOPPED') { $stopped = $true; break }
+						}
+						catch { }
+					}
+					if ($stopped) { Write_Log "Service stopped." "gray" }
+					else { Write_Log "WARN: Service did not report STOPPED in time." "yellow" }
+					
+					# start
+					try
+					{
+						& sc.exe "\\$machineName" start $svcName | Out-Null
+					}
+					catch { }
+					# wait for running up to ~90s
+					$running = $false
+					for ($i = 0; $i -lt 45; $i++)
+					{
+						Start-Sleep -Milliseconds 2000
+						try
+						{
+							$chk = sc.exe "\\$machineName" query $svcName 2>$null
+							$txt = if ($chk) { $chk | Out-String }
+							else { "" }
+							if ($txt -match 'STATE\s*:\s*\d+\s*RUNNING') { $running = $true; break }
+						}
+						catch { }
+					}
+					if ($running) { Write_Log "Service started." "green" }
+					else { Write_Log "ERROR: Service did not report RUNNING in time." "red" }
+					
+					# re-probe connection (service restart broke previous connection context)
+					$reprobeOK = $false
+					for ($t = 1; $t -le 60; $t++)
+					{
+						try
+						{
+							& $InvokeSqlCmd -ConnectionString $connStr -Query "SELECT 1 AS ok;" -QueryTimeout 5 -ErrorAction Stop | Out-Null
+							$reprobeOK = $true
+							break
+						}
+						catch { Start-Sleep -Milliseconds 2000 }
+					}
+					if ($reprobeOK)
+					{
+						# check system DBs again
+						try
+						{
+							$sysRows = & $InvokeSqlCmd -ConnectionString $connStr `
+													   -Query "SELECT name, state_desc FROM sys.databases WHERE name IN ('master','model','msdb','tempdb');" `
+													   -QueryTimeout 10 -ErrorAction Stop
+							$badSystemDbs = @()
+							foreach ($r in $sysRows) { if ($r -and $r.state_desc -and ($r.state_desc.ToString() -ne 'ONLINE')) { $badSystemDbs += [pscustomobject]@{ Name = [string]$r.name; State = [string]$r.state_desc } } }
+						}
+						catch
+						{
+							Write_Log "WARN: Re-check of system DB states failed after restart." "yellow"
+						}
+					}
+					else
+					{
+						Write_Log "ERROR: Could not reconnect after service restart; skipping lane." "red"
+						$laneSummary.Add([pscustomobject]@{
+								Lane	    = $laneKeyP
+								Machine	    = $machineName
+								Protocol    = $proto
+								DBServer    = $dbServer
+								DBName	    = $dbName
+								Level	    = $Level
+								QuickRepair = $false
+								DeepRepair  = $false
+								Result	    = 'ServiceRestartFailed'
+							})
+						continue
+					}
+				}
+				else
+				{
+					Write_Log "User declined SQL service restart for tempdb. Skipping lane with guidance: restart SQL service on the lane to recreate tempdb." "yellow"
+					$laneSummary.Add([pscustomobject]@{
+							Lane	    = $laneKeyP
+							Machine	    = $machineName
+							Protocol    = $proto
+							DBServer    = $dbServer
+							DBName	    = $dbName
+							Level	    = $Level
+							QuickRepair = $false
+							DeepRepair  = $false
+							Result	    = 'TempdbNotOnline_Skipped'
+						})
+					continue
+				}
+			}
+			
+			# After potential tempdb handling, if any system DB still not ONLINE, handle model/msdb or master
+			$stillBad = $false
+			foreach ($r in $badSystemDbs) { if ($r.Name -ne 'tempdb') { $stillBad = $true } }
+			if ($badSystemDbs.Count -gt 0 -and -not $stillBad)
+			{
+				# only tempdb was bad and we handled it; re-check one more time
+				$stillBad = $false
+				foreach ($r in $badSystemDbs) { if ($r.state -ne 'ONLINE') { $stillBad = $true } }
+			}
+			
+			if ($stillBad)
+			{
+				# master/model/msdb handling
+				$hasMaster = $false
+				$hasModel = $false
+				$hasMsdb = $false
+				foreach ($r in $badSystemDbs)
+				{
+					if ($r.Name -eq 'master') { $hasMaster = $true }
+					if ($r.Name -eq 'model') { $hasModel = $true }
+					if ($r.Name -eq 'msdb') { $hasMsdb = $true }
+				}
+				
+				if ($hasMaster)
+				{
+					Write_Log "CRITICAL: master is not ONLINE. Automated repair is not supported here." "red"
+					Write_Log "Action: Restore master from a known-good backup OR rebuild system DBs (setup.exe /ACTION=REBUILDDATABASE), then restore." "gray"
+					$laneSummary.Add([pscustomobject]@{
+							Lane	    = $laneKeyP
+							Machine	    = $machineName
+							Protocol    = $proto
+							DBServer    = $dbServer
+							DBName	    = $dbName
+							Level	    = $Level
+							QuickRepair = $false
+							DeepRepair  = $false
+							Result	    = 'MasterNotOnline'
+						})
+					continue
+				}
+				
+				# Offer EMERGENCY deep-repair for model/msdb (with explicit confirmation)
+				$targets = @()
+				if ($hasModel) { $targets += 'model' }
+				if ($hasMsdb) { $targets += 'msdb' }
+				
+				if ($targets.Count -gt 0)
+				{
+					$list = ($targets -join ', ')
+					$warn = "Lane $laneKeyP ($machineName): $list is not ONLINE.`r`n`r`n" +
+					"Attempt DEEP REPAIR (EMERGENCY + REPAIR_ALLOW_DATA_LOSS) for these system DB(s)?`r`n" +
+					"This can cause data loss. Recommended alternative is RESTORE from backup."
+					$resp2 = [System.Windows.Forms.MessageBox]::Show($warn, "Deep Repair system DB(s)?", `
+						[System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+					if ($resp2 -eq [System.Windows.Forms.DialogResult]::Yes)
+					{
+						foreach ($sysDb in $targets)
+						{
+							Write_Log ("Attempting deep repair on system DB: {0}" -f $sysDb) "yellow"
+							$qSys = "[" + ($sysDb -replace "]", "]]") + "]"
+							try
+							{
+								& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qSys SET EMERGENCY;" -QueryTimeout 30 -ErrorAction Stop | Out-Null
+							}
+							catch { Write_Log ("WARN: EMERGENCY failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
+							try
+							{
+								& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qSys SET SINGLE_USER WITH ROLLBACK IMMEDIATE;" -QueryTimeout 30 -ErrorAction Stop | Out-Null
+							}
+							catch { Write_Log ("WARN: SINGLE_USER failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
+							$okSys = $false
+							try
+							{
+								& $InvokeSqlCmd -ConnectionString $connStr -Query "DBCC CHECKDB ($qSys, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS;" -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+								$okSys = $true
+								Write_Log ("Deep repair completed on {0}." -f $sysDb) "green"
+							}
+							catch
+							{
+								$okSys = $false
+								Write_Log ("Deep repair failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "red"
+							}
+							try
+							{
+								& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qSys SET MULTI_USER;" -QueryTimeout 30 -ErrorAction Stop | Out-Null
+							}
+							catch { Write_Log ("WARN: MULTI_USER restore failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
+						}
+						
+						# Re-check system DBs after deep repair attempts
+						try
+						{
+							$sysRows = & $InvokeSqlCmd -ConnectionString $connStr `
+													   -Query "SELECT name, state_desc FROM sys.databases WHERE name IN ('master','model','msdb','tempdb');" `
+													   -QueryTimeout 10 -ErrorAction Stop
+							$badSystemDbs = @()
+							foreach ($r in $sysRows) { if ($r -and $r.state_desc -and ($r.state_desc.ToString() -ne 'ONLINE')) { $badSystemDbs += [pscustomobject]@{ Name = [string]$r.name; State = [string]$r.state_desc } } }
+						}
+						catch
+						{
+							Write_Log "WARN: Re-check of system DB states failed after deep repair attempt." "yellow"
+						}
+					}
+					else
+					{
+						Write_Log ("User declined deep repair for system DB(s): {0}. Skipping lane with guidance to RESTORE from backup." -f $list) "yellow"
+						$laneSummary.Add([pscustomobject]@{
+								Lane	    = $laneKeyP
+								Machine	    = $machineName
+								Protocol    = $proto
+								DBServer    = $dbServer
+								DBName	    = $dbName
+								Level	    = $Level
+								QuickRepair = $false
+								DeepRepair  = $false
+								Result	    = 'SystemDbNotOnline_Skipped'
+							})
+						continue
+					}
+				}
+			}
+			
+			# Final gate after any actions: if any system DB still not ONLINE, skip.
+			$finalBad = $false
+			foreach ($r in $badSystemDbs)
+			{
+				if ($r -and $r.State -and ($r.State.ToString() -ne 'ONLINE')) { $finalBad = $true }
+			}
+			if ($finalBad)
+			{
+				Write_Log "System DBs are still not ONLINE after attempted actions. Skipping lane." "yellow"
+				$laneSummary.Add([pscustomobject]@{
+						Lane	    = $laneKeyP
+						Machine	    = $machineName
+						Protocol    = $proto
+						DBServer    = $dbServer
+						DBName	    = $dbName
+						Level	    = $Level
+						QuickRepair = $false
+						DeepRepair  = $false
+						Result	    = 'SystemDbStillNotOnline'
+					})
+				continue
+			}
+			else
+			{
+				Write_Log "All system DBs are ONLINE after remediation. Proceeding with lane DB repair." "green"
+			}
+		}
+		
+		# ----------------------------------------
+		# Snapshot lane DB state BEFORE
+		# ----------------------------------------
+		$stateBefore = ''
+		try
+		{
+			$rows = & $InvokeSqlCmd -ConnectionString $connStr -Query "SELECT state_desc FROM sys.databases WHERE name = N'$dbName';" -QueryTimeout 10 -ErrorAction Stop
+			if ($rows -and $rows[0] -and $rows[0].state_desc) { $stateBefore = [string]$rows[0].state_desc }
+		}
+		catch { $stateBefore = 'Unknown' }
+		if ($stateBefore) { Write_Log ("DB state before: {0}" -f $stateBefore) "gray" }
+		else { Write_Log "DB state before: Unknown" "gray" }
+		
+		# ----------------------------------------
+		# Repair the lane's application DB according to chosen level
+		# ----------------------------------------
 		$qDb = "[" + ($dbName -replace "]", "]]") + "]"
 		$ok = $false
 		$usedQuick = $false
 		$usedDeep = $false
 		
-		# Execute according to chosen level
 		if ($Level -eq 'Audit')
 		{
 			Write_Log ("{0}: Running DBCC CHECKDB (Audit)..." -f $dbName) "gray"
@@ -1211,6 +1544,17 @@ function Repair_LOC_Databases_On_Lanes
 			}
 			catch { Write_Log ("WARN: MULTI_USER restore failed: $_") "yellow" }
 		}
+		
+		# Snapshot state AFTER
+		$stateAfter = ''
+		try
+		{
+			$rows2 = & $InvokeSqlCmd -ConnectionString $connStr -Query "SELECT state_desc FROM sys.databases WHERE name = N'$dbName';" -QueryTimeout 10 -ErrorAction Stop
+			if ($rows2 -and $rows2[0] -and $rows2[0].state_desc) { $stateAfter = [string]$rows2[0].state_desc }
+		}
+		catch { $stateAfter = 'Unknown' }
+		if ($stateAfter) { Write_Log ("DB state after:  {0}" -f $stateAfter) "gray" }
+		else { Write_Log "DB state after:  Unknown" "gray" }
 		
 		# Summarize this lane
 		$result = 'OK'
