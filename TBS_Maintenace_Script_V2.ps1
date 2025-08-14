@@ -15931,11 +15931,12 @@ Write_Log "`r`n==================== Deploy_Scale_Currency_Files Completed ======
 # Description:
 #   Lets the user pick any subset of lanes/backoffices (via node selector), resolves their IP/hostname
 #   mapping, ensures the local hosts file is updated (replacing old entries if IPs have changed),
-#   and then copies the finished hosts file to all selected nodes. 
+#   and then copies the finished hosts file to all selected nodes.
 #   - Always includes the current machine.
 #   - Custom node mappings are appended after a blank line (for clarity/compatibility).
 #   - Shows a final Write_Log output as a table, sorted by IP, coloring changed rows yellow.
 #   - Ensures each IP is mapped to only one hostname (last selected wins if dupe).
+#   - Local IP selection is robust: ignores VPN/virtual/tunnel adapters, prefers Ethernet/Wi-Fi with a gateway.
 # Usage:
 #   Sync_Selected_Node_Hosts -StoreNumber "001"
 # Prerequisites:
@@ -15970,18 +15971,89 @@ function Sync_Selected_Node_Hosts
 	$changedMappings = @()
 	$finalRows = @()
 	
-	# Get local machine details
+	# ---------------- Local machine details (robust local IPv4 selection) ----------------
 	$localHostname = $env:COMPUTERNAME
-	try { $localIp = (Test-Connection -ComputerName $localHostname -Count 1 -ErrorAction Stop | Select-Object -ExpandProperty IPV4Address | Select-Object -First 1) }
-	catch { $localIp = $null }
+	$localIp = $null
+	try
+	{
+		# Get all UP NICs; exclude obvious VPN/virtual/tunnel/loopback by name/description/type
+		$badRegex = '(?i)(vpn|virtual|vmware|hyper[- ]?v|vbox|virtualbox|loopback|hamachi|zerotier|tailscale|anyconnect|forti|juniper|pulse|citrix|openvpn|wireguard|proton|nord|ppp|remote)'
+		$nics = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+		Where-Object { $_.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up }
+		
+		$candidates = @()
+		foreach ($nic in $nics)
+		{
+			if ($nic.Name -match $badRegex -or $nic.Description -match $badRegex) { continue }
+			
+			$type = $nic.NetworkInterfaceType.ToString()
+			if ($type -notin @('Ethernet', 'Wireless80211')) { continue } # prefer physical/LAN
+			
+			$props = $nic.GetIPProperties()
+			$hasGw = $false
+			foreach ($gw in $props.GatewayAddresses)
+			{
+				if ($gw.Address -and $gw.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $hasGw = $true; break }
+			}
+			
+			foreach ($ua in $props.UnicastAddresses)
+			{
+				if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+				$ip = $ua.Address.ToString()
+				if ($ip -eq '0.0.0.0' -or $ip.StartsWith('127.') -or $ip.StartsWith('169.254.')) { continue }
+				
+				$isPrivate = ($ip -match '^(10\.)|(192\.168\.)|(172\.(1[6-9]|2[0-9]|3[0-1])\.)')
+				$score = 0
+				if ($type -eq 'Ethernet') { $score += 100 }
+				elseif ($type -eq 'Wireless80211') { $score += 80 }
+				else { $score += 10 }
+				if ($hasGw) { $score += 50 }
+				if ($isPrivate) { $score += 20 }
+				
+				$candidates += [PSCustomObject]@{
+					IP		   = $ip
+					NicName    = $nic.Name
+					Desc	   = $nic.Description
+					Type	   = $type
+					HasGateway = $hasGw
+					IsPrivate  = $isPrivate
+					Score	   = $score
+				}
+			}
+		}
+		
+		if ($candidates.Count -gt 0)
+		{
+			$chosen = $candidates | Sort-Object Score -Descending | Select-Object -First 1
+			$localIp = $chosen.IP
+			Write_Log ("Selected local IP: {0} via NIC '{1}' ({2}); HasGateway={3}; Private={4}" -f `
+				$chosen.IP, $chosen.NicName, $chosen.Type, $chosen.HasGateway, $chosen.IsPrivate) "gray"
+		}
+	}
+	catch
+	{
+		# swallow; fallback below
+	}
+	
+	# Fallbacks if the scoring path didn't produce an IP
 	if (-not $localIp)
 	{
-		Write_Log "Could not resolve local IP address for $localHostname. Aborting." "red"
+		try { $localIp = ([System.Net.Dns]::GetHostAddresses($localHostname) | Where-Object { $_.AddressFamily -eq 'InterNetwork' -and -not $_.ToString().StartsWith('169.254.') -and -not $_.ToString().StartsWith('127.') } | Select-Object -ExpandProperty IPAddressToString -First 1) }
+		catch { }
+	}
+	if (-not $localIp)
+	{
+		try { $localIp = (Test-Connection -ComputerName $localHostname -Count 1 -ErrorAction Stop | Select-Object -ExpandProperty IPV4Address | Select-Object -First 1) }
+		catch { }
+	}
+	if (-not $localIp)
+	{
+		Write_Log "Could not resolve a suitable local IPv4 address for $localHostname. Aborting." "red"
 		return
 	}
 	$ipToHost[$localIp] = $localHostname
 	
-	# Add lanes/backoffices
+	# ---------------- Add lanes/backoffices ----------------
 	$nodes = @()
 	foreach ($lane in $lanes)
 	{
@@ -15993,16 +16065,23 @@ function Sync_Selected_Node_Hosts
 		$hostname = $script:FunctionResults['BackofficeNumToMachineName'][$bo]
 		if ($hostname) { $nodes += @{ Hostname = $hostname; LaneNum = $bo; Type = 'Backoffice' } }
 	}
+	
 	foreach ($n in $nodes)
 	{
-		# Skip the local host if already included
-		if ($n.Hostname -eq $localHostname) { continue }
+		if ($n.Hostname -eq $localHostname) { continue } # already added as local
 		$ip = $null
 		try
 		{
-			$ip = (Test-Connection -ComputerName $n.Hostname -Count 1 -ErrorAction Stop | Select-Object -ExpandProperty IPV4Address | Select-Object -First 1)
+			# Prefer DNS A-record style resolution; fall back to ping
+			$addr = [System.Net.Dns]::GetHostAddresses($n.Hostname) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | Select-Object -First 1
+			if ($addr) { $ip = $addr.IPAddressToString }
 		}
 		catch { }
+		if (-not $ip)
+		{
+			try { $ip = (Test-Connection -ComputerName $n.Hostname -Count 1 -ErrorAction Stop | Select-Object -ExpandProperty IPV4Address | Select-Object -First 1) }
+			catch { }
+		}
 		if (-not $ip)
 		{
 			Write_Log "$($n.Type) $($n.LaneNum): Could not resolve IP for $($n.Hostname). Skipping." "red"
@@ -16010,13 +16089,14 @@ function Sync_Selected_Node_Hosts
 		}
 		$ipToHost[$ip] = $n.Hostname
 	}
+	
 	if ($ipToHost.Count -eq 0)
 	{
 		Write_Log "No valid IP/hostname mappings found for selected nodes." "yellow"
 		return
 	}
 	
-	# Load previous hosts file mappings
+	# ---------------- Load previous hosts file mappings ----------------
 	$hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
 	$oldLines = if (Test-Path $hostsPath) { Get-Content $hostsPath -Raw }
 	else { "" }
@@ -16025,7 +16105,8 @@ function Sync_Selected_Node_Hosts
 	{
 		if ($line -match '^\s*([0-9\.]+)\s+(\S+)\s*$') { $oldMappings[$matches[2].ToLower()] = $matches[1] }
 	}
-	# Preserve all lines before the first custom mapping
+	
+	# Preserve all lines before the first bare "IP hostname" mapping
 	$defaultSection = @()
 	$customStart = $false
 	foreach ($line in $oldLines -split "`r?`n")
@@ -16045,14 +16126,15 @@ function Sync_Selected_Node_Hosts
 	}
 	$outputLines = @($defaultSection + '', '') # Always 1 blank line after defaults
 	
-	# Custom mappings, always start with the local host, then others sorted by IP
+	# ---------------- Build custom mappings (local first, then others by IP) ----------------
 	$orderedMappings = @()
 	$orderedMappings += @{ IP = $localIp; Hostname = $localHostname }
 	foreach ($ip in ($ipToHost.Keys | Sort-Object))
 	{
-		if ($ip -eq $localIp) { continue } # Already first
+		if ($ip -eq $localIp) { continue } # already first
 		$orderedMappings += @{ IP = $ip; Hostname = $ipToHost[$ip] }
 	}
+	
 	foreach ($entry in $orderedMappings)
 	{
 		$hn = $entry.Hostname
@@ -16065,10 +16147,10 @@ function Sync_Selected_Node_Hosts
 		if ($rowColor -eq "yellow") { $changedMappings += "$hn ($oldIp => $ip)" }
 	}
 	
-	# Write hosts file (locally)
+	# ---------------- Write hosts file (local) ----------------
 	Set-Content -Path $hostsPath -Value $outputLines -Encoding ascii
 	
-	# Copy hosts file to selected nodes (SKIP local host)
+	# ---------------- Copy hosts file to selected nodes (skip local) ----------------
 	foreach ($entry in $orderedMappings)
 	{
 		$hn = $entry.Hostname
@@ -16086,9 +16168,8 @@ function Sync_Selected_Node_Hosts
 		}
 	}
 	
-	# Table Output
+	# ---------------- Table Output ----------------
 	Write_Log "`r`nHost file mappings (sorted by IP, local host first):" "blue"
-	# Find max lengths for alignment
 	$maxIpLen = ($finalRows | ForEach-Object { "$($_.IP)".Length } | Measure-Object -Maximum).Maximum
 	$maxHostLen = ($finalRows | ForEach-Object { "$($_.Hostname)".Length } | Measure-Object -Maximum).Maximum
 	Write_Log ("IP".PadRight($maxIpLen + 2) + "Hostname".PadRight($maxHostLen + 2) + "Changed") "blue"
@@ -17298,73 +17379,96 @@ if (-not $form)
 	$form.Font = New-Object System.Drawing.Font("Segoe UI", 9) # Modern font
 	
 	# -------------------- Idle Close (configurable) + Busy-Safe Watchdog --------------------
-	$script:IdleMinutesAllowed = 15 # << change this to allow more/less idle time
-	$script:LastActivity = Get-Date
+	# Config
+	if (-not $script:LastActivity) { $script:LastActivity = Get-Date }
 	$script:SuppressClosePrompt = $false
-	$form.KeyPreview = $true # ensure form sees keystrokes even when a control has focus
+	$script:IsBusy = $false
 	
-	# Function to detect background work so we don't close mid-operations
-	$script:IsBusyCheck = {
-		try
-		{
-			if ($script:LaneProtocolJobs)
-			{
-				foreach ($kv in @($script:LaneProtocolJobs.GetEnumerator()))
-				{
-					$st = $kv.Value
-					if ($st -and $st.Handle -and -not $st.Handle.IsCompleted) { return $true }
-				}
-			}
-		}
+	# Make sure form sees keystrokes even when a control has focus
+	if ($form -and $form -is [System.Windows.Forms.Form])
+	{
+		try { $form.KeyPreview = $true }
 		catch { }
-		try
-		{
-			if ($script:LaneProtocolPool -and
-				($script:LaneProtocolPool.GetAvailableRunspaces() -lt $script:LaneProtocolPool.MaxRunspaces)) { return $true }
-		}
-		catch { }
-		try
-		{
-			if ($script:ScaleCredTasks)
-			{
-				foreach ($k in @($script:ScaleCredTasks.Keys))
-				{
-					$st = $script:ScaleCredTasks[$k]
-					if ($st -and $st.Handle -and -not $st.Handle.IsCompleted) { return $true }
-				}
-			}
-		}
-		catch { }
-		try
-		{
-			if ($ClearXEJob -and ($ClearXEJob.State -eq 'Running')) { return $true }
-		}
-		catch { }
-		try
-		{
-			if (Get-Job -State Running -ErrorAction SilentlyContinue) { return $true }
-		}
-		catch { }
-		return $false
 	}
 	
-	# Idle watchdog (ticks on UI thread; won't fire while UI thread is busy)
+	# --- Busy scanner (UI thread) -------------------------------------------------------------
+	$BusyTimer = New-Object System.Windows.Forms.Timer
+	$BusyTimer.Interval = 800
+	$BusyTimer.add_Tick({
+			$script:IsBusy = $false
+			
+			try
+			{
+				if ($script:LaneProtocolJobs)
+				{
+					foreach ($kv in @($script:LaneProtocolJobs.GetEnumerator()))
+					{
+						$st = $kv.Value
+						if ($st -and $st.Handle -and -not $st.Handle.IsCompleted) { $script:IsBusy = $true; break }
+					}
+				}
+			}
+			catch { }
+			
+			if (-not $script:IsBusy)
+			{
+				try
+				{
+					if ($script:LaneProtocolPool -and
+						($script:LaneProtocolPool.GetAvailableRunspaces() -lt $script:LaneProtocolPool.MaxRunspaces))
+					{
+						$script:IsBusy = $true
+					}
+				}
+				catch { }
+			}
+			
+			if (-not $script:IsBusy)
+			{
+				try
+				{
+					if ($script:ScaleCredTasks)
+					{
+						foreach ($k in @($script:ScaleCredTasks.Keys))
+						{
+							$st = $script:ScaleCredTasks[$k]
+							if ($st -and $st.Handle -and -not $st.Handle.IsCompleted) { $script:IsBusy = $true; break }
+						}
+					}
+				}
+				catch { }
+			}
+			
+			if (-not $script:IsBusy)
+			{
+				try { if ($ClearXEJob -and ($ClearXEJob.State -eq 'Running')) { $script:IsBusy = $true } }
+				catch { }
+			}
+			
+			if (-not $script:IsBusy)
+			{
+				try { if (Get-Job -State Running -ErrorAction SilentlyContinue) { $script:IsBusy = $true } }
+				catch { }
+			}
+		})
+	$BusyTimer.Start()
+	
+	# --- Idle watchdog (UI thread) ------------------------------------------------------------
 	$script:IdleTimer = New-Object System.Windows.Forms.Timer
-	$script:IdleTimer.Interval = 30000 # 30 seconds
-	$script:IdleTimer.Add_Tick({
+	$script:IdleTimer.Interval = 30000 # 30s
+	$script:IdleTimer.add_Tick({
+			if ($script:IdleMinutesAllowed -le 0) { return }
 			try
 			{
 				$minsIdle = (New-TimeSpan -Start $script:LastActivity -End (Get-Date)).TotalMinutes
 				if ($minsIdle -ge $script:IdleMinutesAllowed)
 				{
-					if (-not (& $script:IsBusyCheck))
+					if (-not $script:IsBusy)
 					{
-						if (Get-Command Write_Log -ErrorAction SilentlyContinue)
-						{
-							Write_Log "Idle for $([math]::Round($minsIdle, 1)) minute(s) - closing." "yellow"
-						}
+						try { Write_Log "Idle for $([math]::Round($minsIdle, 1)) minute(s) - closing." "yellow" }
+						catch { }
 						$script:SuppressClosePrompt = $true
-						$form.Close()
+						if ($form -and -not $form.IsDisposed) { $form.Close() }
 					}
 					else
 					{
@@ -17377,10 +17481,36 @@ if (-not $form)
 		})
 	$script:IdleTimer.Start()
 	
-	# Form-level activity hooks
-	$form.Add_KeyDown({ $script:LastActivity = Get-Date })
-	$form.Add_MouseMove({ $script:LastActivity = Get-Date })
-	# ----------------------------------------------------------------------------------------
+	# --- Activity hooks (form + all existing child controls) ---------------------------------
+	if ($form -and $form -is [System.Windows.Forms.Form])
+	{
+		try { $form.add_KeyDown({ $script:LastActivity = Get-Date }) }
+		catch { }
+		try { $form.add_MouseMove({ $script:LastActivity = Get-Date }) }
+		catch { }
+		
+		try
+		{
+			# Recursively attach to current controls
+			$stack = New-Object System.Collections.Stack
+			$stack.Push($form)
+			while ($stack.Count -gt 0)
+			{
+				$parent = [System.Windows.Forms.Control]$stack.Pop()
+				foreach ($ctrl in @($parent.Controls))
+				{
+					try { $ctrl.add_KeyDown({ $script:LastActivity = Get-Date }) }
+					catch { }
+					try { $ctrl.add_Click({ $script:LastActivity = Get-Date }) }
+					catch { }
+					try { $ctrl.add_MouseMove({ $script:LastActivity = Get-Date }) }
+					catch { }
+					if ($ctrl -and $ctrl.HasChildren) { $stack.Push($ctrl) }
+				}
+			}
+		}
+		catch { }
+	}
 	
 	# Banner Label
 	$bannerLabel = New-Object System.Windows.Forms.Label
@@ -17677,24 +17807,49 @@ if (-not $form)
 	}
 	
 	######################################################################################################################
-	# 																													 #
-	# 												Labels																 #
-	#																													 #
+	#                                                                                                                    #
+	#                                                   Labels                                                           #
+	#                                                                                                                    #
 	######################################################################################################################
 	
-	# SMS Version Level
+	# SMS Version Label
 	$smsVersionLabel = New-Object System.Windows.Forms.Label
 	$smsVersionLabel.Text = "SMS Version: N/A"
 	$smsVersionLabel.Location = New-Object System.Drawing.Point(50, 30)
-	$smsVersionLabel.Size = New-Object System.Drawing.Size(250, 20) # Made wider for longer version strings
+	$smsVersionLabel.Size = New-Object System.Drawing.Size(250, 20) # Wider for longer version strings
 	$smsVersionLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($smsVersionLabel)
-	# Make the SMS Version label bring SMS to front (or launch it)
+	# Clickable cursor + tooltip
 	$smsVersionLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$toolTip.SetToolTip($smsVersionLabel, "Shows current SMS version. Click to bring SMSStart to front (or launch it).")
+	# Save original style for hover in/out
+	$smsVersionLabel.Tag = [pscustomobject]@{ Color = $smsVersionLabel.ForeColor; Font = $smsVersionLabel.Font }
+	$smsVersionLabel.Add_MouseEnter({
+			param ($s,
+				$e)
+			try
+			{
+				$s.ForeColor = 'DodgerBlue'
+				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
+				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
+			}
+			catch { }
+		})
+	$smsVersionLabel.Add_MouseLeave({
+			param ($s,
+				$e)
+			try
+			{
+				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
+				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
+			}
+			catch { }
+		})
+	
+	# Bring SMS to front (or launch)
 	$smsVersionLabel.Add_Click({
 			$orig = $smsVersionLabel.ForeColor
 			$smsVersionLabel.ForeColor = 'DodgerBlue'
-			
 			try
 			{
 				# --- Minimal P/Invoke for window focus/restore ---
@@ -17756,7 +17911,6 @@ public static class NativeWin {
 	$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$form.Controls.Add($storeNameLabel)
-	
 	# Center label initially and on resize
 	$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
 	$storeNameLabel.Top = 30
@@ -17764,66 +17918,88 @@ public static class NativeWin {
 			$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
 			$storeNameLabel.Top = 30
 		})
-	# Make Store Name label clickable and ping all nodes on click
+	# Clickable + tooltip + hover
 	$storeNameLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$toolTip.SetToolTip($storeNameLabel, "Shows store name. Click to ping all nodes (Lanes > Scales > Backoffices).")
+	$storeNameLabel.Tag = [pscustomobject]@{ Color = $storeNameLabel.ForeColor; Font = $storeNameLabel.Font }
+	$storeNameLabel.Add_MouseEnter({
+			param ($s,
+				$e)
+			try
+			{
+				$s.ForeColor = 'DodgerBlue'
+				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
+				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
+			}
+			catch { }
+		})
+	$storeNameLabel.Add_MouseLeave({
+			param ($s,
+				$e)
+			try
+			{
+				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
+				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
+			}
+			catch { }
+		})
+	# Click action: ping all nodes
 	$storeNameLabel.Add_Click({
-			# Optionally, you can change the label color to indicate action
 			$storeNameLabel.ForeColor = 'DodgerBlue'
 			try
 			{
-				# Ping all node types in order: Lanes, Scales, Backoffices
 				Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber
 				Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
 				Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
 			}
 			finally
 			{
-				# Restore label color
 				$storeNameLabel.ForeColor = 'Black'
 			}
 		})
 	
-	# Store Number Label
+	# Store Number Label (informational only)
 	$script:storeNumberLabel = New-Object System.Windows.Forms.Label
 	$storeNumberLabel.Text = "Store Number: N/A"
 	$storeNumberLabel.Location = New-Object System.Drawing.Point(830, 30)
 	$storeNumberLabel.Size = New-Object System.Drawing.Size(200, 20)
 	$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($storeNumberLabel)
+	$toolTip.SetToolTip($storeNumberLabel, "Shows store number (informational).")
 	
-	# Nodes Backoffice Label (Number of Backoffices)
-	$NodesBackoffices = New-Object System.Windows.Forms.Label
-	$NodesBackoffices.Text = "Number of Backoffices: N/A"
-	$NodesBackoffices.Location = New-Object System.Drawing.Point(50, 50)
-	$NodesBackoffices.Size = New-Object System.Drawing.Size(200, 20)
-	$NodesBackoffices.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$NodesBackoffices.AutoSize = $false
-	$form.Controls.Add($NodesBackoffices)
-	$NodesBackoffices.Cursor = [System.Windows.Forms.Cursors]::Hand
-	$NodesBackoffices.Add_Click({
-			# Color feedback: Blue during ping, Black after
-			$NodesBackoffices.ForeColor = 'DodgerBlue'
-			try
-			{
-				Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
-			}
-			finally
-			{
-				$NodesBackoffices.ForeColor = 'Black'
-			}
-		})
-	
-	# Nodes Store Label (Number of Lanes)
+	# Number of Lanes (clickable)
 	$script:NodesStore = New-Object System.Windows.Forms.Label
 	$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
-	$NodesStore.Location = New-Object System.Drawing.Point(420, 50)
+	$NodesStore.Location = New-Object System.Drawing.Point(50, 50)
 	$NodesStore.Size = New-Object System.Drawing.Size(200, 20)
 	$NodesStore.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$NodesStore.AutoSize = $false
 	$form.Controls.Add($NodesStore)
 	$NodesStore.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$toolTip.SetToolTip($NodesStore, "Shows count of Lanes. Click to ping Lane nodes.")
+	$NodesStore.Tag = [pscustomobject]@{ Color = $NodesStore.ForeColor; Font = $NodesStore.Font }
+	$NodesStore.Add_MouseEnter({
+			param ($s,
+				$e)
+			try
+			{
+				$s.ForeColor = 'DodgerBlue'
+				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
+				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
+			}
+			catch { }
+		})
+	$NodesStore.Add_MouseLeave({
+			param ($s,
+				$e)
+			try
+			{
+				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
+				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
+			}
+			catch { }
+		})
 	$NodesStore.Add_Click({
-			# Color feedback: Blue during ping, Black after
 			$NodesStore.ForeColor = 'DodgerBlue'
 			try
 			{
@@ -17835,16 +18011,38 @@ public static class NativeWin {
 			}
 		})
 	
-	# Scales Label
+	# Number of Scales (clickable)
 	$script:scalesLabel = New-Object System.Windows.Forms.Label
 	$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
-	$scalesLabel.Location = New-Object System.Drawing.Point(820, 50)
+	$scalesLabel.Location = New-Object System.Drawing.Point(420, 50)
 	$scalesLabel.Size = New-Object System.Drawing.Size(200, 20)
 	$scalesLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($scalesLabel)
 	$scalesLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$toolTip.SetToolTip($scalesLabel, "Shows count of Scales. Click to ping Scale nodes.")
+	$scalesLabel.Tag = [pscustomobject]@{ Color = $scalesLabel.ForeColor; Font = $scalesLabel.Font }
+	$scalesLabel.Add_MouseEnter({
+			param ($s,
+				$e)
+			try
+			{
+				$s.ForeColor = 'DodgerBlue'
+				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
+				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
+			}
+			catch { }
+		})
+	$scalesLabel.Add_MouseLeave({
+			param ($s,
+				$e)
+			try
+			{
+				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
+				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
+			}
+			catch { }
+		})
 	$scalesLabel.Add_Click({
-			# Color feedback: Blue during ping, Black after
 			$scalesLabel.ForeColor = 'DodgerBlue'
 			try
 			{
@@ -17856,25 +18054,66 @@ public static class NativeWin {
 			}
 		})
 	
-	# Create a RichTextBox for log output
+	# Number of Backoffices (clickable)
+	$NodesBackoffices = New-Object System.Windows.Forms.Label
+	$NodesBackoffices.Text = "Number of Backoffices: N/A"
+	$NodesBackoffices.Location = New-Object System.Drawing.Point(790, 50)
+	$NodesBackoffices.Size = New-Object System.Drawing.Size(200, 20)
+	$NodesBackoffices.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
+	$NodesBackoffices.AutoSize = $false
+	$form.Controls.Add($NodesBackoffices)
+	$NodesBackoffices.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$toolTip.SetToolTip($NodesBackoffices, "Shows count of Backoffices. Click to ping Backoffice nodes.")
+	$NodesBackoffices.Tag = [pscustomobject]@{ Color = $NodesBackoffices.ForeColor; Font = $NodesBackoffices.Font }
+	$NodesBackoffices.Add_MouseEnter({
+			param ($s,
+				$e)
+			try
+			{
+				$s.ForeColor = 'DodgerBlue'
+				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
+				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
+			}
+			catch { }
+		})
+	$NodesBackoffices.Add_MouseLeave({
+			param ($s,
+				$e)
+			try
+			{
+				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
+				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
+			}
+			catch { }
+		})
+	$NodesBackoffices.Add_Click({
+			$NodesBackoffices.ForeColor = 'DodgerBlue'
+			try
+			{
+				Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
+			}
+			finally
+			{
+				$NodesBackoffices.ForeColor = 'Black'
+			}
+		})
+		
+	# Log output
 	$logBox = New-Object System.Windows.Forms.RichTextBox
 	$logBox.Location = New-Object System.Drawing.Point(50, 70)
 	$logBox.Size = New-Object System.Drawing.Size(900, 400)
 	$logBox.ReadOnly = $true
 	$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
-	
-	# Add the RichTextBox to the form
 	$form.Controls.Add($logBox)
-	
-	# Add right-click clear functionality to the log box
+	$toolTip.SetToolTip($logBox, "Log output. Right-click to clear.")
+	# Right-click clear
 	$logBox.Add_MouseUp({
 			param ($sender,
 				$eventArgs)
-			# MouseButtons.Right is 2
 			if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Right)
 			{
 				$logBox.Clear()
-				Write_Log "Log Cleared"
+				if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Log Cleared" }
 			}
 		})
 	
@@ -18090,7 +18329,7 @@ public static class NativeWin {
 		})
 	[void]$ContextMenuLane.Items.Add($LaneScheduleBackupItem)
 	
-	############################################################################
+	<############################################################################
 	#  X) Install/Check LOC Options (Lanes) - lane picker + options picker
 	############################################################################
 	$InstallCheckLOCOptionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install/Check LOC Options")
@@ -18099,7 +18338,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			Install_And_Check_LOC_SMS_Options_On_Lanes -StoreNumber "$StoreNumber"
 		})
-	[void]$ContextMenuLane.Items.Add($InstallCheckLOCOptionsItem)
+	[void]$ContextMenuLane.Items.Add($InstallCheckLOCOptionsItem)#>
 	
 	############################################################################
 	#  X) Audit/Repair Lane Databases - lane picker + in-function level picker
