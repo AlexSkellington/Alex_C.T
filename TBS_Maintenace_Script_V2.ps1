@@ -1616,7 +1616,7 @@ ELSE
 		Write_Log "No lanes processed." "yellow"
 	}
 	
-	Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+	Write_Log "==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
