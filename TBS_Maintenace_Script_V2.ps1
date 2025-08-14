@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.4.3"
-$VersionDate = "2025-08-08"
+$VersionDate = "2025-08-14"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -800,6 +800,454 @@ function Get_All_Lanes_Database_Info
 		if ($LaneNumber) { return $laneInfo }
 	}
 	if ($LaneNumber) { return $null }
+}
+
+# ===================================================================================================
+#                               FUNCTION: Repair_LOC_Databases_On_Lanes
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Pick lane(s), then choose repair level (Audit / Quick / Deep) in a dialog.
+#   Uses Get_All_Lanes_Database_Info to resolve DB server/name per lane.
+#   **Only runs** on lanes that already have a cached protocol in $script:LaneProtocols
+#   (from Start_Lane_Protocol_Jobs): TCP or Named Pipes. If no cache entry, inform and skip.
+#   Executes DBCC CHECKDB from master (so SUSPECT DBs can be targeted).
+#   Logging matches Process_Lanes (banners/colors).
+#   PS 5.1, no nested functions, no ternary, only Write_Log.
+# ===================================================================================================
+
+function Repair_LOC_Databases_On_Lanes
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[int]$CommandTimeout = 900 # per-statement timeout (seconds)
+	)
+	
+	# ----------------------------------------
+	# Banner: Start
+	# ----------------------------------------
+	Write_Log "`r`n==================== Starting Repair_LOC_Databases_On_Lanes Function ====================`r`n" "blue"
+	
+	# ----------------------------------------
+	# Import detected SQL module for Invoke-Sqlcmd usage (same pattern as Process_Lanes)
+	# ----------------------------------------
+	$SqlModuleName = $script:FunctionResults['SqlModuleName']
+	if ($SqlModuleName -and $SqlModuleName -ne "None")
+	{
+		try
+		{
+			Import-Module $SqlModuleName -ErrorAction Stop
+			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+		}
+		catch
+		{
+			Write_Log "Failed to import SQL module or find Invoke-Sqlcmd: $_" "red"
+			Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+			return
+		}
+	}
+	else
+	{
+		Write_Log "No valid SQL module available for SQL operations!" "red"
+		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	# ----------------------------------------
+	# Check for available Lane Machines map
+	# ----------------------------------------
+	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+	if (-not $LaneNumToMachineName -or $LaneNumToMachineName.Count -eq 0)
+	{
+		Write_Log "No lanes available. Please retrieve nodes first." "red"
+		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	# ----------------------------------------
+	# Get user's lane selection (same UX as Process_Lanes)
+	# ----------------------------------------
+	$selection = $null
+	try
+	{
+		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Lanes for DB Repair"
+	}
+	catch
+	{
+		Write_Log "Lane selection failed: $_" "red"
+		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+		return
+	}
+	if ($selection -eq $null)
+	{
+		Write_Log "Lane DB repair canceled by user." "yellow"
+		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+		return
+	}
+	if (-not $selection.Lanes -or $selection.Lanes.Count -eq 0)
+	{
+		Write_Log "No lanes selected." "yellow"
+		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	# Support both string and object selections for lanes
+	$Lanes = @()
+	if ($selection.Lanes[0] -is [PSCustomObject] -and $selection.Lanes[0].PSObject.Properties.Name -contains 'LaneNumber')
+	{
+		foreach ($item in $selection.Lanes) { $Lanes += $item.LaneNumber }
+	}
+	else
+	{
+		$Lanes = $selection.Lanes
+	}
+	
+	# ----------------------------------------
+	# In-function dialog to pick repair level (no external switches)
+	# ----------------------------------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Database Repair Level"
+	$form.Size = New-Object System.Drawing.Size(520, 240)
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	
+	$lbl = New-Object System.Windows.Forms.Label
+	$lbl.Text = "Choose how aggressive the repair should be:"
+	$lbl.AutoSize = $true
+	$lbl.Location = New-Object System.Drawing.Point(12, 12)
+	$form.Controls.Add($lbl)
+	
+	$grp = New-Object System.Windows.Forms.GroupBox
+	$grp.Text = "Repair Level"
+	$grp.Location = New-Object System.Drawing.Point(12, 36)
+	$grp.Size = New-Object System.Drawing.Size(490, 110)
+	$form.Controls.Add($grp)
+	
+	$rbAudit = New-Object System.Windows.Forms.RadioButton
+	$rbAudit.Text = "Audit only (DBCC CHECKDB, no changes)"
+	$rbAudit.AutoSize = $true
+	$rbAudit.Location = New-Object System.Drawing.Point(16, 24)
+	$rbAudit.Checked = $true
+	$grp.Controls.Add($rbAudit)
+	
+	$rbQuick = New-Object System.Windows.Forms.RadioButton
+	$rbQuick.Text = "Quick repair (REPAIR_REBUILD)"
+	$rbQuick.AutoSize = $true
+	$rbQuick.Location = New-Object System.Drawing.Point(16, 48)
+	$grp.Controls.Add($rbQuick)
+	
+	$rbDeep = New-Object System.Windows.Forms.RadioButton
+	$rbDeep.Text = "Deep repair (REPAIR_ALLOW_DATA_LOSS)"
+	$rbDeep.AutoSize = $true
+	$rbDeep.Location = New-Object System.Drawing.Point(16, 72)
+	$grp.Controls.Add($rbDeep)
+	
+	$chkConfirm = New-Object System.Windows.Forms.CheckBox
+	$chkConfirm.Text = "I understand deep repair can cause data loss."
+	$chkConfirm.AutoSize = $true
+	$chkConfirm.Location = New-Object System.Drawing.Point(28, 152)
+	$chkConfirm.Enabled = $false
+	$form.Controls.Add($chkConfirm)
+	
+	[void]$rbDeep.Add_CheckedChanged({
+			if ($rbDeep.Checked) { $chkConfirm.Enabled = $true }
+			else { $chkConfirm.Enabled = $false; $chkConfirm.Checked = $false }
+		})
+	[void]$rbAudit.Add_CheckedChanged({ if ($rbAudit.Checked) { $chkConfirm.Enabled = $false; $chkConfirm.Checked = $false } })
+	[void]$rbQuick.Add_CheckedChanged({ if ($rbQuick.Checked) { $chkConfirm.Enabled = $false; $chkConfirm.Checked = $false } })
+	
+	$btnOK = New-Object System.Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Location = New-Object System.Drawing.Point(314, 172)
+	$btnOK.Size = New-Object System.Drawing.Size(85, 28)
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $btnOK
+	$form.Controls.Add($btnOK)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(417, 172)
+	$btnCancel.Size = New-Object System.Drawing.Size(85, 28)
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.CancelButton = $btnCancel
+	$form.Controls.Add($btnCancel)
+	
+	$dlg = $form.ShowDialog()
+	if ($dlg -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write_Log "Repair level selection canceled." "yellow"
+		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	$Level = 'Audit'
+	if ($rbQuick.Checked) { $Level = 'Quick' }
+	if ($rbDeep.Checked) { $Level = 'Deep' }
+	if ($Level -eq 'Deep' -and -not $chkConfirm.Checked)
+	{
+		Write_Log "Deep repair selected but confirmation not checked. Aborting." "yellow"
+		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	Write_Log ("Selected repair level: {0}" -f $Level) "gray"
+	
+	# ----------------------------------------
+	# Ensure protocol cache exists; we will NOT populate it here
+	# ----------------------------------------
+	if (-not $script:LaneProtocols -or $script:LaneProtocols.Keys.Count -eq 0)
+	{
+		Write_Log "Protocol cache is empty. Please run Start_Lane_Protocol_Jobs first. No lanes will be processed." "yellow"
+		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	# ----------------------------------------
+	# Process lanes one by one (summary like Process_Lanes)
+	# ----------------------------------------
+	$laneSummary = New-Object System.Collections.Generic.List[pscustomobject]
+	
+	foreach ($LaneNumber in ($Lanes | Sort-Object))
+	{
+		$laneKey = ($LaneNumber -replace '[^\d]', '')
+		$laneKeyP = $laneKey.PadLeft(3, '0')
+		
+		# Lookup machine
+		$machineName = $null
+		if ($LaneNumToMachineName.ContainsKey($LaneNumber)) { $machineName = $LaneNumToMachineName[$LaneNumber] }
+		if (-not $machineName -and $LaneNumToMachineName.ContainsKey($laneKeyP)) { $machineName = $LaneNumToMachineName[$laneKeyP] }
+		
+		if (-not $machineName)
+		{
+			Write_Log ("Lane {0}: No machine mapping found. Skipping." -f $LaneNumber) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = ''; Protocol = ''; DBServer = ''; DBName = ''; Level = $Level; Result = 'NoMachine' })
+			continue
+		}
+		
+		# Resolve protocol from cache ONLY (do not detect here)
+		$proto = $null
+		if ($script:LaneProtocols.ContainsKey($laneKeyP)) { $proto = $script:LaneProtocols[$laneKeyP] }
+		elseif ($script:LaneProtocols.ContainsKey($LaneNumber)) { $proto = $script:LaneProtocols[$LaneNumber] }
+		elseif ($script:LaneProtocols.ContainsKey($machineName)) { $proto = $script:LaneProtocols[$machineName] }
+		else
+		{
+			$lower = $machineName.ToLower()
+			if ($script:LaneProtocols.ContainsKey($lower)) { $proto = $script:LaneProtocols[$lower] }
+		}
+		
+		if (-not $proto)
+		{
+			Write_Log ("Lane {0} ({1}): No protocol found in cache. Run Start_Lane_Protocol_Jobs first. Skipping." -f $laneKeyP, $machineName) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = ''; DBServer = ''; DBName = ''; Level = $Level; Result = 'NoProtocolCached' })
+			continue
+		}
+		
+		if ($proto -ne 'TCP' -and $proto -ne 'Named Pipes')
+		{
+			Write_Log ("Lane {0} ({1}): Cached protocol is '{2}'. Only TCP or Named Pipes are supported. Skipping." -f $laneKeyP, $machineName, $proto) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = ''; DBName = ''; Level = $Level; Result = 'UnsupportedProtocol' })
+			continue
+		}
+		
+		# Resolve DB connection info from your helper (Startup.ini)
+		$dbInfo = $null
+		try { $dbInfo = Get_All_Lanes_Database_Info -LaneNumber $laneKeyP }
+		catch { $dbInfo = $null }
+		if (-not $dbInfo)
+		{
+			Write_Log ("Lane {0} ({1}): Could not get DB info. Skipping." -f $laneKeyP, $machineName) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = ''; DBName = ''; Level = $Level; Result = 'NoDbInfo' })
+			continue
+		}
+		
+		$dbName = $dbInfo['DBName']
+		$dbServer = $dbInfo['DBServer']
+		$csNamedPipes = $dbInfo['NamedPipesConnStr']
+		$csTcp = $dbInfo['TcpConnStr']
+		
+		Write_Log ("`r`n--- Lane {0} ({1}) | Protocol={2} | DB: {3} on {4} ---" -f $laneKeyP, $machineName, $proto, $dbName, $dbServer) "blue"
+		
+		if ([string]::IsNullOrWhiteSpace($dbName) -or [string]::IsNullOrWhiteSpace($dbServer))
+		{
+			Write_Log "Incomplete DB info (DBName or DBServer missing). Skipping lane." "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'IncompleteDbInfo' })
+			continue
+		}
+		
+		# Build a connection string to MASTER based on cached protocol (no fallbacks)
+		$rawCs = $null
+		if ($proto -eq 'TCP') { $rawCs = $csTcp }
+		if ($proto -eq 'Named Pipes') { $rawCs = $csNamedPipes }
+		
+		if ([string]::IsNullOrWhiteSpace($rawCs))
+		{
+			Write_Log ("Lane {0} ({1}): Missing {2} connection string. Skipping." -f $laneKeyP, $machineName, $proto) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'NoConnStr' })
+			continue
+		}
+		
+		$connStr = $rawCs
+		if ($connStr -match 'Database\s*=\s*[^;]+;')
+		{
+			$connStr = [System.Text.RegularExpressions.Regex]::Replace($connStr, 'Database\s*=\s*[^;]+;', 'Database=master;', 'IgnoreCase')
+		}
+		else
+		{
+			if ($connStr.EndsWith(';')) { $connStr = $connStr + 'Database=master;' }
+			else { $connStr = $connStr + ';Database=master;' }
+		}
+		if ($connStr -notmatch 'TrustServerCertificate\s*=') { $connStr = $connStr + 'TrustServerCertificate=True;' }
+		if ($connStr -notmatch 'Application Name\s*=') { $connStr = $connStr + 'Application Name=TBS_DBRepair;' }
+		if ($connStr -notmatch 'Integrated Security\s*=') { $connStr = $connStr + 'Integrated Security=True;' }
+		
+		# Quick probe using the chosen method ONLY
+		$probeOK = $false
+		try
+		{
+			& $InvokeSqlCmd -ConnectionString $connStr -Query "SELECT 1 AS ok;" -QueryTimeout 8 -ErrorAction Stop | Out-Null
+			$probeOK = $true
+		}
+		catch
+		{
+			$probeOK = $false
+		}
+		
+		if (-not $probeOK)
+		{
+			Write_Log ("Lane {0} ({1}): {2} probe failed. Skipping." -f $laneKeyP, $machineName, $proto) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'ConnProbeFailed' })
+			continue
+		}
+		
+		# Prepare T-SQL bits
+		$qDb = "[" + ($dbName -replace "]", "]]") + "]"
+		$ok = $false
+		$usedQuick = $false
+		$usedDeep = $false
+		
+		# Execute according to chosen level
+		if ($Level -eq 'Audit')
+		{
+			Write_Log ("{0}: Running DBCC CHECKDB (Audit)..." -f $dbName) "gray"
+			try
+			{
+				& $InvokeSqlCmd -ConnectionString $connStr -Query "DBCC CHECKDB (N'$dbName') WITH NO_INFOMSGS, ALL_ERRORMSGS, TABLERESULTS;" -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+				$ok = $true
+				Write_Log "Audit completed." "green"
+			}
+			catch
+			{
+				$ok = $false
+				Write_Log ("Audit reported errors or failed: $_") "yellow"
+			}
+		}
+		elseif ($Level -eq 'Quick')
+		{
+			Write_Log ("{0}: Quick repair (REPAIR_REBUILD)..." -f $dbName) "gray"
+			try
+			{
+				& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;" -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+			}
+			catch { Write_Log ("WARN: SINGLE_USER failed: $_") "yellow" }
+			
+			try
+			{
+				& $InvokeSqlCmd -ConnectionString $connStr -Query "DBCC CHECKDB ($qDb, REPAIR_REBUILD) WITH ALL_ERRORMSGS, TABLERESULTS;" -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+				$ok = $true
+				$usedQuick = $true
+				Write_Log "Quick repair completed." "green"
+			}
+			catch
+			{
+				$ok = $false
+				Write_Log ("Quick repair failed: $_") "yellow"
+			}
+			
+			try
+			{
+				& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qDb SET MULTI_USER;" -QueryTimeout 60 -ErrorAction Stop | Out-Null
+			}
+			catch { Write_Log ("WARN: MULTI_USER restore failed: $_") "yellow" }
+		}
+		elseif ($Level -eq 'Deep')
+		{
+			Write_Log ("{0}: Deep repair (EMERGENCY + REPAIR_ALLOW_DATA_LOSS)..." -f $dbName) "gray"
+			try
+			{
+				& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qDb SET EMERGENCY;" -QueryTimeout 60 -ErrorAction Stop | Out-Null
+			}
+			catch { Write_Log ("WARN: EMERGENCY failed: $_") "yellow" }
+			
+			try
+			{
+				& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;" -QueryTimeout 60 -ErrorAction Stop | Out-Null
+			}
+			catch { Write_Log ("WARN: SINGLE_USER failed: $_") "yellow" }
+			
+			try
+			{
+				& $InvokeSqlCmd -ConnectionString $connStr -Query "DBCC CHECKDB ($qDb, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS, TABLERESULTS;" -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+				$ok = $true
+				$usedDeep = $true
+				Write_Log "Deep repair completed." "green"
+			}
+			catch
+			{
+				$ok = $false
+				Write_Log ("Deep repair failed: $_") "red"
+			}
+			
+			try
+			{
+				& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qDb SET MULTI_USER;" -QueryTimeout 60 -ErrorAction Stop | Out-Null
+			}
+			catch { Write_Log ("WARN: MULTI_USER restore failed: $_") "yellow" }
+		}
+		
+		# Summarize this lane
+		$result = 'OK'
+		if (-not $ok -and $Level -eq 'Audit') { $result = 'AuditFoundErrorsOrFailed' }
+		if (-not $ok -and $Level -ne 'Audit') { $result = 'Failed' }
+		
+		$laneSummary.Add([pscustomobject]@{
+				Lane	    = $laneKeyP
+				Machine	    = $machineName
+				Protocol    = $proto
+				DBServer    = $dbServer
+				DBName	    = $dbName
+				Level	    = $Level
+				QuickRepair = $usedQuick
+				DeepRepair  = $usedDeep
+				Result	    = $result
+			})
+		
+		Write_Log ("Lane {0} | DB {1} -> Level={2}, Protocol={3}, Quick={4}, Deep={5}, Result={6}" -f $laneKeyP, $dbName, $Level, $proto, $usedQuick, $usedDeep, $result) "gray"
+	}
+	
+	# ----------------------------------------
+	# Final: Summary table + finish banner
+	# ----------------------------------------
+	Write_Log "`r`n================ Lane DB Repair Summary ================" "blue"
+	if ($laneSummary.Count -gt 0)
+	{
+		Write_Log ((
+				$laneSummary |
+				Sort-Object Lane |
+				Format-Table -AutoSize Lane, Machine, Protocol, DBServer, DBName, Level, QuickRepair, DeepRepair, Result |
+				Out-String
+			)) "gray"
+	}
+	else
+	{
+		Write_Log "No lanes processed." "yellow"
+	}
+	
+	Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -2459,33 +2907,170 @@ function Get_All_VNC_Passwords
 #                              FUNCTION: Insert_Test_Item
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Inserts or updates a test item record (PLU '0020077700000') in the SCL_TAB, OBJ_TAB, POS_TAB, and PRICE_TAB tables
-#   using the provided SQL connection string. If the record does not exist in a table, it inserts a new one with specified
-#   non-null fields. If it exists, it updates the relevant non-null fields. For PRICE_TAB specifically, the price field (F30)
-#   is only updated to 777.77 if its current value is exactly 777.77; otherwise, it remains unchanged. Null fields are ignored
-#   in both insert and update operations to minimize unnecessary changes. Errors during execution are silently caught to
-#   prevent script interruption.
+#   Inserts a test item (PLU is chosen from 0020077700000, 0020777700000, 0027777700000) into:
+#   - SCL_TAB, OBJ_TAB, POS_TAB, PRICE_TAB, and SCL_TXT_TAB
+#   Logic:
+#     * We DELETE existing rows for the chosen PLU/F267 first to keep the test rows deterministic.
+#     * Then we INSERT fixed values (same semantics as your last working version).
 #
-# Improvements:
-#   - Handles both insert and update scenarios with existence checks for each table.
-#   - Selective update for PRICE_TAB price field to avoid overwriting custom values.
-#   - Optimized queries to include only non-null fields, reducing query complexity.
-#   - Silent error handling for robustness in production environments.
-#   - Uses Invoke-Sqlcmd for efficient SQL execution.
+# Module/Connectivity Handling (integrated with Get_Store_And_Database_Info):
+#   - Uses $script:FunctionResults['SqlModuleName'] to decide the best path.
+#   - Tries Invoke-Sqlcmd with -ConnectionString if SqlServer module is available and probe succeeds.
+#   - If unsupported or probe fails, FALLS BACK to -ServerInstance/-Database with
+#     $script:FunctionResults['DBSERVER']/['DBNAME'] (older Windows / SQLPS path).
+#
+# Notes:
+#   - Write_Log is used for colored status lines.
+#   - If no module provides Invoke-Sqlcmd, we log and abort (keeps behavior predictable).
 #
 # Author: Alex_C.T
 # ===================================================================================================
 
 function Insert_Test_Item
 {
+	[CmdletBinding()]
 	param (
+		# If omitted, we use the ConnectionString assembled by Get_Store_And_Database_Info.
 		[string]$ConnectionString = $script:FunctionResults['ConnectionString']
 	)
 	
-	if (-not $ConnectionString) { return }
+	# ----------------------------------------------------------------------------------------------
+	# Guard: Need connection context from Get_Store_And_Database_Info
+	# (DBSERVER/DBNAME and/or ConnectionString should be available)
+	# ----------------------------------------------------------------------------------------------
+	if (-not $ConnectionString -and
+		(-not $script:FunctionResults['DBSERVER'] -or -not $script:FunctionResults['DBNAME']))
+	{
+		Write_Log "Insert_Test_Item: No ConnectionString nor DBSERVER/DBNAME available. Run Get_Store_And_Database_Info first." "red"
+		return
+	}
 	
 	Write_Log "`r`n==================== Starting Insert_Test_Item ====================`r`n" "blue"
 	
+	# ----------------------------------------------------------------------------------------------
+	# Ensure Invoke-Sqlcmd is available (prefer SqlServer, fallback to SQLPS)
+	# We honor the detection already done in Get_Store_And_Database_Info.
+	# ----------------------------------------------------------------------------------------------
+	$sqlModule = $script:FunctionResults['SqlModuleName']
+	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
+	{
+		try
+		{
+			if ($sqlModule -eq 'SqlServer')
+			{
+				Import-Module SqlServer -ErrorAction Stop
+			}
+			elseif ($sqlModule -eq 'SQLPS')
+			{
+				Import-Module SQLPS -DisableNameChecking -ErrorAction Stop
+			}
+		}
+		catch
+		{
+			# If import fails, we'll check again below; if still missing, we abort.
+		}
+	}
+	
+	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
+	{
+		Write_Log "Insert_Test_Item: Invoke-Sqlcmd not available (SqlServer/SQLPS modules not loaded/installed)." "red"
+		Write_Log "`r`n==================== Insert_Test_Item Aborted (No SQL Module) ====================`r`n" "blue"
+		return
+	}
+	
+	# ----------------------------------------------------------------------------------------------
+	# Decide primary vs. fallback path:
+	#   - If SqlServer module is detected, we ATTEMPT -ConnectionString (modern path).
+	#   - Otherwise (SQLPS/None), we go straight to fallback (-ServerInstance/-Database).
+	#   - Even with SqlServer, if the probe SELECT 1 fails, we flip to fallback.
+	# ----------------------------------------------------------------------------------------------
+	$useConnectionString = $false # Default to fallback unless we validate modern path
+	$fallbackParams = @{ } # Will be used with -ServerInstance/-Database
+	
+	# Pull server/database from FunctionResults (preferred over parsing)
+	$serverInstanceFromInfo = $script:FunctionResults['DBSERVER']
+	$databaseFromInfo = $script:FunctionResults['DBNAME']
+	
+	# Compose fallback param set from known values
+	if ($serverInstanceFromInfo) { $fallbackParams['ServerInstance'] = $serverInstanceFromInfo }
+	if ($databaseFromInfo) { $fallbackParams['Database'] = $databaseFromInfo }
+	
+	# If we have SqlServer module, try modern path first.
+	if ($sqlModule -eq 'SqlServer' -and $ConnectionString)
+	{
+		try
+		{
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT 1" -QueryTimeout 5 -ErrorAction Stop | Out-Null
+			$useConnectionString = $true
+			Write_Log "SQL connectivity via -ConnectionString verified (SqlServer module)." "green"
+		}
+		catch
+		{
+			Write_Log "Modern path (-ConnectionString) failed: $($_.Exception.Message)`r`nFalling back to -ServerInstance/-Database..." "yellow"
+			$useConnectionString = $false
+		}
+	}
+	else
+	{
+		# Either SQLPS or no module indicated from detection - use fallback path.
+		$useConnectionString = $false
+	}
+	
+	# If planning to use fallback, validate it can connect
+	if (-not $useConnectionString)
+	{
+		# If DBSERVER/DBNAME were missing, try to salvage from the connection string
+		if (-not $fallbackParams['ServerInstance'] -or -not $fallbackParams['Database'])
+		{
+			# Last-resort: parse minimal fields from ConnectionString
+			if ($ConnectionString -match '(?i)(?:Data\s*Source|Server)\s*=\s*([^;]+)')
+			{
+				$fallbackParams['ServerInstance'] = $matches[1].Trim()
+			}
+			if ($ConnectionString -match '(?i)(?:Initial\s*Catalog|Database)\s*=\s*([^;]+)')
+			{
+				$fallbackParams['Database'] = $matches[1].Trim()
+			}
+		}
+		
+		try
+		{
+			Invoke-Sqlcmd @fallbackParams -Query "SELECT 1" -QueryTimeout 5 -ErrorAction Stop | Out-Null
+			$dbTxt = if ($fallbackParams['Database']) { " (DB=$($fallbackParams['Database']))" }
+			else { "" }
+			Write_Log "SQL connectivity via fallback -ServerInstance verified: $($fallbackParams['ServerInstance'])$dbTxt" "green"
+		}
+		catch
+		{
+			Write_Log "Fallback (-ServerInstance/-Database) failed: $($_.Exception.Message)" "red"
+			Write_Log "`r`n==================== Insert_Test_Item Aborted (No Connectivity) ====================`r`n" "blue"
+			return
+		}
+	}
+	
+	# ----------------------------------------------------------------------------------------------
+	# Centralized SQL runner - ALWAYS use this for queries below so fallback is automatic.
+	# ----------------------------------------------------------------------------------------------
+	$RunSql = {
+		param ([Parameter(Mandatory = $true)]
+			[string]$Query)
+		
+		if ($useConnectionString)
+		{
+			return Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $Query -ErrorAction Stop
+		}
+		else
+		{
+			$p = $fallbackParams.Clone()
+			$p['Query'] = $Query
+			$p['ErrorAction'] = 'Stop'
+			return Invoke-Sqlcmd @p
+		}
+	}
+	
+	# ----------------------------------------------------------------------------------------------
+	# Business logic: choose appropriate PLU (prefer the "test" one), then delete + insert rows
+	# ----------------------------------------------------------------------------------------------
 	$now = Get-Date
 	$nowFull = $now.ToString("yyyy-MM-dd HH:mm:ss.fff")
 	$nowDate = $now.ToString("yyyy-MM-dd 00:00:00.000")
@@ -2493,30 +3078,34 @@ function Insert_Test_Item
 	$preferredPLU = '0020077700000'
 	$alternativePLU = '0020777700000'
 	$fallbackPLU = '0027777700000'
-	$doInsert = $false
+	
 	$PLU = $null
 	$TestF267 = 777
+	$doInsert = $false
 	
-	# Check preferred PLU
-	$isPreferredTest = $false
-	$descPOS = ""
-	$descOBJ = ""
-	try
+	# ---- Probe helper (local) to keep try/catch noise minimal
+	function Test-IsTestPLU
 	{
-		$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$preferredPLU'"
-		if ($posResult) { $descPOS = $posResult.F02 }
-		$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$preferredPLU'"
-		if ($objResult) { $descOBJ = $objResult.F29 }
-		if ($descPOS -match '(?i)test' -or $descPOS -match '(?i)tecnica' -or $descOBJ -match '(?i)test' -or $descOBJ -match '(?i)tecnica')
+		param ([string]$CheckPLU)
+		try
 		{
-			$isPreferredTest = $true
+			$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$CheckPLU'"
+			$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$CheckPLU'"
+			$posDesc = if ($pos) { $pos.F02 }
+			else { "" }
+			$objDesc = if ($obj) { $obj.F29 }
+			else { "" }
+			# "test" or "tecnica" in either description qualifies; if both empty, also safe to use
+			if ($posDesc -match '(?i)test|tecnica' -or $objDesc -match '(?i)test|tecnica') { return $true }
+			if ([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc)) { return $true }
+			return $false
 		}
+		catch { return $true } # silent-safe default (treat as testable if lookup errors)
 	}
-	catch { }
 	
-	if ($isPreferredTest -or ($descPOS -eq "" -and $descOBJ -eq ""))
+	# Preferred
+	if (Test-IsTestPLU -CheckPLU $preferredPLU)
 	{
-		# Preferred PLU is a test or does not exist, safe to use
 		$PLU = $preferredPLU
 		$TestF267 = 777
 		$doInsert = $true
@@ -2524,23 +3113,8 @@ function Insert_Test_Item
 	}
 	else
 	{
-		# Check alternate PLU
-		$isAltTest = $false
-		$descPOS2 = ""
-		$descOBJ2 = ""
-		try
-		{
-			$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$alternativePLU'"
-			if ($posResult) { $descPOS2 = $posResult.F02 }
-			$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$alternativePLU'"
-			if ($objResult) { $descOBJ2 = $objResult.F29 }
-			if ($descPOS2 -match '(?i)test' -or $descPOS2 -match '(?i)tecnica' -or $descOBJ2 -match '(?i)test' -or $descOBJ2 -match '(?i)tecnica')
-			{
-				$isAltTest = $true
-			}
-		}
-		catch { }
-		if ($isAltTest -or ($descPOS2 -eq "" -and $descOBJ2 -eq ""))
+		# Alternative
+		if (Test-IsTestPLU -CheckPLU $alternativePLU)
 		{
 			$PLU = $alternativePLU
 			$TestF267 = 7777
@@ -2549,23 +3123,8 @@ function Insert_Test_Item
 		}
 		else
 		{
-			# Check fallback PLU
-			$isFallbackTest = $false
-			$descPOS3 = ""
-			$descOBJ3 = ""
-			try
-			{
-				$posResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F02 FROM POS_TAB WHERE F01 = '$fallbackPLU'"
-				if ($posResult) { $descPOS3 = $posResult.F02 }
-				$objResult = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT F29 FROM OBJ_TAB WHERE F01 = '$fallbackPLU'"
-				if ($objResult) { $descOBJ3 = $objResult.F29 }
-				if ($descPOS3 -match '(?i)test' -or $descPOS3 -match '(?i)tecnica' -or $descOBJ3 -match '(?i)test' -or $descOBJ3 -match '(?i)tecnica')
-				{
-					$isFallbackTest = $true
-				}
-			}
-			catch { }
-			if ($isFallbackTest -or ($descPOS3 -eq "" -and $descOBJ3 -eq ""))
+			# Fallback
+			if (Test-IsTestPLU -CheckPLU $fallbackPLU)
 			{
 				$PLU = $fallbackPLU
 				$TestF267 = 77777
@@ -2582,83 +3141,82 @@ function Insert_Test_Item
 	if ($doInsert -and $PLU)
 	{
 		Write_Log "Deleting existing records for PLU: $PLU and F267: $TestF267" "yellow"
-		# Always delete old rows for the chosen PLU and F267 code
+		
+		# --- Always delete old rows for the chosen PLU/F267 to keep inserts deterministic
 		$deleteQueries = @(
-			"DELETE FROM SCL_TAB WHERE F01 = '$PLU'",
-			"DELETE FROM OBJ_TAB WHERE F01 = '$PLU'",
-			"DELETE FROM POS_TAB WHERE F01 = '$PLU'",
-			"DELETE FROM PRICE_TAB WHERE F01 = '$PLU'",
+			"DELETE FROM SCL_TAB     WHERE F01 = '$PLU'",
+			"DELETE FROM OBJ_TAB     WHERE F01 = '$PLU'",
+			"DELETE FROM POS_TAB     WHERE F01 = '$PLU'",
+			"DELETE FROM PRICE_TAB   WHERE F01 = '$PLU'",
 			"DELETE FROM SCL_TXT_TAB WHERE F267 = $TestF267"
 		)
-		foreach ($query in $deleteQueries)
+		foreach ($q in $deleteQueries)
 		{
-			try { Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query }
-			catch { Write_Log "Error during deletion: $_" "red" }
+			try { & $RunSql $q | Out-Null }
+			catch { Write_Log "Error during deletion: $($_.Exception.Message)" "red" }
 		}
 		
+		# --- SCL_TAB
 		Write_Log "Inserting into SCL_TAB..." "yellow"
-		# ===== Insert into SCL_TAB =====
 		try
 		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+			& $RunSql @"
 INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F253, F258, F264, F267, F1952, F1964, F2581, F2582)
 VALUES ('$PLU', 'PAL', 'MANUAL', 1, '$nowFull', 10, 7, $TestF267, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
-"@
+"@ | Out-Null
 			Write_Log "SCL_TAB insertion successful" "green"
 		}
-		catch { Write_Log "Error inserting into SCL_TAB: $_" "red" }
+		catch { Write_Log "Error inserting into SCL_TAB: $($_.Exception.Message)" "red" }
 		
+		# --- OBJ_TAB
 		Write_Log "Inserting into OBJ_TAB..." "yellow"
-		# ===== Insert into OBJ_TAB =====
 		try
 		{
 			$F29 = 'Tecnica Test Item'
 			if ($F29.Length -gt 60) { $F29 = $F29.Substring(0, 60) }
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+			& $RunSql @"
 INSERT INTO OBJ_TAB (F01, F902, F1001, F21, F29, F270, F1118, F1959)
 VALUES ('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
-"@
+"@ | Out-Null
 			Write_Log "OBJ_TAB insertion successful" "green"
 		}
-		catch { Write_Log "Error inserting into OBJ_TAB: $_" "red" }
+		catch { Write_Log "Error inserting into OBJ_TAB: $($_.Exception.Message)" "red" }
 		
+		# --- POS_TAB
 		Write_Log "Inserting into POS_TAB..." "yellow"
-		# ===== Insert into POS_TAB =====
 		try
 		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+			& $RunSql @"
 INSERT INTO POS_TAB (F01, F1000, F902, F1001, F02, F09, F79, F80, F82, F104, F115, F176, F178, F217, F1964, F2119)
 VALUES ('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '1', '0', '0', '1', '1', 1.0, '001', '1')
-"@
+"@ | Out-Null
 			Write_Log "POS_TAB insertion successful" "green"
 		}
-		catch { Write_Log "Error inserting into POS_TAB: $_" "red" }
+		catch { Write_Log "Error inserting into POS_TAB: $($_.Exception.Message)" "red" }
 		
+		# --- PRICE_TAB
 		Write_Log "Inserting into PRICE_TAB..." "yellow"
-		# ===== Insert into PRICE_TAB =====
 		try
 		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
+			& $RunSql @"
 INSERT INTO PRICE_TAB (F01, F1000, F126, F902, F1001, F21, F30, F31, F113, F1006, F1007, F1008, F1009, F1803)
 VALUES ('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate', '1858', 1.0)
-"@
+"@ | Out-Null
 			Write_Log "PRICE_TAB insertion successful" "green"
 		}
-		catch { Write_Log "Error inserting into PRICE_TAB: $_" "red" }
+		catch { Write_Log "Error inserting into PRICE_TAB: $($_.Exception.Message)" "red" }
 		
+		# --- SCL_TXT_TAB
 		Write_Log "Inserting into SCL_TXT_TAB..." "yellow"
-		# ===== Insert into SCL_TXT_TAB =====
 		try
 		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query @"
-INSERT INTO SCL_TXT_TAB
-(F267, F1000, F253, F297, F902, F1001, F1836)
-VALUES
-($TestF267, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, 'Tecnica Test Item')
-"@
+			& $RunSql @"
+INSERT INTO SCL_TXT_TAB (F267, F1000, F253, F297, F902, F1001, F1836)
+VALUES ($TestF267, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, 'Tecnica Test Item')
+"@ | Out-Null
 			Write_Log "SCL_TXT_TAB insertion successful" "green"
 		}
-		catch { Write_Log "Error inserting into SCL_TXT_TAB: $_" "red" }
+		catch { Write_Log "Error inserting into SCL_TXT_TAB: $($_.Exception.Message)" "red" }
 		
 		Write_Log "`r`n==================== Insert_Test_Item Completed ====================`r`n" "blue"
 	}
@@ -7052,6 +7610,852 @@ ORDER BY F1000,F1063;
 	}
 	
 	Write_Log "`r`n==================== Install_FUNCTIONS_Into_SMS Completed ====================`r`n" "blue"
+}
+
+# ===================================================================================================
+#  FUNCTION: Install_And_Check_LOC_SMS_Options_On_Lanes  (PowerShell 5.1)
+# ---------------------------------------------------------------------------------------------------
+#  Key behaviors:
+#    • Reinstall: uses FirstLoad to rewrite files, but NEVER deletes folders (no Remove-Item, no robocopy /MIR or /PURGE).
+#    • Install: first-time uses FirstLoad; if already present, just overwrite/add missing files (no deletes).
+#    • Root Inbox (Options\<Option>\Inbox) goes to Office\XF<Store><Lane>.
+#    • FirstLoad\Inbox -> XF, FirstLoad\Lbz -> Office\Lbz, Xch* -> Storeman\Xch* (FirstLoad Xch* if first-install/reinstall).
+#    • Cgi -> Office\CGI; Htm/Html -> Office\HTM (english only; ignore Cgi_* / Htm_*).
+#    • Generic top-level folders (e.g. Images, Layouts…): copy to lane's existing Office\<Folder> or Storeman\<Folder>;
+#      if neither exists, create Office\<Folder> and copy there.
+#    • Options\<Option> content is copied to Storeman\Options\<Option> (no duplication, no deletes).
+#    • Action picker enables "Reinstall" ONLY if at least one selected option already exists on at least one selected lane.
+#    • No ternary operator anywhere. Robust UNC copies via robocopy /E (no purge).
+# ===================================================================================================
+
+function Install_And_Check_LOC_SMS_Options_On_Lanes
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[string]$BasePath,
+		[string]$OptionsRoot,
+		[ValidateSet('All', 'Bank', 'Device', 'Link', 'Plugin', 'Promo', 'Xchange', 'Option', 'Others')]
+		[string]$Category = 'All',
+		[string[]]$OptionName,
+		[int]$MaxConcurrency = 6
+	)
+	
+	Write_Log "Install_And_Check_LOC_SMS_Options_On_Lanes: starting..." 'Cyan'
+	
+	# ---------------- base paths ----------------
+	if ([string]::IsNullOrWhiteSpace($BasePath))
+	{
+		if ($script:BasePath) { $BasePath = $script:BasePath }
+		else { $BasePath = 'C:\storeman' } # comment: default base
+	}
+	if ([string]::IsNullOrWhiteSpace($OptionsRoot))
+	{
+		$OptionsRoot = Join-Path $BasePath 'Install\Options' # comment: default repo
+	}
+	Write_Log ("Local BasePath : {0}" -f $BasePath)  'Cyan'
+	Write_Log ("Options Root   : {0}" -f $OptionsRoot) 'Cyan'
+	if (-not (Test-Path $OptionsRoot)) { Write_Log ("OptionsRoot not found: {0}" -f $OptionsRoot) 'Red'; return }
+	
+	# ---------------- zip support ----------------
+	$zipLoaded = $false
+	try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop; $zipLoaded = $true }
+	catch { Write_Log "ZIP library unavailable - .zip options will be skipped." 'Yellow' }
+	
+	# ---------------- scan repo ----------------
+	$knownCats = @('Bank', 'Device', 'Link', 'Plugin', 'Promo', 'Xchange', 'Option', 'Others')
+	$optionFS = @()
+	try
+	{
+		$optionFS = Get-ChildItem -Path $OptionsRoot -Force -ErrorAction SilentlyContinue |
+		Where-Object { $_.PSIsContainer -or $_.Extension -match '\.zip$' }
+	}
+	catch { }
+	if (-not $optionFS -or $optionFS.Count -eq 0) { Write_Log "No options found in repository." 'Yellow'; return }
+	
+	$optionEntries = @()
+	foreach ($it in $optionFS)
+	{
+		$bn = $it.BaseName
+		$cat = 'Others'
+		if ($bn -match '^([A-Za-z]+)_')
+		{
+			$pref = $matches[1]
+			if ($pref -match '^(?i)application$') { $pref = 'Option' } # normalize
+			foreach ($kc in $knownCats) { if ($kc -ieq $pref) { $cat = $kc; break } }
+		}
+		else
+		{
+			$leaf = Split-Path -Path $it.DirectoryName -Leaf
+			if ($leaf) { foreach ($kc in $knownCats) { if ($kc -ieq $leaf) { $cat = $kc; break } } }
+		}
+		if ($Category -ne 'All' -and $cat -ne $Category) { continue }
+		if ($OptionName -and $OptionName.Count -gt 0)
+		{
+			$ok = $false; foreach ($p in $OptionName) { if ($bn -like $p) { $ok = $true; break } }
+			if (-not $ok) { continue }
+		}
+		$e = [PSCustomObject]@{ Name = $bn; Category = $cat; SourcePath = $it.FullName; DisplayName = ("$cat\$bn") }
+		$e | Add-Member ScriptMethod ToString { $this.DisplayName } -Force
+		$optionEntries += $e
+	}
+	if (-not $optionEntries -or $optionEntries.Count -eq 0) { Write_Log "No options matched current filters." 'Yellow'; return }
+	
+	# ---------------- OPTIONS PICKER ----------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	$formOpt = New-Object System.Windows.Forms.Form
+	$formOpt.Text = "Select LOC Options"
+	$formOpt.Size = New-Object System.Drawing.Size(780, 560)
+	$formOpt.StartPosition = "CenterScreen"
+	$formOpt.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$formOpt.MaximizeBox = $false; $formOpt.MinimizeBox = $false; $formOpt.ShowInTaskbar = $true
+	
+	$panelCats = New-Object System.Windows.Forms.Panel
+	$panelCats.Location = New-Object System.Drawing.Point(12, 12)
+	$panelCats.Size = New-Object System.Drawing.Size(744, 36)
+	$formOpt.Controls.Add($panelCats)
+	
+	$catNames = @('All', 'Bank', 'Device', 'Link', 'Plugin', 'Promo', 'Xchange', 'Option', 'Others')
+	$presentCats = @('All'); $presentSet = @{ }
+	foreach ($e in $optionEntries) { if (-not $presentSet.ContainsKey($e.Category)) { $presentSet[$e.Category] = $true; $presentCats += $e.Category } }
+	
+	$catButtons = @{ }; $btnX = 0
+	foreach ($cn in $catNames)
+	{
+		$b = New-Object System.Windows.Forms.Button
+		$b.Text = $cn; $b.Tag = $cn
+		$b.Location = New-Object System.Drawing.Point($btnX, 4)
+		$b.Size = New-Object System.Drawing.Size(82, 28)
+		if (($cn -ne 'All') -and (-not ($presentCats -contains $cn))) { $b.Enabled = $false }
+		else { $b.Enabled = $true }
+		[void]$panelCats.Controls.Add($b); $catButtons[$cn] = $b
+		$btnX = $btnX + 84
+	}
+	
+	$lblSearch = New-Object System.Windows.Forms.Label
+	$lblSearch.Text = "Search:"; $lblSearch.AutoSize = $true
+	$lblSearch.Location = New-Object System.Drawing.Point(12, 56)
+	$formOpt.Controls.Add($lblSearch)
+	
+	$txtSearch = New-Object System.Windows.Forms.TextBox
+	$txtSearch.Location = New-Object System.Drawing.Point(72, 52)
+	$txtSearch.Size = New-Object System.Drawing.Size(684, 24)
+	$formOpt.Controls.Add($txtSearch)
+	
+	$clbOpts = New-Object System.Windows.Forms.CheckedListBox
+	$clbOpts.Location = New-Object System.Drawing.Point(12, 84)
+	$clbOpts.Size = New-Object System.Drawing.Size(744, 380)
+	$clbOpts.CheckOnClick = $true
+	$formOpt.Controls.Add($clbOpts)
+	
+	$btnSelAll = New-Object System.Windows.Forms.Button
+	$btnSelAll.Text = "Select All (Filtered)"
+	$btnSelAll.Location = New-Object System.Drawing.Point(12, 472)
+	$btnSelAll.Size = New-Object System.Drawing.Size(160, 30)
+	$formOpt.Controls.Add($btnSelAll)
+	
+	$btnDesAll = New-Object System.Windows.Forms.Button
+	$btnDesAll.Text = "Deselect All (Filtered)"
+	$btnDesAll.Location = New-Object System.Drawing.Point(178, 472)
+	$btnDesAll.Size = New-Object System.Drawing.Size(170, 30)
+	$formOpt.Controls.Add($btnDesAll)
+	
+	$lblCount = New-Object System.Windows.Forms.Label
+	$lblCount.Text = "Selected: 0"; $lblCount.AutoSize = $true
+	$lblCount.Location = New-Object System.Drawing.Point(358, 478)
+	$formOpt.Controls.Add($lblCount)
+	
+	$btnOK = New-Object System.Windows.Forms.Button
+	$btnOK.Text = "OK"; $btnOK.Location = New-Object System.Drawing.Point(538, 472)
+	$btnOK.Size = New-Object System.Drawing.Size(90, 30)
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$formOpt.Controls.Add($btnOK); $formOpt.AcceptButton = $btnOK
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"; $btnCancel.Location = New-Object System.Drawing.Point(646, 472)
+	$btnCancel.Size = New-Object System.Drawing.Size(90, 30)
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$formOpt.Controls.Add($btnCancel); $formOpt.CancelButton = $btnCancel
+	
+	$currentCategory = 'All'; $checkedState = @{ }
+	
+	if ($OptionName -and $OptionName.Count -gt 0)
+	{
+		foreach ($e in $optionEntries) { foreach ($p in $OptionName) { if ($e.Name -like $p) { $checkedState[$e.Name] = $true; break } } }
+	}
+	
+	$updateCountLabel = {
+		$n = 0; foreach ($kv in $checkedState.GetEnumerator()) { if ($kv.Value) { $n = $n + 1 } }
+		$lblCount.Text = ("Selected: {0}" -f $n)
+	}
+	$refreshList = {
+		$q = ""; if ($txtSearch.Text) { $q = "$($txtSearch.Text)".Trim() }
+		$filtered = @()
+		foreach ($e in $optionEntries)
+		{
+			if ($currentCategory -ne 'All' -and $e.Category -ne $currentCategory) { continue }
+			if ($q -ne "")
+			{
+				$hay = ($e.Name + " " + $e.Category + " " + $e.DisplayName)
+				if ($hay.ToLower().IndexOf($q.ToLower()) -lt 0) { continue }
+			}
+			$filtered += $e
+		}
+		$clbOpts.BeginUpdate(); $clbOpts.Items.Clear()
+		foreach ($e in ($filtered | Sort-Object Category, Name))
+		{
+			$idx = $clbOpts.Items.Add($e)
+			if ($checkedState.ContainsKey($e.Name)) { if ($checkedState[$e.Name]) { $clbOpts.SetItemChecked($idx, $true) } }
+		}
+		$clbOpts.EndUpdate()
+		& $updateCountLabel
+	}
+	
+	foreach ($cn in $catNames) { $b = $catButtons[$cn]; [void]$b.Add_Click({ param ($s,
+					$e) $currentCategory = [string]$s.Tag; & $refreshList }) }
+	[void]$txtSearch.Add_TextChanged({ & $refreshList })
+	[void]$clbOpts.Add_ItemCheck({
+			$i = $_.Index
+			if ($i -ge 0 -and $i -lt $clbOpts.Items.Count)
+			{
+				$it = $clbOpts.Items[$i]
+				if ($it -and $it.PSObject.Properties['Name'])
+				{
+					if ($_.NewValue -eq [System.Windows.Forms.CheckState]::Checked) { $checkedState[$it.Name] = $true }
+					else { $checkedState[$it.Name] = $false }
+					& $updateCountLabel
+				}
+			}
+		})
+	[void]$btnSelAll.Add_Click({
+			$i = 0; while ($i -lt $clbOpts.Items.Count)
+			{
+				$checkedState[$clbOpts.Items[$i].Name] = $true
+				$clbOpts.SetItemChecked($i, $true)
+				$i = $i + 1
+			}
+			& $updateCountLabel
+		})
+	[void]$btnDesAll.Add_Click({
+			$i = 0; while ($i -lt $clbOpts.Items.Count)
+			{
+				$item = $clbOpts.Items[$i]
+				if ($item -and $item.PSObject.Properties['Name']) { $checkedState[$item.Name] = $false }
+				$clbOpts.SetItemChecked($i, $false)
+				$i = $i + 1
+			}
+			& $updateCountLabel
+		})
+	
+	& $refreshList
+	if ($formOpt.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { Write_Log "No options selected. Aborting." 'Yellow'; return }
+	$selectedNames = @(); foreach ($kv in $checkedState.GetEnumerator()) { if ($kv.Value) { $selectedNames += $kv.Key } }
+	if (-not $selectedNames -or $selectedNames.Count -eq 0) { Write_Log "No options checked. Aborting." 'Yellow'; return }
+	Write_Log ("Options selected: {0}" -f (($selectedNames | Sort-Object) -join ", ")) 'DarkCyan'
+	
+	# ---------------- LANE PICKER ----------------
+	$sel = $null
+	try { $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Lanes for LOC Options" }
+	catch { Write_Log ("Lane picker failed: {0}" -f $_.Exception.Message) 'Red'; return }
+	if (-not $sel -or -not $sel.Lanes -or $sel.Lanes.Count -eq 0) { Write_Log "No lanes selected. Aborting." 'Yellow'; return }
+	
+	$laneNumToMachine = @{ }
+	if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('LaneNumToMachineName')) { $laneNumToMachine = $script:FunctionResults['LaneNumToMachineName'] }
+	
+	$lanePlan = @()
+	foreach ($ln in ($sel.Lanes | Sort-Object))
+	{
+		$m = $null; if ($laneNumToMachine.ContainsKey($ln)) { $m = $laneNumToMachine[$ln] }
+		if ([string]::IsNullOrWhiteSpace($m)) { Write_Log ("Lane {0} has no machine mapping - skipping." -f $ln) 'Yellow' }
+		else { $lanePlan += (New-Object PSObject -Property @{ Lane = $ln; Machine = $m }) }
+	}
+	if ($lanePlan.Count -eq 0) { Write_Log "No lanes resolved to machine names - aborting." 'Red'; return }
+	$pairs = @(); foreach ($lp in $lanePlan) { $pairs += ("{0}={1}" -f $lp.Lane, $lp.Machine) }
+	Write_Log ("Lanes selected : {0}" -f ($pairs -join ", ")) 'DarkCyan'
+	
+	# ---------------- resolve remote paths ----------------
+	$laneTargets = @()
+	foreach ($lp in $lanePlan)
+	{
+		$mach = $lp.Machine
+		$candidates = @("\\$mach\storeman", "\\$mach\c$\Storeman", "\\$mach\d$\Storeman")
+		$storemanRoot = $null
+		foreach ($p in $candidates) { try { if (Test-Path $p) { $storemanRoot = $p; break } }
+			catch { } }
+		if (-not $storemanRoot) { Write_Log ("Lane {0} ({1}): Storeman root not reachable." -f $lp.Lane, $mach) 'Yellow'; continue }
+		
+		$officeRoot = Join-Path $storemanRoot 'Office'
+		if (-not (Test-Path $officeRoot)) { Write_Log ("Lane {0} ({1}): missing Office. Skipping." -f $lp.Lane, $mach) 'Yellow'; continue }
+		
+		$optionsRootLane = Join-Path $storemanRoot 'Options'
+		if (-not (Test-Path $optionsRootLane)) { Write_Log ("Lane {0} ({1}): missing Options. Skipping." -f $lp.Lane, $mach) 'Yellow'; continue }
+		
+		$laneTargets += (New-Object PSObject -Property @{
+				Lane			   = $lp.Lane
+				Machine		       = $mach
+				RemoteStoremanRoot = $storemanRoot
+				RemoteOfficePath   = $officeRoot
+				RemoteOptionsRoot  = $optionsRootLane
+			})
+	}
+	if ($laneTargets.Count -eq 0) { Write_Log "No reachable lanes with Office/Options present." 'Red'; return }
+	
+	Write_Log "Remote Office/Storeman paths per lane:" 'Blue'
+	Write_Log ((
+			$laneTargets | Select-Object Lane, Machine, RemoteStoremanRoot, RemoteOfficePath, RemoteOptionsRoot |
+			Sort-Object Lane | Format-Table -AutoSize | Out-String
+		)) 'Gray'
+	
+	# ---------------- stage: extract + parse ----------------
+	$selectedFS = @(); foreach ($it in $optionFS) { if ($selectedNames -contains $it.BaseName) { $selectedFS += $it } }
+	
+	$stagingRecords = @(); $tempDirs = New-Object System.Collections.Generic.List[string]
+	foreach ($item in $selectedFS)
+	{
+		$bn = $item.BaseName
+		
+		# extract zip if needed
+		$extractedRoot = $item.FullName
+		try
+		{
+			if (-not $item.PSIsContainer)
+			{
+				if ($zipLoaded)
+				{
+					$dest = Join-Path $env:TEMP ("LOC_Option_" + $bn + "_" + (Get-Date -Format 'yyyyMMdd_HHmmssfff'))
+					New-Item -ItemType Directory -Path $dest -Force | Out-Null
+					[System.IO.Compression.ZipFile]::ExtractToDirectory($item.FullName, $dest)
+					$extractedRoot = $dest
+					[void]$tempDirs.Add($dest)
+				}
+				else { Write_Log ("Skipping ZIP option '{0}' (no ZIP lib)." -f $item.Name) 'Yellow'; continue }
+			}
+		}
+		catch { Write_Log ("Extraction failed for '{0}': {1}" -f $bn, $_.Exception.Message) 'Yellow'; continue }
+		
+		# inner vendor root: Options\<Option>\...
+		$scanBase = $null
+		try { $lvl1 = Join-Path $extractedRoot 'Options'; $lvl2 = Join-Path $lvl1 $bn; if (Test-Path $lvl2 -PathType Container) { $scanBase = $lvl2 } }
+		catch { }
+		if (-not $scanBase)
+		{
+			try
+			{
+				$cand = Get-ChildItem -Path $extractedRoot -Directory -Recurse -Force -ErrorAction SilentlyContinue |
+				Where-Object { (Split-Path $_.Parent.FullName -Leaf) -ieq 'Options' -and $_.Name -ieq $bn } |
+				Select-Object -First 1
+				if ($cand) { $scanBase = $cand.FullName }
+			}
+			catch { }
+		}
+		if (-not $scanBase) { $scanBase = $extractedRoot }
+		
+		# collect top-level (english only Cgi/Htm)
+		$TopCgiDir = $null; $TopHtmDir = $null; $RootInboxDir = $null; $TopOfficeDir = $null
+		$XchDirs = @(); $FirstLoadXchDirs = @(); $FirstLoadInboxFiles = @(); $LbzFiles = @(); $OtherTopDirs = @()
+		try
+		{
+			$top = Get-ChildItem -Path $scanBase -Force -ErrorAction SilentlyContinue
+			foreach ($e in $top)
+			{
+				if (-not $e.PSIsContainer) { continue }
+				$nmLower = $e.Name.ToLower()
+				
+				if ($nmLower -eq 'cgi') { $TopCgiDir = $e.FullName; continue }
+				if ($nmLower -eq 'htm' -or $nmLower -eq 'html') { $TopHtmDir = $e.FullName; continue }
+				if ($nmLower -eq 'inbox') { $RootInboxDir = $e.FullName; continue }
+				if ($nmLower -eq 'office') { $TopOfficeDir = $e.FullName; continue }
+				
+				if ($nmLower -eq 'firstload')
+				{
+					$fl = Get-ChildItem -Path $e.FullName -Force -ErrorAction SilentlyContinue
+					foreach ($fd in $fl)
+					{
+						$sn = $fd.Name.ToLower()
+						if ($sn -eq 'inbox')
+						{
+							$FirstLoadInboxFiles += Get-ChildItem -Path $fd.FullName -Recurse -File -Force -ErrorAction SilentlyContinue |
+							Where-Object { @('.sqi', '.sqm', '.sql', '.txt') -contains $_.Extension.ToLower() } |
+							Select-Object -ExpandProperty FullName
+						}
+						elseif ($sn -eq 'lbz')
+						{
+							$LbzFiles += Get-ChildItem -Path $fd.FullName -Recurse -File -Force -ErrorAction SilentlyContinue |
+							Where-Object { @('.lbz', '.lbt') -contains $_.Extension.ToLower() } |
+							Select-Object -ExpandProperty FullName
+						}
+						elseif ($sn.Length -ge 3 -and ($sn.Substring(0, 3)) -eq 'xch')
+						{
+							$FirstLoadXchDirs += $fd.FullName
+						}
+					}
+					continue
+				}
+				
+				if ($nmLower.Length -ge 3 -and ($nmLower.Substring(0, 3)) -eq 'xch') { $XchDirs += $e.FullName; continue }
+				
+				# generic top-level folder (Images, Layouts, etc.)
+				$OtherTopDirs += $e.FullName
+			}
+		}
+		catch { }
+		
+		# XF sets (Office + Root Inbox + loose root)
+		$XF_Office = @(); $XF_RootInbox = @(); $XF_LooseRoot = @()
+		try
+		{
+			if ($TopOfficeDir)
+			{
+				$XF_Office += Get-ChildItem -Path $TopOfficeDir -Recurse -File -Force -ErrorAction SilentlyContinue |
+				Where-Object { @('.sqi', '.sqm', '.sql', '.txt') -contains $_.Extension.ToLower() } |
+				Select-Object -ExpandProperty FullName
+			}
+		}
+		catch { }
+		try
+		{
+			if ($RootInboxDir)
+			{
+				$XF_RootInbox += Get-ChildItem -Path $RootInboxDir -Recurse -File -Force -ErrorAction SilentlyContinue |
+				Where-Object { @('.sqi', '.sqm', '.sql', '.txt') -contains $_.Extension.ToLower() } |
+				Select-Object -ExpandProperty FullName
+			}
+		}
+		catch { }
+		try
+		{
+			$rootFiles = Get-ChildItem -Path $scanBase -File -Force -ErrorAction SilentlyContinue
+			foreach ($rf in $rootFiles)
+			{
+				$lx = ($rf.Extension).ToLower()
+				$ok = $false; foreach ($x in @('.sqi', '.sqm', '.sql', '.txt')) { if ($lx -eq $x) { $ok = $true; break } }
+				if ($ok) { $XF_LooseRoot += $rf.FullName }
+			}
+		}
+		catch { }
+		
+		$stagingRecords += (New-Object PSObject -Property @{
+				Name			    = $bn
+				ScanBase		    = $scanBase
+				TopCgiDir		    = $TopCgiDir
+				TopHtmDir		    = $TopHtmDir
+				RootInboxDir	    = $RootInboxDir
+				TopOfficeDir	    = $TopOfficeDir
+				XchDirs			    = $XchDirs
+				FirstLoadXchDirs    = $FirstLoadXchDirs
+				FirstLoadInboxFiles = $FirstLoadInboxFiles
+				LbzFiles		    = $LbzFiles
+				XF_Office		    = $XF_Office
+				XF_RootInbox	    = $XF_RootInbox
+				XF_LooseRoot	    = $XF_LooseRoot
+				OtherTopDirs	    = $OtherTopDirs
+			})
+	}
+	if (-not $stagingRecords -or $stagingRecords.Count -eq 0) { Write_Log "Selected options contained no usable content." 'Yellow'; return }
+	
+	# ---------------- check if Reinstall allowed ----------------
+	$reinstallAllowed = $false
+	foreach ($lt in $laneTargets)
+	{
+		foreach ($st in $stagingRecords)
+		{
+			$candidate = Join-Path $lt.RemoteOptionsRoot $st.Name
+			if (Test-Path $candidate) { $reinstallAllowed = $true; break }
+		}
+		if ($reinstallAllowed) { break }
+	}
+	if ($reinstallAllowed) { $reinstallStatus = 'Yes' }
+	else { $reinstallStatus = 'No' }
+	Write_Log ("Reinstall available for selection: {0}" -f $reinstallStatus) 'DarkGray'
+	
+	# ---------------- ACTION PICKER ----------------
+	$formMode = New-Object System.Windows.Forms.Form
+	$formMode.Text = "Action"
+	$formMode.Size = New-Object System.Drawing.Size(440, 220)
+	$formMode.StartPosition = "CenterScreen"
+	$formMode.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$formMode.MaximizeBox = $false; $formMode.MinimizeBox = $false; $formMode.ShowInTaskbar = $true
+	
+	$grp = New-Object System.Windows.Forms.GroupBox
+	$grp.Text = "What do you want to do?"
+	$grp.Location = New-Object System.Drawing.Point(12, 12)
+	$grp.Size = New-Object System.Drawing.Size(410, 120)
+	$formMode.Controls.Add($grp)
+	
+	$rbAudit = New-Object System.Windows.Forms.RadioButton
+	$rbAudit.Text = "Audit only"
+	$rbAudit.AutoSize = $true
+	$rbAudit.Location = New-Object System.Drawing.Point(16, 25)
+	$grp.Controls.Add($rbAudit)
+	
+	$rbInstall = New-Object System.Windows.Forms.RadioButton
+	$rbInstall.Text = "Install / Repair (outside only if already installed)"
+	$rbInstall.AutoSize = $true
+	$rbInstall.Location = New-Object System.Drawing.Point(16, 50)
+	$rbInstall.Checked = $true
+	$grp.Controls.Add($rbInstall)
+	
+	$rbReinstall = New-Object System.Windows.Forms.RadioButton
+	$rbReinstall.Text = "First Load / Reinstall (FirstLoad + outside; FirstLoad wins)"
+	$rbReinstall.AutoSize = $true
+	$rbReinstall.Location = New-Object System.Drawing.Point(16, 75)
+	$rbReinstall.Enabled = $reinstallAllowed
+	$grp.Controls.Add($rbReinstall)
+	
+	$btnModeOK = New-Object System.Windows.Forms.Button
+	$btnModeOK.Text = "OK"; $btnModeOK.Location = New-Object System.Drawing.Point(240, 150)
+	$btnModeOK.Size = New-Object System.Drawing.Size(80, 28)
+	$btnModeOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$formMode.Controls.Add($btnModeOK); $formMode.AcceptButton = $btnModeOK
+	
+	$btnModeCancel = New-Object System.Windows.Forms.Button
+	$btnModeCancel.Text = "Cancel"; $btnModeCancel.Location = New-Object System.Drawing.Point(332, 150)
+	$btnModeCancel.Size = New-Object System.Drawing.Size(80, 28)
+	$btnModeCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$formMode.Controls.Add($btnModeCancel); $formMode.CancelButton = $btnModeCancel
+	
+	$modeDlg = $formMode.ShowDialog()
+	if ($modeDlg -ne [System.Windows.Forms.DialogResult]::OK) { Write_Log "User cancelled action selection." 'Yellow'; return }
+	$ActionMode = 1
+	if ($rbAudit.Checked) { $ActionMode = 0 }
+	if ($rbInstall.Checked) { $ActionMode = 1 }
+	if ($rbReinstall.Checked) { $ActionMode = 2 }
+	
+	# ---------------- per-lane processing ----------------
+	$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+	$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, [Math]::Max(1, $MaxConcurrency), $iss, $Host)
+	$pool.Open()
+	$asyncHandles = New-Object System.Collections.Generic.List[System.IAsyncResult]
+	$psList = New-Object System.Collections.Generic.List[System.Management.Automation.PowerShell]
+	
+	foreach ($lt in $laneTargets)
+	{
+		$ps = [PowerShell]::Create(); $ps.RunspacePool = $pool
+		[void]$ps.AddScript({
+				param ($laneRec,
+					$stagedOptions,
+					[int]$actionMode,
+					[string]$storeNumberArg)
+				
+				$lane = $laneRec.Lane; $machine = $laneRec.Machine
+				$storemanRoot = $laneRec.RemoteStoremanRoot
+				$officeRoot = $laneRec.RemoteOfficePath
+				$optionsRoot = $laneRec.RemoteOptionsRoot
+				
+				$laneMsgs = New-Object System.Collections.Generic.List[string]
+				$laneRows = New-Object System.Collections.Generic.List[psobject]
+				
+				# XF name (must already exist; we don't create)
+				$laneInt = $null; $lanePadded = $null
+				try { $laneInt = [int]$lane }
+				catch { }
+				if ($laneInt -ne $null) { $lanePadded = ('{0:D3}' -f $laneInt) }
+				else { $lanePadded = "$lane" }
+				$xfFolderName = ("XF{0}{1}" -f $storeNumberArg, $lanePadded)
+				$xfFolderPath = Join-Path $officeRoot $xfFolderName
+				
+				foreach ($opt in $stagedOptions)
+				{
+					$name = $opt.Name
+					$scanBase = $opt.ScanBase
+					$cgiDir = $opt.TopCgiDir
+					$htmDir = $opt.TopHtmDir
+					$rootInboxDir = $opt.RootInboxDir
+					$officeDir = $opt.TopOfficeDir
+					$xchDirsOutside = $opt.XchDirs
+					$xchDirsFirst = $opt.FirstLoadXchDirs
+					$lbzFilesFirst = $opt.LbzFiles
+					$xfOffice = $opt.XF_Office
+					$xfRootInbox = $opt.XF_RootInbox
+					$xfLooseRoot = $opt.XF_LooseRoot
+					$otherTopDirs = $opt.OtherTopDirs
+					
+					$optFolderPath = Join-Path $optionsRoot $name
+					$installedBefore = Test-Path $optFolderPath
+					
+					$doAudit = $false; $doInstall = $false; $doReinstall = $false
+					if ($actionMode -eq 0) { $doAudit = $true }
+					if ($actionMode -eq 1) { $doInstall = $true }
+					if ($actionMode -eq 2) { $doReinstall = $true }
+					
+					# First load if reinstall OR not installed yet
+					$useFirstLoad = $false
+					if ($doReinstall) { $useFirstLoad = $true }
+					if ($doInstall -and -not $installedBefore) { $useFirstLoad = $true }
+					
+					$failed = 0
+					$copiedOpt = 0; $copiedCgi = 0; $copiedHtm = 0; $copiedXch = 0; $copiedLBZ = 0; $copiedXF = 0; $copiedOther = 0
+					
+					if (-not $doAudit)
+					{
+						# 1) Options\<Option> - safe to create option subfolder
+						try
+						{
+							if (-not (Test-Path $optFolderPath)) { New-Item -ItemType Directory -Path $optFolderPath -Force | Out-Null }
+							$rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" `
+												-ArgumentList @("`"$scanBase`"", "`"$optFolderPath`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1") `
+												-NoNewWindow -PassThru -Wait
+							$copiedOpt = 1
+						}
+						catch { $failed = $failed + 1 }
+						
+						# 2) Cgi -> Office\Cgi  (english only; do not create dest)
+						if ($cgiDir)
+						{
+							$destCgi = Join-Path $officeRoot 'Cgi'
+							if (Test-Path $destCgi)
+							{
+								try
+								{
+									$rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" `
+														-ArgumentList @("`"$cgiDir`"", "`"$destCgi`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1") `
+														-NoNewWindow -PassThru -Wait
+									$copiedCgi = 1
+								}
+								catch { $failed = $failed + 1 }
+							}
+							else
+							{
+								$laneMsgs.Add(("[WARN] {0} {1} | {2}: Office\Cgi not found. Skipped Cgi copy." -f $lane, $machine, $name))
+							}
+						}
+						
+						# 3) Htm/Html -> Office\Htm  (english only; do not create dest)
+						if ($htmDir)
+						{
+							$destHtm = Join-Path $officeRoot 'Htm'
+							if (Test-Path $destHtm)
+							{
+								try
+								{
+									$rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" `
+														-ArgumentList @("`"$htmDir`"", "`"$destHtm`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1") `
+														-NoNewWindow -PassThru -Wait
+									$copiedHtm = 1
+								}
+								catch { $failed = $failed + 1 }
+							}
+							else
+							{
+								$laneMsgs.Add(("[WARN] {0} {1} | {2}: Office\Htm not found. Skipped Htm copy." -f $lane, $machine, $name))
+							}
+						}
+						
+						# 4) Xch*  -- merge logic
+						#    First load: copy FirstLoad Xch* first, then copy outside Xch* with /XC so FL wins.
+						#    Repair: copy only outside Xch*.
+						$srcXchSetOrder = @()
+						if ($useFirstLoad)
+						{
+							foreach ($p in $xchDirsFirst) { $srcXchSetOrder += ('FL|' + $p) }
+							foreach ($p in $xchDirsOutside) { $srcXchSetOrder += ('OUT|' + $p) }
+						}
+						else
+						{
+							foreach ($p in $xchDirsOutside) { $srcXchSetOrder += ('OUT|' + $p) }
+						}
+						foreach ($tagged in $srcXchSetOrder)
+						{
+							$parts = $tagged.Split('|', 2)
+							$kind = $parts[0]; $srcDir = $parts[1]
+							$xname = Split-Path -Path $srcDir -Leaf
+							$destX = Join-Path $storemanRoot $xname
+							try
+							{
+								if (-not (Test-Path $destX)) { New-Item -ItemType Directory -Path $destX -Force | Out-Null } # allowed to create Xch*
+								$args = @("`"$srcDir`"", "`"$destX`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1")
+								if ($kind -eq 'OUT' -and $useFirstLoad)
+								{
+									# After FL, do not overwrite changed files from outside
+									$args += "/XC"
+								}
+								$rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" -ArgumentList $args -NoNewWindow -PassThru -Wait
+								$copiedXch = $copiedXch + 1
+							}
+							catch { $failed = $failed + 1 }
+						}
+						
+						# 5) LBZ (FirstLoad only, first load) -> Office\Lbz (do not create dest)
+						if ($useFirstLoad -and $lbzFilesFirst -and $lbzFilesFirst.Count -gt 0)
+						{
+							$destLBZ = Join-Path $officeRoot 'Lbz'
+							if (Test-Path $destLBZ)
+							{
+								foreach ($f in $lbzFilesFirst)
+								{
+									try { Copy-Item -Path $f -Destination (Join-Path $destLBZ (Split-Path $f -Leaf)) -Force; $copiedLBZ = $copiedLBZ + 1 }
+									catch { $failed = $failed + 1 }
+								}
+							}
+							else
+							{
+								$laneMsgs.Add(("[WARN] {0} {1} | {2}: Office\Lbz not found. Skipped LBZ." -f $lane, $machine, $name))
+							}
+						}
+						
+						# 6) XF drops - file-by-file control to honor "outside if not duplicate; FL wins"
+						if (Test-Path $xfFolderPath)
+						{
+							try
+							{
+								# Build FirstLoad name set (leaf names only; XF has no subfolders)
+								$flLeaf = New-Object System.Collections.Generic.HashSet[string]
+								if ($useFirstLoad -and $opt.FirstLoadInboxFiles -and $opt.FirstLoadInboxFiles.Count -gt 0)
+								{
+									foreach ($f in $opt.FirstLoadInboxFiles)
+									{
+										try { [void]$flLeaf.Add((Split-Path $f -Leaf).ToLower()) }
+										catch { }
+									}
+								}
+								# Outside set (Office + Root Inbox + Loose Root): skip if leaf collides with FL set (when in FL mode)
+								$outsideFiles = @()
+								if ($opt.XF_Office) { $outsideFiles += $opt.XF_Office }
+								if ($opt.XF_RootInbox) { $outsideFiles += $opt.XF_RootInbox }
+								if ($opt.XF_LooseRoot) { $outsideFiles += $opt.XF_LooseRoot }
+								
+								foreach ($src in $outsideFiles)
+								{
+									$leaf = (Split-Path $src -Leaf)
+									$skip = $false
+									if ($useFirstLoad)
+									{
+										if ($flLeaf.Contains($leaf.ToLower())) { $skip = $true }
+									}
+									if (-not $skip)
+									{
+										try { Copy-Item -Path $src -Destination (Join-Path $xfFolderPath $leaf) -Force; $copiedXF = $copiedXF + 1 }
+										catch { $failed = $failed + 1 }
+									}
+								}
+								# FirstLoad inbox files last (they win)
+								if ($useFirstLoad -and $opt.FirstLoadInboxFiles)
+								{
+									foreach ($src in $opt.FirstLoadInboxFiles)
+									{
+										$leaf = (Split-Path $src -Leaf)
+										try { Copy-Item -Path $src -Destination (Join-Path $xfFolderPath $leaf) -Force; $copiedXF = $copiedXF + 1 }
+										catch { $failed = $failed + 1 }
+									}
+								}
+							}
+							catch { $failed = $failed + 1 }
+						}
+						else
+						{
+							$laneMsgs.Add(("[WARN] {0} {1} | {2}: XF folder {3} not found. Skipped XF drops." -f $lane, $machine, $name, $xfFolderName))
+						}
+						
+						# 7) Other generic top-level folders - copy only if dest already exists; do NOT create
+						foreach ($srcOther in $otherTopDirs)
+						{
+							$oname = Split-Path -Path $srcOther -Leaf
+							$destOffice = Join-Path $officeRoot $oname
+							$destStore = Join-Path  $storemanRoot $oname
+							$target = $null
+							if (Test-Path $destOffice) { $target = $destOffice }
+							elseif (Test-Path $destStore) { $target = $destStore }
+							
+							if ($target -ne $null)
+							{
+								try
+								{
+									$rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" `
+														-ArgumentList @("`"$srcOther`"", "`"$target`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1") `
+														-NoNewWindow -PassThru -Wait
+									$copiedOther = $copiedOther + 1
+								}
+								catch { $failed = $failed + 1 }
+							}
+							else
+							{
+								$laneMsgs.Add(("[WARN] {0} {1} | {2}: Neither Office\{3} nor Storeman\{3} exists. Skipped." -f $lane, $machine, $name, $oname))
+							}
+						}
+					}
+					
+					# after
+					$optFolderAfter = Test-Path $optFolderPath
+					$installedAfter = $optFolderAfter
+					
+					# mode text
+					$modeTxt = 'Audit'
+					if ($actionMode -eq 1) { $modeTxt = 'Install' }
+					if ($actionMode -eq 2) { $modeTxt = 'Reinstall' }
+					
+					# concise summary
+					$summary = ("{0} {1} | {2}: Opt={3} Cgi={4} Htm={5} Xch={6} LBZ={7} XF={8} Other={9} {10}" -f `
+						$lane, $machine, $name, $copiedOpt, $copiedCgi, $copiedHtm, $copiedXch, $copiedLBZ, $copiedXF, $copiedOther, $modeTxt)
+					$laneMsgs.Add($summary)
+					
+					$laneRows.Add((New-Object PSObject -Property @{
+								Lane		    = $lane
+								Machine		    = $machine
+								Option		    = $name
+								InstalledBefore = $installedBefore
+								InstalledAfter  = $installedAfter
+								Copy_Options    = $copiedOpt
+								Copy_Cgi	    = $copiedCgi
+								Copy_Htm	    = $copiedHtm
+								Copy_Xch	    = $copiedXch
+								Copy_LBZ	    = $copiedLBZ
+								Copy_XF		    = $copiedXF
+								Copy_OtherDirs  = $copiedOther
+								Failures	    = $failed
+								Mode		    = $modeTxt
+							}))
+				}
+				
+				New-Object PSObject -Property @{ Messages = $laneMsgs; Items = $laneRows }
+			}).AddArgument($lt).AddArgument($stagingRecords).AddArgument([int]$ActionMode).AddArgument([string]$StoreNumber)
+		
+		$async = $ps.BeginInvoke()
+		[void]$asyncHandles.Add($async)
+		[void]$psList.Add($ps)
+	}
+	
+	# ---------------- collect ----------------
+	$allMessages = New-Object System.Collections.Generic.List[string]
+	$allItems = New-Object System.Collections.Generic.List[psobject]
+	$i = 0
+	while ($i -lt $asyncHandles.Count)
+	{
+		$ar = $asyncHandles[$i]
+		try
+		{
+			[void]$ar.AsyncWaitHandle.WaitOne()
+			$output = $psList[$i].EndInvoke($ar)
+			foreach ($block in $output)
+			{
+				if ($block -and $block.Messages) { foreach ($m in $block.Messages) { [void]$allMessages.Add($m) } }
+				if ($block -and $block.Items) { foreach ($it in $block.Items) { [void]$allItems.Add($it) } }
+			}
+		}
+		catch { Write_Log ("Runspace error: {0}" -f $_.Exception.Message) 'Yellow' }
+		finally { try { $psList[$i].Dispose() }
+			catch { } }
+		$i = $i + 1
+	}
+	try { $pool.Close(); $pool.Dispose() }
+	catch { }
+	
+	foreach ($m in ($allMessages | Sort-Object)) { Write_Log $m 'Gray' }
+	
+	Write_Log "=================== Summary ===================" 'Blue'
+	Write_Log ((
+			$allItems | Sort-Object Lane, Option |
+			Select-Object Lane, Machine, Option, InstalledBefore, InstalledAfter, Copy_Options, Copy_Cgi, Copy_Htm, Copy_Xch, Copy_LBZ, Copy_XF, Copy_OtherDirs, Failures, Mode |
+			Format-Table -AutoSize | Out-String
+		)) 'Gray'
+	
+	foreach ($d in $tempDirs) { try { if (Test-Path $d) { Remove-Item -Path $d -Recurse -Force -ErrorAction SilentlyContinue } }
+		catch { } }
+	
+	Write_Log "Install_And_Check_LOC_SMS_Options_On_Lanes: done." 'Cyan'
+	return $allItems
 }
 
 # ===================================================================================================
@@ -15872,6 +17276,65 @@ if (-not $form)
 	$smsVersionLabel.Size = New-Object System.Drawing.Size(250, 20) # Made wider for longer version strings
 	$smsVersionLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($smsVersionLabel)
+	# Make the SMS Version label bring SMS to front (or launch it)
+	$smsVersionLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$smsVersionLabel.Add_Click({
+			$orig = $smsVersionLabel.ForeColor
+			$smsVersionLabel.ForeColor = 'DodgerBlue'
+			
+			try
+			{
+				# --- Minimal P/Invoke for window focus/restore ---
+				$code = @"
+using System;
+using System.Runtime.InteropServices;
+public static class NativeWin {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+}
+"@
+				if (-not ("NativeWin" -as [type])) { Add-Type -TypeDefinition $code -ErrorAction SilentlyContinue }
+				$p = Get-Process -Name 'SMSStart' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+				if ($p)
+				{
+					$h = $p.MainWindowHandle
+					if ([NativeWin]::IsIconic($h)) { [NativeWin]::ShowWindow($h, 9) | Out-Null }
+					[NativeWin]::SetForegroundWindow($h) | Out-Null
+					if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Brought SMSStart to the foreground." "green" }
+					return
+				}
+				$proc = $null
+				$exe = Join-Path $BasePath 'SMSStart.exe'
+				if (Test-Path -LiteralPath $exe)
+				{
+					$proc = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe -Parent) -PassThru -ErrorAction Stop
+				}
+				else
+				{
+					$lnk = Get-ChildItem -LiteralPath $BasePath -Filter '*SMSStart*.lnk' -ErrorAction SilentlyContinue | Select-Object -First 1
+					if ($lnk) { $proc = Start-Process -FilePath $lnk.FullName -PassThru -ErrorAction Stop }
+				}
+				if (-not $proc)
+				{
+					if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "SMSStart not found under $BasePath" "yellow" }
+					return
+				}
+				$null = $proc.WaitForInputIdle(5000)
+				for ($i = 0; $i -lt 20 -and $proc.MainWindowHandle -eq 0; $i++) { Start-Sleep -Milliseconds 150; $proc.Refresh() }
+				$h = $proc.MainWindowHandle
+				if ($h -ne 0)
+				{
+					if ([NativeWin]::IsIconic($h)) { [NativeWin]::ShowWindow($h, 9) | Out-Null }
+					[NativeWin]::SetForegroundWindow($h) | Out-Null
+				}
+				if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Launched SMSStart from $BasePath and brought to front." "green" }
+			}
+			finally
+			{
+				$smsVersionLabel.ForeColor = $orig
+			}
+		})
 	
 	# Store Name label (centered)
 	$storeNameLabel = New-Object System.Windows.Forms.Label
@@ -16202,7 +17665,27 @@ if (-not $form)
 			Schedule_LaneDB_Backup
 		})
 	[void]$ContextMenuLane.Items.Add($LaneScheduleBackupItem)
-		
+	
+	############################################################################
+	#  X) Install/Check LOC Options (Lanes) - lane picker + options picker
+	############################################################################
+	$InstallCheckLOCOptionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install/Check LOC Options")
+	$InstallCheckLOCOptionsItem.ToolTipText = "Pick lanes, then pick LOC Options to audit/install/reinstall (with categories & search)."
+	$InstallCheckLOCOptionsItem.Add_Click({
+			Install_And_Check_LOC_SMS_Options_On_Lanes -StoreNumber "$StoreNumber"
+		})
+	[void]$ContextMenuLane.Items.Add($InstallCheckLOCOptionsItem)
+	
+	############################################################################
+	#  X) Audit/Repair Lane Databases - lane picker + in-function level picker
+	############################################################################
+	$RepairLaneDatabasesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Audit/Repair Lane Databases")
+	$RepairLaneDatabasesItem.ToolTipText = "Pick lanes, then choose Audit/Quick/Deep in the next dialog. Uses Startup.ini via Get_All_Lanes_Database_Info."
+	$RepairLaneDatabasesItem.Add_Click({
+			Repair_LOC_Databases_On_Lanes -StoreNumber "$StoreNumber"
+		})
+	[void]$ContextMenuLane.Items.Add($RepairLaneDatabasesItem)
+	
 	############################################################################
 	# 4) Pump Table to Lane Menu Item
 	############################################################################
