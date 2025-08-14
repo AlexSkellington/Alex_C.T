@@ -12887,6 +12887,31 @@ END
 						{
 							$out += Add-Log "Linked Server [$linkName] created via provider '$prov' over $protocol - **LIVE TEST PASSED**." "green"
 							$createdAndTested = $true
+							# --- NEW: After $testOk has passed, read the actual transport used on the remote.
+							#          This guarantees the persisted protocol matches what the linked server REALLY used.
+							try
+							{
+								# Query the remote DMVs THROUGH the linked server for the current session's transport.
+								# We do it via a simple EXEC (...) AT [link] so it doesn't need distributed transactions.
+								$dtTp = Invoke-LocalSqlQuery "EXEC ('SELECT TOP 1 net_transport FROM sys.dm_exec_connections WHERE session_id = @@SPID') AT [$linkName]" 8
+								if ($dtTp -and $dtTp.Rows.Count -gt 0)
+								{
+									$remoteTransport = [string]$dtTp.Rows[0][0]
+									
+									# Normalize remote transport string to our two labels to keep your file stable
+									# Examples from SQL: 'TCP', 'Named pipe', 'Shared memory'
+									if ($remoteTransport -match 'TCP') { $protocol = 'TCP' }
+									elseif ($remoteTransport -match 'Named') { $protocol = 'Named Pipes' }
+									elseif ($remoteTransport -match 'Shared') { $protocol = 'Shared Memory' } # rare for remote, but handle it
+									
+									# Log what we actually observed on the remote
+									$out += Add-Log ("Remote net_transport via [$linkName]: $remoteTransport (persisting as '$protocol')") "gray"
+								}
+							}
+							catch
+							{
+								# If this probe fails, we keep the previously detected $protocol (TCP or Named Pipes)
+							}
 							break
 						}
 						else
