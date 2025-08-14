@@ -12730,7 +12730,11 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				}
 				catch { }
 				
-				# --- Build a provider preference list that actually exists on the LOCAL instance
+				# ===================== Provider discovery & preference =====================
+				# CHANGE: Prefer OLE DB providers first. Keep MSDASQL (ODBC bridge) last.
+				$pref = @('MSOLEDBSQL', 'SQLOLEDB', 'SQLNCLI11', 'SQLNCLI', 'MSDASQL')
+				
+				# CHANGE: Query installed OLE DB providers and keep only present ones (when possible).
 				$installedProviders = @()
 				try
 				{
@@ -12749,38 +12753,44 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				}
 				catch
 				{
-					# If we can't query, we'll just try providers in order below
+					# leave $installedProviders empty; we'll try the full $pref
 				}
 				
-				$pref = @('MSOLEDBSQL', 'SQLNCLI11', 'SQLNCLI', 'SQLOLEDB', 'MSDASQL')
 				if ($installedProviders.Count -gt 0)
 				{
-					$pref = $pref | Where-Object { $installedProviders -contains $_ }
-					if ($pref.Count -eq 0) { $pref = @('MSOLEDBSQL', 'SQLNCLI11', 'SQLNCLI', 'SQLOLEDB', 'MSDASQL') }
+					$prefFiltered = $pref | Where-Object { $installedProviders -contains $_ }
+					if ($prefFiltered.Count -gt 0) { $pref = $prefFiltered }
 				}
 				
-				# --- Create Linked Server on LOCAL using the WORKING protocol and a VALID provider
-				if ($CreateLinkedServers -and $protocol -ne 'File')
+				# ===================== Build per-protocol data sources =====================
+				# CHANGE: Keep both TCP and NP endpoints ready (we already detected $protocol above).
+				$tcpDataSource = "tcp:$machine,$tcpPort"
+				$npPipe = "\\$machine\pipe\sql\query"
+				
+				# ===================== Try providers until one works with a live test =====================
+				# CHANGE: We now require a live SELECT test to pass; otherwise we drop and try next provider.
+				$linkName = $machine
+				$createdAndTested = $false
+				$firstCreatedProv = $null
+				$firstCreatedTsql = $null
+				
+				foreach ($prov in $pref)
 				{
-					$linkName = $machine
-					$created = $false
-					
-					foreach ($prov in $pref)
+					try
 					{
-						try
-						{
-							# Provider options (ignore errors if not supported)
-							$optTsql = @"
+						# CHANGE: Provider options set best-effort (ignore errors if not supported).
+						$optTsql = @"
 BEGIN TRY EXEC master.dbo.sp_MSset_oledb_prop N'$prov', N'AllowInProcess', 1; END TRY BEGIN CATCH END CATCH;
 BEGIN TRY EXEC master.dbo.sp_MSset_oledb_prop N'$prov', N'DynamicParameters', 1; END TRY BEGIN CATCH END CATCH;
 "@
-							
-							if ($prov -ne 'MSDASQL')
+						
+						# Compose CREATE script per provider/protocol
+						if ($prov -ne 'MSDASQL')
+						{
+							if ($protocol -eq 'TCP')
 							{
-								if ($protocol -eq 'TCP')
-								{
-									$datasrc = "tcp:$machine,$tcpPort"
-									$createTsql = @"
+								$datasrc = $tcpDataSource
+								$createTsql = @"
 IF EXISTS(SELECT 1 FROM sys.servers WHERE name=N'$linkName')
     EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
 $optTsql
@@ -12791,41 +12801,41 @@ EXEC master.dbo.sp_serveroption N'$linkName', N'rpc out', N'true';
 IF NOT EXISTS (SELECT 1 FROM sys.linked_logins ll JOIN sys.servers s ON s.server_id=ll.server_id WHERE s.name=N'$linkName')
     EXEC master.dbo.sp_addlinkedsrvlogin @rmtsrvname=N'$linkName', @useself='TRUE';
 "@
-								}
-								else
-								{
-									# Named Pipes: force NP via provstr; use pipe path
-									$npDataSrc = "\\$machine\pipe\sql\query"
-									$createTsql = @"
+							}
+							else
+							{
+								# Named Pipes: force NP using provider string
+								$createTsql = @"
 IF EXISTS(SELECT 1 FROM sys.servers WHERE name=N'$linkName')
     EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
 $optTsql
 EXEC master.dbo.sp_addlinkedserver
     @server=N'$linkName', @srvproduct=N'', @provider=N'$prov',
-    @datasrc=N'$npDataSrc', @provstr=N'Network Library=dbnmpntw';
+    @datasrc=N'\\$machine\pipe\sql\query', @provstr=N'Network Library=dbnmpntw';
 EXEC master.dbo.sp_serveroption N'$linkName', N'data access', N'true';
 EXEC master.dbo.sp_serveroption N'$linkName', N'use remote collation', N'true';
 EXEC master.dbo.sp_serveroption N'$linkName', N'rpc out', N'true';
 IF NOT EXISTS (SELECT 1 FROM sys.linked_logins ll JOIN sys.servers s ON s.server_id=ll.server_id WHERE s.name=N'$linkName')
     EXEC master.dbo.sp_addlinkedsrvlogin @rmtsrvname=N'$linkName', @useself='TRUE';
 "@
-								}
+							}
+						}
+						else
+						{
+							# MSDASQL: try ODBC 18 then 17 with matching protocol endpoint
+							if ($protocol -eq 'TCP')
+							{
+								$provstr18 = "Driver={ODBC Driver 18 for SQL Server};Server=$machine,$tcpPort;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
+								$provstr17 = "Driver={ODBC Driver 17 for SQL Server};Server=$machine,$tcpPort;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
 							}
 							else
 							{
-								# MSDASQL uses ODBC provstr; try Driver 18 then 17
-								if ($protocol -eq 'TCP')
-								{
-									$provstr18 = "Driver={ODBC Driver 18 for SQL Server};Server=$machine,$tcpPort;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
-									$provstr17 = "Driver={ODBC Driver 17 for SQL Server};Server=$machine,$tcpPort;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
-								}
-								else
-								{
-									$npServer = "np:\\$machine\pipe\sql\query"
-									$provstr18 = "Driver={ODBC Driver 18 for SQL Server};Server=$npServer;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
-									$provstr17 = "Driver={ODBC Driver 17 for SQL Server};Server=$npServer;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
-								}
-								$createTsql = @"
+								$npServer = "np:\\$machine\pipe\sql\query"
+								$provstr18 = "Driver={ODBC Driver 18 for SQL Server};Server=$npServer;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
+								$provstr17 = "Driver={ODBC Driver 17 for SQL Server};Server=$npServer;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
+							}
+							
+							$createTsql = @"
 IF EXISTS(SELECT 1 FROM sys.servers WHERE name=N'$linkName')
     EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
 $optTsql
@@ -12852,43 +12862,66 @@ BEGIN
     RAISERROR('MSDASQL addlinkedserver failed for both ODBC 18 and 17', 11, 1);
 END
 "@
-							}
-							
-							Invoke-LocalSqlNonQuery $createTsql 30
-							
-							# Optional smoke test (can fail due to delegation; creation is still OK)
-							$testOk = $false
-							try
-							{
-								$dt = Invoke-LocalSqlQuery "SELECT TOP 1 name FROM [$linkName].master.sys.databases" 8
-								$testOk = ($dt -ne $null)
-							}
-							catch { $testOk = $false }
-							
-							if ($testOk)
-							{
-								$out += Add-Log "Linked Server [$linkName] created via $prov ($protocol) and test OK." "green"
-							}
-							else
-							{
-								$out += Add-Log "Linked Server [$linkName] created via $prov ($protocol); test failed (likely delegation). Map a SQL login if needed." "yellow"
-							}
-							
-							$created = $true
-							break
+						}
+						
+						# Create the linked server with this provider
+						Invoke-LocalSqlNonQuery $createTsql 30
+						
+						# Remember the first provider that could CREATE, in case all live tests fail
+						if (-not $firstCreatedProv) { $firstCreatedProv = $prov; $firstCreatedTsql = $createTsql }
+						
+						# CHANGE: Live, per-lane test - drop if it fails and try next provider
+						$testOk = $false
+						try
+						{
+							# Lightweight test against master; avoids distributed transactions.
+							$dt = Invoke-LocalSqlQuery "SELECT TOP 1 name FROM [$linkName].master.sys.databases" 8
+							$testOk = ($dt -ne $null -and $dt.Rows.Count -ge 0)
 						}
 						catch
 						{
-							$out += Add-Log "Provider '$prov' failed creating Linked Server [$linkName] ($protocol). Trying next provider..." "gray"
+							$testOk = $false
 						}
-					} # foreach prov
-					
-					if (-not $created)
-					{
-						$out += Add-Log "All provider attempts failed creating Linked Server [$linkName] ($protocol)." "red"
+						
+						if ($testOk)
+						{
+							$out += Add-Log "Linked Server [$linkName] created via provider '$prov' over $protocol - **LIVE TEST PASSED**." "green"
+							$createdAndTested = $true
+							break
+						}
+						else
+						{
+							# Test failed - drop and continue to next provider
+							try
+							{
+								Invoke-LocalSqlNonQuery "EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';" 15
+							}
+							catch { }
+							$out += Add-Log "Provider '$prov' created [$linkName] over $protocol but live test FAILED - trying next provider..." "yellow"
+						}
 					}
-				} # if create LS
+					catch
+					{
+						$out += Add-Log "Provider '$prov' failed to create Linked Server [$linkName] over $protocol - trying next provider..." "gray"
+					}
+				} # foreach prov
 				
+				# Final resolution of provider choice
+				if ($createdAndTested)
+				{
+					# SUCCESS already logged above
+				}
+				elseif ($firstCreatedProv)
+				{
+					# CHANGE: Nothing passed the live test - leave you with the first creatable provider for manual login mapping
+					try { Invoke-LocalSqlNonQuery $firstCreatedTsql 30 }
+					catch { }
+					$out += Add-Log "No provider passed live test. Re-created [$linkName] using '$firstCreatedProv' over $protocol so you can map a SQL login if needed." "yellow"
+				}
+				else
+				{
+					$out += Add-Log "All provider attempts failed creating Linked Server [$linkName] over $protocol." "red"
+				} # if create LS
 			}
 			catch
 			{
@@ -18057,7 +18090,7 @@ public static class NativeWin {
 	# Number of Backoffices (clickable)
 	$NodesBackoffices = New-Object System.Windows.Forms.Label
 	$NodesBackoffices.Text = "Number of Backoffices: N/A"
-	$NodesBackoffices.Location = New-Object System.Drawing.Point(790, 50)
+	$NodesBackoffices.Location = New-Object System.Drawing.Point(785, 50)
 	$NodesBackoffices.Size = New-Object System.Drawing.Size(200, 20)
 	$NodesBackoffices.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$NodesBackoffices.AutoSize = $false
