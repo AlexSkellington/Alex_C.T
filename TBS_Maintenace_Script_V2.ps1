@@ -1447,17 +1447,27 @@ function Repair_LOC_Databases_On_Lanes
 		}
 		
 		# ----------------------------------------
-		# Snapshot lane DB state BEFORE
+		# Snapshot lane DB state BEFORE (aliased column + fallback)
 		# ----------------------------------------
-		$stateBefore = ''
+		$stateBefore = 'Unknown'
 		try
 		{
-			$rows = & $InvokeSqlCmd -ConnectionString $connStr -Query "SELECT state_desc FROM sys.databases WHERE name = N'$dbName';" -QueryTimeout 10 -ErrorAction Stop
-			if ($rows -and $rows[0] -and $rows[0].state_desc) { $stateBefore = [string]$rows[0].state_desc }
+			$dbNameQuoted = $dbName.Replace("'", "''")
+			$tsqlStateBefore = @"
+IF EXISTS (SELECT 1 FROM sys.databases WHERE name = N'$dbNameQuoted')
+    SELECT state_desc AS state_desc FROM sys.databases WHERE name = N'$dbNameQuoted';
+ELSE
+    SELECT CAST(DATABASEPROPERTYEX(N'$dbNameQuoted', N'Status') AS nvarchar(60)) AS state_desc;
+"@
+			$rows = & $InvokeSqlCmd -ConnectionString $connStr -Query $tsqlStateBefore -QueryTimeout 10 -ErrorAction Stop
+			if ($rows)
+			{
+				$stateBefore = ($rows | Select-Object -First 1 -ExpandProperty state_desc)
+				if ([string]::IsNullOrWhiteSpace($stateBefore)) { $stateBefore = 'Unknown' }
+			}
 		}
-		catch { $stateBefore = 'Unknown' }
-		if ($stateBefore) { Write_Log ("DB state before: {0}" -f $stateBefore) "gray" }
-		else { Write_Log "DB state before: Unknown" "gray" }
+		catch { }
+		Write_Log ("DB state before: {0}" -f $stateBefore) "gray"
 		
 		# ----------------------------------------
 		# Repair the lane's application DB according to chosen level
@@ -1545,16 +1555,28 @@ function Repair_LOC_Databases_On_Lanes
 			catch { Write_Log ("WARN: MULTI_USER restore failed: $_") "yellow" }
 		}
 		
-		# Snapshot state AFTER
-		$stateAfter = ''
+		# ----------------------------------------
+		# Snapshot state AFTER (aliased column + fallback)
+		# ----------------------------------------
+		$stateAfter = 'Unknown'
 		try
 		{
-			$rows2 = & $InvokeSqlCmd -ConnectionString $connStr -Query "SELECT state_desc FROM sys.databases WHERE name = N'$dbName';" -QueryTimeout 10 -ErrorAction Stop
-			if ($rows2 -and $rows2[0] -and $rows2[0].state_desc) { $stateAfter = [string]$rows2[0].state_desc }
+			$dbNameQuoted2 = $dbName.Replace("'", "''")
+			$tsqlStateAfter = @"
+IF EXISTS (SELECT 1 FROM sys.databases WHERE name = N'$dbNameQuoted2')
+    SELECT state_desc AS state_desc FROM sys.databases WHERE name = N'$dbNameQuoted2';
+ELSE
+    SELECT CAST(DATABASEPROPERTYEX(N'$dbNameQuoted2', N'Status') AS nvarchar(60)) AS state_desc;
+"@
+			$rows2 = & $InvokeSqlCmd -ConnectionString $connStr -Query $tsqlStateAfter -QueryTimeout 10 -ErrorAction Stop
+			if ($rows2)
+			{
+				$stateAfter = ($rows2 | Select-Object -First 1 -ExpandProperty state_desc)
+				if ([string]::IsNullOrWhiteSpace($stateAfter)) { $stateAfter = 'Unknown' }
+			}
 		}
-		catch { $stateAfter = 'Unknown' }
-		if ($stateAfter) { Write_Log ("DB state after:  {0}" -f $stateAfter) "gray" }
-		else { Write_Log "DB state after:  Unknown" "gray" }
+		catch { }
+		Write_Log ("DB state after:  {0}" -f $stateAfter) "gray"
 		
 		# Summarize this lane
 		$result = 'OK'
