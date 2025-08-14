@@ -12732,7 +12732,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				
 				# ===================== Provider discovery & preference =====================
 				# CHANGE: Prefer OLE DB providers first. Keep MSDASQL (ODBC bridge) last.
-				$pref = @('MSOLEDBSQL', 'SQLOLEDB', 'SQLNCLI11', 'SQLNCLI', 'MSDASQL')
+				$pref = @('SQLOLEDB', 'MSOLEDBSQL', 'SQLNCLI11', 'SQLNCLI', 'MSDASQL')
 				
 				# CHANGE: Query installed OLE DB providers and keep only present ones (when possible).
 				$installedProviders = @()
