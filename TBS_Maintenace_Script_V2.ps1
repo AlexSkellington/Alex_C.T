@@ -12479,7 +12479,8 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 			
 			$out = @()
 			$laneNeedsRestart = $false
-			$protocol = "File"
+			$protocol = "File" # Default starting value (will be updated by probe/DMV)  # CHANGE: keep but we will clamp later
+			$creationTransport = $null # CHANGE: remember what transport the CREATE used (TCP/Named Pipes)
 			
 			# Small helpers INSIDE the job (no external functions)
 			function Add-Log([string]$text, [string]$color) { $script:__tmp = @{ Text = $text; Color = $color }; $script:__tmp }
@@ -12707,15 +12708,17 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				try
 				{
 					$tcpClient = New-Object System.Net.Sockets.TcpClient
+					# CHANGE: bump TCP wait to reduce false negatives on slow hosts
 					$task = $tcpClient.ConnectAsync($machine, [int]$tcpPort)
-					if ($task.Wait(800) -and $tcpClient.Connected)
+					if ($task.Wait(1500) -and $tcpClient.Connected) # was 800ms
 					{
 						$tcpClient.Close(); $protocol = "TCP"
 					}
 					else
 					{
 						# Try NP with SqlClient using the NP data source
-						$npCs = "Server=np:\\\$machine\pipe\sql\query;Database=master;Integrated Security=True;Encrypt=True;TrustServerCertificate=True;Connection Timeout=2"
+						# CHANGE: bump NP connection timeout from 2s to 5s (NP can be sluggish)
+						$npCs = "Server=np:\\\$machine\pipe\sql\query;Database=master;Integrated Security=True;Encrypt=True;TrustServerCertificate=True;Connection Timeout=5"
 						$cn = New-Object System.Data.SqlClient.SqlConnection $npCs
 						try
 						{
@@ -12730,8 +12733,15 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 				}
 				catch { }
 				
+				if ($protocol -eq 'File')
+				{
+					# CHANGE: visibility when the quick probe didn't confirm TCP/NP
+					$out += Add-Log "Pre-probe did not confirm TCP or NP (likely timeouts). Proceeding to create the link and verify via live test." "yellow"
+				}
+				
 				# ===================== Provider discovery & preference =====================
 				# CHANGE: Prefer OLE DB providers first. Keep MSDASQL (ODBC bridge) last.
+				# (Leave order as requested; both SQLOLEDB and MSOLEDBSQL are tried.)
 				$pref = @('SQLOLEDB', 'MSOLEDBSQL', 'SQLNCLI11', 'SQLNCLI', 'MSDASQL')
 				
 				# CHANGE: Query installed OLE DB providers and keep only present ones (when possible).
@@ -12784,12 +12794,13 @@ BEGIN TRY EXEC master.dbo.sp_MSset_oledb_prop N'$prov', N'AllowInProcess', 1; EN
 BEGIN TRY EXEC master.dbo.sp_MSset_oledb_prop N'$prov', N'DynamicParameters', 1; END TRY BEGIN CATCH END CATCH;
 "@
 						
-						# Compose CREATE script per provider/protocol
+						# --- Build the CREATE script per provider/protocol and remember what we created ---
 						if ($prov -ne 'MSDASQL')
 						{
 							if ($protocol -eq 'TCP')
 							{
 								$datasrc = $tcpDataSource
+								$creationTransport = 'TCP' # CHANGE: remember creation transport
 								$createTsql = @"
 IF EXISTS(SELECT 1 FROM sys.servers WHERE name=N'$linkName')
     EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
@@ -12804,6 +12815,7 @@ IF NOT EXISTS (SELECT 1 FROM sys.linked_logins ll JOIN sys.servers s ON s.server
 							}
 							else
 							{
+								$creationTransport = 'Named Pipes' # CHANGE: remember creation transport
 								# Named Pipes: force NP using provider string
 								$createTsql = @"
 IF EXISTS(SELECT 1 FROM sys.servers WHERE name=N'$linkName')
@@ -12825,11 +12837,13 @@ IF NOT EXISTS (SELECT 1 FROM sys.linked_logins ll JOIN sys.servers s ON s.server
 							# MSDASQL: try ODBC 18 then 17 with matching protocol endpoint
 							if ($protocol -eq 'TCP')
 							{
+								$creationTransport = 'TCP' # CHANGE: remember creation transport
 								$provstr18 = "Driver={ODBC Driver 18 for SQL Server};Server=$machine,$tcpPort;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
 								$provstr17 = "Driver={ODBC Driver 17 for SQL Server};Server=$machine,$tcpPort;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
 							}
 							else
 							{
+								$creationTransport = 'Named Pipes' # CHANGE: remember creation transport
 								$npServer = "np:\\$machine\pipe\sql\query"
 								$provstr18 = "Driver={ODBC Driver 18 for SQL Server};Server=$npServer;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
 								$provstr17 = "Driver={ODBC Driver 17 for SQL Server};Server=$npServer;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
@@ -12870,7 +12884,7 @@ END
 						# Remember the first provider that could CREATE, in case all live tests fail
 						if (-not $firstCreatedProv) { $firstCreatedProv = $prov; $firstCreatedTsql = $createTsql }
 						
-						# CHANGE: Live, per-lane test - drop if it fails and try next provider
+						# Live, per-lane test - drop if it fails and try next provider
 						$testOk = $false
 						try
 						{
@@ -12885,33 +12899,36 @@ END
 						
 						if ($testOk)
 						{
-							$out += Add-Log "Linked Server [$linkName] created via provider '$prov' over $protocol - **LIVE TEST PASSED**." "green"
 							$createdAndTested = $true
-							# --- NEW: After $testOk has passed, read the actual transport used on the remote.
-							#          This guarantees the persisted protocol matches what the linked server REALLY used.
+							
+							# --- Read the actual transport used on the remote (no MSDTC; uses RPC OUT)
+							$normalized = $false
 							try
 							{
-								# Query the remote DMVs THROUGH the linked server for the current session's transport.
-								# We do it via a simple EXEC (...) AT [link] so it doesn't need distributed transactions.
 								$dtTp = Invoke-LocalSqlQuery "EXEC ('SELECT TOP 1 net_transport FROM sys.dm_exec_connections WHERE session_id = @@SPID') AT [$linkName]" 8
 								if ($dtTp -and $dtTp.Rows.Count -gt 0)
 								{
 									$remoteTransport = [string]$dtTp.Rows[0][0]
-									
-									# Normalize remote transport string to our two labels to keep your file stable
-									# Examples from SQL: 'TCP', 'Named pipe', 'Shared memory'
-									if ($remoteTransport -match 'TCP') { $protocol = 'TCP' }
-									elseif ($remoteTransport -match 'Named') { $protocol = 'Named Pipes' }
-									elseif ($remoteTransport -match 'Shared') { $protocol = 'Shared Memory' } # rare for remote, but handle it
-									
-									# Log what we actually observed on the remote
-									$out += Add-Log ("Remote net_transport via [$linkName]: $remoteTransport (persisting as '$protocol')") "gray"
+									if ($remoteTransport -match 'TCP') { $protocol = 'TCP'; $normalized = $true }
+									elseif ($remoteTransport -match 'Named') { $protocol = 'Named Pipes'; $normalized = $true }
+									elseif ($remoteTransport -match 'Shared') { $protocol = 'Shared Memory'; $normalized = $true } # rare remotely
+									$out += Add-Log ("Remote net_transport via [$linkName]: $remoteTransport" + ($(if ($normalized) { " (persisting as '$protocol')" }
+												else { "" }))) "gray"
 								}
 							}
 							catch
 							{
-								# If this probe fails, we keep the previously detected $protocol (TCP or Named Pipes)
+								# If permissions/timeouts block DMV, we'll fall back to creation transport next
 							}
+							
+							# GUARANTEE: never leave "File"/empty on success; fall back to what we created
+							if (-not $normalized -or [string]::IsNullOrWhiteSpace($protocol) -or $protocol -eq 'File')
+							{
+								$protocol = $creationTransport
+							}
+							
+							# SUCCESS log AFTER normalization so it never shows "File"
+							$out += Add-Log "Linked Server [$linkName] created via provider '$prov' over $protocol - **LIVE TEST PASSED**." "green"
 							break
 						}
 						else
@@ -12922,12 +12939,12 @@ END
 								Invoke-LocalSqlNonQuery "EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';" 15
 							}
 							catch { }
-							$out += Add-Log "Provider '$prov' created [$linkName] over $protocol but live test FAILED - trying next provider..." "yellow"
+							$out += Add-Log "Provider '$prov' created [$linkName] over $creationTransport but live test FAILED - trying next provider..." "yellow" # CHANGE: show transport attempted
 						}
 					}
 					catch
 					{
-						$out += Add-Log "Provider '$prov' failed to create Linked Server [$linkName] over $protocol - trying next provider..." "gray"
+						$out += Add-Log "Provider '$prov' failed to create Linked Server [$linkName] - trying next provider..." "gray"
 					}
 				} # foreach prov
 				
@@ -12938,20 +12955,27 @@ END
 				}
 				elseif ($firstCreatedProv)
 				{
-					# CHANGE: Nothing passed the live test - leave you with the first creatable provider for manual login mapping
+					# Nothing passed the live test - leave you with the first creatable provider for manual login mapping
 					try { Invoke-LocalSqlNonQuery $firstCreatedTsql 30 }
 					catch { }
+					if ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpace($protocol)) { $protocol = $creationTransport } # CHANGE: avoid persisting File
 					$out += Add-Log "No provider passed live test. Re-created [$linkName] using '$firstCreatedProv' over $protocol so you can map a SQL login if needed." "yellow"
 				}
 				else
 				{
-					$out += Add-Log "All provider attempts failed creating Linked Server [$linkName] over $protocol." "red"
-				} # if create LS
+					$out += Add-Log "All provider attempts failed creating Linked Server [$linkName]." "red"
+				}
 			}
 			catch
 			{
 				$out += Add-Log "Failed to process [$machine]: $_" "red"
 				$protocol = "File"
+			}
+			
+			# FINAL GUARD: if success occurred but protocol somehow remained 'File', clamp it to creation transport
+			if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpace($protocol)))
+			{
+				$protocol = $creationTransport # CHANGE: ensure we never return 'File' for a passing lane
 			}
 			
 			# Return: caller will print lines; protocol message printed LAST.
