@@ -19,7 +19,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.4.3"
+$VersionNumber = "2.4.4"
 $VersionDate = "2025-08-14"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -27,6 +27,9 @@ $major = $PSVersionTable.PSVersion.Major
 $minor = $PSVersionTable.PSVersion.Minor
 $build = $PSVersionTable.PSVersion.Build
 $revision = $PSVersionTable.PSVersion.Revision
+
+# Idle timeout for the whole script
+$script:IdleMinutesAllowed = 15 # <<< adjust as needed
 
 # Combine them into a single version string
 $PowerShellVersion = "$major.$minor.$build.$revision"
@@ -3022,7 +3025,7 @@ function Insert_Test_Item
 		# If DBSERVER/DBNAME were missing, try to salvage from the connection string
 		if (-not $fallbackParams['ServerInstance'] -or -not $fallbackParams['Database'])
 		{
-			# Last-resort: parse minimal fields from ConnectionString
+			# Last-resort: parse minimal fields from ConnectionString (only if needed)
 			if ($ConnectionString -match '(?i)(?:Data\s*Source|Server)\s*=\s*([^;]+)')
 			{
 				$fallbackParams['ServerInstance'] = $matches[1].Trim()
@@ -3050,11 +3053,11 @@ function Insert_Test_Item
 	
 	# ----------------------------------------------------------------------------------------------
 	# Centralized SQL runner - ALWAYS use this for queries below so fallback is automatic.
+	# (CHANGE: kept as a scriptblock variable - not a nested *function* - to honor 'no nested functions')
 	# ----------------------------------------------------------------------------------------------
 	$RunSql = {
 		param ([Parameter(Mandatory = $true)]
 			[string]$Query)
-		
 		if ($useConnectionString)
 		{
 			return Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $Query -ErrorAction Stop
@@ -3070,6 +3073,7 @@ function Insert_Test_Item
 	
 	# ----------------------------------------------------------------------------------------------
 	# Business logic: choose appropriate PLU (prefer the "test" one), then delete + insert rows
+	# (CHANGE: removed nested helper function; inlined the PLU test logic 3x for clarity/compliance)
 	# ----------------------------------------------------------------------------------------------
 	$now = Get-Date
 	$nowFull = $now.ToString("yyyy-MM-dd HH:mm:ss.fff")
@@ -3083,58 +3087,78 @@ function Insert_Test_Item
 	$TestF267 = 777
 	$doInsert = $false
 	
-	# ---- Probe helper (local) to keep try/catch noise minimal
-	function Test-IsTestPLU
+	# ---- Check preferred PLU (INLINE)
+	$okUse = $false
+	try
 	{
-		param ([string]$CheckPLU)
-		try
-		{
-			$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$CheckPLU'"
-			$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$CheckPLU'"
-			$posDesc = if ($pos) { $pos.F02 }
-			else { "" }
-			$objDesc = if ($obj) { $obj.F29 }
-			else { "" }
-			# "test" or "tecnica" in either description qualifies; if both empty, also safe to use
-			if ($posDesc -match '(?i)test|tecnica' -or $objDesc -match '(?i)test|tecnica') { return $true }
-			if ([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc)) { return $true }
-			return $false
-		}
-		catch { return $true } # silent-safe default (treat as testable if lookup errors)
+		$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$preferredPLU'"
+		$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$preferredPLU'"
+		$posDesc = if ($pos) { [string]$pos.F02 }
+		else { "" }
+		$objDesc = if ($obj) { [string]$obj.F29 }
+		else { "" }
+		$okUse = ($posDesc -match '(?i)test|tecnica') -or
+		($objDesc -match '(?i)test|tecnica') -or
+		([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
 	}
-	
-	# Preferred
-	if (Test-IsTestPLU -CheckPLU $preferredPLU)
+	catch { $okUse = $true } # conservative default if lookups fail
+	if ($okUse)
 	{
 		$PLU = $preferredPLU
 		$TestF267 = 777
 		$doInsert = $true
 		Write_Log "Using preferred PLU: $PLU with F267: $TestF267" "green"
 	}
-	else
+	
+	# ---- If not chosen yet, check alternative PLU (INLINE)
+	if (-not $doInsert)
 	{
-		# Alternative
-		if (Test-IsTestPLU -CheckPLU $alternativePLU)
+		$okUse = $false
+		try
+		{
+			$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$alternativePLU'"
+			$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$alternativePLU'"
+			$posDesc = if ($pos) { [string]$pos.F02 }
+			else { "" }
+			$objDesc = if ($obj) { [string]$obj.F29 }
+			else { "" }
+			$okUse = ($posDesc -match '(?i)test|tecnica') -or
+			($objDesc -match '(?i)test|tecnica') -or
+			([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
+		}
+		catch { $okUse = $true }
+		if ($okUse)
 		{
 			$PLU = $alternativePLU
 			$TestF267 = 7777
 			$doInsert = $true
 			Write_Log "Using alternative PLU: $PLU with F267: $TestF267" "green"
 		}
-		else
+	}
+	
+	# ---- If still not chosen, check fallback PLU (INLINE)
+	if (-not $doInsert)
+	{
+		$okUse = $false
+		try
 		{
-			# Fallback
-			if (Test-IsTestPLU -CheckPLU $fallbackPLU)
-			{
-				$PLU = $fallbackPLU
-				$TestF267 = 77777
-				$doInsert = $true
-				Write_Log "Using fallback PLU: $PLU with F267: $TestF267" "green"
-			}
-			else
-			{
-				Write_Log "No suitable PLU found for test item insertion" "red"
-			}
+			$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$fallbackPLU'"
+			$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$fallbackPLU'"
+			$posDesc = if ($pos) { [string]$pos.F02 }
+			else { "" }
+			$objDesc = if ($obj) { [string]$obj.F29 }
+			else { "" }
+			$okUse = ($posDesc -match '(?i)test|tecnica') -or
+			($objDesc -match '(?i)test|tecnica') -or
+			([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
+		}
+		catch { $okUse = $true }
+		if ($okUse)
+		{
+			$PLU = $fallbackPLU
+			$TestF267 = 77777
+			$doInsert = $true
+			Write_Log "Using fallback PLU: $PLU with F267: $TestF267" "green"
 		}
 	}
 	
@@ -3162,7 +3186,8 @@ function Insert_Test_Item
 		{
 			& $RunSql @"
 INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F253, F258, F264, F267, F1952, F1964, F2581, F2582)
-VALUES ('$PLU', 'PAL', 'MANUAL', 1, '$nowFull', 10, 7, $TestF267, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
+VALUES
+('$PLU', 'PAL', 'MANUAL', 1, '$nowFull', 10, 7, $TestF267, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
 "@ | Out-Null
 			Write_Log "SCL_TAB insertion successful" "green"
 		}
@@ -3176,7 +3201,8 @@ VALUES ('$PLU', 'PAL', 'MANUAL', 1, '$nowFull', 10, 7, $TestF267, 'Test Descript
 			if ($F29.Length -gt 60) { $F29 = $F29.Substring(0, 60) }
 			& $RunSql @"
 INSERT INTO OBJ_TAB (F01, F902, F1001, F21, F29, F270, F1118, F1959)
-VALUES ('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
+VALUES
+('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
 "@ | Out-Null
 			Write_Log "OBJ_TAB insertion successful" "green"
 		}
@@ -3188,7 +3214,8 @@ VALUES ('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
 		{
 			& $RunSql @"
 INSERT INTO POS_TAB (F01, F1000, F902, F1001, F02, F09, F79, F80, F82, F104, F115, F176, F178, F217, F1964, F2119)
-VALUES ('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '1', '0', '0', '1', '1', 1.0, '001', '1')
+VALUES
+('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '1', '0', '0', '1', '1', 1.0, '001', '1')
 "@ | Out-Null
 			Write_Log "POS_TAB insertion successful" "green"
 		}
@@ -3200,7 +3227,8 @@ VALUES ('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '
 		{
 			& $RunSql @"
 INSERT INTO PRICE_TAB (F01, F1000, F126, F902, F1001, F21, F30, F31, F113, F1006, F1007, F1008, F1009, F1803)
-VALUES ('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate', '1858', 1.0)
+VALUES
+('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate', '1858', 1.0)
 "@ | Out-Null
 			Write_Log "PRICE_TAB insertion successful" "green"
 		}
@@ -3212,7 +3240,8 @@ VALUES ('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate
 		{
 			& $RunSql @"
 INSERT INTO SCL_TXT_TAB (F267, F1000, F253, F297, F902, F1001, F1836)
-VALUES ($TestF267, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, 'Tecnica Test Item')
+VALUES
+($TestF267, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, 'Tecnica Test Item')
 "@ | Out-Null
 			Write_Log "SCL_TXT_TAB insertion successful" "green"
 		}
@@ -12024,8 +12053,13 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber,
 		[Parameter(Mandatory = $false)]
-		[string]$tcpPort = "1433"
+		[string]$tcpPort = "1433",
+		[Parameter(Mandatory = $false)]
+		[switch]$CreateLinkedServers
 	)
+	
+	# Default linked-server creation to ON unless explicitly disabled
+	if (-not $PSBoundParameters.ContainsKey('CreateLinkedServers')) { $CreateLinkedServers = $true }
 	
 	Write_Log "`r`n==================== Starting Enable_SQL_Protocols_On_Selected_Lanes Function ====================`r`n" "blue"
 	
@@ -12037,7 +12071,41 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 		return
 	}
 	
-	# --- Always use the new, universal selection form ---
+	# Local SQL instance (from Get_Store_And_Database_Info)
+	$localInstance = $script:FunctionResults['DBSERVER']
+	if ([string]::IsNullOrWhiteSpace($localInstance) -or $localInstance -eq 'N/A') { $localInstance = 'localhost' }
+	
+	# Can we run Invoke-Sqlcmd?
+	$canSqlCmd = $false
+	if ($CreateLinkedServers)
+	{
+		try
+		{
+			if ($script:FunctionResults['SqlModuleName'] -eq 'SqlServer')
+			{
+				Import-Module SqlServer -ErrorAction Stop
+				$canSqlCmd = $true
+			}
+			elseif ($script:FunctionResults['SqlModuleName'] -eq 'SQLPS')
+			{
+				Import-Module SQLPS -DisableNameChecking -ErrorAction Stop
+				$canSqlCmd = $true
+			}
+			else
+			{
+				try { Import-Module SqlServer -ErrorAction Stop; $canSqlCmd = $true }
+				catch
+				{
+					try { Import-Module SQLPS -DisableNameChecking -ErrorAction Stop; $canSqlCmd = $true }
+					catch { $canSqlCmd = $false }
+				}
+			}
+		}
+		catch { $canSqlCmd = $false }
+		if (-not $canSqlCmd) { Write_Log "SqlServer/SQLPS module not available; Linked Server creation will be skipped." "yellow" }
+	}
+	
+	# Select lanes
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 	{
@@ -12046,7 +12114,6 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 		return
 	}
 	
-	# Extract lanes: always convert to zero-padded 3-digit string, deduplicate
 	$lanes = $selection.Lanes | ForEach-Object {
 		if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber }
 		else { $_ }
@@ -12055,8 +12122,6 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 	Write_Log "Selected lanes: $($lanes -join ', ')" "green"
 	
 	$isSingle = ($lanes.Count -eq 1)
-	
-	# Ensure protocol tracking tables exist
 	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{ } }
 	if (-not $script:ProtocolResults) { $script:ProtocolResults = @() }
 	
@@ -12071,15 +12136,16 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 			continue
 		}
 		
-		# --------- Inline for single lane, job for multi ----------
 		if ($isSingle)
 		{
 			Write_Log "`r`n--- Processing Machine: $machine (Store $StoreNumber, Lane $lane) ---" "blue"
 			try
-			{				Write_Log "Ensuring RemoteRegistry is running on $machine..." "gray"
+			{
+				Write_Log "Ensuring RemoteRegistry is running on $machine..." "gray"
 				sc.exe "\\$machine" config RemoteRegistry start= demand | Out-Null
 				sc.exe "\\$machine" start RemoteRegistry | Out-Null
 				$reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $machine)
+				
 				$instanceRootPaths = @(
 					"SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL",
 					"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL"
@@ -12093,10 +12159,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						foreach ($name in $instKey.GetValueNames())
 						{
 							$id = $instKey.GetValue($name)
-							if ($id -and !$allInstances.ContainsKey($name))
-							{
-								$allInstances[$name] = $id
-							}
+							if ($id -and -not $allInstances.ContainsKey($name)) { $allInstances[$name] = $id }
 						}
 						$instKey.Close()
 					}
@@ -12115,7 +12178,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						Write_Log "Processing SQL Instance: $instanceName (ID: $instanceID)" "blue"
 						$needsRestart = $false
 						
-						# --- Mixed Mode ---
+						# Mixed Mode
 						$authPaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer",
 							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer"
@@ -12138,118 +12201,99 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 									Write_Log "Mixed Mode Authentication already enabled at $authPath." "gray"
 								}
 								$authKey.Close()
-								$authSet = $true
-								break
+								$authSet = $true; break
 							}
 						}
-						if (-not $authSet)
-						{
-							Write_Log "LoginMode registry path not found for $instanceName." "yellow"
-						}
+						if (-not $authSet) { Write_Log "LoginMode registry path not found for $instanceName." "yellow" }
 						
-						# --- TCP/IP Protocol ---
-						$basePaths = @(
+						# TCP/IP
+						$tcpPaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
 							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp"
 						)
-						foreach ($basePath in $basePaths)
+						foreach ($p in $tcpPaths)
 						{
-							$regKey = $reg.OpenSubKey($basePath, $true)
-							if ($regKey)
+							$rk = $reg.OpenSubKey($p, $true)
+							if ($rk)
 							{
-								$tcpEnabled = $regKey.GetValue('Enabled', 0)
-								if ($tcpEnabled -eq 1)
+								if ($rk.GetValue('Enabled', 0) -ne 1)
 								{
-									Write_Log "TCP/IP already enabled at $basePath." "gray"
-								}
-								else
-								{
-									$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-									Write_Log "TCP/IP protocol enabled at $basePath." "green"
+									$rk.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+									Write_Log "TCP/IP protocol enabled at $p." "green"
 									$needsRestart = $true
 								}
-								$regKey.Close()
-								break
+								else { Write_Log "TCP/IP already enabled at $p." "gray" }
+								$rk.Close(); break
 							}
 						}
-						# --- TCP Port ---
+						
+						# Port
 						$ipAllPaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll",
 							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll"
 						)
-						foreach ($ipAllPath in $ipAllPaths)
+						foreach ($p in $ipAllPaths)
 						{
-							$regKey = $reg.OpenSubKey($ipAllPath, $true)
-							if ($regKey)
+							$rk = $reg.OpenSubKey($p, $true)
+							if ($rk)
 							{
-								$curPort = $regKey.GetValue('TcpPort', "")
-								$curDyn = $regKey.GetValue('TcpDynamicPorts', "")
-								if ($curPort -eq $tcpPort -and $curDyn -eq "")
+								$curPort = $rk.GetValue('TcpPort', "")
+								$curDyn = $rk.GetValue('TcpDynamicPorts', "")
+								if ($curPort -ne $tcpPort -or $curDyn -ne "")
 								{
-									Write_Log "TCP port already set to $tcpPort at $ipAllPath." "gray"
-								}
-								else
-								{
-									$regKey.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
-									$regKey.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
-									Write_Log "Registry port set to $tcpPort at $ipAllPath." "green"
+									$rk.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
+									$rk.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
+									Write_Log "Registry port set to $tcpPort at $p." "green"
 									$needsRestart = $true
 								}
-								$regKey.Close()
-								break
+								else { Write_Log "TCP port already set to $tcpPort at $p." "gray" }
+								$rk.Close(); break
 							}
 						}
-						# --- Named Pipes ---
-						$npBasePaths = @(
+						
+						# Named Pipes
+						$npPaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np",
 							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np"
 						)
-						foreach ($npBasePath in $npBasePaths)
+						foreach ($p in $npPaths)
 						{
-							$regKey = $reg.OpenSubKey($npBasePath, $true)
-							if ($regKey)
+							$rk = $reg.OpenSubKey($p, $true)
+							if ($rk)
 							{
-								$npEnabled = $regKey.GetValue('Enabled', 0)
-								if ($npEnabled -eq 1)
+								if ($rk.GetValue('Enabled', 0) -ne 1)
 								{
-									Write_Log "Named Pipes already enabled at $npBasePath." "gray"
-								}
-								else
-								{
-									$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-									Write_Log "Named Pipes protocol enabled at $npBasePath." "green"
+									$rk.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+									Write_Log "Named Pipes protocol enabled at $p." "green"
 									$needsRestart = $true
 								}
-								$regKey.Close()
-								break
+								else { Write_Log "Named Pipes already enabled at $p." "gray" }
+								$rk.Close(); break
 							}
 						}
-						# --- Shared Memory ---
-						$smBasePaths = @(
+						
+						# Shared Memory
+						$smPaths = @(
 							"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm",
 							"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm"
 						)
-						foreach ($smBasePath in $smBasePaths)
+						foreach ($p in $smPaths)
 						{
-							$regKey = $reg.OpenSubKey($smBasePath, $true)
-							if ($regKey)
+							$rk = $reg.OpenSubKey($p, $true)
+							if ($rk)
 							{
-								$smEnabled = $regKey.GetValue('Enabled', 0)
-								if ($smEnabled -eq 1)
+								if ($rk.GetValue('Enabled', 0) -ne 1)
 								{
-									Write_Log "Shared Memory already enabled at $smBasePath." "gray"
-								}
-								else
-								{
-									$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-									Write_Log "Shared Memory protocol enabled at $smBasePath." "green"
+									$rk.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+									Write_Log "Shared Memory protocol enabled at $p." "green"
 									$needsRestart = $true
 								}
-								$regKey.Close()
-								break
+								else { Write_Log "Shared Memory already enabled at $p." "gray" }
+								$rk.Close(); break
 							}
 						}
-						# --- Service restart if needed ---
+						
+						# Service restart if needed
 						if ($needsRestart)
 						{
 							$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
@@ -12264,7 +12308,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						}
 						else
 						{
-							Write_Log "No protocol or auth changes required for $instanceName on $machine. No restart needed." "green"
+							Write_Log "No protocol/auth changes for $instanceName on $machine. No restart needed." "green"
 						}
 					}
 					$reg.Close()
@@ -12275,16 +12319,15 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						Write_Log "Restart All Programs sent to $machine (Lane $lane) after protocol update." "green"
 					}
 					
-					# --- Test actual protocol ---
+					# Detect protocol
 					$protocol = "File"
 					try
 					{
 						$tcpClient = New-Object System.Net.Sockets.TcpClient
-						$connectTask = $tcpClient.ConnectAsync($machine, 1433)
-						if ($connectTask.Wait(600) -and $tcpClient.Connected)
+						$connectTask = $tcpClient.ConnectAsync($machine, [int]$tcpPort)
+						if ($connectTask.Wait(800) -and $tcpClient.Connected)
 						{
-							$tcpClient.Close()
-							$protocol = "TCP"
+							$tcpClient.Close(); $protocol = "TCP"
 						}
 						else
 						{
@@ -12292,7 +12335,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							{
 								Import-Module SqlServer -ErrorAction Stop
 								$npConn = "Server=$machine;Database=master;Integrated Security=True;Network Library=dbnmpntw"
-								Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 1 -ErrorAction Stop | Out-Null
+								Invoke-Sqlcmd -ConnectionString $npConn -Query "SELECT 1" -QueryTimeout 2 -ErrorAction Stop | Out-Null
 								$protocol = "Named Pipes"
 							}
 							catch { }
@@ -12303,16 +12346,10 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $lane }
 					if ($null -eq $script:ProtocolResults -or $script:ProtocolResults -isnot [System.Collections.IEnumerable]) { $script:ProtocolResults = @() }
 					$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
-					# === Update protocol result file for this lane ===
+					
+					# Persist to file
 					$protocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
 					$laneStr = $lane.ToString().PadLeft(3, '0')
-					# Remove previous from in-memory variable
-					$script:LaneProtocols[$lane] = $protocol
-					$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $lane }
-					if ($null -eq $script:ProtocolResults -or $script:ProtocolResults -isnot [System.Collections.IEnumerable]) { $script:ProtocolResults = @() }
-					$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
-					
-					# Write out to file (remove any prior, add new, sort)
 					if (-not (Test-Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile))))
 					{
 						New-Item -Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)) -ItemType Directory -Force | Out-Null
@@ -12326,13 +12363,89 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					{
 						$allLines = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' }
 					}
-					# Remove previous for this lane
 					$allLines = $allLines | Where-Object { -not ($_ -match "^\s*0*${laneStr}\s*,") }
 					$allLines += "$laneStr,$protocol"
 					$sortedLines = $allLines | Sort-Object { ($_ -split ',')[0] -as [int] }
 					[System.IO.File]::WriteAllLines($protocolResultsFile, $sortedLines, [System.Text.Encoding]::UTF8)
 					Write_Log "Protocol detected for $machine (Lane $lane): $protocol" "magenta"
+					
+					# Create/Update Linked Server named as the MACHINE, if requested and we can SQLCMD
+					if ($CreateLinkedServers -and $canSqlCmd -and $protocol -ne 'File')
+					{
+						$providers = @('MSOLEDBSQL', 'SQLNCLI11', 'SQLNCLI', 'SQLOLEDB')
+						$datasrc = "tcp:$machine,$tcpPort"
+						$linkName = $machine # <-- linked server NAME equals machine name
+						
+						$created = $false
+						foreach ($prov in $providers)
+						{
+							try
+							{
+								$tsql = @"
+DECLARE @exists bit = CASE WHEN EXISTS(SELECT 1 FROM sys.servers WHERE name = N'$linkName') THEN 1 ELSE 0 END;
+
+IF @exists = 1
+BEGIN
+    DECLARE @curProv sysname = (SELECT provider FROM sys.servers WHERE name = N'$linkName');
+    DECLARE @curDS   nvarchar(4000) = (SELECT data_source FROM sys.servers WHERE name = N'$linkName');
+    IF (ISNULL(@curProv,N'') <> N'$prov') OR (ISNULL(@curDS,N'') <> N'$datasrc')
+    BEGIN
+        EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
+        SET @exists = 0;
+    END
+END
+
+IF @exists = 0
+BEGIN
+    EXEC master.dbo.sp_addlinkedserver
+        @server    = N'$linkName',
+        @srvproduct= N'',
+        @provider  = N'$prov',
+        @datasrc   = N'$datasrc';
+END
+
+-- Options (idempotent)
+EXEC master.dbo.sp_serveroption N'$linkName', N'data access',         N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'collation compatible', N'false';
+EXEC master.dbo.sp_serveroption N'$linkName', N'use remote collation', N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'rpc out',              N'true';
+
+-- Default mapping: use caller's security context
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.linked_logins ll
+    JOIN sys.servers s ON s.server_id = ll.server_id
+    WHERE s.name = N'$linkName'
+)
+BEGIN
+    EXEC master.dbo.sp_addlinkedsrvlogin @rmtsrvname=N'$linkName', @useself='TRUE';
+END
+"@
+								Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query $tsql -QueryTimeout 30 -ErrorAction Stop | Out-Null
+								
+								# Smoke test (may fail if delegation not allowed; not fatal)
+								try
+								{
+									Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query "SELECT TOP 1 name FROM [$linkName].master.sys.databases" -QueryTimeout 10 -ErrorAction Stop | Out-Null
+									Write_Log "Linked Server [$linkName] → $datasrc ($prov) created and tested OK." "green"
+								}
+								catch
+								{
+									Write_Log "Linked Server [$linkName] created with provider '$prov', but test query failed (likely delegation). Add explicit SQL login mapping if needed." "yellow"
+								}
+								$created = $true; break
+							}
+							catch
+							{
+								Write_Log "Provider '$prov' failed creating Linked Server [$linkName] → $datasrc. Trying next provider..." "gray"
+							}
+						}
+						if (-not $created)
+						{
+							Write_Log "All provider attempts failed creating Linked Server [$linkName] → $datasrc." "red"
+						}
 					}
+				}
 			}
 			catch
 			{
@@ -12343,7 +12456,8 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 			}
 		}
 		else
-		{			# Multi-lane: job logic
+		{
+			# Multi-lane: do enablement in jobs; we'll create linked servers on the main thread after
 			$job = Start-Job -ArgumentList $machine, $lane, $StoreNumber, $tcpPort -ScriptBlock {
 				param ($machine,
 					$lane,
@@ -12351,6 +12465,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$tcpPort)
 				$output = @()
 				$laneNeedsRestart = $false
+				$protocol = "File"
 				try
 				{
 					$output += @{ Text = "`r`n--- Processing Machine: $machine (Store $StoreNumber, Lane $lane) ---"; Color = "blue" }
@@ -12358,6 +12473,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					$null = sc.exe "\\$machine" config RemoteRegistry start= demand
 					$null = sc.exe "\\$machine" start RemoteRegistry
 					$reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $machine)
+					
 					$instanceRootPaths = @(
 						"SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL",
 						"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL"
@@ -12371,10 +12487,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							foreach ($name in $instKey.GetValueNames())
 							{
 								$id = $instKey.GetValue($name)
-								if ($id -and !$allInstances.ContainsKey($name))
-								{
-									$allInstances[$name] = $id
-								}
+								if ($id -and -not $allInstances.ContainsKey($name)) { $allInstances[$name] = $id }
 							}
 							$instKey.Close()
 						}
@@ -12392,7 +12505,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							$output += @{ Text = "Processing SQL Instance: $instanceName (ID: $instanceID)"; Color = "blue" }
 							$needsRestart = $false
 							
-							# --- Mixed Mode ---
+							# Mixed Mode
 							$authPaths = @(
 								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer",
 								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer"
@@ -12415,118 +12528,99 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 										$output += @{ Text = "Mixed Mode Authentication already enabled at $authPath."; Color = "gray" }
 									}
 									$authKey.Close()
-									$authSet = $true
-									break
+									$authSet = $true; break
 								}
 							}
-							if (-not $authSet)
-							{
-								$output += @{ Text = "LoginMode registry path not found for $instanceName."; Color = "yellow" }
-							}
+							if (-not $authSet) { $output += @{ Text = "LoginMode registry path not found for $instanceName."; Color = "yellow" } }
 							
-							# --- TCP/IP Protocol ---
-							$basePaths = @(
+							# TCP/IP
+							$tcpPaths = @(
 								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
 								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp"
 							)
-							foreach ($basePath in $basePaths)
+							foreach ($p in $tcpPaths)
 							{
-								$regKey = $reg.OpenSubKey($basePath, $true)
-								if ($regKey)
+								$rk = $reg.OpenSubKey($p, $true)
+								if ($rk)
 								{
-									$tcpEnabled = $regKey.GetValue('Enabled', 0)
-									if ($tcpEnabled -eq 1)
+									if ($rk.GetValue('Enabled', 0) -ne 1)
 									{
-										$output += @{ Text = "TCP/IP already enabled at $basePath."; Color = "gray" }
-									}
-									else
-									{
-										$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-										$output += @{ Text = "TCP/IP protocol enabled at $basePath."; Color = "green" }
+										$rk.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+										$output += @{ Text = "TCP/IP protocol enabled at $p."; Color = "green" }
 										$needsRestart = $true
 									}
-									$regKey.Close()
-									break
+									else { $output += @{ Text = "TCP/IP already enabled at $p."; Color = "gray" } }
+									$rk.Close(); break
 								}
 							}
-							# --- TCP Port ---
+							
+							# Port
 							$ipAllPaths = @(
 								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll",
 								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll"
 							)
-							foreach ($ipAllPath in $ipAllPaths)
+							foreach ($p in $ipAllPaths)
 							{
-								$regKey = $reg.OpenSubKey($ipAllPath, $true)
-								if ($regKey)
+								$rk = $reg.OpenSubKey($p, $true)
+								if ($rk)
 								{
-									$curPort = $regKey.GetValue('TcpPort', "")
-									$curDyn = $regKey.GetValue('TcpDynamicPorts', "")
-									if ($curPort -eq $tcpPort -and $curDyn -eq "")
+									$curPort = $rk.GetValue('TcpPort', "")
+									$curDyn = $rk.GetValue('TcpDynamicPorts', "")
+									if ($curPort -ne $tcpPort -or $curDyn -ne "")
 									{
-										$output += @{ Text = "TCP port already set to $tcpPort at $ipAllPath."; Color = "gray" }
-									}
-									else
-									{
-										$regKey.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
-										$regKey.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
-										$output += @{ Text = "Registry port set to $tcpPort at $ipAllPath."; Color = "green" }
+										$rk.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
+										$rk.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
+										$output += @{ Text = "Registry port set to $tcpPort at $p."; Color = "green" }
 										$needsRestart = $true
 									}
-									$regKey.Close()
-									break
+									else { $output += @{ Text = "TCP port already set to $tcpPort at $p."; Color = "gray" } }
+									$rk.Close(); break
 								}
 							}
-							# --- Named Pipes ---
-							$npBasePaths = @(
+							
+							# Named Pipes
+							$npPaths = @(
 								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np",
 								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np"
 							)
-							foreach ($npBasePath in $npBasePaths)
+							foreach ($p in $npPaths)
 							{
-								$regKey = $reg.OpenSubKey($npBasePath, $true)
-								if ($regKey)
+								$rk = $reg.OpenSubKey($p, $true)
+								if ($rk)
 								{
-									$npEnabled = $regKey.GetValue('Enabled', 0)
-									if ($npEnabled -eq 1)
+									if ($rk.GetValue('Enabled', 0) -ne 1)
 									{
-										$output += @{ Text = "Named Pipes already enabled at $npBasePath."; Color = "gray" }
-									}
-									else
-									{
-										$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-										$output += @{ Text = "Named Pipes protocol enabled at $npBasePath."; Color = "green" }
+										$rk.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+										$output += @{ Text = "Named Pipes protocol enabled at $p."; Color = "green" }
 										$needsRestart = $true
 									}
-									$regKey.Close()
-									break
+									else { $output += @{ Text = "Named Pipes already enabled at $p."; Color = "gray" } }
+									$rk.Close(); break
 								}
 							}
-							# --- Shared Memory ---
-							$smBasePaths = @(
+							
+							# Shared Memory
+							$smPaths = @(
 								"SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm",
 								"SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm"
 							)
-							foreach ($smBasePath in $smBasePaths)
+							foreach ($p in $smPaths)
 							{
-								$regKey = $reg.OpenSubKey($smBasePath, $true)
-								if ($regKey)
+								$rk = $reg.OpenSubKey($p, $true)
+								if ($rk)
 								{
-									$smEnabled = $regKey.GetValue('Enabled', 0)
-									if ($smEnabled -eq 1)
+									if ($rk.GetValue('Enabled', 0) -ne 1)
 									{
-										$output += @{ Text = "Shared Memory already enabled at $smBasePath."; Color = "gray" }
-									}
-									else
-									{
-										$regKey.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-										$output += @{ Text = "Shared Memory protocol enabled at $smBasePath."; Color = "green" }
+										$rk.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+										$output += @{ Text = "Shared Memory protocol enabled at $p."; Color = "green" }
 										$needsRestart = $true
 									}
-									$regKey.Close()
-									break
+									else { $output += @{ Text = "Shared Memory already enabled at $p."; Color = "gray" } }
+									$rk.Close(); break
 								}
 							}
-							# --- Service restart if needed ---
+							
+							# Restart if needed
 							if ($needsRestart)
 							{
 								$svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' }
@@ -12541,19 +12635,18 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 							}
 							else
 							{
-								$output += @{ Text = "No protocol or auth changes required for $instanceName on $machine. No restart needed."; Color = "green" }
+								$output += @{ Text = "No protocol/auth changes for $instanceName on $machine. No restart needed."; Color = "green" }
 							}
 						}
 						$reg.Close()
 					}
 					
-					# --- Test actual protocol ---
-					$protocol = "File"
+					# Detect protocol
 					try
 					{
 						$tcpClient = New-Object System.Net.Sockets.TcpClient
-						$connectTask = $tcpClient.ConnectAsync($machine, 1433)
-						if ($connectTask.Wait(600) -and $tcpClient.Connected)
+						$connectTask = $tcpClient.ConnectAsync($machine, [int]$tcpPort)
+						if ($connectTask.Wait(800) -and $tcpClient.Connected)
 						{
 							$tcpClient.Close()
 							$protocol = "TCP"
@@ -12571,7 +12664,6 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 						}
 					}
 					catch { }
-					$output += @{ Text = "Protocol detected for $machine (Lane $lane): $protocol"; Color = "magenta" }
 				}
 				catch
 				{
@@ -12582,6 +12674,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 					Output    = $output
 					Protocol  = $protocol
 					Lane	  = $lane
+					Machine   = $machine
 					Restarted = $laneNeedsRestart
 				}
 			}
@@ -12589,61 +12682,124 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 		}
 	}
 	
+	# Collate multi-lane results, create Linked Servers (named as machine) here
 	if (-not $isSingle)
 	{
 		$laneOrder = $lanes | Sort-Object
-		$jobMap = @{ }
-		foreach ($j in $jobs) { $jobMap[$j.Lane] = $j.Job }
+		$jobMap = @{ }; foreach ($j in $jobs) { $jobMap[$j.Lane] = $j.Job }
 		$restartedLanes = @()
+		
 		foreach ($lane in $laneOrder)
 		{
 			$job = $jobMap[$lane]
 			Wait-Job $job | Out-Null
 			$result = Receive-Job $job
-			# === Update protocol result file for this lane ===
+			Remove-Job $job
+			
+			foreach ($line in $result.Output) { Write_Log $line.Text $line.Color }
+			
+			$script:LaneProtocols[$result.Lane] = $result.Protocol
+			$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $result.Lane }
+			$script:ProtocolResults += [PSCustomObject]@{ Lane = $result.Lane; Protocol = $result.Protocol }
+			if ($result.Restarted) { $restartedLanes += $lane }
+			
+			# Persist to file
 			$protocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
 			$laneStr = $result.Lane.ToString().PadLeft(3, '0')
 			$protocol = $result.Protocol
-			
-			# Ensure the directory exists
 			if (-not (Test-Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile))))
 			{
 				New-Item -Path ([System.IO.Path]::GetDirectoryName($protocolResultsFile)) -ItemType Directory -Force | Out-Null
 			}
-			# Ensure the file exists
-			if (-not (Test-Path $protocolResultsFile))
-			{
-				New-Item -Path $protocolResultsFile -ItemType File -Force | Out-Null
-			}
-			# Read all existing lines
+			if (-not (Test-Path $protocolResultsFile)) { New-Item -Path $protocolResultsFile -ItemType File -Force | Out-Null }
 			$allLines = @()
 			if (Test-Path $protocolResultsFile)
 			{
 				$allLines = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' }
 			}
-			# Remove any old record for this lane
 			$allLines = $allLines | Where-Object { -not ($_ -match "^\s*0*${laneStr}\s*,") }
-			# Add the new record
 			$allLines += "$laneStr,$protocol"
-			# Sort numerically by lane
 			$sortedLines = $allLines | Sort-Object { ($_ -split ',')[0] -as [int] }
 			[System.IO.File]::WriteAllLines($protocolResultsFile, $sortedLines, [System.Text.Encoding]::UTF8)
-			Remove-Job $job
-			foreach ($line in $result.Output) { Write_Log $line.Text $line.Color }
-			$script:LaneProtocols[$result.Lane] = $result.Protocol
-			$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $result.Lane }
-			$script:ProtocolResults += [PSCustomObject]@{ Lane = $result.Lane; Protocol = $result.Protocol }
-			if ($result.Restarted)
+			
+			# Create/Update Linked Server named as the MACHINE
+			if ($CreateLinkedServers -and $canSqlCmd -and $protocol -ne 'File')
 			{
-				$restartedLanes += $lane
+				$machine = $result.Machine
+				$linkName = $machine # <-- NAME equals machine
+				$datasrc = "tcp:$machine,$tcpPort"
+				$providers = @('MSOLEDBSQL', 'SQLNCLI11', 'SQLNCLI', 'SQLOLEDB')
+				$created = $false
+				foreach ($prov in $providers)
+				{
+					try
+					{
+						$tsql = @"
+DECLARE @exists bit = CASE WHEN EXISTS(SELECT 1 FROM sys.servers WHERE name = N'$linkName') THEN 1 ELSE 0 END;
+
+IF @exists = 1
+BEGIN
+    DECLARE @curProv sysname = (SELECT provider FROM sys.servers WHERE name = N'$linkName');
+    DECLARE @curDS   nvarchar(4000) = (SELECT data_source FROM sys.servers WHERE name = N'$linkName');
+    IF (ISNULL(@curProv,N'') <> N'$prov') OR (ISNULL(@curDS,N'') <> N'$datasrc')
+    BEGIN
+        EXEC master.dbo.sp_dropserver @server=N'$linkName', @droplogins='droplogins';
+        SET @exists = 0;
+    END
+END
+
+IF @exists = 0
+BEGIN
+    EXEC master.dbo.sp_addlinkedserver
+        @server    = N'$linkName',
+        @srvproduct= N'',
+        @provider  = N'$prov',
+        @datasrc   = N'$datasrc';
+END
+
+EXEC master.dbo.sp_serveroption N'$linkName', N'data access',         N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'collation compatible', N'false';
+EXEC master.dbo.sp_serveroption N'$linkName', N'use remote collation', N'true';
+EXEC master.dbo.sp_serveroption N'$linkName', N'rpc out',              N'true';
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.linked_logins ll
+    JOIN sys.servers s ON s.server_id = ll.server_id
+    WHERE s.name = N'$linkName'
+)
+BEGIN
+    EXEC master.dbo.sp_addlinkedsrvlogin @rmtsrvname=N'$linkName', @useself='TRUE';
+END
+"@
+						Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query $tsql -QueryTimeout 30 -ErrorAction Stop | Out-Null
+						try
+						{
+							Invoke-Sqlcmd -ServerInstance $localInstance -Database master -Query "SELECT TOP 1 name FROM [$linkName].master.sys.databases" -QueryTimeout 10 -ErrorAction Stop | Out-Null
+							Write_Log "Linked Server [$linkName] → $datasrc ($prov) created and tested OK." "green"
+						}
+						catch
+						{
+							Write_Log "Linked Server [$linkName] created with provider '$prov', but test query failed (possibly no delegation). Map a SQL login if needed." "yellow"
+						}
+						$created = $true; break
+					}
+					catch
+					{
+						Write_Log "Provider '$prov' failed creating Linked Server [$linkName] → $datasrc. Trying next provider..." "gray"
+					}
+				}
+				if (-not $created) { Write_Log "All provider attempts failed creating Linked Server [$linkName] → $datasrc." "red" }
 			}
 		}
+		
 		if ($restartedLanes.Count -gt 0)
 		{
 			Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers $restartedLanes -Silent
 			Write_Log "Restart All Programs sent to restarted lanes: $($restartedLanes -join ', ')" "green"
 		}
 	}
+	
 	Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Function Completed ====================" "blue"
 }
 
@@ -16983,8 +17139,90 @@ if (-not $form)
 	$form.BackColor = [System.Drawing.SystemColors]::ControlLight # Light gray background
 	$form.Font = New-Object System.Drawing.Font("Segoe UI", 9) # Modern font
 	
-	# Form icon (replace with your icon path if available)
-	# $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon("C:\Path\To\Icon.ico")
+	# -------------------- Idle Close (configurable) + Busy-Safe Watchdog --------------------
+	$script:IdleMinutesAllowed = 15 # << change this to allow more/less idle time
+	$script:LastActivity = Get-Date
+	$script:SuppressClosePrompt = $false
+	$form.KeyPreview = $true # ensure form sees keystrokes even when a control has focus
+	
+	# Function to detect background work so we don't close mid-operations
+	$script:IsBusyCheck = {
+		try
+		{
+			if ($script:LaneProtocolJobs)
+			{
+				foreach ($kv in @($script:LaneProtocolJobs.GetEnumerator()))
+				{
+					$st = $kv.Value
+					if ($st -and $st.Handle -and -not $st.Handle.IsCompleted) { return $true }
+				}
+			}
+		}
+		catch { }
+		try
+		{
+			if ($script:LaneProtocolPool -and
+				($script:LaneProtocolPool.GetAvailableRunspaces() -lt $script:LaneProtocolPool.MaxRunspaces)) { return $true }
+		}
+		catch { }
+		try
+		{
+			if ($script:ScaleCredTasks)
+			{
+				foreach ($k in @($script:ScaleCredTasks.Keys))
+				{
+					$st = $script:ScaleCredTasks[$k]
+					if ($st -and $st.Handle -and -not $st.Handle.IsCompleted) { return $true }
+				}
+			}
+		}
+		catch { }
+		try
+		{
+			if ($ClearXEJob -and ($ClearXEJob.State -eq 'Running')) { return $true }
+		}
+		catch { }
+		try
+		{
+			if (Get-Job -State Running -ErrorAction SilentlyContinue) { return $true }
+		}
+		catch { }
+		return $false
+	}
+	
+	# Idle watchdog (ticks on UI thread; won't fire while UI thread is busy)
+	$script:IdleTimer = New-Object System.Windows.Forms.Timer
+	$script:IdleTimer.Interval = 30000 # 30 seconds
+	$script:IdleTimer.Add_Tick({
+			try
+			{
+				$minsIdle = (New-TimeSpan -Start $script:LastActivity -End (Get-Date)).TotalMinutes
+				if ($minsIdle -ge $script:IdleMinutesAllowed)
+				{
+					if (-not (& $script:IsBusyCheck))
+					{
+						if (Get-Command Write_Log -ErrorAction SilentlyContinue)
+						{
+							Write_Log "Idle for $([math]::Round($minsIdle, 1)) minute(s) - closing." "yellow"
+						}
+						$script:SuppressClosePrompt = $true
+						$form.Close()
+					}
+					else
+					{
+						# Work detected; reset idle window so we don't keep testing in a tight loop
+						$script:LastActivity = Get-Date
+					}
+				}
+			}
+			catch { }
+		})
+	$script:IdleTimer.Start()
+	
+	# Form-level activity hooks
+	$form.Add_KeyDown({ $script:LastActivity = Get-Date })
+	$form.Add_MouseMove({ $script:LastActivity = Get-Date })
+	# ----------------------------------------------------------------------------------------
 	
 	# Banner Label
 	$bannerLabel = New-Object System.Windows.Forms.Label
@@ -16996,19 +17234,36 @@ if (-not $form)
 	
 	# ========================= Form Closing (X) =========================
 	$form.add_FormClosing({
-			$confirmResult = [System.Windows.Forms.MessageBox]::Show(
-				"Are you sure you want to exit?",
-				"Confirm Exit",
-				[System.Windows.Forms.MessageBoxButtons]::YesNo,
-				[System.Windows.Forms.MessageBoxIcon]::Question
-			)
-			if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes)
+			# Skip confirm if we're closing due to idle timeout
+			if ($script:SuppressClosePrompt)
 			{
-				$_.Cancel = $true
-				return
+				$script:SuppressClosePrompt = $false
+			}
+			else
+			{
+				$confirmResult = [System.Windows.Forms.MessageBox]::Show(
+					"Are you sure you want to exit?",
+					"Confirm Exit",
+					[System.Windows.Forms.MessageBoxButtons]::YesNo,
+					[System.Windows.Forms.MessageBoxIcon]::Question
+				)
+				if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes)
+				{
+					$_.Cancel = $true
+					return
+				}
 			}
 			
 			# ---- Timers ----
+			try { if ($script:IdleTimer) { try { $script:IdleTimer.Stop() }
+					catch { }; try { $script:IdleTimer.Dispose() }
+					catch { }; $script:IdleTimer = $null } }
+			catch { }
+			try { if ($refreshTimer) { try { $refreshTimer.Stop() }
+					catch { }; try { $refreshTimer.Dispose() }
+					catch { }; $refreshTimer = $null } }
+			catch { }
+			
 			try
 			{
 				if ($script:protocolTimer)
@@ -17369,7 +17624,7 @@ public static class NativeWin {
 				$storeNameLabel.ForeColor = 'Black'
 			}
 		})
-		
+	
 	# Store Number Label
 	$script:storeNumberLabel = New-Object System.Windows.Forms.Label
 	$storeNumberLabel.Text = "Store Number: N/A"
@@ -17487,6 +17742,7 @@ public static class NativeWin {
 	$ServerDBMaintenanceItem = New-Object System.Windows.Forms.ToolStripMenuItem("Server DB Maintenance")
 	$ServerDBMaintenanceItem.ToolTipText = "Runs maintenance on the store server database."
 	$ServerDBMaintenanceItem.Add_Click({
+			$script:LastActivity = Get-Date
 			$confirmation = [System.Windows.Forms.MessageBox]::Show(
 				"Do you want to proceed with the server database maintenance?",
 				"Confirmation",
@@ -17515,6 +17771,7 @@ public static class NativeWin {
 	$ServerScheduleRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Server DB Maintenance")
 	$ServerScheduleRepairItem.ToolTipText = "Schedule a task to run maintenance at the server database."
 	$ServerScheduleRepairItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Schedule_Server_DB_Maintenance -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuServer.Items.Add($ServerScheduleRepairItem)
@@ -17525,6 +17782,7 @@ public static class NativeWin {
 	$ServerScheduleBackupItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Local DB Backup")
 	$ServerScheduleBackupItem.ToolTipText = "Schedule a task to run database backup on the server."
 	$ServerScheduleBackupItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Schedule_LocalDB_Backup
 		})
 	[void]$ContextMenuServer.Items.Add($ServerScheduleBackupItem)
@@ -17535,16 +17793,18 @@ public static class NativeWin {
 	$ServerScheduleStoremanZipBackupItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Storeman ZIP Backup")
 	$ServerScheduleStoremanZipBackupItem.ToolTipText = "Schedule a task to back up the Storeman folder to a weekly ZIP archive."
 	$ServerScheduleStoremanZipBackupItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Schedule_Storeman_Zip_Backup
 		})
 	[void]$ContextMenuServer.Items.Add($ServerScheduleStoremanZipBackupItem)
-		
+	
 	############################################################################
 	# 5) Organize_TBS_SCL_ver520 Menu Item
 	############################################################################
 	$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize_TBS_SCL_ver520")
 	$OrganizeScaleTableItem.ToolTipText = "Organize the Scale SQL table (TBS_SCL_ver520)."
 	$OrganizeScaleTableItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Organize_TBS_SCL_ver520
 		})
 	[void]$ContextMenuServer.Items.Add($OrganizeScaleTableItem)
@@ -17555,6 +17815,7 @@ public static class NativeWin {
 	$ManageSaAccountItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manage SQL 'sa' Account")
 	$ManageSaAccountItem.ToolTipText = "Enable or disable the 'sa' account on the local SQL Server with a predefined password."
 	$ManageSaAccountItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Manage_Sa_Account
 		})
 	[void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
@@ -17565,6 +17826,7 @@ public static class NativeWin {
 	$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
 	$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
 	$RepairWindowsItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Repair_Windows
 		})
 	[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
@@ -17575,6 +17837,7 @@ public static class NativeWin {
 	$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
 	$ConfigureSystemSettingsItem.ToolTipText = "Organize the desktop, set power plan to maximize performance and make sure necessary services are running."
 	$ConfigureSystemSettingsItem.Add_Click({
+			$script:LastActivity = Get-Date
 			$confirmResult = [System.Windows.Forms.MessageBox]::Show(
 				"Warning: Configuring system settings will make major changes. Do you want to continue?",
 				"Confirm Changes",
@@ -17642,6 +17905,7 @@ public static class NativeWin {
 	$LaneDBMaintenanceItem = New-Object System.Windows.Forms.ToolStripMenuItem("Lane DB Maintenance")
 	$LaneDBMaintenanceItem.ToolTipText = "Runs maintenance at the lane(s) databases for the selected lane(s)."
 	$LaneDBMaintenanceItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Process_Lanes -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($LaneDBMaintenanceItem)
@@ -17652,6 +17916,7 @@ public static class NativeWin {
 	$LaneScheduleMaintenanceItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane DB Maintenance")
 	$LaneScheduleMaintenanceItem.ToolTipText = "Schedule a task to run maintenance at the lane/s database."
 	$LaneScheduleMaintenanceItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Schedule_Lane_DB_Maintenance -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($LaneScheduleMaintenanceItem)
@@ -17662,6 +17927,7 @@ public static class NativeWin {
 	$LaneScheduleBackupItem = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule Lane DB Backups")
 	$LaneScheduleBackupItem.ToolTipText = "Schedule a task to run backups of the selected lanes' databases."
 	$LaneScheduleBackupItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Schedule_LaneDB_Backup
 		})
 	[void]$ContextMenuLane.Items.Add($LaneScheduleBackupItem)
@@ -17672,6 +17938,7 @@ public static class NativeWin {
 	$InstallCheckLOCOptionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install/Check LOC Options")
 	$InstallCheckLOCOptionsItem.ToolTipText = "Pick lanes, then pick LOC Options to audit/install/reinstall (with categories & search)."
 	$InstallCheckLOCOptionsItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Install_And_Check_LOC_SMS_Options_On_Lanes -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($InstallCheckLOCOptionsItem)
@@ -17682,6 +17949,7 @@ public static class NativeWin {
 	$RepairLaneDatabasesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Audit/Repair Lane Databases")
 	$RepairLaneDatabasesItem.ToolTipText = "Pick lanes, then choose Audit/Quick/Deep in the next dialog. Uses Startup.ini via Get_All_Lanes_Database_Info."
 	$RepairLaneDatabasesItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Repair_LOC_Databases_On_Lanes -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($RepairLaneDatabasesItem)
@@ -17692,6 +17960,7 @@ public static class NativeWin {
 	$PumpTableToLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Pump Table to Lane")
 	$PumpTableToLaneItem.ToolTipText = "Pump the selected tables to the lane/s databases."
 	$PumpTableToLaneItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Pump_Tables -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
@@ -17702,6 +17971,7 @@ public static class NativeWin {
 	$UpdateLaneConfigItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Lane Configuration")
 	$UpdateLaneConfigItem.ToolTipText = "Update the configuration files for the lanes. Fixes connectivity errors and mistakes made during lane ghosting."
 	$UpdateLaneConfigItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Update_Lane_Config -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($UpdateLaneConfigItem)
@@ -17712,6 +17982,7 @@ public static class NativeWin {
 	$CloseOpenTransItem = New-Object System.Windows.Forms.ToolStripMenuItem("Close Open Transactions")
 	$CloseOpenTransItem.ToolTipText = "Close any open transactions at the lane/s."
 	$CloseOpenTransItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Close_Open_Transactions -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
@@ -17722,6 +17993,7 @@ public static class NativeWin {
 	$OpenLaneCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Lane C$ Share(s)")
 	$OpenLaneCShareItem.ToolTipText = "Select lanes and open their administrative C$ shares in Explorer."
 	$OpenLaneCShareItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Open_Selected_Node_C_Path -StoreNumber $StoreNumber -NodeTypes Lane
 		})
 	[void]$ContextMenuLane.Items.Add($OpenLaneCShareItem)
@@ -17732,6 +18004,7 @@ public static class NativeWin {
 	$DeleteDBSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Delete DBS")
 	$DeleteDBSItem.ToolTipText = "Delete the DBS files (*.txt, *.dwr, if selected *.sus as well) at the lane."
 	$DeleteDBSItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Delete_DBS -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
@@ -17742,6 +18015,7 @@ public static class NativeWin {
 	$RefreshPinPadFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh PIN Pad Files")
 	$RefreshPinPadFilesItem.ToolTipText = "Refresh the PIN pad files for the lane/s."
 	$RefreshPinPadFilesItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Refresh_PIN_Pad_Files -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
@@ -17752,6 +18026,7 @@ public static class NativeWin {
 	$DrawerControlItem = New-Object System.Windows.Forms.ToolStripMenuItem("Drawer Control")
 	$DrawerControlItem.ToolTipText = "Set the Drawer Control for a lane for testing"
 	$DrawerControlItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Drawer_Control -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($DrawerControlItem)
@@ -17762,6 +18037,7 @@ public static class NativeWin {
 	$RefreshDatabaseItem = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh Database")
 	$RefreshDatabaseItem.ToolTipText = "Refresh the database at the lane/s"
 	$RefreshDatabaseItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Refresh_Database -StoreNumber $StoreNumber
 		})
 	[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
@@ -17772,6 +18048,7 @@ public static class NativeWin {
 	$SendRestartCommandItem = New-Object System.Windows.Forms.ToolStripMenuItem("Send Restart All Programs")
 	$SendRestartCommandItem.ToolTipText = "Send restart all programs to selected lane(s) for the store."
 	$SendRestartCommandItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Send_Restart_All_Programs -StoreNumber "$StoreNumber"
 		})
 	[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
@@ -17782,7 +18059,8 @@ public static class NativeWin {
 	$EnableSQLProtocolsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Enable SQL Protocols")
 	$EnableSQLProtocolsItem.ToolTipText = "Enable TCP/IP, Named Pipes, and set static port for SQL Server on selected lane(s)."
 	$EnableSQLProtocolsItem.Add_Click({
-			Enable_SQL_Protocols_On_Selected_Lanes -StoreNumber $StoreNumber
+			$script:LastActivity = Get-Date
+			Enable_SQL_Protocols_On_Selected_Lanes -StoreNumber $StoreNumber -CreateLinkedServers
 		})
 	[void]$ContextMenuLane.Items.Add($EnableSQLProtocolsItem)
 	
@@ -17792,6 +18070,7 @@ public static class NativeWin {
 	$SetLaneTimeFromLocalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Set/Schedule Time on Lanes")
 	$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize or schedule time sync for selected lanes."
 	$SetLaneTimeFromLocalItem.Add_Click({
+			$script:LastActivity = Get-Date
 			# Prompt for mode: one-time or schedule
 			$modeResult = [System.Windows.Forms.MessageBox]::Show(
 				"Do you want to schedule recurring sync? (Yes for schedule, No for one-time)",
@@ -17810,6 +18089,7 @@ public static class NativeWin {
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
 	$RebootLaneItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Reboot_Nodes -StoreNumber "$StoreNumber" -NodeTypes Lane
 		})
 	[void]$ContextMenuLane.Items.Add($RebootLaneItem)
@@ -17838,13 +18118,14 @@ public static class NativeWin {
 	$ScaleToolsButton.Size = New-Object System.Drawing.Size(200, 50)
 	$ContextMenuScale = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuScale.ShowItemToolTips = $true
-		
+	
 	############################################################################
 	# 1) Repair BMS Service
 	############################################################################
 	$repairBMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair BMS Service")
 	$repairBMSItem.ToolTipText = "Repairs the BMS service for scale deployment."
 	$repairBMSItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Repair_BMS
 		})
 	[void]$ContextMenuScale.Items.Add($repairBMSItem)
@@ -17855,6 +18136,7 @@ public static class NativeWin {
 	$Reboot_ScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Scales")
 	$Reboot_ScalesItem.ToolTipText = "Reboot Scale/s."
 	$Reboot_ScalesItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Reboot_Nodes -StoreNumber "$StoreNumber" -NodeTypes Scale
 		})
 	[void]$ContextMenuScale.Items.Add($Reboot_ScalesItem)
@@ -17865,6 +18147,7 @@ public static class NativeWin {
 	$OpenScaleCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Scale C$ Share(s)")
 	$OpenScaleCShareItem.ToolTipText = "Select scales and open their C$ administrative shares as 'bizuser' (bizerba/biyerba)."
 	$OpenScaleCShareItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Open_Selected_Node_C_Path -StoreNumber $StoreNumber -NodeTypes Scale
 		})
 	[void]$ContextMenuScale.Items.Add($OpenScaleCShareItem)
@@ -17875,16 +18158,18 @@ public static class NativeWin {
 	$DeployScaleCurrencyFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Deploy Scale Currency Files")
 	$DeployScaleCurrencyFilesItem.ToolTipText = "Push currency-configured price files (.txt, .properties) to selected scales (Bizerba only)."
 	$DeployScaleCurrencyFilesItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Deploy_Scale_Currency_Files
 		})
 	[void]$ContextMenuScale.Items.Add($DeployScaleCurrencyFilesItem)
-		
+	
 	############################################################################
 	# 5) Update Scales Specials
 	############################################################################
 	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
 	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
 	$UpdateScalesSpecialsItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Update_Scales_Specials_Interactive
 		})
 	[void]$ContextMenuScale.Items.Add($UpdateScalesSpecialsItem)
@@ -17895,6 +18180,7 @@ public static class NativeWin {
 	$UpdateScaleConfigAndDBItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scale Config && DB (F272 Upsert)")
 	$UpdateScaleConfigAndDBItem.ToolTipText = "Updates ScaleCommApp configs and upserts F272 in SCL_TAB for POS_TAB F82=1 in item range."
 	$UpdateScaleConfigAndDBItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Update_ScaleConfig_And_DB
 		})
 	[void]$ContextMenuScale.Items.Add($UpdateScaleConfigAndDBItem)
@@ -17905,6 +18191,7 @@ public static class NativeWin {
 	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove duplicate files from (toBizerba)")
 	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in (toBizerba). Run now or schedule as SYSTEM."
 	$ScheduleRemoveDupesItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Remove_Duplicate_Files_From_toBizerba
 		})
 	[void]$ContextMenuScale.Items.Add($ScheduleRemoveDupesItem)
@@ -17940,6 +18227,7 @@ public static class NativeWin {
 	$activateItem = New-Object System.Windows.Forms.ToolStripMenuItem("Alex_C.T")
 	$activateItem.ToolTipText = "Activate Windows using Alex_C.T's method."
 	$activateItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Invoke_Secure_Script
 		})
 	[void]$contextMenuGeneral.Items.Add($activateItem)
@@ -17950,6 +18238,7 @@ public static class NativeWin {
 	$rebootItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot System")
 	$rebootItem.ToolTipText = "Reboot the host system immediately."
 	$rebootItem.Add_Click({
+			$script:LastActivity = Get-Date
 			$rebootResult = [System.Windows.Forms.MessageBox]::Show(
 				"Do you want to reboot now?",
 				"Reboot",
@@ -17972,6 +18261,7 @@ public static class NativeWin {
 	$Install_ONE_FUNCTION_Into_SMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install 'DEPLOY_MULTI_FCT' in SMS")
 	$Install_ONE_FUNCTION_Into_SMSItem.ToolTipText = "Updates DEPLOY_SYS.sql and installs DEPLOY_MULTI_FCT.sqm into SMS."
 	$Install_ONE_FUNCTION_Into_SMSItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
 	[void]$contextMenuGeneral.Items.Add($Install_ONE_FUNCTION_Into_SMSItem)
@@ -17982,6 +18272,7 @@ public static class NativeWin {
 	$Copy_Files_Between_NodesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Copy Files Between Nodes")
 	$Copy_Files_Between_NodesItem.ToolTipText = "Copy (storeman) subfolders/files from Server or a Lane to selected lanes."
 	$Copy_Files_Between_NodesItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Copy_Files_Between_Nodes
 		})
 	[void]$contextMenuGeneral.Items.Add($Copy_Files_Between_NodesItem)
@@ -17992,6 +18283,7 @@ public static class NativeWin {
 	$INI_EditorItem = New-Object System.Windows.Forms.ToolStripMenuItem("INI_Editor")
 	$INI_EditorItem.ToolTipText = "Edit \storeman\<relative>\*.ini (default: office\Setup.ini) on Server or a Lane, then optionally copy to other lanes."
 	$INI_EditorItem.Add_Click({
+			$script:LastActivity = Get-Date
 			INI_Editor
 		})
 	[void]$contextMenuGeneral.Items.Add($INI_EditorItem)
@@ -18002,6 +18294,7 @@ public static class NativeWin {
 	$manualRepairItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manual Repair")
 	$manualRepairItem.ToolTipText = "Writes SQL repair scripts to the desktop."
 	$manualRepairItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Write_SQL_Scripts_To_Desktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
 		})
 	[void]$contextMenuGeneral.Items.Add($manualRepairItem)
@@ -18012,16 +18305,18 @@ public static class NativeWin {
 	$fixJournalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Journal")
 	$fixJournalItem.ToolTipText = "Fix journal entries for the specified date."
 	$fixJournalItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Fix_Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
 	[void]$contextMenuGeneral.Items.Add($fixJournalItem)
-		
+	
 	############################################################################
 	# 7) Reboot selected Backoffices
 	############################################################################
 	$RebootBackofficesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Backoffices")
 	$RebootBackofficesItem.ToolTipText = "Reboot the selected Backoffice/s."
 	$RebootBackofficesItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Reboot_Nodes -StoreNumber $StoreNumber -NodeTypes Backoffice
 		})
 	[void]$contextMenuGeneral.Items.Add($RebootBackofficesItem)
@@ -18032,6 +18327,7 @@ public static class NativeWin {
 	$ExportVNCFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export All VNC Files")
 	$ExportVNCFilesItem.ToolTipText = "Generate UltraVNC (.vnc) connection files for all lanes, scales, and backoffices."
 	$ExportVNCFilesItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Export_VNC_Files_For_All_Nodes `
 										   -LaneNumToMachineName $script:FunctionResults['LaneNumToMachineName'] `
 										   -ScaleCodeToIPInfo $script:FunctionResults['ScaleCodeToIPInfo'] `
@@ -18046,6 +18342,7 @@ public static class NativeWin {
 	$ExportMachineHardwareInfoItem = New-Object System.Windows.Forms.ToolStripMenuItem("Export Machines Hardware Info")
 	$ExportMachineHardwareInfoItem.ToolTipText = "Collect and export manufacturer/model for all machines"
 	$ExportMachineHardwareInfoItem.Add_Click({
+			$script:LastActivity = Get-Date
 			$didExport = Get_Remote_Machine_Info
 		})
 	[void]$contextMenuGeneral.Items.Add($ExportMachineHardwareInfoItem)
@@ -18056,6 +18353,7 @@ public static class NativeWin {
 	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
 	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
 	$RemoveArchiveBitItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Remove_ArchiveBit_Interactive
 		})
 	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
@@ -18066,6 +18364,7 @@ public static class NativeWin {
 	$SyncHostsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Sync Host Files")
 	$SyncHostsItem.ToolTipText = "Update the host file with the nodes selected, then copy the local host file to the selected node."
 	$SyncHostsItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Sync_Selected_Node_Hosts -StoreNumber $StoreNumber
 		})
 	[void]$contextMenuGeneral.Items.Add($SyncHostsItem)
@@ -18076,6 +18375,7 @@ public static class NativeWin {
 	$InsertTestItem = New-Object System.Windows.Forms.ToolStripMenuItem("Insert Test Item")
 	$InsertTestItem.ToolTipText = "Inserts or updates a test item (PLU 0020077700000 or alternatives) in the database."
 	$InsertTestItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Insert_Test_Item
 		})
 	[void]$ContextMenuGeneral.Items.Add($InsertTestItem)
@@ -18086,6 +18386,7 @@ public static class NativeWin {
 	$FixDeployCHGItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Deploy_CHG")
 	$FixDeployCHGItem.ToolTipText = "Restores the deploy line to DEPLOY_CHG.sql for scale management."
 	$FixDeployCHGItem.Add_Click({
+			$script:LastActivity = Get-Date
 			Fix_Deploy_CHG
 		})
 	[void]$ContextMenuGeneral.Items.Add($FixDeployCHGItem)
@@ -18099,6 +18400,31 @@ public static class NativeWin {
 		})
 	$toolTip.SetToolTip($GeneralToolsButton, "Click to see some tools created for SMS.")
 	$form.Controls.Add($GeneralToolsButton)
+	
+	# ========================= Global Activity Hooks (controls & menus) =========================
+	$__activityControls = @(
+		$form,
+		$logBox,
+		$ServerToolsButton, $LaneToolsButton, $ScaleToolsButton, $GeneralToolsButton,
+		$storeNameLabel, $NodesBackoffices, $NodesStore, $scalesLabel, $smsVersionLabel, $bannerLabel,
+		$ContextMenuServer, $ContextMenuLane, $ContextMenuScale, $ContextMenuGeneral,
+		$global:ProtocolForm, $global:ProtocolGrid
+	) | Where-Object { $_ }
+	
+	foreach ($__c in $__activityControls)
+	{
+		try
+		{
+			if ($__c -is [System.Windows.Forms.Control])
+			{
+				$__c.Add_MouseMove({ $script:LastActivity = Get-Date })
+				$__c.Add_KeyDown({ $script:LastActivity = Get-Date })
+				$__c.Add_Click({ $script:LastActivity = Get-Date })
+			}
+		}
+		catch { }
+	}
+	# ============================================================================================
 }
 
 
