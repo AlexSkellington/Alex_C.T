@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.4.5"
-$VersionDate = "2025-08-18"
+$VersionNumber = "2.4.6"
+$VersionDate = "2025-08-20"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -7304,266 +7304,311 @@ function Invoke_Secure_Script
 }
 
 # ===================================================================================================
-#                                     FUNCTION: Configure_System_Settings
+#                               FUNCTION: Organize_Desktop_Items
 # ---------------------------------------------------------------------------------------------------
-# Description:
-#   Configures various system settings to optimize performance and organization. This function performs
-#   the following tasks:
-#     1. **Organizes Desktop**:
-#        - Creates an "Unorganized Items" folder (or a custom-named folder) on the Desktop.
-#        - Moves all non-system and non-excluded items from the Desktop into the designated folder.
-#        - Ensures that specified excluded folders (e.g., "Lanes", "Scales", "BackOffices") exist.
+# Purpose:
+#   Moves non-system/non-excluded items from the current user's Desktop into a single folder,
+#   ensuring specified excluded folders exist. Designed to be called independently of other
+#   system tuning steps.
 #
-#     2. **Configures Power Settings**:
-#        - Sets the power plan to High Performance.
-#        - Disables system sleep modes.
-#        - Sets the minimum processor performance to 100%.
-#        - Configures the monitor to turn off after 15 minutes of inactivity.
-#
-#     3. **Configures Services**:
-#        - Sets specified services (e.g., "fdPHost", "FDResPub", "SSDPSRV", "upnphost") to start automatically.
-#        - Starts the services if they are not already running.
-#
-#     4. **Configures Visual Settings**:
-#        - Enables "Show thumbnails instead of icons" in Explorer.
-#        - Enables "Smooth edges of screen fonts" (font smoothing with ClearType).
-#
-# ---------------------------------------------------------------------------------------------------
 # Parameters:
-#   - [string]$UnorganizedFolderName (Optional)
-#     Specifies the name of the folder where unorganized Desktop items will be moved.
-#     Default value: "Unorganized Items"
+#   - UnorganizedFolderName [string]
+#       Target folder name on Desktop where unorganized items will be moved. Default: "Unorganized Items"
+#   - AdditionalExclusions [string[]]
+#       Optional extra file/folder names (case-insensitive) to exclude from moving.
 #
+# Notes:
+#   - Uses Write_Log for consistent logging.
+#   - Skips common system shortcuts and script launchers.
+#   - Does NOT restart Explorer (kept side-effect free).
 # ---------------------------------------------------------------------------------------------------
-# Usage Example:
-#   # Use default folder name
-#   Configure_System_Settings
-#
-#   # Specify a custom folder name for unorganized Desktop items
-#   Configure_System_Settings -UnorganizedFolderName "MyCustomFolder"
-#
-# ---------------------------------------------------------------------------------------------------
-# Prerequisites:
-#   - **Administrator Privileges**:
-#     The script must be run with elevated privileges. If not, it will prompt the user to restart PowerShell as an Administrator.
-#
-#   - **Write_Log Function**:
-#     Ensure that the `Write_Log` function is available in the session for logging actions and statuses.
-#
-#   - **Permissions**:
-#     The user must have the necessary permissions to create folders, modify power settings, and configure services.
-#
-#   - **PowerShell Version**:
-#     Compatible with PowerShell versions that support the cmdlets used in the script (e.g., PowerShell 5.1 or later).
-#
-#   - **Internet Connectivity** (if applicable):
-#     Required if any of the configured services or settings depend on internet access.
-#
-# ===================================================================================================
 
-function Configure_System_Settings
+function Organize_Desktop_Items
 {
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $false)]
-		[string]$UnorganizedFolderName = "Unorganized Items"
+		[string]$UnorganizedFolderName = "Unorganized Items",
+		[Parameter(Mandatory = $false)]
+		[string[]]$AdditionalExclusions
 	)
 	
-	Write_Log "`r`n==================== Starting Configure_System_Settings Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Organize_Desktop_Items ====================`r`n" "blue"
 	
 	try
 	{
-		# ===========================================
-		# 1. Organize Desktop
-		# ===========================================
-		Write_Log "`r`nOrganizing Desktop..." "Blue"
-		
+		# -- Resolve Desktop path
 		$DesktopPath = [Environment]::GetFolderPath("Desktop")
+		
+		# -- Compute the destination folder path
 		$UnorganizedFolder = Join-Path -Path $DesktopPath -ChildPath $UnorganizedFolderName
 		
-		# Define system icons and excluded folders
-		$systemIcons = @("This PC.lnk", "Network.lnk", "Control Panel.lnk", "Recycle Bin.lnk", "User's Files.lnk", "Execute(TBS_Maintenance_Script).bat", "Execute(MiniGhost).bat", "TBS_Maintenance_Script.exe", "MiniGhost.exe", $scriptName)
-		$excludedFolders = @("Lanes", "Scales", "BackOffices", "Unorganized Items")
-		
-		# Create Unorganized Items folder if it doesn't exist
-		$folderPath = Join-Path -Path $DesktopPath -ChildPath "Unorganized Items"
-		if (-not (Test-Path -Path $folderPath))
+		# -- Best-effort current script/launcher name (used for exclusions)
+		#    $scriptName could be defined elsewhere; fall back to the current command name if available
+		$scriptName = if ($MyInvocation -and $MyInvocation.MyCommand -and $MyInvocation.MyCommand.Name)
 		{
-			New-Item -Path $folderPath -ItemType Directory | Out-Null
-			Write_Log "Created folder: $folderPath" "green"
+			$MyInvocation.MyCommand.Name
 		}
 		else
 		{
-			Write_Log "Folder already exists: $folderPath" "Cyan"
+			"TBS_Maintenance_Script.exe"
 		}
 		
-		# Get all items on the desktop
-		$desktopItems = Get-ChildItem -Path $DesktopPath -Force | Where-Object { $_.Name -notin $systemIcons -and ($_PSIsContainer -or $_.Extension -ne ".lnk") }
+		# -- Known system/launcher items to preserve on Desktop (case-insensitive match by name)
+		$systemIcons = @(
+			"This PC.lnk", "Network.lnk", "Control Panel.lnk", "Recycle Bin.lnk", "User's Files.lnk",
+			"Execute(TBS_Maintenance_Script).bat", "Execute(MiniGhost).bat",
+			"TBS_Maintenance_Script.exe", "MiniGhost.exe",
+			$scriptName
+		)
 		
+		# -- Default excluded folders that must remain on Desktop
+		$defaultExcludedFolders = @("Lanes", "Scales", "BackOffices", $UnorganizedFolderName)
+		
+		# -- Merge additional exclusions if provided
+		$excludedSet = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+		foreach ($n in $systemIcons) { [void]$excludedSet.Add($n) }
+		foreach ($n in $defaultExcludedFolders) { [void]$excludedSet.Add($n) }
+		if ($AdditionalExclusions)
+		{
+			foreach ($n in $AdditionalExclusions) { if ($n) { [void]$excludedSet.Add($n) } }
+		}
+		
+		# -- Ensure destination and commonly-used excluded folders exist
+		foreach ($ensure in ($defaultExcludedFolders | Select-Object -Unique))
+		{
+			$ensurePath = Join-Path -Path $DesktopPath -ChildPath $ensure
+			if (-not (Test-Path -LiteralPath $ensurePath))
+			{
+				New-Item -ItemType Directory -Path $ensurePath | Out-Null
+				Write_Log "Created folder: $ensurePath" "green"
+			}
+		}
+		
+		# -- Ensure the target "Unorganized" folder exists
+		if (-not (Test-Path -LiteralPath $UnorganizedFolder))
+		{
+			New-Item -ItemType Directory -Path $UnorganizedFolder | Out-Null
+			Write_Log "Created folder: $UnorganizedFolder" "green"
+		}
+		else
+		{
+			Write_Log "Folder already exists: $UnorganizedFolder" "cyan"
+		}
+		
+		# -- Enumerate Desktop items; keep both files and folders
+		#    We exclude *.lnk shortcuts unless they are explicitly allowed (systemIcons list).
+		$desktopItems = Get-ChildItem -LiteralPath $DesktopPath -Force |
+		Where-Object {
+			# Skip items explicitly excluded by name
+			-not $excludedSet.Contains($_.Name) -and
+			# Skip .lnk shortcuts unless the name is explicitly allowed
+			(-not ($_.Extension -ieq ".lnk"))
+		}
+		
+		# -- Move everything else into the Unorganized folder
 		foreach ($item in $desktopItems)
 		{
-			$exclude = $false
-			
-			# Check if item is in excluded folders
-			foreach ($excluded in $excludedFolders)
+			try
 			{
-				if ($item.Name -ieq $excluded)
-				{
-					$exclude = $true
-					break
-				}
+				Move-Item -LiteralPath $item.FullName -Destination $UnorganizedFolder -Force
+				Write_Log "Moved item: $($item.Name)" "green"
 			}
-			
-			if (-not $exclude)
+			catch
 			{
-				try
-				{
-					Move-Item -Path $item.FullName -Destination $UnorganizedFolder -Force
-					Write_Log "Moved item: $($item.Name)" "Green"
-				}
-				catch
-				{
-					Write_Log "Failed to move item: $($item.Name). Error: $_" "Red"
-				}
-			}
-			else
-			{
-				#	Write_Log "Excluded from moving: $($item.Name)" "Cyan"
+				Write_Log "Failed to move item: $($item.Name). Error: $_" "red"
 			}
 		}
 		
-		Write_Log "Desktop organization complete." "Green"
+		Write_Log "Desktop organization complete." "green"
+		Write_Log "==================== Organize_Desktop_Items Completed ====================" "blue"
+	}
+	catch
+	{
+		Write_Log "Unexpected error in Organize_Desktop_Items: $_" "red"
+	}
+}
+
+
+# ===================================================================================================
+#                               FUNCTION: Configure_System_Settings
+# ---------------------------------------------------------------------------------------------------
+# Description (UPDATED - Desktop organizing removed):
+#   Configures power plan, services, and visual settings. No Desktop file moves here.
+#
+#   1) Power Settings:
+#       - High Performance plan
+#       - Sleep disabled (AC/DC)
+#       - Minimum processor performance to 100% (AC/DC)
+#       - Monitor off after 15 minutes (AC)
+#
+#   2) Services:
+#       - Sets fdPHost, FDResPub, SSDPSRV, upnphost to Automatic and starts them
+#
+#   3) Visual Settings:
+#       - Show thumbnails instead of icons
+#       - Font smoothing + ClearType
+#       - Restarts Explorer to ensure settings apply
+#
+# Parameters:
+#   (none)
+#
+# Notes:
+#   - The prior "Organize Desktop" section has been removed from this function.
+#   - Call Organize_Desktop_Items separately when desired.
+# ---------------------------------------------------------------------------------------------------
+
+function Configure_System_Settings
+{
+	[CmdletBinding()]
+	param ()
+	
+	Write_Log "`r`n==================== Starting Configure_System_Settings ====================`r`n" "blue"
+	
+	try
+	{
+		# ==========================================================================================
+		# [CHANGE] Removed: Desktop organizing block
+		#          Moved into new function: Organize_Desktop_Items
+		# ==========================================================================================
 		
 		# ===========================================
-		# 2. Configure Power Settings
+		# 1. Configure Power Settings
 		# ===========================================
-		Write_Log "`r`nConfiguring power plan and performance settings..." "Blue"
+		Write_Log "`r`nConfiguring power plan and performance settings..." "blue"
 		
-		# Set the power plan to High Performance
+		# High Performance plan GUID
 		$highPerfGUID = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+		
 		try
 		{
 			powercfg /s $highPerfGUID
-			Write_Log "Power plan set to High Performance." "Green"
+			Write_Log "Power plan set to High Performance." "green"
 		}
 		catch
 		{
-			Write_Log "Failed to set power plan to High Performance. Error: $_" "Red"
+			Write_Log "Failed to set power plan to High Performance. Error: $_" "red"
 		}
 		
-		# Set system to never sleep
+		# Disable sleep (AC/DC)
 		try
 		{
 			powercfg /change standby-timeout-ac 0
 			powercfg /change standby-timeout-dc 0
-			Write_Log "System sleep disabled." "Green"
+			Write_Log "System sleep disabled for AC/DC." "green"
 		}
 		catch
 		{
-			Write_Log "Failed to disable system sleep. Error: $_" "Red"
+			Write_Log "Failed to disable system sleep. Error: $_" "red"
 		}
 		
-		# Set minimum processor performance to 100%
+		# Minimum processor performance to 100% (AC/DC)
 		try
 		{
+			# SUB_PROCESSOR         = 54533251-82be-4824-96c1-47b60b740d00
+			# PROCTHROTTLEMIN       = 893dee8e-2bef-41e0-89c6-b55d0929964c
 			powercfg /setacvalueindex $highPerfGUID "54533251-82be-4824-96c1-47b60b740d00" "893dee8e-2bef-41e0-89c6-b55d0929964c" 100
 			powercfg /setdcvalueindex $highPerfGUID "54533251-82be-4824-96c1-47b60b740d00" "893dee8e-2bef-41e0-89c6-b55d0929964c" 100
 			powercfg /setactive $highPerfGUID
-			Write_Log "Minimum processor performance set to 100%." "Green"
+			Write_Log "Minimum processor performance set to 100% (AC/DC)." "green"
 		}
 		catch
 		{
-			Write_Log "Failed to set processor performance. Error: $_" "Red"
+			Write_Log "Failed to set processor performance. Error: $_" "red"
 		}
 		
-		# Turn off screen after 15 minutes
+		# Turn off screen after 15 minutes (AC)
 		try
 		{
 			powercfg /change monitor-timeout-ac 15
-			Write_Log "Monitor timeout set to 15 minutes." "Green"
+			Write_Log "Monitor timeout (AC) set to 15 minutes." "green"
 		}
 		catch
 		{
-			Write_Log "Failed to set monitor timeout. Error: $_" "Red"
+			Write_Log "Failed to set monitor timeout. Error: $_" "red"
 		}
 		
-		Write_Log "Power plan and performance settings configuration complete. Some changes may require a reboot to take effect." "Green"
+		Write_Log "Power and performance settings complete." "green"
 		
 		# ===========================================
-		# 3. Configure Services
+		# 2. Configure Services
 		# ===========================================
-		Write_Log "`r`nConfiguring services to start automatically..." "Blue"
+		Write_Log "`r`nConfiguring services to start automatically..." "blue"
 		
 		$servicesToConfigure = @("fdPHost", "FDResPub", "SSDPSRV", "upnphost")
-		
 		foreach ($service in $servicesToConfigure)
 		{
 			try
 			{
-				# Set service to start automatically
 				Set-Service -Name $service -StartupType Automatic -ErrorAction Stop
-				Write_Log "Set service '$service' to Automatic." "Green"
+				Write_Log "Set service '$service' to Automatic." "green"
 				
-				# Start the service if not running
 				$svc = Get-Service -Name $service -ErrorAction Stop
 				if ($svc.Status -ne 'Running')
 				{
 					Start-Service -Name $service -ErrorAction Stop
-					Write_Log "Started service '$service'." "Green"
+					Write_Log "Started service '$service'." "green"
 				}
 				else
 				{
-					Write_Log "Service '$service' is already running." "Cyan"
+					Write_Log "Service '$service' is already running." "cyan"
 				}
 			}
 			catch
 			{
-				Write_Log "Failed to configure service '$service'. Error: $_" "Red"
+				Write_Log "Failed to configure service '$service'. Error: $_" "red"
 			}
 		}
 		
-		Write_Log "Service configuration complete." "Green"
+		Write_Log "Service configuration complete." "green"
 		
 		# ===========================================
-		# 4. Configure Visual Settings
+		# 3. Configure Visual Settings
 		# ===========================================
-		Write_Log "`r`nConfiguring visual settings..." "Blue"
+		Write_Log "`r`nConfiguring visual settings..." "blue"
 		
 		try
 		{
-			# Enable "Show thumbnails instead of icons" (disable "Always show icons, never thumbnails")
-			Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "IconsOnly" -Value 0 -Type DWord -ErrorAction Stop
-			Write_Log "Enabled 'Show thumbnails instead of icons'." "Green"
+			# Show thumbnails (IconsOnly = 0)
+			Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" `
+							 -Name "IconsOnly" -Value 0 -Type DWord -ErrorAction Stop
+			Write_Log "Enabled 'Show thumbnails instead of icons'." "green"
 		}
 		catch
 		{
-			Write_Log "Failed to enable thumbnails. Error: $_" "Red"
+			Write_Log "Failed to enable thumbnails. Error: $_" "red"
 		}
 		
 		try
 		{
-			# Enable "Smooth edges of screen fonts" (font smoothing with ClearType)
+			# Font smoothing + ClearType
 			Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "FontSmoothing" -Value "2" -Type String -ErrorAction Stop
 			Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "FontSmoothingType" -Value 2 -Type DWord -ErrorAction Stop
-			Write_Log "Enabled 'Smooth edges of screen fonts'." "Green"
+			Write_Log "Enabled 'Smooth edges of screen fonts' (ClearType)." "green"
 		}
 		catch
 		{
-			Write_Log "Failed to enable font smoothing. Error: $_" "Red"
+			Write_Log "Failed to enable font smoothing. Error: $_" "red"
 		}
 		
-		Write_Log "Visual settings configuration complete." "Green"
+		# Restart Explorer to apply visual tweaks (kept here since it's visual-settings-related)
+		Write_Log "Restarting Explorer to apply changes..." "yellow"
+		try
+		{
+			Stop-Process -Name explorer -Force
+			Write_Log "Explorer restarted." "green"
+		}
+		catch
+		{
+			Write_Log "Explorer restart may already be complete or not required. Info: $_" "cyan"
+		}
 		
-		Write_Log "Restarting Explorer to apply changes..." "Yellow"
-		Stop-Process -Name explorer -Force
-		Write_Log "Explorer restarted." "Green"
-		
-		Write_Log "All system configurations have been applied successfully." "Green"
-		Write_Log "`r`n==================== Configure_System_Settings Function Completed ====================`r`n" "blue"
+		Write_Log "All system configurations have been applied." "green"
+		Write_Log "`r`n==================== Configure_System_Settings Completed ====================`r`n" "blue"
 	}
 	catch
 	{
-		Write_Log "An unexpected error occurred: $_" "Red"
+		Write_Log "An unexpected error occurred in Configure_System_Settings: $_" "red"
 	}
 }
 
@@ -15959,7 +16004,7 @@ END CATCH;
 	[void][System.Windows.Forms.Application]::EnableVisualStyles()
 	
 	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Scale Subdepartments & SdpDefault"
+	$form.Text = "Scale Sub-Departments Configuration"
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = 'FixedDialog'
 	$form.MaximizeBox = $false
@@ -19102,21 +19147,37 @@ public static class NativeWin {
 	[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
 	
 	############################################################################
-	# 8) Configure System Settings Menu Item
+	# 8) Configure System Settings Menu Item  (UPDATED tooltip + unchanged behavior)
 	############################################################################
 	$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
-	$ConfigureSystemSettingsItem.ToolTipText = "Organize the desktop, set power plan to maximize performance and make sure necessary services are running."
+	$ConfigureSystemSettingsItem.ToolTipText = "Set High Performance power plan, disable sleep, ensure required services are Automatic/running, and apply visual tweaks."
 	$ConfigureSystemSettingsItem.Add_Click({
 			$script:LastActivity = Get-Date
+			# Confirm before making system-level changes
 			$confirmResult = [System.Windows.Forms.MessageBox]::Show(
-				"Warning: Configuring system settings will make major changes. Do you want to continue?",
+				"Warning: This will modify power, services, and visual settings. Continue?",
 				"Confirm Changes",
 				[System.Windows.Forms.MessageBoxButtons]::YesNo,
 				[System.Windows.Forms.MessageBoxIcon]::Warning
 			)
 			if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes)
 			{
-				Configure_System_Settings
+				try
+				{
+					Configure_System_Settings
+				}
+				catch
+				{
+					# Use your existing logger if present
+					if (Get-Command Write_Log -ErrorAction SilentlyContinue)
+					{
+						Write_Log "Configure_System_Settings threw an error: $_" "red"
+					}
+					else
+					{
+						[System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)", "Configure System Settings", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+					}
+				}
 			}
 			else
 			{
@@ -19125,10 +19186,133 @@ public static class NativeWin {
 					"Canceled",
 					[System.Windows.Forms.MessageBoxButtons]::OK,
 					[System.Windows.Forms.MessageBoxIcon]::Information
-				)
+				) | Out-Null
 			}
 		})
 	[void]$ContextMenuServer.Items.Add($ConfigureSystemSettingsItem)
+	
+	############################################################################
+	# 9) Organize Desktop Items Menu Item  (NEW button for the split-out function)
+	############################################################################
+	$OrganizeDesktopItemsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize Desktop Items")
+	$OrganizeDesktopItemsItem.ToolTipText = "Move non-system items from the Desktop into the 'Unorganized Items' folder (or a name you choose)."
+	$OrganizeDesktopItemsItem.Add_Click({
+			$script:LastActivity = Get-Date
+			# Optional: Ask whether to use a custom folder name or the default
+			$result = [System.Windows.Forms.MessageBox]::Show(
+				"Use a custom folder name for your unorganized Desktop items? (Click 'No' to use the default: 'Unorganized Items')",
+				"Organize Desktop Items",
+				[System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+				[System.Windows.Forms.MessageBoxIcon]::Question
+			)
+			
+			if ($result -eq [System.Windows.Forms.DialogResult]::Cancel)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Operation canceled.", "Canceled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				return
+			}
+			# Determine target folder name
+			$targetFolderName = "Unorganized Items"
+			if ($result -eq [System.Windows.Forms.DialogResult]::Yes)
+			{
+				# Prompt for custom name (PS 5.1-safe: simple WinForms input dialog)
+				Add-Type -AssemblyName System.Windows.Forms
+				Add-Type -AssemblyName System.Drawing
+				
+				$inForm = New-Object System.Windows.Forms.Form
+				$inForm.Text = "Custom Folder Name"
+				$inForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+				$inForm.StartPosition = "CenterParent"
+				$inForm.ClientSize = New-Object System.Drawing.Size(420, 120)
+				$inForm.MaximizeBox = $false
+				$inForm.MinimizeBox = $false
+				$inForm.TopMost = $true
+				
+				$lbl = New-Object System.Windows.Forms.Label
+				$lbl.Text = "Enter a folder name to create on the Desktop:"
+				$lbl.AutoSize = $true
+				$lbl.Location = New-Object System.Drawing.Point(12, 12)
+				$inForm.Controls.Add($lbl)
+				
+				$tb = New-Object System.Windows.Forms.TextBox
+				$tb.Size = New-Object System.Drawing.Size(390, 24)
+				$tb.Location = New-Object System.Drawing.Point(12, 40)
+				$tb.Text = "Unorganized Items"
+				$inForm.Controls.Add($tb)
+				
+				$okBtn = New-Object System.Windows.Forms.Button
+				$okBtn.Text = "OK"
+				$okBtn.Size = New-Object System.Drawing.Size(90, 28)
+				$okBtn.Location = New-Object System.Drawing.Point(230, 80)
+				$okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
+				$inForm.AcceptButton = $okBtn
+				$inForm.Controls.Add($okBtn)
+				
+				$cancelBtn = New-Object System.Windows.Forms.Button
+				$cancelBtn.Text = "Cancel"
+				$cancelBtn.Size = New-Object System.Drawing.Size(90, 28)
+				$cancelBtn.Location = New-Object System.Drawing.Point(324, 80)
+				$cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+				$inForm.CancelButton = $cancelBtn
+				$inForm.Controls.Add($cancelBtn)
+				
+				$dlgRes = $inForm.ShowDialog()
+				if ($dlgRes -ne [System.Windows.Forms.DialogResult]::OK)
+				{
+					[System.Windows.Forms.MessageBox]::Show("Operation canceled.", "Canceled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+					return
+				}
+				
+				$txt = $tb.Text
+				if ([string]::IsNullOrWhiteSpace($txt))
+				{
+					[System.Windows.Forms.MessageBox]::Show("Folder name cannot be empty.", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+					return
+				}
+				$targetFolderName = $txt.Trim()
+			}
+			# Confirm action
+			$confirm = [System.Windows.Forms.MessageBox]::Show(
+				"This will move non-system items from the Desktop into '$targetFolderName'. Continue?",
+				"Confirm Desktop Organization",
+				[System.Windows.Forms.MessageBoxButtons]::YesNo,
+				[System.Windows.Forms.MessageBoxIcon]::Warning
+			)
+			if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes)
+			{
+				[System.Windows.Forms.MessageBox]::Show("Operation canceled.", "Canceled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				return
+			}
+			# Execute organization
+			try
+			{
+				if (Get-Command Organize_Desktop_Items -ErrorAction SilentlyContinue)
+				{
+					Organize_Desktop_Items -UnorganizedFolderName $targetFolderName
+				}
+				else
+				{
+					[System.Windows.Forms.MessageBox]::Show(
+						"Organize_Desktop_Items is not loaded in this session.",
+						"Function Not Found",
+						[System.Windows.Forms.MessageBoxButtons]::OK,
+						[System.Windows.Forms.MessageBoxIcon]::Error
+					) | Out-Null
+				}
+			}
+			catch
+			{
+				if (Get-Command Write_Log -ErrorAction SilentlyContinue)
+				{
+					Write_Log "Organize_Desktop_Items threw an error: $_" "red"
+				}
+				else
+				{
+					[System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)", "Organize Desktop Items", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+				}
+			}
+		})
+	[void]$ContextMenuServer.Items.Add($OrganizeDesktopItemsItem)
 	
 	############################################################################
 	# Show the context menu when the Server Tools button is clicked
