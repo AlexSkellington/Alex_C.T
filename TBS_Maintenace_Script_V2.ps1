@@ -18879,7 +18879,7 @@ public static class NativeWin {
 	# Store Number Label (informational only)
 	$script:storeNumberLabel = New-Object System.Windows.Forms.Label
 	$storeNumberLabel.Text = "Store Number: N/A"
-	$storeNumberLabel.Location = New-Object System.Drawing.Point(830, 30)
+	$storeNumberLabel.Location = New-Object System.Drawing.Point(825, 30)
 	$storeNumberLabel.Size = New-Object System.Drawing.Size(200, 20)
 	$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($storeNumberLabel)
