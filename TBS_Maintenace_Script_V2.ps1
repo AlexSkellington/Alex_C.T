@@ -18438,6 +18438,67 @@ if (-not $form)
 	$bannerLabel.Dock = 'Top'
 	$form.Controls.Add($bannerLabel)
 	
+	# --- Make banner clickable to open the Helpdesk ----------------------------------------------------
+	# Ensure we have a tooltip instance (matches your existing UX)
+	if (-not $toolTip)
+	{
+		$toolTip = New-Object System.Windows.Forms.ToolTip
+		$toolTip.AutoPopDelay = 8000
+		$toolTip.InitialDelay = 300
+		$toolTip.ReshowDelay = 100
+	}
+	
+	# Show hand cursor + tooltip on hover
+	$bannerLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$toolTip.SetToolTip($bannerLabel, "Open TBS Helpdesk (helpdesk.tecnicasystems.com)")
+	
+	# Preserve original color/font so we can restore after hover
+	$bannerLabel.Tag = [pscustomobject]@{ Color = $bannerLabel.ForeColor; Font = $bannerLabel.Font }
+	
+	# Hover effect: blue + underline (hyperlink-style)
+	$bannerLabel.Add_MouseEnter({
+			param ($s,
+				$e)
+			try
+			{
+				$s.ForeColor = 'DodgerBlue'
+				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
+				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
+			}
+			catch { }
+		})
+	
+	# Leave hover: restore original look
+	$bannerLabel.Add_MouseLeave({
+			param ($s,
+				$e)
+			try
+			{
+				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
+				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
+			}
+			catch { }
+		})
+	
+	# Click: open Helpdesk in default browser
+	$bannerLabel.Add_Click({
+			$script:LastActivity = Get-Date # keep your idle tracker consistent
+			$url = "https://helpdesk.tecnicasystems.com"
+			try
+			{
+				Start-Process $url
+			}
+			catch
+			{
+				[System.Windows.Forms.MessageBox]::Show(
+					"Couldn't open $url.`r`n$($_.Exception.Message)",
+					"Open Link",
+					[System.Windows.Forms.MessageBoxButtons]::OK,
+					[System.Windows.Forms.MessageBoxIcon]::Error
+				) | Out-Null
+			}
+		})
+	
 	# ========================= Form Closing (X) =========================
 	$form.add_FormClosing({
 			# Skip confirm if we're closing due to idle timeout
@@ -18876,7 +18937,7 @@ public static class NativeWin {
 			}
 		})
 	
-	# Store Number Label (informational only)
+	# Store Number Label 
 	$script:storeNumberLabel = New-Object System.Windows.Forms.Label
 	$storeNumberLabel.Text = "Store Number: N/A"
 	$storeNumberLabel.Location = New-Object System.Drawing.Point(825, 30)
@@ -18884,6 +18945,107 @@ public static class NativeWin {
 	$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$form.Controls.Add($storeNumberLabel)
 	$toolTip.SetToolTip($storeNumberLabel, "Shows store number (informational).")
+	
+	# Ensure a tooltip object exists (mirrors your other controls' UX)
+	if (-not $toolTip)
+	{
+		$toolTip = New-Object System.Windows.Forms.ToolTip
+		$toolTip.AutoPopDelay = 8000
+		$toolTip.InitialDelay = 300
+		$toolTip.ReshowDelay = 100
+	}
+	
+	# Hand cursor + initial tooltip (will be refreshed on hover with the actual path)
+	$storeNumberLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$toolTip.SetToolTip($storeNumberLabel, "Click to open the Storeman folder.")
+	
+	# Preserve original color and font so we can restore after hover
+	$storeNumberLabel.Tag = [pscustomobject]@{
+		Color = $storeNumberLabel.ForeColor
+		Font  = $storeNumberLabel.Font
+	}
+	
+	# Hover effect: blue + underline (hyperlink-style)
+	$storeNumberLabel.Add_MouseEnter({
+			param ($s,
+				$e)
+			try
+			{
+				$s.ForeColor = 'DodgerBlue'
+				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
+				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
+			}
+			catch { }
+		})
+	
+	# Leave hover: restore original look
+	$storeNumberLabel.Add_MouseLeave({
+			param ($s,
+				$e)
+			try
+			{
+				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
+				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
+			}
+			catch { }
+		})
+	
+	# While hovering, update tooltip text to show the current BasePath (handles dynamic detection)
+	$storeNumberLabel.Add_MouseHover({
+			param ($s,
+				$e)
+			try
+			{
+				$p = $null
+				if ($script:BasePath) { $p = $script:BasePath }
+				elseif ($BasePath) { $p = $BasePath }
+				if ($p)
+				{
+					$toolTip.SetToolTip($s, "Open Storeman folder: $p")
+				}
+				else
+				{
+					$toolTip.SetToolTip($s, "Storeman folder not detected yet.")
+				}
+			}
+			catch { }
+		})
+	
+	# Click handler: open the Storeman folder in Explorer using the detected BasePath
+	$storeNumberLabel.Add_Click({
+			$script:LastActivity = Get-Date # keep your idle tracker consistent
+			
+			# Prefer script-scope BasePath if available; else fall back to local/global
+			$path = $null
+			if ($script:BasePath) { $path = $script:BasePath }
+			elseif ($BasePath) { $path = $BasePath }
+			
+			if ($path -and (Test-Path -LiteralPath $path))
+			{
+				try
+				{
+					Start-Process -FilePath $path # opens folder in Explorer
+				}
+				catch
+				{
+					[System.Windows.Forms.MessageBox]::Show(
+						"Couldn't open: $path`r`n$($_.Exception.Message)",
+						"Open Storeman Folder",
+						[System.Windows.Forms.MessageBoxButtons]::OK,
+						[System.Windows.Forms.MessageBoxIcon]::Error
+					) | Out-Null
+				}
+			}
+			else
+			{
+				[System.Windows.Forms.MessageBox]::Show(
+					"Storeman folder not found yet.`r`nCurrent value: " + [string]$path,
+					"Open Storeman Folder",
+					[System.Windows.Forms.MessageBoxButtons]::OK,
+					[System.Windows.Forms.MessageBoxIcon]::Warning
+				) | Out-Null
+			}
+		})
 	
 	# Number of Lanes (clickable)
 	$script:NodesStore = New-Object System.Windows.Forms.Label
