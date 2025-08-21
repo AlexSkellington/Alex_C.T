@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.4.6"
-$VersionDate = "2025-08-20"
+$VersionNumber = "2.4.7"
+$VersionDate = "2025-08-21"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -18430,16 +18430,18 @@ if (-not $form)
 		catch { }
 	}
 	
-	# Banner Label
+	# ========================= Banner (header) =========================
+	# Static banner background (full width)
 	$bannerLabel = New-Object System.Windows.Forms.Label
 	$bannerLabel.Text = "PowerShell Script - TBS_Maintenance_Script"
 	$bannerLabel.Font = New-Object System.Drawing.Font("Arial", 16, [System.Drawing.FontStyle]::Bold)
-	$bannerLabel.TextAlign = 'MiddleCenter'
+	$bannerLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$bannerLabel.Dock = 'Top'
+	$bannerLabel.Height = 30 # give the header some breathing room
+	$bannerLabel.Cursor = [System.Windows.Forms.Cursors]::Default # parent is NOT clickable
 	$form.Controls.Add($bannerLabel)
 	
-	# --- Make banner clickable to open the Helpdesk ----------------------------------------------------
-	# Ensure we have a tooltip instance (matches your existing UX)
+	# Ensure ToolTip exists (shared across the app)
 	if (-not $toolTip)
 	{
 		$toolTip = New-Object System.Windows.Forms.ToolTip
@@ -18448,46 +18450,75 @@ if (-not $form)
 		$toolTip.ReshowDelay = 100
 	}
 	
-	# Show hand cursor + tooltip on hover
-	$bannerLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
-	$toolTip.SetToolTip($bannerLabel, "Open TBS Helpdesk (helpdesk.tecnicasystems.com)")
+	# Clickable text overlay (only text bounds are clickable)
+	$bannerLink = New-Object System.Windows.Forms.LinkLabel
+	$bannerLink.Parent = $bannerLabel # render "on top" of the banner area
+	$bannerLink.Text = $bannerLabel.Text # mirror the banner's text
+	$bannerLink.Font = $bannerLabel.Font # mirror the banner's font
+	$bannerLink.AutoSize = $true # <-- hit area == text size
+	$bannerLink.BackColor = [System.Drawing.Color]::Transparent
+	$bannerLink.Cursor = [System.Windows.Forms.Cursors]::Hand
 	
-	# Preserve original color/font so we can restore after hover
-	$bannerLabel.Tag = [pscustomobject]@{ Color = $bannerLabel.ForeColor; Font = $bannerLabel.Font }
+	# Make the entire string a link
+	$bannerLink.LinkArea = New-Object System.Windows.Forms.LinkArea(0, $bannerLink.Text.Length)
+	$bannerLink.LinkBehavior = [System.Windows.Forms.LinkBehavior]::HoverUnderline # underline on hover
+	$bannerLink.LinkColor = $bannerLabel.ForeColor # normal color (usually black)
+	$bannerLink.ActiveLinkColor = [System.Drawing.Color]::DodgerBlue # color while clicking
+	$bannerLink.VisitedLinkColor = $bannerLabel.ForeColor # keep same color after click
+	$bannerLink.DisabledLinkColor = [System.Drawing.Color]::Gray
 	
-	# Hover effect: blue + underline (hyperlink-style)
-	$bannerLabel.Add_MouseEnter({
+	# Tooltip for the link itself
+	$toolTip.SetToolTip($bannerLink, "Open TBS Helpdesk (helpdesk.tecnicasystems.com)")
+	
+	# Store original link color so we can restore after hover
+	$bannerLink.Tag = [pscustomobject]@{ LinkColor = $bannerLink.LinkColor }
+	
+	# --- Hover color change (this is what you asked for) ---
+	$bannerLink.Add_MouseEnter({
+			param ($s,
+				$e)
+			try { $s.LinkColor = [System.Drawing.Color]::DodgerBlue }
+			catch { }
+		})
+	$bannerLink.Add_MouseLeave({
 			param ($s,
 				$e)
 			try
 			{
-				$s.ForeColor = 'DodgerBlue'
-				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
-				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
+				if ($s.Tag -and $s.Tag.LinkColor) { $s.LinkColor = $s.Tag.LinkColor }
 			}
 			catch { }
 		})
 	
-	# Leave hover: restore original look
-	$bannerLabel.Add_MouseLeave({
-			param ($s,
-				$e)
-			try
-			{
-				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
-				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
-			}
-			catch { }
+	# Center the link text inside the banner area (initial + on resize + on text/font changes)
+	$centerBannerLink = {
+		# Center horizontally against the FORM (not just the label), so it stays visually centered
+		$x = [math]::Max(0, ($form.ClientSize.Width - $bannerLink.Width) / 2)
+		# Center vertically inside the banner strip
+		$y = [math]::Max(0, ($bannerLabel.Height - $bannerLink.Height) / 2)
+		$bannerLink.Location = New-Object System.Drawing.Point([int]$x, [int]$y)
+	}
+	& $centerBannerLink
+	$form.add_Resize({ & $centerBannerLink })
+	
+	# If someone changes the banner text or font later, keep the link synced and centered
+	$bannerLabel.add_TextChanged({
+			$bannerLink.Text = $bannerLabel.Text
+			$bannerLink.LinkArea = New-Object System.Windows.Forms.LinkArea(0, $bannerLink.Text.Length)
+			$bannerLink.AutoSize = $true
+			& $centerBannerLink
+		})
+	$bannerLabel.add_FontChanged({
+			$bannerLink.Font = $bannerLabel.Font
+			$bannerLink.AutoSize = $true
+			& $centerBannerLink
 		})
 	
-	# Click: open Helpdesk in default browser
-	$bannerLabel.Add_Click({
-			$script:LastActivity = Get-Date # keep your idle tracker consistent
+	# Click handler (only the text is clickable)
+	$bannerLink.Add_LinkClicked({
+			$script:LastActivity = Get-Date
 			$url = "https://helpdesk.tecnicasystems.com"
-			try
-			{
-				Start-Process $url
-			}
+			try { Start-Process $url }
 			catch
 			{
 				[System.Windows.Forms.MessageBox]::Show(
@@ -18522,13 +18553,25 @@ if (-not $form)
 			}
 			
 			# ---- Timers ----
-			try { if ($script:IdleTimer) { try { $script:IdleTimer.Stop() }
+			try
+			{
+				if ($script:IdleTimer)
+				{
+					try { $script:IdleTimer.Stop() }
 					catch { }; try { $script:IdleTimer.Dispose() }
-					catch { }; $script:IdleTimer = $null } }
+					catch { }; $script:IdleTimer = $null
+				}
+			}
 			catch { }
-			try { if ($refreshTimer) { try { $refreshTimer.Stop() }
+			try
+			{
+				if ($refreshTimer)
+				{
+					try { $refreshTimer.Stop() }
 					catch { }; try { $refreshTimer.Dispose() }
-					catch { }; $refreshTimer = $null } }
+					catch { }; $refreshTimer = $null
+				}
+			}
 			catch { }
 			
 			try
@@ -18787,52 +18830,67 @@ if (-not $form)
 	
 	######################################################################################################################
 	#                                                                                                                    #
-	#                                                   Labels                                                           #
+	#                                                    Labels 					                                     #
 	#                                                                                                                    #
 	######################################################################################################################
 	
-	# SMS Version Label
+	# Shared tooltip (create once)  ─────────────────────────────────────────────────────────────────────────────────────
+	if (-not $toolTip)
+	{
+		$toolTip = New-Object System.Windows.Forms.ToolTip
+		$toolTip.AutoPopDelay = 8000
+		$toolTip.InitialDelay = 300
+		$toolTip.ReshowDelay = 100
+	}
+	
+	# Helper as scriptblock (not a function): make a label look like a link (hand + blue + underline on hover)
+	$applyLinkStyle = {
+		param ([System.Windows.Forms.Label]$Label)
+		$Label.Cursor = [System.Windows.Forms.Cursors]::Hand
+		if (-not $Label.Tag) { $Label.Tag = [pscustomobject]@{ Color = $Label.ForeColor; Font = $Label.Font } }
+		
+		$Label.add_MouseEnter({
+				param ($s,
+					$e)
+				try
+				{
+					$s.ForeColor = 'DodgerBlue'
+					$s.Font = New-Object System.Drawing.Font($s.Font, ($s.Font.Style -bor [System.Drawing.FontStyle]::Underline))
+				}
+				catch { }
+			})
+		$Label.add_MouseLeave({
+				param ($s,
+					$e)
+				try
+				{
+					if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
+					if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
+				}
+				catch { }
+			})
+	}
+	
+	# ─────────────────────────────────────────── Create the labels (your same look/positions) ──────────────────────────
+	
+	# SMS Version (left, row 1) - clickable text only
 	$smsVersionLabel = New-Object System.Windows.Forms.Label
 	$smsVersionLabel.Text = "SMS Version: N/A"
 	$smsVersionLabel.Location = New-Object System.Drawing.Point(50, 30)
-	$smsVersionLabel.Size = New-Object System.Drawing.Size(250, 20) # Wider for longer version strings
+	$smsVersionLabel.AutoSize = $true # only letters are clickable (no dead zone)
 	$smsVersionLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$form.Controls.Add($smsVersionLabel)
-	# Clickable cursor + tooltip
-	$smsVersionLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$form.Controls.Add($smsVersionLabel) | Out-Null
 	$toolTip.SetToolTip($smsVersionLabel, "Shows current SMS version. Click to bring SMSStart to front (or launch it).")
-	# Save original style for hover in/out
-	$smsVersionLabel.Tag = [pscustomobject]@{ Color = $smsVersionLabel.ForeColor; Font = $smsVersionLabel.Font }
-	$smsVersionLabel.Add_MouseEnter({
-			param ($s,
-				$e)
-			try
-			{
-				$s.ForeColor = 'DodgerBlue'
-				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
-				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
-			}
-			catch { }
-		})
-	$smsVersionLabel.Add_MouseLeave({
-			param ($s,
-				$e)
-			try
-			{
-				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
-				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
-			}
-			catch { }
-		})
+	& $applyLinkStyle $smsVersionLabel
 	
-	# Bring SMS to front (or launch)
+	# Click: bring SMSStart to front or launch it (inline, no functions)
 	$smsVersionLabel.Add_Click({
+			$script:LastActivity = Get-Date
 			$orig = $smsVersionLabel.ForeColor
 			$smsVersionLabel.ForeColor = 'DodgerBlue'
 			try
 			{
-				# --- Minimal P/Invoke for window focus/restore ---
-				$code = @"
+				@"
 using System;
 using System.Runtime.InteropServices;
 public static class NativeWin {
@@ -18840,9 +18898,12 @@ public static class NativeWin {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
 }
-"@
-				if (-not ("NativeWin" -as [type])) { Add-Type -TypeDefinition $code -ErrorAction SilentlyContinue }
-				$p = Get-Process -Name 'SMSStart' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+"@ | ForEach-Object {
+					if (-not ("NativeWin" -as [type])) { Add-Type -TypeDefinition $_ -ErrorAction SilentlyContinue }
+				}
+				
+				$p = Get-Process -Name 'SMSStart' -ErrorAction SilentlyContinue |
+				Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 				if ($p)
 				{
 					$h = $p.MainWindowHandle
@@ -18851,8 +18912,8 @@ public static class NativeWin {
 					if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Brought SMSStart to the foreground." "green" }
 					return
 				}
-				$proc = $null
 				$exe = Join-Path $BasePath 'SMSStart.exe'
+				$proc = $null
 				if (Test-Path -LiteralPath $exe)
 				{
 					$proc = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe -Parent) -PassThru -ErrorAction Stop
@@ -18869,11 +18930,10 @@ public static class NativeWin {
 				}
 				$null = $proc.WaitForInputIdle(5000)
 				for ($i = 0; $i -lt 20 -and $proc.MainWindowHandle -eq 0; $i++) { Start-Sleep -Milliseconds 150; $proc.Refresh() }
-				$h = $proc.MainWindowHandle
-				if ($h -ne 0)
+				if ($proc.MainWindowHandle -ne 0)
 				{
-					if ([NativeWin]::IsIconic($h)) { [NativeWin]::ShowWindow($h, 9) | Out-Null }
-					[NativeWin]::SetForegroundWindow($h) | Out-Null
+					if ([NativeWin]::IsIconic($proc.MainWindowHandle)) { [NativeWin]::ShowWindow($proc.MainWindowHandle, 9) | Out-Null }
+					[NativeWin]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
 				}
 				if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Launched SMSStart from $BasePath and brought to front." "green" }
 			}
@@ -18883,47 +18943,17 @@ public static class NativeWin {
 			}
 		})
 	
-	# Store Name label (centered)
+	# Store Name (centered, row 1) - clickable text only
 	$storeNameLabel = New-Object System.Windows.Forms.Label
 	$storeNameLabel.Text = "Store Name: N/A"
-	$storeNameLabel.Size = New-Object System.Drawing.Size(350, 20)
+	$storeNameLabel.AutoSize = $true
 	$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
 	$storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-	$form.Controls.Add($storeNameLabel)
-	# Center label initially and on resize
-	$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
-	$storeNameLabel.Top = 30
-	$form.add_Resize({
-			$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
-			$storeNameLabel.Top = 30
-		})
-	# Clickable + tooltip + hover
-	$storeNameLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$form.Controls.Add($storeNameLabel) | Out-Null
 	$toolTip.SetToolTip($storeNameLabel, "Shows store name. Click to ping all nodes (Lanes > Scales > Backoffices).")
-	$storeNameLabel.Tag = [pscustomobject]@{ Color = $storeNameLabel.ForeColor; Font = $storeNameLabel.Font }
-	$storeNameLabel.Add_MouseEnter({
-			param ($s,
-				$e)
-			try
-			{
-				$s.ForeColor = 'DodgerBlue'
-				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
-				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
-			}
-			catch { }
-		})
-	$storeNameLabel.Add_MouseLeave({
-			param ($s,
-				$e)
-			try
-			{
-				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
-				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
-			}
-			catch { }
-		})
-	# Click action: ping all nodes
+	& $applyLinkStyle $storeNameLabel
 	$storeNameLabel.Add_Click({
+			$script:LastActivity = Get-Date
 			$storeNameLabel.ForeColor = 'DodgerBlue'
 			try
 			{
@@ -18937,256 +18967,184 @@ public static class NativeWin {
 			}
 		})
 	
-	# Store Number Label 
+	# Store Number (right, row 1) - clickable text only
 	$script:storeNumberLabel = New-Object System.Windows.Forms.Label
 	$storeNumberLabel.Text = "Store Number: N/A"
-	$storeNumberLabel.Location = New-Object System.Drawing.Point(825, 30)
-	$storeNumberLabel.Size = New-Object System.Drawing.Size(200, 20)
+	$storeNumberLabel.AutoSize = $true
 	$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$form.Controls.Add($storeNumberLabel)
-	$toolTip.SetToolTip($storeNumberLabel, "Shows store number (informational).")
-	
-	# Ensure a tooltip object exists (mirrors your other controls' UX)
-	if (-not $toolTip)
-	{
-		$toolTip = New-Object System.Windows.Forms.ToolTip
-		$toolTip.AutoPopDelay = 8000
-		$toolTip.InitialDelay = 300
-		$toolTip.ReshowDelay = 100
-	}
-	
-	# Hand cursor + initial tooltip (will be refreshed on hover with the actual path)
-	$storeNumberLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$storeNumberLabel.Anchor = 'Top,Right' # still anchor to right; layout scriptblock will clamp
+	$form.Controls.Add($storeNumberLabel) | Out-Null
 	$toolTip.SetToolTip($storeNumberLabel, "Click to open the Storeman folder.")
+	& $applyLinkStyle $storeNumberLabel
 	
-	# Preserve original color and font so we can restore after hover
-	$storeNumberLabel.Tag = [pscustomobject]@{
-		Color = $storeNumberLabel.ForeColor
-		Font  = $storeNumberLabel.Font
-	}
-	
-	# Hover effect: blue + underline (hyperlink-style)
-	$storeNumberLabel.Add_MouseEnter({
-			param ($s,
-				$e)
-			try
-			{
-				$s.ForeColor = 'DodgerBlue'
-				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
-				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
-			}
-			catch { }
-		})
-	
-	# Leave hover: restore original look
-	$storeNumberLabel.Add_MouseLeave({
-			param ($s,
-				$e)
-			try
-			{
-				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
-				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
-			}
-			catch { }
-		})
-	
-	# While hovering, update tooltip text to show the current BasePath (handles dynamic detection)
+	# Hover: refresh tooltip with actual BasePath
 	$storeNumberLabel.Add_MouseHover({
-			param ($s,
-				$e)
-			try
-			{
-				$p = $null
-				if ($script:BasePath) { $p = $script:BasePath }
-				elseif ($BasePath) { $p = $BasePath }
-				if ($p)
-				{
-					$toolTip.SetToolTip($s, "Open Storeman folder: $p")
-				}
-				else
-				{
-					$toolTip.SetToolTip($s, "Storeman folder not detected yet.")
-				}
-			}
-			catch { }
+			$p = if ($script:BasePath) { $script:BasePath }
+			elseif ($BasePath) { $BasePath }
+			else { $null }
+			$toolTip.SetToolTip($storeNumberLabel, $(if ($p) { "Open Storeman folder: $p" }
+					else { "Storeman folder not detected yet." }))
 		})
-	
-	# Click handler: open the Storeman folder in Explorer using the detected BasePath
+	# Click: open Storeman folder (inline)
 	$storeNumberLabel.Add_Click({
-			$script:LastActivity = Get-Date # keep your idle tracker consistent
-			
-			# Prefer script-scope BasePath if available; else fall back to local/global
-			$path = $null
-			if ($script:BasePath) { $path = $script:BasePath }
-			elseif ($BasePath) { $path = $BasePath }
-			
+			$script:LastActivity = Get-Date
+			$path = if ($script:BasePath) { $script:BasePath }
+			elseif ($BasePath) { $BasePath }
+			else { $null }
 			if ($path -and (Test-Path -LiteralPath $path))
 			{
-				try
-				{
-					Start-Process -FilePath $path # opens folder in Explorer
-				}
+				try { Start-Process -FilePath $path }
 				catch
 				{
-					[System.Windows.Forms.MessageBox]::Show(
-						"Couldn't open: $path`r`n$($_.Exception.Message)",
-						"Open Storeman Folder",
-						[System.Windows.Forms.MessageBoxButtons]::OK,
-						[System.Windows.Forms.MessageBoxIcon]::Error
-					) | Out-Null
+					[System.Windows.Forms.MessageBox]::Show("Couldn't open: $path`r`n$($_.Exception.Message)",
+						"Open Storeman Folder", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
 				}
 			}
 			else
 			{
-				[System.Windows.Forms.MessageBox]::Show(
-					"Storeman folder not found yet.`r`nCurrent value: " + [string]$path,
-					"Open Storeman Folder",
-					[System.Windows.Forms.MessageBoxButtons]::OK,
-					[System.Windows.Forms.MessageBoxIcon]::Warning
-				) | Out-Null
+				[System.Windows.Forms.MessageBox]::Show("Storeman folder not found.`r`nCurrent value: " + [string]$path,
+					"Open Storeman Folder", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
 			}
 		})
 	
-	# Number of Lanes (clickable)
+	# Number of Lanes (centered, row 2) - clickable text only
 	$script:NodesStore = New-Object System.Windows.Forms.Label
 	$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
-	$NodesStore.Location = New-Object System.Drawing.Point(50, 50)
-	$NodesStore.Size = New-Object System.Drawing.Size(200, 20)
+	$NodesStore.Location = New-Object System.Drawing.Point(50, 50) # seed; layout will clamp/center
+	$NodesStore.AutoSize = $true
 	$NodesStore.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$NodesStore.AutoSize = $false
-	$form.Controls.Add($NodesStore)
-	$NodesStore.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$form.Controls.Add($NodesStore) | Out-Null
 	$toolTip.SetToolTip($NodesStore, "Shows count of Lanes. Click to ping Lane nodes.")
-	$NodesStore.Tag = [pscustomobject]@{ Color = $NodesStore.ForeColor; Font = $NodesStore.Font }
-	$NodesStore.Add_MouseEnter({
-			param ($s,
-				$e)
-			try
-			{
-				$s.ForeColor = 'DodgerBlue'
-				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
-				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
-			}
-			catch { }
-		})
-	$NodesStore.Add_MouseLeave({
-			param ($s,
-				$e)
-			try
-			{
-				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
-				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
-			}
-			catch { }
-		})
+	& $applyLinkStyle $NodesStore
 	$NodesStore.Add_Click({
+			$script:LastActivity = Get-Date
 			$NodesStore.ForeColor = 'DodgerBlue'
-			try
-			{
-				Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber
-			}
-			finally
-			{
-				$NodesStore.ForeColor = 'Black'
-			}
+			try { Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber }
+			finally { $NodesStore.ForeColor = 'Black' }
 		})
 	
-	# Number of Scales (clickable)
+	# Number of Scales (right-block, row 2)
 	$script:scalesLabel = New-Object System.Windows.Forms.Label
 	$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
-	$scalesLabel.Location = New-Object System.Drawing.Point(420, 50)
-	$scalesLabel.Size = New-Object System.Drawing.Size(200, 20)
+	$scalesLabel.Location = New-Object System.Drawing.Point(420, 50) # seed; layout will position near right block
+	$scalesLabel.AutoSize = $true
 	$scalesLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$form.Controls.Add($scalesLabel)
-	$scalesLabel.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$form.Controls.Add($scalesLabel) | Out-Null
 	$toolTip.SetToolTip($scalesLabel, "Shows count of Scales. Click to ping Scale nodes.")
-	$scalesLabel.Tag = [pscustomobject]@{ Color = $scalesLabel.ForeColor; Font = $scalesLabel.Font }
-	$scalesLabel.Add_MouseEnter({
-			param ($s,
-				$e)
-			try
-			{
-				$s.ForeColor = 'DodgerBlue'
-				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
-				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
-			}
-			catch { }
-		})
-	$scalesLabel.Add_MouseLeave({
-			param ($s,
-				$e)
-			try
-			{
-				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
-				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
-			}
-			catch { }
-		})
+	& $applyLinkStyle $scalesLabel
 	$scalesLabel.Add_Click({
-			$scalesLabel.ForeColor = 'DodgerBlue'
-			try
-			{
-				Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
-			}
-			finally
-			{
-				$scalesLabel.ForeColor = 'Black'
-			}
+			$script:LastActivity = Get-Date
+			try { Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber }
+			catch { }
 		})
 	
-	# Number of Backoffices (clickable)
+	# Number of Backoffices (rightmost, row 2)
 	$NodesBackoffices = New-Object System.Windows.Forms.Label
 	$NodesBackoffices.Text = "Number of Backoffices: N/A"
-	$NodesBackoffices.Location = New-Object System.Drawing.Point(785, 50)
-	$NodesBackoffices.Size = New-Object System.Drawing.Size(200, 20)
+	$NodesBackoffices.Location = New-Object System.Drawing.Point(785, 50) # seed; layout will right-align
+	$NodesBackoffices.AutoSize = $true
 	$NodesBackoffices.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$NodesBackoffices.AutoSize = $false
-	$form.Controls.Add($NodesBackoffices)
-	$NodesBackoffices.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$form.Controls.Add($NodesBackoffices) | Out-Null
 	$toolTip.SetToolTip($NodesBackoffices, "Shows count of Backoffices. Click to ping Backoffice nodes.")
-	$NodesBackoffices.Tag = [pscustomobject]@{ Color = $NodesBackoffices.ForeColor; Font = $NodesBackoffices.Font }
-	$NodesBackoffices.Add_MouseEnter({
-			param ($s,
-				$e)
-			try
-			{
-				$s.ForeColor = 'DodgerBlue'
-				$newStyle = $s.Font.Style -bor [System.Drawing.FontStyle]::Underline
-				$s.Font = New-Object System.Drawing.Font($s.Font, $newStyle)
-			}
-			catch { }
-		})
-	$NodesBackoffices.Add_MouseLeave({
-			param ($s,
-				$e)
-			try
-			{
-				if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
-				if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
-			}
-			catch { }
-		})
+	& $applyLinkStyle $NodesBackoffices
 	$NodesBackoffices.Add_Click({
-			$NodesBackoffices.ForeColor = 'DodgerBlue'
-			try
-			{
-				Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
-			}
-			finally
-			{
-				$NodesBackoffices.ForeColor = 'Black'
-			}
+			$script:LastActivity = Get-Date
+			try { Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber }
+			catch { }
 		})
+	
+	# ─────────────────────────────────────────── Non-overlap/clamping layout (updated) ───────────────────────────────────
+	$TopPadLeft = 50 # left margin for labels
+	$Gap = 12 # spacing between neighbors
+	
+	$layoutTopStrip = {
+		if (-not $form -or $form.IsDisposed) { return }
 		
-	# Log output
+		# Y positions for the two rows
+		$y1 = 30 # Row 1: SMS (L), Store Name (C), Store Number (R)
+		$y2 = 50 # Row 2: Lanes (L), Scales (C), Backoffices (R)
+		
+		# Right edge to align with = log box right (fallback to client right if logBox not ready)
+		$rightEdge = if ($logBox -and -not $logBox.IsDisposed) { $logBox.Left + $logBox.Width }
+		else { $form.ClientSize.Width - 20 }
+		
+		# ---------------- Row 1 ----------------
+		if ($smsVersionLabel) { $smsVersionLabel.Top = $y1; $smsVersionLabel.Left = $TopPadLeft }
+		
+		if ($storeNumberLabel)
+		{
+			$storeNumberLabel.Top = $y1
+			# align the right edge to the logBox right edge
+			$storeNumberLabel.Left = [math]::Max(0, $rightEdge - $storeNumberLabel.Width)
+		}
+		
+		if ($storeNameLabel)
+		{
+			$storeNameLabel.Top = $y1
+			
+			# clamp centered Store Name between SMS (left) and Store Number (right)
+			$leftBound = if ($smsVersionLabel) { $smsVersionLabel.Left + $smsVersionLabel.Width + $Gap }
+			else { $TopPadLeft }
+			$rightBound = if ($storeNumberLabel) { $storeNumberLabel.Left - $Gap }
+			else { $rightEdge }
+			
+			$centered = [math]::Floor(($form.ClientSize.Width - $storeNameLabel.Width) / 2)
+			$safeLeft = [math]::Max($leftBound, [math]::Min($centered, $rightBound - $storeNameLabel.Width))
+			$storeNameLabel.Left = [int][math]::Max(0, $safeLeft)
+		}
+		
+		# ---------------- Row 2 ----------------
+		if ($NodesStore)
+		{
+			$NodesStore.Top = $y2
+			$NodesStore.Left = $TopPadLeft
+		}
+		
+		if ($NodesBackoffices)
+		{
+			$NodesBackoffices.Top = $y2
+			# align the right edge to the logBox right edge
+			$NodesBackoffices.Left = [math]::Max(0, $rightEdge - $NodesBackoffices.Width)
+		}
+		
+		if ($scalesLabel)
+		{
+			$scalesLabel.Top = $y2
+			
+			# clamp centered Scales between Lanes (left) and Backoffices (right)
+			$leftBound2 = if ($NodesStore) { $NodesStore.Left + $NodesStore.Width + $Gap }
+			else { $TopPadLeft }
+			$rightBound2 = if ($NodesBackoffices) { $NodesBackoffices.Left - $Gap }
+			else { $rightEdge }
+			
+			$centered2 = [math]::Floor(($form.ClientSize.Width - $scalesLabel.Width) / 2)
+			$safeLeft2 = [math]::Max($leftBound2, [math]::Min($centered2, $rightBound2 - $scalesLabel.Width))
+			$scalesLabel.Left = [int][math]::Max(0, $safeLeft2)
+		}
+	}
+	
+	
+	# run once + re-run on any size/text/font change (reacts to AutoSize growth/shrink)
+	& $layoutTopStrip
+	$form.add_Resize({ & $layoutTopStrip })
+	foreach ($lbl in @($smsVersionLabel, $storeNameLabel, $storeNumberLabel, $NodesStore, $scalesLabel, $NodesBackoffices))
+	{
+		if ($lbl)
+		{
+			$lbl.add_TextChanged({ & $layoutTopStrip })
+			$lbl.add_FontChanged({ & $layoutTopStrip })
+			$lbl.add_SizeChanged({ & $layoutTopStrip }) # extra safety for AutoSize
+		}
+	}
+	
+	# ───────────────────────────────────────────────────── Log box (unchanged) ─────────────────────────────────────────
 	$logBox = New-Object System.Windows.Forms.RichTextBox
 	$logBox.Location = New-Object System.Drawing.Point(50, 70)
 	$logBox.Size = New-Object System.Drawing.Size(900, 400)
 	$logBox.ReadOnly = $true
 	$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
-	$form.Controls.Add($logBox)
+	$form.Controls.Add($logBox) | Out-Null
 	$toolTip.SetToolTip($logBox, "Log output. Right-click to clear.")
-	# Right-click clear
 	$logBox.Add_MouseUp({
 			param ($sender,
 				$eventArgs)
@@ -19237,7 +19195,7 @@ public static class NativeWin {
 					"Canceled",
 					[System.Windows.Forms.MessageBoxButtons]::OK,
 					[System.Windows.Forms.MessageBoxIcon]::Information
-				)
+				) | Out-Null
 			}
 		})
 	[void]$ContextMenuServer.Items.Add($ServerDBMaintenanceItem)
@@ -19309,13 +19267,12 @@ public static class NativeWin {
 	[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
 	
 	############################################################################
-	# 8) Configure System Settings Menu Item  (UPDATED tooltip + unchanged behavior)
+	# 8) Configure System Settings Menu Item
 	############################################################################
 	$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
 	$ConfigureSystemSettingsItem.ToolTipText = "Set High Performance power plan, disable sleep, ensure required services are Automatic/running, and apply visual tweaks."
 	$ConfigureSystemSettingsItem.Add_Click({
 			$script:LastActivity = Get-Date
-			# Confirm before making system-level changes
 			$confirmResult = [System.Windows.Forms.MessageBox]::Show(
 				"Warning: This will modify power, services, and visual settings. Continue?",
 				"Confirm Changes",
@@ -19324,116 +19281,90 @@ public static class NativeWin {
 			)
 			if ($confirmResult -eq [System.Windows.Forms.DialogResult]::Yes)
 			{
-				try
-				{
-					Configure_System_Settings
-				}
+				try { Configure_System_Settings }
 				catch
 				{
-					# Use your existing logger if present
 					if (Get-Command Write_Log -ErrorAction SilentlyContinue)
 					{
 						Write_Log "Configure_System_Settings threw an error: $_" "red"
 					}
 					else
 					{
-						[System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)", "Configure System Settings", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+						[System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)", "Configure System Settings",
+							[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
 					}
 				}
 			}
 			else
 			{
-				[System.Windows.Forms.MessageBox]::Show(
-					"Operation canceled.",
-					"Canceled",
-					[System.Windows.Forms.MessageBoxButtons]::OK,
-					[System.Windows.Forms.MessageBoxIcon]::Information
-				) | Out-Null
+				[System.Windows.Forms.MessageBox]::Show("Operation canceled.", "Canceled",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 			}
 		})
 	[void]$ContextMenuServer.Items.Add($ConfigureSystemSettingsItem)
 	
 	############################################################################
-	# 9) Organize Desktop Items Menu Item  (NEW button for the split-out function)
+	# 9) Organize Desktop Items Menu Item
 	############################################################################
 	$OrganizeDesktopItemsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize Desktop Items")
 	$OrganizeDesktopItemsItem.ToolTipText = "Move non-system items from the Desktop into the 'Unorganized Items' folder (or a name you choose)."
 	$OrganizeDesktopItemsItem.Add_Click({
 			$script:LastActivity = Get-Date
-			# Optional: Ask whether to use a custom folder name or the default
 			$result = [System.Windows.Forms.MessageBox]::Show(
 				"Use a custom folder name for your unorganized Desktop items? (Click 'No' to use the default: 'Unorganized Items')",
 				"Organize Desktop Items",
 				[System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
 				[System.Windows.Forms.MessageBoxIcon]::Question
 			)
-			
 			if ($result -eq [System.Windows.Forms.DialogResult]::Cancel)
 			{
-				[System.Windows.Forms.MessageBox]::Show("Operation canceled.", "Canceled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				[System.Windows.Forms.MessageBox]::Show("Operation canceled.", "Canceled",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 				return
 			}
-			# Determine target folder name
 			$targetFolderName = "Unorganized Items"
 			if ($result -eq [System.Windows.Forms.DialogResult]::Yes)
 			{
-				# Prompt for custom name (PS 5.1-safe: simple WinForms input dialog)
 				Add-Type -AssemblyName System.Windows.Forms
 				Add-Type -AssemblyName System.Drawing
-				
 				$inForm = New-Object System.Windows.Forms.Form
 				$inForm.Text = "Custom Folder Name"
 				$inForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 				$inForm.StartPosition = "CenterParent"
 				$inForm.ClientSize = New-Object System.Drawing.Size(420, 120)
-				$inForm.MaximizeBox = $false
-				$inForm.MinimizeBox = $false
-				$inForm.TopMost = $true
-				
+				$inForm.MaximizeBox = $false; $inForm.MinimizeBox = $false; $inForm.TopMost = $true
 				$lbl = New-Object System.Windows.Forms.Label
-				$lbl.Text = "Enter a folder name to create on the Desktop:"
-				$lbl.AutoSize = $true
-				$lbl.Location = New-Object System.Drawing.Point(12, 12)
-				$inForm.Controls.Add($lbl)
-				
+				$lbl.Text = "Enter a folder name to create on the Desktop:"; $lbl.AutoSize = $true
+				$lbl.Location = New-Object System.Drawing.Point(12, 12); $inForm.Controls.Add($lbl)
 				$tb = New-Object System.Windows.Forms.TextBox
-				$tb.Size = New-Object System.Drawing.Size(390, 24)
-				$tb.Location = New-Object System.Drawing.Point(12, 40)
-				$tb.Text = "Unorganized Items"
-				$inForm.Controls.Add($tb)
-				
+				$tb.Size = New-Object System.Drawing.Size(390, 24); $tb.Location = New-Object System.Drawing.Point(12, 40)
+				$tb.Text = "Unorganized Items"; $inForm.Controls.Add($tb)
 				$okBtn = New-Object System.Windows.Forms.Button
-				$okBtn.Text = "OK"
-				$okBtn.Size = New-Object System.Drawing.Size(90, 28)
+				$okBtn.Text = "OK"; $okBtn.Size = New-Object System.Drawing.Size(90, 28)
 				$okBtn.Location = New-Object System.Drawing.Point(230, 80)
 				$okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
-				$inForm.AcceptButton = $okBtn
-				$inForm.Controls.Add($okBtn)
-				
+				$inForm.AcceptButton = $okBtn; $inForm.Controls.Add($okBtn)
 				$cancelBtn = New-Object System.Windows.Forms.Button
-				$cancelBtn.Text = "Cancel"
-				$cancelBtn.Size = New-Object System.Drawing.Size(90, 28)
+				$cancelBtn.Text = "Cancel"; $cancelBtn.Size = New-Object System.Drawing.Size(90, 28)
 				$cancelBtn.Location = New-Object System.Drawing.Point(324, 80)
 				$cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-				$inForm.CancelButton = $cancelBtn
-				$inForm.Controls.Add($cancelBtn)
-				
+				$inForm.CancelButton = $cancelBtn; $inForm.Controls.Add($cancelBtn)
 				$dlgRes = $inForm.ShowDialog()
 				if ($dlgRes -ne [System.Windows.Forms.DialogResult]::OK)
 				{
-					[System.Windows.Forms.MessageBox]::Show("Operation canceled.", "Canceled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+					[System.Windows.Forms.MessageBox]::Show("Operation canceled.", "Canceled",
+						[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 					return
 				}
-				
 				$txt = $tb.Text
 				if ([string]::IsNullOrWhiteSpace($txt))
 				{
-					[System.Windows.Forms.MessageBox]::Show("Folder name cannot be empty.", "Invalid Input", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+					[System.Windows.Forms.MessageBox]::Show("Folder name cannot be empty.", "Invalid Input",
+						[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
 					return
 				}
 				$targetFolderName = $txt.Trim()
 			}
-			# Confirm action
 			$confirm = [System.Windows.Forms.MessageBox]::Show(
 				"This will move non-system items from the Desktop into '$targetFolderName'. Continue?",
 				"Confirm Desktop Organization",
@@ -19442,10 +19373,10 @@ public static class NativeWin {
 			)
 			if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes)
 			{
-				[System.Windows.Forms.MessageBox]::Show("Operation canceled.", "Canceled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+				[System.Windows.Forms.MessageBox]::Show("Operation canceled.", "Canceled",
+					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 				return
 			}
-			# Execute organization
 			try
 			{
 				if (Get-Command Organize_Desktop_Items -ErrorAction SilentlyContinue)
@@ -19470,7 +19401,8 @@ public static class NativeWin {
 				}
 				else
 				{
-					[System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)", "Organize Desktop Items", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+					[System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)", "Organize Desktop Items",
+						[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
 				}
 			}
 		})
@@ -19479,9 +19411,7 @@ public static class NativeWin {
 	############################################################################
 	# Show the context menu when the Server Tools button is clicked
 	############################################################################
-	$ServerToolsButton.Add_Click({
-			$ContextMenuServer.Show($ServerToolsButton, 0, $ServerToolsButton.Height)
-		})
+	$ServerToolsButton.Add_Click({ $ContextMenuServer.Show($ServerToolsButton, 0, $ServerToolsButton.Height) })
 	$toolTip.SetToolTip($ServerToolsButton, "Click to see Server-related tools.")
 	$form.Controls.Add($ServerToolsButton)
 	
@@ -19500,18 +19430,13 @@ public static class NativeWin {
 	$LaneToolsButton.Size = New-Object System.Drawing.Size(200, 50)
 	$ContextMenuLane = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuLane.ShowItemToolTips = $true
-	# Left-click: Show context menu
-	$LaneToolsButton.Add_Click({
-			$ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height)
-		})
-	# Right-click: Show protocol window
+	$LaneToolsButton.Add_Click({ $ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height) })
 	$LaneToolsButton.Add_MouseDown({
 			param ($sender,
 				$e)
 			if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
 			{
-				$global:ProtocolForm.Show()
-				$global:ProtocolForm.BringToFront()
+				$global:ProtocolForm.Show(); $global:ProtocolForm.BringToFront()
 			}
 		})
 	
@@ -19836,7 +19761,7 @@ public static class NativeWin {
 	
 	######################################################################################################################
 	# 
-	# General Tools Buttons
+	# General Tools Button
 	#
 	######################################################################################################################
 	
@@ -20030,6 +19955,78 @@ public static class NativeWin {
 	$toolTip.SetToolTip($GeneralToolsButton, "Click to see some tools created for SMS.")
 	$form.Controls.Add($GeneralToolsButton)
 	
+	# -------- Bottom buttons + logbox layout (expand buttons, tight gap) --------
+	$padSide = 50 # left/right margin for logbox & button row
+	$padBottom = 10 # distance from buttons to bottom edge
+	$gapAboveButtons = 8 # <-- vertical gap between logbox and buttons
+	$btnH = 50 # button height (fixed)
+	$btnMinW = 180 # minimum button width so labels never wrap
+	$gapHPreferred = 18 # preferred horizontal gap between buttons
+	$gapHMin = 10 # absolute minimum horizontal gap
+	$minLogH = 140 # don't let the logbox collapse
+	
+	# keep WinForms from fighting our math
+	$ServerToolsButton.Anchor = 'Bottom'
+	$LaneToolsButton.Anchor = 'Bottom'
+	$ScaleToolsButton.Anchor = 'Bottom'
+	$GeneralToolsButton.Anchor = 'Bottom'
+	$logBox.Anchor = 'Top,Left'
+	
+	$layoutBottom = {
+		if (-not $form -or $form.IsDisposed) { return }
+		
+		# --- lay out the logbox first (full width minus side margins) -------------
+		$rowW = [math]::Max(200, $form.ClientSize.Width - (2 * $padSide))
+		$logBox.Left = $padSide
+		$logBox.Top = 70
+		$logBox.Width = $rowW
+		
+		# button row Y; then set logbox height so the vertical gap stays constant
+		$btnY = $form.ClientSize.Height - $btnH - $padBottom
+		$logBox.Height = [math]::Max($minLogH, $btnY - $logBox.Top - $gapAboveButtons)
+		
+		# --- compute dynamic button width so the four buttons fill the row --------
+		# try with preferred gaps first
+		$gapH = $gapHPreferred
+		$btnW = [math]::Floor(($rowW - (3 * $gapH)) / 4)
+		
+		# if too small, clamp width and reduce gaps (not below gapHMin)
+		if ($btnW -lt $btnMinW)
+		{
+			$btnW = $btnMinW
+			$gapH = [math]::Floor(($rowW - (4 * $btnW)) / 3)
+			if ($gapH -lt $gapHMin) { $gapH = $gapHMin }
+		}
+		else
+		{
+			# distribute any leftover pixels (from integer math) into gaps
+			$used = (4 * $btnW) + (3 * $gapH)
+			$extra = $rowW - $used
+			if ($extra -gt 0) { $gapH += [math]::Floor($extra / 3) }
+		}
+		
+		# --- position buttons left->right; group width == logbox width ------------
+		$x = $padSide
+		$ServerToolsButton.SetBounds($x, $btnY, $btnW, $btnH); $x += $btnW + $gapH
+		$LaneToolsButton.SetBounds($x, $btnY, $btnW, $btnH); $x += $btnW + $gapH
+		$ScaleToolsButton.SetBounds($x, $btnY, $btnW, $btnH); $x += $btnW + $gapH
+		$GeneralToolsButton.SetBounds($x, $btnY, $btnW, $btnH)
+		
+		# keep right-side labels aligned with the logbox edge
+		& $layoutTopStrip
+	}
+	
+	# prevent shrinking so far that 4*minW + 3*minGap won't fit
+	$minW = (2 * $padSide) + (4 * $btnMinW) + (3 * $gapHMin)
+	if ($form.MinimumSize.Width -lt $minW)
+	{
+		$form.MinimumSize = New-Object System.Drawing.Size($minW, [math]::Max($form.MinimumSize.Height, 560))
+	}
+	
+	# run now + on resize
+	& $layoutBottom
+	$form.add_Resize({ & $layoutBottom })
+	
 	# ========================= Global Activity Hooks (controls & menus) =========================
 	$__activityControls = @(
 		$form,
@@ -20053,55 +20050,7 @@ public static class NativeWin {
 		}
 		catch { }
 	}
-	# ============================================================================================
 }
-
-
-######################################################################################################################
-#
-# Anchor all controls for resize (PowerShell WinForms)
-#
-######################################################################################################################
-
-$smsVersionLabel.Anchor = 'Top,Left'
-$storeNumberLabel.Anchor = 'Top,Right'
-$NodesBackoffices.Anchor = 'Top,Left'
-$NodesStore.Anchor = 'Top'
-$scalesLabel.Anchor = 'Top,Right'
-$logBox.Anchor = 'Top,Left,Right,Bottom'
-$GeneralToolsButton.Anchor = 'Bottom,Right'
-$ServerToolsButton.Anchor = 'Bottom,Left'
-$LaneToolsButton.Anchor = 'Bottom'
-$ScaleToolsButton.Anchor = 'Bottom'
-
-$form.add_Resize({
-		# Margin around logBox (since no buttons on the right anymore)
-		$sideMargin = 50 # Left and right margin for logBox
-		
-		# Set logBox position and size to fill full width
-		$logBox.Left = $sideMargin
-		$logBox.Top = 70
-		$logBox.Width = [math]::Max(100, $form.ClientSize.Width - (2 * $sideMargin)) # Full width minus margins
-		$logBox.Height = $form.ClientSize.Height - 170 # Leave space for bottom buttons
-		
-		# Center store name label
-		$storeNameLabel.Left = [math]::Max(0, ($form.ClientSize.Width - $storeNameLabel.Width) / 2)
-		
-		# Center NodesStore label
-		$NodesStore.Left = [math]::Max(0, ($form.ClientSize.Width - $NodesStore.Width) / 2)
-		
-		# Space the bottom buttons evenly
-		$buttonWidth = 200
-		$buttonHeight = 50
-		$numButtons = 4
-		$availableWidth = $form.ClientSize.Width
-		$gap = [math]::Max(10, ($availableWidth - ($numButtons * $buttonWidth)) / ($numButtons + 1))
-		$ServerToolsButton.Left = $gap
-		$LaneToolsButton.Left = $ServerToolsButton.Left + $buttonWidth + $gap
-		$ScaleToolsButton.Left = $LaneToolsButton.Left + $buttonWidth + $gap
-		$GeneralToolsButton.Left = $ScaleToolsButton.Left + $buttonWidth + $gap
-		$ServerToolsButton.Top = $LaneToolsButton.Top = $ScaleToolsButton.Top = $GeneralToolsButton.Top = $form.ClientSize.Height - $buttonHeight - 10 # Padding from bottom
-	})
 
 # ===================================================================================================
 #                                       SECTION: Main Script Execution
