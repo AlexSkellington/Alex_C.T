@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.4.7"
-$VersionDate = "2025-08-21"
+$VersionDate = "2025-09-03"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -2292,7 +2292,7 @@ function Generate_SQL_Scripts
 	$defaultStoreDbName = "STORESQL"
 	$defaultLaneDbName = "LANESQL"
 	$dbServer = $script:FunctionResults['DBSERVER']
-		
+	
 	# Retrive the DB name
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
@@ -7924,7 +7924,7 @@ ORDER BY STO.F1000"));
 
 @EXEC(sqi=USERE_DEPLOY_SYS);
 "@
-		
+	
 	# ===============================================================================================================
 	#                                      DEPLOY_FCT.sqm (template)
 	#   Supports CSV and ranges (e.g., 123,234,300-305).
@@ -8036,7 +8036,7 @@ ORDER BY F1000,F1063;
 	{
 		Write_Log "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
 	}
-		
+	
 	# -- DEPLOY_MULTI_FCT.sqm --
 	try
 	{
@@ -8255,8 +8255,13 @@ function Install_And_Check_LOC_SMS_Options_On_Lanes
 		& $updateCountLabel
 	}
 	
-	foreach ($cn in $catNames) { $b = $catButtons[$cn]; [void]$b.Add_Click({ param ($s,
-					$e) $currentCategory = [string]$s.Tag; & $refreshList }) }
+	foreach ($cn in $catNames)
+	{
+		$b = $catButtons[$cn]; [void]$b.Add_Click({
+				param ($s,
+					$e) $currentCategory = [string]$s.Tag; & $refreshList
+			})
+	}
 	[void]$txtSearch.Add_TextChanged({ & $refreshList })
 	[void]$clbOpts.Add_ItemCheck({
 			$i = $_.Index
@@ -8324,8 +8329,11 @@ function Install_And_Check_LOC_SMS_Options_On_Lanes
 		$mach = $lp.Machine
 		$candidates = @("\\$mach\storeman", "\\$mach\c$\Storeman", "\\$mach\d$\Storeman")
 		$storemanRoot = $null
-		foreach ($p in $candidates) { try { if (Test-Path $p) { $storemanRoot = $p; break } }
-			catch { } }
+		foreach ($p in $candidates)
+		{
+			try { if (Test-Path $p) { $storemanRoot = $p; break } }
+			catch { }
+		}
 		if (-not $storemanRoot) { Write_Log ("Lane {0} ({1}): Storeman root not reachable." -f $lp.Lane, $mach) 'Yellow'; continue }
 		
 		$officeRoot = Join-Path $storemanRoot 'Office'
@@ -8876,8 +8884,11 @@ function Install_And_Check_LOC_SMS_Options_On_Lanes
 			}
 		}
 		catch { Write_Log ("Runspace error: {0}" -f $_.Exception.Message) 'Yellow' }
-		finally { try { $psList[$i].Dispose() }
-			catch { } }
+		finally
+		{
+			try { $psList[$i].Dispose() }
+			catch { }
+		}
 		$i = $i + 1
 	}
 	try { $pool.Close(); $pool.Dispose() }
@@ -8892,8 +8903,11 @@ function Install_And_Check_LOC_SMS_Options_On_Lanes
 			Format-Table -AutoSize | Out-String
 		)) 'Gray'
 	
-	foreach ($d in $tempDirs) { try { if (Test-Path $d) { Remove-Item -Path $d -Recurse -Force -ErrorAction SilentlyContinue } }
-		catch { } }
+	foreach ($d in $tempDirs)
+	{
+		try { if (Test-Path $d) { Remove-Item -Path $d -Recurse -Force -ErrorAction SilentlyContinue } }
+		catch { }
+	}
 	
 	Write_Log "Install_And_Check_LOC_SMS_Options_On_Lanes: done." 'Cyan'
 	return $allItems
@@ -9689,8 +9703,10 @@ function INI_Editor
 			}
 			elseif ($sel -is [System.Collections.IEnumerable] -and -not ($sel -is [string])) { $laneNums = @($sel) }
 			elseif ($sel -is [string]) { $laneNums = @($sel -split '[,\s]+' | Where-Object { $_ }) }
-			$laneNums = @($laneNums | ForEach-Object { try { "{0:D3}" -f ([int]$_) }
-					catch { "$_" } }) | Where-Object { $_ -match '^\d{3}$' }
+			$laneNums = @($laneNums | ForEach-Object {
+					try { "{0:D3}" -f ([int]$_) }
+					catch { "$_" }
+				}) | Where-Object { $_ -match '^\d{3}$' }
 			if (-not $laneNums -or $laneNums.Count -eq 0)
 			{
 				[System.Windows.Forms.MessageBox]::Show("No destination lanes selected.", "No selection",
@@ -9778,21 +9794,21 @@ function INI_Editor
 				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 		})
 	
-			# run no-op/activity log when the form actually closes (covers X, Alt+F4, Close button)	$btnClose.Add_Click({
-			$frm.Add_FormClosed({
-					if (-not $state.DidSave -and -not $state.DidDeploy)
-					{
-						Write_Log "[No operations] Editor closed without saving or deploying." "gray"
-					}
-					else
-					{
-						# Optional: a tiny summary
-						$acts = @()
-						if ($state.DidSave) { $acts += "save" }
-						if ($state.DidDeploy) { $acts += "deploy" }
-						Write_Log "[Activity] Completed: $($acts -join ', ')." "gray"
-					}
-				})
+	# run no-op/activity log when the form actually closes (covers X, Alt+F4, Close button)	$btnClose.Add_Click({
+	$frm.Add_FormClosed({
+			if (-not $state.DidSave -and -not $state.DidDeploy)
+			{
+				Write_Log "[No operations] Editor closed without saving or deploying." "gray"
+			}
+			else
+			{
+				# Optional: a tiny summary
+				$acts = @()
+				if ($state.DidSave) { $acts += "save" }
+				if ($state.DidDeploy) { $acts += "deploy" }
+				Write_Log "[Activity] Completed: $($acts -join ', ')." "gray"
+			}
+		})
 	
 	$btnClose.Add_Click({ $frm.Close() })
 	
@@ -11059,107 +11075,222 @@ ORDER BY ScaleCode ASC;
 #                                 FUNCTION: Repair_BMS
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Repairs the "BMS" service by performing the following steps:
-#     1. Stops the "BMS" service if it's running.
-#     2. Deletes the "BMS" service.
-#     3. Registers BMSSrv.exe to recreate the "BMS" service.
-#     4. Starts the newly registered "BMS" service.
-#   Ensures that the script waits appropriately between deleting and registering to prevent errors.
+#   Repairs the "BMS" service by:
+#     1) Stopping/killing BMS-related processes and the service (if running).
+#     2) Deleting the "BMS" service (if it exists).
+#     3) Registering BMSSrv.exe (-reg) to recreate the service.
+#     4) Starting the newly created service.
+#     5) Cleaning the toBizerba staging folder.
+#     6) Launching ScaleManagementAppUpdateSpecials.exe (if present).
+#
+# Notes:
+#   - Uses Write_Log for colored output.
+#   - Includes sleeps and verification loops to avoid timing issues.
+#   - Does not 'exit' the host; returns control to the caller.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
-#   - BMSSrvPath (Optional): Full path to BMSSrv.exe. Defaults to "C:\Bizerba\RetailConnect\BMS\BMSSrv.exe".
+#   - BMSSrvPath (Optional): Full path to BMSSrv.exe (default: C:\Bizerba\RetailConnect\BMS\BMSSrv.exe)
+#   - UpdateSpecialsPath (Optional): Full path to ScaleManagementAppUpdateSpecials.exe
+#                                    (default: C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe)
 # ===================================================================================================
 
 function Repair_BMS
 {
 	[CmdletBinding()]
-	param (
+	param
+	(
+		# -- Path to the BMSSrv.exe used to register the service --
 		[Parameter(Mandatory = $false)]
-		[string]$BMSSrvPath = "$env:SystemDrive\Bizerba\RetailConnect\BMS\BMSSrv.exe"
+		[string]$BMSSrvPath = "$env:SystemDrive\Bizerba\RetailConnect\BMS\BMSSrv.exe",
+		# -- Optional path to the updater launcher you wanted to start at the end --
+		[Parameter(Mandatory = $false)]
+		[string]$UpdateSpecialsPath = "$env:SystemDrive\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe"
 	)
 	
+	# ---------------------------------------
+	# Banner
+	# ---------------------------------------
 	Write_Log "`r`n==================== Starting Repair_BMS Function ====================`r`n" "blue"
 	
-	# -- Check for Admin Privileges --
-	$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+	# ---------------------------------------
+	# 0) Elevation check (fail fast)
+	# ---------------------------------------
+	$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
+	IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 	if (-not $isAdmin)
 	{
 		Write_Log "Insufficient permissions. Please run this script as an Administrator." "red"
 		return
 	}
 	
-	# -- Check BMSSrv.exe Exists --
-	if (-not (Test-Path $BMSSrvPath))
+	# ---------------------------------------
+	# 1) Validate BMSSrv.exe path (fail fast)
+	# ---------------------------------------
+	if (-not (Test-Path -LiteralPath $BMSSrvPath))
 	{
 		Write_Log "BMSSrv.exe not found at path: $BMSSrvPath" "red"
 		return
 	}
 	
+	# ---------------------------------------
+	# Constants & helpers
+	# ---------------------------------------
 	$serviceName = "BMS"
+	$toBizerbaPath = Join-Path -Path "$env:SystemDrive\Bizerba\RetailConnect\BMS" -ChildPath "toBizerba"
+	$processNames = @(
+		# Order matters a bit-kill app UI first, then service binaries
+		"ScaleManagementApp", # ScaleManagementApp.exe
+		"BMSSrv", # BMSSrv.exe (Bizerba service binary)
+		"BMS" # BMS.exe (if exists in some builds)
+	)
 	
-	# -- Service Exists Helper --
+	# Local helper: does service exist?
 	$serviceExists = $false
 	try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null; $serviceExists = $true }
 	catch { $serviceExists = $false }
 	
-	# -- Stop BMS Service if running --
+	# ---------------------------------------
+	# 2) Stop service if present and running
+	# ---------------------------------------
 	if ($serviceExists)
 	{
-		Write_Log "Attempting to stop the '$serviceName' service..." "blue"
-		try
+		$svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+		if ($svc -and $svc.Status -ne 'Stopped')
 		{
-			Stop-Service -Name $serviceName -Force -ErrorAction Stop
-			Write_Log "'$serviceName' service stopped successfully." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to stop '$serviceName' service: $_" "red"
-			return
-		}
-	}
-	else
-	{
-		Write_Log "'$serviceName' service does not exist or is already stopped." "yellow"
-	}
-	
-	# -- Delete the BMS Service if it exists --
-	$serviceExists = $false
-	try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null; $serviceExists = $true }
-	catch { $serviceExists = $false }
-	if ($serviceExists)
-	{
-		Write_Log "Attempting to delete the '$serviceName' service..." "blue"
-		try
-		{
-			sc.exe delete $serviceName | Out-Null
-			Write_Log "'$serviceName' service deleted successfully." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to delete '$serviceName' service: $_" "red"
-			return
-		}
-		Start-Sleep -Seconds 5
-	}
-	else
-	{
-		Write_Log "'$serviceName' service does not exist. Skipping deletion." "yellow"
-	}
-	
-	# -- Register BMSSrv.exe --
-	Write_Log "Registering BMSSrv.exe to recreate the '$serviceName' service..." "blue"
-	try
-	{
-		$process = Start-Process -FilePath $BMSSrvPath -ArgumentList "-reg" -NoNewWindow -Wait -PassThru
-		if ($process.ExitCode -eq 0)
-		{
-			Write_Log "BMSSrv.exe registered successfully." "green"
+			Write_Log "Stopping '$serviceName' service..." "blue"
+			try
+			{
+				Stop-Service -Name $serviceName -Force -ErrorAction Stop
+				# Wait for it to stop
+				$stopWait = 0
+				while ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue).Status -ne 'Stopped' -and $stopWait -lt 30)
+				{
+					Start-Sleep -Seconds 1
+					$stopWait++
+				}
+				Write_Log "'$serviceName' service stopped." "green"
+			}
+			catch
+			{
+				Write_Log "Failed to stop '$serviceName' service: $_" "yellow"
+				# Continue-we will force-kill processes below.
+			}
 		}
 		else
 		{
-			Write_Log "BMSSrv.exe registration failed with exit code $($process.ExitCode)." "red"
+			Write_Log "'$serviceName' service is already stopped." "yellow"
+		}
+	}
+	else
+	{
+		Write_Log "'$serviceName' service does not exist (yet)." "yellow"
+	}
+	
+	# ---------------------------------------
+	# 3) Kill related processes (forced)
+	#    Matches your batch approach but uses Stop-Process for reliability.
+	# ---------------------------------------
+	Write_Log "Force-terminating related processes: $($processNames -join ', ') ..." "blue"
+	foreach ($p in $processNames)
+	{
+		try
+		{
+			$procs = Get-Process -Name $p -ErrorAction SilentlyContinue
+			if ($procs)
+			{
+				$procs | ForEach-Object {
+					Write_Log ("Killing process {0} (PID {1})" -f $_.ProcessName, $_.Id) "yellow"
+				}
+				$procs | Stop-Process -Force -ErrorAction Stop
+			}
+		}
+		catch
+		{
+			Write_Log "Could not kill process '$p': $_" "yellow"
+		}
+	}
+	# Small grace period so the OS releases the service binary/handles
+	Start-Sleep -Seconds 2
+	
+	# ---------------------------------------
+	# 4) Clean the toBizerba staging folder (if present)
+	# ---------------------------------------
+	if (Test-Path -LiteralPath $toBizerbaPath)
+	{
+		try
+		{
+			Write_Log "Cleaning folder: $toBizerbaPath" "blue"
+			# Remove only contents; preserve folder
+			Get-ChildItem -LiteralPath $toBizerbaPath -Force -ErrorAction SilentlyContinue | ForEach-Object {
+				try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop }
+				catch { Write_Log "Failed to remove '$($_.FullName)': $_" "yellow" }
+			}
+			Write_Log "toBizerba folder cleaned." "green"
+		}
+		catch
+		{
+			Write_Log "Failed to clean toBizerba folder: $_" "yellow"
+		}
+	}
+	else
+	{
+		Write_Log "toBizerba folder not found at: $toBizerbaPath (skipping cleanup)" "yellow"
+	}
+	
+	# ---------------------------------------
+	# 5) Delete the BMS service (if it exists)
+	# ---------------------------------------
+	$serviceExists = $false
+	try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null; $serviceExists = $true }
+	catch { $serviceExists = $false }
+	
+	if ($serviceExists)
+	{
+		Write_Log "Deleting '$serviceName' service..." "blue"
+		try
+		{
+			# Using sc.exe for hard delete
+			sc.exe delete $serviceName | Out-Null
+			# Wait up to ~15 seconds for the SCM to forget it
+			$wait = 0
+			while ($wait -lt 15)
+			{
+				Start-Sleep -Seconds 1
+				$wait++
+				try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null }
+				catch { break } # service gone -> break
+			}
+			# Re-check
+			$gone = $false
+			try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null }
+			catch { $gone = $true }
+			if ($gone) { Write_Log "'$serviceName' service deleted." "green" }
+			else { Write_Log "Warning: '$serviceName' still appears in SCM. Continuing..." "yellow" }
+		}
+		catch
+		{
+			Write_Log "Failed to delete '$serviceName' service: $_" "yellow"
+			# Continue; re-registration often overwrites anyway
+		}
+	}
+	else
+	{
+		Write_Log "'$serviceName' service not present; skipping delete." "yellow"
+	}
+	
+	# ---------------------------------------
+	# 6) Register the service again (BMSSrv.exe -reg)
+	# ---------------------------------------
+	Write_Log "Registering service with: `"$BMSSrvPath -reg`"" "blue"
+	try
+	{
+		$proc = Start-Process -FilePath $BMSSrvPath -ArgumentList "-reg" -NoNewWindow -Wait -PassThru
+		if ($proc.ExitCode -ne 0)
+		{
+			Write_Log ("BMSSrv.exe registration failed with exit code {0}." -f $proc.ExitCode) "red"
 			return
 		}
+		Write_Log "BMSSrv.exe registered successfully." "green"
 	}
 	catch
 	{
@@ -11167,16 +11298,52 @@ function Repair_BMS
 		return
 	}
 	
-	# -- Start the BMS Service --
-	Write_Log "Attempting to start the '$serviceName' service..." "blue"
+	# Verify the service appears
+	$appeared = $false
+	for ($i = 0; $i -lt 10; $i++)
+	{
+		Start-Sleep -Seconds 1
+		try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null; $appeared = $true; break }
+		catch { }
+	}
+	if (-not $appeared)
+	{
+		Write_Log "BMS service did not appear after registration. Aborting." "red"
+		return
+	}
+	
+	# ---------------------------------------
+	# 7) Start the BMS service (robust)
+	# ---------------------------------------
+	Write_Log "Starting '$serviceName' service..." "blue"
+	$started = $false
 	try
 	{
 		Start-Service -Name $serviceName -ErrorAction Stop
-		Write_Log "'$serviceName' service started successfully." "green"
+		$started = $true
 	}
 	catch
 	{
-		Write_Log "Failed to start '$serviceName' service: $_" "red"
+		Write_Log "Start-Service failed: $_" "yellow"
+		# Fallback with sc.exe
+		try
+		{
+			sc.exe start $serviceName | Out-Null
+			# brief wait and check
+			Start-Sleep -Seconds 2
+			$svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+			if ($svc -and $svc.Status -eq 'Running') { $started = $true }
+		}
+		catch { Write_Log "sc.exe start also failed: $_" "red" }
+	}
+	
+	if ($started)
+	{
+		Write_Log "'$serviceName' service started successfully." "green"
+	}
+	else
+	{
+		Write_Log "Failed to start '$serviceName' service." "red"
 		return
 	}
 	
@@ -11972,7 +12139,8 @@ function Reboot_Nodes
 	{
 		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes $NodeTypes
 	}
-	if (-not $selection)	{
+	if (-not $selection)
+	{
 		Write_Log "No nodes selected or dialog cancelled." "yellow"
 		Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
 		return
@@ -12112,7 +12280,7 @@ function Reboot_Nodes
 	
 	Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
 	[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected nodes.", "Reboot",
-	[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+		[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 }
 
 # ===================================================================================================
@@ -12491,8 +12659,10 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 	# ---- Normalize lane list (ensure 3-digit strings) ----------------------------------------------
 	$lanes =
 	$selection.Lanes |
-	ForEach-Object { if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber }
-		else { $_ } } |
+	ForEach-Object {
+		if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber }
+		else { $_ }
+	} |
 	ForEach-Object { $_.ToString().PadLeft(3, '0') } |
 	Sort-Object -Unique
 	
@@ -14507,8 +14677,13 @@ PreemptiveUpdates=0
 			$lastOctet = $octets[-1]
 			$brandRaw = ($scaleObj.ScaleBrand -as [string]).Trim()
 			$model = ($scaleObj.ScaleModel -as [string]).Trim()
-			$brand = if ($brandRaw) { ($brandRaw -split ' ' | ForEach-Object { if ($_.Length -gt 0) { $_.Substring(0, 1).ToUpper() + $_.Substring(1).ToLower() }
-						else { $_ } }) -join ' ' }
+			$brand = if ($brandRaw)
+			{
+				($brandRaw -split ' ' | ForEach-Object {
+						if ($_.Length -gt 0) { $_.Substring(0, 1).ToUpper() + $_.Substring(1).ToLower() }
+						else { $_ }
+					}) -join ' '
+			}
 			else { "" }
 			if ($brand -and $model)
 			{
@@ -16284,7 +16459,7 @@ END CATCH;
 		{
 			$why = "No empty candidate found. FAM rows=" + ($famInfo.RowCnt) + ", RPC rows=" + ($rpcInfo.RowCnt) + ", CAT rows=" + ($catInfo.RowCnt) + "."
 			[void][System.Windows.Forms.MessageBox]::Show($why, "Auto: No Empty Table",
-			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
 			Write_Log ("Auto aborted: " + $why) "yellow"
 			Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
 			return
@@ -16640,7 +16815,7 @@ function Deploy_Scale_Currency_Files
     </source>
 </properties>
 "@
-		
+	
 	# ---- Push files to each selected scale ----
 	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
 	$results = @() # Correct: array, not hashtable
@@ -16765,7 +16940,7 @@ function Deploy_Scale_Currency_Files
 			}
 		}
 	}
-Write_Log "`r`n==================== Deploy_Scale_Currency_Files Completed ====================" "blue"
+	Write_Log "`r`n==================== Deploy_Scale_Currency_Files Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -17080,8 +17255,11 @@ function Show_Node_Selection_Form
 			if ($null -ne $e -and "$e".Trim())
 			{
 				$s = "$e".Trim()
-				if ($s -match '(\d{1,3})$') { try { $__ex_lanes += ('{0:D3}' -f ([int]$matches[1])) }
-					catch { } }
+				if ($s -match '(\d{1,3})$')
+				{
+					try { $__ex_lanes += ('{0:D3}' -f ([int]$matches[1])) }
+					catch { }
+				}
 				$__ex_names += $s.ToLower()
 			}
 		}
@@ -18116,8 +18294,11 @@ elseif (Test-SqlConn ('np:' + $machine)) {
 				$resultList = $null
 				try { $resultList = $ps.EndInvoke($handle) }
 				catch { $resultList = $null }
-				finally { try { $ps.Dispose() }
-					catch { } }
+				finally
+				{
+					try { $ps.Dispose() }
+					catch { }
+				}
 				
 				$result = $null
 				if ($resultList -and $resultList.Count -ge 1) { $result = $resultList[0] }
