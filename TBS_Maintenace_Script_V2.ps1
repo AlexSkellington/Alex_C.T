@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.4.7"
-$VersionDate = "2025-09-03"
+$VersionDate = "2025-09-25"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -11072,49 +11072,43 @@ ORDER BY ScaleCode ASC;
 }
 
 # ===================================================================================================
-#                                 FUNCTION: Repair_BMS
+#                                 FUNCTION: Repair_BMS (All-in-one, PS5.1-safe)
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Repairs the "BMS" service by:
-#     1) Stopping/killing BMS-related processes and the service (if running).
-#     2) Deleting the "BMS" service (if it exists).
-#     3) Registering BMSSrv.exe (-reg) to recreate the service.
-#     4) Starting the newly created service.
-#     5) Cleaning the toBizerba staging folder.
-#     6) Launching ScaleManagementAppUpdateSpecials.exe (if present).
+#   Forces "BMS" to stop with escalating actions, then repairs it:
+#     - Disable service (prevent recovery auto-restart while working)
+#     - Stop-Service -Force  ->  sc stop  ->  net stop /y  ->  WMI StopService()
+#     - Kill by Service PID (WMI/sc queryex), by service association (taskkill /FI "SERVICES eq BMS"),
+#       and by known process names (ScaleManagementApp.exe, BMSSrv.exe, BMS.exe)
+#     - Clean toBizerba, delete service, re-register (BMSSrv.exe -reg), start service
 #
 # Notes:
 #   - Uses Write_Log for colored output.
-#   - Includes sleeps and verification loops to avoid timing issues.
-#   - Does not 'exit' the host; returns control to the caller.
+#   - Includes waits and verification loops to avoid timing issues.
+#   - PS5.1-compatible: no nested/local helper functions; everything is inline.
 # ---------------------------------------------------------------------------------------------------
 # Parameters:
 #   - BMSSrvPath (Optional): Full path to BMSSrv.exe (default: C:\Bizerba\RetailConnect\BMS\BMSSrv.exe)
 #   - UpdateSpecialsPath (Optional): Full path to ScaleManagementAppUpdateSpecials.exe
 #                                    (default: C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe)
-# ===================================================================================================
+# ---------------------------------------------------------------------------------------------------
 
 function Repair_BMS
 {
 	[CmdletBinding()]
 	param
 	(
-		# -- Path to the BMSSrv.exe used to register the service --
 		[Parameter(Mandatory = $false)]
 		[string]$BMSSrvPath = "$env:SystemDrive\Bizerba\RetailConnect\BMS\BMSSrv.exe",
-		# -- Optional path to the updater launcher you wanted to start at the end --
 		[Parameter(Mandatory = $false)]
 		[string]$UpdateSpecialsPath = "$env:SystemDrive\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe"
 	)
 	
-	# ---------------------------------------
-	# Banner
-	# ---------------------------------------
 	Write_Log "`r`n==================== Starting Repair_BMS Function ====================`r`n" "blue"
 	
-	# ---------------------------------------
-	# 0) Elevation check (fail fast)
-	# ---------------------------------------
+	# ---------------------------
+	# 0) Elevation check
+	# ---------------------------
 	$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
 	IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 	if (-not $isAdmin)
@@ -11123,107 +11117,292 @@ function Repair_BMS
 		return
 	}
 	
-	# ---------------------------------------
-	# 1) Validate BMSSrv.exe path (fail fast)
-	# ---------------------------------------
+	# ---------------------------
+	# 1) Validate BMSSrv.exe path
+	# ---------------------------
 	if (-not (Test-Path -LiteralPath $BMSSrvPath))
 	{
 		Write_Log "BMSSrv.exe not found at path: $BMSSrvPath" "red"
 		return
 	}
 	
-	# ---------------------------------------
-	# Constants & helpers
-	# ---------------------------------------
+	# ---------------------------
+	# Constants and state flags
+	# ---------------------------
 	$serviceName = "BMS"
 	$toBizerbaPath = Join-Path -Path "$env:SystemDrive\Bizerba\RetailConnect\BMS" -ChildPath "toBizerba"
-	$processNames = @(
-		# Order matters a bit-kill app UI first, then service binaries
-		"ScaleManagementApp", # ScaleManagementApp.exe
-		"BMSSrv", # BMSSrv.exe (Bizerba service binary)
-		"BMS" # BMS.exe (if exists in some builds)
-	)
+	$processNames = @("ScaleManagementApp", "BMSSrv", "BMS") # UI/client first, then service binaries
+	$needHardKill = $false
 	
-	# Local helper: does service exist?
-	$serviceExists = $false
-	try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null; $serviceExists = $true }
-	catch { $serviceExists = $false }
+	# Helper note:
+	#   Since the user requested "all one function", we inline the logic for:
+	#   - Safe service retrieval
+	#   - PID discovery
+	#   - Wait loops for state changes
 	
-	# ---------------------------------------
-	# 2) Stop service if present and running
-	# ---------------------------------------
-	if ($serviceExists)
-	{
-		$svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-		if ($svc -and $svc.Status -ne 'Stopped')
-		{
-			Write_Log "Stopping '$serviceName' service..." "blue"
-			try
-			{
-				Stop-Service -Name $serviceName -Force -ErrorAction Stop
-				# Wait for it to stop
-				$stopWait = 0
-				while ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue).Status -ne 'Stopped' -and $stopWait -lt 30)
-				{
-					Start-Sleep -Seconds 1
-					$stopWait++
-				}
-				Write_Log "'$serviceName' service stopped." "green"
-			}
-			catch
-			{
-				Write_Log "Failed to stop '$serviceName' service: $_" "yellow"
-				# Continue-we will force-kill processes below.
-			}
-		}
-		else
-		{
-			Write_Log "'$serviceName' service is already stopped." "yellow"
-		}
-	}
-	else
-	{
-		Write_Log "'$serviceName' service does not exist (yet)." "yellow"
-	}
+	# -------------------------------------------
+	# Inline: Safe get-service (returns $null if missing)
+	# -------------------------------------------
+	$svcObj = $null
+	try { $svcObj = Get-Service -Name $serviceName -ErrorAction Stop }
+	catch { $svcObj = $null }
 	
-	# ---------------------------------------
-	# 3) Kill related processes (forced)
-	#    Matches your batch approach but uses Stop-Process for reliability.
-	# ---------------------------------------
-	Write_Log "Force-terminating related processes: $($processNames -join ', ') ..." "blue"
-	foreach ($p in $processNames)
+	# ---------------------------------------------------------
+	# 2) Disable service (block auto-restart/recovery while we work)
+	# ---------------------------------------------------------
+	if ($svcObj)
 	{
 		try
 		{
-			$procs = Get-Process -Name $p -ErrorAction SilentlyContinue
-			if ($procs)
+			if ($svcObj.StartType -ne 'Disabled')
 			{
-				$procs | ForEach-Object {
-					Write_Log ("Killing process {0} (PID {1})" -f $_.ProcessName, $_.Id) "yellow"
-				}
-				$procs | Stop-Process -Force -ErrorAction Stop
+				Write_Log "Disabling '$serviceName' temporarily to prevent auto-restart during repair..." "blue"
+				Set-Service -Name $serviceName -StartupType Disabled
 			}
 		}
 		catch
 		{
-			Write_Log "Could not kill process '$p': $_" "yellow"
+			Write_Log "Failed to set '$serviceName' startup type to Disabled: $_" "yellow"
 		}
 	}
-	# Small grace period so the OS releases the service binary/handles
-	Start-Sleep -Seconds 2
+	else
+	{
+		Write_Log "'$serviceName' service not found before stop attempts." "yellow"
+	}
 	
-	# ---------------------------------------
-	# 4) Clean the toBizerba staging folder (if present)
-	# ---------------------------------------
+	# ---------------------------------------------------------
+	# 3) Stop service via escalating methods (each with inline waits)
+	# ---------------------------------------------------------
+	
+	# 3.1 Stop-Service -Force
+	$svcObj = $null; try { $svcObj = Get-Service -Name $serviceName -ErrorAction Stop }
+	catch { $svcObj = $null }
+	if ($svcObj -and $svcObj.Status -ne 'Stopped')
+	{
+		Write_Log "Stopping '$serviceName' via Stop-Service -Force..." "blue"
+		try { Stop-Service -Name $serviceName -Force -ErrorAction Stop }
+		catch { Write_Log "Stop-Service failed: $_" "yellow" }
+		
+		# Inline wait up to 10s for Stopped
+		$elapsed = 0; $desired = 'Stopped'; $timeoutSec = 10; $stopped = $false
+		while ($elapsed -lt $timeoutSec)
+		{
+			$svcCheck = $null; try { $svcCheck = Get-Service -Name $serviceName -ErrorAction Stop }
+			catch { $svcCheck = $null }
+			if (-not $svcCheck) { $stopped = $true; break } # Missing => acceptable as stopped
+			if ($svcCheck.Status -eq $desired) { $stopped = $true; break }
+			Start-Sleep -Seconds 1; $elapsed++
+		}
+		if (-not $stopped) { Write_Log "Service did not stop after Stop-Service. Escalating..." "yellow" }
+	}
+	
+	# 3.2 sc.exe stop
+	$svcObj = $null; try { $svcObj = Get-Service -Name $serviceName -ErrorAction Stop }
+	catch { $svcObj = $null }
+	if ($svcObj -and $svcObj.Status -ne 'Stopped')
+	{
+		Write_Log "Stopping '$serviceName' via sc.exe stop..." "blue"
+		try { sc.exe stop $serviceName | Out-Null }
+		catch { Write_Log "sc stop failed: $_" "yellow" }
+		
+		# Inline wait up to 10s
+		$elapsed = 0; $desired = 'Stopped'; $timeoutSec = 10; $stopped = $false
+		while ($elapsed -lt $timeoutSec)
+		{
+			$svcCheck = $null; try { $svcCheck = Get-Service -Name $serviceName -ErrorAction Stop }
+			catch { $svcCheck = $null }
+			if (-not $svcCheck) { $stopped = $true; break }
+			if ($svcCheck.Status -eq $desired) { $stopped = $true; break }
+			Start-Sleep -Seconds 1; $elapsed++
+		}
+		if (-not $stopped) { Write_Log "Service did not stop after sc stop. Escalating..." "yellow" }
+	}
+	
+	# 3.3 net stop /y
+	$svcObj = $null; try { $svcObj = Get-Service -Name $serviceName -ErrorAction Stop }
+	catch { $svcObj = $null }
+	if ($svcObj -and $svcObj.Status -ne 'Stopped')
+	{
+		Write_Log "Stopping '$serviceName' via 'net stop /y' (with dependencies)..." "blue"
+		try { cmd /c "net stop $serviceName /y" | Out-Null }
+		catch { Write_Log "net stop failed: $_" "yellow" }
+		
+		# Inline wait up to 10s
+		$elapsed = 0; $desired = 'Stopped'; $timeoutSec = 10; $stopped = $false
+		while ($elapsed -lt $timeoutSec)
+		{
+			$svcCheck = $null; try { $svcCheck = Get-Service -Name $serviceName -ErrorAction Stop }
+			catch { $svcCheck = $null }
+			if (-not $svcCheck) { $stopped = $true; break }
+			if ($svcCheck.Status -eq $desired) { $stopped = $true; break }
+			Start-Sleep -Seconds 1; $elapsed++
+		}
+		if (-not $stopped) { Write_Log "Service did not stop after 'net stop'. Escalating..." "yellow" }
+	}
+	
+	# 3.4 WMI/CIM StopService()
+	$svcObj = $null; try { $svcObj = Get-Service -Name $serviceName -ErrorAction Stop }
+	catch { $svcObj = $null }
+	if ($svcObj -and $svcObj.Status -ne 'Stopped')
+	{
+		Write_Log "Stopping '$serviceName' via WMI StopService()..." "blue"
+		try
+		{
+			$svcWmi = $null
+			try { $svcWmi = Get-CimInstance -ClassName Win32_Service -Filter ("Name='{0}'" -f $serviceName) -ErrorAction Stop }
+			catch { $svcWmi = $null }
+			if ($svcWmi)
+			{
+				$ret = $null
+				try { $ret = Invoke-CimMethod -InputObject $svcWmi -MethodName StopService -ErrorAction SilentlyContinue }
+				catch { $ret = $null }
+				if ($ret) { Write_Log ("WMI StopService() returned: {0}" -f ($ret.ReturnValue)) "yellow" }
+			}
+		}
+		catch
+		{
+			Write_Log "WMI StopService failed: $_" "yellow"
+		}
+		
+		# Inline wait up to 8s; if still not stopped, set hard-kill flag
+		$elapsed = 0; $desired = 'Stopped'; $timeoutSec = 8; $stopped = $false
+		while ($elapsed -lt $timeoutSec)
+		{
+			$svcCheck = $null; try { $svcCheck = Get-Service -Name $serviceName -ErrorAction Stop }
+			catch { $svcCheck = $null }
+			if (-not $svcCheck) { $stopped = $true; break }
+			if ($svcCheck.Status -eq $desired) { $stopped = $true; break }
+			Start-Sleep -Seconds 1; $elapsed++
+		}
+		if (-not $stopped) { Write_Log "Service still not stopped after WMI StopService. Preparing hard kill..." "yellow"; $needHardKill = $true }
+	}
+	
+	# ---------------------------------------------------------
+	# 4) Hard kill: by PID, by service association, and by names
+	# ---------------------------------------------------------
+	$svcObj = $null; try { $svcObj = Get-Service -Name $serviceName -ErrorAction Stop }
+	catch { $svcObj = $null }
+	if ($needHardKill -or ($svcObj -and $svcObj.Status -ne 'Stopped'))
+	{
+		# 4.1 Kill by PID (WMI first, then sc queryex)
+		$pid = $null
+		
+		# Try WMI/CIM for PID
+		try
+		{
+			$svcWmi = Get-CimInstance -ClassName Win32_Service -Filter ("Name='{0}'" -f $serviceName) -ErrorAction Stop
+			if ($svcWmi -and $svcWmi.ProcessId -gt 0) { $pid = [int]$svcWmi.ProcessId }
+		}
+		catch { }
+		
+		# Fallback: sc queryex
+		if (-not $pid)
+		{
+			try
+			{
+				$scOut = sc.exe queryex $serviceName 2>&1
+				if ($scOut)
+				{
+					foreach ($line in $scOut)
+					{
+						if ($line -match 'PID\s*:\s*(\d+)') { $pid = [int]$Matches[1]; break }
+					}
+				}
+			}
+			catch { }
+		}
+		
+		# Kill the PID if still running
+		if ($pid -and (Get-Process -Id $pid -ErrorAction SilentlyContinue))
+		{
+			try
+			{
+				Write_Log ("Killing service PID {0} (from queryex/WMI)..." -f $pid) "blue"
+				Stop-Process -Id $pid -Force -ErrorAction Stop
+			}
+			catch
+			{
+				Write_Log "Killing PID $pid failed: $_" "yellow"
+			}
+		}
+		
+		# 4.2 Kill any process hosting the service (SERVICES filter)
+		try
+		{
+			Write_Log "Killing any process hosting '$serviceName' (taskkill /F /FI 'SERVICES eq BMS')..." "blue"
+			cmd /c 'taskkill /F /FI "SERVICES eq BMS"' | Out-Null
+		}
+		catch
+		{
+			Write_Log "taskkill by SERVICES filter failed (may be fine): $_" "yellow"
+		}
+		
+		# 4.3 Kill well-known binaries by name
+		Write_Log "Force-terminating related processes by name: $($processNames -join ', ') ..." "blue"
+		foreach ($p in $processNames)
+		{
+			try
+			{
+				$procs = Get-Process -Name $p -ErrorAction SilentlyContinue
+				if ($procs)
+				{
+					$procs | ForEach-Object { Write_Log ("Killing process {0} (PID {1})" -f $_.ProcessName, $_.Id) "yellow" }
+					$procs | Stop-Process -Force -ErrorAction Stop
+				}
+			}
+			catch
+			{
+				Write_Log "Could not kill process '$p': $_" "yellow"
+			}
+		}
+		
+		Start-Sleep -Seconds 2
+	}
+	
+	# ---------------------------------------------------------
+	# Final verification: ensure service is stopped (or gone)
+	# ---------------------------------------------------------
+	$elapsed = 0; $desired = 'Stopped'; $timeoutSec = 5; $stopped = $false
+	while ($elapsed -lt $timeoutSec)
+	{
+		$svcCheck = $null; try { $svcCheck = Get-Service -Name $serviceName -ErrorAction Stop }
+		catch { $svcCheck = $null }
+		if (-not $svcCheck) { $stopped = $true; break }
+		if ($svcCheck.Status -eq $desired) { $stopped = $true; break }
+		Start-Sleep -Seconds 1; $elapsed++
+	}
+	
+	if (-not $stopped)
+	{
+		$svcObj = $null; try { $svcObj = Get-Service -Name $serviceName -ErrorAction Stop }
+		catch { $svcObj = $null }
+		if ($svcObj -and $svcObj.Status -ne 'Stopped')
+		{
+			Write_Log "WARNING: '$serviceName' still not stopped after all methods; proceeding with delete anyway." "yellow"
+		}
+		else
+		{
+			Write_Log "'$serviceName' appears stopped." "green"
+		}
+	}
+	else
+	{
+		Write_Log "'$serviceName' confirmed stopped." "green"
+	}
+	
+	# ---------------------------------------------------------
+	# 5) Clean the toBizerba staging folder (if present)
+	# ---------------------------------------------------------
 	if (Test-Path -LiteralPath $toBizerbaPath)
 	{
 		try
 		{
 			Write_Log "Cleaning folder: $toBizerbaPath" "blue"
-			# Remove only contents; preserve folder
-			Get-ChildItem -LiteralPath $toBizerbaPath -Force -ErrorAction SilentlyContinue | ForEach-Object {
-				try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop }
-				catch { Write_Log "Failed to remove '$($_.FullName)': $_" "yellow" }
+			$items = Get-ChildItem -LiteralPath $toBizerbaPath -Force -ErrorAction SilentlyContinue
+			foreach ($it in $items)
+			{
+				try { Remove-Item -LiteralPath $it.FullName -Recurse -Force -ErrorAction Stop }
+				catch { Write_Log "Failed to remove '$($it.FullName)': $_" "yellow" }
 			}
 			Write_Log "toBizerba folder cleaned." "green"
 		}
@@ -11237,40 +11416,42 @@ function Repair_BMS
 		Write_Log "toBizerba folder not found at: $toBizerbaPath (skipping cleanup)" "yellow"
 	}
 	
-	# ---------------------------------------
-	# 5) Delete the BMS service (if it exists)
-	# ---------------------------------------
-	$serviceExists = $false
-	try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null; $serviceExists = $true }
-	catch { $serviceExists = $false }
-	
-	if ($serviceExists)
+	# ---------------------------------------------------------
+	# 6) Delete the BMS service (best-effort)
+	# ---------------------------------------------------------
+	$svcObj = $null; try { $svcObj = Get-Service -Name $serviceName -ErrorAction Stop }
+	catch { $svcObj = $null }
+	if ($svcObj)
 	{
-		Write_Log "Deleting '$serviceName' service..." "blue"
+		Write_Log "Deleting '$serviceName' service via sc.exe delete..." "blue"
 		try
 		{
-			# Using sc.exe for hard delete
 			sc.exe delete $serviceName | Out-Null
-			# Wait up to ~15 seconds for the SCM to forget it
+			
+			# Wait up to 15s for SCM to reflect deletion
 			$wait = 0
 			while ($wait -lt 15)
 			{
-				Start-Sleep -Seconds 1
-				$wait++
-				try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null }
-				catch { break } # service gone -> break
+				Start-Sleep -Seconds 1; $wait++
+				$svcCheck = $null; try { $svcCheck = Get-Service -Name $serviceName -ErrorAction Stop }
+				catch { $svcCheck = $null }
+				if (-not $svcCheck) { break }
 			}
-			# Re-check
-			$gone = $false
-			try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null }
-			catch { $gone = $true }
-			if ($gone) { Write_Log "'$serviceName' service deleted." "green" }
-			else { Write_Log "Warning: '$serviceName' still appears in SCM. Continuing..." "yellow" }
+			
+			$svcCheck = $null; try { $svcCheck = Get-Service -Name $serviceName -ErrorAction Stop }
+			catch { $svcCheck = $null }
+			if (-not $svcCheck)
+			{
+				Write_Log "'$serviceName' service deleted." "green"
+			}
+			else
+			{
+				Write_Log "Warning: '$serviceName' still appears in SCM. Continuing..." "yellow"
+			}
 		}
 		catch
 		{
 			Write_Log "Failed to delete '$serviceName' service: $_" "yellow"
-			# Continue; re-registration often overwrites anyway
 		}
 	}
 	else
@@ -11278,9 +11459,9 @@ function Repair_BMS
 		Write_Log "'$serviceName' service not present; skipping delete." "yellow"
 	}
 	
-	# ---------------------------------------
-	# 6) Register the service again (BMSSrv.exe -reg)
-	# ---------------------------------------
+	# ---------------------------------------------------------
+	# 7) Register the service again (BMSSrv.exe -reg)
+	# ---------------------------------------------------------
 	Write_Log "Registering service with: `"$BMSSrvPath -reg`"" "blue"
 	try
 	{
@@ -11298,13 +11479,14 @@ function Repair_BMS
 		return
 	}
 	
-	# Verify the service appears
+	# Verify service appears (wait up to 15s)
 	$appeared = $false
-	for ($i = 0; $i -lt 10; $i++)
+	for ($i = 0; $i -lt 15; $i++)
 	{
 		Start-Sleep -Seconds 1
-		try { Get-Service -Name $serviceName -ErrorAction Stop | Out-Null; $appeared = $true; break }
-		catch { }
+		$svcCheck = $null; try { $svcCheck = Get-Service -Name $serviceName -ErrorAction Stop }
+		catch { $svcCheck = $null }
+		if ($svcCheck) { $appeared = $true; break }
 	}
 	if (-not $appeared)
 	{
@@ -11312,9 +11494,13 @@ function Repair_BMS
 		return
 	}
 	
-	# ---------------------------------------
-	# 7) Start the BMS service (robust)
-	# ---------------------------------------
+	# Restore startup to Automatic (we disabled earlier)
+	try { Set-Service -Name $serviceName -StartupType Automatic }
+	catch { Write_Log "Failed to set '$serviceName' startup type to Automatic: $_" "yellow" }
+	
+	# ---------------------------------------------------------
+	# 8) Start the BMS service (robust)
+	# ---------------------------------------------------------
 	Write_Log "Starting '$serviceName' service..." "blue"
 	$started = $false
 	try
@@ -11325,16 +11511,18 @@ function Repair_BMS
 	catch
 	{
 		Write_Log "Start-Service failed: $_" "yellow"
-		# Fallback with sc.exe
 		try
 		{
 			sc.exe start $serviceName | Out-Null
-			# brief wait and check
 			Start-Sleep -Seconds 2
-			$svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-			if ($svc -and $svc.Status -eq 'Running') { $started = $true }
+			$svcCheck = $null; try { $svcCheck = Get-Service -Name $serviceName -ErrorAction Stop }
+			catch { $svcCheck = $null }
+			if ($svcCheck -and $svcCheck.Status -eq 'Running') { $started = $true }
 		}
-		catch { Write_Log "sc.exe start also failed: $_" "red" }
+		catch
+		{
+			Write_Log "sc.exe start also failed: $_" "red"
+		}
 	}
 	
 	if ($started)
@@ -15638,7 +15826,7 @@ function Update_ScaleConfig_And_DB
 	Add-Type -AssemblyName System.Windows.Forms
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select Weighted Item Marking Method"
-	$form.Size = New-Object System.Drawing.Size(420, 170)
+	$form.Size = New-Object System.Drawing.Size(420, 180)
 	$form.StartPosition = "CenterScreen"
 	$form.Topmost = $true
 	$label = New-Object System.Windows.Forms.Label
@@ -16634,6 +16822,7 @@ END CATCH;
 #     \\<ScaleIP>\c$\bizstorecard\bizerba\_fileIO\generic_data\in
 #   Uses shared mappings and writes all file contents inline (no external dependencies).
 #   Reports detailed status per scale.
+#   CHANGE: Writes files as UTF-8 **without BOM** to prevent a leading ï»¿ (or similar) before the currency.
 # ===================================================================================================
 
 function Deploy_Scale_Currency_Files
@@ -16656,80 +16845,70 @@ function Deploy_Scale_Currency_Files
 	# ---- Create Form ----
 	$form = New-Object Windows.Forms.Form
 	$form.Text = "Set Currency Symbol"
-	$form.Size = [System.Drawing.Size]::new(420, 250) # Taller to accommodate preview label
+	$form.Size = [System.Drawing.Size]::new(420, 250)
 	$form.FormBorderStyle = 'FixedDialog'
 	$form.StartPosition = 'CenterScreen'
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
-	$form.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 252) # Softer light gray for modern feel
-	$form.Icon = [System.Drawing.SystemIcons]::Information # Add a simple info icon (or load a custom one)
+	$form.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 252)
+	$form.Icon = [System.Drawing.SystemIcons]::Information
 	
 	# ---- Centered, bold, wrapped label ----
 	$lbl = New-Object Windows.Forms.Label
 	$lbl.Text = "Please enter the currency symbol to use`nfor all scale price files:"
 	$lbl.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
 	$lbl.Width = $form.ClientSize.Width - 40
-	$lbl.Height = 50 # Adjusted for better line spacing
+	$lbl.Height = 50
 	$lbl.Location = New-Object System.Drawing.Point(20, 20)
 	$lbl.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$lbl.AutoSize = $false
-	$lbl.ForeColor = [System.Drawing.Color]::FromArgb(33, 33, 33) # Darker text for contrast
+	$lbl.ForeColor = [System.Drawing.Color]::FromArgb(33, 33, 33)
 	$form.Controls.Add($lbl)
 	
-	# ---- ComboBox for common symbols (improved from TextBox: allows dropdown + custom input) ----
+	# ---- ComboBox for common symbols ----
 	$cmbCurrency = New-Object Windows.Forms.ComboBox
-	$cmbCurrency.Items.AddRange(@('$', [char]0x20AC, [char]0x00A3, [char]0x00A5, [char]0x20B9, [char]0x20BD, [char]0x20A9, [char]0x20BA, [char]0x20AA)) # Encoding-safe symbols
-	$cmbCurrency.Text = '$' # Default
+	$cmbCurrency.Items.AddRange(@('$', [char]0x20AC, [char]0x00A3, [char]0x00A5, [char]0x20B9, [char]0x20BD, [char]0x20A9, [char]0x20BA, [char]0x20AA))
+	$cmbCurrency.Text = '$'
 	$cmbCurrency.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Regular)
-	$cmbCurrency.DropDownStyle = 'DropDown' # Allows typing custom values
+	$cmbCurrency.DropDownStyle = 'DropDown'
 	$cmbCurrency.MaxLength = 3
-	$cmbCurrency.Width = 100 # Wider for visibility
+	$cmbCurrency.Width = 100
 	$cmbCurrency.Height = 30
-	$cmbCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $cmbCurrency.Width)/2), 80) # Centered below label
-	$cmbCurrency.FlatStyle = 'Flat' # Cleaner look
+	$cmbCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $cmbCurrency.Width)/2), 80)
+	$cmbCurrency.FlatStyle = 'Flat'
 	$form.Controls.Add($cmbCurrency)
 	
-	# ---- Tooltip for ComboBox (accessibility) ----
+	# ---- Tooltip ----
 	$toolTip = New-Object System.Windows.Forms.ToolTip
 	$toolTip.SetToolTip($cmbCurrency, "Select a common symbol or type a custom one (up to 3 characters).")
 	
-	# ---- Preview Label (updates in real-time) ----
+	# ---- Preview Label ----
 	$previewLabel = New-Object Windows.Forms.Label
-	$previewLabel.Text = "Preview: $1.99" # Initial preview with default
+	$previewLabel.Text = "Preview: $1.99"
 	$previewLabel.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Italic)
 	$previewLabel.Width = $form.ClientSize.Width - 40
 	$previewLabel.Height = 30
-	$previewLabel.Location = New-Object System.Drawing.Point(20, 120) # Below ComboBox
+	$previewLabel.Location = New-Object System.Drawing.Point(20, 120)
 	$previewLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-	$previewLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 100) # Muted gray for subtlety
+	$previewLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 100)
 	$form.Controls.Add($previewLabel)
 	
-	# ---- Event: Update preview in real-time on text change (DEFAULTS TO $) ----
-	# CHANGED: Normalize empty/whitespace to '$' so preview never goes blank.
+	# ---- Update preview on text change ----
 	$cmbCurrency.Add_TextChanged({
 			$symbol = ($this.Text).Trim()
-			if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = '$' } # <-- DEFAULT
+			if ([string]::IsNullOrWhiteSpace($symbol)) { $symbol = '$' }
 			$previewLabel.Text = "Preview: $($symbol)1.99"
 		})
-	
-	# OPTIONAL HARDENING: Ensure the control itself shows '$' if left empty.
-	# NEW: On leave, force '$' if user cleared it.
 	$cmbCurrency.Add_Leave({
 			if ([string]::IsNullOrWhiteSpace($cmbCurrency.Text)) { $cmbCurrency.Text = '$' }
 		})
-	
-	# OPTIONAL: On form shown, re-sync preview and ensure default is set.
-	# NEW: Guarantees correct preview even if order of events shifts.
 	$form.Add_Shown({
 			if ([string]::IsNullOrWhiteSpace($cmbCurrency.Text)) { $cmbCurrency.Text = '$' }
 			$previewLabel.Text = "Preview: $($cmbCurrency.Text.Trim())1.99"
 		})
 	
-	# ---- OK and Cancel buttons, spaced and centered at the bottom ----
-	$btnWidth = 100
-	$btnHeight = 36 # Slightly taller for touch-friendliness
-	$btnSpacing = 24
-	$btnY = 170 # Adjusted for taller form with preview
+	# ---- OK / Cancel ----
+	$btnWidth = 100; $btnHeight = 36; $btnSpacing = 24; $btnY = 170
 	$totalBtnWidth = $btnWidth * 2 + $btnSpacing
 	$startX = [Math]::Floor(($form.ClientSize.Width - $totalBtnWidth)/2)
 	
@@ -16738,12 +16917,11 @@ function Deploy_Scale_Currency_Files
 	$btnOK.Size = [System.Drawing.Size]::new($btnWidth, $btnHeight)
 	$btnOK.Location = [System.Drawing.Point]::new($startX, $btnY)
 	$btnOK.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-	$btnOK.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204) # Modern blue (Windows accent)
+	$btnOK.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
 	$btnOK.ForeColor = [System.Drawing.Color]::White
 	$btnOK.FlatStyle = 'Flat'
 	$btnOK.FlatAppearance.BorderSize = 0
-	# Add hover effect
-	$btnOK.Add_MouseEnter({ $this.BackColor = [System.Drawing.Color]::FromArgb(0, 103, 173) }) # Darker on hover
+	$btnOK.Add_MouseEnter({ $this.BackColor = [System.Drawing.Color]::FromArgb(0, 103, 173) })
 	$btnOK.Add_MouseLeave({ $this.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204) })
 	$btnOK.Add_Click({
 			if ([string]::IsNullOrWhiteSpace($cmbCurrency.Text))
@@ -16761,18 +16939,16 @@ function Deploy_Scale_Currency_Files
 	$btnCancel.Size = [System.Drawing.Size]::new($btnWidth, $btnHeight)
 	$btnCancel.Location = [System.Drawing.Point]::new($startX + $btnWidth + $btnSpacing, $btnY)
 	$btnCancel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-	$btnCancel.BackColor = [System.Drawing.Color]::FromArgb(232, 72, 85) # Softer red
+	$btnCancel.BackColor = [System.Drawing.Color]::FromArgb(232, 72, 85)
 	$btnCancel.ForeColor = [System.Drawing.Color]::White
 	$btnCancel.FlatStyle = 'Flat'
 	$btnCancel.FlatAppearance.BorderSize = 0
-	# Add hover effect
-	$btnCancel.Add_MouseEnter({ $this.BackColor = [System.Drawing.Color]::FromArgb(196, 61, 72) }) # Darker on hover
+	$btnCancel.Add_MouseEnter({ $this.BackColor = [System.Drawing.Color]::FromArgb(196, 61, 72) })
 	$btnCancel.Add_MouseLeave({ $this.BackColor = [System.Drawing.Color]::FromArgb(232, 72, 85) })
 	$btnCancel.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $form.Close() })
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
 	
-	# ---- Responsive reposition on resize (future-proof if made resizable) ----
 	$form.Add_Resize({
 			$lbl.Width = $form.ClientSize.Width - 40
 			$cmbCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $cmbCurrency.Width)/2), 80)
@@ -16783,7 +16959,7 @@ function Deploy_Scale_Currency_Files
 			$btnCancel.Location = [System.Drawing.Point]::new($startX + $btnWidth + $btnSpacing, $btnY)
 		})
 	
-	# ---- Show the form and return the result ----
+	# ---- Show the form ----
 	$res = $form.ShowDialog()
 	if ($res -ne [System.Windows.Forms.DialogResult]::OK)
 	{
@@ -16791,11 +16967,14 @@ function Deploy_Scale_Currency_Files
 		return
 	}
 	$currency = $cmbCurrency.Text.Trim()
-	if (-not $currency) { $currency = '$' } # Fallback if somehow empty after validation
-	# Use $currency in your script (e.g., Write_Log "Selected currency: $currency" "green")
+	if (-not $currency) { $currency = '$' }
 	
 	# ---- Inline file content templates ----
+	# NOTE: These are what get *inlined* by the scale. If a BOM is present at the start of the file,
+	#       the BOM shows up right before the first visible token (your currency). Hence No-BOM writes.
 	$totalprice_txt = "=$%$ BT20 =`"$currency *#.##`""
+	$unitprice_txt = "=$%$ BT10 =`"$currency *#.##`""
+	
 	$totalprice_properties = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <properties>
@@ -16805,7 +16984,7 @@ function Deploy_Scale_Currency_Files
     </source>
 </properties>
 "@
-	$unitprice_txt = "=$%$ BT10 =`"$currency *#.##`""
+	
 	$unitprice_properties = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <properties>
@@ -16818,7 +16997,7 @@ function Deploy_Scale_Currency_Files
 	
 	# ---- Push files to each selected scale ----
 	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
-	$results = @() # Correct: array, not hashtable
+	$results = @()
 	
 	foreach ($scaleCode in $selection.Scales)
 	{
@@ -16827,7 +17006,6 @@ function Deploy_Scale_Currency_Files
 		$scaleLabel = $scaleObj.ScaleName
 		$targetPath = "\\$scaleIP\c$\bizstorecard\bizerba\_fileIO\generic_data\in"
 		
-		# Prepare a result object as PSCustomObject
 		$result = [PSCustomObject]@{
 			Scale = "$scaleLabel [$scaleIP]"
 			ScaleCode = $scaleCode
@@ -16839,10 +17017,7 @@ function Deploy_Scale_Currency_Files
 		$isAccessible = $false
 		try
 		{
-			if (Test-Path $targetPath -ErrorAction Stop)
-			{
-				$isAccessible = $true
-			}
+			if (Test-Path $targetPath -ErrorAction Stop) { $isAccessible = $true }
 		}
 		catch
 		{
@@ -16853,7 +17028,6 @@ function Deploy_Scale_Currency_Files
 			continue
 		}
 		
-		# Create folder if missing
 		if (-not $isAccessible)
 		{
 			try
@@ -16871,14 +17045,28 @@ function Deploy_Scale_Currency_Files
 			}
 		}
 		
-		# Attempt file deployment
+		# ==========================================================================================
+		# CHANGED: Write files as UTF-8 **without BOM** so the first bytes are the actual content.
+		#          Using .NET API here because PS5.1 `-Encoding UTF8` includes a BOM.
+		# ==========================================================================================
 		try
 		{
-			Set-Content -Path (Join-Path $targetPath 'na_f_totalprice.txt') -Value $totalprice_txt -Encoding UTF8 -ErrorAction Stop
-			Set-Content -Path (Join-Path $targetPath 'na_f_totalprice.properties') -Value $totalprice_properties -Encoding UTF8 -ErrorAction Stop
-			Set-Content -Path (Join-Path $targetPath 'na_f_unitprice.txt') -Value $unitprice_txt -Encoding UTF8 -ErrorAction Stop
-			Set-Content -Path (Join-Path $targetPath 'na_f_unitprice.properties') -Value $unitprice_properties -Encoding UTF8 -ErrorAction Stop
-			$result.Details += "Files copied successfully."
+			$utf8NoBom = New-Object System.Text.UTF8Encoding($false) # $false => NO BOM
+			
+			[System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_totalprice.txt'), $totalprice_txt, $utf8NoBom) # No BOM
+			[System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_unitprice.txt'), $unitprice_txt, $utf8NoBom) # No BOM
+			[System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_totalprice.properties'), $totalprice_properties, $utf8NoBom) # No BOM
+			[System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_unitprice.properties'), $unitprice_properties, $utf8NoBom) # No BOM
+			
+			# Optional: ensure CRLF line endings (Windows) on the XML (usually fine as-is).
+			# If your environment requires explicit CRLF normalization, uncomment:
+			# $crlf = "`r`n"
+			# [System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_totalprice.properties'),
+			#     ($totalprice_properties -replace "`r?`n",$crlf), $utf8NoBom)
+			# [System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_unitprice.properties'),
+			#     ($unitprice_properties -replace "`r?`n",$crlf), $utf8NoBom)
+			
+			$result.Details += "Files copied successfully (UTF-8 without BOM)."
 			Write_Log "Deployed price files to $($scaleLabel) [$scaleIP] with Currency ($currency)" "green"
 		}
 		catch
@@ -16887,6 +17075,7 @@ function Deploy_Scale_Currency_Files
 			$result.Details = @("File write failed (network/permission).")
 			Write_Log "Could not deploy price files to $($scaleLabel) [$scaleIP]. File write failed or network/permission denied." "yellow"
 		}
+		
 		$results += ,$result
 	}
 	
@@ -16895,51 +17084,33 @@ function Deploy_Scale_Currency_Files
 	foreach ($r in $results)
 	{
 		$msg = "$($r.Scale): $($r.Result) - $($r.Details -join '; ')"
-		if ($r.Result -eq "Success")
-		{
-			Write_Log $msg "green"
-		}
-		else
-		{
-			Write_Log $msg "red"
-		}
+		if ($r.Result -eq "Success") { Write_Log $msg "green" }
+		else { Write_Log $msg "red" }
 	}
 	
-	# ===== After summary, prompt for reboot of only SUCCESSFUL scales =====
-	
-	# Build list of successfully deployed scales (ScaleCodes) for reboot
+	# ---- Prompt for reboot of only SUCCESSFUL scales ----
 	$successScales = $results | Where-Object { $_.Result -eq "Success" -and $_.PSObject.Properties.Match('ScaleCode') } | Select-Object -ExpandProperty ScaleCode
 	$successScalesLabels = $results | Where-Object { $_.Result -eq "Success" } | ForEach-Object { $_.Scale }
 	
 	if ($successScales.Count -gt 0)
 	{
-		# Ask user with Windows prompt if they want to reboot now
 		$scaleListText = ($successScalesLabels -join "`n")
 		$rebootMsg = "Do you want to reboot the following successfully deployed scales now to apply changes?`n`n$scaleListText"
 		$dialogResult = [System.Windows.Forms.MessageBox]::Show($rebootMsg, "Reboot Scales?", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
 		
 		if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Yes)
 		{
-			# Call Reboot_Nodes for just these scales (without UI)
 			Write_Log "User chose to reboot all successfully deployed scales." "cyan"
-			# Build fake selection object for direct call
-			$rebootSelection = [PSCustomObject]@{
-				Lanes	    = @()
-				Scales	    = $successScales
-				Backoffices = @()
-			}
-			# Call Reboot_Nodes with this selection; modify Reboot_Nodes to accept -Selection if not present
+			$rebootSelection = [PSCustomObject]@{ Lanes = @(); Scales = $successScales; Backoffices = @() }
 			Reboot_Nodes -StoreNumber $StoreNumber -NodeTypes Scale -Selection $rebootSelection
 		}
 		else
 		{
 			Write_Log "User chose not to reboot. The following scales will need to be rebooted to apply changes:" "yellow"
-			foreach ($s in $successScalesLabels)
-			{
-				Write_Log "$s" "yellow"
-			}
+			foreach ($s in $successScalesLabels) { Write_Log "$s" "yellow" }
 		}
 	}
+	
 	Write_Log "`r`n==================== Deploy_Scale_Currency_Files Completed ====================" "blue"
 }
 
