@@ -17119,10 +17119,11 @@ function Deploy_Scale_Currency_Files
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   One-shot picker + writer for IshidaSDPs based on SDP_TAB.
-#   - Uses F04 as SDP number and F1022 as SDP name (explicit per Alex).
+#   - Uses F04 as SDP number and F1022 as SDP name.
 #   - Shows a GUI to pick which SDPs go into the config.
 #   - Pre-checks those already present in IshidaSDPs.
-#   - Saves back to <add key="IshidaSDPs" value="..."> as a comma-separated list of numbers.
+#   - Saves back to <add key="IshidaSDPs" value="..."> as a comma-separated list of numbers,
+#     or "Null" when none are selected (per request).
 #
 # Notes:
 #   - Handles missing ConnectionString by building one (SQL Auth preferred, else Integrated).
@@ -17139,7 +17140,7 @@ function Pick_And_Update_IshidaSDPs
 		[string[]]$ScaleCommRoots = @('C:\ScaleCommApp', 'D:\ScaleCommApp'),
 		[switch]$AllMatches,
 		[switch]$IncludeInactive,
-		# (kept for parity; not used since we read explicit F04/F1022)
+		# reserved for future use
 		[switch]$Force
 	)
 	
@@ -17178,25 +17179,23 @@ function Pick_And_Update_IshidaSDPs
 	}
 	
 	# ---------------- Build a ConnectionString when missing ----------------
-	# CHANGE: handle missing conn string by building one (SQL Auth preferred, else Integrated)
 	if (-not $ConnectionString -and $server -and $dbName)
 	{
-		$sqlUser = $script:FunctionResults['SQL_UserID'] # CHANGE
-		$sqlPwd = $script:FunctionResults['SQL_UserPwd'] # CHANGE
+		$sqlUser = $script:FunctionResults['SQL_UserID']
+		$sqlPwd = $script:FunctionResults['SQL_UserPwd']
 		if ($sqlUser -and $sqlPwd)
 		{
-			$ConnectionString = "Server=$server;Database=$dbName;User ID=$sqlUser;Password=$sqlPwd;TrustServerCertificate=True;" # CHANGE
-			& $logInfo "Built SQL Authentication connection string from cached credentials." # CHANGE
+			$ConnectionString = "Server=$server;Database=$dbName;User ID=$sqlUser;Password=$sqlPwd;TrustServerCertificate=True;"
+			& $logInfo "Built SQL Authentication connection string from cached credentials."
 		}
 		else
 		{
-			$ConnectionString = "Server=$server;Database=$dbName;Integrated Security=SSPI;TrustServerCertificate=True;" # CHANGE
-			& $logInfo "Built Integrated Security connection string (no SQL creds found)." # CHANGE
+			$ConnectionString = "Server=$server;Database=$dbName;Integrated Security=SSPI;TrustServerCertificate=True;"
+			& $logInfo "Built Integrated Security connection string (no SQL creds found)."
 		}
-		$script:FunctionResults['ConnectionString'] = $ConnectionString # CHANGE: persist for others
+		$script:FunctionResults['ConnectionString'] = $ConnectionString
 	}
 	
-	# If still missing server/db, bail
 	if (-not $server -or -not $dbName)
 	{
 		& $logErr "DB server or DB name unresolved. Cannot read SDP_TAB."
@@ -17215,19 +17214,17 @@ function Pick_And_Update_IshidaSDPs
 		}
 		catch
 		{
-			& $logWarn "SQL module '$SqlModuleName' could not be loaded. Will use .NET SqlClient fallback." # CHANGE
+			& $logWarn "SQL module '$SqlModuleName' could not be loaded. Will use .NET SqlClient fallback."
 		}
 	}
 	else
 	{
-		& $logWarn "No SQL module name provided. Will use .NET SqlClient fallback." # CHANGE
+		& $logWarn "No SQL module name provided. Will use .NET SqlClient fallback."
 	}
-	
-	# CHANGE: detect if Invoke-Sqlcmd supports -ConnectionString
 	$supportsConnectionString = $false
 	if ($InvokeSqlCmd) { $supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString' }
 	
-	# ---------------- Read SDP_TAB using explicit F04 (number) and F1022 (name) ----------------
+	# ---------------- Read SDP_TAB (F04 number, F1022 name) ----------------
 	$sql = @"
 IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='SDP_TAB')
     RAISERROR('SDP_TAB not found',16,1);
@@ -17245,32 +17242,24 @@ FROM SDP_TAB
 ORDER BY CAST([F04] AS int);
 "@
 	
-	# CHANGE: unified executor to get rows regardless of tool
 	try
 	{
 		if ($InvokeSqlCmd)
 		{
 			if ($supportsConnectionString -and $ConnectionString)
 			{
-				$rows = & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $sql -QueryTimeout 60 -ErrorAction Stop # CHANGE
+				$rows = & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $sql -QueryTimeout 60 -ErrorAction Stop
 			}
 			else
 			{
-				$rows = & $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $sql -QueryTimeout 60 -ErrorAction Stop # CHANGE
+				$rows = & $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $sql -QueryTimeout 60 -ErrorAction Stop
 			}
 		}
 		else
 		{
-			# .NET fallback
 			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-			if ($ConnectionString)
-			{
-				$csb.ConnectionString = $ConnectionString
-			}
-			else
-			{
-				$csb.DataSource = $server; $csb.InitialCatalog = $dbName; $csb.IntegratedSecurity = $true
-			}
+			if ($ConnectionString) { $csb.ConnectionString = $ConnectionString }
+			else { $csb.DataSource = $server; $csb.InitialCatalog = $dbName; $csb.IntegratedSecurity = $true }
 			$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
 			$cmd = $conn.CreateCommand(); $cmd.CommandText = $sql
 			$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
@@ -17356,12 +17345,19 @@ ORDER BY CAST([F04] AS int);
 	}
 	& $logInfo ("Current IshidaSDPs in first config: " + ($existingRaw -replace '\s+', ' '))
 	
+	# ---------- build the "top bar" title text with the already-checked list ----------
+	# CHANGE: Put already-in-config SDPs on the form title (top bar). Truncate if too long.
+	$existingListText = ($existingNums | Sort-Object -Unique) -join ','
+	if ([string]::IsNullOrWhiteSpace($existingListText)) { $existingListText = 'None' }
+	$existingShort = $existingListText
+	if ($existingShort.Length -gt 90) { $existingShort = $existingShort.Substring(0, 90) + '... (' + $existingNums.Count + ' total)' } # CHANGE
+	
 	# ---------------- Build WinForms picker ----------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
 	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Select Ishida SDPs (applies to selected configs)"
+	$form.Text = "Select Ishida SDPs  |  Already in config: $existingShort" # CHANGE: show on top bar
 	$form.StartPosition = 'CenterScreen'
 	$form.Size = New-Object System.Drawing.Size(640, 640)
 	$form.MinimizeBox = $false
@@ -17452,7 +17448,13 @@ ORDER BY CAST([F04] AS int);
 		if ($text -match '^\s*(\d+)') { $selectedNums += [int]$Matches[1] }
 	}
 	$selectedNums = $selectedNums | Sort-Object -Unique
-	& $logInfo ("User selected SDPs: " + (($selectedNums | ForEach-Object { $_ }) -join ','))
+	
+	# ---------- write "Null" when nothing is selected ----------
+	# CHANGE: If user leaves everything unchecked, write "Null" to the config value.
+	$valueToWrite = if ($selectedNums.Count -gt 0) { ($selectedNums -join ',') }
+	else { 'Null' }
+	
+	& $logInfo ("User selected SDPs -> " + $valueToWrite)
 	
 	# ---------------- Write back to each target config ----------------
 	foreach ($t in $targets)
@@ -17492,8 +17494,6 @@ ORDER BY CAST([F04] AS int);
 			if (-not $as) { $as = $xml.CreateElement('appSettings'); [void]$cfg.AppendChild($as); & $logWarn "Created <appSettings> section in $path" }
 			
 			$key = 'IshidaSDPs'
-			$valueToWrite = ($selectedNums | ForEach-Object { $_ }) -join ','
-			
 			$node = $as.SelectSingleNode("add[@key='$key']")
 			if ($node)
 			{
