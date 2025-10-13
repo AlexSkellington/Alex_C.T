@@ -17124,20 +17124,11 @@ function Deploy_Scale_Currency_Files
 #   - Pre-checks those already present in IshidaSDPs.
 #   - Saves back to <add key="IshidaSDPs" value="..."> as a comma-separated list of numbers.
 #
-# Parameters:
-#   -ConfigPath      : Optional explicit path to *.exe.config. If omitted, searches top-level of C:\ScaleCommApp and D:\ScaleCommApp.
-#   -ScaleCommRoots  : Root folders to search when -ConfigPath not provided (top-level only).
-#   -AllMatches      : If multiple configs are found, update all (otherwise only the first).
-#   -IncludeInactive : Include rows that may be marked inactive (if such a column exists, we ignore it here since Alex wants F04/F1022 explicitly).
-#   -Force           : Clear ReadOnly before saving (if set).
-#
 # Notes:
-#   - Fully self-contained (no nested helper functions defined).
+#   - Handles missing ConnectionString by building one (SQL Auth preferred, else Integrated).
 #   - PS 5.1 compatible WinForms UI.
 #   - Logging via Write_Log when available; falls back to Write-Host.
 #   - Saves UTF-8 without BOM and creates a timestamped .bak next to the config.
-#
-# Author: Alex_C.T request - integrated helper
 # ===================================================================================================
 
 function Pick_And_Update_IshidaSDPs
@@ -17148,25 +17139,25 @@ function Pick_And_Update_IshidaSDPs
 		[string[]]$ScaleCommRoots = @('C:\ScaleCommApp', 'D:\ScaleCommApp'),
 		[switch]$AllMatches,
 		[switch]$IncludeInactive,
+		# (kept for parity; not used since we read explicit F04/F1022)
 		[switch]$Force
 	)
 	
-	# ---------------- Logging shim (no nested functions): use Write_Log if present, else Write-Host ----------------
-	# CHANGE: Detect Write_Log (underscore), not Write-Log; call positionally with your color strings.
+	# ---------------- Logging shim (Write_Log if present, else host) ----------------
 	$logInfo = { param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'cyan' }
-		else { Write-Host "[INFO] $m" -ForegroundColor Cyan } } # CHANGE
+		else { Write-Host "[INFO] $m" -ForegroundColor Cyan } }
 	$logWarn = { param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'yellow' }
-		else { Write-Host "[WARN] $m" -ForegroundColor Yellow } } # CHANGE
+		else { Write-Host "[WARN] $m" -ForegroundColor Yellow } }
 	$logErr = { param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'red' }
-		else { Write-Host "[ERR ] $m" -ForegroundColor Red } } # CHANGE
+		else { Write-Host "[ERR ] $m" -ForegroundColor Red } }
 	$logOk = { param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'green' }
-		else { Write-Host "[ OK ] $m" -ForegroundColor Green } } # CHANGE
+		else { Write-Host "[ OK ] $m" -ForegroundColor Green } }
 	$logBlue = { param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'blue' }
-		else { Write-Host $m -ForegroundColor Blue } } # CHANGE
+		else { Write-Host $m -ForegroundColor Blue } }
 	
 	& $logBlue "`r`n==================== Starting Pick_And_Update_IshidaSDPs ====================`r`n"
 	
-	# ---------------- Resolve DB connection details (your convention: $script:FunctionResults) ---------------------
+	# ---------------- Resolve DB info from your cache ----------------
 	$dbName = $script:FunctionResults['DBNAME']
 	$server = $script:FunctionResults['DBSERVER']
 	$ConnectionString = $script:FunctionResults['ConnectionString']
@@ -17176,7 +17167,7 @@ function Pick_And_Update_IshidaSDPs
 	{
 		if (Get-Command Get_Store_And_Database_Info -ErrorAction SilentlyContinue)
 		{
-			& $logWarn "DB cache missing; calling Get_Store_And_Database_Info..."
+			& $logWarn "DB cache incomplete; calling Get_Store_And_Database_Info..."
 			try { Get_Store_And_Database_Info | Out-Null }
 			catch { & $logErr "Failed to resolve DB info: $($_.Exception.Message)" }
 			$dbName = $script:FunctionResults['DBNAME']
@@ -17185,15 +17176,58 @@ function Pick_And_Update_IshidaSDPs
 			$SqlModuleName = $script:FunctionResults['SqlModuleName']
 		}
 	}
-	if (-not $dbName -or -not $server)
+	
+	# ---------------- Build a ConnectionString when missing ----------------
+	# CHANGE: handle missing conn string by building one (SQL Auth preferred, else Integrated)
+	if (-not $ConnectionString -and $server -and $dbName)
 	{
-		& $logErr "DB server/name unresolved. Cannot read SDP_TAB."
+		$sqlUser = $script:FunctionResults['SQL_UserID'] # CHANGE
+		$sqlPwd = $script:FunctionResults['SQL_UserPwd'] # CHANGE
+		if ($sqlUser -and $sqlPwd)
+		{
+			$ConnectionString = "Server=$server;Database=$dbName;User ID=$sqlUser;Password=$sqlPwd;TrustServerCertificate=True;" # CHANGE
+			& $logInfo "Built SQL Authentication connection string from cached credentials." # CHANGE
+		}
+		else
+		{
+			$ConnectionString = "Server=$server;Database=$dbName;Integrated Security=SSPI;TrustServerCertificate=True;" # CHANGE
+			& $logInfo "Built Integrated Security connection string (no SQL creds found)." # CHANGE
+		}
+		$script:FunctionResults['ConnectionString'] = $ConnectionString # CHANGE: persist for others
+	}
+	
+	# If still missing server/db, bail
+	if (-not $server -or -not $dbName)
+	{
+		& $logErr "DB server or DB name unresolved. Cannot read SDP_TAB."
 		& $logBlue "`r`n==================== Pick_And_Update_IshidaSDPs Completed ====================`r`n"
 		return
 	}
 	
-	# ---------------- Read SDP_TAB using explicit columns: F04 (number) and F1022 (name) --------------------------
-	# We explicitly select F04 and F1022 as requested; no auto-detect to avoid ambiguity.
+	# ---------------- Prepare SQL execution (Invoke-Sqlcmd or .NET) ----------------
+	$InvokeSqlCmd = $null
+	if ($SqlModuleName -and $SqlModuleName -ne 'None')
+	{
+		try
+		{
+			Import-Module $SqlModuleName -ErrorAction Stop
+			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+		}
+		catch
+		{
+			& $logWarn "SQL module '$SqlModuleName' could not be loaded. Will use .NET SqlClient fallback." # CHANGE
+		}
+	}
+	else
+	{
+		& $logWarn "No SQL module name provided. Will use .NET SqlClient fallback." # CHANGE
+	}
+	
+	# CHANGE: detect if Invoke-Sqlcmd supports -ConnectionString
+	$supportsConnectionString = $false
+	if ($InvokeSqlCmd) { $supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString' }
+	
+	# ---------------- Read SDP_TAB using explicit F04 (number) and F1022 (name) ----------------
 	$sql = @"
 IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='SDP_TAB')
     RAISERROR('SDP_TAB not found',16,1);
@@ -17205,27 +17239,38 @@ IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='SDP_TA
     RAISERROR('Column F1022 not found in SDP_TAB',16,1);
 
 SELECT
-    CAST([F04]   AS int)            AS SdpNumber,   -- explicit: subdepartment number
-    CAST([F1022] AS nvarchar(200))  AS SdpName      -- explicit: subdepartment name/label
+    CAST([F04]   AS int)            AS SdpNumber,
+    CAST([F1022] AS nvarchar(200))  AS SdpName
 FROM SDP_TAB
--- NOTE: If you later want to filter inactive rows, add a WHERE here once an ACTIVE flag is standardized
 ORDER BY CAST([F04] AS int);
 "@
 	
-	# Execute SQL via Invoke-Sqlcmd if module is present, else via .NET SqlClient
+	# CHANGE: unified executor to get rows regardless of tool
 	try
 	{
-		if ($SqlModuleName -and $SqlModuleName -ne 'None' -and (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
+		if ($InvokeSqlCmd)
 		{
-			Import-Module $SqlModuleName -ErrorAction SilentlyContinue | Out-Null
-			$rows = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $sql -QueryTimeout 60 -ErrorAction Stop
+			if ($supportsConnectionString -and $ConnectionString)
+			{
+				$rows = & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $sql -QueryTimeout 60 -ErrorAction Stop # CHANGE
+			}
+			else
+			{
+				$rows = & $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $sql -QueryTimeout 60 -ErrorAction Stop # CHANGE
+			}
 		}
 		else
 		{
+			# .NET fallback
 			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-			$csb.DataSource = $server
-			$csb.InitialCatalog = $dbName
-			$csb.IntegratedSecurity = $true
+			if ($ConnectionString)
+			{
+				$csb.ConnectionString = $ConnectionString
+			}
+			else
+			{
+				$csb.DataSource = $server; $csb.InitialCatalog = $dbName; $csb.IntegratedSecurity = $true
+			}
 			$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
 			$cmd = $conn.CreateCommand(); $cmd.CommandText = $sql
 			$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
@@ -17248,7 +17293,7 @@ ORDER BY CAST([F04] AS int);
 		return
 	}
 	
-	# Normalize to simple list we can bind to the UI.
+	# Normalize for UI
 	$sdpList = @()
 	foreach ($r in $rows)
 	{
@@ -17259,7 +17304,7 @@ ORDER BY CAST([F04] AS int);
 	}
 	& $logInfo ("Loaded SDPs: " + ($sdpList.Count))
 	
-	# ---------------- Find target config(s) -------------------------------------------------------
+	# ---------------- Find target config files ----------------
 	$targets = @()
 	if ($ConfigPath)
 	{
@@ -17271,7 +17316,6 @@ ORDER BY CAST([F04] AS int);
 		foreach ($root in $ScaleCommRoots)
 		{
 			if (-not (Test-Path -LiteralPath $root)) { continue }
-			# Your folder layout shows top-level *.exe.config in ScaleCommApp root
 			$found = Get-ChildItem -LiteralPath $root -File -Filter '*.exe.config' -ErrorAction SilentlyContinue
 			if ($found) { $targets += $found }
 		}
@@ -17290,8 +17334,7 @@ ORDER BY CAST([F04] AS int);
 		return
 	}
 	
-	# ---------------- Load current IshidaSDPs per target, then show a picker once (applies to all) ---------------
-	# We read IshidaSDPs from the first target to determine pre-checked items (typical use).
+	# ---------------- Read IshidaSDPs from first config (for pre-checks) ----------------
 	$firstConfig = $targets[0].FullName
 	[xml]$xmlFirst = Get-Content -LiteralPath $firstConfig -Raw
 	$configuration = $xmlFirst.configuration; if (-not $configuration) { $configuration = $xmlFirst.DocumentElement }
@@ -17299,49 +17342,37 @@ ORDER BY CAST([F04] AS int);
 	$appSettings = $configuration.appSettings
 	if (-not $appSettings)
 	{
-		# Create appSettings in-memory so we can read/write uniformly below
 		$appSettings = $xmlFirst.CreateElement('appSettings')
 		[void]$configuration.AppendChild($appSettings)
 	}
-	
 	$keyName = 'IshidaSDPs'
 	$node = $appSettings.SelectSingleNode("add[@key='$keyName']")
-	$existingRaw = $null
+	$existingRaw = ''
 	$existingNums = @()
 	if ($node)
 	{
 		$existingRaw = [string]$node.GetAttribute('value')
-		foreach ($part in ($existingRaw -split ','))
-		{
-			$p = $part.Trim()
-			if ($p -match '^\s*(\d+)') { $existingNums += [int]$Matches[1] }
-		}
-	}
-	else
-	{
-		$existingRaw = ''
+		foreach ($part in ($existingRaw -split ',')) { $p = $part.Trim(); if ($p -match '^\s*(\d+)') { $existingNums += [int]$Matches[1] } }
 	}
 	& $logInfo ("Current IshidaSDPs in first config: " + ($existingRaw -replace '\s+', ' '))
 	
-	# ---------------- Build WinForms picker (no nested function definitions) ----------------------
+	# ---------------- Build WinForms picker ----------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
 	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Select Ishida SDPs"
+	$form.Text = "Select Ishida SDPs (applies to selected configs)"
 	$form.StartPosition = 'CenterScreen'
 	$form.Size = New-Object System.Drawing.Size(640, 640)
 	$form.MinimizeBox = $false
 	$form.MaximizeBox = $false
 	$form.TopMost = $true
 	
-	# Search box (to filter)
 	$search = New-Object System.Windows.Forms.TextBox
 	$search.Location = New-Object System.Drawing.Point(10, 10)
 	$search.Size = New-Object System.Drawing.Size(505, 24)
 	$form.Controls.Add($search)
 	
-	# Select All / Clear
 	$btnAll = New-Object System.Windows.Forms.Button
 	$btnAll.Text = "Select All"
 	$btnAll.Location = New-Object System.Drawing.Point(520, 10)
@@ -17354,21 +17385,18 @@ ORDER BY CAST([F04] AS int);
 	$btnNone.Size = New-Object System.Drawing.Size(100, 28)
 	$form.Controls.Add($btnNone)
 	
-	# Checked list
 	$list = New-Object System.Windows.Forms.CheckedListBox
 	$list.Location = New-Object System.Drawing.Point(10, 44)
 	$list.Size = New-Object System.Drawing.Size(505, 520)
 	$list.CheckOnClick = $true
 	$form.Controls.Add($list)
 	
-	# Already-in-config legend
 	$legend = New-Object System.Windows.Forms.Label
 	$legend.AutoSize = $true
 	$legend.Location = New-Object System.Drawing.Point(10, 570)
-	$legend.Text = "Checked = already in config (pre-selected). Adjust and click Save."
+	$legend.Text = "Checked = selected. Pre-checked = already in config. Click Save to write."
 	$form.Controls.Add($legend)
 	
-	# OK / Cancel
 	$btnOK = New-Object System.Windows.Forms.Button
 	$btnOK.Text = "Save"
 	$btnOK.Location = New-Object System.Drawing.Point(520, 536)
@@ -17385,50 +17413,31 @@ ORDER BY CAST([F04] AS int);
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
 	
-	# Populate the list and remember all entries for filtering (array of PSCustomObjects)
 	$allEntries = @()
 	foreach ($s in $sdpList)
 	{
 		$display = "{0} - {1}" -f $s.SdpNumber, $s.SdpName
 		$null = $list.Items.Add($display)
 		$allEntries += [pscustomobject]@{ Display = $display; Number = $s.SdpNumber }
-		# Pre-check those already in the config
-		if ($existingNums -contains [int]$s.SdpNumber)
-		{
-			$list.SetItemChecked(($list.Items.Count - 1), $true)
-		}
+		if ($existingNums -contains [int]$s.SdpNumber) { $list.SetItemChecked(($list.Items.Count - 1), $true) }
 	}
 	
-	# Wire up filter logic (simple contains on display text)
 	$search.Add_TextChanged({
 			$needle = $search.Text.Trim()
 			$list.Items.Clear()
-			if ([string]::IsNullOrWhiteSpace($needle))
-			{
-				foreach ($e in $allEntries) { [void]$list.Items.Add($e.Display) }
-			}
-			else
-			{
-				foreach ($e in $allEntries) { if ($e.Display -like "*$needle*") { [void]$list.Items.Add($e.Display) } }
-			}
-			# Re-apply checks based on $existingNums
+			if ([string]::IsNullOrWhiteSpace($needle)) { foreach ($e in $allEntries) { [void]$list.Items.Add($e.Display) } }
+			else { foreach ($e in $allEntries) { if ($e.Display -like "*$needle*") { [void]$list.Items.Add($e.Display) } } }
 			for ($i = 0; $i -lt $list.Items.Count; $i++)
 			{
 				$text = [string]$list.Items[$i]
-				if ($text -match '^\s*(\d+)')
-				{
-					if ($existingNums -contains [int]$Matches[1]) { $list.SetItemChecked($i, $true) }
-				}
+				if ($text -match '^\s*(\d+)') { if ($existingNums -contains [int]$Matches[1]) { $list.SetItemChecked($i, $true) } }
 			}
 		})
 	
-	# Select All / Clear
 	$btnAll.Add_Click({ for ($i = 0; $i -lt $list.Items.Count; $i++) { $list.SetItemChecked($i, $true) } })
 	$btnNone.Add_Click({ for ($i = 0; $i -lt $list.Items.Count; $i++) { $list.SetItemChecked($i, $false) } })
 	
-	# Show the dialog
 	$dialogResult = $form.ShowDialog()
-	
 	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
 	{
 		& $logWarn "User cancelled. No changes saved."
@@ -17436,7 +17445,6 @@ ORDER BY CAST([F04] AS int);
 		return
 	}
 	
-	# Extract the chosen numbers from the checked items and sort ascending
 	$selectedNums = @()
 	foreach ($item in $list.CheckedItems)
 	{
@@ -17446,37 +17454,23 @@ ORDER BY CAST([F04] AS int);
 	$selectedNums = $selectedNums | Sort-Object -Unique
 	& $logInfo ("User selected SDPs: " + (($selectedNums | ForEach-Object { $_ }) -join ','))
 	
-	# ---------------- Write back to each target config -------------------------------------------
+	# ---------------- Write back to each target config ----------------
 	foreach ($t in $targets)
 	{
 		$path = $t.FullName
 		if (-not $PSCmdlet.ShouldProcess($path, "Set appSettings 'IshidaSDPs'")) { continue }
 		
-		# Ensure writable / clear ReadOnly if requested
 		try
 		{
 			$item = Get-Item -LiteralPath $path -ErrorAction Stop
 			if ($item.Attributes -band [IO.FileAttributes]::ReadOnly)
 			{
-				if ($Force)
-				{
-					& $logWarn "Removing ReadOnly attribute: $path"
-					$item.Attributes = ($item.Attributes -bxor [IO.FileAttributes]::ReadOnly)
-				}
-				else
-				{
-					& $logErr "File is read-only. Re-run with -Force to clear attribute."
-					continue
-				}
+				if ($Force) { & $logWarn "Removing ReadOnly attribute: $path"; $item.Attributes = ($item.Attributes -bxor [IO.FileAttributes]::ReadOnly) }
+				else { & $logErr "File is read-only. Re-run with -Force to clear attribute."; continue }
 			}
 		}
-		catch
-		{
-			& $logErr "Cannot access file attributes for ${path}: $($_.Exception.Message)"
-			continue
-		}
+		catch { & $logErr "Cannot access file attributes for ${path}: $($_.Exception.Message)"; continue }
 		
-		# Backup
 		try
 		{
 			$dir = Split-Path -LiteralPath $path -Parent
@@ -17486,12 +17480,8 @@ ORDER BY CAST([F04] AS int);
 			Copy-Item -LiteralPath $path -Destination $bak -Force
 			& $logOk "Backup created: $bak"
 		}
-		catch
-		{
-			& $logWarn "Backup failed for ${path}: $($_.Exception.Message)"
-		}
+		catch { & $logWarn "Backup failed for ${path}: $($_.Exception.Message)" }
 		
-		# Load XML, ensure appSettings, set/add IshidaSDPs, save UTF-8 (no BOM)
 		try
 		{
 			[xml]$xml = Get-Content -LiteralPath $path -Raw
@@ -17508,21 +17498,14 @@ ORDER BY CAST([F04] AS int);
 			if ($node)
 			{
 				$old = $node.GetAttribute('value')
-				if ($old -ne $valueToWrite)
-				{
-					$node.SetAttribute('value', $valueToWrite) # <-- CHANGE: update IshidaSDPs list
-					& $logOk "Updated ${key}: '$old' -> '$valueToWrite'"
-				}
-				else
-				{
-					& $logInfo "No change needed in $path ($key already '$valueToWrite')."
-				}
+				if ($old -ne $valueToWrite) { $node.SetAttribute('value', $valueToWrite); & $logOk "Updated ${key}: '$old' -> '$valueToWrite'" }
+				else { & $logInfo "No change needed in $path ($key already '$valueToWrite')." }
 			}
 			else
 			{
 				$add = $xml.CreateElement('add')
 				[void]$add.SetAttribute('key', $key)
-				[void]$add.SetAttribute('value', $valueToWrite) # <-- CHANGE: add IshidaSDPs if missing
+				[void]$add.SetAttribute('value', $valueToWrite)
 				[void]$as.AppendChild($add)
 				& $logOk "Added $key with value '$valueToWrite'"
 			}
