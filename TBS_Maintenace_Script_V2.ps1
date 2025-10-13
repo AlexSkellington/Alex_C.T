@@ -11616,6 +11616,495 @@ END CATCH;
 }
 
 # ===================================================================================================
+#                               FUNCTION: Troubleshoot_ScaleCommApp
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Audits & (optionally) repairs ScaleCommApp *.exe.config files:
+#     - StoreName                  => script's store name
+#     - FistScaleIP                => FIRST active scale full IP from IPNetwork + IPDevice
+#                                     (robust parser + table/active-NIC fallbacks)
+#     - SQL_InstanceName           => script's SQL instance
+#     - SQL_databaseName           => script's DB name
+#     - Recs_BatchSendFull         => "10000"
+#
+# Logging policy (consolidated):
+#   - Start/End banners.
+#   - DB/NIC discovery logged ONCE.
+#   - Show ONE "Desired Settings" block and ONE "Existing (first file)" snapshot.
+#   - No per-file OK/mismatch spam; only a final summary and list of saved files.
+#
+# Implementation:
+#   - Uses Invoke-Sqlcmd (if available) or .NET SqlClient.
+#   - Saves UTF-8 (no BOM), timestamped .bak, respects -Force and -WhatIf.
+#   - Honors -AllMatches (else only first file), -NoAutoFix to audit-only.
+#   - **NO TERNARY / NO '??'** - PS 5.1 compatible.
+# ===================================================================================================
+
+function Troubleshoot_ScaleCommApp
+{
+	[CmdletBinding(SupportsShouldProcess = $true)]
+	param (
+		[string]$ConfigPath,
+		[string[]]$ScaleCommRoots = @('C:\ScaleCommApp', 'D:\ScaleCommApp'),
+		[switch]$AllMatches,
+		[switch]$NoAutoFix,
+		[switch]$Force,
+		[string]$ExpectedStoreName,
+		[string]$ExpectedSqlInstance,
+		[string]$ExpectedDatabase
+	)
+	
+	Write_Log "`r`n==================== Starting Troubleshoot_ScaleCommApp ====================`r`n" "blue"
+	
+	# ------------------------------------------------------------------------------------------------
+	# Resolve expectations & connection (same behavior; no ternary)
+	# ------------------------------------------------------------------------------------------------
+	$dbName = $script:FunctionResults['DBNAME']
+	$server = $script:FunctionResults['DBSERVER']
+	$connStr = $script:FunctionResults['ConnectionString']
+	$sqlModule = $script:FunctionResults['SqlModuleName']
+	
+	if (-not $ExpectedDatabase -and $dbName) { $ExpectedDatabase = $dbName }
+	if (-not $ExpectedSqlInstance -and $server) { $ExpectedSqlInstance = $server }
+	if (-not $ExpectedStoreName)
+	{
+		$ExpectedStoreName = $script:FunctionResults['StoreName']
+		if (-not $ExpectedStoreName) { $ExpectedStoreName = $script:FunctionResults['STORENAME'] }
+	}
+	
+	if (-not $connStr -and $server -and $dbName)
+	{
+		$sqlUser = $script:FunctionResults['SQL_UserID']
+		$sqlPwd = $script:FunctionResults['SQL_UserPwd']
+		if ($sqlUser -and $sqlPwd)
+		{
+			$connStr = "Server=$server;Database=$dbName;User ID=$sqlUser;Password=$sqlPwd;TrustServerCertificate=True;"
+		}
+		else
+		{
+			$connStr = "Server=$server;Database=$dbName;Integrated Security=SSPI;TrustServerCertificate=True;"
+		}
+		$script:FunctionResults['ConnectionString'] = $connStr
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Active NIC prefix (fallback) - logged ONCE
+	# ------------------------------------------------------------------------------------------------
+	$ActiveNicPrefix = $null
+	try
+	{
+		$serverIPv4s = @()
+		try
+		{
+			[System.Net.Dns]::GetHostAddresses($server) | ForEach-Object {
+				if ($_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $serverIPv4s += $_.ToString() }
+			}
+		}
+		catch { }
+		
+		$allNics = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+		Where-Object { $_.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up }
+		
+		function _SameSubnet($aStr, $bStr, $maskStr)
+		{
+			try
+			{
+				$a = [System.Net.IPAddress]::Parse($aStr).GetAddressBytes()
+				$b = [System.Net.IPAddress]::Parse($bStr).GetAddressBytes()
+				$m = [System.Net.IPAddress]::Parse($maskStr).GetAddressBytes()
+				for ($i = 0; $i -lt 4; $i++) { if (($a[$i] -band $m[$i]) -ne ($b[$i] -band $m[$i])) { return $false } }
+				return $true
+			}
+			catch { return $false }
+		}
+		
+		$pickedIP = $null
+		foreach ($ni in $allNics)
+		{
+			$ipProps = $ni.GetIPProperties()
+			foreach ($ua in $ipProps.UnicastAddresses)
+			{
+				if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+				if (-not $ua.IPv4Mask) { continue }
+				foreach ($srv in $serverIPv4s)
+				{
+					if (_SameSubnet $ua.Address.ToString() $srv $ua.IPv4Mask.ToString()) { $pickedIP = $ua.Address.ToString(); break }
+				}
+				if ($pickedIP) { break }
+			}
+			if ($pickedIP) { break }
+		}
+		if (-not $pickedIP)
+		{
+			foreach ($ni in $allNics)
+			{
+				$ipProps = $ni.GetIPProperties()
+				$hasGw = $false
+				foreach ($gw in $ipProps.GatewayAddresses)
+				{
+					if ($gw.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $hasGw = $true; break }
+				}
+				if (-not $hasGw) { continue }
+				foreach ($ua in $ipProps.UnicastAddresses)
+				{
+					if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+					$pickedIP = $ua.Address.ToString(); break
+				}
+				if ($pickedIP) { break }
+			}
+		}
+		if (-not $pickedIP)
+		{
+			foreach ($ni in $allNics)
+			{
+				$ipProps = $ni.GetIPProperties()
+				foreach ($ua in $ipProps.UnicastAddresses)
+				{
+					if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+					$ip = $ua.Address.ToString()
+					if ($ip.StartsWith('10.') -or $ip.StartsWith('192.168.')) { $pickedIP = $ip; break }
+					if ($ip.StartsWith('172.'))
+					{
+						$parts = $ip.Split('.')
+						if ($parts.Length -ge 2)
+						{
+							$sec = 0
+							if ([int]::TryParse($parts[1], [ref]$sec)) { if ($sec -ge 16 -and $sec -le 31) { $pickedIP = $ip; break } }
+						}
+					}
+				}
+				if ($pickedIP) { break }
+			}
+		}
+		if ($pickedIP)
+		{
+			$p = $pickedIP.Split('.')
+			if ($p.Length -ge 3) { $ActiveNicPrefix = "$($p[0]).$($p[1]).$($p[2])" }
+		}
+	}
+	catch { }
+	
+	if ($ActiveNicPrefix) { Write_Log "Active NIC /24 prefix: $ActiveNicPrefix" "cyan" }
+	else { Write_Log "Active NIC /24 prefix not detected (fallback may be unavailable)." "yellow" }
+	
+	# ------------------------------------------------------------------------------------------------
+	# FIRST active scale full IP (robust) - logged ONCE
+	# ------------------------------------------------------------------------------------------------
+	$firstScaleIP = $null
+	if ($server -and $dbName -and $connStr)
+	{
+		$InvokeSqlCmd = $null
+		if ($sqlModule -and $sqlModule -ne 'None') { try { Import-Module $sqlModule -ErrorAction Stop; $InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $sqlModule -ErrorAction Stop }
+			catch { $InvokeSqlCmd = $null } }
+		$supportsConnStr = $false
+		if ($InvokeSqlCmd) { $supportsConnStr = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString' }
+		
+		function _RunQuery([string]$query)
+		{
+			try
+			{
+				if ($InvokeSqlCmd)
+				{
+					if ($supportsConnStr) { return Invoke-Sqlcmd -ConnectionString $connStr -Query $query -ErrorAction Stop }
+					else { return Invoke-Sqlcmd -ServerInstance $server -Database $dbName -Query $query -ErrorAction Stop }
+				}
+				else
+				{
+					$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+					$csb.ConnectionString = $connStr
+					$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
+					$conn.Open()
+					$cmd = $conn.CreateCommand(); $cmd.CommandText = $query; $cmd.CommandTimeout = 30
+					$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
+					$dt = New-Object System.Data.DataTable
+					[void]$da.Fill($dt)
+					$conn.Close()
+					return $dt
+				}
+			}
+			catch { return $null }
+		}
+		
+		$q = @"
+SELECT IPNetwork, IPDevice, ScaleCode, Active
+FROM dbo.TBS_SCL_ver520
+ORDER BY
+    CASE WHEN TRY_CAST(ScaleCode AS INT) IS NULL THEN 1 ELSE 0 END,
+    TRY_CAST(ScaleCode AS INT),
+    ScaleCode;
+"@
+		$rows = _RunQuery $q
+		
+		if ($rows -and (($rows -is [System.Data.DataTable] -and $rows.Rows.Count -gt 0) -or ($rows -isnot [System.Data.DataTable] -and $rows.Count -gt 0)))
+		{
+			Write_Log "Loaded rows from TBS_SCL_ver520 for first-scale detection." "cyan"
+			
+			$IsActive = {
+				param ($v)
+				if ($null -eq $v) { return $true }
+				$s = ([string]$v).Trim().ToUpper()
+				if ($s -eq '') { return $true }
+				if ($s -eq 'Y' -or $s -eq '1' -or $s -eq 'TRUE') { return $true }
+				return $false
+			}
+			$ParsePrefix = {
+				param ($ipn)
+				if ([string]::IsNullOrWhiteSpace($ipn)) { return $null }
+				$m = [regex]::Match($ipn.Trim(), '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
+				if ($m.Success) { return "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)" }
+				return $null
+			}
+			$ParseOctet = {
+				param ($d)
+				if ($null -eq $d) { return $null }
+				$tmp = 0
+				if ([int]::TryParse(([string]$d).Trim(), [ref]$tmp))
+				{
+					if ($tmp -ge 0 -and $tmp -le 255) { return $tmp }
+				}
+				return $null
+			}
+			
+			$enum = @()
+			if ($rows -is [System.Data.DataTable]) { $enum = $rows.Rows }
+			else { $enum = $rows }
+			
+			$pfxCounts = @{ }
+			foreach ($r in $enum)
+			{
+				$pref = & $ParsePrefix ($r.IPNetwork)
+				if ($pref)
+				{
+					if (-not $pfxCounts.ContainsKey($pref)) { $pfxCounts[$pref] = 0 }
+					$pfxCounts[$pref]++
+				}
+			}
+			$MostCommonPrefix = $null
+			if ($pfxCounts.Count -gt 0)
+			{
+				$MostCommonPrefix = ($pfxCounts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 1).Key
+				Write_Log "Most common IPNetwork prefix in table: $MostCommonPrefix" "cyan"
+			}
+			
+			$candidates = @()
+			foreach ($r in $enum) { if (& $IsActive ($r.Active)) { $candidates += $r } }
+			
+			foreach ($r in $candidates)
+			{
+				$p = & $ParsePrefix ($r.IPNetwork)
+				if (-not $p -and $r.IPNetwork)
+				{
+					$m4 = [regex]::Match(([string]$r.IPNetwork).Trim(), '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\s*$')
+					if ($m4.Success)
+					{
+						$p = "$($m4.Groups[1].Value).$($m4.Groups[2].Value).$($m4.Groups[3].Value)"
+						if (-not $r.IPDevice) { $r.IPDevice = $m4.Groups[4].Value }
+					}
+				}
+				$d = & $ParseOctet ($r.IPDevice)
+				if ($p -and ($null -ne $d)) { $firstScaleIP = "$p.$d"; break }
+			}
+			
+			if (-not $firstScaleIP -and $MostCommonPrefix)
+			{
+				foreach ($r in $candidates)
+				{
+					$d = & $ParseOctet ($r.IPDevice)
+					if ($null -ne $d) { $firstScaleIP = "$MostCommonPrefix.$d"; break }
+				}
+			}
+			
+			if (-not $firstScaleIP -and $ActiveNicPrefix)
+			{
+				foreach ($r in $candidates)
+				{
+					$d = & $ParseOctet ($r.IPDevice)
+					if ($null -ne $d) { $firstScaleIP = "$ActiveNicPrefix.$d"; break }
+				}
+			}
+			
+			if ($firstScaleIP) { Write_Log "First scale IP resolved: $firstScaleIP" "cyan" }
+			else { Write_Log "First scale IP NOT resolved (need prefix + device)." "yellow" }
+		}
+		else
+		{
+			Write_Log "Could not read rows from TBS_SCL_ver520 (DB issue or empty table)." "yellow"
+		}
+	}
+	else
+	{
+		Write_Log "DB connection info incomplete; first-scale detection skipped." "yellow"
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Locate target configs
+	# ------------------------------------------------------------------------------------------------
+	$targets = @()
+	if ($ConfigPath)
+	{
+		if (Test-Path -LiteralPath $ConfigPath) { $targets += (Get-Item -LiteralPath $ConfigPath) }
+		else { Write_Log "Config path not found: $ConfigPath" "red"; return }
+	}
+	else
+	{
+		foreach ($root in $ScaleCommRoots)
+		{
+			if (Test-Path -LiteralPath $root)
+			{
+				$found = Get-ChildItem -LiteralPath $root -File -Filter '*.exe.config' -ErrorAction SilentlyContinue
+				if ($found) { $targets += $found }
+			}
+		}
+	}
+	$targets = $targets | Sort-Object FullName -Unique
+	if (-not $targets -or $targets.Count -eq 0) { Write_Log "No *.exe.config found under ScaleCommApp roots." "red"; return }
+	if (-not $AllMatches -and $targets.Count -gt 1)
+	{
+		Write_Log ("Multiple configs found; using first. Use -AllMatches to update all." + "`r`n - " + (($targets | ForEach-Object FullName) -join "`r`n - ")) "yellow"
+		$targets = @($targets[0])
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# ONE-TIME "Desired Settings" + "Existing (first file)" snapshot (NO TERNARY)
+	# ------------------------------------------------------------------------------------------------
+	$previewPath = $targets[0].FullName
+	$previewXml = $null
+	try { [xml]$previewXml = Get-Content -LiteralPath $previewPath -Raw -ErrorAction Stop }
+	catch { }
+	function _GetVal([xml]$xmlDoc, $key)
+	{
+		if (-not $xmlDoc) { return $null }
+		$cfg = $xmlDoc.configuration; if (-not $cfg) { $cfg = $xmlDoc.DocumentElement }
+		if (-not $cfg) { return $null }
+		$as = $cfg.appSettings; if (-not $as) { return $null }
+		$n = $as.SelectSingleNode("add[@key='$key']"); if ($n) { return [string]$n.GetAttribute('value') }
+		return $null
+	}
+	$curStorePreview = _GetVal $previewXml 'StoreName'
+	$curFirstIPPreview = _GetVal $previewXml 'FistScaleIP'
+	$curSqlInstPreview = _GetVal $previewXml 'SQL_InstanceName'
+	$curDbNamePreview = _GetVal $previewXml 'SQL_databaseName'
+	$curBatchPreview = _GetVal $previewXml 'Recs_BatchSendFull'
+	
+	# -- Build log strings without '??' (PowerShell 5.1 safe)
+	$dStore = '<unchanged/skip>'; if ($ExpectedStoreName) { $dStore = $ExpectedStoreName }
+	$dIP = '<skip>'; if ($firstScaleIP) { $dIP = $firstScaleIP }
+	$dInst = '<unchanged/skip>'; if ($ExpectedSqlInstance) { $dInst = $ExpectedSqlInstance }
+	$dDb = '<unchanged/skip>'; if ($ExpectedDatabase) { $dDb = $ExpectedDatabase }
+	
+	Write_Log "Desired Settings:" "blue"
+	Write_Log ("  StoreName          : {0}" -f $dStore) "cyan"
+	Write_Log ("  FistScaleIP        : {0}" -f $dIP) "cyan"
+	Write_Log ("  SQL_InstanceName   : {0}" -f $dInst) "cyan"
+	Write_Log ("  SQL_databaseName   : {0}" -f $dDb) "cyan"
+	Write_Log ("  Recs_BatchSendFull : 10000") "cyan"
+	
+	$leafPreview = Split-Path -Leaf $previewPath
+	Write_Log ("Existing (first file: {0}):" -f $leafPreview) "blue"
+	$eStore = $curStorePreview; if (-not $eStore) { $eStore = '<missing>' }
+	$eIP = $curFirstIPPreview; if (-not $eIP) { $eIP = '<missing>' }
+	$eInst = $curSqlInstPreview; if (-not $eInst) { $eInst = '<missing>' }
+	$eDb = $curDbNamePreview; if (-not $eDb) { $eDb = '<missing>' }
+	$eBatch = $curBatchPreview; if (-not $eBatch) { $eBatch = '<missing>' }
+	Write_Log ("  StoreName          : {0}" -f $eStore) "yellow"
+	Write_Log ("  FistScaleIP        : {0}" -f $eIP) "yellow"
+	Write_Log ("  SQL_InstanceName   : {0}" -f $eInst) "yellow"
+	Write_Log ("  SQL_databaseName   : {0}" -f $eDb) "yellow"
+	Write_Log ("  Recs_BatchSendFull : {0}" -f $eBatch) "yellow"
+	
+	# ------------------------------------------------------------------------------------------------
+	# Apply to all targets (quiet per-file; track counts + saved list)
+	# ------------------------------------------------------------------------------------------------
+	$autoFix = (-not $NoAutoFix.IsPresent)
+	[int]$audited = 0
+	[int]$updated = 0
+	[int]$skipped = 0
+	$savedFiles = New-Object System.Collections.Generic.List[string]
+	
+	foreach ($t in $targets)
+	{
+		$audited++
+		$path = $t.FullName
+		
+		try { [xml]$xml = Get-Content -LiteralPath $path -Raw -ErrorAction Stop }
+		catch { $skipped++; continue }
+		$cfg = $xml.configuration; if (-not $cfg) { $cfg = $xml.DocumentElement }
+		if (-not $cfg) { $skipped++; continue }
+		$as = $cfg.appSettings
+		if (-not $as) { $skipped++; continue }
+		
+		$getVal = { param ($key) $n = $as.SelectSingleNode("add[@key='$key']"); if ($n) { return [string]$n.GetAttribute('value') }
+			else { return $null } }
+		$setVal = {
+			param ($key,
+				$val)
+			$n = $as.SelectSingleNode("add[@key='$key']"); if (-not $n) { $n = $xml.CreateElement('add'); $null = $n.SetAttribute('key', $key); $null = $as.AppendChild($n) }
+			$null = $n.SetAttribute('value', [string]$val)
+		}
+		
+		$changedHere = $false
+		$curStore = & $getVal 'StoreName'
+		$curFirstIP = & $getVal 'FistScaleIP'
+		$curInst = & $getVal 'SQL_InstanceName'
+		$curDb = & $getVal 'SQL_databaseName'
+		$curBatch = & $getVal 'Recs_BatchSendFull'
+		
+		if ($ExpectedStoreName -and $curStore -ne $ExpectedStoreName) { if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set StoreName')) { & $setVal 'StoreName' $ExpectedStoreName; $changedHere = $true } }
+		if ($firstScaleIP -and $curFirstIP -ne $firstScaleIP) { if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set FistScaleIP')) { & $setVal 'FistScaleIP' $firstScaleIP; $changedHere = $true } }
+		if ($ExpectedSqlInstance -and $curInst -ne $ExpectedSqlInstance) { if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set SQL_InstanceName')) { & $setVal 'SQL_InstanceName' $ExpectedSqlInstance; $changedHere = $true } }
+		if ($ExpectedDatabase -and $curDb -ne $ExpectedDatabase) { if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set SQL_databaseName')) { & $setVal 'SQL_databaseName' $ExpectedDatabase; $changedHere = $true } }
+		if ($curBatch -ne '10000') { if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set Recs_BatchSendFull=10000')) { & $setVal 'Recs_BatchSendFull' '10000'; $changedHere = $true } }
+		
+		if ($changedHere -and $autoFix)
+		{
+			try
+			{
+				$item = Get-Item -LiteralPath $path -ErrorAction Stop
+				if ($item.Attributes -band [IO.FileAttributes]::ReadOnly)
+				{
+					if ($Force) { $item.Attributes = ($item.Attributes -bxor [IO.FileAttributes]::ReadOnly) }
+					else { $skipped++; continue }
+				}
+			}
+			catch { $skipped++; continue }
+			
+			try
+			{
+				$dir = Split-Path -LiteralPath $path -Parent
+				$leaf = Split-Path -LiteralPath $path -Leaf
+				$stamp = (Get-Date).ToString('yyyyMMdd_HHmmss')
+				$bak = Join-Path $dir "$leaf.$stamp.bak"
+				Copy-Item -LiteralPath $path -Destination $bak -Force
+			}
+			catch { }
+			
+			try
+			{
+				$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+				$sw = New-Object System.IO.StreamWriter($path, $false, $utf8NoBom)
+				$xml.Save($sw); $sw.Close()
+				$updated++; $savedFiles.Add((Split-Path -Leaf $path)) | Out-Null
+			}
+			catch { $skipped++ }
+		}
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Final summary (NO TERNARY)
+	# ------------------------------------------------------------------------------------------------
+	$sumIP = 'n/a'
+	if ($firstScaleIP) { $sumIP = $firstScaleIP }
+	
+	Write_Log ("`r`nTroubleshoot_ScaleCommApp: Audited={0}, Updated={1}, Skipped={2}, FirstScaleIP={3}" -f $audited, $updated, $skipped, $sumIP) "blue"
+	if ($updated -gt 0)
+	{
+		Write_Log ("Saved files: {0}" -f ($savedFiles -join ', ')) "green"
+	}
+	
+	Write_Log "==================== Troubleshoot_ScaleCommApp Completed ====================" "blue"
+}
+
+# ===================================================================================================
 #                                 FUNCTION: Repair_BMS (All-in-one, PS5.1-safe)
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -20967,7 +21456,19 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($repairBMSItem)
 	
 	############################################################################
-	# 2) Reboot Scales
+	# 2) Troubleshoot ScaleCommApp
+	############################################################################
+	$troubleshootItem = New-Object System.Windows.Forms.ToolStripMenuItem("Troubleshoot ScaleCommApp")
+	$troubleshootItem.ToolTipText = "Checks and fixes ScaleCommApp config (StoreName, First Scale IP, SQL instance/db, BatchSendFull=10000)."
+	$troubleshootItem.Add_Click({
+			$script:LastActivity = Get-Date
+			# Auto-fix enabled; update ALL configs found; clear read-only if needed
+			Troubleshoot_ScaleCommApp -AllMatches -Force
+		})
+	[void]$ContextMenuScale.Items.Add($troubleshootItem)
+	
+	############################################################################
+	# 3) Reboot Scales
 	############################################################################
 	$Reboot_ScalesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Scales")
 	$Reboot_ScalesItem.ToolTipText = "Reboot Scale/s."
@@ -20978,7 +21479,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($Reboot_ScalesItem)
 	
 	############################################################################
-	# 3) Open Scale C$ Share(s)
+	# 4) Open Scale C$ Share(s)
 	############################################################################
 	$OpenScaleCShareItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Scale C$ Share(s)")
 	$OpenScaleCShareItem.ToolTipText = "Select scales and open their C$ administrative shares as 'bizuser' (bizerba/biyerba)."
@@ -20989,7 +21490,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($OpenScaleCShareItem)
 	
 	############################################################################
-	# 4) Edit_TBS_SCL_ver520_Table Menu Item
+	# 5) Edit_TBS_SCL_ver520_Table Menu Item
 	############################################################################
 	$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Edit_TBS_SCL_ver520_Table")
 	$OrganizeScaleTableItem.ToolTipText = "Organize the Scale SQL table (TBS_SCL_ver520)."
@@ -21000,7 +21501,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($OrganizeScaleTableItem)
 	
 	############################################################################
-	# 5) Deploy Scale Currency Files
+	# 6) Deploy Scale Currency Files
 	############################################################################
 	$DeployScaleCurrencyFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Deploy Scale Currency Files")
 	$DeployScaleCurrencyFilesItem.ToolTipText = "Push currency-configured price files (.txt, .properties) to selected scales (Bizerba only)."
@@ -21011,7 +21512,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($DeployScaleCurrencyFilesItem)
 	
 	############################################################################
-	# 6) Edit Ishida SDPs (ALL configs)
+	# 7) Edit Ishida SDPs (ALL configs)
 	############################################################################
 	$editIshidaSDPsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Edit Ishida SDPs (All Configs)")
 	$editIshidaSDPsItem.ToolTipText = "Pick subdepartments from SDP_TAB (F04/F1022) and write to IshidaSDPs in ALL ScaleCommApp *.exe.config files."
@@ -21026,7 +21527,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($editIshidaSDPsItem)
 	
 	############################################################################
-	# 7) Update Scales Specials
+	# 8) Update Scales Specials
 	############################################################################
 	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
 	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
@@ -21037,7 +21538,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($UpdateScalesSpecialsItem)
 	
 	############################################################################
-	# 8) Update Scale Config and DB (F272 Upsert)
+	# 9) Update Scale Config and DB (F272 Upsert)
 	############################################################################
 	$UpdateScaleConfigAndDBItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scale Config && DB (F272 Upsert)")
 	$UpdateScaleConfigAndDBItem.ToolTipText = "Updates ScaleCommApp configs and upserts F272 in SCL_TAB for POS_TAB F82=1 in item range."
@@ -21048,7 +21549,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($UpdateScaleConfigAndDBItem)
 	
 	############################################################################
-	# 9) Configure Subdepartments & SdpDefault (OBJ.F16 / OBJ.F18 / OBJ.F17)
+	# 10) Configure Subdepartments & SdpDefault (OBJ.F16 / OBJ.F18 / OBJ.F17)
 	############################################################################
 	$sep_ConfigureSdpDefault = New-Object System.Windows.Forms.ToolStripSeparator
 	#[void]$ContextMenuScale.Items.Add($sep_ConfigureSdpDefault)
@@ -21061,7 +21562,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($ConfigureSdpDefaultItem)
 	
 	############################################################################
-	# 10) Schedule Duplicate File Monitor
+	# 11) Schedule Duplicate File Monitor
 	############################################################################
 	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove duplicate files from (toBizerba)")
 	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in (toBizerba). Run now or schedule as SYSTEM."
