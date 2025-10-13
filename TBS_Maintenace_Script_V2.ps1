@@ -11993,11 +11993,11 @@ ORDER BY
 	$dDb = '<unchanged/skip>'; if ($ExpectedDatabase) { $dDb = $ExpectedDatabase }
 	
 	Write_Log "Desired Settings:" "blue"
-	Write_Log ("  StoreName          : {0}" -f $dStore) "cyan"
-	Write_Log ("  FistScaleIP        : {0}" -f $dIP) "cyan"
-	Write_Log ("  SQL_InstanceName   : {0}" -f $dInst) "cyan"
-	Write_Log ("  SQL_databaseName   : {0}" -f $dDb) "cyan"
-	Write_Log ("  Recs_BatchSendFull : 10000") "cyan"
+	Write_Log ("  StoreName          : {0}" -f $dStore) "green"
+	Write_Log ("  FistScaleIP        : {0}" -f $dIP) "green"
+	Write_Log ("  SQL_InstanceName   : {0}" -f $dInst) "green"
+	Write_Log ("  SQL_databaseName   : {0}" -f $dDb) "green"
+	Write_Log ("  Recs_BatchSendFull : 10000") "green"
 	
 	$leafPreview = Split-Path -Leaf $previewPath
 	Write_Log ("Existing (first file: {0}):" -f $leafPreview) "blue"
@@ -12101,7 +12101,7 @@ ORDER BY
 		Write_Log ("Saved files: {0}" -f ($savedFiles -join ', ')) "green"
 	}
 	
-	Write_Log "==================== Troubleshoot_ScaleCommApp Completed ====================" "blue"
+	Write_Log "`r`n==================== Troubleshoot_ScaleCommApp Completed ====================" "blue"
 }
 
 # ===================================================================================================
