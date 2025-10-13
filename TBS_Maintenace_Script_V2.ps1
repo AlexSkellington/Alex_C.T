@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.4.8"
-$VersionDate = "2025-10-10"
+$VersionNumber = "2.4.9"
+$VersionDate = "2025-10-13"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -10888,187 +10888,731 @@ function Schedule_Server_DB_Maintenance
 }
 
 # ===================================================================================================
-#                                 FUNCTION: Organize_TBS_SCL_ver520
+#                                 FUNCTION: Edit_TBS_SCL_ver520_Table
 # ---------------------------------------------------------------------------------------------------
-# Description:
-#   Organizes the [TBS_SCL_ver520] table by updating ScaleName, BufferTime, and ScaleCode for
-#   BIZERBA and ISHIDA records. 
-#   - Sets BufferTime to 1 for first BIZERBA, 5 for others.
-#   - Updates ScaleName for BIZERBA with IPDevice.
-#   - Reassigns ScaleCode to ensure BIZERBA are first, then ISHIDA.
-#   - Updates ScaleName and BufferTime for ISHIDA WMAI records.
-#   Displays the organized table at the end.
+# Interactive editor for [TBS_SCL_ver520] WITHOUT DRAGGING and WITHOUT SAVE CHECKBOX.
+#   • Auto Sort: BIZERBA first (by numeric IP), then ISHIDA; renumbers BIZERBA from 10,
+#                ISHIDA from (last BIZERBA)+10 (or 20 if none). Applies naming/BufferTime
+#                template and SAVES immediately.
+#   • Save: validates and writes EXACTLY the values visible in the grid (no auto renumber).
+#   • Refresh: reloads from DB.
+#   • Close/Cancel buttons provided.
+#   • IPNetwork shown before IPDevice. All visible columns editable.
+#   • Hidden Orig* columns anchor UPDATEs so edits to visible keys are safe.
+#   • Auto Sort uses deep snapshots to avoid detached DataRow issues.
+#   • Active must be Y/N (uppercased on save). IPNetwork must match local /24 (when detectable).
+#   • FIX: All SQL-escape replacements use -replace "'", "''" to avoid parser errors.
 # ===================================================================================================
 
-function Organize_TBS_SCL_ver520
+function Edit_TBS_SCL_ver520_Table
 {
 	[CmdletBinding()]
 	param ()
 	
-	Write_Log "`r`n==================== Starting Organize_TBS_SCL_ver520 Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Edit_TBS_SCL_ver520_Table (No Drag / No Checkbox) ====================`r`n" "blue"
 	
-	# Get connection string and module
+	# ----------------------------------------------------------------------------------------------
+	# 1) Resolve DB info and build connection string when missing (SQL Auth preferred, else Integrated)
+	# ----------------------------------------------------------------------------------------------
+	$server = $script:FunctionResults['DBSERVER']
+	$database = $script:FunctionResults['DBNAME']
 	$connectionString = $script:FunctionResults['ConnectionString']
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
+	
+	if (-not $server -or -not $database)
+	{
+		Write_Log "DB server or DB name missing - cannot proceed." "red"
+		return
+	}
+	
 	if (-not $connectionString)
 	{
-		Write_Log "Connection string not found in `$script:FunctionResults['ConnectionString']`." "red"
-		return
+		$sqlUser = $script:FunctionResults['SQL_UserID']
+		$sqlPwd = $script:FunctionResults['SQL_UserPwd']
+		if ($sqlUser -and $sqlPwd)
+		{
+			# Build SQL Auth connection string
+			$connectionString = "Server=$server;Database=$database;User ID=$sqlUser;Password=$sqlPwd;TrustServerCertificate=True;"
+			Write_Log "Built SQL Authentication connection string from cached credentials." "cyan"
+		}
+		else
+		{
+			# Build Integrated Security connection string
+			$connectionString = "Server=$server;Database=$database;Integrated Security=SSPI;TrustServerCertificate=True;"
+			Write_Log "Built Integrated Security connection string (no SQL creds found)." "cyan"
+		}
+		$script:FunctionResults['ConnectionString'] = $connectionString
 	}
-	if (-not $SqlModuleName -or $SqlModuleName -eq "None")
+	
+	# ----------------------------------------------------------------------------------------------
+	# 2) Pick SQL runner (Invoke-Sqlcmd if available, else .NET SqlClient)
+	# ----------------------------------------------------------------------------------------------
+	$InvokeSqlCmd = $null
+	if ($SqlModuleName -and $SqlModuleName -ne "None")
 	{
-		Write_Log "No valid SQL module detected for SQL operations." "red"
-		return
+		try
+		{
+			Import-Module $SqlModuleName -ErrorAction Stop
+			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+		}
+		catch
+		{
+			Write_Log "SQL module '$SqlModuleName' not loaded. Using .NET SqlClient fallback." "yellow"
+		}
 	}
-	Import-Module $SqlModuleName -ErrorAction Stop
-	$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
-	$supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString'
+	else
+	{
+		Write_Log "No SQL module name provided. Using .NET SqlClient fallback." "yellow"
+	}
+	$supportsConnectionString = $InvokeSqlCmd -and ($InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString')
 	
-	# Define the SQL commands
-	$updateQueries = @"
--------------------------------------------------------------------------------
--- 1) Update ISHIDA WMAI ScaleName and BufferTime based on the record count
--------------------------------------------------------------------------------
-DECLARE @IshidaWMAICount INT;
-SELECT @IshidaWMAICount = COUNT(*) FROM [TBS_SCL_ver520] WHERE ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
-IF @IshidaWMAICount > 1
-BEGIN
-    UPDATE [TBS_SCL_ver520] SET ScaleName = CONCAT('Ishida Wrapper ', IPDevice), BufferTime = '1' WHERE ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
-END
-ELSE
-BEGIN
-    UPDATE [TBS_SCL_ver520] SET ScaleName = 'Ishida Wrapper', BufferTime = '1' WHERE ScaleBrand = 'ISHIDA' AND ScaleModel = 'WMAI';
-END;
-
--------------------------------------------------------------------------------
--- 2) Update BIZERBA ScaleName
--------------------------------------------------------------------------------
-UPDATE [TBS_SCL_ver520] SET ScaleName = CONCAT('Scale ', IPDevice) WHERE ScaleBrand = 'BIZERBA';
-
--------------------------------------------------------------------------------
--- 3) Update ScaleCode for BIZERBA, starting at 10, in IPDevice ascending order
--------------------------------------------------------------------------------
-WITH BIZERBA_CTE AS (
-    SELECT ScaleCode, IPDevice, rn = ROW_NUMBER() OVER (ORDER BY TRY_CAST(IPDevice AS INT)) 
-    FROM [TBS_SCL_ver520] WHERE ScaleBrand = 'BIZERBA'
-)
-UPDATE T
-SET T.ScaleCode = 10 + B.rn - 1
-FROM [TBS_SCL_ver520] AS T
-JOIN BIZERBA_CTE AS B ON T.ScaleCode = B.ScaleCode
-WHERE T.ScaleBrand = 'BIZERBA';
-
--------------------------------------------------------------------------------
--- 4) Update ScaleCode for ISHIDA, starting after the new max BIZERBA ScaleCode.
--------------------------------------------------------------------------------
-;WITH MaxBizerba AS (
-    SELECT MAX(ScaleCode) AS MaxCode FROM [TBS_SCL_ver520] WHERE ScaleBrand = 'BIZERBA'
-),
-ISHIDA_CTE AS (
-    SELECT ScaleCode, IPDevice, rn = ROW_NUMBER() OVER (ORDER BY TRY_CAST(IPDevice AS INT))
-    FROM [TBS_SCL_ver520] WHERE ScaleBrand = 'ISHIDA'
-)
-UPDATE T
-SET T.ScaleCode = (SELECT MaxCode FROM MaxBizerba) + 10 + I.rn - 1
-FROM [TBS_SCL_ver520] AS T
-JOIN ISHIDA_CTE AS I ON T.ScaleCode = I.ScaleCode
-WHERE T.ScaleBrand = 'ISHIDA';
-
--------------------------------------------------------------------------------
--- 5) Now set BufferTime for BIZERBA records:
--------------------------------------------------------------------------------
-WITH BIZ_ORDER AS (
-    SELECT ScaleCode, RN = ROW_NUMBER() OVER (ORDER BY ScaleCode ASC)
-    FROM [TBS_SCL_ver520] WHERE ScaleBrand = 'BIZERBA'
-)
-UPDATE T
-SET T.BufferTime = CASE WHEN B.RN = 1 THEN '1' ELSE '5' END
-FROM [TBS_SCL_ver520] T
-INNER JOIN BIZ_ORDER B ON T.ScaleCode = B.ScaleCode
-WHERE T.ScaleBrand = 'BIZERBA';
-"@
+	# Helper: run SQL (returns rows if -ReturnRows; $true on non-query success)
+	$runQuery = {
+		param ($q,
+			[switch]$ReturnRows)
+		try
+		{
+			if ($InvokeSqlCmd)
+			{
+				if ($supportsConnectionString)
+				{
+					if ($ReturnRows) { return & $InvokeSqlCmd -ConnectionString $connectionString -Query $q -ErrorAction Stop }
+					else { & $InvokeSqlCmd -ConnectionString $connectionString -Query $q -ErrorAction Stop | Out-Null; return $true }
+				}
+				else
+				{
+					if ($ReturnRows) { return & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $q -ErrorAction Stop }
+					else { & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $q -ErrorAction Stop | Out-Null; return $true }
+				}
+			}
+			else
+			{
+				$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+				$csb.ConnectionString = $connectionString
+				$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
+				$conn.Open()
+				$cmd = $conn.CreateCommand(); $cmd.CommandText = $q; $cmd.CommandTimeout = 0
+				if ($ReturnRows)
+				{
+					$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
+					$td = New-Object System.Data.DataTable
+					[void]$da.Fill($td)
+					$conn.Close()
+					return $td
+				}
+				else
+				{
+					[void]$cmd.ExecuteNonQuery()
+					$conn.Close()
+					return $true
+				}
+			}
+		}
+		catch
+		{
+			Write_Log "SQL error: $($_.Exception.Message)" "red"
+			return $null
+		}
+	}
 	
+	# ----------------------------------------------------------------------------------------------
+	# 3) Discover the /24 prefix actually IN USE:
+	#    Prefer the NIC that can reach the SQL server ($server). If not found, prefer NIC with a
+	#    default gateway. As a final fallback, use the first RFC1918 IPv4 found.
+	#    Result: $allowedPrefix like '192.168.5' (used to validate/normalize IPNetwork).
+	# ----------------------------------------------------------------------------------------------
+	$allowedPrefix = $null
+	try
+	{
+		# Resolve SQL server to IPv4(s) we can test reachability/subnet against
+		$serverIPv4s = @()
+		try
+		{
+			$serverIPs = [System.Net.Dns]::GetHostAddresses($server)
+			foreach ($ip in $serverIPs)
+			{
+				if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork)
+				{
+					$serverIPv4s += $ip
+				}
+			}
+		}
+		catch
+		{
+			# resolution can fail (server is an instance name or local); ignore here
+		}
+		
+		$allNics = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
+			$_.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up
+		}
+		
+		# Helper: compute if two IPv4s are in same subnet using mask/prefix
+		function _SameSubnet($aStr, $bStr, $maskStr)
+		{
+			try
+			{
+				$a = [System.Net.IPAddress]::Parse($aStr).GetAddressBytes()
+				$b = [System.Net.IPAddress]::Parse($bStr).GetAddressBytes()
+				$m = [System.Net.IPAddress]::Parse($maskStr).GetAddressBytes()
+				for ($i = 0; $i -lt 4; $i++)
+				{
+					if (($a[$i] -band $m[$i]) -ne ($b[$i] -band $m[$i])) { return $false }
+				}
+				return $true
+			}
+			catch { return $false }
+		}
+		
+		# Pass 1: pick NIC whose IPv4 is on the same subnet as the SQL server IPv4 (most authoritative)
+		$pickedIP = $null
+		foreach ($ni in $allNics)
+		{
+			$ipProps = $ni.GetIPProperties()
+			foreach ($ua in $ipProps.UnicastAddresses)
+			{
+				if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+				if ($ua.IPv4Mask -eq $null) { continue }
+				if ($serverIPv4s.Count -gt 0)
+				{
+					foreach ($srv in $serverIPv4s)
+					{
+						if (_SameSubnet $ua.Address.ToString() $srv.ToString() $ua.IPv4Mask.ToString())
+						{
+							$pickedIP = $ua.Address.ToString()
+							break
+						}
+					}
+				}
+				if ($pickedIP) { break }
+			}
+			if ($pickedIP) { break }
+		}
+		
+		# Pass 2: if not found, pick NIC that has a default gateway (likely primary route)
+		if (-not $pickedIP)
+		{
+			foreach ($ni in $allNics)
+			{
+				$ipProps = $ni.GetIPProperties()
+				$hasGw = $false
+				foreach ($gw in $ipProps.GatewayAddresses)
+				{
+					if ($gw.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $hasGw = $true; break }
+				}
+				if (-not $hasGw) { continue }
+				foreach ($ua in $ipProps.UnicastAddresses)
+				{
+					if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+					$pickedIP = $ua.Address.ToString()
+					break
+				}
+				if ($pickedIP) { break }
+			}
+		}
+		
+		# Pass 3: fallback to first RFC1918 IPv4
+		if (-not $pickedIP)
+		{
+			foreach ($ni in $allNics)
+			{
+				$ipProps = $ni.GetIPProperties()
+				foreach ($ua in $ipProps.UnicastAddresses)
+				{
+					if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+					$ip = $ua.Address.ToString()
+					if ($ip.StartsWith('10.') -or $ip.StartsWith('192.168.') -or (
+							$ip.StartsWith('172.') -and (([int]($ip.Split('.')[1])) -ge 16) -and (([int]($ip.Split('.')[1])) -le 31)
+						))
+					{
+						$pickedIP = $ip
+						break
+					}
+				}
+				if ($pickedIP) { break }
+			}
+		}
+		
+		if ($pickedIP)
+		{
+			$parts = $pickedIP.Split('.')
+			if ($parts.Length -ge 3)
+			{
+				$allowedPrefix = "$($parts[0]).$($parts[1]).$($parts[2])"
+			}
+		}
+	}
+	catch
+	{
+		# ignore detection errors; $allowedPrefix stays $null
+	}
+	
+	if ($allowedPrefix)
+	{
+		Write_Log "IPNetwork allowed prefix detected (active NIC): $allowedPrefix" "cyan"
+	}
+	else
+	{
+		Write_Log "WARNING: Could not determine active NIC / RFC1918 IPv4. IPNetwork validation will be skipped." "yellow"
+	}
+	
+	# ----------------------------------------------------------------------------------------------
+	# 4) Load table -> DataTable (include Orig* columns to anchor updates)
+	# ----------------------------------------------------------------------------------------------
 	$selectQuery = @"
 SELECT 
-    ScaleCode, ScaleName, ScaleLocation, IPNetwork, IPDevice, Active,
-    SystemLocalTime, AutoStart, AutoTransmit, BufferTime, ScaleBrand, ScaleModel
+    ScaleCode, ScaleName, ScaleBrand, ScaleModel, IPNetwork, IPDevice, BufferTime, Active
 FROM [TBS_SCL_ver520]
 ORDER BY ScaleCode ASC;
 "@
+	Write_Log "Loading table for edit..." "blue"
+	$rows = & $runQuery $selectQuery -ReturnRows
+	if (-not $rows) { return }
 	
-	# -------------------------------------------------------------------------
-	# Execute update and select queries using detected module and connection string
-	# -------------------------------------------------------------------------
-	try
+	$dt = New-Object System.Data.DataTable
+	foreach ($c in 'ScaleCode', 'ScaleName', 'ScaleBrand', 'ScaleModel', 'IPNetwork', 'IPDevice', 'BufferTime', 'Active',
+		'OrigScaleBrand', 'OrigScaleModel', 'OrigIPNetwork', 'OrigIPDevice')
 	{
-		Write_Log "Executing update queries to modify ScaleName, BufferTime, and ScaleCode..." "blue"
-		if ($supportsConnectionString)
+		[void]$dt.Columns.Add($c)
+	}
+	
+	foreach ($r in $rows)
+	{
+		$nr = $dt.NewRow()
+		$nr['ScaleCode'] = [string]$r.ScaleCode
+		$nr['ScaleName'] = [string]$r.ScaleName
+		$nr['ScaleBrand'] = [string]$r.ScaleBrand
+		$nr['ScaleModel'] = [string]$r.ScaleModel
+		$nr['IPNetwork'] = [string]$r.IPNetwork
+		$nr['IPDevice'] = [string]$r.IPDevice
+		$nr['BufferTime'] = [string]$r.BufferTime
+		$nr['Active'] = [string]$r.Active
+		# ORIGINAL KEYS SNAPSHOT
+		$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
+		$nr['OrigScaleModel'] = [string]$r.ScaleModel
+		$nr['OrigIPNetwork'] = [string]$r.IPNetwork
+		$nr['OrigIPDevice'] = [string]$r.IPDevice
+		[void]$dt.Rows.Add($nr)
+	}
+	
+	# ----------------------------------------------------------------------------------------------
+	# 5) WinForms UI - simple layout (no drag UI, no checkbox)
+	# ----------------------------------------------------------------------------------------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Edit Placings - TBS_SCL_ver520"
+	$form.StartPosition = 'CenterScreen'
+	$form.Size = New-Object System.Drawing.Size(1100, 720)
+	$form.MinimumSize = New-Object System.Drawing.Size(960, 600)
+	$form.AutoScaleMode = 'Dpi'
+	$form.TopMost = $true
+	
+	# Grid with manual columns to control order (IPNetwork before IPDevice) and editability
+	$grid = New-Object System.Windows.Forms.DataGridView
+	$grid.Dock = [System.Windows.Forms.DockStyle]::Fill
+	$grid.AutoGenerateColumns = $false
+	$grid.AllowUserToAddRows = $false
+	$grid.AllowUserToDeleteRows = $false
+	$grid.ReadOnly = $false
+	$grid.SelectionMode = 'FullRowSelect'
+	$grid.MultiSelect = $false
+	$grid.AutoSizeColumnsMode = 'Fill'
+	$grid.ColumnHeadersHeightSizeMode = 'AutoSize'
+	$grid.AllowUserToOrderColumns = $true
+	$grid.RowHeadersWidth = 30
+	
+	$AddCol = {
+		param ($header,
+			$prop,
+			$visible = $true,
+			$readOnly = $false)
+		$c = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+		$c.HeaderText = $header
+		$c.DataPropertyName = $prop
+		$c.ReadOnly = $readOnly
+		$c.SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::NotSortable
+		$c.Visible = $visible
+		$grid.Columns.Add($c) | Out-Null
+	}
+	
+	# IPNetwork before IPDevice; all visible columns are editable
+	& $AddCol 'ScaleCode'   'ScaleCode'
+	& $AddCol 'ScaleName'   'ScaleName'
+	& $AddCol 'ScaleBrand'  'ScaleBrand'
+	& $AddCol 'ScaleModel'  'ScaleModel'
+	& $AddCol 'IPNetwork'   'IPNetwork'
+	& $AddCol 'IPDevice'    'IPDevice'
+	& $AddCol 'BufferTime'  'BufferTime'
+	& $AddCol 'Active'      'Active'
+	
+	# Hidden original-key columns for safe UPDATE matching
+	& $AddCol 'OrigScaleBrand' 'OrigScaleBrand' $false $true
+	& $AddCol 'OrigScaleModel' 'OrigScaleModel' $false $true
+	& $AddCol 'OrigIPNetwork'  'OrigIPNetwork'  $false $true
+	& $AddCol 'OrigIPDevice'   'OrigIPDevice'   $false $true
+	
+	$grid.DataSource = $dt
+	$form.Controls.Add($grid)
+	
+	# Bottom bar
+	$bottom = New-Object System.Windows.Forms.Panel
+	$bottom.Dock = [System.Windows.Forms.DockStyle]::Bottom
+	$bottom.Height = 86
+	$form.Controls.Add($bottom)
+	
+	$lbl = New-Object System.Windows.Forms.Label
+	$lbl.AutoSize = $true
+	$lbl.Location = New-Object System.Drawing.Point(10, 10)
+	if ($allowedPrefix)
+	{
+		$lbl.Text = "Edit cells directly. Auto Sort applies standard order + numbering and saves immediately.  Active must be Y/N.  IPNetwork must match $allowedPrefix.* (accepted: '$allowedPrefix', '$allowedPrefix.0', '$allowedPrefix.*', '$allowedPrefix.x', '$allowedPrefix.')"
+	}
+	else
+	{
+		$lbl.Text = "Edit cells directly. Auto Sort applies standard order + numbering and saves immediately.  Active must be Y/N."
+	}
+	$bottom.Controls.Add($lbl)
+	
+	$btnAuto = New-Object System.Windows.Forms.Button
+	$btnAuto.Text = "Auto Sort (BIZERBA first)"
+	$btnAuto.Size = New-Object System.Drawing.Size(220, 28)
+	$btnAuto.Location = New-Object System.Drawing.Point(10, 44)
+	$bottom.Controls.Add($btnAuto)
+	
+	$btnRefresh = New-Object System.Windows.Forms.Button
+	$btnRefresh.Text = "Refresh"
+	$btnRefresh.Size = New-Object System.Drawing.Size(100, 28)
+	$btnRefresh.Location = New-Object System.Drawing.Point(240, 44)
+	$bottom.Controls.Add($btnRefresh)
+	
+	$btnClose = New-Object System.Windows.Forms.Button
+	$btnClose.Text = "Close"
+	$btnClose.Size = New-Object System.Drawing.Size(100, 28)
+	$bottom.Controls.Add($btnClose)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Size = New-Object System.Drawing.Size(100, 28)
+	$bottom.Controls.Add($btnCancel)
+	
+	$btnSave = New-Object System.Windows.Forms.Button
+	$btnSave.Text = "Save"
+	$btnSave.Size = New-Object System.Drawing.Size(100, 28)
+	$bottom.Controls.Add($btnSave)
+	
+	# Right-align main action buttons responsively
+	$placeButtons = {
+		$bw = [int]$bottom.ClientSize.Width
+		$btnSave.Location = New-Object System.Drawing.Point(($bw - 110), 44)
+		$btnCancel.Location = New-Object System.Drawing.Point(($bw - 220), 44)
+		$btnClose.Location = New-Object System.Drawing.Point(($bw - 330), 44)
+	}
+	& $placeButtons
+	$form.add_Resize({ & $placeButtons })
+	
+	# Helper: commit any in-progress cell edits before reading grid values
+	$CommitGridEdits = {
+		if ($grid -and $grid.IsCurrentCellInEditMode)
 		{
-			Invoke-Sqlcmd -ConnectionString $connectionString -Query $updateQueries -ErrorAction Stop
+			[void]$grid.EndEdit()
 		}
 		else
 		{
-			$server = $script:FunctionResults['DBSERVER']
-			$database = $script:FunctionResults['DBNAME']
-			if (-not $server -or -not $database)
-			{
-				Write_Log "Invalid ConnectionString. Missing Server or Database information." "red"
-				throw "Invalid ConnectionString. Cannot parse Server or Database."
-			}
-			Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $updateQueries -ErrorAction Stop
+			if ($grid) { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) }
 		}
-		Write_Log "Update queries executed successfully." "green"
-	}
-	catch
-	{
-		Write_Log "An error occurred while executing update queries: $_" "red"
-		return
 	}
 	
-	# -------------------------------------------------------------------------
-	# Retrieve and display organized data
-	# -------------------------------------------------------------------------
-	try
-	{
-		Write_Log "Retrieving organized data..." "blue"
-		if ($supportsConnectionString)
+	# ----------------------------------------------------------------------------------------------
+	# 6) SAVE - validate & write exactly what's in the grid (NO renumber here)
+	#     Active must be Y/N (uppercased); IPNetwork must match detected /24 (if available).
+	# ----------------------------------------------------------------------------------------------
+	$DoSave = {
+		& $CommitGridEdits
+		
+		# Validate ScaleCode: integers + unique
+		$seenCodes = @{ }
+		$rowIdx = 0
+		foreach ($row in $dt.Rows)
 		{
-			$data = Invoke-Sqlcmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
-		}
-		else
-		{
-			$server = $script:FunctionResults['DBSERVER']
-			$database = $script:FunctionResults['DBNAME']
-			if (-not $server -or -not $database)
+			$raw = $row['ScaleCode']
+			$val = $null
+			if (-not [int]::TryParse([string]$raw, [ref]$val))
 			{
-				Write_Log "Invalid ConnectionString. Missing Server or Database information." "red"
-				throw "Invalid ConnectionString. Cannot parse Server or Database."
+				[void][System.Windows.Forms.MessageBox]::Show("Invalid ScaleCode at row #$($rowIdx + 1): '$raw' is not a number.", "Invalid Code", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				return $false
 			}
-			$data = Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
+			if ($seenCodes.ContainsKey($val))
+			{
+				[void][System.Windows.Forms.MessageBox]::Show("Duplicate ScaleCode '$val' detected (row #$($rowIdx + 1)).", "Duplicate Code", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				return $false
+			}
+			$seenCodes[$val] = $true
+			
+			# Validate Active -> must be Y/N; uppercase
+			$actRaw = [string]$row['Active']; if ($null -eq $actRaw) { $actRaw = '' }
+			$actUp = $actRaw.Trim().ToUpper()
+			if ($actUp -ne 'Y' -and $actUp -ne 'N')
+			{
+				[void][System.Windows.Forms.MessageBox]::Show("Invalid Active value at row #$($rowIdx + 1): '$actRaw'. Use Y or N.", "Invalid Active", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+				return $false
+			}
+			$row['Active'] = $actUp
+			
+			# Validate IPNetwork -> must match local /24 (first three octets) when detectable
+			if ($allowedPrefix)
+			{
+				$ipnRaw = [string]$row['IPNetwork']; if ($null -eq $ipnRaw) { $ipnRaw = '' }
+				$ipnRaw = $ipnRaw.Trim()
+				$m = [regex]::Match($ipnRaw, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
+				if (-not $m.Success)
+				{
+					[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx + 1): '$ipnRaw'. Expected '$allowedPrefix', '$allowedPrefix.0' or '$allowedPrefix.*'.", "Invalid IPNetwork", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+					return $false
+				}
+				$prefix = "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)"
+				if ($prefix -ne $allowedPrefix)
+				{
+					[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$($rowIdx + 1) must be within '$allowedPrefix.*'. Got '$ipnRaw'.", "IPNetwork Out of Range", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+					return $false
+				}
+				# Normalize form
+				$row['IPNetwork'] = $allowedPrefix
+			}
+			
+			$rowIdx = $rowIdx + 1
 		}
-		Write_Log "Data retrieval successful." "green"
-	}
-	catch
-	{
-		Write_Log "An error occurred while retrieving data: $_" "red"
-		return
+		
+		# Build VALUES block (SQL-escape with -replace "'", "''")
+		$values = New-Object System.Collections.Generic.List[string]
+		foreach ($row in $dt.Rows)
+		{
+			$nBrand = ([string]$row['ScaleBrand']).Replace("`r", "").Replace("`n", "")
+			$nModel = ([string]$row['ScaleModel']).Replace("`r", "").Replace("`n", "")
+			$nIPNet = ([string]$row['IPNetwork']).Replace("`r", "").Replace("`n", "")
+			$nIPDev = ([string]$row['IPDevice']).Replace("`r", "").Replace("`n", "")
+			$nCode = [int]$row['ScaleCode']
+			$nBuf = ([string]$row['BufferTime']).Replace("`r", "").Replace("`n", "")
+			$nName = ([string]$row['ScaleName']).Replace("`r", "").Replace("`n", "")
+			$nAct = ([string]$row['Active']).Replace("`r", "").Replace("`n", "")
+			
+			# Escape single quotes for SQL
+			$nBrand = $nBrand -replace "'", "''"
+			$nModel = $nModel -replace "'", "''"
+			$nIPNet = $nIPNet -replace "'", "''"
+			$nIPDev = $nIPDev -replace "'", "''"
+			$nBuf = $nBuf -replace "'", "''"
+			$nName = $nName -replace "'", "''"
+			$nAct = $nAct -replace "'", "''"
+			
+			$oBrand = ([string]$row['OrigScaleBrand']) -replace "'", "''"
+			$oModel = ([string]$row['OrigScaleModel']) -replace "'", "''"
+			$oIPNet = ([string]$row['OrigIPNetwork']) -replace "'", "''"
+			$oIPDev = ([string]$row['OrigIPDevice']) -replace "'", "''"
+			
+			$values.Add("('$oBrand','$oModel','$oIPNet','$oIPDev','$nBrand','$nModel','$nIPNet','$nIPDev',$nCode,'$nBuf','$nName','$nAct')")
+		}
+		if ($values.Count -eq 0)
+		{
+			Write_Log "Nothing to save." "yellow"
+			return $false
+		}
+		
+		# Use a single-quoted here-string (no expansion), then inject the VALUES with .Replace()
+		$sqlSave = @'
+BEGIN TRY
+  BEGIN TRAN;
+
+  DECLARE @Placings TABLE(
+      OrigScaleBrand nvarchar(100) NOT NULL,
+      OrigScaleModel nvarchar(100) NOT NULL,
+      OrigIPNetwork  nvarchar(100) NOT NULL,
+      OrigIPDevice   nvarchar(100) NOT NULL,
+      NewScaleBrand  nvarchar(100) NOT NULL,
+      NewScaleModel  nvarchar(100) NOT NULL,
+      NewIPNetwork   nvarchar(100) NOT NULL,
+      NewIPDevice    nvarchar(100) NOT NULL,
+      NewScaleCode   int           NOT NULL,
+      NewBufferTime  nvarchar(20)  NOT NULL,
+      NewScaleName   nvarchar(200) NOT NULL,
+      NewActive      nvarchar(20)  NOT NULL
+  );
+
+  INSERT INTO @Placings (
+      OrigScaleBrand, OrigScaleModel, OrigIPNetwork, OrigIPDevice,
+      NewScaleBrand, NewScaleModel, NewIPNetwork, NewIPDevice,
+      NewScaleCode, NewBufferTime, NewScaleName, NewActive
+  )
+  VALUES
+  $(VALUES_BLOCK);
+
+  UPDATE tgt
+     SET tgt.ScaleBrand = src.NewScaleBrand,
+         tgt.ScaleModel = src.NewScaleModel,
+         tgt.IPNetwork  = src.NewIPNetwork,
+         tgt.IPDevice   = src.NewIPDevice,
+         tgt.ScaleCode  = src.NewScaleCode,
+         tgt.BufferTime = src.NewBufferTime,
+         tgt.ScaleName  = src.NewScaleName,
+         tgt.Active     = src.NewActive
+  FROM [TBS_SCL_ver520] AS tgt
+  JOIN @Placings AS src
+    ON  tgt.ScaleBrand = src.OrigScaleBrand
+    AND tgt.ScaleModel = src.OrigScaleModel
+    AND tgt.IPNetwork  = src.OrigIPNetwork
+    AND tgt.IPDevice   = src.OrigIPDevice;
+
+  COMMIT TRAN;
+END TRY
+BEGIN CATCH
+  IF @@TRANCOUNT > 0 ROLLBACK TRAN;
+  DECLARE @msg nvarchar(4000) = ERROR_MESSAGE();
+  RAISERROR(@msg, 16, 1);
+END CATCH;
+'@
+		
+		# Inject VALUES rows into placeholder safely
+		$sqlSave = $sqlSave.Replace('$(VALUES_BLOCK)', ([string]::Join(",`r`n  ", $values)))
+		
+		Write_Log "Saving to database..." "blue"
+		$ok = & $runQuery $sqlSave
+		if (-not $ok)
+		{
+			Write_Log "Save failed." "red"
+			[void][System.Windows.Forms.MessageBox]::Show("Save failed. Check logs.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			return $false
+		}
+		
+		# Refresh view from DB after save
+		Write_Log "Refreshing view..." "blue"
+		$fresh = & $runQuery $selectQuery -ReturnRows
+		if ($fresh)
+		{
+			$dt.Rows.Clear() | Out-Null
+			foreach ($r in $fresh)
+			{
+				$nr = $dt.NewRow()
+				$nr['ScaleCode'] = [string]$r.ScaleCode
+				$nr['ScaleName'] = [string]$r.ScaleName
+				$nr['ScaleBrand'] = [string]$r.ScaleBrand
+				$nr['ScaleModel'] = [string]$r.ScaleModel
+				$nr['IPNetwork'] = [string]$r.IPNetwork
+				$nr['IPDevice'] = [string]$r.IPDevice
+				$nr['BufferTime'] = [string]$r.BufferTime
+				$nr['Active'] = [string]$r.Active
+				$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
+				$nr['OrigScaleModel'] = [string]$r.ScaleModel
+				$nr['OrigIPNetwork'] = [string]$r.IPNetwork
+				$nr['OrigIPDevice'] = [string]$r.IPDevice
+				[void]$dt.Rows.Add($nr)
+			}
+			$grid.Refresh()
+		}
+		
+		[void][System.Windows.Forms.MessageBox]::Show("Saved and refreshed.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+		Write_Log "Saved and refreshed." "green"
+		return $true
 	}
 	
-	# -------------------------------------------------------------------------
-	# Display organized data
-	# -------------------------------------------------------------------------
-	Write_Log "Displaying organized data:" "yellow"
-	try
-	{
-		$formattedData = $data | Format-Table -AutoSize | Out-String
-		Write_Log $formattedData "Blue"
-	}
-	catch
-	{
-		Write_Log "Failed to format and display data: $_" "red"
-	}
+	# ----------------------------------------------------------------------------------------------
+	# 7) AUTO SORT - BIZERBA first (by numeric IP), then ISHIDA; renumber & SAVE immediately
+	# ----------------------------------------------------------------------------------------------
+	$btnAuto.add_Click({
+			# deep snapshot
+			$ipNum = { param ($s) $out = 0; if ([int]::TryParse([string]$s, [ref]$out)) { return $out }
+				else { return [int]::MaxValue } }
+			
+			$snapB = @(); $snapI = @()
+			foreach ($row in $dt.Rows)
+			{
+				$o = [ordered]@{
+					ScaleCode	   = $row['ScaleCode']; ScaleName = $row['ScaleName']; ScaleBrand = $row['ScaleBrand']; ScaleModel = $row['ScaleModel']
+					IPNetwork	   = $row['IPNetwork']; IPDevice = $row['IPDevice']; BufferTime = $row['BufferTime']; Active = $row['Active']
+					OrigScaleBrand = $row['OrigScaleBrand']; OrigScaleModel = $row['OrigScaleModel']; OrigIPNetwork = $row['OrigIPNetwork']; OrigIPDevice = $row['OrigIPDevice']
+				}
+				if ($o.ScaleBrand -eq 'BIZERBA') { $snapB += $o }
+				elseif ($o.ScaleBrand -eq 'ISHIDA') { $snapI += $o }
+			}
+			
+			$snapB = $snapB | Sort-Object @{ Expression = { & $ipNum $_.IPDevice } }, @{ Expression = { $_.IPDevice } }
+			$snapI = $snapI | Sort-Object @{ Expression = { & $ipNum $_.IPDevice } }, @{ Expression = { $_.IPDevice } }
+			
+			$dt.BeginLoadData()
+			try
+			{
+				$dt.Rows.Clear()
+				foreach ($s in $snapB) { $nr = $dt.NewRow(); foreach ($k in $s.Keys) { $nr[$k] = [string]$s[$k] }; [void]$dt.Rows.Add($nr) }
+				foreach ($s in $snapI) { $nr = $dt.NewRow(); foreach ($k in $s.Keys) { $nr[$k] = [string]$s[$k] }; [void]$dt.Rows.Add($nr) }
+			}
+			finally { $dt.EndLoadData() }
+			
+			# Template naming + BufferTime
+			$firstB = $true
+			foreach ($r in $dt.Rows)
+			{
+				if ($r['ScaleBrand'] -eq 'BIZERBA')
+				{
+					$r['ScaleName'] = "Scale $($r['IPDevice'])"
+					if ($firstB) { $r['BufferTime'] = '1'; $firstB = $false }
+					else { $r['BufferTime'] = '5' }
+				}
+			}
+			$ishWmai = @(); foreach ($r in $dt.Rows) { if ($r['ScaleBrand'] -eq 'ISHIDA' -and $r['ScaleModel'] -eq 'WMAI') { $ishWmai += $r } }
+			if ($ishWmai.Count -gt 1) { foreach ($r in $ishWmai) { $r['ScaleName'] = "Ishida Wrapper $($r['IPDevice'])" } }
+			elseif ($ishWmai.Count -eq 1) { $ishWmai[0]['ScaleName'] = 'Ishida Wrapper' }
+			
+			# Renumber: BIZERBA from 10; ISHIDA from (last BIZERBA)+10 (or 20 if none)
+			$codeB = 10
+			foreach ($r in $dt.Rows) { if ($r['ScaleBrand'] -eq 'BIZERBA') { $r['ScaleCode'] = [string]$codeB; $codeB = $codeB + 1 } }
+			$ishidaStart = 20; if ($codeB -gt 10) { $ishidaStart = ($codeB - 1) + 10 }
+			$codeI = $ishidaStart
+			foreach ($r in $dt.Rows) { if ($r['ScaleBrand'] -eq 'ISHIDA') { $r['ScaleCode'] = [string]$codeI; $codeI = $codeI + 1 } }
+			
+			$grid.Refresh()
+			
+			# Save immediately (will also enforce Active & IPNetwork rules and uppercase Active)
+			[void](& $DoSave)
+		})
 	
-	Write_Log "==================== Organize_TBS_SCL_ver520 Function Completed ====================" "blue"
+	# ----------------------------------------------------------------------------------------------
+	# 8) Refresh / Close / Cancel / Save button wiring
+	# ----------------------------------------------------------------------------------------------
+	$btnRefresh.add_Click({
+			Write_Log "Refreshing view from database..." "blue"
+			$fresh = & $runQuery $selectQuery -ReturnRows
+			if ($fresh)
+			{
+				$dt.Rows.Clear() | Out-Null
+				foreach ($r in $fresh)
+				{
+					$nr = $dt.NewRow()
+					$nr['ScaleCode'] = [string]$r.ScaleCode
+					$nr['ScaleName'] = [string]$r.ScaleName
+					$nr['ScaleBrand'] = [string]$r.ScaleBrand
+					$nr['ScaleModel'] = [string]$r.ScaleModel
+					$nr['IPNetwork'] = [string]$r.IPNetwork
+					$nr['IPDevice'] = [string]$r.IPDevice
+					$nr['BufferTime'] = [string]$r.BufferTime
+					$nr['Active'] = [string]$r.Active
+					$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
+					$nr['OrigScaleModel'] = [string]$r.ScaleModel
+					$nr['OrigIPNetwork'] = [string]$r.IPNetwork
+					$nr['OrigIPDevice'] = [string]$r.IPDevice
+					[void]$dt.Rows.Add($nr)
+				}
+				$grid.Refresh()
+			}
+		})
+	
+	$btnClose.add_Click({ $form.Close() })
+	$btnCancel.add_Click({ Write_Log "Cancel: reloading from database..." "yellow"; $btnRefresh.PerformClick() })
+	$btnSave.add_Click({ [void](& $DoSave) }) # Save exactly what's visible; validation enforces Active/IPNetwork
+	
+	# ----------------------------------------------------------------------------------------------
+	# 9) Show dialog
+	# ----------------------------------------------------------------------------------------------
+	[void]$form.ShowDialog()
+	Write_Log "==================== Edit_TBS_SCL_ver520_Table Closed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -19994,20 +20538,9 @@ public static class NativeWin {
 			Schedule_Storeman_Zip_Backup
 		})
 	[void]$ContextMenuServer.Items.Add($ServerScheduleStoremanZipBackupItem)
-	
+		
 	############################################################################
-	# 5) Organize_TBS_SCL_ver520 Menu Item
-	############################################################################
-	$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize_TBS_SCL_ver520")
-	$OrganizeScaleTableItem.ToolTipText = "Organize the Scale SQL table (TBS_SCL_ver520)."
-	$OrganizeScaleTableItem.Add_Click({
-			$script:LastActivity = Get-Date
-			Organize_TBS_SCL_ver520
-		})
-	[void]$ContextMenuServer.Items.Add($OrganizeScaleTableItem)
-	
-	############################################################################
-	# 6) Manage SQL 'sa' Account Menu Item
+	# 5) Manage SQL 'sa' Account Menu Item
 	############################################################################
 	$ManageSaAccountItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manage SQL 'sa' Account")
 	$ManageSaAccountItem.ToolTipText = "Enable or disable the 'sa' account on the local SQL Server with a predefined password."
@@ -20018,7 +20551,7 @@ public static class NativeWin {
 	[void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
 	
 	############################################################################
-	# 7) Repair Windows Menu Item
+	# 6) Repair Windows Menu Item
 	############################################################################
 	$RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
 	$RepairWindowsItem.ToolTipText = "Perform repairs on the Windows operating system."
@@ -20029,7 +20562,7 @@ public static class NativeWin {
 	[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
 	
 	############################################################################
-	# 8) Configure System Settings Menu Item
+	# 7) Configure System Settings Menu Item
 	############################################################################
 	$ConfigureSystemSettingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure System Settings")
 	$ConfigureSystemSettingsItem.ToolTipText = "Set High Performance power plan, disable sleep, ensure required services are Automatic/running, and apply visual tweaks."
@@ -20066,7 +20599,7 @@ public static class NativeWin {
 	[void]$ContextMenuServer.Items.Add($ConfigureSystemSettingsItem)
 	
 	############################################################################
-	# 9) Organize Desktop Items Menu Item
+	# 8) Organize Desktop Items Menu Item
 	############################################################################
 	$OrganizeDesktopItemsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Organize Desktop Items")
 	$OrganizeDesktopItemsItem.ToolTipText = "Move non-system items from the Desktop into the 'Unorganized Items' folder (or a name you choose)."
@@ -20456,7 +20989,18 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($OpenScaleCShareItem)
 	
 	############################################################################
-	# 4) Deploy Scale Currency Files
+	# 4) Edit_TBS_SCL_ver520_Table Menu Item
+	############################################################################
+	$OrganizeScaleTableItem = New-Object System.Windows.Forms.ToolStripMenuItem("Edit_TBS_SCL_ver520_Table")
+	$OrganizeScaleTableItem.ToolTipText = "Organize the Scale SQL table (TBS_SCL_ver520)."
+	$OrganizeScaleTableItem.Add_Click({
+			$script:LastActivity = Get-Date
+			Edit_TBS_SCL_ver520_Table
+		})
+	[void]$ContextMenuScale.Items.Add($OrganizeScaleTableItem)
+	
+	############################################################################
+	# 5) Deploy Scale Currency Files
 	############################################################################
 	$DeployScaleCurrencyFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Deploy Scale Currency Files")
 	$DeployScaleCurrencyFilesItem.ToolTipText = "Push currency-configured price files (.txt, .properties) to selected scales (Bizerba only)."
@@ -20467,7 +21011,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($DeployScaleCurrencyFilesItem)
 	
 	############################################################################
-	# 5) Edit Ishida SDPs (ALL configs)
+	# 6) Edit Ishida SDPs (ALL configs)
 	############################################################################
 	$editIshidaSDPsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Edit Ishida SDPs (All Configs)")
 	$editIshidaSDPsItem.ToolTipText = "Pick subdepartments from SDP_TAB (F04/F1022) and write to IshidaSDPs in ALL ScaleCommApp *.exe.config files."
@@ -20482,7 +21026,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($editIshidaSDPsItem)
 	
 	############################################################################
-	# 6) Update Scales Specials
+	# 7) Update Scales Specials
 	############################################################################
 	$UpdateScalesSpecialsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scales Specials")
 	$UpdateScalesSpecialsItem.ToolTipText = "Update scale specials immediately or schedule as a daily 5AM task."
@@ -20493,7 +21037,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($UpdateScalesSpecialsItem)
 	
 	############################################################################
-	# 7) Update Scale Config and DB (F272 Upsert)
+	# 8) Update Scale Config and DB (F272 Upsert)
 	############################################################################
 	$UpdateScaleConfigAndDBItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scale Config && DB (F272 Upsert)")
 	$UpdateScaleConfigAndDBItem.ToolTipText = "Updates ScaleCommApp configs and upserts F272 in SCL_TAB for POS_TAB F82=1 in item range."
@@ -20504,7 +21048,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($UpdateScaleConfigAndDBItem)
 	
 	############################################################################
-	# 8) Configure Subdepartments & SdpDefault (OBJ.F16 / OBJ.F18 / OBJ.F17)
+	# 9) Configure Subdepartments & SdpDefault (OBJ.F16 / OBJ.F18 / OBJ.F17)
 	############################################################################
 	$sep_ConfigureSdpDefault = New-Object System.Windows.Forms.ToolStripSeparator
 	#[void]$ContextMenuScale.Items.Add($sep_ConfigureSdpDefault)
@@ -20517,7 +21061,7 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($ConfigureSdpDefaultItem)
 	
 	############################################################################
-	# 9) Schedule Duplicate File Monitor
+	# 10) Schedule Duplicate File Monitor
 	############################################################################
 	$ScheduleRemoveDupesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove duplicate files from (toBizerba)")
 	$ScheduleRemoveDupesItem.ToolTipText = "Monitor for and auto-delete duplicate files in (toBizerba). Run now or schedule as SYSTEM."
