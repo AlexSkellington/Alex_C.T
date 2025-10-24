@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.4.9"
-$VersionDate = "2025-10-21"
+$VersionDate = "2025-10-24"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -455,6 +455,8 @@ function Write_Log
 #     - Falls back to system.ini [SMS] Name=... for store name if not found in WIN.INI
 #   Builds a SQL Server connection string using trusted authentication and TrustServerCertificate.
 #   **Also checks for available SQL module (SqlServer or SQLPS) and stores result.**
+#   **Resolves the correct INFO_*_WIN.INI that coincides with STORE (and TER) in startup.ini** and saves it to
+#   $script:FunctionResults['ResolvedWinIniPath'].
 #   Populates all results in $script:FunctionResults for downstream use.
 # ===================================================================================================
 
@@ -477,22 +479,212 @@ function Get_Store_And_Database_Info
 	$script:FunctionResults['SqlModuleName'] = $availableSqlModule
 	
 	# ------------------------------------------------------------------------------------------------
-	# Initialize results with N/A for every expected property
+	# Initialize results with N/A for every expected property (+ resolved WIN.INI path)
 	# ------------------------------------------------------------------------------------------------
 	$fields = @(
 		'StoreNumber', 'StoreName', 'CompanyName', 'Terminal', 'Address', 'City', 'State',
 		'SMSVersionFull', 'StampDate', 'StampTime', 'KeyNumber',
-		'DBSERVER', 'DBNAME', 'ConnectionString'
+		'DBSERVER', 'DBNAME', 'ConnectionString', 'ResolvedWinIniPath'
 	)
 	foreach ($f in $fields) { $script:FunctionResults[$f] = 'N/A' }
 	
+	# ==================================================================================================
+	# Parse Startup.ini first to learn STORE and TER and to derive likely DBs folder(s)
+	# NOTE: FIX - removed invalid trailing 'i' regex flags; PowerShell -match is case-insensitive by default.
+	# ==================================================================================================
+	$startupStore = $null # 3-digit, zero-padded
+	$startupTer = $null # 3-digit terminal (e.g., 901)
+	$probableDbsRoots = @() # candidate roots to search for INFO_*_WIN.INI
+	
+	if ($StartupIniPath -and (Test-Path $StartupIniPath))
+	{
+		try
+		{
+		#	Write_Log "Reading Startup.ini at: $StartupIniPath" "cyan"
+			foreach ($line in Get-Content -LiteralPath $StartupIniPath)
+			{
+				$t = $line.Trim()
+				if ($t.StartsWith(';')) { continue }
+				
+				# FIX: removed trailing 'i' after the regex. PowerShell -match is already case-insensitive.
+				if ($t -match '^\s*STORE\s*=\s*(\d+)\s*$')
+				{
+					$startupStore = ($Matches[1] -as [int]).ToString('000') # zero-pad
+				}
+				elseif ($t -match '^\s*TER\s*=\s*(\d+)\s*$')
+				{
+					$startupTer = ($Matches[1] -as [int]).ToString('000') # zero-pad
+				}
+			}
+			
+			if ($startupStore)
+			{
+			#	Write_Log "Startup.ini indicates STORE=$startupStore$(if ($startupTer) { ", TER=$startupTer" })" "green"
+				# Pre-populate UI-friendly values; WIN.INI can refine/confirm later.
+				$script:FunctionResults['StoreNumber'] = $startupStore
+				if ($startupTer) { $script:FunctionResults['Terminal'] = $startupTer }
+			}
+			else
+			{
+				Write_Log "STORE= not found in Startup.ini. Will still attempt WIN.INI path resolution." "yellow"
+			}
+			
+			# Derive most likely DBs path from Startup.ini location (…\storeman\office\dbs)
+			$storemanRoot = Split-Path -Path $StartupIniPath -Parent # typically C:\storeman or \\localhost\storeman
+			if ($storemanRoot)
+			{
+				$derivedOffice = Join-Path $storemanRoot 'office'
+				$derivedDbs = Join-Path $derivedOffice 'dbs'
+				if (Test-Path $derivedDbs) { $probableDbsRoots += $derivedDbs }
+			}
+		}
+		catch
+		{
+			Write_Log "Error parsing Startup.ini: $($_.Exception.Message)" "red"
+		}
+	}
+	else
+	{
+		Write_Log "Startup.ini path not provided or not found. Skipping STORE/TER pre-resolution." "yellow"
+	}
+	
+	# Add common fallback DBs roots to search (de-duped below)
+	foreach ($fallback in @(
+			'C:\storeman\office\dbs',
+			'D:\storeman\office\dbs',
+			'\\localhost\storeman\office\dbs'
+		))
+	{
+		if (Test-Path $fallback) { $probableDbsRoots += $fallback }
+	}
+	$probableDbsRoots = $probableDbsRoots | Sort-Object -Unique # de-dup
+	
+	# ==================================================================================================
+	# Resolve the correct INFO_*_WIN.INI that coincides with the STORE (and preferably TER) from Startup.ini
+	# Priority: exact STORE+TER  > exact STORE+901 > any exact STORE (newest LastWriteTime)
+	# If a supplied $WinIniPath doesn't match, override it and log why.
+	# ==================================================================================================
+	$resolvedWinIni = $null
+	$needResolve = $true
+	
+	if ($WinIniPath -and (Test-Path $WinIniPath))
+	{
+		$name = [System.IO.Path]::GetFileName($WinIniPath)
+		if ($name -match '^INFO_(\d{3})(\d{3})_WIN\.INI$')
+		{
+			$suppliedStore = $Matches[1]
+			$suppliedTer = $Matches[2]
+			$storeOk = -not $startupStore -or ($suppliedStore -eq $startupStore)
+			$terOk = -not $startupTer -or ($suppliedTer -eq $startupTer)
+			if ($storeOk -and $terOk)
+			{
+				$resolvedWinIni = $WinIniPath
+				$needResolve = $false
+			#	Write_Log "Using provided WIN.INI (matches Startup.ini): $WinIniPath" "green"
+			}
+			else
+			{
+				Write_Log "Provided WIN.INI '$name' does not coincide with Startup.ini (STORE=$startupStore TER=$startupTer). Will search for the correct one." "yellow"
+			}
+		}
+		else
+		{
+			Write_Log "Provided WIN.INI name '$name' does not match expected pattern 'INFO_SSSLLL_WIN.INI'. Will search for the correct one." "yellow"
+		}
+	}
+	
+	if ($needResolve -and $probableDbsRoots.Count -gt 0)
+	{
+		try
+		{
+			# Gather all candidates INFO_*_WIN.INI in known DBs roots
+			$candidates = foreach ($root in $probableDbsRoots)
+			{
+				Get-ChildItem -LiteralPath $root -Filter 'INFO_*_WIN.INI' -File -ErrorAction SilentlyContinue
+			}
+			
+			# Score and select best candidate according to Startup.ini hints
+			$scored = @(
+				foreach ($f in $candidates)
+				{
+					# Validate expected filename pattern INFO_SSSLLL_WIN.INI, skip others
+					$m = [System.Text.RegularExpressions.Regex]::Match($f.Name, '^INFO_(\d{3})(\d{3})_WIN\.INI$')
+					if (-not $m.Success) { continue }
+					
+					# Extract store (SSS) and terminal (LLL)
+					$s = $m.Groups[1].Value
+					$t = $m.Groups[2].Value
+					
+					# Score the candidate:
+					# +10 for same STORE as Startup.ini
+					# +5  for exact same TER as Startup.ini
+					# +3  prefer 901 (server) when TER unknown
+					$score = 0
+					if ($startupStore -and $s -eq $startupStore) { $score += 10 }
+					if ($startupTer -and $t -eq $startupTer) { $score += 5 }
+					if (-not $startupTer -and $t -eq '901') { $score += 3 }
+					
+					# Emit the scored object
+					[PSCustomObject]@{
+						File  = $f
+						Store = $s
+						Ter   = $t
+						Score = $score
+						Age   = $f.LastWriteTimeUtc
+					}
+				}
+			) | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, @{ Expression = 'Age'; Descending = $true }
+			
+			if ($scored -and $scored[0].Score -gt 0)
+			{
+				$resolvedWinIni = $scored[0].File.FullName
+			#	Write_Log ("Resolved WIN.INI: {0} (STORE={1}, TER={2}, Score={3})" -f $resolvedWinIni, $scored[0].Store, $scored[0].Ter, $scored[0].Score) "green"
+			}
+			elseif ($scored)
+			{
+				# No strong store hint? Take the newest INFO_*_WIN.INI to avoid being stuck.
+				$resolvedWinIni = ($scored | Sort-Object -Property Age -Descending | Select-Object -First 1).File.FullName
+			#	Write_Log "Resolved WIN.INI (no strong STORE hint available): $resolvedWinIni" "yellow"
+			}
+			else
+			{
+				Write_Log "No INFO_*_WIN.INI candidates found under: $($probableDbsRoots -join '; ')" "red"
+			}
+		}
+		catch
+		{
+			# FIX: ensure Try has a proper Catch to avoid "Try statement missing Catch/Finally" parser complaints.
+			Write_Log "Error while resolving WIN.INI: $($_.Exception.Message)" "red"
+		}
+	}
+	
+	if ($resolvedWinIni)
+	{
+		# Use the resolved path and publish it
+		$WinIniPath = $resolvedWinIni
+		$script:FunctionResults['ResolvedWinIniPath'] = $resolvedWinIni
+	}
+	else
+	{
+		# Keep the provided one if valid; otherwise warn and continue
+		if (-not ($WinIniPath -and (Test-Path $WinIniPath)))
+		{
+			Write_Log "WIN.INI is unresolved; continuing without store metadata from WIN.INI." "red"
+		}
+		else
+		{
+			$script:FunctionResults['ResolvedWinIniPath'] = $WinIniPath
+			Write_Log "Proceeding with provided WIN.INI (unvalidated): $WinIniPath" "yellow"
+		}
+	}
+	
 	# ------------------------------------------------------------------------------------------------
-	# Extract Store Info from WIN.INI (required for store metadata)
+	# Extract Store Info from WIN.INI (store metadata)
 	# ------------------------------------------------------------------------------------------------
 	if ($WinIniPath -and (Test-Path $WinIniPath))
 	{
 		$currentSection = ""
-		foreach ($line in Get-Content $WinIniPath)
+		foreach ($line in Get-Content -LiteralPath $WinIniPath)
 		{
 			$trimmed = $line.Trim()
 			if ($trimmed -match '^\[(.+)\]$') { $currentSection = $Matches[1]; continue }
@@ -508,8 +700,8 @@ function Get_Store_And_Database_Info
 				}
 				"SYSTEM" {
 					if ($key -ieq "CompanyName") { $script:FunctionResults['CompanyName'] = $value }
-					if ($key -ieq "Store") { $script:FunctionResults['StoreNumber'] = $value.PadLeft(3, "0") }
-					if ($key -ieq "Terminal") { $script:FunctionResults['Terminal'] = $value }
+					if ($key -ieq "Store") { $script:FunctionResults['StoreNumber'] = ($value -as [int]).ToString('000') }
+					if ($key -ieq "Terminal") { $script:FunctionResults['Terminal'] = ($value -as [int]).ToString('000') }
 				}
 				"STOREDETAIL" {
 					if ($key -ieq "Name") { $script:FunctionResults['StoreName'] = $value }
@@ -528,7 +720,7 @@ function Get_Store_And_Database_Info
 	}
 	else
 	{
-		Write_Log "No INFO_*901_WIN.INI found at $WinIniPath" "red"
+		Write_Log "No INFO_*_WIN.INI found at $WinIniPath" "red"
 	}
 	
 	# ------------------------------------------------------------------------------------------------
@@ -541,7 +733,7 @@ function Get_Store_And_Database_Info
 	)
 	{
 		$inSMSSection = $false
-		foreach ($line in Get-Content $SystemIniPath)
+		foreach ($line in Get-Content -LiteralPath $SystemIniPath)
 		{
 			$trimmed = $line.Trim()
 			if ($trimmed -match '^\[SMS\]$')
@@ -553,8 +745,8 @@ function Get_Store_And_Database_Info
 			{
 				# End of section if new [Section] starts
 				if ($trimmed -match '^\[.+\]$') { break }
-				# Look for Name=
-				if ($trimmed -match '^Name\s*=(.*)$')
+				# Look for Name= (case-flexible)
+				if ($trimmed -match '^\s*Name\s*=(.*)$')
 				{
 					$storeNameBackup = $Matches[1].Trim()
 					if ($storeNameBackup)
@@ -575,14 +767,14 @@ function Get_Store_And_Database_Info
 	
 	if ($SmsStartIniPath -and (Test-Path $SmsStartIniPath))
 	{
-		foreach ($line in Get-Content $SmsStartIniPath)
+		foreach ($line in Get-Content -LiteralPath $SmsStartIniPath)
 		{
 			$trimmed = $line.Trim()
 			if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
 			$parts = $trimmed -split "=", 2
 			$key = $parts[0].Trim()
 			$value = $parts[1].Trim()
-			if (-not $dbServer -and $key -match 'ServerName') { $dbServer = $value }
+			if (-not $dbServer -and $key -match 'ServerName') { $dbServer = $value } # -match is CI by default
 			if (-not $dbName -and $key -match 'DatabaseName') { $dbName = $value }
 			if ($dbServer -and $dbName) { break }
 		}
@@ -593,15 +785,15 @@ function Get_Store_And_Database_Info
 	# ------------------------------------------------------------------------------------------------
 	if ((!$dbServer -or !$dbName) -and $StartupIniPath -and (Test-Path $StartupIniPath))
 	{
-		foreach ($line in Get-Content $StartupIniPath)
+		foreach ($line in Get-Content -LiteralPath $StartupIniPath)
 		{
 			$trimmed = $line.Trim()
 			if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
 			$parts = $trimmed -split "=", 2
 			$key = $parts[0].Trim()
 			$value = $parts[1].Trim()
-			if (-not $dbServer -and $key -match 'DBSERVER') { $dbServer = $value }
-			if (-not $dbName -and $key -match 'DBNAME') { $dbName = $value }
+			if (-not $dbServer -and $key -match '^DBSERVER$') { $dbServer = $value } # FIX: no trailing flag
+			if (-not $dbName -and $key -match '^DBNAME$') { $dbName = $value }
 			if ($dbServer -and $dbName) { break }
 		}
 		if (-not $dbServer) { $dbServer = "localhost" }
@@ -615,11 +807,12 @@ function Get_Store_And_Database_Info
 	{
 		$script:FunctionResults['DBSERVER'] = $dbServer
 		$script:FunctionResults['DBNAME'] = $dbName
-		$script:FunctionResults['ConnectionString'] = "Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
+		$script:FunctionResults['ConnectionString'] =
+		"Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
 	}
 	
 	# ------------------------------------------------------------------------------------------------
-	# GUI label updates (optional; can be removed if not needed)
+	# GUI label updates (optional)
 	# ------------------------------------------------------------------------------------------------
 	if ($storeNumberLabel -ne $null)
 	{
@@ -10905,6 +11098,7 @@ function Schedule_Server_DB_Maintenance
 #
 # CHANGE: No nested helper functions or helper scriptblock variables. All logic is inline.
 #         Unavoidable scriptblocks remain only for WinForms event handlers and Sort-Object expressions.
+#         NEW RULE: IPNetwork must ALWAYS end with a trailing period (e.g., 192.168.5.)
 # ===================================================================================================
 
 function Edit_TBS_SCL_ver520_Table
@@ -11095,7 +11289,7 @@ function Edit_TBS_SCL_ver520_Table
 	}
 	else
 	{
-		Write_Log "WARNING: Could not determine active NIC / RFC1918 IPv4. IPNetwork validation will be skipped." "yellow"
+		Write_Log "WARNING: Could not determine active NIC / RFC1918 IPv4. IPNetwork validation will be skipped (but trailing '.' will still be enforced if parsable)." "yellow" # CHANGE: note trailing '.' enforcement still happens
 	}
 	
 	# ----------------------------------------------------------------------------------------------
@@ -11303,11 +11497,13 @@ ORDER BY ScaleCode ASC;
 	$lbl.Location = New-Object System.Drawing.Point(10, 10)
 	if ($allowedPrefix)
 	{
-		$lbl.Text = "Edit cells directly. Auto Sort applies standard order + numbering and saves immediately.  Active must be Y/N.  IPNetwork must match $allowedPrefix.* (accepted: '$allowedPrefix', '$allowedPrefix.0', '$allowedPrefix.*', '$allowedPrefix.x', '$allowedPrefix.')"
+		# CHANGE: Reflect the enforced trailing period examples only.
+		$lbl.Text = "Edit cells directly. Auto Sort applies standard order + numbering and saves immediately.  Active must be Y/N.  IPNetwork must match $allowedPrefix.* and will be normalized to '$allowedPrefix.'. Accepted inputs include '$allowedPrefix', '$allowedPrefix.0', '$allowedPrefix.*', '$allowedPrefix.x', '$allowedPrefix.' → all saved as '$allowedPrefix.'"
 	}
 	else
 	{
-		$lbl.Text = "Edit cells directly. Auto Sort applies standard order + numbering and saves immediately.  Active must be Y/N."
+		# CHANGE: Note that a trailing period is still enforced if we can parse A.B.C.
+		$lbl.Text = "Edit cells directly. Auto Sort applies standard order + numbering and saves immediately.  Active must be Y/N. IPNetwork will be normalized to 'A.B.C.' (trailing dot) if parsable."
 	}
 	$bottom.Controls.Add($lbl)
 	
@@ -11443,14 +11639,17 @@ END CATCH;
 				}
 				$row['Active'] = $actUp
 				
+				# --- IPNetwork normalization/enforcement (ALWAYS ends with a period) -----------------
+				$ipnRaw = [string]$row['IPNetwork']; if ($null -eq $ipnRaw) { $ipnRaw = '' }
+				$ipnRaw = $ipnRaw.Trim()
+				
 				if ($allowedPrefix)
 				{
-					$ipnRaw = [string]$row['IPNetwork']; if ($null -eq $ipnRaw) { $ipnRaw = '' }
-					$ipnRaw = $ipnRaw.Trim()
+					# Validate input looks like allowedPrefix.(something optional), then normalize strictly to "$allowedPrefix."
 					$m = [regex]::Match($ipnRaw, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
 					if (-not $m.Success)
 					{
-						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx + 1): '$ipnRaw'. Expected '$allowedPrefix', '$allowedPrefix.0' or '$allowedPrefix.*'.", "Invalid IPNetwork", 'OK', 'Error')
+						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx + 1): '$ipnRaw'. Expected something within '$allowedPrefix.*'.", "Invalid IPNetwork", 'OK', 'Error')
 						return
 					}
 					$prefix = "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)"
@@ -11459,9 +11658,27 @@ END CATCH;
 						[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$($rowIdx + 1) must be within '$allowedPrefix.*'. Got '$ipnRaw'.", "IPNetwork Out of Range", 'OK', 'Error')
 						return
 					}
-					# Normalize to bare prefix (no trailing .x)
-					$row['IPNetwork'] = $allowedPrefix
+					
+					# CHANGE: enforce trailing period
+					$row['IPNetwork'] = "$allowedPrefix." # <-- always ends with a '.'
 				}
+				else
+				{
+					# NEW: Even without allowedPrefix, if parsable A.B.C(.anything), normalize to A.B.C.
+					$mGen = [regex]::Match($ipnRaw, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
+					if ($mGen.Success)
+					{
+						$prefixGen = "$($mGen.Groups[1].Value).$($mGen.Groups[2].Value).$($mGen.Groups[3].Value)"
+						$row['IPNetwork'] = "$prefixGen." # <-- enforce trailing '.'
+					}
+					else
+					{
+						# If totally unparsable, keep original but warn & block save
+						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx + 1): '$ipnRaw'. Expected a pattern like A.B.C or A.B.C.X", "Invalid IPNetwork", 'OK', 'Error')
+						return
+					}
+				}
+				# --------------------------------------------------------------------------------------
 				
 				$rowIdx = $rowIdx + 1
 			}
@@ -11472,7 +11689,7 @@ END CATCH;
 			{
 				$nBrand = ([string]$row['ScaleBrand']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
 				$nModel = ([string]$row['ScaleModel']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nIPNet = ([string]$row['IPNetwork']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
+				$nIPNet = ([string]$row['IPNetwork']).Replace("`r", "").Replace("`n", "") -replace "'", "''" # already ends with '.'
 				$nIPDev = ([string]$row['IPDevice']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
 				$nCode = [int]$row['ScaleCode']
 				$nBuf = ([string]$row['BufferTime']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
@@ -11612,11 +11829,19 @@ END CATCH;
 			}
 			
 			# Sort by numeric IPDevice (non-numeric last), then by raw IPDevice
-			$snapB = $snapB | Sort-Object @{ Expression = { $n = $null; if ([int]::TryParse([string]$_.IPDevice, [ref]$n)) { $n }
-					else { [int]::MaxValue } } },
+			$snapB = $snapB | Sort-Object @{
+				Expression = {
+					$n = $null; if ([int]::TryParse([string]$_.IPDevice, [ref]$n)) { $n }
+					else { [int]::MaxValue }
+				}
+			},
 										  @{ Expression = { $_.IPDevice } }
-			$snapI = $snapI | Sort-Object @{ Expression = { $n = $null; if ([int]::TryParse([string]$_.IPDevice, [ref]$n)) { $n }
-					else { [int]::MaxValue } } },
+			$snapI = $snapI | Sort-Object @{
+				Expression = {
+					$n = $null; if ([int]::TryParse([string]$_.IPDevice, [ref]$n)) { $n }
+					else { [int]::MaxValue }
+				}
+			},
 										  @{ Expression = { $_.IPDevice } }
 			
 			$dt.BeginLoadData()
@@ -11685,14 +11910,16 @@ END CATCH;
 				}
 				$row2['Active'] = $actUp2
 				
+				# --- IPNetwork normalization/enforcement (ALWAYS ends with a period) -----------------
+				$ipnRaw2 = [string]$row2['IPNetwork']; if ($null -eq $ipnRaw2) { $ipnRaw2 = '' }
+				$ipnRaw2 = $ipnRaw2.Trim()
+				
 				if ($allowedPrefix)
 				{
-					$ipnRaw2 = [string]$row2['IPNetwork']; if ($null -eq $ipnRaw2) { $ipnRaw2 = '' }
-					$ipnRaw2 = $ipnRaw2.Trim()
 					$m2 = [regex]::Match($ipnRaw2, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
 					if (-not $m2.Success)
 					{
-						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx2 + 1): '$ipnRaw2'. Expected '$allowedPrefix', '$allowedPrefix.0' or '$allowedPrefix.*'.", "Invalid IPNetwork", 'OK', 'Error')
+						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx2 + 1): '$ipnRaw2'. Expected something within '$allowedPrefix.*'.", "Invalid IPNetwork", 'OK', 'Error')
 						return
 					}
 					$prefix2 = "$($m2.Groups[1].Value).$($m2.Groups[2].Value).$($m2.Groups[3].Value)"
@@ -11701,8 +11928,26 @@ END CATCH;
 						[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$($rowIdx2 + 1) must be within '$allowedPrefix.*'. Got '$ipnRaw2'.", "IPNetwork Out of Range", 'OK', 'Error')
 						return
 					}
-					$row2['IPNetwork'] = $allowedPrefix
+					
+					# CHANGE: enforce trailing period
+					$row2['IPNetwork'] = "$allowedPrefix." # <-- always ends with '.'
 				}
+				else
+				{
+					# NEW: Even without allowedPrefix, normalize any parsable A.B.C(.anything) to A.B.C.
+					$mGen2 = [regex]::Match($ipnRaw2, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
+					if ($mGen2.Success)
+					{
+						$prefixGen2 = "$($mGen2.Groups[1].Value).$($mGen2.Groups[2].Value).$($mGen2.Groups[3].Value)"
+						$row2['IPNetwork'] = "$prefixGen2." # <-- enforce trailing '.'
+					}
+					else
+					{
+						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx2 + 1): '$ipnRaw2'. Expected a pattern like A.B.C or A.B.C.X", "Invalid IPNetwork", 'OK', 'Error')
+						return
+					}
+				}
+				# --------------------------------------------------------------------------------------
 				
 				$rowIdx2 = $rowIdx2 + 1
 			}
@@ -11712,7 +11957,7 @@ END CATCH;
 			{
 				$nBrand2 = ([string]$row3['ScaleBrand']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
 				$nModel2 = ([string]$row3['ScaleModel']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nIPNet2 = ([string]$row3['IPNetwork']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
+				$nIPNet2 = ([string]$row3['IPNetwork']).Replace("`r", "").Replace("`n", "") -replace "'", "''" # already ends with '.'
 				$nIPDev2 = ([string]$row3['IPDevice']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
 				$nCode2 = [int]$row3['ScaleCode']
 				$nBuf2 = ([string]$row3['BufferTime']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
@@ -11920,17 +12165,27 @@ END CATCH;
 #     - SQL_databaseName           => script's DB name
 #     - Recs_BatchSendFull         => "10000"
 #
+#   NEW (integrated from Fix_Deploy_CHG):
+#     - Restores the deploy line in Office\DEPLOY_CHG.sql to point at
+#         C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe   (preferred)  OR
+#         C:\ScaleCommApp\ScaleManagementApp.exe
+#       (Also checks D:\ScaleCommApp\... as fallback if C:\ is missing.)
+#     - Removes any existing matching @EXEC lines before appending the correct one.
+#     - Deletes the "Update_Scales_Specials_Task_Minutes" scheduled task if present.
+#
 # Logging policy (consolidated):
 #   - Start/End banners.
 #   - DB/NIC discovery logged ONCE.
-#   - Show ONE "Desired Settings" block and ONE "Existing (first file)" snapshot.
+#   - One "Desired Settings" block and ONE "Existing (first file)" snapshot.
 #   - No per-file OK/mismatch spam; only a final summary and list of saved files.
 #
 # Implementation:
 #   - Uses Invoke-Sqlcmd (if available) or .NET SqlClient.
-#   - Saves UTF-8 (no BOM), timestamped .bak, respects -Force and -WhatIf.
+#   - Saves UTF-8 (no BOM) for XML configs; DEPLOY_CHG.sql saved with Default encoding (matches prior).
+#   - Timestamped .bak for XML configs, respects -Force and -WhatIf.
 #   - Honors -AllMatches (else only first file), -NoAutoFix to audit-only.
 #   - **NO TERNARY / NO '??'** - PS 5.1 compatible.
+#   - **NO NESTED FUNCTIONS** (all logic inline).
 # ===================================================================================================
 
 function Troubleshoot_ScaleCommApp
@@ -11944,7 +12199,9 @@ function Troubleshoot_ScaleCommApp
 		[switch]$Force,
 		[string]$ExpectedStoreName,
 		[string]$ExpectedSqlInstance,
-		[string]$ExpectedDatabase
+		[string]$ExpectedDatabase,
+		# NEW: where Office\DEPLOY_CHG.sql lives. If not passed, uses $script:OfficePath when available.
+		[string]$OfficePath
 	)
 	
 	Write_Log "`r`n==================== Starting Troubleshoot_ScaleCommApp ====================`r`n" "blue"
@@ -11967,6 +12224,7 @@ function Troubleshoot_ScaleCommApp
 	
 	if (-not $connStr -and $server -and $dbName)
 	{
+		# Build connection string inline (no helpers)
 		$sqlUser = $script:FunctionResults['SQL_UserID']
 		$sqlPwd = $script:FunctionResults['SQL_UserPwd']
 		if ($sqlUser -and $sqlPwd)
@@ -11981,11 +12239,12 @@ function Troubleshoot_ScaleCommApp
 	}
 	
 	# ------------------------------------------------------------------------------------------------
-	# Active NIC prefix (fallback) - logged ONCE
+	# Active NIC prefix (fallback) - logged ONCE (inline)
 	# ------------------------------------------------------------------------------------------------
 	$ActiveNicPrefix = $null
 	try
 	{
+		# Collect server IPv4s (for subnet check)
 		$serverIPv4s = @()
 		try
 		{
@@ -11995,22 +12254,11 @@ function Troubleshoot_ScaleCommApp
 		}
 		catch { }
 		
+		# Get all UP NICs
 		$allNics = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
 		Where-Object { $_.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up }
 		
-		function _SameSubnet($aStr, $bStr, $maskStr)
-		{
-			try
-			{
-				$a = [System.Net.IPAddress]::Parse($aStr).GetAddressBytes()
-				$b = [System.Net.IPAddress]::Parse($bStr).GetAddressBytes()
-				$m = [System.Net.IPAddress]::Parse($maskStr).GetAddressBytes()
-				for ($i = 0; $i -lt 4; $i++) { if (($a[$i] -band $m[$i]) -ne ($b[$i] -band $m[$i])) { return $false } }
-				return $true
-			}
-			catch { return $false }
-		}
-		
+		# Try to pick an interface on the same subnet as SQL server (inline mask compare)
 		$pickedIP = $null
 		foreach ($ni in $allNics)
 		{
@@ -12019,14 +12267,27 @@ function Troubleshoot_ScaleCommApp
 			{
 				if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
 				if (-not $ua.IPv4Mask) { continue }
+				
 				foreach ($srv in $serverIPv4s)
 				{
-					if (_SameSubnet $ua.Address.ToString() $srv $ua.IPv4Mask.ToString()) { $pickedIP = $ua.Address.ToString(); break }
+					$ok = $false
+					try
+					{
+						$a = [System.Net.IPAddress]::Parse($ua.Address.ToString()).GetAddressBytes()
+						$b = [System.Net.IPAddress]::Parse($srv).GetAddressBytes()
+						$m = [System.Net.IPAddress]::Parse($ua.IPv4Mask.ToString()).GetAddressBytes()
+						$ok = $true
+						for ($i = 0; $i -lt 4; $i++) { if (($a[$i] -band $m[$i]) -ne ($b[$i] -band $m[$i])) { $ok = $false; break } }
+					}
+					catch { $ok = $false }
+					if ($ok) { $pickedIP = $ua.Address.ToString(); break }
 				}
 				if ($pickedIP) { break }
 			}
 			if ($pickedIP) { break }
 		}
+		
+		# Gateway-backed interface fallback
 		if (-not $pickedIP)
 		{
 			foreach ($ni in $allNics)
@@ -12046,6 +12307,8 @@ function Troubleshoot_ScaleCommApp
 				if ($pickedIP) { break }
 			}
 		}
+		
+		# RFC1918 preference fallback
 		if (-not $pickedIP)
 		{
 			foreach ($ni in $allNics)
@@ -12069,11 +12332,9 @@ function Troubleshoot_ScaleCommApp
 				if ($pickedIP) { break }
 			}
 		}
-		if ($pickedIP)
-		{
-			$p = $pickedIP.Split('.')
-			if ($p.Length -ge 3) { $ActiveNicPrefix = "$($p[0]).$($p[1]).$($p[2])" }
-		}
+		
+		# Derive /24 prefix
+		if ($pickedIP) { $p = $pickedIP.Split('.'); if ($p.Length -ge 3) { $ActiveNicPrefix = "$($p[0]).$($p[1]).$($p[2])" } }
 	}
 	catch { }
 	
@@ -12081,43 +12342,19 @@ function Troubleshoot_ScaleCommApp
 	else { Write_Log "Active NIC /24 prefix not detected (fallback may be unavailable)." "yellow" }
 	
 	# ------------------------------------------------------------------------------------------------
-	# FIRST active scale full IP (robust) - logged ONCE
+	# FIRST active scale full IP (robust) - logged ONCE (inline)
 	# ------------------------------------------------------------------------------------------------
 	$firstScaleIP = $null
 	if ($server -and $dbName -and $connStr)
 	{
+		# Decide Invoke-Sqlcmd availability and argument style
 		$InvokeSqlCmd = $null
 		if ($sqlModule -and $sqlModule -ne 'None') { try { Import-Module $sqlModule -ErrorAction Stop; $InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $sqlModule -ErrorAction Stop }
 			catch { $InvokeSqlCmd = $null } }
 		$supportsConnStr = $false
 		if ($InvokeSqlCmd) { $supportsConnStr = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString' }
 		
-		function _RunQuery([string]$query)
-		{
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnStr) { return Invoke-Sqlcmd -ConnectionString $connStr -Query $query -ErrorAction Stop }
-					else { return Invoke-Sqlcmd -ServerInstance $server -Database $dbName -Query $query -ErrorAction Stop }
-				}
-				else
-				{
-					$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb.ConnectionString = $connStr
-					$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
-					$conn.Open()
-					$cmd = $conn.CreateCommand(); $cmd.CommandText = $query; $cmd.CommandTimeout = 30
-					$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
-					$dt = New-Object System.Data.DataTable
-					[void]$da.Fill($dt)
-					$conn.Close()
-					return $dt
-				}
-			}
-			catch { return $null }
-		}
-		
+		# Query
 		$q = @"
 SELECT IPNetwork, IPDevice, ScaleCode, Active
 FROM dbo.TBS_SCL_ver520
@@ -12126,52 +12363,71 @@ ORDER BY
     TRY_CAST(ScaleCode AS INT),
     ScaleCode;
 "@
-		$rows = _RunQuery $q
 		
-		if ($rows -and (($rows -is [System.Data.DataTable] -and $rows.Rows.Count -gt 0) -or ($rows -isnot [System.Data.DataTable] -and $rows.Count -gt 0)))
+		# Execute query (inline; no helpers)
+		$rows = $null
+		try
+		{
+			if ($InvokeSqlCmd)
+			{
+				if ($supportsConnStr) { $rows = Invoke-Sqlcmd -ConnectionString $connStr -Query $q -ErrorAction Stop }
+				else { $rows = Invoke-Sqlcmd -ServerInstance $server -Database $dbName -Query $q -ErrorAction Stop }
+			}
+			else
+			{
+				$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+				$csb.ConnectionString = $connStr
+				$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
+				$conn.Open()
+				$cmd = $conn.CreateCommand(); $cmd.CommandText = $q; $cmd.CommandTimeout = 30
+				$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
+				$dt = New-Object System.Data.DataTable
+				[void]$da.Fill($dt)
+				$conn.Close()
+				$rows = $dt
+			}
+		}
+		catch { $rows = $null }
+		
+		# Process rows
+		$hasRows = $false
+		if ($rows -is [System.Data.DataTable]) { if ($rows.Rows.Count -gt 0) { $hasRows = $true } }
+		elseif ($rows) { if ($rows.Count -gt 0) { $hasRows = $true } }
+		
+		if ($hasRows)
 		{
 			Write_Log "Loaded rows from TBS_SCL_ver520 for first-scale detection." "cyan"
 			
-			$IsActive = {
-				param ($v)
-				if ($null -eq $v) { return $true }
-				$s = ([string]$v).Trim().ToUpper()
-				if ($s -eq '') { return $true }
-				if ($s -eq 'Y' -or $s -eq '1' -or $s -eq 'TRUE') { return $true }
-				return $false
-			}
-			$ParsePrefix = {
-				param ($ipn)
-				if ([string]::IsNullOrWhiteSpace($ipn)) { return $null }
-				$m = [regex]::Match($ipn.Trim(), '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
-				if ($m.Success) { return "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)" }
-				return $null
-			}
-			$ParseOctet = {
-				param ($d)
-				if ($null -eq $d) { return $null }
-				$tmp = 0
-				if ([int]::TryParse(([string]$d).Trim(), [ref]$tmp))
-				{
-					if ($tmp -ge 0 -and $tmp -le 255) { return $tmp }
-				}
-				return $null
-			}
-			
+			# Normalize enumeration
 			$enum = @()
 			if ($rows -is [System.Data.DataTable]) { $enum = $rows.Rows }
 			else { $enum = $rows }
 			
+			# Prefix frequency map (inline)
 			$pfxCounts = @{ }
 			foreach ($r in $enum)
 			{
-				$pref = & $ParsePrefix ($r.IPNetwork)
-				if ($pref)
+				$ipn = $null
+				if ($null -ne $r.IPNetwork) { $ipn = [string]$r.IPNetwork }
+				if ($ipn)
 				{
-					if (-not $pfxCounts.ContainsKey($pref)) { $pfxCounts[$pref] = 0 }
-					$pfxCounts[$pref]++
+					$ipn = $ipn.Trim()
+					$pref = $null
+					$m = [regex]::Match($ipn, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
+					if ($m.Success) { $pref = "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)" }
+					else
+					{
+						$m4 = [regex]::Match($ipn, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\s*$')
+						if ($m4.Success) { $pref = "$($m4.Groups[1].Value).$($m4.Groups[2].Value).$($m4.Groups[3].Value)" }
+					}
+					if ($pref)
+					{
+						if (-not $pfxCounts.ContainsKey($pref)) { $pfxCounts[$pref] = 0 }
+						$pfxCounts[$pref] = $pfxCounts[$pref] + 1
+					}
 				}
 			}
+			
 			$MostCommonPrefix = $null
 			if ($pfxCounts.Count -gt 0)
 			{
@@ -12179,40 +12435,86 @@ ORDER BY
 				Write_Log "Most common IPNetwork prefix in table: $MostCommonPrefix" "cyan"
 			}
 			
+			# Filter "active" rows (inline)
 			$candidates = @()
-			foreach ($r in $enum) { if (& $IsActive ($r.Active)) { $candidates += $r } }
-			
-			foreach ($r in $candidates)
+			foreach ($r in $enum)
 			{
-				$p = & $ParsePrefix ($r.IPNetwork)
-				if (-not $p -and $r.IPNetwork)
-				{
-					$m4 = [regex]::Match(([string]$r.IPNetwork).Trim(), '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\s*$')
-					if ($m4.Success)
-					{
-						$p = "$($m4.Groups[1].Value).$($m4.Groups[2].Value).$($m4.Groups[3].Value)"
-						if (-not $r.IPDevice) { $r.IPDevice = $m4.Groups[4].Value }
-					}
-				}
-				$d = & $ParseOctet ($r.IPDevice)
-				if ($p -and ($null -ne $d)) { $firstScaleIP = "$p.$d"; break }
+				$act = $null
+				if ($null -ne $r.Active) { $act = ([string]$r.Active).Trim().ToUpper() }
+				else { $act = '' }
+				$isActive = $false
+				if ($act -eq '') { $isActive = $true }
+				elseif ($act -eq 'Y' -or $act -eq '1' -or $act -eq 'TRUE') { $isActive = $true }
+				if ($isActive) { $candidates += $r }
 			}
 			
+			# Try 1: exact per-row prefix + device
+			foreach ($r in $candidates)
+			{
+				$pref = $null
+				$ipn = $null
+				if ($null -ne $r.IPNetwork) { $ipn = ([string]$r.IPNetwork).Trim() }
+				if ($ipn)
+				{
+					$m = [regex]::Match($ipn, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
+					if ($m.Success) { $pref = "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)" }
+					if (-not $pref)
+					{
+						$m4 = [regex]::Match($ipn, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\s*$')
+						if ($m4.Success)
+						{
+							$pref = "$($m4.Groups[1].Value).$($m4.Groups[2].Value).$($m4.Groups[3].Value)"
+							if (-not $r.IPDevice) { $r.IPDevice = $m4.Groups[4].Value }
+						}
+					}
+				}
+				
+				$devOct = $null
+				if ($null -ne $r.IPDevice)
+				{
+					$tmp = 0
+					if ([int]::TryParse(([string]$r.IPDevice).Trim(), [ref]$tmp))
+					{
+						if ($tmp -ge 0 -and $tmp -le 255) { $devOct = $tmp }
+					}
+				}
+				
+				if ($pref -and ($null -ne $devOct)) { $firstScaleIP = "$pref.$devOct"; break }
+			}
+			
+			# Try 2: table-most-common prefix + device
 			if (-not $firstScaleIP -and $MostCommonPrefix)
 			{
 				foreach ($r in $candidates)
 				{
-					$d = & $ParseOctet ($r.IPDevice)
-					if ($null -ne $d) { $firstScaleIP = "$MostCommonPrefix.$d"; break }
+					$devOct = $null
+					if ($null -ne $r.IPDevice)
+					{
+						$tmp = 0
+						if ([int]::TryParse(([string]$r.IPDevice).Trim(), [ref]$tmp))
+						{
+							if ($tmp -ge 0 -and $tmp -le 255) { $devOct = $tmp }
+						}
+					}
+					if ($null -ne $devOct) { $firstScaleIP = "$MostCommonPrefix.$devOct"; break }
 				}
 			}
 			
+			# Try 3: active NIC /24 prefix + device
 			if (-not $firstScaleIP -and $ActiveNicPrefix)
 			{
 				foreach ($r in $candidates)
 				{
-					$d = & $ParseOctet ($r.IPDevice)
-					if ($null -ne $d) { $firstScaleIP = "$ActiveNicPrefix.$d"; break }
+					$devOct = $null
+					if ($null -ne $r.IPDevice)
+					{
+						$tmp = 0
+						if ([int]::TryParse(([string]$r.IPDevice).Trim(), [ref]$tmp))
+						{
+							if ($tmp -ge 0 -and $tmp -le 255) { $devOct = $tmp }
+						}
+					}
+					if ($null -ne $devOct) { $firstScaleIP = "$ActiveNicPrefix.$devOct"; break }
 				}
 			}
 			
@@ -12258,28 +12560,31 @@ ORDER BY
 	}
 	
 	# ------------------------------------------------------------------------------------------------
-	# ONE-TIME "Desired Settings" + "Existing (first file)" snapshot (NO TERNARY)
+	# ONE-TIME "Desired Settings" + "Existing (first file)" snapshot (inline getters)
 	# ------------------------------------------------------------------------------------------------
 	$previewPath = $targets[0].FullName
 	$previewXml = $null
 	try { [xml]$previewXml = Get-Content -LiteralPath $previewPath -Raw -ErrorAction Stop }
 	catch { }
-	function _GetVal([xml]$xmlDoc, $key)
-	{
-		if (-not $xmlDoc) { return $null }
-		$cfg = $xmlDoc.configuration; if (-not $cfg) { $cfg = $xmlDoc.DocumentElement }
-		if (-not $cfg) { return $null }
-		$as = $cfg.appSettings; if (-not $as) { return $null }
-		$n = $as.SelectSingleNode("add[@key='$key']"); if ($n) { return [string]$n.GetAttribute('value') }
-		return $null
-	}
-	$curStorePreview = _GetVal $previewXml 'StoreName'
-	$curFirstIPPreview = _GetVal $previewXml 'FistScaleIP'
-	$curSqlInstPreview = _GetVal $previewXml 'SQL_InstanceName'
-	$curDbNamePreview = _GetVal $previewXml 'SQL_databaseName'
-	$curBatchPreview = _GetVal $previewXml 'Recs_BatchSendFull'
 	
-	# -- Build log strings without '??' (PowerShell 5.1 safe)
+	$curStorePreview = $null; $curFirstIPPreview = $null; $curSqlInstPreview = $null; $curDbNamePreview = $null; $curBatchPreview = $null
+	if ($previewXml)
+	{
+		$cfgPrev = $previewXml.configuration; if (-not $cfgPrev) { $cfgPrev = $previewXml.DocumentElement }
+		if ($cfgPrev)
+		{
+			$asPrev = $cfgPrev.appSettings
+			if ($asPrev)
+			{
+				$n = $asPrev.SelectSingleNode("add[@key='StoreName']"); if ($n) { $curStorePreview = [string]$n.GetAttribute('value') }
+				$n = $asPrev.SelectSingleNode("add[@key='FistScaleIP']"); if ($n) { $curFirstIPPreview = [string]$n.GetAttribute('value') }
+				$n = $asPrev.SelectSingleNode("add[@key='SQL_InstanceName']"); if ($n) { $curSqlInstPreview = [string]$n.GetAttribute('value') }
+				$n = $asPrev.SelectSingleNode("add[@key='SQL_databaseName']"); if ($n) { $curDbNamePreview = [string]$n.GetAttribute('value') }
+				$n = $asPrev.SelectSingleNode("add[@key='Recs_BatchSendFull']"); if ($n) { $curBatchPreview = [string]$n.GetAttribute('value') }
+			}
+		}
+	}
+	
 	$dStore = '<unchanged/skip>'; if ($ExpectedStoreName) { $dStore = $ExpectedStoreName }
 	$dIP = '<skip>'; if ($firstScaleIP) { $dIP = $firstScaleIP }
 	$dInst = '<unchanged/skip>'; if ($ExpectedSqlInstance) { $dInst = $ExpectedSqlInstance }
@@ -12294,16 +12599,16 @@ ORDER BY
 	
 	$leafPreview = Split-Path -Leaf $previewPath
 	Write_Log ("Existing (first file: {0}):" -f $leafPreview) "blue"
-	$eStore = $curStorePreview; if (-not $eStore) { $eStore = '<missing>' }
-	$eIP = $curFirstIPPreview; if (-not $eIP) { $eIP = '<missing>' }
-	$eInst = $curSqlInstPreview; if (-not $eInst) { $eInst = '<missing>' }
-	$eDb = $curDbNamePreview; if (-not $eDb) { $eDb = '<missing>' }
-	$eBatch = $curBatchPreview; if (-not $eBatch) { $eBatch = '<missing>' }
-	Write_Log ("  StoreName          : {0}" -f $eStore) "yellow"
-	Write_Log ("  FistScaleIP        : {0}" -f $eIP) "yellow"
-	Write_Log ("  SQL_InstanceName   : {0}" -f $eInst) "yellow"
-	Write_Log ("  SQL_databaseName   : {0}" -f $eDb) "yellow"
-	Write_Log ("  Recs_BatchSendFull : {0}" -f $eBatch) "yellow"
+	if (-not $curStorePreview) { $curStorePreview = '<missing>' }
+	if (-not $curFirstIPPreview) { $curFirstIPPreview = '<missing>' }
+	if (-not $curSqlInstPreview) { $curSqlInstPreview = '<missing>' }
+	if (-not $curDbNamePreview) { $curDbNamePreview = '<missing>' }
+	if (-not $curBatchPreview) { $curBatchPreview = '<missing>' }
+	Write_Log ("  StoreName          : {0}" -f $curStorePreview) "yellow"
+	Write_Log ("  FistScaleIP        : {0}" -f $curFirstIPPreview) "yellow"
+	Write_Log ("  SQL_InstanceName   : {0}" -f $curSqlInstPreview) "yellow"
+	Write_Log ("  SQL_databaseName   : {0}" -f $curDbNamePreview) "yellow"
+	Write_Log ("  Recs_BatchSendFull : {0}" -f $curBatchPreview) "yellow"
 	
 	# ------------------------------------------------------------------------------------------------
 	# Apply to all targets (quiet per-file; track counts + saved list)
@@ -12319,6 +12624,8 @@ ORDER BY
 		$audited++
 		$path = $t.FullName
 		
+		# Load XML
+		$xml = $null
 		try { [xml]$xml = Get-Content -LiteralPath $path -Raw -ErrorAction Stop }
 		catch { $skipped++; continue }
 		$cfg = $xml.configuration; if (-not $cfg) { $cfg = $xml.DocumentElement }
@@ -12326,28 +12633,73 @@ ORDER BY
 		$as = $cfg.appSettings
 		if (-not $as) { $skipped++; continue }
 		
-		$getVal = { param ($key) $n = $as.SelectSingleNode("add[@key='$key']"); if ($n) { return [string]$n.GetAttribute('value') }
-			else { return $null } }
-		$setVal = {
-			param ($key,
-				$val)
-			$n = $as.SelectSingleNode("add[@key='$key']"); if (-not $n) { $n = $xml.CreateElement('add'); $null = $n.SetAttribute('key', $key); $null = $as.AppendChild($n) }
-			$null = $n.SetAttribute('value', [string]$val)
-		}
+		# READ current values (inline)
+		$curStore = $null; $curFirstIP = $null; $curInst = $null; $curDb = $null; $curBatch = $null
+		$n = $as.SelectSingleNode("add[@key='StoreName']"); if ($n) { $curStore = [string]$n.GetAttribute('value') }
+		$n = $as.SelectSingleNode("add[@key='FistScaleIP']"); if ($n) { $curFirstIP = [string]$n.GetAttribute('value') }
+		$n = $as.SelectSingleNode("add[@key='SQL_InstanceName']"); if ($n) { $curInst = [string]$n.GetAttribute('value') }
+		$n = $as.SelectSingleNode("add[@key='SQL_databaseName']"); if ($n) { $curDb = [string]$n.GetAttribute('value') }
+		$n = $as.SelectSingleNode("add[@key='Recs_BatchSendFull']"); if ($n) { $curBatch = [string]$n.GetAttribute('value') }
 		
 		$changedHere = $false
-		$curStore = & $getVal 'StoreName'
-		$curFirstIP = & $getVal 'FistScaleIP'
-		$curInst = & $getVal 'SQL_InstanceName'
-		$curDb = & $getVal 'SQL_databaseName'
-		$curBatch = & $getVal 'Recs_BatchSendFull'
 		
-		if ($ExpectedStoreName -and $curStore -ne $ExpectedStoreName) { if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set StoreName')) { & $setVal 'StoreName' $ExpectedStoreName; $changedHere = $true } }
-		if ($firstScaleIP -and $curFirstIP -ne $firstScaleIP) { if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set FistScaleIP')) { & $setVal 'FistScaleIP' $firstScaleIP; $changedHere = $true } }
-		if ($ExpectedSqlInstance -and $curInst -ne $ExpectedSqlInstance) { if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set SQL_InstanceName')) { & $setVal 'SQL_InstanceName' $ExpectedSqlInstance; $changedHere = $true } }
-		if ($ExpectedDatabase -and $curDb -ne $ExpectedDatabase) { if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set SQL_databaseName')) { & $setVal 'SQL_databaseName' $ExpectedDatabase; $changedHere = $true } }
-		if ($curBatch -ne '10000') { if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set Recs_BatchSendFull=10000')) { & $setVal 'Recs_BatchSendFull' '10000'; $changedHere = $true } }
+		# SET (inline create-if-missing)
+		if ($ExpectedStoreName -and $curStore -ne $ExpectedStoreName)
+		{
+			if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set StoreName'))
+			{
+				$n = $as.SelectSingleNode("add[@key='StoreName']")
+				if (-not $n) { $n = $xml.CreateElement('add'); $null = $n.SetAttribute('key', 'StoreName'); $null = $as.AppendChild($n) }
+				$null = $n.SetAttribute('value', [string]$ExpectedStoreName)
+				$changedHere = $true
+			}
+		}
 		
+		if ($firstScaleIP -and $curFirstIP -ne $firstScaleIP)
+		{
+			if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set FistScaleIP'))
+			{
+				$n = $as.SelectSingleNode("add[@key='FistScaleIP']")
+				if (-not $n) { $n = $xml.CreateElement('add'); $null = $n.SetAttribute('key', 'FistScaleIP'); $null = $as.AppendChild($n) }
+				$null = $n.SetAttribute('value', [string]$firstScaleIP)
+				$changedHere = $true
+			}
+		}
+		
+		if ($ExpectedSqlInstance -and $curInst -ne $ExpectedSqlInstance)
+		{
+			if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set SQL_InstanceName'))
+			{
+				$n = $as.SelectSingleNode("add[@key='SQL_InstanceName']")
+				if (-not $n) { $n = $xml.CreateElement('add'); $null = $n.SetAttribute('key', 'SQL_InstanceName'); $null = $as.AppendChild($n) }
+				$null = $n.SetAttribute('value', [string]$ExpectedSqlInstance)
+				$changedHere = $true
+			}
+		}
+		
+		if ($ExpectedDatabase -and $curDb -ne $ExpectedDatabase)
+		{
+			if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set SQL_databaseName'))
+			{
+				$n = $as.SelectSingleNode("add[@key='SQL_databaseName']")
+				if (-not $n) { $n = $xml.CreateElement('add'); $null = $n.SetAttribute('key', 'SQL_databaseName'); $null = $as.AppendChild($n) }
+				$null = $n.SetAttribute('value', [string]$ExpectedDatabase)
+				$changedHere = $true
+			}
+		}
+		
+		if ($curBatch -ne '10000')
+		{
+			if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set Recs_BatchSendFull=10000'))
+			{
+				$n = $as.SelectSingleNode("add[@key='Recs_BatchSendFull']")
+				if (-not $n) { $n = $xml.CreateElement('add'); $null = $n.SetAttribute('key', 'Recs_BatchSendFull'); $null = $as.AppendChild($n) }
+				$null = $n.SetAttribute('value', '10000')
+				$changedHere = $true
+			}
+		}
+		
+		# Save if changed
 		if ($changedHere -and $autoFix)
 		{
 			try
@@ -12382,17 +12734,133 @@ ORDER BY
 		}
 	}
 	
+	# ==================================================================================================
+	# NEW: Restore DEPLOY_CHG.sql deploy line (integrated Fix_Deploy_CHG)
+	# ==================================================================================================
+	# Resolve Office path to find DEPLOY_CHG.sql
+	if (-not $OfficePath -and $script:OfficePath) { $OfficePath = $script:OfficePath }
+	if ($OfficePath)
+	{
+		$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
+		
+		if (Test-Path -LiteralPath $deployChgFile)
+		{
+			# Choose executable (prefer FastDEPLOY on C:\; fall back to D:\; then regular exe)
+			$exeCandidate = $null
+			if (Test-Path "C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe") { $exeCandidate = "C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe" }
+			elseif (Test-Path "D:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe") { $exeCandidate = "D:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe" }
+			elseif (Test-Path "C:\ScaleCommApp\ScaleManagementApp.exe") { $exeCandidate = "C:\ScaleCommApp\ScaleManagementApp.exe" }
+			elseif (Test-Path "D:\ScaleCommApp\ScaleManagementApp.exe") { $exeCandidate = "D:\ScaleCommApp\ScaleManagementApp.exe" }
+			
+			if ($exeCandidate)
+			{
+				# Build the two-line payload (comment + @EXEC)
+				$exeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='$exeCandidate');"
+				
+				try
+				{
+					if ($PSCmdlet.ShouldProcess($deployChgFile, "Restore DEPLOY_CHG @EXEC line -> $exeCandidate"))
+					{
+						
+						# Read entire file and split into lines
+						$content = Get-Content -LiteralPath $deployChgFile -Raw
+						$lines = $content -split "`r?`n"
+						
+						# CHANGE: Build a mutable list so we can RemoveAt safely (arrays are fixed-size)
+						$filtered = New-Object System.Collections.Generic.List[string]
+						
+						# Filter OUT previous lines: our comment and any matching @EXEC to ScaleManagementApp(_FastDEPLOY).exe
+						foreach ($ln in $lines)
+						{
+							if ($ln -match '^\s*/\* Deploy price changes to the scales \*/') { continue }
+							if ($ln -match "(?i)@EXEC\(RUN='[A-Z]:\\ScaleCommApp\\ScaleManagementApp(_FastDEPLOY)?\.exe'\);") { continue }
+							[void]$filtered.Add($ln)
+						}
+						
+						# CHANGE: Trim trailing blank lines safely using List.RemoveAt
+						while ($filtered.Count -gt 0 -and [string]::IsNullOrWhiteSpace($filtered[$filtered.Count - 1]))
+						{
+							$filtered.RemoveAt($filtered.Count - 1)
+						}
+						
+						# CHANGE: Append payload as two distinct lines (avoid embedded CRLFs inside a single element)
+						[void]$filtered.Add("") # ensure one blank line before our payload
+						[void]$filtered.Add("/* Deploy price changes to the scales */")
+						[void]$filtered.Add("@EXEC(RUN='$exeCandidate');")
+						
+						# If file is read-only, clear attribute only when -Force is given
+						$fileOk = $true
+						try
+						{
+							$fi = Get-Item -LiteralPath $deployChgFile -ErrorAction Stop
+							if ($fi.Attributes -band [IO.FileAttributes]::ReadOnly)
+							{
+								if ($Force) { $fi.Attributes = ($fi.Attributes -bxor [IO.FileAttributes]::ReadOnly) }
+								else { $fileOk = $false }
+							}
+						}
+						catch { $fileOk = $false }
+						
+						if ($fileOk)
+						{
+							# Keep your original encoding choice for DEPLOY_CHG.sql
+							($filtered -join "`r`n") | Set-Content -Path $deployChgFile -Encoding Default
+							Write_Log "Restored lines to DEPLOY_CHG.sql: @EXEC(RUN='$exeCandidate');" "green"
+						}
+						else
+						{
+							Write_Log "DEPLOY_CHG.sql is read-only and -Force not specified; skipped restore." "yellow"
+						}
+					}
+				}
+				catch
+				{
+					Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
+				}
+				
+				# Delete the minutes scheduled task if it exists
+				try
+				{
+					$minutesTaskName = "Update_Scales_Specials_Task_Minutes"
+					$taskExists = schtasks /Query /TN "$minutesTaskName" 2>&1 | Select-String -Quiet -Pattern "$minutesTaskName"
+					if ($taskExists)
+					{
+						if ($PSCmdlet.ShouldProcess($minutesTaskName, "Delete scheduled task"))
+						{
+							$deleteOut = schtasks /Delete /TN "$minutesTaskName" /F 2>&1
+							if ($LASTEXITCODE -eq 0) { Write_Log "Deleted scheduled task '$minutesTaskName' after DEPLOY_CHG.sql restore." "yellow" }
+							else { Write_Log "Attempted to delete '$minutesTaskName' but schtasks said: $deleteOut" "yellow" }
+						}
+					}
+				}
+				catch
+				{
+					Write_Log "Error while checking/deleting '$minutesTaskName': $_" "yellow"
+				}
+			}
+			else
+			{
+				Write_Log "Neither FastDEPLOY nor regular ScaleManagementApp.exe found in C:\ or D:\ScaleCommApp." "red"
+			}
+		}
+		else
+		{
+			Write_Log "DEPLOY_CHG.sql not found at $deployChgFile" "red"
+		}
+	}
+	else
+	{
+		Write_Log "Office path not provided and \$script:OfficePath not available; skipping DEPLOY_CHG.sql restore." "yellow"
+	}
+	
 	# ------------------------------------------------------------------------------------------------
-	# Final summary (NO TERNARY)
+	# Final summary
 	# ------------------------------------------------------------------------------------------------
 	$sumIP = 'n/a'
 	if ($firstScaleIP) { $sumIP = $firstScaleIP }
 	
 	Write_Log ("`r`nTroubleshoot_ScaleCommApp: Audited={0}, Updated={1}, Skipped={2}, FirstScaleIP={3}" -f $audited, $updated, $skipped, $sumIP) "blue"
-	if ($updated -gt 0)
-	{
-		Write_Log ("Saved files: {0}" -f ($savedFiles -join ', ')) "green"
-	}
+	if ($updated -gt 0) { Write_Log ("Saved files: {0}" -f ($savedFiles -join ', ')) "green" }
 	
 	Write_Log "`r`n==================== Troubleshoot_ScaleCommApp Completed ====================" "blue"
 }
