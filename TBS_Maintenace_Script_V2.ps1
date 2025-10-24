@@ -19,7 +19,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.4.9"
+$VersionNumber = "2.5.0"
 $VersionDate = "2025-10-24"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -11498,7 +11498,7 @@ ORDER BY ScaleCode ASC;
 	if ($allowedPrefix)
 	{
 		# CHANGE: Reflect the enforced trailing period examples only.
-		$lbl.Text = "Edit cells directly. Auto Sort applies standard order + numbering and saves immediately.  Active must be Y/N.  IPNetwork must match $allowedPrefix.* and will be normalized to '$allowedPrefix.'. Accepted inputs include '$allowedPrefix', '$allowedPrefix.0', '$allowedPrefix.*', '$allowedPrefix.x', '$allowedPrefix.' → all saved as '$allowedPrefix.'"
+		$lbl.Text = "Edit directly • Auto-Sort renumbers & saves • Active: Y/N • IPNetwork → '$allowedPrefix.' (accepts $allowedPrefix, $allowedPrefix.0/*/x/.)"
 	}
 	else
 	{
@@ -12158,7 +12158,7 @@ END CATCH;
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Audits & (optionally) repairs ScaleCommApp *.exe.config files:
-#     - StoreName                  => script's store name
+#     - StoreName                  => script's store name (NOW READ FROM system.ini NAME= when not passed)
 #     - FistScaleIP                => FIRST active scale full IP from IPNetwork + IPDevice
 #                                     (robust parser + table/active-NIC fallbacks)
 #     - SQL_InstanceName           => script's SQL instance
@@ -12198,6 +12198,7 @@ function Troubleshoot_ScaleCommApp
 		[switch]$NoAutoFix,
 		[switch]$Force,
 		[string]$ExpectedStoreName,
+		# If not provided, we will try to read NAME= from system.ini (NEW)
 		[string]$ExpectedSqlInstance,
 		[string]$ExpectedDatabase,
 		# NEW: where Office\DEPLOY_CHG.sql lives. If not passed, uses $script:OfficePath when available.
@@ -12236,6 +12237,99 @@ function Troubleshoot_ScaleCommApp
 			$connStr = "Server=$server;Database=$dbName;Integrated Security=SSPI;TrustServerCertificate=True;"
 		}
 		$script:FunctionResults['ConnectionString'] = $connStr
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# NEW: Pull StoreName from system.ini (case-insensitive NAME=) if not provided explicitly
+	#       Supports multiple candidate Office paths and robust parsing of NAME= line.
+	# ------------------------------------------------------------------------------------------------
+	$systemIniStoreName = $null
+	try
+	{
+		# Build candidate Office roots to locate system.ini
+		$officeCandidates = @()
+		if ($OfficePath) { $officeCandidates += $OfficePath } # 1) param
+		if ($script:OfficePath -and ($officeCandidates -notcontains $script:OfficePath)) # 2) cached script var
+		{
+			$officeCandidates += $script:OfficePath
+		}
+		# 3) canonical UNC that you use elsewhere
+		if ($officeCandidates -notcontains "\\localhost\storeman\office")
+		{
+			$officeCandidates += "\\localhost\storeman\office"
+		}
+		# 4/5) local drive fallbacks
+		if ($officeCandidates -notcontains "C:\storeman\office") { $officeCandidates += "C:\storeman\office" }
+		if ($officeCandidates -notcontains "D:\storeman\office") { $officeCandidates += "D:\storeman\office" }
+		
+		# Try each candidate until we find a system.ini to parse
+		$systemIniPathUsed = $null
+		foreach ($off in $officeCandidates)
+		{
+			if ([string]::IsNullOrWhiteSpace($off)) { continue }
+			$iniCandidate = Join-Path $off "system.ini"
+			if (Test-Path -LiteralPath $iniCandidate)
+			{
+				# Read file raw to preserve all characters; parse NAME= line (case-insensitive)
+				$raw = $null
+				try { $raw = Get-Content -LiteralPath $iniCandidate -Raw -ErrorAction Stop }
+				catch { $raw = $null }
+				
+				if ($raw)
+				{
+					# Split and scan lines
+					$lines = $raw -split "`r?`n"
+					foreach ($ln in $lines)
+					{
+						if ($ln -match '^\s*NAME\s*=\s*(.+?)\s*$') # case-insensitive by default in PowerShell regex
+						{
+							$val = $matches[1]
+							# Strip trailing comments ( ; or # ) and surrounding quotes
+							if ($val -match '^(.*?)(;|#).*$') { $val = $matches[1] }
+							$val = $val.Trim()
+							if ($val.StartsWith('"') -and $val.EndsWith('"') -and $val.Length -ge 2)
+							{
+								$val = $val.Substring(1, $val.Length - 2)
+							}
+							if ($val)
+							{
+								$systemIniStoreName = $val
+								$systemIniPathUsed = $iniCandidate
+								break
+							}
+						}
+					}
+				}
+			}
+			if ($systemIniStoreName) { break }
+		}
+		
+		# If we found a NAME= in system.ini and user did not pass -ExpectedStoreName, adopt it
+		if ($systemIniStoreName -and -not $PSBoundParameters.ContainsKey('ExpectedStoreName'))
+		{
+			$ExpectedStoreName = $systemIniStoreName
+			if ($systemIniPathUsed)
+			{
+				Write_Log "Store name read from system.ini: '$ExpectedStoreName'  (at: $systemIniPathUsed)" "cyan"
+			}
+			else
+			{
+				Write_Log "Store name read from system.ini: '$ExpectedStoreName'" "cyan"
+			}
+		}
+		elseif (-not $systemIniStoreName)
+		{
+			Write_Log "system.ini not found or NAME= missing in all candidate paths; using existing ExpectedStoreName source." "yellow"
+		}
+		else
+		{
+			# User explicitly passed -ExpectedStoreName; keep it, but log discovery for awareness
+			Write_Log "system.ini NAME= found ('$systemIniStoreName') but parameter -ExpectedStoreName was provided; keeping passed value '$ExpectedStoreName'." "yellow"
+		}
+	}
+	catch
+	{
+		Write_Log "Error while reading system.ini for NAME=: $($_.Exception.Message)" "yellow"
 	}
 	
 	# ------------------------------------------------------------------------------------------------
@@ -12349,8 +12443,11 @@ function Troubleshoot_ScaleCommApp
 	{
 		# Decide Invoke-Sqlcmd availability and argument style
 		$InvokeSqlCmd = $null
-		if ($sqlModule -and $sqlModule -ne 'None') { try { Import-Module $sqlModule -ErrorAction Stop; $InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $sqlModule -ErrorAction Stop }
-			catch { $InvokeSqlCmd = $null } }
+		if ($sqlModule -and $sqlModule -ne 'None')
+		{
+			try { Import-Module $sqlModule -ErrorAction Stop; $InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $sqlModule -ErrorAction Stop }
+			catch { $InvokeSqlCmd = $null }
+		}
 		$supportsConnStr = $false
 		if ($InvokeSqlCmd) { $supportsConnStr = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString' }
 		
@@ -12585,7 +12682,7 @@ ORDER BY
 		}
 	}
 	
-	$dStore = '<unchanged/skip>'; if ($ExpectedStoreName) { $dStore = $ExpectedStoreName }
+	$dStore = '<unchanged/skip>'; if ($ExpectedStoreName) { $dStore = $ExpectedStoreName } # CHANGE: reflects system.ini-driven name when adopted
 	$dIP = '<skip>'; if ($firstScaleIP) { $dIP = $firstScaleIP }
 	$dInst = '<unchanged/skip>'; if ($ExpectedSqlInstance) { $dInst = $ExpectedSqlInstance }
 	$dDb = '<unchanged/skip>'; if ($ExpectedDatabase) { $dDb = $ExpectedDatabase }
