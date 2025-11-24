@@ -138,10 +138,11 @@ Write-Host "Selected (storeman) folder: '$BasePath'" -ForegroundColor Magenta
 # Build All Core Paths and File Locations
 # ---------------------------------------------------------------------------------------------------
 
-# Build the base structural paths for the Storeman / Office environment.
+# Storeman root paths
 $OfficePath = Join-Path $BasePath "Office"
 $LoadPath = Join-Path $OfficePath "Load"
 $StartupIniPath = Join-Path $BasePath "Startup.ini"
+$GlobalSmsStartIniPath = Join-Path $BasePath "SMSStart.ini"
 $SystemIniPath = Join-Path $OfficePath "system.ini"
 $GasInboxPath = Join-Path $OfficePath "XchGAS\INBOX"
 $DbsPath = Join-Path $OfficePath "Dbs"
@@ -149,28 +150,21 @@ $TempDir = [System.IO.Path]::GetTempPath()
 
 # Initialize variables for the INFO_*901 files
 $WinIniPath = $null
-$SmsStartIniPath = $null
+$SmsStartIniPath = $null # INFO_*901_SMSStart.ini inside Dbs
 
 # ---------------------------------------------------------------------------------------------------
 # Find INFO_*901_WIN.INI
 # ---------------------------------------------------------------------------------------------------
-# We only want **one** file - the FIRST valid match in Office\Dbs.
-# Using -Filter ensures fast enumeration and avoids recursive search.
 try
 {
 	$WinIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_WIN.INI' -ErrorAction Stop |
 	Select-Object -First 1
-	
 	if ($WinIniMatch)
 	{
-		$WinIniPath = $WinIniMatch.FullName # Store full resolved path
-		# Write-Host "WIN INI Found: $WinIniPath" -ForegroundColor Cyan
+		$WinIniPath = $WinIniMatch.FullName
 	}
 }
-catch
-{
-	# Write-Host "WIN INI scan failed: $_" -ForegroundColor Red
-}
+catch { }
 
 # ---------------------------------------------------------------------------------------------------
 # Find INFO_*901_SMSStart.ini
@@ -183,13 +177,9 @@ try
 	if ($SmsStartIniMatch)
 	{
 		$SmsStartIniPath = $SmsStartIniMatch.FullName
-		# Write-Host "SMSStart INI Found: $SmsStartIniPath" -ForegroundColor Cyan
 	}
 }
-catch
-{
-	# Write-Host "SMSStart INI scan failed: $_" -ForegroundColor Red
-}
+catch { }
 
 # Initialize a hashtable to track the status of each operation
 $operationStatus = @{
@@ -1028,13 +1018,11 @@ function Get-ValidStoreNumber
 #       - Updates REDIRMAIL=xxx901
 #       - Updates REDIRMSG=xxx901
 #
-#   2) C:\Storeman\SMSStart.ini  (global)
+#   2) Global SMSStart.ini  (Storeman\SMSStart.ini)
 #       - Updates ONLY STORE=xxx inside [SMSSTART]
-#       - Does NOT touch TER or anything else
 #
 #   3) Office\Dbs\INFO_*901_WIN.ini
 #       - Updates ONLY STORE=xxx (any whitespace/format)
-#       - Does NOT touch anything else in the file
 # ===================================================================================================
 
 function Update-StoreNumberInINI
@@ -1042,49 +1030,43 @@ function Update-StoreNumberInINI
 	param (
 		[Parameter(Mandatory)]
 		[ValidatePattern('^\d{3}$')]
-		# Enforce 3-digit store number
-		[string]$newStoreNumber,
-		[Parameter(Mandatory)]
-		[string]$startupIniPath
+		# Enforce exactly 3 digits
+		[string]$newStoreNumber
 	)
 	
-	# ---------------------------------------------------------
-	# 1) STARTUP.INI (original behavior)
-	# ---------------------------------------------------------
-	if (-not (Test-Path $startupIniPath))
+	# ================================================================================
+	# 1) Update Startup.ini  (STORE + REDIRs)
+	# ================================================================================
+	if (-not (Test-Path $StartupIniPath))
 	{
 		return $false
 	}
 	
-	# Read startup.ini line-by-line to preserve formatting
-	$iniContent = Get-Content $startupIniPath
+	$startupLines = Get-Content $StartupIniPath
 	
-	# Replace STORE=xxx (allow optional whitespace before STORE)
-	$iniContent = $iniContent -replace '^[ \t]*STORE=\d{3}', "STORE=$newStoreNumber"
+	# Update STORE=xxx (allow optional whitespace)
+	$startupLines = $startupLines -replace '^[ \t]*STORE\s*=\s*\d{3}', "STORE=$newStoreNumber"
 	
-	# Replace REDIRMAIL=xxx901 and REDIRMSG=xxx901 (only in startup.ini)
-	$iniContent = $iniContent -replace '^[ \t]*(REDIRMAIL|REDIRMSG)=\d{3}(901)', "`$1=$newStoreNumber`$2"
+	# Update REDIRMAIL / REDIRMSG (only in startup.ini)
+	$startupLines = $startupLines -replace '^[ \t]*(REDIRMAIL|REDIRMSG)\s*=\s*\d{3}(901)', "`$1=$newStoreNumber`$2"
 	
-	# Write back startup.ini
-	Set-Content -Path $startupIniPath -Value $iniContent -Encoding UTF8
+	Set-Content -Path $StartupIniPath -Value $startupLines -Encoding UTF8
 	
 	
-	# ---------------------------------------------------------
-	# 2) GLOBAL SMSStart.ini (C:\Storeman\SMSStart.ini)
-	#     - ONLY update STORE=xxx inside [SMSSTART]
-	# ---------------------------------------------------------
-	$globalSmsStartPath = "C:\Storeman\SMSStart.ini"
-	
-	if (Test-Path $globalSmsStartPath)
+	# ================================================================================
+	# 2) Update Global SMSStart.ini (Storeman\SMSStart.ini)
+	#    → Only STORE= inside [SMSSTART]
+	# ================================================================================
+	if ($GlobalSmsStartIniPath -and (Test-Path $GlobalSmsStartIniPath))
 	{
-		$lines = Get-Content $globalSmsStartPath
+		$globalLines = Get-Content $GlobalSmsStartIniPath
 		$inSmsStartSection = $false
 		
-		for ($i = 0; $i -lt $lines.Count; $i++)
+		for ($i = 0; $i -lt $globalLines.Count; $i++)
 		{
-			$line = $lines[$i]
+			$line = $globalLines[$i]
 			
-			# Detect section headers like [SMSSTART], [Health], etc.
+			# Detect section headers
 			if ($line -match '^\s*\[(.+?)\]\s*$')
 			{
 				$sectionName = $matches[1].Trim()
@@ -1092,62 +1074,33 @@ function Update-StoreNumberInINI
 				continue
 			}
 			
-			# Only touch STORE line while inside [SMSSTART]
-			if ($inSmsStartSection)
+			# Only update STORE line inside [SMSSTART]
+			if ($inSmsStartSection -and $line -match '^\s*STORE\s*=\s*\d{3}\s*$')
 			{
-				# Match STORE=xxx with any whitespace variation
-				if ($line -match '^\s*STORE\s*=\s*\d{3}\s*$')
-				{
-					$lines[$i] = "STORE=$newStoreNumber"
-				}
+				$globalLines[$i] = "STORE=$newStoreNumber"
 			}
 		}
 		
-		# Save back global SMSStart.ini
-		Set-Content -Path $globalSmsStartPath -Value $lines -Encoding UTF8
+		Set-Content -Path $GlobalSmsStartIniPath -Value $globalLines -Encoding UTF8
 	}
 	
 	
-	# ---------------------------------------------------------
-	# 3) Office\Dbs\INFO_*901_WIN.ini
-	#     - ONLY update STORE line anywhere in file
-	# ---------------------------------------------------------
-	try
+	# ================================================================================
+	# 3) Update INFO_*901_WIN.ini → STORE only, anywhere in file
+	# ================================================================================
+	if ($WinIniPath -and (Test-Path $WinIniPath))
 	{
-		# Build Office\Dbs path from startupIniPath
-		$basePath = Split-Path $startupIniPath -Parent
-		$officePath = Join-Path $basePath "Office"
-		$dbsPath = Join-Path $officePath "Dbs"
+		$winLines = Get-Content $WinIniPath
 		
-		if (Test-Path $dbsPath)
+		for ($j = 0; $j -lt $winLines.Count; $j++)
 		{
-			# Find first INFO_*901_WIN.INI
-			$winIniMatch = Get-ChildItem -Path $dbsPath -Filter "INFO_*901_WIN.INI" -ErrorAction SilentlyContinue |
-			Select-Object -First 1
-			
-			if ($winIniMatch)
+			if ($winLines[$j] -match '^\s*STORE\s*=\s*\d{3}\s*$')
 			{
-				$winIniPath = $winIniMatch.FullName
-				$winLines = Get-Content $winIniPath
-				
-				for ($j = 0; $j -lt $winLines.Count; $j++)
-				{
-					# Update ONLY STORE=xxx (any whitespace/format)
-					if ($winLines[$j] -match '^\s*STORE\s*=\s*\d{3}\s*$')
-					{
-						$winLines[$j] = "STORE=$newStoreNumber"
-					}
-				}
-				
-				# Save back INFO_*901_WIN.ini
-				Set-Content -Path $winIniPath -Value $winLines -Encoding UTF8
+				$winLines[$j] = "STORE=$newStoreNumber"
 			}
 		}
-	}
-	catch
-	{
-		# We do not fail the whole operation if WIN ini update hits an error.
-		# Startup.ini already updated successfully above.
+		
+		Set-Content -Path $WinIniPath -Value $winLines -Encoding UTF8
 	}
 	
 	return $true
