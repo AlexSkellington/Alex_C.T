@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.2.5"
-$VersionDate = "2025-08-14"
+$VersionNumber = "1.2.6"
+$VersionDate = "2025-11-24"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -137,6 +137,8 @@ Write-Host "Selected (storeman) folder: '$BasePath'" -ForegroundColor Magenta
 # ---------------------------------------------------------------------------------------------------
 # Build All Core Paths and File Locations
 # ---------------------------------------------------------------------------------------------------
+
+# Build the base structural paths for the Storeman / Office environment.
 $OfficePath = Join-Path $BasePath "Office"
 $LoadPath = Join-Path $OfficePath "Load"
 $StartupIniPath = Join-Path $BasePath "Startup.ini"
@@ -145,14 +147,49 @@ $GasInboxPath = Join-Path $OfficePath "XchGAS\INBOX"
 $DbsPath = Join-Path $OfficePath "Dbs"
 $TempDir = [System.IO.Path]::GetTempPath()
 
-# Find first INFO_*901_WIN.INI and INFO_*901_SMSStart.ini in Office\Dbs
+# Initialize variables for the INFO_*901 files
 $WinIniPath = $null
 $SmsStartIniPath = $null
 
-$WinIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($WinIniMatch) { $WinIniPath = $WinIniMatch.FullName }
-$SmsStartIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_SMSStart.ini' -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($SmsStartIniMatch) { $SmsStartIniPath = $SmsStartIniMatch.FullName }
+# ---------------------------------------------------------------------------------------------------
+# Find INFO_*901_WIN.INI
+# ---------------------------------------------------------------------------------------------------
+# We only want **one** file - the FIRST valid match in Office\Dbs.
+# Using -Filter ensures fast enumeration and avoids recursive search.
+try
+{
+	$WinIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_WIN.INI' -ErrorAction Stop |
+	Select-Object -First 1
+	
+	if ($WinIniMatch)
+	{
+		$WinIniPath = $WinIniMatch.FullName # Store full resolved path
+		# Write-Host "WIN INI Found: $WinIniPath" -ForegroundColor Cyan
+	}
+}
+catch
+{
+	# Write-Host "WIN INI scan failed: $_" -ForegroundColor Red
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Find INFO_*901_SMSStart.ini
+# ---------------------------------------------------------------------------------------------------
+try
+{
+	$SmsStartIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_SMSStart.ini' -ErrorAction Stop |
+	Select-Object -First 1
+	
+	if ($SmsStartIniMatch)
+	{
+		$SmsStartIniPath = $SmsStartIniMatch.FullName
+		# Write-Host "SMSStart INI Found: $SmsStartIniPath" -ForegroundColor Cyan
+	}
+}
+catch
+{
+	# Write-Host "SMSStart INI scan failed: $_" -ForegroundColor Red
+}
 
 # Initialize a hashtable to track the status of each operation
 $operationStatus = @{
@@ -984,41 +1021,136 @@ function Get-ValidStoreNumber
 #                                       FUNCTION: Update-StoreNumberInINI
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Updates the store number in the startup.ini file with the new store number provided.
-#   Also updates REDIRMAIL and REDIRMSG lines using the new store number.
-#   Example:
-#     STORE=003   => STORE=005
-#     REDIRMAIL=003901 => REDIRMAIL=005901
-#     REDIRMSG=003901  => REDIRMSG=005901
+#   Updates ALL required INI files with the new store number.
+#
+#   1) startup.ini
+#       - Updates STORE=xxx
+#       - Updates REDIRMAIL=xxx901
+#       - Updates REDIRMSG=xxx901
+#
+#   2) C:\Storeman\SMSStart.ini  (global)
+#       - Updates ONLY STORE=xxx inside [SMSSTART]
+#       - Does NOT touch TER or anything else
+#
+#   3) Office\Dbs\INFO_*901_WIN.ini
+#       - Updates ONLY STORE=xxx (any whitespace/format)
+#       - Does NOT touch anything else in the file
 # ===================================================================================================
 
 function Update-StoreNumberInINI
 {
 	param (
 		[Parameter(Mandatory)]
+		[ValidatePattern('^\d{3}$')]
+		# Enforce 3-digit store number
 		[string]$newStoreNumber,
-		# Should be a 3-digit string (e.g., "005")
 		[Parameter(Mandatory)]
 		[string]$startupIniPath
 	)
 	
-	if (Test-Path $startupIniPath)
-	{
-		$iniContent = Get-Content $startupIniPath
-		
-		# Replace STORE=xxx
-		$iniContent = $iniContent -replace '^STORE=\d{3}', "STORE=$newStoreNumber"
-		
-		# Replace REDIRMAIL=xxx901 and REDIRMSG=xxx901
-		$iniContent = $iniContent -replace '^(REDIRMAIL|REDIRMSG)=\d{3}(901)', "`$1=$newStoreNumber`$2"
-		
-		Set-Content -Path $startupIniPath -Value $iniContent -Encoding UTF8
-		return $true
-	}
-	else
+	# ---------------------------------------------------------
+	# 1) STARTUP.INI (original behavior)
+	# ---------------------------------------------------------
+	if (-not (Test-Path $startupIniPath))
 	{
 		return $false
 	}
+	
+	# Read startup.ini line-by-line to preserve formatting
+	$iniContent = Get-Content $startupIniPath
+	
+	# Replace STORE=xxx (allow optional whitespace before STORE)
+	$iniContent = $iniContent -replace '^[ \t]*STORE=\d{3}', "STORE=$newStoreNumber"
+	
+	# Replace REDIRMAIL=xxx901 and REDIRMSG=xxx901 (only in startup.ini)
+	$iniContent = $iniContent -replace '^[ \t]*(REDIRMAIL|REDIRMSG)=\d{3}(901)', "`$1=$newStoreNumber`$2"
+	
+	# Write back startup.ini
+	Set-Content -Path $startupIniPath -Value $iniContent -Encoding UTF8
+	
+	
+	# ---------------------------------------------------------
+	# 2) GLOBAL SMSStart.ini (C:\Storeman\SMSStart.ini)
+	#     - ONLY update STORE=xxx inside [SMSSTART]
+	# ---------------------------------------------------------
+	$globalSmsStartPath = "C:\Storeman\SMSStart.ini"
+	
+	if (Test-Path $globalSmsStartPath)
+	{
+		$lines = Get-Content $globalSmsStartPath
+		$inSmsStartSection = $false
+		
+		for ($i = 0; $i -lt $lines.Count; $i++)
+		{
+			$line = $lines[$i]
+			
+			# Detect section headers like [SMSSTART], [Health], etc.
+			if ($line -match '^\s*\[(.+?)\]\s*$')
+			{
+				$sectionName = $matches[1].Trim()
+				$inSmsStartSection = ($sectionName -ieq 'SMSSTART')
+				continue
+			}
+			
+			# Only touch STORE line while inside [SMSSTART]
+			if ($inSmsStartSection)
+			{
+				# Match STORE=xxx with any whitespace variation
+				if ($line -match '^\s*STORE\s*=\s*\d{3}\s*$')
+				{
+					$lines[$i] = "STORE=$newStoreNumber"
+				}
+			}
+		}
+		
+		# Save back global SMSStart.ini
+		Set-Content -Path $globalSmsStartPath -Value $lines -Encoding UTF8
+	}
+	
+	
+	# ---------------------------------------------------------
+	# 3) Office\Dbs\INFO_*901_WIN.ini
+	#     - ONLY update STORE line anywhere in file
+	# ---------------------------------------------------------
+	try
+	{
+		# Build Office\Dbs path from startupIniPath
+		$basePath = Split-Path $startupIniPath -Parent
+		$officePath = Join-Path $basePath "Office"
+		$dbsPath = Join-Path $officePath "Dbs"
+		
+		if (Test-Path $dbsPath)
+		{
+			# Find first INFO_*901_WIN.INI
+			$winIniMatch = Get-ChildItem -Path $dbsPath -Filter "INFO_*901_WIN.INI" -ErrorAction SilentlyContinue |
+			Select-Object -First 1
+			
+			if ($winIniMatch)
+			{
+				$winIniPath = $winIniMatch.FullName
+				$winLines = Get-Content $winIniPath
+				
+				for ($j = 0; $j -lt $winLines.Count; $j++)
+				{
+					# Update ONLY STORE=xxx (any whitespace/format)
+					if ($winLines[$j] -match '^\s*STORE\s*=\s*\d{3}\s*$')
+					{
+						$winLines[$j] = "STORE=$newStoreNumber"
+					}
+				}
+				
+				# Save back INFO_*901_WIN.ini
+				Set-Content -Path $winIniPath -Value $winLines -Encoding UTF8
+			}
+		}
+	}
+	catch
+	{
+		# We do not fail the whole operation if WIN ini update hits an error.
+		# Startup.ini already updated successfully above.
+	}
+	
+	return $true
 }
 
 # ===================================================================================================
