@@ -1030,7 +1030,7 @@ function Update-StoreNumberInINI
 	param (
 		[Parameter(Mandatory)]
 		[ValidatePattern('^\d{3}$')]
-		# Enforce exactly 3 digits
+		# Enforce exactly 3 digits (e.g. 901, 123)
 		[string]$newStoreNumber
 	)
 	
@@ -1044,11 +1044,11 @@ function Update-StoreNumberInINI
 	
 	$startupLines = Get-Content $StartupIniPath
 	
-	# Update STORE=xxx (allow optional whitespace)
-	$startupLines = $startupLines -replace '^[ \t]*STORE\s*=\s*\d{3}', "STORE=$newStoreNumber"
+	# CHG: Simple start-anchored replace: matches "STORE=nnn" and ignores the rest of the line
+	$startupLines = $startupLines -replace '^STORE=\d{3}', "STORE=$newStoreNumber"
 	
-	# Update REDIRMAIL / REDIRMSG (only in startup.ini)
-	$startupLines = $startupLines -replace '^[ \t]*(REDIRMAIL|REDIRMSG)\s*=\s*\d{3}(901)', "`$1=$newStoreNumber`$2"
+	# CHG: Same idea for REDIRMAIL / REDIRMSG → only the first 3 digits are replaced, suffix 901 kept
+	$startupLines = $startupLines -replace '^(REDIRMAIL|REDIRMSG)=\d{3}(901)', "`$1=$newStoreNumber`$2"
 	
 	Set-Content -Path $StartupIniPath -Value $startupLines -Encoding UTF8
 	
@@ -1057,16 +1057,16 @@ function Update-StoreNumberInINI
 	# 2) Update Global SMSStart.ini (Storeman\SMSStart.ini)
 	#    → Only STORE= inside [SMSSTART]
 	# ================================================================================
-	if ($GlobalSmsStartIniPath -and (Test-Path $GlobalSmsStartIniPath))
+	if ($SmsStartIniPath -and (Test-Path $SmsStartIniPath))
 	{
-		$globalLines = Get-Content $GlobalSmsStartIniPath
+		$smsStartLines = Get-Content $SmsStartIniPath
 		$inSmsStartSection = $false
 		
-		for ($i = 0; $i -lt $globalLines.Count; $i++)
+		for ($i = 0; $i -lt $smsStartLines.Count; $i++)
 		{
-			$line = $globalLines[$i]
+			$line = $smsStartLines[$i]
 			
-			# Detect section headers
+			# Detect section headers like [SMSSTART]
 			if ($line -match '^\s*\[(.+?)\]\s*$')
 			{
 				$sectionName = $matches[1].Trim()
@@ -1074,14 +1074,16 @@ function Update-StoreNumberInINI
 				continue
 			}
 			
-			# Only update STORE line inside [SMSSTART]
-			if ($inSmsStartSection -and $line -match '^\s*STORE\s*=\s*\d{3}\s*$')
+			# Only touch STORE=nnn inside [SMSSTART]
+			if ($inSmsStartSection -and $line -match '^STORE=\d{3}')
 			{
-				$globalLines[$i] = "STORE=$newStoreNumber"
+				# CHG: Use the same simple pattern as Startup.ini so comments/trailing text are preserved
+				#      Only the leading STORE=nnn segment is replaced.
+				$smsStartLines[$i] = $line -replace '^STORE=\d{3}', "STORE=$newStoreNumber"
 			}
 		}
 		
-		Set-Content -Path $GlobalSmsStartIniPath -Value $globalLines -Encoding UTF8
+		Set-Content -Path $SmsStartIniPath -Value $smsStartLines -Encoding UTF8
 	}
 	
 	
@@ -1094,9 +1096,11 @@ function Update-StoreNumberInINI
 		
 		for ($j = 0; $j -lt $winLines.Count; $j++)
 		{
-			if ($winLines[$j] -match '^\s*STORE\s*=\s*\d{3}\s*$')
+			# CHG: Same approach again - match "STORE=nnn" at the start of the line
+			#      and replace just that token, leaving comments/etc. alone.
+			if ($winLines[$j] -match '^STORE=\d{3}')
 			{
-				$winLines[$j] = "STORE=$newStoreNumber"
+				$winLines[$j] = $winLines[$j] -replace '^STORE=\d{3}', "STORE=$newStoreNumber"
 			}
 		}
 		
