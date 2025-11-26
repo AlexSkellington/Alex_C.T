@@ -1042,7 +1042,7 @@ function Update-StoreNumberInINI
 		return $false
 	}
 	
-	$StartupIniPath = "\\localhost\storeman\startup.ini"
+	$startupLines = Get-Content $StartupIniPath
 	
 	# Update STORE=xxx (allow optional whitespace)
 	$startupLines = $startupLines -replace '^[ \t]*STORE\s*=\s*\d{3}', "STORE=$newStoreNumber"
@@ -2125,7 +2125,7 @@ Write-Host "Script started" -ForegroundColor Green
 
 # Create the main form
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Created by Alex_C.T - Version $VersionNumber -Last Moddified $VersionDate"
+$form.Text = "Created by Alex_C.T | Version: $VersionNumber | Revised: $VersionDate"
 $form.Size = New-Object System.Drawing.Size(505, 320)
 $form.StartPosition = "CenterScreen"
 
@@ -3175,5 +3175,3 @@ Write-Host "Script closing..." -ForegroundColor Yellow
 
 # Close the console to aviod duplicate logging to the richbox
 exit
-
-
