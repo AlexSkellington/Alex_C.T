@@ -2125,7 +2125,7 @@ Write-Host "Script started" -ForegroundColor Green
 
 # Create the main form
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Created by Alex_C.T - Version $VersionNumber"
+$form.Text = "Created by Alex_C.T - Version $VersionNumber -Last Moddified $VersionDate"
 $form.Size = New-Object System.Drawing.Size(505, 320)
 $form.StartPosition = "CenterScreen"
 
@@ -3175,4 +3175,5 @@ Write-Host "Script closing..." -ForegroundColor Yellow
 
 # Close the console to aviod duplicate logging to the richbox
 exit
+
 
