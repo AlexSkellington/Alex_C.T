@@ -2212,7 +2212,7 @@ $updateStoreNumberButton.Add_Click({
 					# Update startup.ini
 					if (Test-Path $startupIniPath)
 					{
-						$updateSuccess = Update-StoreNumberInINI -newStoreNumber $newStoreNumberInput -startupIniPath $startupIniPath
+						$updateSuccess = Update-StoreNumberInINI -newStoreNumber $newStoreNumberInput
 						if ($updateSuccess)
 						{
 							# Assign to script-level variable
