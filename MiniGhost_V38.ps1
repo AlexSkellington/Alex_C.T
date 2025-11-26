@@ -3175,3 +3175,4 @@ Write-Host "Script closing..." -ForegroundColor Yellow
 
 # Close the console to aviod duplicate logging to the richbox
 exit
+
