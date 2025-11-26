@@ -1116,31 +1116,58 @@ function Update-StoreNumberInINI
 function Update-SQLTablesForStoreNumberChange
 {
 	param (
-		[string]$storeNumber
+		[string]$storeNumber # New store number to apply
 	)
 	
-	# Variables
+	# =============================
+	# TABLE NAMES
+	# =============================
 	$stdTableName = "STD_TAB"
+	$terTableName = "TER_TAB"
 	
-	# SQL commands for updating STD_TAB
+	# =============================
+	# SQL FOR STD_TAB
+	# =============================
+	
+	# Create view (required by Storeman load process)
 	$createViewCommandStd = @"
 CREATE VIEW Std_Load AS
 SELECT F1056
 FROM $stdTableName;
 "@
 	
+	# Update STD_TAB.F1056 to the new store number
 	$updateStdTabCommand = @"
-UPDATE $stdTableName 
+UPDATE $stdTableName
 SET F1056 = '$storeNumber';
 "@
 	
+	# Drop the view
 	$dropViewCommandStd = "DROP VIEW Std_Load;"
 	
-	# Execute the SQL commands
+	
+	# =============================
+	# SQL FOR TER_TAB
+	# =============================
+	# Only update rows where F1057 = '901'
+	# This ensures ONLY the back-office record gets changed
+	# and does NOT break lane entries.
+	# =============================
+	$updateTerTabCommand = @"
+UPDATE $terTableName
+SET F1056 = '$storeNumber'
+WHERE F1057 = '901';
+"@
+	
+	
+	# =============================
+	# EXECUTION PIPELINE
+	# =============================
 	$sqlCommands = @(
 		$createViewCommandStd,
 		$updateStdTabCommand,
-		$dropViewCommandStd
+		$dropViewCommandStd,
+		$updateTerTabCommand # <-- NEW COMMAND
 	)
 	
 	$allSqlSuccessful = $true
@@ -1148,6 +1175,8 @@ SET F1056 = '$storeNumber';
 	
 	foreach ($command in $sqlCommands)
 	{
+		# Execute-SqlCommand is part of your existing framework
+		# so no changes here.
 		if (-not (Execute-SqlCommand -commandText $command))
 		{
 			$allSqlSuccessful = $false
@@ -1155,7 +1184,9 @@ SET F1056 = '$storeNumber';
 		}
 	}
 	
-	# Return the result
+	# =============================
+	# RETURN STRUCTURED RESULT
+	# =============================
 	return @{
 		Success	       = $allSqlSuccessful
 		FailedCommands = $failedSqlCommands
