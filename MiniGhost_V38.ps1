@@ -1042,7 +1042,7 @@ function Update-StoreNumberInINI
 		return $false
 	}
 	
-	$startupLines = Get-Content $StartupIniPath
+	$StartupIniPath = "\\localhost\storeman\startup.ini"
 	
 	# Update STORE=xxx (allow optional whitespace)
 	$startupLines = $startupLines -replace '^[ \t]*STORE\s*=\s*\d{3}', "STORE=$newStoreNumber"
