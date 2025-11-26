@@ -19,7 +19,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.2.7"
+$VersionNumber = "1.2.6"
 $VersionDate = "2025-11-26"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -1050,7 +1050,7 @@ function Update-StoreNumberInINI
 	# CHG: Same idea for REDIRMAIL / REDIRMSG → only the first 3 digits are replaced, suffix 901 kept
 	$startupLines = $startupLines -replace '^(REDIRMAIL|REDIRMSG)=\d{3}(901)', "`$1=$newStoreNumber`$2"
 	
-	Set-Content -Path $StartupIniPath -Value $startupLines -Encoding UTF8
+	Set-Content -Path $StartupIniPath -Value $startupLines -Encoding Default # ANSI + CRLF
 	
 	
 	# ================================================================================
@@ -1083,7 +1083,7 @@ function Update-StoreNumberInINI
 			}
 		}
 		
-		Set-Content -Path $SmsStartIniPath -Value $smsStartLines -Encoding UTF8
+		Set-Content -Path $SmsStartIniPath -Value $smsStartLines -Encoding Default # ANSI + CRLF
 	}
 	
 	
@@ -1104,7 +1104,7 @@ function Update-StoreNumberInINI
 			}
 		}
 		
-		Set-Content -Path $WinIniPath -Value $winLines -Encoding UTF8
+		Set-Content -Path $WinIniPath -Value $winLines -Encoding Default # ANSI + CRLF
 	}
 	
 	return $true
@@ -3179,4 +3179,3 @@ Write-Host "Script closing..." -ForegroundColor Yellow
 
 # Close the console to aviod duplicate logging to the richbox
 exit
-
