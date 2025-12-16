@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.5.0"
-$VersionDate = "2025-10-24"
+$VersionNumber = "2.5.2"
+$VersionDate = "2025-12-04"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -2283,7 +2283,7 @@ WHERE Active = 'Y'
 	$script:FunctionResults['ScaleLabels'] = $ScaleLabels
 	$script:FunctionResults['ScaleExePaths'] = $ScaleExePaths
 	$script:FunctionResults['ScaleCodeToIPInfo'] = $ScaleCodeToIPInfo
-	$script:FunctionResults['ScaleNameToCode'] = $ExpandedScaleNameToCode
+	$script:FunctionResults['ScaleNameToCode'] = $ScaleNameToCode
 	$script:FunctionResults['BackofficeNumToMachineName'] = $BackofficeNumToMachineName
 	$script:FunctionResults['MachineNameToBackofficeNum'] = $MachineNameToBackofficeNum
 	$script:FunctionResults['BackofficeNumToLabel'] = $BackofficeNumToLabel
@@ -12281,21 +12281,54 @@ function Troubleshoot_ScaleCommApp
 					$lines = $raw -split "`r?`n"
 					foreach ($ln in $lines)
 					{
-						if ($ln -match '^\s*NAME\s*=\s*(.+?)\s*$') # case-insensitive by default in PowerShell regex
+						# CHANGE: Robust NAME= parsing that captures the full value after '='
+						#         - Keeps '#' as literal text (so "Supermarket #2" is preserved)
+						#         - Strips ';' comments only when ';' is preceded by whitespace
+						#         - Supports quoted values and keeps everything inside quotes
+						
+						$trimLine = $ln.Trim()
+						if ([string]::IsNullOrWhiteSpace($trimLine)) { continue }
+						
+						# Look for NAME= at start of line (case-insensitive)
+						if ($trimLine -match '^\s*NAME\s*=')
 						{
-							$val = $matches[1]
-							# Strip trailing comments ( ; or # ) and surrounding quotes
-							if ($val -match '^(.*?)(;|#).*$') { $val = $matches[1] }
-							$val = $val.Trim()
-							if ($val.StartsWith('"') -and $val.EndsWith('"') -and $val.Length -ge 2)
+							# Take everything after the FIRST '=' (full capture)
+							$eqIndex = $trimLine.IndexOf('=')
+							if ($eqIndex -ge 0 -and ($eqIndex + 1) -lt $trimLine.Length)
 							{
-								$val = $val.Substring(1, $val.Length - 2)
-							}
-							if ($val)
-							{
-								$systemIniStoreName = $val
-								$systemIniPathUsed = $iniCandidate
-								break
+								$val = $trimLine.Substring($eqIndex + 1).Trim()
+								
+								# If quoted, keep everything inside the outer quotes
+								if ($val.StartsWith('"'))
+								{
+									$lastQuote = $val.LastIndexOf('"')
+									if ($lastQuote -gt 0)
+									{
+										$val = $val.Substring(1, $lastQuote - 1).Trim()
+									}
+									else
+									{
+										# Unbalanced quote fallback
+										$val = $val.Trim('"').Trim()
+									}
+								}
+								else
+								{
+									# CHANGE: Only treat ';' as inline comment (NOT '#')
+									# Strip only when preceded by whitespace: "NAME=My Store ; comment"
+									$mSemi = [regex]::Match($val, '^(.*?)(\s;.*)$')
+									if ($mSemi.Success)
+									{
+										$val = $mSemi.Groups[1].Value.Trim()
+									}
+								}
+								
+								if (-not [string]::IsNullOrWhiteSpace($val))
+								{
+									$systemIniStoreName = $val
+									$systemIniPathUsed = $iniCandidate
+									break
+								}
 							}
 						}
 					}
@@ -14387,8 +14420,17 @@ function Remove_ArchiveBit_Interactive
 	$storeNumber = $script:FunctionResults['StoreNumber']
 	$terFile = Join-Path $OfficePath "Load\Ter_Load.sql"
 	$scriptFolder = $script:ScriptsFolder
-	$batchName = "Remove_Archive_Bit.bat"
-	$batchPath = Join-Path $scriptFolder $batchName
+	
+	# --- Service/NSSM paths
+	$installRoot = Join-Path $scriptFolder "Remove_Archive_Bit_Service"
+	$svcScripts = Join-Path $installRoot "Scripts"
+	$svcNssmDir = Join-Path $installRoot "NSSM"
+	$svcPS1 = Join-Path $svcScripts "Remove_Archive_Bit_Service.ps1"
+	$nssmExe = Join-Path $svcNssmDir "nssm.exe"
+	$serviceName = "Remove_Archive_Bit"
+	
+	if (-not (Test-Path $svcScripts)) { New-Item -Path $svcScripts -ItemType Directory -Force | Out-Null }
+	if (-not (Test-Path $svcNssmDir)) { New-Item -Path $svcNssmDir -ItemType Directory -Force | Out-Null }
 	
 	# --------------------- Show Choice Form ---------------------
 	Add-Type -AssemblyName System.Windows.Forms
@@ -14403,7 +14445,7 @@ function Remove_ArchiveBit_Interactive
 	$form.MinimizeBox = $false
 	
 	$label = New-Object System.Windows.Forms.Label
-	$label.Text = "Do you want to run Remove Archive Bit now, or schedule it as a repeating background task?"
+	$label.Text = "Do you want to run Remove Archive Bit now, or install it as a repeating background SERVICE?"
 	$label.Location = New-Object System.Drawing.Point(20, 20)
 	$label.Size = New-Object System.Drawing.Size(390, 40)
 	$label.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
@@ -14415,11 +14457,11 @@ function Remove_ArchiveBit_Interactive
 	$btnRunNow.Size = New-Object System.Drawing.Size(100, 40)
 	$form.Controls.Add($btnRunNow)
 	
-	$btnSchedule = New-Object System.Windows.Forms.Button
-	$btnSchedule.Text = "Schedule Task"
-	$btnSchedule.Location = New-Object System.Drawing.Point(160, 90)
-	$btnSchedule.Size = New-Object System.Drawing.Size(120, 40)
-	$form.Controls.Add($btnSchedule)
+	$btnService = New-Object System.Windows.Forms.Button
+	$btnService.Text = "Install Service"
+	$btnService.Location = New-Object System.Drawing.Point(160, 90)
+	$btnService.Size = New-Object System.Drawing.Size(120, 40)
+	$form.Controls.Add($btnService)
 	
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
@@ -14434,8 +14476,8 @@ function Remove_ArchiveBit_Interactive
 			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
 			$form.Close()
 		})
-	$btnSchedule.Add_Click({
-			$script:selectedAction = "schedule"
+	$btnService.Add_Click({
+			$script:selectedAction = "service"
 			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
 			$form.Close()
 		})
@@ -14456,12 +14498,12 @@ function Remove_ArchiveBit_Interactive
 		return
 	}
 	
-	# --------------------- Schedule Task Path ---------------------
-	if ($script:selectedAction -eq "schedule")
+	# --------------------- SERVICE PATH ---------------------
+	if ($script:selectedAction -eq "service")
 	{
-		# Use a WinForms interval prompt
+		# Interval prompt
 		$intervalForm = New-Object System.Windows.Forms.Form
-		$intervalForm.Text = "Schedule Interval"
+		$intervalForm.Text = "Service Interval"
 		$intervalForm.Size = New-Object System.Drawing.Size(300, 160)
 		$intervalForm.StartPosition = "CenterScreen"
 		$intervalForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -14500,7 +14542,7 @@ function Remove_ArchiveBit_Interactive
 		$intervalResult = $intervalForm.ShowDialog()
 		if ($intervalResult -ne [System.Windows.Forms.DialogResult]::OK)
 		{
-			Write_Log "User cancelled interval prompt for scheduled Remove_ArchiveBit_Interactive." "yellow"
+			Write_Log "User cancelled interval prompt for service install." "yellow"
 			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
 			return
 		}
@@ -14508,96 +14550,149 @@ function Remove_ArchiveBit_Interactive
 		$interval = $intervalBox.Text.Trim()
 		if (-not $interval -or $interval -notmatch "^\d+$" -or [int]$interval -le 0)
 		{
-			Write_Log "Invalid interval value for scheduled Remove_ArchiveBit_Interactive." "red"
+			Write_Log "Invalid interval value for service install." "red"
 			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
 			return
 		}
 		
-		if (-not (Test-Path $scriptFolder)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
+		# Validate core inputs before installing service
+		if (-not (Test-Path $terFile))
+		{
+			Write_Log "ERROR: Ter_Load.sql could not be located at $terFile" "red"
+			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			return
+		}
+		if (-not $storeNumber)
+		{
+			Write_Log "ERROR: Store number not present in context." "red"
+			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			return
+		}
 		
-		$batchContent = @"
-@echo off
-setlocal
+		# --- Write the SERVICE script (standalone repeating loop)
+		$svcContent = @"
+`$StoreNumber = "$storeNumber"
+`$TerFile     = "$terFile"
+`$OfficePath  = "$OfficePath"
+`$IntervalMin = [int]"$interval"
 
-REM - check for admin & elevate if needed -
-net session >nul 2>&1
-if errorlevel 1 (
-    powershell -Command "Start-Process cmd -ArgumentList '/c %~s0 %*' -Verb RunAs" >nul
-    exit /b
-)
+function Refresh-AttribPath([string]`$p){
+    if([string]::IsNullOrWhiteSpace(`$p)) { return }
+    if(Test-Path `$p){
+        attrib -a -r "`$p\*.*" >nul 2>&1
+    }
+}
 
-echo *****************************************************
-echo *                Remove Archive Bit                 *
-echo *               Created by: Alex_C.T                *
-echo *      What it does: Removes archived bits from     *
-echo *            Lane directories and Server            *
-echo *****************************************************
+function Process-LanesFromTerFile {
+    if(!(Test-Path `$TerFile)){ return }
 
-set "StoreNumber=$storeNumber"
-set "TerFile=$terFile"
-if not defined StoreNumber (
-    echo ERROR: Store number could not be extracted.
-    echo Press any key to exit...
-    timeout /t 5 >nul
-    exit /b
-)
-echo Debug: Store Number is %StoreNumber%
-echo.
-if not defined TerFile (
-    echo ERROR: Ter_Load.sql could not be located.
-    echo Press any key to exit...
-    timeout /t 5 >nul
-    exit /b
-)
-echo Debug: Found Ter_Load.sql
-echo Processing lane paths from Ter_Load.sql
+    # Regex to capture two paths for Terminal 0 lines
+    `$rx = "^\(\s*'Terminal\s*0'\s*,\s*'([^']+)'\s*(?:,\s*'([^']+)')?"
 
-REM -- Remove archived bit in lanes --
-for /f "tokens=4,5 delims=,()'" %%A in ('
-    type "%TerFile%" ^
-    ^| findstr /b "(" ^
-    ^| findstr /i /c:"Terminal 0"
-') do (
-    echo Refreshing attributes in %%A...
-    attrib -a -r "%%A\*.*" >nul 2>&1
-    if errorlevel 1 echo ERROR: Failed to refresh attributes for %%A
-    if "%%B" NEQ "" (
-        echo Refreshing attributes in %%B...
-        attrib -a -r "%%B\*.*" >nul 2>&1
-        if errorlevel 1 echo ERROR: Failed to refresh attributes for %%B
-    )
-)
-REM -- Remove archived bit in server paths --
-echo(
-echo Processing server paths
-for %%S in (900 901) do (
-    if exist "$OfficePath\XF%StoreNumber%%%S" (
-        echo Refreshing attributes in "$OfficePath\XF%StoreNumber%%%S"
-        attrib -a -r "$OfficePath\XF%StoreNumber%%%S\*.*" >nul 2>&1
-        if errorlevel 1 echo ERROR: Failed to refresh attributes for $OfficePath\XF%StoreNumber%%%S
-    ) else (
-        echo Server path not found: $OfficePath\XF%StoreNumber%%%S
-    )
-)
-endlocal
-echo Press any key to exit...
-timeout /t 5 >nul
-exit /b
+    foreach(`$line in Get-Content `$TerFile){
+        if(`$line -match `$rx){
+            `$p1 = `$matches[1]
+            `$p2 = `$matches[2]
+            Refresh-AttribPath `$p1
+            Refresh-AttribPath `$p2
+        }
+    }
+}
+
+function Process-ServerXF {
+    foreach(`$suffix in 900,901){
+        `$serverPath = Join-Path `$OfficePath ("XF" + `$StoreNumber + `$suffix)
+        Refresh-AttribPath `$serverPath
+    }
+}
+
+while(`$true){
+    try{
+        Process-LanesFromTerFile
+        Process-ServerXF
+    } catch {}
+
+    Start-Sleep -Seconds (`$IntervalMin * 60)
+}
 "@
 		
-		Set-Content -Path $batchPath -Value $batchContent -Encoding ASCII
+		Set-Content -Path $svcPS1 -Value $svcContent -Encoding UTF8 -Force
 		
-		$taskName = "Remove_Archive_Bit"
-		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath`" /sc MINUTE /mo $interval /st 01:00 /rl HIGHEST /f"
-		$result = Invoke-Expression $schtasks
-		if ($LASTEXITCODE -eq 0)
+		# --- Ensure NSSM exists (download if missing)
+		if (!(Test-Path $nssmExe))
 		{
-			Write_Log "Scheduled task created successfully for Remove_Archive_Bit." "green"
+			try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
+			catch { }
+			$tempZip = Join-Path $env:TEMP "nssm.zip"
+			$url = "https://nssm.cc/release/nssm-2.24.zip"
+			
+			try
+			{
+				Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing
+				Expand-Archive -Path $tempZip -DestinationPath $svcNssmDir -Force
+				
+				$found = Get-ChildItem $svcNssmDir -Recurse -Filter "nssm.exe" |
+				Where-Object { $_.FullName -match "win64|amd64|x64" } |
+				Select-Object -First 1
+				if (-not $found)
+				{
+					$found = Get-ChildItem $svcNssmDir -Recurse -Filter "nssm.exe" | Select-Object -First 1
+				}
+				Copy-Item $found.FullName $nssmExe -Force
+			}
+			catch
+			{
+				Write_Log "ERROR: Could not download NSSM. Service install aborted." "red"
+				Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+				return
+			}
 		}
-		else
+		
+		# --- If service exists, ask Uninstall or Reinstall
+		$existingSvc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+		if ($existingSvc)
 		{
-			Write_Log "Failed to create scheduled task for Remove_Archive_Bit." "red"
+			$msg = "Service '$serviceName' already exists.`r`n`r`nYES = Uninstall`r`nNO = Reinstall/Repair`r`nCANCEL = Abort"
+			$res = [System.Windows.Forms.MessageBox]::Show($msg, "Service Already Installed",
+				[System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+				[System.Windows.Forms.MessageBoxIcon]::Question)
+			
+			if ($res -eq [System.Windows.Forms.DialogResult]::Cancel)
+			{
+				Write_Log "User aborted service action." "yellow"
+				Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+				return
+			}
+			
+			if ($res -eq [System.Windows.Forms.DialogResult]::Yes)
+			{
+				# Uninstall
+				& $nssmExe stop $serviceName *> $null
+				& $nssmExe remove $serviceName confirm *> $null
+				
+				Write_Log "Service '$serviceName' uninstalled successfully." "green"
+				Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+				return
+			}
+			
+			# else NO => reinstall, so remove first
+			& $nssmExe stop $serviceName *> $null
+			& $nssmExe remove $serviceName confirm *> $null
 		}
+		
+		# --- Install / start service
+		$psExe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+		$psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$svcPS1`""
+		
+		& $nssmExe install $serviceName $psExe $psArgs
+		& $nssmExe set $serviceName AppDirectory $svcScripts
+		& $nssmExe set $serviceName DisplayName "Remove Archive Bit"
+		& $nssmExe set $serviceName Description "Repeating Archive Bit removal every $interval minutes (Store $storeNumber)."
+		& $nssmExe set $serviceName Start SERVICE_AUTO_START
+		& $nssmExe set $serviceName AppRestartDelay 5000
+		& $nssmExe start $serviceName
+		
+		Write_Log "Service '$serviceName' installed and started. Interval: $interval minutes." "green"
 		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
 		return
 	}
@@ -14636,37 +14731,27 @@ exit /b
 			{
 				$path = "\\$machine\storeman\Office\XF${storeNumber}${laneNum}"
 				Write_Log "Refreshing attributes in $path..." "green"
-				try
-				{
-					attrib -a -r "$path\*.*" 2>&1 | Out-Null
-				}
-				catch
-				{
-					Write_Log "ERROR: Failed to refresh attributes for $path" "red"
-				}
+				try { attrib -a -r "$path\*.*" 2>&1 | Out-Null }
+				catch { Write_Log "ERROR: Failed to refresh attributes for $path" "red" }
 			}
 		}
 	}
+	
 	foreach ($suffix in 900, 901)
 	{
 		$serverPath = "\\localhost\storeman\office\XF${storeNumber}${suffix}"
 		if (Test-Path $serverPath)
 		{
 			Write_Log "Refreshing attributes in $serverPath" "green"
-			try
-			{
-				attrib -a -r "$serverPath\*.*" 2>&1 | Out-Null
-			}
-			catch
-			{
-				Write_Log "ERROR: Failed to refresh attributes for $serverPath" "red"
-			}
+			try { attrib -a -r "$serverPath\*.*" 2>&1 | Out-Null }
+			catch { Write_Log "ERROR: Failed to refresh attributes for $serverPath" "red" }
 		}
 		else
 		{
 			Write_Log "Server path not found: $serverPath" "yellow"
 		}
 	}
+	
 	Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
 }
 
@@ -15530,12 +15615,19 @@ function Remove_Duplicate_Files_From_toBizerba
 	$psScriptName = "Remove_Duplicate_Files_From_toBizerba.ps1"
 	$psScriptPath = Join-Path $scriptFolder $psScriptName
 	$TargetPath = "C:\Bizerba\RetailConnect\BMS\toBizerba"
-	$taskName = "Remove_Duplicate_Files_From_toBizerba"
 	$logPath = Join-Path $scriptFolder "Remove_Duplicates.log"
 	
-	if (-not (Test-Path $scriptFolder)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
+	# --- Service / NSSM paths ---
+	$serviceName = "Remove_Duplicate_Files_From_toBizerba"
+	$serviceRoot = Join-Path $scriptFolder "Duplicate_File_Monitor_Service"
+	$svcNssmDir = Join-Path $serviceRoot "NSSM"
+	$nssmExe = Join-Path $svcNssmDir "nssm.exe"
 	
-	# Write the PowerShell watcher script (with param and logging)
+	if (-not (Test-Path $scriptFolder)) { New-Item -Path $scriptFolder -ItemType Directory -Force | Out-Null }
+	if (-not (Test-Path $serviceRoot)) { New-Item -Path $serviceRoot -ItemType Directory -Force | Out-Null }
+	if (-not (Test-Path $svcNssmDir)) { New-Item -Path $svcNssmDir -ItemType Directory -Force | Out-Null }
+	
+	# Write the PowerShell watcher script (same logic you already had)
 	$psScriptContent = @"
 param([int]`$IntervalSeconds = 5)
 `$Path = '$TargetPath'
@@ -15619,11 +15711,12 @@ while (`$true) {
 "@
 	Set-Content -Path $psScriptPath -Value $psScriptContent -Encoding UTF8
 	
-	# ---- Check if task exists ----
-	$hasTask = [bool](schtasks /Query /TN "$taskName" 2>$null)
+	# ---- Check if service exists ----
+	$hasService = [bool](Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
 	
 	# --- Build the GUI ---
 	Add-Type -AssemblyName System.Windows.Forms
+	
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Duplicate File Monitor"
 	$form.Size = New-Object System.Drawing.Size(440, 230)
@@ -15645,11 +15738,11 @@ while (`$true) {
 	$btnRunNow.Size = New-Object System.Drawing.Size(110, 35)
 	$form.Controls.Add($btnRunNow)
 	
-	$btnSchedule = New-Object System.Windows.Forms.Button
-	$btnSchedule.Text = "Schedule (background)"
-	$btnSchedule.Location = New-Object System.Drawing.Point(125, 70)
-	$btnSchedule.Size = New-Object System.Drawing.Size(140, 35)
-	$form.Controls.Add($btnSchedule)
+	$btnService = New-Object System.Windows.Forms.Button
+	$btnService.Text = "Install Service"
+	$btnService.Location = New-Object System.Drawing.Point(125, 70)
+	$btnService.Size = New-Object System.Drawing.Size(140, 35)
+	$form.Controls.Add($btnService)
 	
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
@@ -15671,17 +15764,16 @@ while (`$true) {
 	$numSec.Value = 5
 	$form.Controls.Add($numSec)
 	
-	# --- Delete Scheduled Task button, only enabled if task exists ---
-	$btnDeleteTask = New-Object System.Windows.Forms.Button
-	$btnDeleteTask.Text = "Delete Scheduled Task"
-	$btnDeleteTask.Location = New-Object System.Drawing.Point(270, 70)
-	$btnDeleteTask.Size = New-Object System.Drawing.Size(140, 35)
-	$btnDeleteTask.Enabled = $hasTask
-	$form.Controls.Add($btnDeleteTask)
+	# --- Uninstall Service button (instead of Delete Scheduled Task) ---
+	$btnDeleteService = New-Object System.Windows.Forms.Button
+	$btnDeleteService.Text = "Uninstall Service"
+	$btnDeleteService.Location = New-Object System.Drawing.Point(270, 70)
+	$btnDeleteService.Size = New-Object System.Drawing.Size(140, 35)
+	$btnDeleteService.Enabled = $hasService
+	$form.Controls.Add($btnDeleteService)
 	
 	$selectedAction = [ref] ""
 	$intervalSeconds = [ref] 5
-	$deleteScheduledTask = [ref]$false
 	$monitorJob = $null
 	
 	# Handle form closing: stop job and child processes if running
@@ -15699,7 +15791,7 @@ while (`$true) {
 					Write_Log "Failed to stop monitor job on close: $_" "red"
 				}
 			}
-			# Stop any child powershell processes
+			# Stop any child powershell processes running this watcher script (interactive run-now only)
 			Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
 				$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
 			} | ForEach-Object {
@@ -15715,6 +15807,7 @@ while (`$true) {
 			}
 		})
 	
+	# --- Run Now button: same as before (job based) ---
 	$btnRunNow.Add_Click({
 			if ($btnRunNow.Text -eq "Run Now (as Job)")
 			{
@@ -15728,8 +15821,8 @@ while (`$true) {
 				Write_Log "Started duplicate file monitor as job (ID: $($monitorJob.Id))." "green"
 				
 				$btnRunNow.Text = "Stop Monitor"
-				$btnSchedule.Enabled = $false
-				$btnDeleteTask.Enabled = $false
+				$btnService.Enabled = $false
+				$btnDeleteService.Enabled = $false
 				$btnCancel.Text = "Close (Monitor Running)"
 			}
 			else
@@ -15747,7 +15840,7 @@ while (`$true) {
 						Write_Log "Failed to stop monitor job: $_" "red"
 					}
 				}
-				# Stop any child powershell processes
+				# Stop any child powershell processes started by this GUI Run Now
 				Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
 					$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
 				} | ForEach-Object {
@@ -15762,15 +15855,22 @@ while (`$true) {
 					}
 				}
 				$btnRunNow.Text = "Run Now (as Job)"
-				$btnSchedule.Enabled = $true
-				$btnDeleteTask.Enabled = $hasTask
+				$btnService.Enabled = $true
+				$btnDeleteService.Enabled = $hasService
 				$btnCancel.Text = "Cancel"
 			}
 		})
 	
-	$btnSchedule.Add_Click({
+	# --- Install Service button ---
+	$btnService.Add_Click({
 			$intervalSeconds.Value = $numSec.Value
-			$selectedAction.Value = "schedule"
+			$selectedAction.Value = "service"
+			$form.Close()
+		})
+	
+	# --- Uninstall Service button ---
+	$btnDeleteService.Add_Click({
+			$selectedAction.Value = "uninstall"
 			$form.Close()
 		})
 	
@@ -15778,108 +15878,127 @@ while (`$true) {
 			$form.Close()
 		})
 	
-	$btnDeleteTask.Add_Click({
-			$deleteScheduledTask.Value = $true
-			$form.Close()
-		})
-	
 	$form.ShowDialog() | Out-Null
-	
-	# --- Post-dialog actions ---
-	
-	# Stop existing processes/jobs if deleting or scheduling
-	if ($deleteScheduledTask.Value -or $selectedAction.Value -eq "schedule")
-	{
-		Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
-			$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
-		} | ForEach-Object {
-			try
-			{
-				Stop-Process -Id $_.ProcessId -Force
-				Write_Log "Stopped powershell.exe PID $($_.ProcessId) running $psScriptPath" "yellow"
-			}
-			catch
-			{
-				Write_Log "Failed to stop powershell.exe PID $($_.ProcessId)" "red"
-			}
-		}
-		Get-Job | Where-Object {
-			$_.Command -like "*$psScriptPath*"
-		} | ForEach-Object {
-			try { Stop-Job $_ -Force }
-			catch { }
-			try { Remove-Job $_ -Force }
-			catch { }
-		}
-	}
-	
-	if ($deleteScheduledTask.Value)
-	{
-		$deleteOut = schtasks /Delete /TN "$taskName" /F 2>&1
-		if ($LASTEXITCODE -ne 0 -and -not $deleteOut -match "cannot find the file specified")
-		{
-			Write_Log "Failed to delete scheduled task: $deleteOut" "red"
-		}
-		else
-		{
-			Write_Log "Scheduled task deleted." "green"
-		}
-		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
-		return
-	}
 	
 	if (-not $selectedAction.Value)
 	{
-		Write_Log "User cancelled." "yellow"
+		Write_Log "User cancelled Duplicate File Monitor dialog." "yellow"
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 		return
 	}
 	
-	if ($selectedAction.Value -eq "schedule")
+	# ---------------- SERVICE INSTALL / REINSTALL ----------------
+	if ($selectedAction.Value -eq "service")
 	{
 		if (-not (Test-Path $psScriptPath))
 		{
 			Write_Log "Script file missing: $psScriptPath" "red"
+			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
 		
-		$escapedPath = $psScriptPath -replace '"', '""'
-		$action = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$escapedPath`" -IntervalSeconds $($intervalSeconds.Value)"
-		
-		# Delete if exists
-		if (schtasks /Query /TN "$taskName" 2>$null)
+		# Ensure NSSM
+		if (-not (Test-Path $nssmExe))
 		{
-			schtasks /Delete /TN "$taskName" /F | Out-Null
+			Write_Log "NSSM not found. Downloading..." "yellow"
+			try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
+			catch { }
+			
+			$tempZip = Join-Path $env:TEMP "nssm_dupmon.zip"
+			$url = "https://nssm.cc/release/nssm-2.24.zip"
+			
+			try
+			{
+				Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing
+				Expand-Archive -Path $tempZip -DestinationPath $svcNssmDir -Force
+				
+				$found = Get-ChildItem $svcNssmDir -Recurse -Filter "nssm.exe" |
+				Where-Object { $_.FullName -match "win64|amd64|x64" } |
+				Select-Object -First 1
+				if (-not $found)
+				{
+					$found = Get-ChildItem $svcNssmDir -Recurse -Filter "nssm.exe" | Select-Object -First 1
+				}
+				Copy-Item $found.FullName $nssmExe -Force
+			}
+			catch
+			{
+				Write_Log "ERROR: Could not download NSSM. Service install aborted." "red"
+				Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+				return
+			}
 		}
 		
-		$createArgs = @(
-			'/Create',
-			'/TN', $taskName,
-			'/TR', $action,
-			'/SC', 'ONLOGON',
-			'/RL', 'HIGHEST',
-			'/RU', 'SYSTEM',
-			'/F'
-		)
-		$createOut = schtasks @createArgs 2>&1
-		if ($LASTEXITCODE -ne 0)
+		$existingSvc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+		if ($existingSvc)
 		{
-			Write_Log "Failed to schedule task: $createOut" "red"
-			return
+			$msg = "Service '$serviceName' already exists.`r`n`r`nYES = Uninstall`r`nNO = Reinstall/Repair`r`nCANCEL = Abort"
+			$res = [System.Windows.Forms.MessageBox]::Show(
+				$msg,
+				"Service Already Installed",
+				[System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+				[System.Windows.Forms.MessageBoxIcon]::Question
+			)
+			
+			if ($res -eq [System.Windows.Forms.DialogResult]::Cancel)
+			{
+				Write_Log "User aborted service action for Duplicate File Monitor." "yellow"
+				Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+				return
+			}
+			
+			if ($res -eq [System.Windows.Forms.DialogResult]::Yes)
+			{
+				# Uninstall only
+				& $nssmExe stop   $serviceName *> $null
+				& $nssmExe remove $serviceName confirm *> $null
+				
+				Write_Log "Service '$serviceName' uninstalled successfully." "green"
+				Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+				return
+			}
+			
+			# NO => Reinstall: stop & remove first, then continue install
+			& $nssmExe stop   $serviceName *> $null
+			& $nssmExe remove $serviceName confirm *> $null
 		}
-		Write_Log "Task scheduled successfully." "green"
 		
-		# Start immediately
-		try
-		{
-			Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$psScriptPath`" -IntervalSeconds $($intervalSeconds.Value)"
-			Write_Log "Started monitor immediately." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to start immediately: $_" "yellow"
-		}
+		# Install service
+		$psExe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+		$psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$psScriptPath`" -IntervalSeconds $($intervalSeconds.Value)"
+		
+		& $nssmExe install $serviceName $psExe $psArgs
+		& $nssmExe set $serviceName AppDirectory $scriptFolder
+		& $nssmExe set $serviceName DisplayName "Remove Duplicate Files From toBizerba"
+		& $nssmExe set $serviceName Description "Monitors $TargetPath for duplicate files and removes them (interval $($intervalSeconds.Value) sec)."
+		& $nssmExe set $serviceName Start SERVICE_AUTO_START
+		& $nssmExe set $serviceName AppRestartDelay 5000
+		
+		& $nssmExe start $serviceName
+		
+		Write_Log "Service '$serviceName' installed and started. Interval: $($intervalSeconds.Value) seconds." "green"
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+		return
+	}
+	
+	# ---------------- SERVICE UNINSTALL ONLY ----------------
+	if ($selectedAction.Value -eq "uninstall")
+	{
+		if (Test-Path $nssmExe)
+		{
+			& $nssmExe stop   $serviceName *> $null
+			& $nssmExe remove $serviceName confirm *> $null
+		}
+		else
+		{
+			# fallback with sc if nssm not present
+			sc stop   $serviceName *> $null
+			sc delete $serviceName *> $null
+		}
+		
+		Write_Log "Service '$serviceName' uninstalled (if it existed)." "green"
+		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+		return
 	}
 }
 
@@ -20833,6 +20952,1088 @@ elseif (Test-SqlConn ('np:' + $machine)) {
 	catch { }
 }
 
+# ===================================================================================================
+#                        FUNCTION: Manage_Bizerba_Scales_Alex_Profile
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   All-in-one interactive function to manage Bizerba scales by modifying ONLY the dynamic config,
+#   while keeping BMS.xml untouched.
+#
+# Key behavior (FIXED):
+#   - BMS gets ONE EventProcess per event (SEND/DEL+SEND/STATUS/SALES).
+#   - That single EventProcess has ONE InputPath (our shared deployment folder) and a Terminals list
+#     containing ONLY the selected scales.
+#   - This avoids the "only first scale gets items, others show 0" behavior.
+#
+# Export capture:
+#   - ScaleManagementApp / UpdateSpecials export to GLOBAL toBizerba:
+#       C:\Bizerba\RetailConnect\BMS\toBizerba\
+#   - We capture ATST/PLST into memory ASAP and delete the export files immediately from GLOBAL so the
+#     normal service doesn't act on them.
+#
+# Targeted deploy:
+#   - We deploy SCL files once into:
+#       C:\Bizerba\RetailConnect\BMS\Scales_Deployment\toBizerba\
+#   - We create triggers (NO EXTENSION) in ORIGINAL toBizerba (tight control):
+#       BatchSendFull / BatchScl / DBatch / DBatchScl / Status / Sales (etc)
+#   - We run:
+#       BMS.exe -config .\BMS.xml -dynamic .\dynamic_config_Alex_C.T.xml
+#
+# Dependencies:
+#   - Write_Log
+#   - Show_Node_Selection_Form
+#   - $script:FunctionResults['ScaleCodeToIPInfo'] (from Retrieve_Nodes)
+#
+# Usage:
+#   Manage_Bizerba_Scales_Alex_Profile -StoreNumber 003
+# ===================================================================================================
+
+function Manage_Bizerba_Scales_Alex_Profile
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[Parameter(Mandatory = $false)]
+		[string]$BmsRootPath = "C:\Bizerba\RetailConnect\BMS",
+		[Parameter(Mandatory = $false)]
+		[string]$BmsConfigName = "BMS.xml",
+		[Parameter(Mandatory = $false)]
+		[string]$AlexDynamicConfigName = "dynamic_config_Alex_C.T.xml",
+		[Parameter(Mandatory = $false)]
+		[string]$BmsExeName = "BMS.exe",
+		[Parameter(Mandatory = $false)]
+		[string]$ScaleManagementAppPath = "C:\ScaleCommApp\ScaleManagementApp.exe",
+		[Parameter(Mandatory = $false)]
+		[string]$ScaleManagementAppUpdateSpecialsPath = "C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe"
+	)
+	
+	# ------------------------------------------------------------------------------------------------
+	# 0) Banner
+	# ------------------------------------------------------------------------------------------------
+	Write_Log "`r`n==================== Manage Bizerba Scales (Dynamic Only) ====================`r`n" "blue"
+	Write_Log "Store Number : $StoreNumber" "blue"
+	Write_Log "BMS Root Path: $BmsRootPath" "blue"
+	
+	# Normalize base BMS root (original working directory)
+	$BmsRootNorm = $BmsRootPath.TrimEnd('\') + "\"
+	
+	# Global (normal service) locations - KEEP and reuse
+	$BmsExePath = Join-Path $BmsRootNorm $BmsExeName
+	$BmsConfigPath = Join-Path $BmsRootNorm $BmsConfigName
+	$GlobalToBizerba = Join-Path $BmsRootNorm "toBizerba"
+	$GlobalBackup = Join-Path $BmsRootNorm "Backup"
+	$GlobalLogPath = Join-Path $BmsRootNorm "log"
+	$GlobalFromBiz = Join-Path $BmsRootNorm "fromBizerba"
+	$AlexDynamicPath = Join-Path $BmsRootNorm $AlexDynamicConfigName
+	$GlobalToBizerbaDir = $GlobalToBizerba.TrimEnd('\') + "\"
+	
+	# Shared deployment folder (InputPath for BMS)
+	$ScaleDeployRoot = Join-Path $BmsRootNorm "Scales_Deployment"
+	$DeployInputPath = Join-Path $ScaleDeployRoot "toBizerba"
+	
+	# ------------------------------------------------------------------------------------------------
+	# 1) Validate core paths/files
+	# ------------------------------------------------------------------------------------------------
+	if (-not (Test-Path -LiteralPath $BmsExePath))
+	{
+		Write_Log "ERROR: BMS.exe not found at: $BmsExePath" "red"
+		return
+	}
+	if (-not (Test-Path -LiteralPath $BmsConfigPath))
+	{
+		Write_Log "ERROR: BMS config not found at: $BmsConfigPath" "red"
+		return
+	}
+	if (-not (Test-Path -LiteralPath $GlobalToBizerba))
+	{
+		Write_Log "ERROR: Global toBizerba folder not found at: $GlobalToBizerba" "red"
+		return
+	}
+	
+	foreach ($p in @($ScaleDeployRoot, $DeployInputPath))
+	{
+		if (-not (Test-Path -LiteralPath $p))
+		{
+			try
+			{
+				New-Item -ItemType Directory -Path $p -Force | Out-Null
+				Write_Log "Created deployment folder: $p" "green"
+			}
+			catch
+			{
+				Write_Log "ERROR: Failed to create deployment folder '$p': $_" "red"
+				return
+			}
+		}
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# 2) Ask user what to do (GUI)
+	# ------------------------------------------------------------------------------------------------
+	try
+	{
+		Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+		Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+	}
+	catch
+	{
+		Write_Log "ERROR: Failed to load WinForms assemblies: $_" "red"
+		return
+	}
+	
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "Bizerba Scales (Dynamic Only) - Operation Selection"
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	$form.Size = New-Object System.Drawing.Size(520, 340)
+	
+	# Group: Export Mode
+	$grpExport = New-Object System.Windows.Forms.GroupBox
+	$grpExport.Text = "Export Mode"
+	$grpExport.Location = New-Object System.Drawing.Point(10, 10)
+	$grpExport.Size = New-Object System.Drawing.Size(240, 140)
+	
+	$rdoFull = New-Object System.Windows.Forms.RadioButton
+	$rdoFull.Text = "Full Items (BatchSendFull)"
+	$rdoFull.Location = New-Object System.Drawing.Point(10, 25)
+	$rdoFull.AutoSize = $true
+	$rdoFull.Checked = $true
+	
+	$rdoSpecials = New-Object System.Windows.Forms.RadioButton
+	$rdoSpecials.Text = "Specials Only (BatchScl)"
+	$rdoSpecials.Location = New-Object System.Drawing.Point(10, 55)
+	$rdoSpecials.AutoSize = $true
+	
+	$rdoNone = New-Object System.Windows.Forms.RadioButton
+	$rdoNone.Text = "No Export (Triggers only)"
+	$rdoNone.Location = New-Object System.Drawing.Point(10, 85)
+	$rdoNone.AutoSize = $true
+	
+	$grpExport.Controls.Add($rdoFull)
+	$grpExport.Controls.Add($rdoSpecials)
+	$grpExport.Controls.Add($rdoNone)
+	$form.Controls.Add($grpExport)
+	
+	# Group: Additional Actions
+	$grpActions = New-Object System.Windows.Forms.GroupBox
+	$grpActions.Text = "Additional Actions"
+	$grpActions.Location = New-Object System.Drawing.Point(265, 10)
+	$grpActions.Size = New-Object System.Drawing.Size(235, 140)
+	
+	$chkDelete = New-Object System.Windows.Forms.CheckBox
+	$chkDelete.Text = "Delete PLU/TEXT/NUT first"
+	$chkDelete.Location = New-Object System.Drawing.Point(10, 25)
+	$chkDelete.AutoSize = $true
+	
+	$chkStatus = New-Object System.Windows.Forms.CheckBox
+	$chkStatus.Text = "Check Status (Status*)"
+	$chkStatus.Location = New-Object System.Drawing.Point(10, 55)
+	$chkStatus.AutoSize = $true
+	
+	$chkSales = New-Object System.Windows.Forms.CheckBox
+	$chkSales.Text = "Get Sales Data (Sales*)"
+	$chkSales.Location = New-Object System.Drawing.Point(10, 85)
+	$chkSales.AutoSize = $true
+	
+	$grpActions.Controls.Add($chkDelete)
+	$grpActions.Controls.Add($chkStatus)
+	$grpActions.Controls.Add($chkSales)
+	$form.Controls.Add($grpActions)
+	
+	$lblInfo = New-Object System.Windows.Forms.Label
+	$lblInfo.AutoSize = $true
+	$lblInfo.Location = New-Object System.Drawing.Point(10, 160)
+	$lblInfo.Text = "Tip: Export (Full/Specials) is optional. You can run Status/Sales/Delete triggers too."
+	$form.Controls.Add($lblInfo)
+	
+	$btnOK = New-Object System.Windows.Forms.Button
+	$btnOK.Text = "OK"
+	$btnOK.Location = New-Object System.Drawing.Point(145, 235)
+	$btnOK.Size = New-Object System.Drawing.Size(100, 32)
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $btnOK
+	$form.Controls.Add($btnOK)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(270, 235)
+	$btnCancel.Size = New-Object System.Drawing.Size(100, 32)
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.CancelButton = $btnCancel
+	$form.Controls.Add($btnCancel)
+	
+	$dialogResult = $form.ShowDialog()
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		Write_Log "Cancelled by user at operation selection." "yellow"
+		return
+	}
+	
+	# Translate selection into flags
+	$sendFull = $false
+	$sendSpecials = $false
+	$doDeleteTrigger = $false
+	$doStatusTrigger = $false
+	$doSalesTrigger = $false
+	
+	if ($rdoFull.Checked) { $sendFull = $true }
+	elseif ($rdoSpecials.Checked) { $sendSpecials = $true }
+	
+	if ($chkDelete.Checked) { $doDeleteTrigger = $true }
+	if ($chkStatus.Checked) { $doStatusTrigger = $true }
+	if ($chkSales.Checked) { $doSalesTrigger = $true }
+	
+	if (-not $sendFull -and -not $sendSpecials -and -not $doDeleteTrigger -and -not $doStatusTrigger -and -not $doSalesTrigger)
+	{
+		Write_Log "No actions selected. Aborting." "yellow"
+		return
+	}
+	
+	$opParts = @()
+	if ($sendFull) { $opParts += "FullItems" }
+	if ($sendSpecials) { $opParts += "Specials" }
+	if ($doDeleteTrigger) { $opParts += "Delete" }
+	if ($doStatusTrigger) { $opParts += "Status" }
+	if ($doSalesTrigger) { $opParts += "Sales" }
+	$opSummary = $opParts -join " + "
+	Write_Log "Selected: $opSummary" "blue"
+	
+	# ------------------------------------------------------------------------------------------------
+	# 3) Select Bizerba scales via existing node selector
+	# ------------------------------------------------------------------------------------------------
+	Write_Log "Opening scale selection..." "blue"
+	
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale" -OnlyBizerbaScales -Title "Select Bizerba Scales (Dynamic Only)"
+	if (-not $selection -or -not $selection.Scales -or $selection.Scales.Count -eq 0)
+	{
+		Write_Log "No scales selected. Aborting." "yellow"
+		return
+	}
+	
+	$selectedScaleCodes = @($selection.Scales)
+	
+	# ------------------------------------------------------------------------------------------------
+	# 4) Resolve scale metadata (ScaleCodeToIPInfo)
+	# ------------------------------------------------------------------------------------------------
+	if (-not $script:FunctionResults -or -not $script:FunctionResults.ContainsKey('ScaleCodeToIPInfo'))
+	{
+		Write_Log "ERROR: ScaleCodeToIPInfo not found in FunctionResults. Run Retrieve_Nodes first." "red"
+		return
+	}
+	
+	$scaleCodeToIpInfo = $script:FunctionResults['ScaleCodeToIPInfo']
+	$selectedScaleMeta = @()
+	
+	foreach ($code in $selectedScaleCodes)
+	{
+		if (-not $scaleCodeToIpInfo.ContainsKey($code))
+		{
+			Write_Log "WARNING: No metadata found for scale code '$code'. Skipping." "yellow"
+			continue
+		}
+		
+		$info = $scaleCodeToIpInfo[$code]
+		
+		# Resolve IP
+		$ip = $null
+		if ($info.FullIP) { $ip = $info.FullIP }
+		elseif ($info.IPNetwork -and $info.IPDevice) { $ip = "$($info.IPNetwork)$($info.IPDevice)" }
+		
+		if (-not $ip)
+		{
+			Write_Log "WARNING: No IP resolved for scale code '$code'. Skipping." "yellow"
+			continue
+		}
+		
+		# Resolve Name
+		$scaleName = $info.ScaleName
+		if (-not $scaleName -or [string]::IsNullOrWhiteSpace($scaleName)) { $scaleName = "Scale $code" }
+		$scaleName = $scaleName.Trim()
+		
+		$selectedScaleMeta += [PSCustomObject]@{
+			ScaleCode = "$code"
+			ScaleName = $scaleName
+			IPAddress = $ip
+		}
+	}
+	
+	if ($selectedScaleMeta.Count -eq 0)
+	{
+		Write_Log "ERROR: None of the selected scales could be mapped. Aborting." "red"
+		return
+	}
+	
+	$targetLine = ($selectedScaleMeta | ForEach-Object { "{0} ({1})" -f $_.ScaleName, $_.IPAddress }) -join "; "
+	Write_Log "Targeting: $targetLine" "green"
+	
+	# ------------------------------------------------------------------------------------------------
+	# 5) Build export data (FULL from SQL, SPECIALS via capture)  ***SPECIALS STILL WORKS***
+	# ------------------------------------------------------------------------------------------------
+	$atstLines = $null
+	$plstLines = $null
+	$atstOrigName = $null
+	$plstOrigName = $null
+	
+	# ------------------------- FULL -------------------------
+	if ($sendFull)
+	{
+		Write_Log "Export: FULL (Build ATST/PLST from SQL for ALL eligible items) [matches real BatchSendFull]" "blue"
+		
+		if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
+		
+		$needConn =
+		(-not $script:FunctionResults.ContainsKey('ConnectionString')) -or
+		[string]::IsNullOrWhiteSpace($script:FunctionResults['ConnectionString']) -or
+		($script:FunctionResults['ConnectionString'] -eq 'N/A')
+		
+		if ($needConn)
+		{
+			Write_Log "Store/DB info not loaded yet. Running Get_Store_And_Database_Info..." "yellow"
+			Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
+		}
+		
+		$connString = $script:FunctionResults['ConnectionString']
+		if ([string]::IsNullOrWhiteSpace($connString) -or $connString -eq 'N/A')
+		{
+			Write_Log "ERROR: ConnectionString is empty. Cannot query SQL." "red"
+			Write_Log "DBSERVER=$($script:FunctionResults['DBSERVER'])  DBNAME=$($script:FunctionResults['DBNAME'])" "yellow"
+			return
+		}
+		
+		Write_Log "Using SQL: $($script:FunctionResults['DBSERVER']) / $($script:FunctionResults['DBNAME'])" "green"
+		
+		$sql = @"
+;WITH Eligible AS (
+    SELECT o.F01
+    FROM OBJ_TAB o
+    WHERE SUBSTRING(o.F01,1,3) = '$StoreNumber'
+      AND SUBSTRING(o.F01,9,5) = '00000'
+      AND SUBSTRING(o.F01,4,5) NOT LIKE '%[^0-9]%'   -- digits-only PLU5
+),
+LatestPrice AS (
+    SELECT p1.F01, p1.F30
+    FROM PRICE_TAB p1
+    INNER JOIN (
+        SELECT F01, MAX(F253) AS MaxF253
+        FROM PRICE_TAB
+        GROUP BY F01
+    ) px ON px.F01 = p1.F01 AND px.MaxF253 = p1.F253
+),
+PosPlu AS (
+    SELECT
+        p.F01,
+        p.F82,
+        CASE
+            WHEN p.F01 IS NOT NULL
+             AND LTRIM(RTRIM(p.F01)) <> ''
+             AND LTRIM(RTRIM(p.F01)) NOT LIKE '%[^0-9]%'   -- digits-only
+             AND LEN(LTRIM(RTRIM(p.F01))) <= 18            -- safe for BIGINT
+            THEN CAST(LTRIM(RTRIM(p.F01)) AS bigint)
+            ELSE NULL
+        END AS F01_NUM
+    FROM POS_TAB p
+)
+SELECT
+    e.F01,
+    SUBSTRING(e.F01,4,5) AS PLU5,
+    CAST(SUBSTRING(e.F01,4,5) AS int) AS PLU_INT,
+
+    -- POS join can be either full key or numeric PLU
+    COALESCE(posFull.F82, posPluJoin.F82) AS POS_F82_ProductType,
+
+    pr.F30    AS RetailPriceMoney,
+    obj.F29   AS OBJ_F29,
+    scl.F1952 AS SCL_F1952,
+    scl.F2581 AS SCL_F2581,
+    scl.F2582 AS SCL_F2582,
+    scl.F263  AS SCL_F263_Field20,
+    scl.F258  AS SCL_F258_Field26,
+    scl.F272  AS SCL_F272_Field42,
+    txt.F297  AS IngredientsText
+FROM Eligible e
+
+LEFT JOIN POS_TAB posFull
+    ON posFull.F01 = e.F01
+
+LEFT JOIN PosPlu posPluJoin
+    ON posPluJoin.F01_NUM = CAST(SUBSTRING(e.F01,4,5) AS bigint)
+
+LEFT JOIN OBJ_TAB     obj ON obj.F01 = e.F01
+LEFT JOIN SCL_TAB     scl ON scl.F01 = e.F01
+LEFT JOIN SCL_TXT_TAB txt ON txt.F267 = CAST(SUBSTRING(e.F01,4,5) AS int)
+LEFT JOIN LatestPrice pr  ON pr.F01  = e.F01
+ORDER BY e.F01;
+"@
+		
+		$dt = New-Object System.Data.DataTable
+		try
+		{
+			$cn = New-Object System.Data.SqlClient.SqlConnection $connString
+			$cn.Open()
+			$cmd = $cn.CreateCommand()
+			$cmd.CommandText = $sql
+			$cmd.CommandTimeout = 240
+			$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
+			[void]$da.Fill($dt)
+			$cn.Close()
+		}
+		catch
+		{
+			try { if ($cn -and $cn.State -eq 'Open') { $cn.Close() } }
+			catch { }
+			Write_Log "ERROR: SQL query failed (BatchSendFull build): $($_.Exception.Message)" "red"
+			return
+		}
+		
+		if ($dt.Rows.Count -eq 0)
+		{
+			Write_Log "ERROR: SQL returned 0 eligible items for Store $StoreNumber." "red"
+			return
+		}
+		
+		$plstOut = New-Object System.Collections.Generic.List[string]
+		$atstOut = New-Object System.Collections.Generic.List[string]
+		
+		foreach ($r in $dt.Rows)
+		{
+			$plu5 = [string]$r["PLU5"]
+			if ([string]::IsNullOrWhiteSpace($plu5)) { continue }
+			
+			$pluInt = 0
+			try { $pluInt = [int]$r["PLU_INT"] }
+			catch { continue }
+			
+			# Field 2 (Product type)
+			$field2 = ""
+			if ($r["POS_F82_ProductType"] -ne [DBNull]::Value -and $r["POS_F82_ProductType"] -ne $null)
+			{
+				try { $field2 = [string]([int]$r["POS_F82_ProductType"]) }
+				catch { $field2 = "" }
+			}
+			
+			# Field 10 (price in cents)
+			$field10 = ""
+			if ($r["RetailPriceMoney"] -ne [DBNull]::Value -and $r["RetailPriceMoney"] -ne $null)
+			{
+				try
+				{
+					$priceDec = [decimal]$r["RetailPriceMoney"]
+					$field10 = [string]([int][Math]::Round(($priceDec * 100), 0))
+				}
+				catch { $field10 = "" }
+			}
+			
+			# Field 20 (blank if NULL)
+			$field20 = ""
+			if ($r["SCL_F263_Field20"] -ne [DBNull]::Value -and $r["SCL_F263_Field20"] -ne $null)
+			{
+				try { $field20 = [string]([int]$r["SCL_F263_Field20"]) }
+				catch { $field20 = "" }
+			}
+			
+			# Field 26 (blank if NULL)
+			$field26 = ""
+			if ($r["SCL_F258_Field26"] -ne [DBNull]::Value -and $r["SCL_F258_Field26"] -ne $null)
+			{
+				try { $field26 = [string]([int]$r["SCL_F258_Field26"]) }
+				catch { $field26 = "" }
+			}
+			
+			# Field 42 (default 0)
+			$field42 = "0"
+			if ($r["SCL_F272_Field42"] -ne [DBNull]::Value -and $r["SCL_F272_Field42"] -ne $null)
+			{
+				try { $field42 = [string]([int][Math]::Round(([double]$r["SCL_F272_Field42"]), 0)) }
+				catch { $field42 = "0" }
+			}
+			
+			# Descriptions joined with @0A
+			$descParts = New-Object System.Collections.Generic.List[string]
+			$main = ""; if ($r["OBJ_F29"] -ne [DBNull]::Value -and $r["OBJ_F29"]) { $main = ([string]$r["OBJ_F29"]).Trim() }
+			$d2 = ""; if ($r["SCL_F1952"] -ne [DBNull]::Value -and $r["SCL_F1952"]) { $d2 = ([string]$r["SCL_F1952"]).Trim() }
+			$d3 = ""; if ($r["SCL_F2581"] -ne [DBNull]::Value -and $r["SCL_F2581"]) { $d3 = ([string]$r["SCL_F2581"]).Trim() }
+			$d4 = ""; if ($r["SCL_F2582"] -ne [DBNull]::Value -and $r["SCL_F2582"]) { $d4 = ([string]$r["SCL_F2582"]).Trim() }
+			if ($main) { [void]$descParts.Add($main) }
+			if ($d2) { [void]$descParts.Add($d2) }
+			if ($d3) { [void]$descParts.Add($d3) }
+			if ($d4) { [void]$descParts.Add($d4) }
+			$descBlock = ($descParts -join "@0A")
+			
+			# Ingredients (no Trim); ATST only if non-whitespace
+			$ing = ""
+			if ($r["IngredientsText"] -ne [DBNull]::Value -and $r["IngredientsText"] -ne $null) { $ing = [string]$r["IngredientsText"] }
+			$hasIngredients = (-not [string]::IsNullOrWhiteSpace($ing))
+			
+			# Build 61-field PLST with defaults = "0"
+			$plst = New-Object string[] 61
+			for ($i = 0; $i -lt 61; $i++) { $plst[$i] = "0" }
+			
+			# Real BatchSendFull "blank fields"
+			$plst[14] = "" # field 15
+			$plst[30] = "" # field 31
+			$plst[60] = "" # field 61 blank unless ingredients exist
+			
+			# Populate fields
+			$plst[0] = "0"
+			$plst[1] = $field2
+			$plst[2] = $plu5
+			$plst[7] = "2"
+			$plst[8] = "4"
+			$plst[9] = $field10
+			
+			$plst[19] = $field20 # blank if NULL
+			$plst[25] = $field26 # blank if NULL
+			
+			$plst[41] = $field42
+			$plst[42] = $descBlock
+			$plst[43] = [string]$pluInt
+			
+			if ($hasIngredients) { $plst[60] = $ing }
+			
+			[void]$plstOut.Add(($plst -join "|"))
+			
+			if ($hasIngredients)
+			{
+				$atstBody = "^4;^Al;^b+^u+Ingredients:^u-^b- @0A^3;^Al;" + $ing
+				[void]$atstOut.Add(("0|{0}|{1}" -f $pluInt, $atstBody))
+			}
+		}
+		
+		$plstLines = @($plstOut)
+		$atstLines = @($atstOut)
+		
+		if ($plstLines.Count -eq 0)
+		{
+			Write_Log "ERROR: Built 0 PLST lines. Nothing to deploy." "red"
+			return
+		}
+		
+		$stamp = Get-Date -Format "MMdd.HHmmssfff"
+		$plstOrigName = "PLST_SCL$StoreNumber.$stamp`_1.BatchSendFull"
+		$atstOrigName = "ATST_SCL$StoreNumber.$stamp`_1.BatchSendFull"
+		
+		Write_Log "Built FULL deploy files from SQL (PLST: $($plstLines.Count) line(s), ATST (ingredients only): $($atstLines.Count) line(s))." "green"
+	}
+	
+	# ------------------------- SPECIALS (UNCHANGED/WORKING) -------------------------
+	if ($sendSpecials)
+	{
+		$scaleExeToRun = $ScaleManagementAppUpdateSpecialsPath
+		Write_Log "Export: SPECIALS (ScaleManagementAppUpdateSpecials) [capture + delete from GLOBAL]" "blue"
+		
+		if (-not (Test-Path -LiteralPath $scaleExeToRun))
+		{
+			Write_Log "ERROR: Export EXE not found: $scaleExeToRun" "red"
+			return
+		}
+		
+		$atstPattern = "ATST_SCL*.BatchScl"
+		$plstPattern = "PLST_SCL*.BatchScl"
+		
+		Write_Log "Watching GLOBAL toBizerba for export files..." "blue"
+		
+		$scaleExeWorkingDir = Split-Path -Parent $scaleExeToRun
+		try
+		{
+			$scaleProc = Start-Process -FilePath $scaleExeToRun -WorkingDirectory $scaleExeWorkingDir -PassThru -ErrorAction Stop
+			Write_Log "ScaleManagementAppUpdateSpecials PID: $($scaleProc.Id)" "green"
+		}
+		catch
+		{
+			Write_Log "ERROR: Failed to start export EXE: $_" "red"
+			return
+		}
+		
+		$atstCaptured = $false
+		$plstCaptured = $false
+		$maxWaitSeconds = 20
+		$pollIntervalMs = 50
+		$elapsedMs = 0
+		
+		while ($elapsedMs -lt ($maxWaitSeconds * 1000))
+		{
+			try { $scaleProc.Refresh() }
+			catch { }
+			
+			if (-not $atstCaptured)
+			{
+				$atstCandidate = Get-ChildItem -LiteralPath $GlobalToBizerba -Filter $atstPattern -ErrorAction SilentlyContinue |
+				Sort-Object LastWriteTime -Descending | Select-Object -First 1
+				
+				if ($atstCandidate)
+				{
+					$atstOrigName = $atstCandidate.Name
+					try
+					{
+						$atstLines = Get-Content -LiteralPath $atstCandidate.FullName -Encoding Default -ErrorAction Stop
+						$atstCaptured = $true
+						Remove-Item -LiteralPath $atstCandidate.FullName -Force -ErrorAction SilentlyContinue
+					}
+					catch { Write_Log "ERROR: Failed to capture ATST export: $_" "red" }
+				}
+			}
+			
+			if (-not $plstCaptured)
+			{
+				$plstCandidate = Get-ChildItem -LiteralPath $GlobalToBizerba -Filter $plstPattern -ErrorAction SilentlyContinue |
+				Sort-Object LastWriteTime -Descending | Select-Object -First 1
+				
+				if ($plstCandidate)
+				{
+					$plstOrigName = $plstCandidate.Name
+					try
+					{
+						$plstLines = Get-Content -LiteralPath $plstCandidate.FullName -Encoding Default -ErrorAction Stop
+						$plstCaptured = $true
+						Remove-Item -LiteralPath $plstCandidate.FullName -Force -ErrorAction SilentlyContinue
+					}
+					catch { Write_Log "ERROR: Failed to capture PLST export: $_" "red" }
+				}
+			}
+			
+			$scaleExited = $false
+			try { $scaleExited = $scaleProc.HasExited }
+			catch { $scaleExited = $true }
+			
+			if ($atstCaptured -and $plstCaptured) { break }
+			if ($scaleExited -and ($atstCaptured -or $plstCaptured)) { break }
+			
+			Start-Sleep -Milliseconds $pollIntervalMs
+			$elapsedMs += $pollIntervalMs
+		}
+		
+		$atstCount = if ($atstLines) { $atstLines.Count }
+		else { 0 }
+		$plstCount = if ($plstLines) { $plstLines.Count }
+		else { 0 }
+		
+		if ($atstCount -eq 0 -and $plstCount -eq 0)
+		{
+			Write_Log "ERROR: No export data captured; cannot send specials." "red"
+			return
+		}
+		
+		Write_Log "Captured SPECIALS export data (ATST: $atstCount line(s), PLST: $plstCount line(s))." "green"
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# 6) Build dynamic_config_Alex_C.T.xml (NO nested helpers)
+	# ------------------------------------------------------------------------------------------------
+	Write_Log "Building dynamic config for selected scales..." "blue"
+	
+	$globalWorkDir = $BmsRootNorm
+	$globalBackup = $GlobalBackup.TrimEnd('\') + "\"
+	$globalLogDir = $GlobalLogPath.TrimEnd('\') + "\"
+	$globalFromDir = $GlobalFromBiz.TrimEnd('\') + "\"
+	$inputPathXml = $DeployInputPath.TrimEnd('\') + "\"
+	
+	try
+	{
+		$dynDoc = New-Object System.Xml.XmlDocument
+		$decl = $dynDoc.CreateXmlDeclaration("1.0", "utf-8", $null)
+		[void]$dynDoc.AppendChild($decl)
+		
+		$root = $dynDoc.CreateElement("Configuration")
+		[void]$dynDoc.AppendChild($root)
+		
+		$globalElem = $dynDoc.CreateElement("Global")
+		[void]$root.AppendChild($globalElem)
+		
+		$logLevelElem = $dynDoc.CreateElement("LogLevel"); $logLevelElem.InnerText = "0"; [void]$globalElem.AppendChild($logLevelElem)
+		[void]$globalElem.AppendChild($dynDoc.CreateComment(" 0 for error only; 2 for complete info "))
+		
+		$wdElem = $dynDoc.CreateElement("WorkingDirectory"); $wdElem.InnerText = $globalWorkDir; [void]$globalElem.AppendChild($wdElem)
+		$backupElem = $dynDoc.CreateElement("BackupPath"); $backupElem.InnerText = $globalBackup; [void]$globalElem.AppendChild($backupElem)
+		$backupTimeElem = $dynDoc.CreateElement("BackupTime"); $backupTimeElem.InnerText = "30"; [void]$globalElem.AppendChild($backupTimeElem)
+		$logPathElem = $dynDoc.CreateElement("LogPath"); $logPathElem.InnerText = $globalLogDir; [void]$globalElem.AppendChild($logPathElem)
+		
+		$termsRoot = $dynDoc.CreateElement("Terminals")
+		$attrExisting = $dynDoc.CreateAttribute("existingTerminals"); $attrExisting.Value = "replace"
+		[void]$termsRoot.Attributes.Append($attrExisting)
+		[void]$root.AppendChild($termsRoot)
+		
+		foreach ($m in $selectedScaleMeta)
+		{
+			$term = $dynDoc.CreateElement("Terminal"); [void]$termsRoot.AppendChild($term)
+			$nameElem = $dynDoc.CreateElement("Name"); $nameElem.InnerText = $m.ScaleName; [void]$term.AppendChild($nameElem)
+			$ipElem = $dynDoc.CreateElement("TCPIPAddress"); $ipElem.InnerText = $m.IPAddress; [void]$term.AppendChild($ipElem)
+			
+			$e = $dynDoc.CreateElement("Active"); $e.InnerText = "Yes"; [void]$term.AppendChild($e)
+			$e = $dynDoc.CreateElement("SystemLocalTime"); $e.InnerText = "Yes"; [void]$term.AppendChild($e)
+			$e = $dynDoc.CreateElement("AutoStart"); $e.InnerText = "Yes"; [void]$term.AppendChild($e)
+			$e = $dynDoc.CreateElement("AutoTransmit"); $e.InnerText = "Yes"; [void]$term.AppendChild($e)
+			$e = $dynDoc.CreateElement("BufferTime"); $e.InnerText = "5"; [void]$term.AppendChild($e)
+		}
+		
+		$eventsElem = $dynDoc.CreateElement("Events")
+		$attrTermMap = $dynDoc.CreateAttribute("terminalMappings"); $attrTermMap.Value = "replace"
+		[void]$eventsElem.Attributes.Append($attrTermMap)
+		[void]$root.AppendChild($eventsElem)
+		
+		# SEND_DATA
+		[void]$eventsElem.AppendChild($dynDoc.CreateComment(" Send Data only "))
+		$eventSend = $dynDoc.CreateElement("Event")
+		$a = $dynDoc.CreateAttribute("name"); $a.Value = "SEND_DATA"; [void]$eventSend.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("path"); $a.Value = $GlobalToBizerbaDir; [void]$eventSend.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("filename"); $a.Value = "Batch*"; [void]$eventSend.Attributes.Append($a)
+		[void]$eventsElem.AppendChild($eventSend)
+		
+		$eps = $dynDoc.CreateElement("EventProcesses"); [void]$eventSend.AppendChild($eps)
+		$epItem = $dynDoc.CreateElement("EventProcess")
+		$a = $dynDoc.CreateAttribute("name"); $a.Value = "EP_BMS_ITEM"; [void]$epItem.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("no"); $a.Value = "1"; [void]$epItem.Attributes.Append($a)
+		[void]$eps.AppendChild($epItem)
+		
+		$vars = $dynDoc.CreateElement("Variables"); [void]$epItem.AppendChild($vars)
+		$v = $dynDoc.CreateElement("Variable"); $a = $dynDoc.CreateAttribute("name"); $a.Value = "InputPath"; [void]$v.Attributes.Append($a); $v.InnerText = $inputPathXml; [void]$vars.AppendChild($v)
+		$v = $dynDoc.CreateElement("Variable"); $a = $dynDoc.CreateAttribute("name"); $a.Value = "NutriTemplateNumber"; [void]$v.Attributes.Append($a); $v.InnerText = "0"; [void]$vars.AppendChild($v)
+		$v = $dynDoc.CreateElement("Variable"); $a = $dynDoc.CreateAttribute("name"); $a.Value = "ResponseFile"; [void]$v.Attributes.Append($a); $v.InnerText = ($globalLogDir + "Response.log"); [void]$vars.AppendChild($v)
+		
+		$terms = $dynDoc.CreateElement("Terminals"); [void]$epItem.AppendChild($terms)
+		foreach ($mm in $selectedScaleMeta)
+		{
+			$n = $dynDoc.CreateElement("Name"); $n.InnerText = $mm.ScaleName; [void]$terms.AppendChild($n)
+		}
+		
+		# DELETE_AND_SEND_DATA
+		[void]$eventsElem.AppendChild($dynDoc.CreateComment(" Delete entire PLU/TEXT/NUTRITION table and then Send Data "))
+		$eventDel = $dynDoc.CreateElement("Event")
+		$a = $dynDoc.CreateAttribute("name"); $a.Value = "DELETE_AND_SEND_DATA"; [void]$eventDel.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("path"); $a.Value = $GlobalToBizerbaDir; [void]$eventDel.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("filename"); $a.Value = "DBatch*"; [void]$eventDel.Attributes.Append($a)
+		[void]$eventsElem.AppendChild($eventDel)
+		
+		$epsDel = $dynDoc.CreateElement("EventProcesses"); [void]$eventDel.AppendChild($epsDel)
+		
+		$epDel = $dynDoc.CreateElement("EventProcess")
+		$a = $dynDoc.CreateAttribute("name"); $a.Value = "EP_BMS_DELETEALL"; [void]$epDel.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("no"); $a.Value = "1"; [void]$epDel.Attributes.Append($a)
+		[void]$epsDel.AppendChild($epDel)
+		
+		$varsDel = $dynDoc.CreateElement("Variables"); [void]$epDel.AppendChild($varsDel)
+		$v = $dynDoc.CreateElement("Variable"); $a = $dynDoc.CreateAttribute("name"); $a.Value = "ResponseFile"; [void]$v.Attributes.Append($a); $v.InnerText = ($globalLogDir + "Response.log"); [void]$varsDel.AppendChild($v)
+		
+		$terms2 = $dynDoc.CreateElement("Terminals"); [void]$epDel.AppendChild($terms2)
+		foreach ($mm in $selectedScaleMeta) { $n = $dynDoc.CreateElement("Name"); $n.InnerText = $mm.ScaleName; [void]$terms2.AppendChild($n) }
+		
+		$epDelItem = $dynDoc.CreateElement("EventProcess")
+		$a = $dynDoc.CreateAttribute("name"); $a.Value = "EP_BMS_ITEM"; [void]$epDelItem.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("no"); $a.Value = "2"; [void]$epDelItem.Attributes.Append($a)
+		[void]$epsDel.AppendChild($epDelItem)
+		
+		$varsDelItem = $dynDoc.CreateElement("Variables"); [void]$epDelItem.AppendChild($varsDelItem)
+		$v = $dynDoc.CreateElement("Variable"); $a = $dynDoc.CreateAttribute("name"); $a.Value = "InputPath"; [void]$v.Attributes.Append($a); $v.InnerText = $inputPathXml; [void]$varsDelItem.AppendChild($v)
+		$v = $dynDoc.CreateElement("Variable"); $a = $dynDoc.CreateAttribute("name"); $a.Value = "NutriTemplateNumber"; [void]$v.Attributes.Append($a); $v.InnerText = "0"; [void]$varsDelItem.AppendChild($v)
+		$v = $dynDoc.CreateElement("Variable"); $a = $dynDoc.CreateAttribute("name"); $a.Value = "ResponseFile"; [void]$v.Attributes.Append($a); $v.InnerText = ($globalLogDir + "Response.log"); [void]$varsDelItem.AppendChild($v)
+		
+		$terms3 = $dynDoc.CreateElement("Terminals"); [void]$epDelItem.AppendChild($terms3)
+		foreach ($mm in $selectedScaleMeta) { $n = $dynDoc.CreateElement("Name"); $n.InnerText = $mm.ScaleName; [void]$terms3.AppendChild($n) }
+		
+		# CHECK_STATUS
+		[void]$eventsElem.AppendChild($dynDoc.CreateComment(" Check Online/Offline Status of Scale "))
+		$eventStatus = $dynDoc.CreateElement("Event")
+		$a = $dynDoc.CreateAttribute("name"); $a.Value = "CHECK_STATUS"; [void]$eventStatus.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("path"); $a.Value = $GlobalToBizerbaDir; [void]$eventStatus.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("filename"); $a.Value = "Status*"; [void]$eventStatus.Attributes.Append($a)
+		[void]$eventsElem.AppendChild($eventStatus)
+		
+		$epsStatus = $dynDoc.CreateElement("EventProcesses"); [void]$eventStatus.AppendChild($epsStatus)
+		$epStatus = $dynDoc.CreateElement("EventProcess")
+		$a = $dynDoc.CreateAttribute("name"); $a.Value = "EP_BMS_STATUS"; [void]$epStatus.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("no"); $a.Value = "1"; [void]$epStatus.Attributes.Append($a)
+		[void]$epsStatus.AppendChild($epStatus)
+		
+		$varsStatus = $dynDoc.CreateElement("Variables"); [void]$epStatus.AppendChild($varsStatus)
+		$v = $dynDoc.CreateElement("Variable"); $a = $dynDoc.CreateAttribute("name"); $a.Value = "ResponseFile"; [void]$v.Attributes.Append($a); $v.InnerText = ($globalLogDir + "Response.log"); [void]$varsStatus.AppendChild($v)
+		$terms4 = $dynDoc.CreateElement("Terminals"); [void]$epStatus.AppendChild($terms4)
+		foreach ($mm in $selectedScaleMeta) { $n = $dynDoc.CreateElement("Name"); $n.InnerText = $mm.ScaleName; [void]$terms4.AppendChild($n) }
+		
+		# GET_SALES_DATA
+		[void]$eventsElem.AppendChild($dynDoc.CreateComment(" Download Sales Data from Scale "))
+		$eventSales = $dynDoc.CreateElement("Event")
+		$a = $dynDoc.CreateAttribute("name"); $a.Value = "GET_SALES_DATA"; [void]$eventSales.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("path"); $a.Value = $GlobalToBizerbaDir; [void]$eventSales.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("filename"); $a.Value = "Sales*"; [void]$eventSales.Attributes.Append($a)
+		[void]$eventsElem.AppendChild($eventSales)
+		
+		$epsSales = $dynDoc.CreateElement("EventProcesses"); [void]$eventSales.AppendChild($epsSales)
+		$epSales = $dynDoc.CreateElement("EventProcess")
+		$a = $dynDoc.CreateAttribute("name"); $a.Value = "EP_BMS_SALES"; [void]$epSales.Attributes.Append($a)
+		$a = $dynDoc.CreateAttribute("no"); $a.Value = "1"; [void]$epSales.Attributes.Append($a)
+		[void]$epsSales.AppendChild($epSales)
+		
+		$varsSales = $dynDoc.CreateElement("Variables"); [void]$epSales.AppendChild($varsSales)
+		$v = $dynDoc.CreateElement("Variable"); $a = $dynDoc.CreateAttribute("name"); $a.Value = "OutputPath"; [void]$v.Attributes.Append($a); $v.InnerText = $globalFromDir; [void]$varsSales.AppendChild($v)
+		$v = $dynDoc.CreateElement("Variable"); $a = $dynDoc.CreateAttribute("name"); $a.Value = "ResponseFile"; [void]$v.Attributes.Append($a); $v.InnerText = ($globalLogDir + "Response.log"); [void]$varsSales.AppendChild($v)
+		$terms5 = $dynDoc.CreateElement("Terminals"); [void]$epSales.AppendChild($terms5)
+		foreach ($mm in $selectedScaleMeta) { $n = $dynDoc.CreateElement("Name"); $n.InnerText = $mm.ScaleName; [void]$terms5.AppendChild($n) }
+		
+		$dynDoc.Save($AlexDynamicPath)
+		Write_Log "Dynamic config saved: $AlexDynamicPath" "green"
+	}
+	catch
+	{
+		Write_Log "ERROR: Failed to build dynamic config: $_" "red"
+		return
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# 7) Write SCL files once into DeployInputPath + create triggers in ORIGINAL toBizerba
+	# ------------------------------------------------------------------------------------------------
+	$timestampSlug = Get-Date -Format "MMdd.HHmmssfff"
+	
+	try { Get-ChildItem -LiteralPath $DeployInputPath -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+	catch { }
+	
+	if ($sendFull -or $sendSpecials)
+	{
+		if ($atstLines -and $atstLines.Count -gt 0)
+		{
+			$atstOutName = if ($atstOrigName) { $atstOrigName }
+			else { "ATST_SCL.$timestampSlug.txt" }
+			$atstOut = Join-Path $DeployInputPath $atstOutName
+			try { $atstLines | Set-Content -LiteralPath $atstOut -Encoding Default -ErrorAction Stop }
+			catch { Write_Log "ERROR: Failed to write ATST: $_" "red"; return }
+		}
+		
+		if ($plstLines -and $plstLines.Count -gt 0)
+		{
+			$plstOutName = if ($plstOrigName) { $plstOrigName }
+			else { "PLST_SCL.$timestampSlug.txt" }
+			$plstOut = Join-Path $DeployInputPath $plstOutName
+			try { $plstLines | Set-Content -LiteralPath $plstOut -Encoding Default -ErrorAction Stop }
+			catch { Write_Log "ERROR: Failed to write PLST: $_" "red"; return }
+		}
+		
+		$batchTriggerName = if ($sendSpecials) { "BatchScl" }
+		else { "BatchSendFull" }
+		$batchTriggerPath = Join-Path $GlobalToBizerba $batchTriggerName
+		try { "Batch trigger created at $timestampSlug" | Set-Content -LiteralPath $batchTriggerPath -Encoding ASCII -ErrorAction Stop }
+		catch { Write_Log "ERROR: Failed to create Batch trigger '$batchTriggerPath': $_" "red"; return }
+		Write_Log "Prepared send trigger: $batchTriggerName" "green"
+	}
+	
+	if ($doDeleteTrigger)
+	{
+		$dbatchTriggerName = if ($sendSpecials) { "DBatchScl" }
+		else { "DBatch" }
+		$dbatchPath = Join-Path $GlobalToBizerba $dbatchTriggerName
+		try { "DBatch trigger created at $timestampSlug" | Set-Content -LiteralPath $dbatchPath -Encoding ASCII -ErrorAction Stop; Write_Log "Prepared delete trigger: $dbatchTriggerName" "green" }
+		catch { Write_Log "ERROR: Failed to create DBatch trigger '$dbatchPath': $_" "red"; return }
+	}
+	
+	if ($doStatusTrigger)
+	{
+		$statusPath = Join-Path $GlobalToBizerba "Status"
+		try { "Status trigger created at $timestampSlug" | Set-Content -LiteralPath $statusPath -Encoding ASCII -ErrorAction Stop; Write_Log "Prepared status trigger: Status" "green" }
+		catch { Write_Log "ERROR: Failed to create Status trigger '$statusPath': $_" "red"; return }
+	}
+	
+	if ($doSalesTrigger)
+	{
+		$salesPath = Join-Path $GlobalToBizerba "Sales"
+		try { "Sales trigger created at $timestampSlug" | Set-Content -LiteralPath $salesPath -Encoding ASCII -ErrorAction Stop; Write_Log "Prepared sales trigger: Sales" "green" }
+		catch { Write_Log "ERROR: Failed to create Sales trigger '$salesPath': $_" "red"; return }
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# 8) Run BMS.exe with ORIGINAL BMS.xml + dynamic_config_Alex_C.T.xml
+	# ------------------------------------------------------------------------------------------------
+	$responseLogPath = Join-Path $GlobalLogPath "Response.log"
+	$oldResponseLines = @()
+	if (Test-Path -LiteralPath $responseLogPath) { try { $oldResponseLines = Get-Content -LiteralPath $responseLogPath -ErrorAction Stop }
+		catch { } }
+	
+	$oldSalesFiles = @()
+	if ($doSalesTrigger -and (Test-Path -LiteralPath $GlobalFromBiz))
+	{
+		try { $oldSalesFiles = Get-ChildItem -LiteralPath $GlobalFromBiz -File -ErrorAction Stop }
+		catch { }
+	}
+	
+	$relConfig = ".\{0}" -f $BmsConfigName
+	$relDynamic = ".\{0}" -f $AlexDynamicConfigName
+	
+	Write_Log "Running BMS.exe with dynamic profile..." "blue"
+	
+	$exitCode = $null
+	try
+	{
+		Push-Location $BmsRootNorm
+		& $BmsExePath -config $relConfig -dynamic $relDynamic
+		$exitCode = $LASTEXITCODE
+	}
+	catch { Write_Log "ERROR: Failed to run BMS.exe: $_" "red" }
+	finally { Pop-Location }
+	
+	if ($exitCode -ne $null) { Write_Log "BMS.exe exit code: $exitCode" "green" }
+	else { Write_Log "WARNING: BMS.exe exit code unknown." "yellow" }
+	
+	# ------------------------------------------------------------------------------------------------
+	# 9) Parse Response.log reliably (NO delta slicing; match by IP first)
+	# ------------------------------------------------------------------------------------------------
+	$perScaleSummary = New-Object System.Collections.Generic.List[string]
+	
+	$responseLogPath = Join-Path $GlobalLogPath "Response.log"
+	if (-not (Test-Path -LiteralPath $responseLogPath))
+	{
+		foreach ($m in $selectedScaleMeta)
+		{
+			[void]$perScaleSummary.Add(("{0} ({1}): Response.log not found" -f $m.ScaleName, $m.IPAddress))
+		}
+	}
+	else
+	{
+		$allLines = @()
+		try { $allLines = Get-Content -LiteralPath $responseLogPath -ErrorAction Stop }
+		catch { $allLines = @() }
+		
+		# Latest record per IP (most reliable key)
+		$latestByIP = @{ } # key=ip, value=parsed record
+		
+		foreach ($l in $allLines)
+		{
+			if ([string]::IsNullOrWhiteSpace($l)) { continue }
+			
+			$parts = $l -split '\|', -1
+			if ($parts.Count -lt 9) { continue }
+			
+			$tsText = ($parts[0]).Trim()
+			$nameInLog = ($parts[1]).Trim()
+			$ip = ($parts[2]).Trim()
+			if ([string]::IsNullOrWhiteSpace($ip)) { continue }
+			
+			$rcText = ($parts[3]).Trim()
+			$trigger = ($parts[5]).Trim()
+			$itemsText = ($parts[6]).Trim()
+			$errText = ($parts[7]).Trim()
+			$type = ($parts[8]).Trim()
+			
+			$tsNum = 0L
+			try { $tsNum = [int64]($tsText -replace '_', '') }
+			catch { $tsNum = 0L }
+			
+			$rc = $null; try { $rc = [int]$rcText }
+			catch { $rc = $null }
+			$items = $null; try { $items = [int]$itemsText }
+			catch { $items = $null }
+			$errs = $null; try { $errs = [int]$errText }
+			catch { $errs = $null }
+			
+			$rec = [PSCustomObject]@{
+				TimestampText = $tsText
+				TimestampNum  = $tsNum
+				ScaleNameLog  = $nameInLog
+				IPAddress	  = $ip
+				RC		      = $rc
+				Trigger	      = $trigger
+				Items		  = $items
+				Errors	      = $errs
+				Type		  = $type
+				Raw		      = $l
+			}
+			
+			if (-not $latestByIP.ContainsKey($ip))
+			{
+				$latestByIP[$ip] = $rec
+			}
+			else
+			{
+				$cur = $latestByIP[$ip]
+				if ($rec.TimestampNum -gt $cur.TimestampNum)
+				{
+					$latestByIP[$ip] = $rec
+				}
+				elseif ($rec.TimestampNum -eq $cur.TimestampNum)
+				{
+					$curItems = if ($cur.Items -ne $null) { $cur.Items }
+					else { -1 }
+					$newItems = if ($rec.Items -ne $null) { $rec.Items }
+					else { -1 }
+					if ($newItems -gt $curItems) { $latestByIP[$ip] = $rec }
+				}
+			}
+		}
+		
+		foreach ($m in $selectedScaleMeta)
+		{
+			$ipKey = ($m.IPAddress).Trim()
+			if (-not $latestByIP.ContainsKey($ipKey))
+			{
+				# Helpful debug: show what we DO have in the log for quick troubleshooting
+				$anyIPs = ($latestByIP.Keys | Sort-Object) -join ", "
+				[void]$perScaleSummary.Add(("{0} ({1}): no response line detected (log IPs seen: {2})" -f $m.ScaleName, $m.IPAddress, $anyIPs))
+				continue
+			}
+			
+			$r = $latestByIP[$ipKey]
+			$rcOut = if ($r.RC -ne $null) { $r.RC }
+			else { "?" }
+			$itemsOut = if ($r.Items -ne $null) { $r.Items }
+			else { "?" }
+			$errsOut = if ($r.Errors -ne $null) { $r.Errors }
+			else { "?" }
+			$trgOut = if ($r.Trigger) { $r.Trigger }
+			else { "?" }
+			$typOut = if ($r.Type) { $r.Type }
+			else { "" }
+			
+			[void]$perScaleSummary.Add(
+				("{0} ({1}): rc={2}, trigger={3}, items={4}, errs={5}{6}, ts={7}, logName={8}" -f
+					$m.ScaleName, $m.IPAddress, $rcOut, $trgOut, $itemsOut, $errsOut,
+					$(if ($typOut) { ", type=$typOut" }
+						else { "" }),
+					$r.TimestampText, $r.ScaleNameLog
+				)
+			)
+		}
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# 10) Sales files summary
+	# ------------------------------------------------------------------------------------------------
+	$salesSummary = @()
+	if ($doSalesTrigger -and (Test-Path -LiteralPath $GlobalFromBiz))
+	{
+		try
+		{
+			$newSalesFilesAll = Get-ChildItem -LiteralPath $GlobalFromBiz -File -ErrorAction Stop
+			$oldSalesSet = $oldSalesFiles | Select-Object -ExpandProperty FullName
+			$newSalesOnly = $newSalesFilesAll | Where-Object { $oldSalesSet -notcontains $_.FullName }
+			if ($newSalesOnly -and $newSalesOnly.Count -gt 0)
+			{
+				foreach ($sf in $newSalesOnly) { $salesSummary += ("{0} ({1} bytes)" -f $sf.Name, $sf.Length) }
+			}
+		}
+		catch { }
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# 11) Completion summary
+	# ------------------------------------------------------------------------------------------------
+	Write_Log "`r`nManage_Bizerba_Scales_Alex_Profile completed." "green"
+	Write_Log "  Actions : $opSummary" "green"
+	Write_Log "  Scales  : $($selectedScaleMeta.ScaleName -join ', ')" "green"
+	
+	Write_Log "  Scale Responses (filtered):" "cyan"
+	foreach ($s in $perScaleSummary) { Write_Log "    $s" "magenta" }
+	
+	if ($doSalesTrigger)
+	{
+		if ($salesSummary.Count -gt 0)
+		{
+			Write_Log "  New Sales Files:" "cyan"
+			foreach ($sf in $salesSummary) { Write_Log "    $sf" "magenta" }
+		}
+		else { Write_Log "  New Sales Files: none detected" "yellow" }
+	}
+	
+	Write_Log "`r`n==================== Completed Manage Bizerba Scales (Dynamic Only) ====================`r`n" "blue"
+}
+
 # =================================================================================================== 
 #                                       SECTION: Initialize GUI
 # ---------------------------------------------------------------------------------------------------
@@ -22429,6 +23630,17 @@ public static class NativeWin {
 			Remove_Duplicate_Files_From_toBizerba
 		})
 	[void]$ContextMenuScale.Items.Add($ScheduleRemoveDupesItem)
+	
+	############################################################################
+	# 12) Deploy Scale Files (Per-Scale S00 / Alex Profile BMS)
+	############################################################################
+	$DeployScaleFilesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Deploy Scale Files (Per-Scale S00)")
+	$DeployScaleFilesItem.ToolTipText = "Interactive per-scale Bizerba management (Full, Specials, Delete, Status, Sales)."
+	$DeployScaleFilesItem.Add_Click({
+			$script:LastActivity = Get-Date
+			Manage_Bizerba_Scales_Alex_Profile -StoreNumber $StoreNumber
+		})
+	[void]$ContextMenuScale.Items.Add($DeployScaleFilesItem)
 	
 	############################################################################
 	# Show the context menu when the Server Tools button is clicked
