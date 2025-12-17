@@ -3017,7 +3017,7 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE
 function Get_Table_Aliases
 {
 	$MinSupportedSMSVersion = "3.3.0.0"
-	$MaxSupportedSMSVersion = "3.6.0.8"
+	$MaxSupportedSMSVersion = "3.6.1.8"
 	
 	$SMSVersion = $script:FunctionResults['SMSVersionFull']
 	if ($SMSVersion -match '([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)')
