@@ -17968,27 +17968,33 @@ USING (
     SELECT
         $ItemKey,
         F1000,
-        TRY_CAST(FLOOR(CAST(SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) AS FLOAT)) AS INT) AS F267,
+        CASE
+            WHEN LEN($ItemKey) > 8
+                 AND SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) NOT LIKE '%[^0-9]%'
+            THEN CAST(SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) AS INT)
+            ELSE NULL
+        END AS F267,
         $POS_Field
     FROM POS_TAB
     WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
 ) AS Source
 ON Target.$ItemKey = Source.$ItemKey
 
--- Update F272 only when it's NOT already one of the preserved values
-WHEN MATCHED AND (Target.$SCL_Field NOT IN (0,1,3,4,9,10) OR Target.$SCL_Field IS NULL) THEN
+WHEN MATCHED THEN
     UPDATE SET
-        $SCL_Field = CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END,
-        F1000      = Source.F1000,
-        F267       = Source.F267
-
--- Still refresh F1000/F267, but leave F272 as-is if it's already a preserved value
-WHEN MATCHED AND Target.$SCL_Field IN (0,1,3,4,9,10) THEN
-    UPDATE SET
+        -- Always refresh these
         F1000 = Source.F1000,
-        F267  = Source.F267
+        F267  = Source.F267,
 
--- New rows: insert with computed F272
+        -- Preserve Target.$SCL_Field when it's one of the protected values.
+        -- Otherwise compute and overwrite it.
+        $SCL_Field =
+            CASE
+                WHEN Target.$SCL_Field IN (0,1,3,4,9,10) THEN Target.$SCL_Field
+                ELSE
+                    CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END
+            END
+
 WHEN NOT MATCHED BY TARGET THEN
     INSERT ($ItemKey, F1000, $SCL_Field, F267)
     VALUES (
