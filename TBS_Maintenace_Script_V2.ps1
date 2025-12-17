@@ -17836,7 +17836,7 @@ function Update_ScaleConfig_And_DB
 	Add-Type -AssemblyName System.Windows.Forms
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select Weighted Item Marking Method"
-	$form.Size = New-Object System.Drawing.Size(420, 180)
+	$form.Size = New-Object System.Drawing.Size(420, 170)
 	$form.StartPosition = "CenterScreen"
 	$form.Topmost = $true
 	$label = New-Object System.Windows.Forms.Label
@@ -17968,33 +17968,17 @@ USING (
     SELECT
         $ItemKey,
         F1000,
-        CASE
-            WHEN LEN($ItemKey) > 8
-                 AND SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) NOT LIKE '%[^0-9]%'
-            THEN CAST(SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) AS INT)
-            ELSE NULL
-        END AS F267,
-        $POS_Field
+		TRY_CAST(FLOOR(CAST(SUBSTRING($ItemKey, 4, LEN($ItemKey) - 8) AS FLOAT)) AS INT) AS F267,
+        $POS_Field -- e.g., F82
     FROM POS_TAB
     WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
 ) AS Source
 ON Target.$ItemKey = Source.$ItemKey
-
 WHEN MATCHED THEN
     UPDATE SET
-        -- Always refresh these
+        $SCL_Field = CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END,
         F1000 = Source.F1000,
-        F267  = Source.F267,
-
-        -- Preserve Target.$SCL_Field when it's one of the protected values.
-        -- Otherwise compute and overwrite it.
-        $SCL_Field =
-            CASE
-                WHEN Target.$SCL_Field IN (0,1,3,4,9,10) THEN Target.$SCL_Field
-                ELSE
-                    CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END
-            END
-
+        F267 = Source.F267
 WHEN NOT MATCHED BY TARGET THEN
     INSERT ($ItemKey, F1000, $SCL_Field, F267)
     VALUES (
@@ -18003,7 +17987,6 @@ WHEN NOT MATCHED BY TARGET THEN
         CASE WHEN Source.$POS_Field = 1 THEN 0 ELSE $SCL_Value END,
         Source.F267
     );
-
 SELECT @@ROWCOUNT AS RowsAffected;
 "@
 	}
@@ -18013,9 +17996,7 @@ SELECT @@ROWCOUNT AS RowsAffected;
 UPDATE SCL_TAB
 SET $SCL_Field = NULL
 WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
-  AND $SCL_Field IS NOT NULL
-  AND $SCL_Field NOT IN (0,1,3,4,9,10);
-
+AND F272 IS NOT NULL;
 SELECT @@ROWCOUNT AS RowsAffected;
 "@
 	}
