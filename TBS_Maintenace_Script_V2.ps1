@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.5.2"
-$VersionDate = "2025-12-04"
+$VersionNumber = "2.5.3"
+$VersionDate = "2025-12-18"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -2320,12 +2320,24 @@ WHERE Active = 'Y'
 }
 
 # ===================================================================================================
-#                                      FUNCTION: Clearing XE folder
+# 									FUNCTION: Clear_XE_Folder
 # ---------------------------------------------------------------------------------------------------
-# Description:
-#   Performs an initial cleanup of the XE (Urgent Messages) folder by deleting all files and subdirectories,
-#   then starts a background job to continuously monitor and clear the folder at specified intervals,
-#   excluding any files or directories whose names start with "FATAL".
+# Behavior (per your requirement):
+#   STARTUP CLEAN:
+#     - Deletes EVERYTHING in XE EXCEPT valid S*.??? health files.
+#     - ALSO deletes FATAL* on startup (clears old errors).
+#
+#   RUNTIME MONITOR (FileSystemWatcher):
+#     - Keeps NEW FATAL* while running.
+#     - Deletes everything else except the same valid health files.
+#
+# Requested structure:
+#   - No nested functions.
+#   - Always runs (no start/stop switches).
+#   - ONE shared keep/delete logic (single scriptblock) used by:
+#       * Created/Changed/Renamed events
+#       * Periodic sweep fallback
+#   - PowerShell 5.1 compatible.
 # ===================================================================================================
 
 function Clear_XE_Folder
@@ -2333,39 +2345,195 @@ function Clear_XE_Folder
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $false)]
-		[string]$folderPath = "$OfficePath\XE${StoreNumber}901",
+		[string]$FolderPath = "$OfficePath\XE${StoreNumber}901",
 		[Parameter(Mandatory = $false)]
-		[int]$checkIntervalSeconds = 2
+		[ValidateRange(2, 3600)]
+		[int]$SweepIntervalSeconds = 30,
+		[Parameter(Mandatory = $false)]
+		[ValidateRange(1, 3650)]
+		[int]$HealthMaxAgeDays = 30
 	)
 	
-	# -- Initial clearing: remove everything except valid S*.??? health files
-	if (Test-Path -Path $folderPath)
+	# ------------------------------------------------------------------------------------------------
+	# 0) Validate folder exists
+	# ------------------------------------------------------------------------------------------------
+	if (-not (Test-Path -LiteralPath $FolderPath))
 	{
-		try
+		Write_Log "Folder '$FolderPath' (Urgent Messages) does not exist." "red"
+		return
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# 1) STARTUP CLEANUP
+	#    - Deletes EVERYTHING except valid S*.??? health files
+	#    - ALSO deletes FATAL* (clear old errors)
+	# ------------------------------------------------------------------------------------------------
+	try
+	{
+		$now = Get-Date
+		
+		$items = Get-ChildItem -LiteralPath $FolderPath -Recurse -Force -ErrorAction SilentlyContinue |
+		Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 }
+		
+		foreach ($item in $items)
 		{
-			$currentTime = Get-Date
-			Get-ChildItem -Path $folderPath -Recurse -Force | ForEach-Object {
-				$file = $_
+			$keep = $false
+			
+			# Startup mode: delete FATAL*
+			if ($item.Name -like 'FATAL*')
+			{
 				$keep = $false
-				if ($file.Name -like 'FATAL*') { $keep = $false }
-				elseif ($file.Name -match '^S.*\.\w{3}$')
+			}
+			elseif ($item.PSIsContainer)
+			{
+				$keep = $false
+			}
+			elseif ($item.Name -match '^S.*\.\w{3}$')
+			{
+				if (($now - $item.LastWriteTime).TotalDays -le $HealthMaxAgeDays)
 				{
-					if (($currentTime - $file.LastWriteTime).TotalDays -le 30)
+					$content = $null
+					try { $content = Get-Content -LiteralPath $item.FullName -ErrorAction Stop }
+					catch { $content = $null }
+					
+					if ($content)
 					{
-						try { $content = Get-Content $file.FullName -ErrorAction Stop }
+						$fromLine = $content | Where-Object { $_ -like 'From:*' } | Select-Object -First 1
+						$subjectLine = $content | Where-Object { $_ -like 'Subject:*' } | Select-Object -First 1
+						$msgLine = $content | Where-Object { $_ -like 'MSG:*' } | Select-Object -First 1
+						$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' } | Select-Object -First 1
+						
+						if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
+						{
+							$fileStoreNumber = $Matches[1]
+							$fileLaneNumber = $Matches[2]
+							
+							if ($fileStoreNumber -eq $StoreNumber -and
+								$item.Name -match '^S.*\.(\d{3})$' -and
+								$fileLaneNumber -eq $Matches[1] -and
+								$subjectLine -match 'Subject:\s*Health' -and
+								$msgLine -match 'MSG:\s*This application is not running\.' -and
+								$lastStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
+							{
+								$keep = $true
+							}
+						}
+					}
+				}
+			}
+			
+			if (-not $keep)
+			{
+				for ($i = 0; $i -lt 8; $i++)
+				{
+					try
+					{
+						if (Test-Path -LiteralPath $item.FullName)
+						{
+							Remove-Item -LiteralPath $item.FullName -Force -Recurse -ErrorAction Stop
+						}
+						break
+					}
+					catch
+					{
+						Start-Sleep -Milliseconds 150
+					}
+				}
+			}
+		}
+	}
+	catch
+	{
+		Write_Log "An error occurred during startup cleaning of '$FolderPath': $_" "red"
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# 2) MONITOR (FileSystemWatcher in a background job)
+	#    - Keeps NEW FATAL* while running
+	#    - Deletes everything else except valid health files
+	#    - ONE shared ProcessPath used by events + sweep (no nested functions)
+	# ------------------------------------------------------------------------------------------------
+	try
+	{
+		$jobName = "XEWatcherJob_$StoreNumber"
+		
+		# Replace any existing watcher job (always runs, no stop/start UI)
+		$existing = Get-Job -Name $jobName -ErrorAction SilentlyContinue
+		if ($existing)
+		{
+			Stop-Job -Job $existing -Force -ErrorAction SilentlyContinue | Out-Null
+			Remove-Job -Job $existing -Force -ErrorAction SilentlyContinue | Out-Null
+		}
+		
+		$job = Start-Job -Name $jobName -ArgumentList $FolderPath, $StoreNumber, $HealthMaxAgeDays, $SweepIntervalSeconds -ScriptBlock {
+			param (
+				[string]$FolderPath,
+				[string]$StoreNumber,
+				[int]$HealthMaxAgeDays,
+				[int]$SweepIntervalSeconds
+			)
+			
+			# --- Watcher object ---
+			$fsw = New-Object System.IO.FileSystemWatcher
+			$fsw.Path = $FolderPath
+			$fsw.IncludeSubdirectories = $true
+			$fsw.NotifyFilter = [IO.NotifyFilters]'FileName, DirectoryName, LastWrite, CreationTime'
+			
+			# --- Shared processor (MONITOR MODE: keep FATAL*) ---
+			$script:ProcessPath = {
+				param ([string]$Path)
+				
+				if (-not $Path) { return }
+				
+				# Retry Get-Item because events can fire before writer finishes.
+				$item = $null
+				for ($t = 0; $t -lt 8; $t++)
+				{
+					try
+					{
+						if (-not (Test-Path -LiteralPath $Path)) { return }
+						$item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+						break
+					}
+					catch { Start-Sleep -Milliseconds 120 }
+				}
+				if (-not $item) { return }
+				
+				# Keep NEW FATAL* while running
+				if ($item.Name -like 'FATAL*') { return }
+				
+				# Skip reparse points (junctions/symlinks)
+				if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return }
+				
+				$now = Get-Date
+				$keep = $false
+				
+				if ($item.PSIsContainer)
+				{
+					$keep = $false
+				}
+				elseif ($item.Name -match '^S.*\.\w{3}$')
+				{
+					if (($now - $item.LastWriteTime).TotalDays -le $HealthMaxAgeDays)
+					{
+						$content = $null
+						try { $content = Get-Content -LiteralPath $item.FullName -ErrorAction Stop }
 						catch { $content = $null }
+						
 						if ($content)
 						{
-							$fromLine = $content | Where-Object { $_ -like 'From:*' }
-							$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
-							$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
-							$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
+							$fromLine = $content | Where-Object { $_ -like 'From:*' } | Select-Object -First 1
+							$subjectLine = $content | Where-Object { $_ -like 'Subject:*' } | Select-Object -First 1
+							$msgLine = $content | Where-Object { $_ -like 'MSG:*' } | Select-Object -First 1
+							$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' } | Select-Object -First 1
+							
 							if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
 							{
 								$fileStoreNumber = $Matches[1]
 								$fileLaneNumber = $Matches[2]
+								
 								if ($fileStoreNumber -eq $StoreNumber -and
-									$file.Name -match '^S.*\.(\d{3})$' -and
+									$item.Name -match '^S.*\.(\d{3})$' -and
 									$fileLaneNumber -eq $Matches[1] -and
 									$subjectLine -match 'Subject:\s*Health' -and
 									$msgLine -match 'MSG:\s*This application is not running\.' -and
@@ -2377,82 +2545,136 @@ function Clear_XE_Folder
 						}
 					}
 				}
-				if (-not $keep) { Remove-Item -Path $file.FullName -Force -Recurse }
+				
+				if (-not $keep)
+				{
+					for ($i = 0; $i -lt 8; $i++)
+					{
+						try
+						{
+							if (Test-Path -LiteralPath $item.FullName)
+							{
+								Remove-Item -LiteralPath $item.FullName -Force -Recurse -ErrorAction Stop
+							}
+							break
+						}
+						catch { Start-Sleep -Milliseconds 150 }
+					}
+				}
 			}
-		}
-		catch
-		{
-			Write_Log "An error occurred during initial cleaning of 'XE${StoreNumber}901': $_" "red"
-		}
-	}
-	else
-	{
-		Write_Log "Folder 'XE${StoreNumber}901' (Urgent Messages) does not exist." "red"
-		return
-	}
-	
-	# -- Start background monitoring as a job
-	try
-	{
-		$job = Start-Job -Name "ClearXEFolderJob" -ScriptBlock {
-			param ($folderPath,
-				$checkIntervalSeconds,
-				$StoreNumber)
+			
+			# --- Register events WITHOUT -Action, then actively consume them with Wait-Event (reliable in jobs) ---
+			$createdId = "XE_Created_$StoreNumber"
+			$changedId = "XE_Changed_$StoreNumber"
+			$renamedId = "XE_Renamed_$StoreNumber"
+			
+			Register-ObjectEvent -InputObject $fsw -EventName Created -SourceIdentifier $createdId | Out-Null
+			Register-ObjectEvent -InputObject $fsw -EventName Changed -SourceIdentifier $changedId | Out-Null
+			Register-ObjectEvent -InputObject $fsw -EventName Renamed -SourceIdentifier $renamedId | Out-Null
+			
+			$fsw.EnableRaisingEvents = $true
+			
+			# --- Timers for sweep fallback ---
+			$nextSweep = (Get-Date).AddSeconds($SweepIntervalSeconds)
+			
+			while ($true)
+			{
+				# Wait briefly for an event (returns immediately when one arrives)
+				$e = Wait-Event -Timeout 1
+				
+				if ($e)
+				{
+					try
+					{
+						# FullPath works for Created/Changed/Renamed
+						$path = $e.SourceEventArgs.FullPath
+						& $script:ProcessPath -Path $path
+					}
+					catch { }
+					finally
+					{
+						# Always remove handled event from queue
+						Remove-Event -EventIdentifier $e.EventIdentifier -ErrorAction SilentlyContinue
+					}
+					
+					# Drain any burst quickly (no delay)
+					while ($true)
+					{
+						$e2 = Wait-Event -Timeout 0
+						if (-not $e2) { break }
+						try
+						{
+							$path2 = $e2.SourceEventArgs.FullPath
+							& $script:ProcessPath -Path $path2
+						}
+						catch { }
+						finally
+						{
+							Remove-Event -EventIdentifier $e2.EventIdentifier -ErrorAction SilentlyContinue
+						}
+					}
+				}
+				
+				# Periodic sweep fallback (keeps new FATAL* automatically because ProcessPath does)
+				if ((Get-Date) -ge $nextSweep)
+				{
+					$nextSweep = (Get-Date).AddSeconds($SweepIntervalSeconds)
+					
+					try
+					{
+						if (Test-Path -LiteralPath $FolderPath)
+						{
+							Get-ChildItem -LiteralPath $FolderPath -Recurse -Force -ErrorAction SilentlyContinue |
+							Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 } |
+							ForEach-Object { & $script:ProcessPath -Path $_.FullName }
+						}
+					}
+					catch { }
+				}
+			}
+		
+			# --- ONE handler for all events (calls shared processor) ---
+			$handler = {
+				$path = $Event.SourceEventArgs.FullPath
+				& $script:ProcessPath -Path $path
+			}
+			
+			# Register the SAME handler for Created/Changed/Renamed
+			$null = Register-ObjectEvent -InputObject $fsw -EventName Created -SourceIdentifier "XE_Created_$StoreNumber" -Action $handler
+			$null = Register-ObjectEvent -InputObject $fsw -EventName Changed -SourceIdentifier "XE_Changed_$StoreNumber" -Action $handler
+			$null = Register-ObjectEvent -InputObject $fsw -EventName Renamed -SourceIdentifier "XE_Renamed_$StoreNumber" -Action $handler
+			
+			# Enable watcher
+			$fsw.EnableRaisingEvents = $true
+			
+			# Periodic sweep fallback: feed each path into the SAME processor
 			while ($true)
 			{
 				try
 				{
-					$currentTime = Get-Date
-					if (Test-Path -Path $folderPath)
+					Start-Sleep -Seconds $SweepIntervalSeconds
+					if (-not (Test-Path -LiteralPath $FolderPath)) { continue }
+					
+					$items = Get-ChildItem -LiteralPath $FolderPath -Recurse -Force -ErrorAction SilentlyContinue |
+					Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 }
+					
+					foreach ($it in $items)
 					{
-						Get-ChildItem -Path $folderPath -Recurse -Force | ForEach-Object {
-							$file = $_
-							$keep = $false
-							if ($file.Name -like 'FATAL*') { $keep = $true }
-							elseif ($file.Name -match '^S.*\.\w{3}$')
-							{
-								if (($currentTime - $file.LastWriteTime).TotalDays -le 30)
-								{
-									try { $content = Get-Content $file.FullName -ErrorAction Stop }
-									catch { $content = $null }
-									if ($content)
-									{
-										$fromLine = $content | Where-Object { $_ -like 'From:*' }
-										$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
-										$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
-										$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
-										if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
-										{
-											$fileStoreNumber = $Matches[1]
-											$fileLaneNumber = $Matches[2]
-											if ($fileStoreNumber -eq $StoreNumber -and
-												$file.Name -match '^S.*\.(\d{3})$' -and
-												$fileLaneNumber -eq $Matches[1] -and
-												$subjectLine -match 'Subject:\s*Health' -and
-												$msgLine -match 'MSG:\s*This application is not running\.' -and
-												$lastStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
-											{
-												$keep = $true
-											}
-										}
-									}
-								}
-							}
-							if (-not $keep) { Remove-Item -Path $file.FullName -Force -Recurse }
-						}
+						& $script:ProcessPath -Path $it.FullName
 					}
 				}
-				catch { }
-				Start-Sleep -Seconds $checkIntervalSeconds
+				catch
+				{
+					# Best-effort; keep the job alive
+				}
 			}
-		} -ArgumentList $folderPath, $checkIntervalSeconds, $StoreNumber
+		}
+		return $job
 	}
 	catch
 	{
-		Write_Log "Failed to start background job for 'XE${StoreNumber}901': $_" "red"
+		return
 	}
-	
-	return $job
 }
 
 # ===================================================================================================
@@ -6983,6 +7205,701 @@ function Close_Open_Transactions
 	}
 	Write_Log "No further matching files were found after processing." "yellow"
 	Write_Log "`r`n==================== Close_Open_Transactions Function Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#               FUNCTION: Sync_ServerKey_To_Lanes_With_ScheduledTask
+# ---------------------------------------------------------------------------------------------------
+# What it does (Interactive):
+#   1) Ask which lanes to deploy to (Show_Node_Selection_Form).
+#   2) Read server key from STORE DB: SELECT TOP 1 F1243 FROM SYS_TAB
+#   3) Update lanes: UPDATE SYS_TAB SET F1243 = 'key'
+#      - SQL first (Named Pipes / TCP depending on $script:LaneProtocols + connection strings)
+#      - Fallback: COPY SQI file into $OfficePath\XF{Store}{Lane}\UPDATE_SERVERKEY.SQI
+#   4) Restart ALL programs on selected lanes after deploy (mailslot)
+#   5) Ask if you want to create/update a Windows Scheduled Task for these lanes:
+#      - Reads existing config + task and shows existing lanes + interval
+#      - Asks for frequency minutes
+#      - Merges new lanes into existing config (does NOT remove old lanes)
+#
+# What it does (NonInteractive - for scheduled runs):
+#   - Uses LaneNumbers passed in (no UI)
+#   - Skips Scheduled Task prompts
+#   - Does NOT restart programs
+#
+# Requires your existing ecosystem:
+#   Write_Log, Retrieve_Nodes, Show_Node_Selection_Form, Get_All_Lanes_Database_Info
+#   $script:FunctionResults, $script:LaneProtocols, [MailslotSender]::SendMailslotCommand(...)
+# ===================================================================================================
+
+function Sync_ServerKey_To_Lanes_With_ScheduledTask
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		# NonInteractive use (Scheduled Task): pass lanes directly
+		[Parameter(Mandatory = $false)]
+		[string[]]$LaneNumbers = $null,
+		# When running from the Scheduled Task runner (headless)
+		[Parameter(Mandatory = $false)]
+		[switch]$NonInteractive,
+		# SQL timeout for queries/updates
+		[Parameter(Mandatory = $false)]
+		[int]$SqlTimeoutSeconds = 30
+	)
+	
+	Write_Log "`r`n==================== Starting Sync_ServerKey_To_Lanes_With_ScheduledTask ====================`r`n" "blue"
+	
+	# ------------------------------------------------------------------------------------------------
+	# Normalize store number
+	# ------------------------------------------------------------------------------------------------
+	$StoreNumber = "$StoreNumber".PadLeft(3, '0')
+	
+	# ------------------------------------------------------------------------------------------------
+	# Ensure we have node mappings (needed for restart mailslots)
+	# ------------------------------------------------------------------------------------------------
+	if (-not $script:FunctionResults.ContainsKey('LaneNumToMachineName') -or -not $script:FunctionResults['LaneNumToMachineName'])
+	{
+		$null = Retrieve_Nodes -StoreNumber $StoreNumber
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Validate SQL module availability (Get_Store_And_Database_Info sets this)
+	# ------------------------------------------------------------------------------------------------
+	$SqlModule = $script:FunctionResults['SqlModuleName']
+	if (-not $SqlModule -or $SqlModule -eq "None")
+	{
+		Write_Log "No SQL Server module available (SqlServer or SQLPS). Cannot sync server key." "red"
+		return
+	}
+	
+	try
+	{
+		Import-Module $SqlModule -ErrorAction Stop
+	}
+	catch
+	{
+		Write_Log "Failed to import SQL module '$SqlModule'. Error: $_" "red"
+		return
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Detect whether Invoke-Sqlcmd supports -ConnectionString (SQLPS often does NOT)
+	# ------------------------------------------------------------------------------------------------
+	$supportsConnStr = $false
+	try
+	{
+		$supportsConnStr = (Get-Command Invoke-Sqlcmd -ErrorAction Stop).Parameters.ContainsKey('ConnectionString')
+	}
+	catch
+	{
+		$supportsConnStr = $false
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Lane selection (interactive) or validation (non-interactive)
+	# ------------------------------------------------------------------------------------------------
+	if (-not $NonInteractive)
+	{
+		Write_Log "Opening lane selection..." "yellow"
+		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
+		
+		if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
+		{
+			Write_Log "Lane selection cancelled or returned no lanes." "yellow"
+			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			return
+		}
+		
+		$LaneNumbers = foreach ($ln in $selection.Lanes)
+		{
+			if ($ln -is [pscustomobject] -and $ln.LaneNumber) { "$($ln.LaneNumber)".PadLeft(3, '0') }
+			else { "$ln".PadLeft(3, '0') }
+		}
+	}
+	else
+	{
+		if (-not $LaneNumbers -or $LaneNumbers.Count -eq 0)
+		{
+			Write_Log "NonInteractive run requires -LaneNumbers." "red"
+			return
+		}
+		$LaneNumbers = $LaneNumbers | ForEach-Object { "$_".PadLeft(3, '0') }
+	}
+	
+	$LaneNumbers = @($LaneNumbers | Where-Object { $_ } | Select-Object -Unique)
+	Write_Log ("Target lanes: " + ($LaneNumbers -join ", ")) "cyan"
+	
+	# =================================================================================================
+	# 1) READ KEY FROM LOCAL DB (MATCH YOUR EXACT MANUAL TEST)
+	#    Use the same SQL you run by hand, then choose the "best" non-empty value in PowerShell.
+	# =================================================================================================
+	$localConnStr = $script:FunctionResults['ConnectionString']
+	$localDbServer = $script:FunctionResults['DBSERVER']
+	$localDbName = $script:FunctionResults['DBNAME']
+	
+	if ([string]::IsNullOrWhiteSpace($localConnStr) -or $localConnStr -eq "N/A")
+	{
+		Write_Log "Local DB ConnectionString is missing (FunctionResults['ConnectionString']). Make sure Get_Store_And_Database_Info ran successfully." "red"
+		return
+	}
+	
+	Write_Log ("Reading SYS_TAB.F1243 from LOCAL DB: Server='{0}' Database='{1}'" -f $localDbServer, $localDbName) "yellow"
+	
+	# IMPORTANT: Match the exact query you confirmed works in SSMS.
+	$selectKeySql = "SELECT F1243 FROM SYS_TAB;"
+	
+	$serverKey = $null
+	$res = $null
+	
+	try
+	{
+		if ($supportsConnStr)
+		{
+			$res = Invoke-Sqlcmd -ConnectionString $localConnStr -Query $selectKeySql -QueryTimeout $SqlTimeoutSeconds -ErrorAction Stop
+		}
+		else
+		{
+			if ([string]::IsNullOrWhiteSpace($localDbServer) -or [string]::IsNullOrWhiteSpace($localDbName) -or $localDbServer -eq "N/A" -or $localDbName -eq "N/A")
+			{
+				Write_Log "Invoke-Sqlcmd lacks -ConnectionString and DBSERVER/DBNAME are not available. Cannot read key." "red"
+				return
+			}
+			$res = Invoke-Sqlcmd -ServerInstance $localDbServer -Database $localDbName -Query $selectKeySql -QueryTimeout $SqlTimeoutSeconds -ErrorAction Stop
+		}
+	}
+	catch
+	{
+		Write_Log "Failed to run 'SELECT F1243 FROM SYS_TAB' on LOCAL DB. Error: $_" "red"
+		return
+	}
+	
+	# Collect all returned values robustly (handles odd object shapes)
+	$rawValues = @()
+	if ($res)
+	{
+		foreach ($row in $res)
+		{
+			$val = $null
+			
+			# Normal case: property exists
+			try { $val = $row.F1243 }
+			catch { $val = $null }
+			
+			# Fallback: look for any property that is literally named F1243 (sometimes casing differs)
+			if ($val -eq $null)
+			{
+				try
+				{
+					$p = $row.PSObject.Properties | Where-Object { $_.Name -ieq 'F1243' } | Select-Object -First 1
+					if ($p) { $val = $p.Value }
+				}
+				catch { }
+			}
+			
+			if ($val -ne $null)
+			{
+				$rawValues += [string]$val
+			}
+		}
+	}
+	
+	# Choose the best candidate:
+	# - Trim edges only
+	# - Reject values that are whitespace-only, including non-breaking spaces
+	# - Prefer the longest (your key is long)
+	$candidates = @()
+	foreach ($v in $rawValues)
+	{
+		if ($v -eq $null) { continue }
+		
+		$t = $v.Trim()
+		
+		# Remove ALL whitespace + NBSP for the "is this empty?" test (but keep original formatting for storage)
+		$stripped = [regex]::Replace($t, '[\s\u00A0]+', '')
+		
+		if (-not [string]::IsNullOrWhiteSpace($t) -and -not [string]::IsNullOrWhiteSpace($stripped))
+		{
+			$candidates += [pscustomobject]@{
+				Value = $t
+				Len   = $t.Length
+			}
+		}
+	}
+	
+	if ($candidates.Count -gt 0)
+	{
+		$serverKey = ($candidates | Sort-Object Len -Descending | Select-Object -First 1).Value
+		Write_Log ("Server key retrieved from LOCAL DB (length {0})." -f $serverKey.Length) "green"
+	}
+	else
+	{
+		# Extra visibility if something is still weird
+		Write_Log ("LOCAL DB returned {0} row(s) from SYS_TAB, but none were usable as a key." -f ($rawValues.Count)) "yellow"
+		
+		if ($rawValues.Count -gt 0)
+		{
+			$preview = $rawValues[0]
+			$previewTrim = $preview.Trim()
+			$previewLen = $previewTrim.Length
+			$previewShow = $previewTrim.Substring(0, [Math]::Min(80, $previewTrim.Length))
+			Write_Log ("First returned value preview (trimmed, len={0}): {1}" -f $previewLen, $previewShow) "yellow"
+		}
+		
+		Write_Log "Server key (SYS_TAB.F1243) came back empty/null from LOCAL DB. Aborting." "red"
+		return
+	}
+	
+	# Escape single quotes for SQL literal
+	$safeServerKey = $serverKey.Replace("'", "''")
+	$serverKeySqlLiteral = "'$safeServerKey'"
+	
+	# =================================================================================================
+	# 2) PREPARE SQI FALLBACK FILE ONCE (COPY TO LANES IF SQL UPDATE FAILS)
+	# =================================================================================================
+	$SqiName = "UPDATE_SERVERKEY"
+	$SqiFileName = "$SqiName.SQI"
+	
+	# NOTE: keep it ASCII-ish / ANSI (matches Storeman expectations)
+	$SqiContent = "@dbEXEC(UPDATE SYS_TAB SET F1243 = $serverKeySqlLiteral)`r`n"
+	
+	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
+	$TempDir = if ($script:FunctionResults.ContainsKey('TempDir') -and $script:FunctionResults['TempDir']) { $script:FunctionResults['TempDir'] }
+	else { [System.IO.Path]::GetTempPath() }
+	$TempSqiPath = Join-Path $TempDir $SqiFileName
+	
+	try
+	{
+		[System.IO.File]::WriteAllText($TempSqiPath, $SqiContent, $ansiEncoding)
+		Set-ItemProperty -Path $TempSqiPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+	}
+	catch
+	{
+		Write_Log "Failed to create temp SQI '$TempSqiPath'. Error: $_" "red"
+		return
+	}
+	
+	# =================================================================================================
+	# 3) PUSH KEY TO SELECTED LANES (SQL FIRST, FILE COPY FALLBACK), RESTART PROGRAMS IF MANUAL
+	# =================================================================================================
+	$UpdatedViaSql = New-Object System.Collections.Generic.List[string]
+	$UpdatedViaFile = New-Object System.Collections.Generic.List[string]
+	$FailedLanes = New-Object System.Collections.Generic.List[string]
+	
+	foreach ($LaneNumber in $LaneNumbers)
+	{
+		Write_Log "`r`n--- Lane $LaneNumber ---" "magenta"
+		
+		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
+		if (-not $laneInfo)
+		{
+			Write_Log "Could not retrieve DB info for lane $LaneNumber. Skipping." "red"
+			$FailedLanes.Add($LaneNumber) | Out-Null
+			continue
+		}
+		
+		$dbName = $laneInfo['DBName']
+		$tcpConnStr = $laneInfo['TcpConnStr']
+		$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
+		$tcpServer = $laneInfo['TcpServer']
+		
+		# Prefer protocol from your saved mapping, but try both
+		$laneKey = "$LaneNumber".PadLeft(3, '0')
+		$protocolPref = $null
+		if ($script:LaneProtocols.ContainsKey($laneKey)) { $protocolPref = $script:LaneProtocols[$laneKey] }
+		
+		$tryOrder = if ($protocolPref -eq "Named Pipes") { @("Named Pipes", "TCP") }
+		elseif ($protocolPref -eq "TCP") { @("TCP", "Named Pipes") }
+		else { @("TCP", "Named Pipes") }
+		
+		$updateSql = "UPDATE SYS_TAB SET F1243 = $serverKeySqlLiteral"
+		$sqlWorked = $false
+		
+		foreach ($proto in $tryOrder)
+		{
+			try
+			{
+				if ($supportsConnStr)
+				{
+					$connToUse = if ($proto -eq "Named Pipes") { $namedPipesConnStr }
+					else { $tcpConnStr }
+					Invoke-Sqlcmd -ConnectionString $connToUse -Query $updateSql -QueryTimeout $SqlTimeoutSeconds -ErrorAction Stop
+				}
+				else
+				{
+					Invoke-Sqlcmd -ServerInstance $tcpServer -Database $dbName -Query $updateSql -QueryTimeout $SqlTimeoutSeconds -ErrorAction Stop
+				}
+				
+				Write_Log "Updated SYS_TAB.F1243 via SQL ($proto) on lane $LaneNumber." "green"
+				$UpdatedViaSql.Add($LaneNumber) | Out-Null
+				$sqlWorked = $true
+				break
+			}
+			catch
+			{
+				Write_Log "SQL update failed ($proto) on lane $LaneNumber. Error: $_" "yellow"
+			}
+		}
+		
+		# Fallback: copy SQI into the lane XF folder
+		if (-not $sqlWorked)
+		{
+			$LaneXFDir = Join-Path $OfficePath ("XF{0}{1}" -f $StoreNumber, $LaneNumber)
+			$DestSqiPath = Join-Path $LaneXFDir $SqiFileName
+			
+			if (-not (Test-Path $LaneXFDir))
+			{
+				Write_Log "Lane XF folder not found: $LaneXFDir (cannot copy SQI fallback)." "red"
+				$FailedLanes.Add($LaneNumber) | Out-Null
+			}
+			else
+			{
+				try
+				{
+					Copy-Item -Path $TempSqiPath -Destination $DestSqiPath -Force
+					Set-ItemProperty -Path $DestSqiPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+					Write_Log "Copied SQI fallback to $DestSqiPath" "yellow"
+					$UpdatedViaFile.Add($LaneNumber) | Out-Null
+				}
+				catch
+				{
+					Write_Log "Failed to copy SQI fallback for lane $LaneNumber. Error: $_" "red"
+					$FailedLanes.Add($LaneNumber) | Out-Null
+				}
+			}
+		}
+		
+		# Manual run only: restart all programs on the lane
+		if (-not $NonInteractive)
+		{
+			try
+			{
+				$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
+				if ($nodes)
+				{
+					$machineName = $nodes.LaneNumToMachineName[$LaneNumber]
+					if ($machineName)
+					{
+						$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
+						$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
+						$sent = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
+						
+						if ($sent) { Write_Log "Restart All Programs sent to $machineName (lane $LaneNumber)." "green" }
+						else { Write_Log "Failed to send restart to $machineName (lane $LaneNumber)." "red" }
+					}
+					else
+					{
+						Write_Log "Could not resolve machine name for lane $LaneNumber (restart skipped)." "yellow"
+					}
+				}
+			}
+			catch
+			{
+				Write_Log "Restart attempt failed for lane $LaneNumber. Error: $_" "red"
+			}
+		}
+	}
+	
+	# Summary
+	if ($UpdatedViaSql.Count -gt 0) { Write_Log ("Updated via SQL: " + ($UpdatedViaSql -join ", ")) "green" }
+	if ($UpdatedViaFile.Count -gt 0) { Write_Log ("Updated via SQI fallback: " + ($UpdatedViaFile -join ", ")) "yellow" }
+	if ($FailedLanes.Count -gt 0) { Write_Log ("Failed lanes: " + ($FailedLanes -join ", ")) "red" }
+	
+	# =================================================================================================
+	# 4) OPTIONAL: CREATE/UPDATE WINDOWS SCHEDULED TASK (MERGE LANES + ASK FREQUENCY)
+	# =================================================================================================
+	if (-not $NonInteractive)
+	{
+		$taskRoot = Join-Path $BasePath "Scripts_by_Alex_C.T"
+		if (-not (Test-Path $taskRoot))
+		{
+			try { New-Item -Path $taskRoot -ItemType Directory -Force | Out-Null }
+			catch { Write_Log "Failed to create task folder '$taskRoot'. Error: $_" "red"; return }
+		}
+		
+		$taskName = "TBS Server Key Sync - Store $StoreNumber"
+		$configPath = Join-Path $taskRoot ("ServerKeySync_Task_Store{0}.json" -f $StoreNumber)
+		$runnerPath = Join-Path $taskRoot ("Run-ServerKeySync_Task_Store{0}.ps1" -f $StoreNumber)
+		$taskLog = Join-Path $taskRoot ("ServerKeySync_TaskLog_Store{0}.txt" -f $StoreNumber)
+		
+		# Read existing config to show lanes/interval
+		$existingCfg = $null
+		if (Test-Path $configPath)
+		{
+			try { $existingCfg = Get-Content $configPath -Raw | ConvertFrom-Json }
+			catch { $existingCfg = $null }
+		}
+		
+		$existingCfgLanes = @()
+		$existingCfgFreqMins = $null
+		if ($existingCfg)
+		{
+			if ($existingCfg.LaneNumbers) { $existingCfgLanes = @($existingCfg.LaneNumbers | ForEach-Object { "$_".PadLeft(3, '0') } | Select-Object -Unique) }
+			if ($existingCfg.FrequencyMinutes) { $existingCfgFreqMins = [int]$existingCfg.FrequencyMinutes }
+		}
+		
+		# Read existing Scheduled Task interval + next run
+		$existingTask = $null
+		$existingTaskIntervalMins = $null
+		$existingTaskNextRun = $null
+		
+		try
+		{
+			$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+			if ($existingTask)
+			{
+				$tr = $existingTask.Triggers | Select-Object -First 1
+				if ($tr -and $tr.Repetition -and $tr.Repetition.Interval)
+				{
+					try
+					{
+						$ts = [System.Xml.XmlConvert]::ToTimeSpan($tr.Repetition.Interval)
+						if ($ts.TotalMinutes -ge 1) { $existingTaskIntervalMins = [int][Math]::Round($ts.TotalMinutes) }
+					}
+					catch { }
+				}
+				
+				try
+				{
+					$info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+					if ($info) { $existingTaskNextRun = $info.NextRunTime }
+				}
+				catch { }
+			}
+		}
+		catch { }
+		
+		if ($existingCfg)
+		{
+			Write_Log ("Existing task config found: {0}" -f $configPath) "cyan"
+			Write_Log (" - Lanes in config: {0}" -f ($(if ($existingCfgLanes.Count -gt 0) { $existingCfgLanes -join ", " }
+						else { "(none)" }))) "cyan"
+			Write_Log (" - Interval in config (minutes): {0}" -f ($(if ($existingCfgFreqMins) { $existingCfgFreqMins }
+						else { "(not set)" }))) "cyan"
+		}
+		else
+		{
+			Write_Log "No existing task config found (this would be a new task config)." "yellow"
+		}
+		
+		if ($existingTask)
+		{
+			Write_Log ("Existing Scheduled Task found: {0}" -f $taskName) "cyan"
+			Write_Log (" - Interval from task trigger (minutes): {0}" -f ($(if ($existingTaskIntervalMins) { $existingTaskIntervalMins }
+						else { "(not set)" }))) "cyan"
+			if ($existingTaskNextRun) { Write_Log (" - Next run time: {0}" -f $existingTaskNextRun) "cyan" }
+		}
+		else
+		{
+			Write_Log "No existing Scheduled Task found (this would create a new task)." "yellow"
+		}
+		
+		try { Add-Type -AssemblyName System.Windows.Forms | Out-Null }
+		catch { }
+		
+		$ans = [System.Windows.Forms.MessageBox]::Show(
+			"Do you want to create/update a Windows Scheduled Task for these lanes?`r`n`r`nThis will MERGE lanes into the existing task (it won't remove existing lanes).",
+			"Server Key Sync - Scheduled Task",
+			[System.Windows.Forms.MessageBoxButtons]::YesNo,
+			[System.Windows.Forms.MessageBoxIcon]::Question
+		)
+		
+		if ($ans -eq [System.Windows.Forms.DialogResult]::Yes)
+		{
+			# Choose a sensible default interval (existing config > existing task > 60)
+			$defaultMins = 60
+			if ($existingCfgFreqMins -and $existingCfgFreqMins -ge 1) { $defaultMins = $existingCfgFreqMins }
+			elseif ($existingTaskIntervalMins -and $existingTaskIntervalMins -ge 1) { $defaultMins = $existingTaskIntervalMins }
+			
+			# Simple frequency input UI
+			$form = New-Object System.Windows.Forms.Form
+			$form.Text = "Server Key Sync Frequency"
+			$form.Width = 520
+			$form.Height = 240
+			$form.StartPosition = "CenterScreen"
+			
+			$lbl = New-Object System.Windows.Forms.Label
+			$lbl.AutoSize = $true
+			$lbl.Location = New-Object System.Drawing.Point(15, 20)
+			$lbl.Text = "Run every how many minutes?"
+			$form.Controls.Add($lbl)
+			
+			$tb = New-Object System.Windows.Forms.TextBox
+			$tb.Location = New-Object System.Drawing.Point(20, 50)
+			$tb.Width = 100
+			$tb.Text = "$defaultMins"
+			$form.Controls.Add($tb)
+			
+			$existingLaneText = if ($existingCfgLanes.Count -gt 0) { $existingCfgLanes -join ", " }
+			else { "(none)" }
+			
+			$lbl2 = New-Object System.Windows.Forms.Label
+			$lbl2.AutoSize = $true
+			$lbl2.Location = New-Object System.Drawing.Point(15, 95)
+			$lbl2.Text = "Existing lanes on file: $existingLaneText"
+			$form.Controls.Add($lbl2)
+			
+			$lbl3 = New-Object System.Windows.Forms.Label
+			$lbl3.AutoSize = $true
+			$lbl3.Location = New-Object System.Drawing.Point(15, 120)
+			$lbl3.Text = "New lanes being added now: " + ($LaneNumbers -join ", ")
+			$form.Controls.Add($lbl3)
+			
+			$ok = New-Object System.Windows.Forms.Button
+			$ok.Text = "OK"
+			$ok.Location = New-Object System.Drawing.Point(300, 160)
+			$ok.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::OK })
+			$form.Controls.Add($ok)
+			
+			$cancel = New-Object System.Windows.Forms.Button
+			$cancel.Text = "Cancel"
+			$cancel.Location = New-Object System.Drawing.Point(380, 160)
+			$cancel.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
+			$form.Controls.Add($cancel)
+			
+			$form.AcceptButton = $ok
+			$form.CancelButton = $cancel
+			
+			if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
+			{
+				Write_Log "Scheduled Task setup cancelled by user." "yellow"
+				Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+				return
+			}
+			
+			[int]$freqMinutes = 0
+			if (-not [int]::TryParse($tb.Text, [ref]$freqMinutes) -or $freqMinutes -lt 1)
+			{
+				Write_Log "Invalid frequency entered. Using default $defaultMins minutes." "yellow"
+				$freqMinutes = $defaultMins
+			}
+			
+			# MERGE lanes (do not remove existing lanes)
+			$mergedLanes = @($existingCfgLanes + $LaneNumbers | ForEach-Object { "$_".PadLeft(3, '0') } | Select-Object -Unique)
+			
+			# Store the main script path so the runner can dot-source it
+			$mainScriptPath = $PSCommandPath
+			if ([string]::IsNullOrWhiteSpace($mainScriptPath))
+			{
+				try { $mainScriptPath = $MyInvocation.MyCommand.ScriptBlock.File }
+				catch { $mainScriptPath = $null }
+			}
+			
+			$configObj = [pscustomobject]@{
+				StoreNumber	     = $StoreNumber
+				LaneNumbers	     = $mergedLanes
+				FrequencyMinutes = $freqMinutes
+				MainScriptPath   = $mainScriptPath
+				BasePath		 = $BasePath
+				LastUpdated	     = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+			}
+			
+			try
+			{
+				($configObj | ConvertTo-Json -Depth 6) | Set-Content -Path $configPath -Encoding UTF8
+				Write_Log "Saved task config: $configPath" "green"
+				Write_Log ("Config lanes now: " + ($mergedLanes -join ", ")) "green"
+				Write_Log ("Config interval now: every {0} minutes" -f $freqMinutes) "green"
+			}
+			catch
+			{
+				Write_Log "Failed to write config '$configPath'. Error: $_" "red"
+				return
+			}
+			
+			# Runner script (headless run: no UI prompts, no restarts)
+			$runnerContent = @"
+param(
+	[Parameter(Mandatory = `$true)]
+	[string]`$ConfigPath
+)
+
+function Write-TaskLog {
+	param([string]`$Message)
+	try {
+		"`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  `$(hostname)  `$(whoami)  `$(Message)" | Add-Content -Path "$taskLog" -Encoding UTF8
+	} catch { }
+}
+
+Write-TaskLog "Starting ServerKey Sync task. Config=`$ConfigPath"
+
+try {
+	if (-not (Test-Path `$ConfigPath)) { throw "Config not found: `$ConfigPath" }
+	`$cfg = Get-Content `$ConfigPath -Raw | ConvertFrom-Json
+
+	`$scriptPath = `$cfg.MainScriptPath
+	if ([string]::IsNullOrWhiteSpace(`$scriptPath) -or -not (Test-Path `$scriptPath)) {
+		try {
+			`$candidates = Get-ChildItem -Path `$cfg.BasePath -Filter "TBS_Maintenance_Script*.ps1" -File -ErrorAction SilentlyContinue |
+				Sort-Object LastWriteTime -Descending
+			if (`$candidates -and `$candidates.Count -gt 0) { `$scriptPath = `$candidates[0].FullName }
+		} catch { }
+	}
+
+	if ([string]::IsNullOrWhiteSpace(`$scriptPath) -or -not (Test-Path `$scriptPath)) {
+		throw "Main script not found. Stored=`$(`$cfg.MainScriptPath)"
+	}
+
+	. `$scriptPath
+
+	Sync_ServerKey_To_Lanes_With_ScheduledTask -StoreNumber `$cfg.StoreNumber -LaneNumbers `$cfg.LaneNumbers -NonInteractive -SqlTimeoutSeconds 30
+
+	Write-TaskLog ("Completed OK. Lanes=" + (`$cfg.LaneNumbers -join ", ") + " IntervalMins=" + `$cfg.FrequencyMinutes)
+}
+catch {
+	Write-TaskLog ("FAILED: " + `$_)
+	throw
+}
+"@ -replace "`n", "`r`n"
+			
+			try
+			{
+				Set-Content -Path $runnerPath -Value $runnerContent -Encoding UTF8
+				Write_Log "Runner script written/updated: $runnerPath" "green"
+			}
+			catch
+			{
+				Write_Log "Failed to write runner '$runnerPath'. Error: $_" "red"
+				return
+			}
+			
+			# Create/Update Scheduled Task (SYSTEM, highest)
+			try
+			{
+				$psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+				$actionArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$runnerPath`" -ConfigPath `"$configPath`""
+				$action = New-ScheduledTaskAction -Execute $psExe -Argument $actionArgs
+				
+				# Daily trigger + repetition interval (simple + stable)
+				$repInterval = New-TimeSpan -Minutes $freqMinutes
+				$repDuration = New-TimeSpan -Days 1
+				$trigger = New-ScheduledTaskTrigger -Daily -At (Get-Date).Date -RepetitionInterval $repInterval -RepetitionDuration $repDuration
+				
+				$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+				$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+				
+				$task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings
+				Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
+				
+				Write_Log "Scheduled Task created/updated: $taskName" "green"
+				
+				try
+				{
+					$info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+					if ($info) { Write_Log ("Next run time: {0}" -f $info.NextRunTime) "cyan" }
+				}
+				catch { }
+			}
+			catch
+			{
+				Write_Log "Failed to create/update Scheduled Task '$taskName'. Run as admin. Error: $_" "red"
+				return
+			}
+		}
+	}
+	
+	Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -23471,7 +24388,27 @@ public static class NativeWin {
 	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
 	
 	############################################################################
-	# 15) Reboot Lane Menu Item
+	# 15) Sync Server Key (SYS_TAB.F1243) + Optional Scheduled Task
+	############################################################################
+	$SyncServerKeyItem = New-Object System.Windows.Forms.ToolStripMenuItem("Sync Server Key")
+	$SyncServerKeyItem.ToolTipText = "Reads SYS_TAB.F1243 from the store DB, deploys it to selected lane DBs (SQL -> SQI fallback), restarts programs, and can add/merge lanes into an auto-sync Scheduled Task."
+	$SyncServerKeyItem.Add_Click({
+			$script:LastActivity = Get-Date
+			try
+			{
+				Sync_ServerKey_To_Lanes_With_ScheduledTask -StoreNumber "$StoreNumber"
+			}
+			catch
+			{
+				Write_Log "Sync Server Key failed: $_" "red"
+				try { [System.Windows.Forms.MessageBox]::Show("Sync Server Key failed:`r`n`r`n$_", "Error", "OK", "Error") | Out-Null }
+				catch { }
+			}
+		})
+	[void]$ContextMenuLane.Items.Add($SyncServerKeyItem)
+	
+	############################################################################
+	# 16) Reboot Lane Menu Item
 	############################################################################
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
