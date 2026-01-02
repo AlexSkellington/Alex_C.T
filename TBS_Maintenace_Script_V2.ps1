@@ -16675,7 +16675,7 @@ while (`$true) {
 		
 		# CHANGED: multiple sources. If one is down (503), try the next.
 		$urls = @(
-			"https://nssm.cc/release/nssm-2.24.zip",
+			"https://nssm.cc/download/nssm-2.24.zip",
 			"https://github.com/kirillkovalenko/nssm/releases/download/v2.24/nssm-2.24.zip"
 		)
 		
