@@ -15379,7 +15379,7 @@ while(`$true){
 			try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
 			catch { }
 			$tempZip = Join-Path $env:TEMP "nssm.zip"
-			$url = "https://nssm.cc/download/nssm-2.24.zip"
+			$url = "https://nssm.cc/release/nssm-2.24.zip"
 			
 			try
 			{
