@@ -1637,14 +1637,13 @@ function Update_SQL_Database
 		# TER_TAB commands
 		# ---------------------------
 		$createViewCommandTer = @"
-IF OBJECT_ID('Ter_Load','V') IS NOT NULL DROP VIEW Ter_Load;
 CREATE VIEW Ter_Load AS
 SELECT F1056, F1057, F1058, F1125, F1169
 FROM $terTableName;
 "@
 		
 		$deleteOldRecordCommand = @"
-DELETE FROM $terTableName
+DELETE FROM $terTableName 
 WHERE F1057 NOT IN ('$machineNumber', '901');
 "@
 		
@@ -1652,50 +1651,44 @@ WHERE F1057 NOT IN ('$machineNumber', '901');
 IF EXISTS (SELECT 1 FROM $terTableName WHERE F1056='$storeNumber' AND F1057='$machineNumber')
 BEGIN
     UPDATE $terTableName
-    SET F1058='Terminal $machineNumber',
-        F1125='\\$machineName\storeman\office\XF$storeNumber$machineNumber\',
-        F1169='\\$machineName\storeman\office\XF${storeNumber}901\'
+    SET F1058='Terminal $machineNumber', 
+        F1125='\\$machineName\storeman\office\XF$storeNumber$machineNumber\', 
+        F1169='\\$machineName\storeman\office\XF${storeNumber}901\' 
     WHERE F1056='$storeNumber' AND F1057='$machineNumber';
 END
 ELSE
 BEGIN
     INSERT INTO $terTableName (F1056, F1057, F1058, F1125, F1169) VALUES
-    ('$storeNumber', '$machineNumber',
-     'Terminal $machineNumber',
-     '\\$machineName\storeman\office\XF$storeNumber$machineNumber\',
+    ('$storeNumber', '$machineNumber', 
+     'Terminal $machineNumber', 
+     '\\$machineName\storeman\office\XF$storeNumber$machineNumber\', 
      '\\$machineName\storeman\office\XF${storeNumber}901\');
 END
 "@
 		
-		$dropViewCommandTer = "IF OBJECT_ID('Ter_Load','V') IS NOT NULL DROP VIEW Ter_Load;"
+		$dropViewCommandTer = "DROP VIEW Ter_Load;"
 		
-		# ---------------------------
 		# RUN_TAB commands
-		# ---------------------------
 		$createViewCommandRun = @"
-IF OBJECT_ID('Run_Load','V') IS NOT NULL DROP VIEW Run_Load;
 CREATE VIEW Run_Load AS
 SELECT F1000, F1104
 FROM $runTableName;
 "@
 		
 		$updateRunTabCommand = @"
-UPDATE $runTableName
+UPDATE $runTableName 
 SET F1000 = '$machineNumber'
 WHERE F1000 <> 'SMS';
 
-UPDATE $runTableName
+UPDATE $runTableName 
 SET F1104 = '$machineNumber'
 WHERE F1104 <> '901';
 "@
 		
-		$dropViewCommandRun = "IF OBJECT_ID('Run_Load','V') IS NOT NULL DROP VIEW Run_Load;"
+		$dropViewCommandRun = "DROP VIEW Run_Load;"
 		
-		# ---------------------------
 		# STO_TAB commands
-		# ---------------------------
 		$createViewCommandSto = @"
-IF OBJECT_ID('Sto_Load','V') IS NOT NULL DROP VIEW Sto_Load;
 CREATE VIEW Sto_Load AS
 SELECT F1000, F1018, F1180, F1181, F1182
 FROM $stoTableName;
@@ -1703,12 +1696,12 @@ FROM $stoTableName;
 		
 		$insertOrUpdateStoCommand = @"
 MERGE INTO $stoTableName AS target
-USING (VALUES
+USING (VALUES 
     ('$machineNumber', 'Terminal $machineNumber', 1, 1, 1)
 ) AS source (F1000, F1018, F1180, F1181, F1182)
 ON target.F1000 = source.F1000
 WHEN MATCHED THEN
-    UPDATE SET
+    UPDATE SET 
         F1018 = source.F1018,
         F1180 = source.F1180,
         F1181 = source.F1181,
@@ -1719,21 +1712,18 @@ WHEN NOT MATCHED THEN
 "@
 		
 		$deleteOldStoTabEntries = @"
-DELETE FROM $stoTableName
+DELETE FROM $stoTableName 
 WHERE F1000 <> '$machineNumber'
-AND F1000 NOT LIKE 'DSM%'
-AND F1000 NOT LIKE 'PAL%'
-AND F1000 NOT LIKE 'RAL%'
+AND F1000 NOT LIKE 'DSM%' 
+AND F1000 NOT LIKE 'PAL%' 
+AND F1000 NOT LIKE 'RAL%' 
 AND F1000 NOT LIKE 'XAL%';
 "@
 		
-		$dropViewCommandSto = "IF OBJECT_ID('Sto_Load','V') IS NOT NULL DROP VIEW Sto_Load;"
+		$dropViewCommandSto = "DROP VIEW Sto_Load;"
 		
-		# ---------------------------
 		# LNK_TAB commands
-		# ---------------------------
 		$createViewCommandLnk = @"
-IF OBJECT_ID('Lnk_Load','V') IS NOT NULL DROP VIEW Lnk_Load;
 CREATE VIEW Lnk_Load AS
 SELECT F1000, F1056, F1057
 FROM $lnkTableName;
@@ -1741,7 +1731,7 @@ FROM $lnkTableName;
 		
 		$insertOrUpdateLnkCommand = @"
 MERGE INTO $lnkTableName AS target
-USING (VALUES
+USING (VALUES 
     ('$machineNumber', '$storeNumber', '$machineNumber'),
     ('DSM', '$storeNumber', '$machineNumber'),
     ('PAL', '$storeNumber', '$machineNumber'),
@@ -1754,17 +1744,14 @@ WHEN NOT MATCHED THEN
 "@
 		
 		$deleteOldLnkTabEntries = @"
-DELETE FROM $lnkTableName
+DELETE FROM $lnkTableName 
 WHERE F1057 <> '$machineNumber';
 "@
 		
-		$dropViewCommandLnk = "IF OBJECT_ID('Lnk_Load','V') IS NOT NULL DROP VIEW Lnk_Load;"
+		$dropViewCommandLnk = "DROP VIEW Lnk_Load;"
 		
-		# ---------------------------
 		# STD_TAB commands
-		# ---------------------------
 		$createViewCommandStd = @"
-IF OBJECT_ID('Std_Load','V') IS NOT NULL DROP VIEW Std_Load;
 CREATE VIEW Std_Load AS
 SELECT F1056
 FROM $stdTableName;
@@ -1772,10 +1759,11 @@ FROM $stdTableName;
 		
 		$updateStdTabCommand = @"
 UPDATE $stdTableName
-SET F1056 = '$storeNumber';
+SET F1056 = '$storeNumber'
+WHERE F1056 NOT IN ('999','901');
 "@
 		
-		$dropViewCommandStd = "IF OBJECT_ID('Std_Load','V') IS NOT NULL DROP VIEW Std_Load;"
+		$dropViewCommandStd = "DROP VIEW Std_Load;"
 		
 		# Execute SQL commands
 		$allSqlSuccessful = $true
