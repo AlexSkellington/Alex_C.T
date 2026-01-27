@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.3.0"
-$VersionDate = "2026-01-07"
+$VersionNumber = "1.3.1"
+$VersionDate = "2026-01-19"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -513,45 +513,66 @@ function Get_Active_IP_Config
 }
 
 # ===================================================================================================
-# FUNCTION: Remove_Old_XF/XW_Folders
+# FUNCTION: Remove_Old_XZ_Folders
 # ---------------------------------------------------------------------------------------------------
 # Description:
-# Removes old XF and XW folders based on the provided store number and machine name.
-# Supports both:
-#   - 6-digit format: XF123456   (3 digit store + 3 digit terminal)
-#   - 7-digit format: XF1234006  (4 digit store + 3 digit terminal)
-# The machine number is always extracted from the last 3 characters of $MachineName.
+# Removes old X* and Z* folders under \storeman\office that do NOT match the NEW store and allowed
+# terminal numbers.
+#
+# Strict folder name pattern acted upon:
+#   ^(X|Z)[A-Za-z](store 3-4 digits)(terminal 3 digits)$
+# Examples: XF0231006, XW0242901, ZF1234006, ZW1234901
+#
+# Keeps ONLY folders that match:
+#   - Store = new store (3-digit OR 4-digit representation)
+#   - Terminal IN: current lane terminal (from MachineName), 900, 901
+#
+# Safeguard: refuses to run if extracted terminal is 901 unless -AllowBackoffice is passed.
+# Automatic: no prompts.
 # ===================================================================================================
 
-function Remove_Old_XF/XW_Folders
+function Remove_Old_XZ_Folders
 {
+	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber,
 		[Parameter(Mandatory = $true)]
 		[string]$MachineName,
-		# add this because your code writes to it
 		[Parameter(Mandatory = $false)]
-		[hashtable]$OperationStatus
+		[hashtable]$OperationStatus,
+		[Parameter(Mandatory = $false)]
+		[switch]$AllowBackoffice
 	)
 	
-	# Define prefixes to process
-	$folderPrefixes = @("XF", "XW")
-	
-	# Initialize results
+	# -----------------------------
+	# Init / status bucket
+	# -----------------------------
 	$deletedFolders = @()
 	$failedToDeleteFolders = @()
-	
-	# Status tracking
 	$anyFoldersSeen = $false
 	$anyCandidatesMatched = $false
 	
-	# Validate store number (3 or 4 digits, not all zeros)
+	if ($OperationStatus)
+	{
+		if (-not $OperationStatus.ContainsKey("OldXFoldersDeletion"))
+		{
+			$OperationStatus["OldXFoldersDeletion"] = [pscustomobject]@{
+				Status  = ""
+				Message = ""
+				Details = ""
+			}
+		}
+	}
+	
+	# -----------------------------
+	# Validate store number
+	# -----------------------------
 	$storeNumberTrim = $StoreNumber
 	if ($null -eq $storeNumberTrim) { $storeNumberTrim = "" }
 	$storeNumberTrim = $storeNumberTrim.Trim()
 	
-	if ($storeNumberTrim -notmatch '^(?!0{3,4})\d{3,4}$')
+	if ($storeNumberTrim -notmatch '^(?!0+$)\d{3,4}$')
 	{
 		if ($OperationStatus)
 		{
@@ -563,23 +584,18 @@ function Remove_Old_XF/XW_Folders
 		return
 	}
 	
-	# Normalize store to numeric + both 3/4 digit strings for matching folders
 	$storeInt = [int]$storeNumberTrim
 	$store3 = $storeInt.ToString("D3")
 	$store4 = $storeInt.ToString("D4")
 	
-	# Define possible base paths in order of priority
+	# -----------------------------
+	# Pick base path
+	# -----------------------------
 	$possibleBasePaths = @("\\localhost\storeman\office", "C:\storeman\office", "D:\storeman\office")
-	
-	# Find the first existing base path
 	$basePath = $null
 	foreach ($p in $possibleBasePaths)
 	{
-		if (Test-Path $p)
-		{
-			$basePath = $p
-			break
-		}
+		if (Test-Path $p) { $basePath = $p; break }
 	}
 	
 	if (-not $basePath)
@@ -594,10 +610,13 @@ function Remove_Old_XF/XW_Folders
 		return
 	}
 	
-	# Normalize machine name to host only (handles UNC/path/FQDN), then extract last 1-3 digits and pad to 3
+	# -----------------------------
+	# Extract machine terminal (last 1-3 digits, padded to 3)
+	# -----------------------------
 	$mn = $MachineName
 	if ($null -eq $mn) { $mn = "" }
 	$mn = $mn.Trim()
+	
 	$mn = $mn -replace '^[\\\/]+', '' # strip leading \\ or /
 	if ($mn -match '[\\\/]') { $mn = ($mn -split '[\\\/]')[0] } # keep host portion
 	if ($mn -match '\.') { $mn = ($mn -split '\.')[0] } # drop domain
@@ -617,78 +636,97 @@ function Remove_Old_XF/XW_Folders
 	
 	$machineNumber = ([int]$Matches[1]).ToString("D3")
 	
-	# Safety: prevent wiping all lane folders when machineNumber is 901
-	if ($machineNumber -eq "901")
+	# Safeguard for backoffice unless explicitly allowed
+	if ($machineNumber -eq "901" -and -not $AllowBackoffice)
 	{
 		if ($OperationStatus)
 		{
 			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
-			$OperationStatus["OldXFoldersDeletion"].Message = "Refusing to run because extracted terminal number is 901 (backoffice)."
-			$OperationStatus["OldXFoldersDeletion"].Details = "This would delete all non-901 XF/XW folders for the store."
+			$OperationStatus["OldXFoldersDeletion"].Message = "Refusing to run because extracted terminal number is 901 (backoffice). Use -AllowBackoffice to override."
+			$OperationStatus["OldXFoldersDeletion"].Details = "This could delete many lane folders. Override only if intentional."
 		}
-		Write-Host "Failed: Refusing to run on terminal 901 (backoffice safeguard)." -ForegroundColor Red
+		Write-Host "Failed: Refusing to run on terminal 901 (backoffice safeguard). Use -AllowBackoffice to override." -ForegroundColor Red
 		return
 	}
 	
-	foreach ($prefix in $folderPrefixes)
+	# Keep set: current lane + 900 + 901
+	$keepStores = @($store3, $store4)
+	$keepTerminals = @($machineNumber, "900", "901")
+	
+	# -----------------------------
+	# Enumerate X* and Z* folders
+	# -----------------------------
+	$folders = @()
+	
+	$xFolders = Get-ChildItem -Path $basePath -Directory -Filter "X*" -ErrorAction SilentlyContinue
+	if ($xFolders) { $folders += $xFolders }
+	
+	$zFolders = Get-ChildItem -Path $basePath -Directory -Filter "Z*" -ErrorAction SilentlyContinue
+	if ($zFolders) { $folders += $zFolders }
+	
+	if (-not $folders -or $folders.Count -eq 0)
 	{
-		# enumerate only XF* or XW*
-		$folders = Get-ChildItem -Path $basePath -Directory -Filter ($prefix + "*") -ErrorAction SilentlyContinue
-		if (-not $folders) { continue }
-		
-		$anyFoldersSeen = $true
-		
-		foreach ($folder in $folders)
+		if ($OperationStatus)
 		{
-			$folderName = $folder.Name
+			$OperationStatus["OldXFoldersDeletion"].Status = "No Folders Found"
+			$OperationStatus["OldXFoldersDeletion"].Message = "No X* or Z* folders were found under '$basePath'."
+			$OperationStatus["OldXFoldersDeletion"].Details = "Nothing to delete."
+		}
+		Write-Host "Info: No X* or Z* folders found under '$basePath'." -ForegroundColor Cyan
+		return
+	}
+	
+	$anyFoldersSeen = $true
+	
+	foreach ($folder in $folders)
+	{
+		$folderName = $folder.Name
+		
+		# STRICT pattern only: (X|Z)(letter)(store 3-4 digits)(terminal 3 digits)
+		if ($folderName -match '^(?<prefix>[XZ][A-Za-z])(?<store>\d{3,4})(?<terminal>\d{3})$')
+		{
+			$folderStore = $matches['store']
+			$folderTerminal = $matches['terminal']
 			
-			# Match expected pattern
-			if ($folderName -match "^(?<prefix>XF|XW)(?<store>\d{3,4})(?<terminal>\d{3})$")
+			$storeOk = ($keepStores -contains $folderStore)
+			$terminalOk = ($keepTerminals -contains $folderTerminal)
+			
+			# Delete if it does NOT match new store AND allowed terminal(s)
+			if (-not ($storeOk -and $terminalOk))
 			{
-				$folderStore = $matches['store']
-				$folderTerminal = $matches['terminal']
+				$anyCandidatesMatched = $true
 				
-				# Store match: accept either 3 or 4 digit representation of the SAME store
-				$storeMatches = ($folderStore -eq $store3) -or ($folderStore -eq $store4)
+				$maxRetries = 3
+				$retryCount = 0
+				$deleted = $false
 				
-				if ($storeMatches -and $folderTerminal -ne "901" -and $folderTerminal -ne $machineNumber)
+				while ($retryCount -lt $maxRetries -and -not $deleted)
 				{
-					$anyCandidatesMatched = $true
-					
-					$maxRetries = 3
-					$retryCount = 0
-					$deleted = $false
-					
-					while ($retryCount -lt $maxRetries -and -not $deleted)
+					try
 					{
-						try
+						Remove-Item -Path $folder.FullName -Recurse -Force -ErrorAction Stop
+						$deletedFolders += $folderName
+						$deleted = $true
+					}
+					catch
+					{
+						$retryCount++
+						Start-Sleep -Seconds 2
+						
+						if ($retryCount -ge $maxRetries)
 						{
-							Remove-Item -Path $folder.FullName -Recurse -Force -ErrorAction Stop
-							$deletedFolders += $folderName
-							$deleted = $true
-						}
-						catch
-						{
-							$retryCount++
-							Start-Sleep -Seconds 2
-							
-							if ($retryCount -ge $maxRetries)
-							{
-								$failedToDeleteFolders += $folderName
-								Write-Host "Failed to delete folder: $folderName. Error: $_" -ForegroundColor Red
-							}
+							$failedToDeleteFolders += $folderName
+							Write-Host "Failed to delete folder: $folderName. Error: $($_.Exception.Message)" -ForegroundColor Red
 						}
 					}
 				}
 			}
-			else
-			{
-				Write-Host "Skipped: Folder '$folderName' does not match expected pattern (XF/XW + 3-4 digits + 3 digits)" -ForegroundColor Yellow
-			}
 		}
 	}
 	
-	# Build result message
+	# -----------------------------
+	# Results
+	# -----------------------------
 	$resultMessage = ""
 	if ($deletedFolders.Count -gt 0)
 	{
@@ -699,28 +737,15 @@ function Remove_Old_XF/XW_Folders
 		$resultMessage += "Failed to delete folders:`n$($failedToDeleteFolders -join "`n")`n"
 	}
 	
-	# Decide outcome
-	if (-not $anyFoldersSeen)
-	{
-		if ($OperationStatus)
-		{
-			$OperationStatus["OldXFoldersDeletion"].Status = "No Folders Found"
-			$OperationStatus["OldXFoldersDeletion"].Message = "No XF/XW folders were found under '$basePath'."
-			$OperationStatus["OldXFoldersDeletion"].Details = "Nothing to delete."
-		}
-		Write-Host "Info: No XF/XW folders found under '$basePath'." -ForegroundColor Cyan
-		return
-	}
-	
 	if (-not $anyCandidatesMatched)
 	{
 		if ($OperationStatus)
 		{
 			$OperationStatus["OldXFoldersDeletion"].Status = "No Matching Folders"
-			$OperationStatus["OldXFoldersDeletion"].Message = "No old XF/XW folders matched store $StoreNumber (excluding $machineNumber and 901)."
+			$OperationStatus["OldXFoldersDeletion"].Message = "No X*/Z* folders needed deletion. Kept stores: $($keepStores -join ', ') terminals: $($keepTerminals -join ', ')."
 			$OperationStatus["OldXFoldersDeletion"].Details = "Nothing to delete."
 		}
-		Write-Host "Info: No matching old XF/XW folders to delete for store $StoreNumber." -ForegroundColor Cyan
+		Write-Host "Info: Nothing to delete. Kept stores: $($keepStores -join ', ') terminals: $($keepTerminals -join ', ')." -ForegroundColor Cyan
 		return
 	}
 	
@@ -729,10 +754,10 @@ function Remove_Old_XF/XW_Folders
 		if ($OperationStatus)
 		{
 			$OperationStatus["OldXFoldersDeletion"].Status = "Successful"
-			$OperationStatus["OldXFoldersDeletion"].Message = "Old XF and XW folders deleted successfully."
+			$OperationStatus["OldXFoldersDeletion"].Message = "Old X*/Z* folders deleted successfully."
 			$OperationStatus["OldXFoldersDeletion"].Details = $resultMessage
 		}
-		Write-Host "Success: Old XF and XW folders deleted successfully." -ForegroundColor Green
+		Write-Host "Success: Old X*/Z* folders deleted successfully." -ForegroundColor Green
 		if ($resultMessage) { Write-Host $resultMessage -ForegroundColor Green }
 	}
 	elseif ($deletedFolders.Count -gt 0 -and $failedToDeleteFolders.Count -gt 0)
@@ -740,10 +765,10 @@ function Remove_Old_XF/XW_Folders
 		if ($OperationStatus)
 		{
 			$OperationStatus["OldXFoldersDeletion"].Status = "Partial Failure"
-			$OperationStatus["OldXFoldersDeletion"].Message = "Some old XF and XW folders could not be deleted."
+			$OperationStatus["OldXFoldersDeletion"].Message = "Some old X*/Z* folders could not be deleted."
 			$OperationStatus["OldXFoldersDeletion"].Details = $resultMessage
 		}
-		Write-Host "Warning: Some old XF and XW folders could not be deleted." -ForegroundColor Yellow
+		Write-Host "Warning: Some old X*/Z* folders could not be deleted." -ForegroundColor Yellow
 		if ($resultMessage) { Write-Host $resultMessage -ForegroundColor Yellow }
 	}
 	else
@@ -751,10 +776,10 @@ function Remove_Old_XF/XW_Folders
 		if ($OperationStatus)
 		{
 			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
-			$OperationStatus["OldXFoldersDeletion"].Message = "Failed to delete any old XF and XW folders."
+			$OperationStatus["OldXFoldersDeletion"].Message = "Failed to delete any old X*/Z* folders."
 			$OperationStatus["OldXFoldersDeletion"].Details = $resultMessage
 		}
-		Write-Host "Error: Failed to delete any old XF and XW folders." -ForegroundColor Red
+		Write-Host "Error: Failed to delete any old X*/Z* folders." -ForegroundColor Red
 		if ($resultMessage) { Write-Host $resultMessage -ForegroundColor Red }
 	}
 }
@@ -904,84 +929,390 @@ function Get_NEW_Store_Number
 }
 
 # ===================================================================================================
-# 									FUNCTION: Update_Store_Number_In_INI
+# 									FUNCTION: Update_INIs
 # ---------------------------------------------------------------------------------------------------
 # Description:
 # Updates ALL required INI files with the new store number.
 # Supports both 3-digit and 4-digit store numbers.
 # NOTE: No backups are created.
+#
+# Always-best-effort behavior:
+# - Does NOT prompt
+# - If MachineName missing -> uses $env:COMPUTERNAME
+# - If terminal digits cannot be extracted -> still updates other INIs; skips SmsHttps Processor update
+# - If old store cannot be detected -> still forces STORE= and REDIR lines; skips token-replace mapping
+# - SmsHttps.INI: enforces exactly ONE processor entry (purges all others), and forces REDIR to <STORE>901
+#
+# FIX INCLUDED:
+# - Startup.ini / SMSStart.ini / INFO_*901_WIN.ini now preserve ORIGINAL encoding + ORIGINAL newline style
+#   (same approach as SmsHttps.INI: read bytes -> detect encoding -> detect CRLF/LF -> write back with same)
 # ===================================================================================================
 
-function Update_Store_Number_In_INI
+function Update_INIs
 {
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $true)]
-		[ValidatePattern('^(?!0{3,4})\d{3,4}$')]
-		[string]$newStoreNumber
+		[ValidatePattern('^(?!0+$)\d{3,4}$')]
+		[string]$newStoreNumber,
+		[Parameter(Mandatory = $false)]
+		[string]$MachineName,
+		[Parameter(Mandatory = $false)]
+		[string]$OldStoreNumber,
+		[Parameter(Mandatory = $false)]
+		[string]$OldMachineName,
+		[Parameter(Mandatory = $false)]
+		[string]$StartupIniPath,
+		[Parameter(Mandatory = $false)]
+		[string]$GlobalSmsStartIniPath,
+		[Parameter(Mandatory = $false)]
+		[string]$WinIniPath,
+		[Parameter(Mandatory = $false)]
+		[string]$SmsHttpsIniPath,
+		[Parameter(Mandatory = $false)]
+		[switch]$CreateSmsHttpsIfMissing
 	)
-
+	
 	$success = $true
-
-	# ===============================================================================================
-	# 1) Update Startup.ini (STORE + REDIRs)
-	# ===============================================================================================
-	if (-not (Test-Path $StartupIniPath))
+	
+	# If caller didn't supply MachineName, use current machine name (no prompt, no rename)
+	if ([string]::IsNullOrWhiteSpace($MachineName))
 	{
-		Write-Host "startup.ini not found at $StartupIniPath" -ForegroundColor Red
+		$MachineName = $env:COMPUTERNAME
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Normalize NEW store (preserve user width for REDIR/STORE lines)
+	# ------------------------------------------------------------------------------------------------
+	$newStoreTrim = $newStoreNumber
+	if ($null -eq $newStoreTrim) { $newStoreTrim = "" }
+	$newStoreTrim = $newStoreTrim.Trim()
+	
+	$newStoreInt = [int]$newStoreTrim
+	$newStore3 = $newStoreInt.ToString("D3")
+	$newStore4 = $newStoreInt.ToString("D4")
+	
+	# ------------------------------------------------------------------------------------------------
+	# Normalize machine -> extract terminal (last 1-3 digits) padded to 3 (used for SmsHttps key)
+	# If not possible, we still update other INIs; just skip SmsHttps processor update.
+	# ------------------------------------------------------------------------------------------------
+	$mn = $MachineName
+	if ($null -eq $mn) { $mn = "" }
+	$mn = $mn.Trim()
+	$mn = $mn -replace '^[\\\/]+', ''
+	if ($mn -match '[\\\/]') { $mn = ($mn -split '[\\\/]')[0] }
+	if ($mn -match '\.') { $mn = ($mn -split '\.')[0] }
+	$mn = $mn.Trim().ToUpper()
+	
+	$newTerminal = $null
+	if ($mn -match '(\d{1,3})$')
+	{
+		$newTerminal = ([int]$Matches[1]).ToString("D3")
+		if ($newTerminal -eq "000") { $newTerminal = $null }
+	}
+	
+	# ===============================================================================================
+	# 1) Resolve + Update Startup.ini (required)
+	# ===============================================================================================
+	if ([string]::IsNullOrWhiteSpace($StartupIniPath))
+	{
+		$startupCandidates = @(
+			"\\localhost\storeman\Startup.ini",
+			"C:\storeman\Startup.ini",
+			"D:\storeman\Startup.ini"
+		)
+		foreach ($c in $startupCandidates)
+		{
+			if (Test-Path $c) { $StartupIniPath = $c; break }
+		}
+	}
+	
+	if ([string]::IsNullOrWhiteSpace($StartupIniPath) -or -not (Test-Path $StartupIniPath))
+	{
+		Write-Host "startup.ini not found. Provide -StartupIniPath or ensure it exists in default locations." -ForegroundColor Red
 		return $false
 	}
-
+	
+	$oldStoreDetected = $null
+	
 	try
 	{
-		$startupLines = Get-Content -Path $StartupIniPath -ErrorAction Stop
-
-		# STORE= (3 or 4 digits)
-		$startupLines = $startupLines -replace '^[ \t]*STORE\s*=\s*\d{1,4}\s*$', ("STORE=" + $newStoreNumber)
-
-		# REDIRMAIL/REDIRMSG=<store>901  -> keep the 901 suffix
-		$startupLines = $startupLines -replace '^[ \t]*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$',
-			('`$1=' + $newStoreNumber + '`$2')
-
-		# IMPORTANT: Set-Content default encoding differs by PS version; keep UTF8 if that’s what you want.
-		Set-Content -Path $StartupIniPath -Value $startupLines -Encoding UTF8 -Force -ErrorAction Stop
-
+		# --- Read preserving encoding + newline (SmsHttps-style) ---
+		$bytes = [System.IO.File]::ReadAllBytes($StartupIniPath)
+		
+		$encStartup = $null
+		if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+		{
+			$encStartup = New-Object System.Text.UTF8Encoding($true)
+		}
+		elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
+		{
+			$encStartup = [System.Text.Encoding]::Unicode
+		}
+		elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
+		{
+			$encStartup = [System.Text.Encoding]::BigEndianUnicode
+		}
+		else
+		{
+			$encStartup = [System.Text.Encoding]::Default
+		}
+		
+		$textStartup = $encStartup.GetString($bytes)
+		
+		$nlStartup = "`r`n"
+		if ($textStartup -notmatch "`r`n" -and $textStartup -match "`n") { $nlStartup = "`n" }
+		
+		$startupLines = $textStartup -split "\r?\n", -1
+		
+		# Detect OLD store number (prefer STORE=)
+		foreach ($l in $startupLines)
+		{
+			if ($l -match '^\s*STORE\s*=\s*(\d{3,4})\s*$')
+			{
+				$oldStoreDetected = $matches[1]
+				break
+			}
+		}
+		
+		if (-not $oldStoreDetected)
+		{
+			foreach ($l in $startupLines)
+			{
+				if ($l -match '^\s*SERVERNAME\s*=\s*(\d{3,4})[A-Za-z]')
+				{
+					$oldStoreDetected = $matches[1]
+					break
+				}
+			}
+		}
+		
+		if (-not $oldStoreDetected)
+		{
+			foreach ($l in $startupLines)
+			{
+				if ($l -match '\\\\(\d{3,4})[A-Za-z]')
+				{
+					$oldStoreDetected = $matches[1]
+					break
+				}
+			}
+		}
+		
+		# If user provided OldStoreNumber, it overrides detection (as long as valid)
+		if (-not [string]::IsNullOrWhiteSpace($OldStoreNumber))
+		{
+			$os = $OldStoreNumber.Trim()
+			if ($os -match '^(?!0+$)\d{3,4}$')
+			{
+				$oldStoreDetected = $os
+			}
+		}
+		
+		# If still not detected, do NOT abort - we can still force STORE=/REDIR= lines.
+		$doTokenReplace = $true
+		if (-not $oldStoreDetected)
+		{
+			$doTokenReplace = $false
+		}
+		
+		$oldTokens = @()
+		$newTokens = @()
+		
+		if ($doTokenReplace)
+		{
+			$oldStoreInt = [int]$oldStoreDetected
+			$oldStore3 = $oldStoreInt.ToString("D3")
+			$oldStore4 = $oldStoreInt.ToString("D4")
+			
+			# Replace order: 4-digit first, then 3-digit
+			$oldTokens = @($oldStore4, $oldStore3)
+			$newTokens = @($newStore4, $newStore3)
+		}
+		
+		for ($i = 0; $i -lt $startupLines.Count; $i++)
+		{
+			$line = $startupLines[$i]
+			
+			# Force STORE=
+			$line = $line -replace '^\s*STORE\s*=\s*\d{1,4}\s*$', ("STORE=" + $newStoreTrim)
+			
+			# REDIRMAIL/REDIRMSG=<store>901 (keep 901 suffix)
+			$line = $line -replace '^\s*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$', ('$1=' + $newStoreTrim + '$2')
+			
+			# Replace store token wherever it appears (only if we detected old store)
+			if ($doTokenReplace)
+			{
+				for ($t = 0; $t -lt $oldTokens.Count; $t++)
+				{
+					$oldEsc = [regex]::Escape($oldTokens[$t])
+					$newTok = $newTokens[$t]
+					
+					# before letters: 0242SERVER001
+					$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
+					# before 3 digits: 0242901, XF0242901
+					$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
+					# standalone token
+					$line = $line -replace ("(?<!\d)" + $oldEsc + "(?!\d)"), $newTok
+				}
+			}
+			
+			$startupLines[$i] = $line
+		}
+		
+		# --- Write preserving encoding + newline ---
+		$outTextStartup = ($startupLines -join $nlStartup)
+		[System.IO.File]::WriteAllText($StartupIniPath, $outTextStartup, $encStartup)
+		
 		Write-Host "Updated startup.ini" -ForegroundColor Green
+		
+		# If old store wasn't detected, keep OldStoreNumber fallback for downstream (optional use)
+		if (-not $oldStoreDetected)
+		{
+			$oldStoreDetected = $newStoreTrim
+		}
 	}
 	catch
 	{
 		$success = $false
 		Write-Host "Failed updating startup.ini: $($_.Exception.Message)" -ForegroundColor Red
+		# still continue to other INIs
+		if (-not $oldStoreDetected) { $oldStoreDetected = $newStoreTrim }
 	}
-
+	
 	# ===============================================================================================
-	# 2) Update Global SMSStart.ini → Only STORE= inside [SMSSTART]
+	# 2) Update Global SMSStart.ini (optional; skip if missing)
+	#    FIX: also update/ensure TER=<terminal> inside [SMSSTART]
 	# ===============================================================================================
-	if ($GlobalSmsStartIniPath -and (Test-Path $GlobalSmsStartIniPath))
+	if ([string]::IsNullOrWhiteSpace($GlobalSmsStartIniPath))
+	{
+		$smsStartCandidates = @(
+			"\\localhost\storeman\SMSStart.ini",
+			"C:\storeman\SMSStart.ini",
+			"D:\storeman\SMSStart.ini"
+		)
+		foreach ($c in $smsStartCandidates)
+		{
+			if (Test-Path $c) { $GlobalSmsStartIniPath = $c; break }
+		}
+	}
+	
+	if (-not [string]::IsNullOrWhiteSpace($GlobalSmsStartIniPath) -and (Test-Path $GlobalSmsStartIniPath))
 	{
 		try
 		{
-			$globalLines = Get-Content -Path $GlobalSmsStartIniPath -ErrorAction Stop
-			$inSmsStartSection = $false
-
-			for ($i = 0; $i -lt $globalLines.Count; $i++)
+			# --- Read preserving encoding + newline (SmsHttps-style) ---
+			$bytes = [System.IO.File]::ReadAllBytes($GlobalSmsStartIniPath)
+			
+			$encSmsStart = $null
+			if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
 			{
-				$line = $globalLines[$i]
-
+				$encSmsStart = New-Object System.Text.UTF8Encoding($true)
+			}
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
+			{
+				$encSmsStart = [System.Text.Encoding]::Unicode
+			}
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
+			{
+				$encSmsStart = [System.Text.Encoding]::BigEndianUnicode
+			}
+			else
+			{
+				$encSmsStart = [System.Text.Encoding]::Default
+			}
+			
+			$textSmsStart = $encSmsStart.GetString($bytes)
+			
+			$nlSmsStart = "`r`n"
+			if ($textSmsStart -notmatch "`r`n" -and $textSmsStart -match "`n") { $nlSmsStart = "`n" }
+			
+			$globalLines = $textSmsStart -split "\r?\n", -1
+			
+			$doTokenReplace = $false
+			$oldTokens = @()
+			$newTokens = @()
+			
+			if (-not [string]::IsNullOrWhiteSpace($oldStoreDetected) -and ($oldStoreDetected -match '^\d{3,4}$'))
+			{
+				$doTokenReplace = $true
+				$oldStoreInt = [int]$oldStoreDetected
+				$oldTokens = @($oldStoreInt.ToString("D4"), $oldStoreInt.ToString("D3"))
+				$newTokens = @($newStore4, $newStore3)
+			}
+			
+			$out = @()
+			$inSmsStartSection = $false
+			$terFound = $false
+			$terLine = $null
+			if ($newTerminal) { $terLine = "TER=$newTerminal" }
+			
+			foreach ($raw in $globalLines)
+			{
+				$line = $raw
+				
+				# Section header?
 				if ($line -match '^\s*\[(.+?)\]\s*$')
 				{
+					# Leaving [SMSSTART] -> ensure TER exists (if we can build it)
+					if ($inSmsStartSection -and -not $terFound -and $terLine)
+					{
+						$out += $terLine
+						$terFound = $true
+					}
+					
 					$sectionName = $matches[1].Trim()
 					$inSmsStartSection = ($sectionName -ieq 'SMSSTART')
+					if ($inSmsStartSection) { $terFound = $false }
+					
+					$out += $line
 					continue
 				}
-
-				if ($inSmsStartSection -and $line -match '^\s*STORE\s*=\s*\d{1,4}\s*$')
+				
+				if ($inSmsStartSection)
 				{
-					$globalLines[$i] = "STORE=$newStoreNumber"
+					# Force STORE= inside [SMSSTART]
+					$line = $line -replace '^\s*STORE\s*=\s*\d{1,4}\s*$', ("STORE=" + $newStoreTrim)
+					
+					# Keep 901 suffix
+					$line = $line -replace '^\s*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$',
+					('$1=' + $newStoreTrim + '$2')
+					
+					# FIX: Update TER= inside [SMSSTART] (only if terminal was extracted)
+					if ($terLine -and ($line -match '^\s*(?i:TER)\s*='))
+					{
+						$line = $terLine
+						$terFound = $true
+					}
+					
+					# Replace store token contexts (if present in this section)
+					if ($doTokenReplace)
+					{
+						for ($t = 0; $t -lt $oldTokens.Count; $t++)
+						{
+							$oldEsc = [regex]::Escape($oldTokens[$t])
+							$newTok = $newTokens[$t]
+							
+							$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
+							$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
+							$line = $line -replace ("(?<!\d)" + $oldEsc + "(?!\d)"), $newTok
+						}
+					}
 				}
+				
+				$out += $line
 			}
-
-			Set-Content -Path $GlobalSmsStartIniPath -Value $globalLines -Encoding UTF8 -Force -ErrorAction Stop
+			
+			# EOF while still in [SMSSTART] -> ensure TER exists
+			if ($inSmsStartSection -and -not $terFound -and $terLine)
+			{
+				$out += $terLine
+			}
+			
+			# --- Write preserving encoding + newline ---
+			$outTextSmsStart = ($out -join $nlSmsStart)
+			[System.IO.File]::WriteAllText($GlobalSmsStartIniPath, $outTextSmsStart, $encSmsStart)
+			
 			Write-Host "Updated SMSStart.ini" -ForegroundColor Green
 		}
 		catch
@@ -990,25 +1321,94 @@ function Update_Store_Number_In_INI
 			Write-Host "Failed updating SMSStart.ini: $($_.Exception.Message)" -ForegroundColor Red
 		}
 	}
-
+	
 	# ===============================================================================================
-	# 3) Update INFO_*901_WIN.ini → STORE anywhere
+	# 3) Update INFO_*901_WIN.ini (optional; skip if missing)
 	# ===============================================================================================
-	if ($WinIniPath -and (Test-Path $WinIniPath))
+	if ([string]::IsNullOrWhiteSpace($WinIniPath))
+	{
+		$officeBases = @("\\localhost\storeman\office", "C:\storeman\office", "D:\storeman\office")
+		foreach ($b in $officeBases)
+		{
+			if (Test-Path $b)
+			{
+				$f = Get-ChildItem -Path $b -File -Filter "INFO_*901_WIN.ini" -ErrorAction SilentlyContinue | Select-Object -First 1
+				if ($f) { $WinIniPath = $f.FullName; break }
+			}
+		}
+	}
+	
+	if (-not [string]::IsNullOrWhiteSpace($WinIniPath) -and (Test-Path $WinIniPath))
 	{
 		try
 		{
-			$winLines = Get-Content -Path $WinIniPath -ErrorAction Stop
-
+			# --- Read preserving encoding + newline (SmsHttps-style) ---
+			$bytes = [System.IO.File]::ReadAllBytes($WinIniPath)
+			
+			$encWin = $null
+			if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+			{
+				$encWin = New-Object System.Text.UTF8Encoding($true)
+			}
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
+			{
+				$encWin = [System.Text.Encoding]::Unicode
+			}
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
+			{
+				$encWin = [System.Text.Encoding]::BigEndianUnicode
+			}
+			else
+			{
+				$encWin = [System.Text.Encoding]::Default
+			}
+			
+			$textWin = $encWin.GetString($bytes)
+			
+			$nlWin = "`r`n"
+			if ($textWin -notmatch "`r`n" -and $textWin -match "`n") { $nlWin = "`n" }
+			
+			$winLines = $textWin -split "\r?\n", -1
+			
+			$doTokenReplace = $false
+			$oldTokens = @()
+			$newTokens = @()
+			
+			if (-not [string]::IsNullOrWhiteSpace($oldStoreDetected) -and ($oldStoreDetected -match '^\d{3,4}$'))
+			{
+				$doTokenReplace = $true
+				$oldStoreInt = [int]$oldStoreDetected
+				$oldTokens = @($oldStoreInt.ToString("D4"), $oldStoreInt.ToString("D3"))
+				$newTokens = @($newStore4, $newStore3)
+			}
+			
 			for ($j = 0; $j -lt $winLines.Count; $j++)
 			{
-				if ($winLines[$j] -match '^\s*STORE\s*=\s*\d{1,4}\s*$')
+				$line = $winLines[$j]
+				
+				$line = $line -replace '^\s*STORE\s*=\s*\d{1,4}\s*$', ("STORE=" + $newStoreTrim)
+				$line = $line -replace '^\s*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$', ('$1=' + $newStoreTrim + '$2')
+				
+				if ($doTokenReplace)
 				{
-					$winLines[$j] = "STORE=$newStoreNumber"
+					for ($t = 0; $t -lt $oldTokens.Count; $t++)
+					{
+						$oldEsc = [regex]::Escape($oldTokens[$t])
+						$newTok = $newTokens[$t]
+						
+						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
+						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
+						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?!\d)"), $newTok
+					}
 				}
+				
+				$winLines[$j] = $line
 			}
-
-			Set-Content -Path $WinIniPath -Value $winLines -Encoding UTF8 -Force -ErrorAction Stop
+			
+			# --- Write preserving encoding + newline ---
+			$outTextWin = ($winLines -join $nlWin)
+			[System.IO.File]::WriteAllText($WinIniPath, $outTextWin, $encWin)
+			
 			Write-Host "Updated INFO_*901_WIN.ini" -ForegroundColor Green
 		}
 		catch
@@ -1017,7 +1417,332 @@ function Update_Store_Number_In_INI
 			Write-Host "Failed updating INFO_*901_WIN.ini: $($_.Exception.Message)" -ForegroundColor Red
 		}
 	}
-
+	
+	# ===============================================================================================
+	# 4) Update SmsHttps.INI (optional; skip if missing)
+	#     - Update [PROCESSORS] / [PROCESSOR] to EXACTLY ONE entry matching <STORE><LANE>
+	#     - Purge any other processor entries
+	#     - Force REDIRMAIL/REDIRMSG=<STORE>901
+	#     - Clear LicenseGUID in [GENERAL]
+	# ===============================================================================================
+	if ([string]::IsNullOrWhiteSpace($SmsHttpsIniPath))
+	{
+		$smsHttpsCandidates = @(
+			"\\localhost\storeman\SmsHttps64\SmsHttps.INI",
+			"C:\storeman\SmsHttps64\SmsHttps.INI",
+			"D:\storeman\SmsHttps64\SmsHttps.INI"
+		)
+		foreach ($c in $smsHttpsCandidates)
+		{
+			if (Test-Path $c) { $SmsHttpsIniPath = $c; break }
+		}
+	}
+	
+	if (-not [string]::IsNullOrWhiteSpace($SmsHttpsIniPath) -and (Test-Path $SmsHttpsIniPath))
+	{
+		try
+		{
+			# If we can't extract a lane number, skip processor update (but still clear LicenseGUID)
+			$canUpdateProcessor = $true
+			if ([string]::IsNullOrWhiteSpace($newTerminal))
+			{
+				$canUpdateProcessor = $false
+			}
+			
+			$bytes = [System.IO.File]::ReadAllBytes($SmsHttpsIniPath)
+			
+			$enc = $null
+			if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+			{
+				$enc = New-Object System.Text.UTF8Encoding($true)
+			}
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
+			{
+				$enc = [System.Text.Encoding]::Unicode
+			}
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
+			{
+				$enc = [System.Text.Encoding]::BigEndianUnicode
+			}
+			else
+			{
+				$enc = [System.Text.Encoding]::Default
+			}
+			
+			$text = $enc.GetString($bytes)
+			
+			$nl = "`r`n"
+			if ($text -notmatch "`r`n" -and $text -match "`n") { $nl = "`n" }
+			
+			$lines = $text -split "\r?\n", -1
+			
+			$storeWidth = $newStoreTrim.Length
+			$storeNorm = ([int]$newStoreTrim).ToString(("D{0}" -f $storeWidth))
+			
+			$newKey = $null
+			if ($canUpdateProcessor)
+			{
+				$newKey = $storeNorm + $newTerminal
+			}
+			$redirKey901 = $storeNorm + "901"
+			
+			# oldTerminal (optional)
+			$oldTerminal = $null
+			if (-not [string]::IsNullOrWhiteSpace($OldMachineName))
+			{
+				$omn = $OldMachineName
+				if ($null -eq $omn) { $omn = "" }
+				$omn = $omn.Trim()
+				$omn = $omn -replace '^[\\\/]+', ''
+				if ($omn -match '[\\\/]') { $omn = ($omn -split '[\\\/]')[0] }
+				if ($omn -match '\.') { $omn = ($omn -split '\.')[0] }
+				$omn = $omn.Trim().ToUpper()
+				
+				if ($omn -match '(\d{1,3})$')
+				{
+					$oldTerminal = ([int]$Matches[1]).ToString("D3")
+					if ($oldTerminal -eq "000") { $oldTerminal = $null }
+				}
+			}
+			
+			$oldKeyExact = $null
+			if (-not [string]::IsNullOrWhiteSpace($OldStoreNumber) -and $oldTerminal)
+			{
+				$osn = $OldStoreNumber.Trim()
+				if ($osn -match '^(?!0+$)\d{3,4}$')
+				{
+					$osWidth = $osn.Length
+					$oldKeyExact = ([int]$osn).ToString(("D{0}" -f $osWidth)) + $oldTerminal
+				}
+			}
+			
+			# Find section [PROCESSORS] or [PROCESSOR]
+			$secStart = -1
+			for ($i = 0; $i -lt $lines.Length; $i++)
+			{
+				if ($lines[$i] -match '^\s*\[\s*PROCESSORS?\s*\]\s*$')
+				{
+					$secStart = $i
+					break
+				}
+			}
+			
+			$secEnd = $lines.Length
+			if ($secStart -ge 0)
+			{
+				for ($i = $secStart + 1; $i -lt $lines.Length; $i++)
+				{
+					if ($lines[$i] -match '^\s*\[.*\]\s*$')
+					{
+						$secEnd = $i
+						break
+					}
+				}
+			}
+			
+			$processorsChanged = $false
+			$licenseGuidCleared = $false
+			
+			# ---- Processor enforcement (ONLY if we can build the newKey)
+			if ($canUpdateProcessor)
+			{
+				if ($secStart -ge 0)
+				{
+					$entries = @()
+					for ($i = $secStart + 1; $i -lt $secEnd; $i++)
+					{
+						if ($lines[$i] -match '^(?<ws>\s*)(?<key>\d{6,7})\s*=\s*(?<rhs>.*)$')
+						{
+							$entries += [pscustomobject]@{
+								Index = $i
+								Ws    = $matches['ws']
+								Key   = $matches['key']
+								Rhs   = $matches['rhs']
+							}
+						}
+					}
+					
+					# pick a source rhs
+					$source = $null
+					if ($oldKeyExact)
+					{
+						foreach ($e in $entries) { if ($e.Key -eq $oldKeyExact) { $source = $e; break } }
+					}
+					if (-not $source -and $oldTerminal)
+					{
+						foreach ($e in $entries)
+						{
+							if ($e.Key.Length -ge 3 -and $e.Key.Substring($e.Key.Length - 3) -eq $oldTerminal) { $source = $e; break }
+						}
+					}
+					if (-not $source)
+					{
+						foreach ($e in $entries)
+						{
+							if ($e.Key.Length -ge 3 -and $e.Key.Substring($e.Key.Length - 3) -eq $newTerminal) { $source = $e; break }
+						}
+					}
+					if (-not $source -and $entries.Count -gt 0) { $source = $entries[0] }
+					
+					$rhsUpdated = ""
+					$wsToUse = ""
+					if ($source)
+					{
+						$rhsUpdated = $source.Rhs
+						$wsToUse = $source.Ws
+					}
+					
+					# Replace any old processor keys inside RHS -> newKey (fixes 2222004... lingering)
+					foreach ($e in $entries)
+					{
+						$rhsUpdated = $rhsUpdated -replace ("(?<!\d)" + [regex]::Escape($e.Key) + "(?!\d)"), $newKey
+					}
+					if ($oldKeyExact)
+					{
+						$rhsUpdated = $rhsUpdated -replace ("(?<!\d)" + [regex]::Escape($oldKeyExact) + "(?!\d)"), $newKey
+					}
+					
+					# Strip existing REDIRMAIL/REDIRMSG then enforce correct
+					$rhsUpdated = [regex]::Replace($rhsUpdated, '\bREDIRMAIL\s*=\s*\d{6,7}', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+					$rhsUpdated = [regex]::Replace($rhsUpdated, '\bREDIRMSG\s*=\s*\d{6,7}', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+					
+					$rhsUpdated = $rhsUpdated -replace ',{2,}', ','
+					$rhsUpdated = $rhsUpdated.Trim().Trim(',').Trim()
+					
+					if ([string]::IsNullOrWhiteSpace($rhsUpdated))
+					{
+						$rhsUpdated = "REDIRMAIL=$redirKey901,REDIRMSG=$redirKey901,TARGETSEND=,TARGETRECV=,DEADLOCKPRIORITY="
+					}
+					else
+					{
+						$rhsUpdated = "REDIRMAIL=$redirKey901,REDIRMSG=$redirKey901," + $rhsUpdated
+					}
+					
+					$newProcessorLine = $wsToUse + $newKey + "=" + $rhsUpdated
+					
+					# Purge all entries; insert ONE
+					$insertAt = $secStart + 1
+					if ($entries.Count -gt 0)
+					{
+						$min = $entries[0].Index
+						foreach ($e in $entries) { if ($e.Index -lt $min) { $min = $e.Index } }
+						$insertAt = $min
+					}
+					
+					$out = @()
+					$inserted = $false
+					
+					for ($i = 0; $i -lt $lines.Length; $i++)
+					{
+						if ($i -ge ($secStart + 1) -and $i -lt $secEnd)
+						{
+							if ($i -eq $insertAt -and -not $inserted)
+							{
+								$out += $newProcessorLine
+								$inserted = $true
+							}
+							
+							if ($lines[$i] -match '^\s*\d{6,7}\s*=')
+							{
+								continue
+							}
+							
+							$out += $lines[$i]
+							continue
+						}
+						
+						$out += $lines[$i]
+					}
+					
+					if (-not $inserted)
+					{
+						$out2 = @()
+						for ($i = 0; $i -lt $out.Length; $i++)
+						{
+							$out2 += $out[$i]
+							if ($i -eq $secStart)
+							{
+								$out2 += $newProcessorLine
+								$inserted = $true
+							}
+						}
+						$out = $out2
+					}
+					
+					if (($out -join $nl) -ne ($lines -join $nl))
+					{
+						$lines = $out
+						$processorsChanged = $true
+					}
+				}
+				else
+				{
+					# Section missing: create only if requested
+					if ($CreateSmsHttpsIfMissing)
+					{
+						$add = @()
+						$add += ""
+						$add += "[PROCESSORS]"
+						$add += ($newKey + "=REDIRMAIL=" + $redirKey901 + ",REDIRMSG=" + $redirKey901 + ",TARGETSEND=,TARGETRECV=,DEADLOCKPRIORITY=")
+						$lines = @($lines + $add)
+						$processorsChanged = $true
+					}
+				}
+			}
+			
+			# ---- Clear LicenseGUID in [GENERAL] (always attempt)
+			$genStart = -1
+			for ($i = 0; $i -lt $lines.Length; $i++)
+			{
+				if ($lines[$i] -match '^\s*\[\s*GENERAL\s*\]\s*$')
+				{
+					$genStart = $i
+					break
+				}
+			}
+			
+			if ($genStart -ge 0)
+			{
+				$genEnd = $lines.Length
+				for ($i = $genStart + 1; $i -lt $lines.Length; $i++)
+				{
+					if ($lines[$i] -match '^\s*\[.*\]\s*$')
+					{
+						$genEnd = $i
+						break
+					}
+				}
+				
+				for ($i = $genStart + 1; $i -lt $genEnd; $i++)
+				{
+					if ($lines[$i] -match '^(?<ws>\s*)(?i:LicenseGUID)\s*=\s*(?<val>.*)\s*$')
+					{
+						$ws = $matches['ws']
+						$val = $matches['val']
+						if ($val -ne "")
+						{
+							$lines[$i] = $ws + "LicenseGUID="
+							$licenseGuidCleared = $true
+						}
+						break
+					}
+				}
+			}
+			
+			if ($processorsChanged -or $licenseGuidCleared)
+			{
+				$outText = ($lines -join $nl)
+				[System.IO.File]::WriteAllText($SmsHttpsIniPath, $outText, $enc)
+				Write-Host "Updated SmsHttps.INI" -ForegroundColor Green
+			}
+		}
+		catch
+		{
+			$success = $false
+			Write-Host "Failed updating SmsHttps.INI: $($_.Exception.Message)" -ForegroundColor Red
+		}
+	}
+	
 	return $success
 }
 
@@ -1170,14 +1895,13 @@ function Get_NEW_Machine_Name
 			return $null
 		}
 		
-		# PS 5.1-safe null handling (no ??)
 		$userInput = $userInputRaw
 		if ($null -eq $userInput) { $userInput = "" }
 		$userInput = $userInput.Trim().ToUpper()
 		
 		if ([string]::IsNullOrEmpty($userInput))
 		{
-			[System.Windows.Forms.MessageBox]::Show("Machine name cannot be empty.", "Error")
+			[void][System.Windows.Forms.MessageBox]::Show("Machine name cannot be empty.", "Error")
 			continue
 		}
 		
@@ -1188,10 +1912,8 @@ function Get_NEW_Machine_Name
 			$namePrefix = $matches[2]
 			$terminal = $matches[3]
 			
-			# Ensure FunctionResults exists
 			if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 			
-			# Pull current store (as-is) from cache or INI
 			$currentStore = $null
 			if ($script:FunctionResults.ContainsKey('StoreNumber') -and $script:FunctionResults['StoreNumber'])
 			{
@@ -1203,9 +1925,9 @@ function Get_NEW_Machine_Name
 				if ($currentStore) { $currentStore = ($currentStore.ToString()).Trim() }
 			}
 			
-			# Decide store width:
-			# - If current store is 3 or 4 digits -> use THAT length
-			# - Else if user typed store prefix (3 or 4 digits) -> use THAT length
+			# Store width:
+			# - If current store is 3/4 digits -> use that length
+			# - Else if user typed 3/4 digits -> use that length
 			# - Else default 4
 			$storeWidth = 4
 			if ($currentStore -match '^\d{3,4}$')
@@ -1217,7 +1939,6 @@ function Get_NEW_Machine_Name
 				$storeWidth = $storePrefixRaw.Length
 			}
 			
-			# Normalize store prefix to chosen width (INLINE)
 			$storePrefixNorm = $null
 			if ($storePrefixRaw)
 			{
@@ -1225,7 +1946,6 @@ function Get_NEW_Machine_Name
 				$storePrefixNorm = $val.ToString(("D{0}" -f $storeWidth))
 			}
 			
-			# Normalize current store to same width (INLINE)
 			$currentStoreNorm = $null
 			if ($currentStore -match '^\d{3,4}$')
 			{
@@ -1233,11 +1953,17 @@ function Get_NEW_Machine_Name
 				$currentStoreNorm = $val2.ToString(("D{0}" -f $storeWidth))
 			}
 			
-			# Build normalized final machine name
-			$normalizedName = if ($storePrefixNorm) { "$storePrefixNorm$namePrefix$terminal" }
-			else { "$namePrefix$terminal" }
+			$normalizedName = $null
+			if ($storePrefixNorm)
+			{
+				$normalizedName = "$storePrefixNorm$namePrefix$terminal"
+			}
+			else
+			{
+				$normalizedName = "$namePrefix$terminal"
+			}
 			
-			# If user included store prefix, optionally sync INI when mismatch/unknown
+			# If user included store prefix, optionally sync INIs when mismatch/unknown
 			if ($storePrefixNorm)
 			{
 				if (-not $currentStoreNorm -or $storePrefixNorm -ne $currentStoreNorm)
@@ -1254,7 +1980,16 @@ function Get_NEW_Machine_Name
 					
 					if ($sync -eq [System.Windows.Forms.DialogResult]::Yes)
 					{
-						$success = Update_Store_Number_In_INI -newStoreNumber $storePrefixNorm
+						$iniParams = @{
+							newStoreNumber = $storePrefixNorm
+							MachineName    = $normalizedName # <-- IMPORTANT: new lane digits (002)
+							OldStoreNumber = $currentStoreNorm # best-effort (may be $null)
+							OldMachineName = $env:COMPUTERNAME # old lane digits (004)
+						}
+						if ($currentStoreNorm) { $iniParams["OldStoreNumber"] = $currentStoreNorm }
+						
+						$success = Update_INIs @iniParams
+						
 						if ($success)
 						{
 							$script:newStoreNumber = $storePrefixNorm
@@ -1268,17 +2003,16 @@ function Get_NEW_Machine_Name
 						}
 						else
 						{
-							[System.Windows.Forms.MessageBox]::Show("Failed to update store number in INI.", "Error")
+							[void][System.Windows.Forms.MessageBox]::Show("Failed to update store number in INI.", "Error")
 							continue
 						}
 					}
 				}
 			}
 			
-			# Prevent duplicate name (compare against current computername)
 			if ($normalizedName -eq $env:COMPUTERNAME.ToUpper())
 			{
-				[System.Windows.Forms.MessageBox]::Show(
+				[void][System.Windows.Forms.MessageBox]::Show(
 					"New name is the same as current computer name ($env:COMPUTERNAME).`nChoose a different name.",
 					"Invalid Name"
 				)
@@ -1288,7 +2022,7 @@ function Get_NEW_Machine_Name
 			return $normalizedName
 		}
 		
-		[System.Windows.Forms.MessageBox]::Show(
+		[void][System.Windows.Forms.MessageBox]::Show(
 			"Invalid format.`n`nValid examples:`n  LANE003`n  SCO012`n  0231LANE006`n  1234POS999`n`nRule: [optional 1-4 digits] + [2-8 letters] + [3 digits]",
 			"Invalid Machine Name",
 			[System.Windows.Forms.MessageBoxButtons]::OK,
@@ -1298,7 +2032,7 @@ function Get_NEW_Machine_Name
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Update_SQL_Tables_For_Machine_Name_Change
+#                       FUNCTION: Update_SQL_Tables_For_Machine_Name_Change
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Updates STO_TAB, TER_TAB, LNK_TAB, and RUN_TAB in the SQL database after machine name change.
@@ -1317,10 +2051,13 @@ function Update_SQL_Tables_For_Machine_Name_Change
 	$runTableName = "RUN_TAB"
 	$stoTableName = "STO_TAB"
 	$lnkTableName = "LNK_TAB"
+	$stdTableName = "STD_TAB"
 	
 	# Prepare SQL commands
 	
+	# ---------------------------
 	# TER_TAB commands
+	# ---------------------------
 	$createViewCommandTer = @"
 CREATE VIEW Ter_Load AS
 SELECT F1056, F1057, F1058, F1125, F1169
@@ -1353,7 +2090,9 @@ END
 	
 	$dropViewCommandTer = "DROP VIEW Ter_Load;"
 	
+	# ---------------------------
 	# RUN_TAB commands
+	# ---------------------------
 	$createViewCommandRun = @"
 CREATE VIEW Run_Load AS
 SELECT F1000, F1104
@@ -1372,7 +2111,9 @@ WHERE F1104 <> '901';
 	
 	$dropViewCommandRun = "DROP VIEW Run_Load;"
 	
+	# ---------------------------
 	# STO_TAB commands
+	# ---------------------------
 	$createViewCommandSto = @"
 CREATE VIEW Sto_Load AS
 SELECT F1000, F1018, F1180, F1181, F1182
@@ -1407,7 +2148,9 @@ AND F1000 NOT LIKE 'XAL%';
 	
 	$dropViewCommandSto = "DROP VIEW Sto_Load;"
 	
+	# ---------------------------
 	# LNK_TAB commands
+	# ---------------------------
 	$createViewCommandLnk = @"
 CREATE VIEW Lnk_Load AS
 SELECT F1000, F1056, F1057
@@ -1435,6 +2178,23 @@ WHERE F1057 <> '$machineNumber';
 	
 	$dropViewCommandLnk = "DROP VIEW Lnk_Load;"
 	
+	# ---------------------------
+	# STD_TAB commands
+	# ---------------------------
+	$createViewCommandStd = @"
+CREATE VIEW Std_Load AS
+SELECT F1056
+FROM $stdTableName;
+"@
+	
+	$updateStdTabCommand = @"
+UPDATE $stdTableName
+SET F1056 = '$storeNumber'
+WHERE F1056 NOT IN ('999','901');
+"@
+	
+	$dropViewCommandStd = "DROP VIEW Std_Load;"
+	
 	# Execute the SQL commands
 	$sqlCommands = @(
 		# TER_TAB commands
@@ -1459,6 +2219,11 @@ WHERE F1057 <> '$machineNumber';
 		$insertOrUpdateLnkCommand,
 		$deleteOldLnkTabEntries,
 		$dropViewCommandLnk
+		
+		# STD_TAB
+		$createViewCommandStd,
+		$updateStdTabCommand,
+		$dropViewCommandStd
 	)
 	
 	$allSqlSuccessful = $true
@@ -1668,7 +2433,9 @@ END
 		
 		$dropViewCommandTer = "DROP VIEW Ter_Load;"
 		
+		# ---------------------------
 		# RUN_TAB commands
+		# ---------------------------
 		$createViewCommandRun = @"
 CREATE VIEW Run_Load AS
 SELECT F1000, F1104
@@ -1687,7 +2454,9 @@ WHERE F1104 <> '901';
 		
 		$dropViewCommandRun = "DROP VIEW Run_Load;"
 		
+		# ---------------------------
 		# STO_TAB commands
+		# ---------------------------
 		$createViewCommandSto = @"
 CREATE VIEW Sto_Load AS
 SELECT F1000, F1018, F1180, F1181, F1182
@@ -1722,7 +2491,9 @@ AND F1000 NOT LIKE 'XAL%';
 		
 		$dropViewCommandSto = "DROP VIEW Sto_Load;"
 		
+		# ---------------------------
 		# LNK_TAB commands
+		# ---------------------------
 		$createViewCommandLnk = @"
 CREATE VIEW Lnk_Load AS
 SELECT F1000, F1056, F1057
@@ -1750,7 +2521,9 @@ WHERE F1057 <> '$machineNumber';
 		
 		$dropViewCommandLnk = "DROP VIEW Lnk_Load;"
 		
+		# ---------------------------
 		# STD_TAB commands
+		# ---------------------------
 		$createViewCommandStd = @"
 CREATE VIEW Std_Load AS
 SELECT F1056
@@ -1962,486 +2735,6 @@ function Remove_GT_Registry_Values
 		Status	     = $status
 		DeletedCount = $totalDeletedCount
 		Message	     = $message
-	}
-}
-
-# ===================================================================================================
-#                              FUNCTION: Update_SmsHttpsINI
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Updates the [PROCESSORS] section inside SmsHttps.INI to reflect the current machine/store values,
-#   and clears the LicenseGUID value in [GENERAL] so a new GUID can be generated after reboot.
-#
-#   Updates:
-#     - Processor key: <STORE><TERMINAL> (3+3 or 4+3 based on StoreNumber length)
-#     - REDIRMAIL / REDIRMSG: <STORE>901
-#     - [GENERAL] LicenseGUID: clears value -> "LicenseGUID="
-#
-#   Preserves:
-#     - Other parameters on the processor line (TARGETSEND/TARGETRECV/DEADLOCKPRIORITY/etc.)
-#     - File encoding + newline style
-#
-#   Matching:
-#     - Finds [PROCESSORS] section
-#     - Prefers exact old key if OldStoreNumber + OldMachineName provided
-#     - Otherwise matches by terminal suffix
-#     - Can create entry if missing (-CreateIfMissing)
-#
-#   Returns:
-#     Hashtable: Success/Message/Path/OldKey/NewKey/Changed/Redir901/LicenseGuidCleared
-# ===================================================================================================
-
-function Update_SmsHttpsINI
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $false)]
-		[string]$IniPath,
-		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber,
-		[Parameter(Mandatory = $true)]
-		[string]$MachineName,
-		[Parameter(Mandatory = $false)]
-		[string]$OldStoreNumber,
-		[Parameter(Mandatory = $false)]
-		[string]$OldMachineName,
-		[Parameter(Mandatory = $false)]
-		[switch]$CreateIfMissing
-	)
-	
-	# -----------------------------
-	# Resolve INI path
-	# -----------------------------
-	if ([string]::IsNullOrWhiteSpace($IniPath))
-	{
-		$candidates = @(
-			"\\localhost\storeman\SmsHttps64\SmsHttps.INI",
-			"C:\storeman\SmsHttps64\SmsHttps.INI",
-			"D:\storeman\SmsHttps64\SmsHttps.INI"
-		)
-		
-		foreach ($c in $candidates)
-		{
-			if (Test-Path $c)
-			{
-				$IniPath = $c
-				break
-			}
-		}
-	}
-	
-	if ([string]::IsNullOrWhiteSpace($IniPath) -or -not (Test-Path $IniPath))
-	{
-		return @{
-			Success		       = $false
-			Message		       = "SmsHttps.INI not found. Provide -IniPath or ensure it exists in the default locations."
-			Path			   = $IniPath
-			OldKey			   = $null
-			NewKey			   = $null
-			Changed		       = $false
-			Redir901		   = $null
-			LicenseGuidCleared = $false
-		}
-	}
-	
-	# -----------------------------
-	# Read file with encoding detect
-	# -----------------------------
-	$bytes = [System.IO.File]::ReadAllBytes($IniPath)
-	
-	$enc = $null
-	if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-	{
-		$enc = [System.Text.Encoding]::UTF8
-	}
-	elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
-	{
-		$enc = [System.Text.Encoding]::Unicode # UTF-16LE
-	}
-	elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
-	{
-		$enc = [System.Text.Encoding]::BigEndianUnicode # UTF-16BE
-	}
-	else
-	{
-		$enc = [System.Text.Encoding]::Default # common for INIs
-	}
-	
-	$text = $enc.GetString($bytes)
-	
-	# Detect newline style
-	$nl = "`r`n"
-	if ($text -notmatch "`r`n" -and $text -match "`n") { $nl = "`n" }
-	
-	$lines = $text -split "\r?\n", -1
-	
-	# -----------------------------
-	# Validate StoreNumber (3 or 4 digits, not all zeros)
-	# -----------------------------
-	$sn = $StoreNumber
-	if ($null -eq $sn) { $sn = "" }
-	$sn = $sn.Trim()
-	
-	if ($sn -notmatch '^(?!0{3,4})\d{3,4}$')
-	{
-		return @{
-			Success = $false
-			Message = "Invalid StoreNumber '$StoreNumber' (must be 3 or 4 digits, not all zeros)."
-			Path    = $IniPath
-			OldKey  = $null
-			NewKey  = $null
-			Changed = $false
-			Redir901 = $null
-			LicenseGuidCleared = $false
-		}
-	}
-	
-	# Store width = length of the CURRENT store number you pass (3 or 4)
-	$storeWidth = $sn.Length
-	$storeNorm = ([int]$sn).ToString(("D{0}" -f $storeWidth))
-	
-	# -----------------------------
-	# Normalize MachineName -> host and extract terminal (1-3 trailing digits), pad to 3
-	# -----------------------------
-	$mn = $MachineName
-	if ($null -eq $mn) { $mn = "" }
-	$mn = $mn.Trim()
-	$mn = $mn -replace '^[\\\/]+', ''
-	if ($mn -match '[\\\/]') { $mn = ($mn -split '[\\\/]')[0] }
-	if ($mn -match '\.') { $mn = ($mn -split '\.')[0] }
-	$mn = $mn.Trim().ToUpper()
-	
-	if ($mn -notmatch '(\d{1,3})$')
-	{
-		return @{
-			Success = $false
-			Message = "MachineName '$MachineName' must end with 1-3 digits to extract terminal number."
-			Path    = $IniPath
-			OldKey  = $null
-			NewKey  = $null
-			Changed = $false
-			Redir901 = $null
-			LicenseGuidCleared = $false
-		}
-	}
-	
-	$newTerminal = ([int]$Matches[1]).ToString("D3")
-	if ($newTerminal -eq "000")
-	{
-		return @{
-			Success		       = $false
-			Message		       = "Extracted terminal number is 000 (not allowed)."
-			Path			   = $IniPath
-			OldKey			   = $null
-			NewKey			   = $null
-			Changed		       = $false
-			Redir901		   = $null
-			LicenseGuidCleared = $false
-		}
-	}
-	
-	# Optional old terminal extraction
-	$oldTerminal = $null
-	if (-not [string]::IsNullOrWhiteSpace($OldMachineName))
-	{
-		$omn = $OldMachineName.Trim()
-		$omn = $omn -replace '^[\\\/]+', ''
-		if ($omn -match '[\\\/]') { $omn = ($omn -split '[\\\/]')[0] }
-		if ($omn -match '\.') { $omn = ($omn -split '\.')[0] }
-		$omn = $omn.Trim().ToUpper()
-		
-		if ($omn -match '(\d{1,3})$')
-		{
-			$oldTerminal = ([int]$Matches[1]).ToString("D3")
-			if ($oldTerminal -eq "000") { $oldTerminal = $null }
-		}
-	}
-	
-	$newKey = $storeNorm + $newTerminal
-	$redirKey901 = $storeNorm + "901"
-	
-	# -----------------------------
-	# Locate [PROCESSORS] section
-	# -----------------------------
-	$secStart = -1
-	for ($i = 0; $i -lt $lines.Length; $i++)
-	{
-		if ($lines[$i] -match '^\s*\[\s*PROCESSORS\s*\]\s*$')
-		{
-			$secStart = $i
-			break
-		}
-	}
-	
-	if ($secStart -lt 0)
-	{
-		# Still attempt to clear LicenseGUID even if PROCESSORS missing
-		# (but report processors failure)
-		$processorsError = $true
-	}
-	else
-	{
-		$processorsError = $false
-	}
-	
-	$secEnd = $lines.Length
-	if ($secStart -ge 0)
-	{
-		for ($i = $secStart + 1; $i -lt $lines.Length; $i++)
-		{
-			if ($lines[$i] -match '^\s*\[.*\]\s*$')
-			{
-				$secEnd = $i
-				break
-			}
-		}
-	}
-	
-	# -----------------------------
-	# Find target PROCESSORS line
-	# -----------------------------
-	$targetIndex = -1
-	$targetWs = ""
-	$targetRhs = ""
-	$foundKey = $null
-	
-	$oldKeyExact = $null
-	if (-not [string]::IsNullOrWhiteSpace($OldStoreNumber) -and $oldTerminal)
-	{
-		$osn = $OldStoreNumber.Trim()
-		if ($osn -match '^(?!0{3,4})\d{3,4}$')
-		{
-			$osWidth = $osn.Length
-			$oldKeyExact = ([int]$osn).ToString(("D{0}" -f $osWidth)) + $oldTerminal
-		}
-	}
-	
-	if ($secStart -ge 0)
-	{
-		# 1) Exact old key match
-		if ($oldKeyExact)
-		{
-			for ($i = $secStart + 1; $i -lt $secEnd; $i++)
-			{
-				if ($lines[$i] -match '^(?<ws>\s*)(?<key>\d{6,7})\s*=\s*(?<rhs>.*)$')
-				{
-					if ($matches['key'] -eq $oldKeyExact)
-					{
-						$targetIndex = $i
-						$targetWs = $matches['ws']
-						$foundKey = $matches['key']
-						$targetRhs = $matches['rhs']
-						break
-					}
-				}
-			}
-		}
-		
-		# 2) Match by terminal suffix (old first then new)
-		if ($targetIndex -lt 0)
-		{
-			$termToTry = @()
-			if ($oldTerminal) { $termToTry += $oldTerminal }
-			$termToTry += $newTerminal
-			
-			foreach ($t in $termToTry)
-			{
-				for ($i = $secStart + 1; $i -lt $secEnd; $i++)
-				{
-					if ($lines[$i] -match '^(?<ws>\s*)(?<key>\d{6,7})\s*=\s*(?<rhs>.*)$')
-					{
-						$k = $matches['key']
-						if ($k.Length -ge 6 -and $k.Substring($k.Length - 3) -eq $t)
-						{
-							$targetIndex = $i
-							$targetWs = $matches['ws']
-							$foundKey = $k
-							$targetRhs = $matches['rhs']
-							break
-						}
-					}
-				}
-				if ($targetIndex -ge 0) { break }
-			}
-		}
-	}
-	
-	# -----------------------------
-	# Update PROCESSORS entry
-	# -----------------------------
-	$processorsChanged = $false
-	
-	if ($secStart -ge 0)
-	{
-		if ($targetIndex -ge 0)
-		{
-			$rhsUpdated = $targetRhs
-			
-			# REDIRMAIL
-			if ($rhsUpdated -match '(?i)\bREDIRMAIL\s*=')
-			{
-				$rhsUpdated = [System.Text.RegularExpressions.Regex]::Replace(
-					$rhsUpdated,
-					'(?i)\bREDIRMAIL\s*=\s*\d{6,7}',
-					("REDIRMAIL=" + $redirKey901)
-				)
-			}
-			else
-			{
-				if ([string]::IsNullOrWhiteSpace($rhsUpdated)) { $rhsUpdated = "" }
-				if ($rhsUpdated.Length -gt 0 -and $rhsUpdated[0] -ne ',') { $rhsUpdated = "," + $rhsUpdated }
-				$rhsUpdated = ("REDIRMAIL=" + $redirKey901) + $rhsUpdated
-			}
-			
-			# REDIRMSG
-			if ($rhsUpdated -match '(?i)\bREDIRMSG\s*=')
-			{
-				$rhsUpdated = [System.Text.RegularExpressions.Regex]::Replace(
-					$rhsUpdated,
-					'(?i)\bREDIRMSG\s*=\s*\d{6,7}',
-					("REDIRMSG=" + $redirKey901)
-				)
-			}
-			else
-			{
-				if ($rhsUpdated -match '(?i)\bREDIRMAIL\s*=\s*\d{6,7}\s*,?')
-				{
-					$rhsUpdated = [System.Text.RegularExpressions.Regex]::Replace(
-						$rhsUpdated,
-						'(?i)\bREDIRMAIL\s*=\s*\d{6,7}\s*,?',
-						("$0" + "REDIRMSG=" + $redirKey901 + ",")
-					)
-					$rhsUpdated = $rhsUpdated -replace ',{2,}', ','
-				}
-				else
-				{
-					if ($rhsUpdated.Length -gt 0 -and $rhsUpdated[0] -ne ',') { $rhsUpdated = "," + $rhsUpdated }
-					$rhsUpdated = ("REDIRMSG=" + $redirKey901) + $rhsUpdated
-				}
-			}
-			
-			$rhsUpdated = $rhsUpdated -replace ',{2,}', ','
-			
-			$oldLine = $lines[$targetIndex]
-			$newLine = $targetWs + $newKey + "=" + $rhsUpdated
-			
-			if ($oldLine -ne $newLine)
-			{
-				$lines[$targetIndex] = $newLine
-				$processorsChanged = $true
-			}
-		}
-		else
-		{
-			if ($CreateIfMissing)
-			{
-				$newEntry = $newKey + "=REDIRMAIL=" + $redirKey901 + ",REDIRMSG=" + $redirKey901 + ",TARGETSEND=,TARGETRECV=,DEADLOCKPRIORITY="
-				$insertAt = $secEnd
-				
-				if ($insertAt -eq $lines.Length -and $lines.Length -gt 0 -and [string]::IsNullOrEmpty($lines[$lines.Length - 1]))
-				{
-					$insertAt = $lines.Length - 1
-				}
-				
-				$before = @()
-				$after = @()
-				
-				for ($i = 0; $i -lt $insertAt; $i++) { $before += $lines[$i] }
-				$before += $newEntry
-				for ($i = $insertAt; $i -lt $lines.Length; $i++) { $after += $lines[$i] }
-				
-				$lines = @($before + $after)
-				$processorsChanged = $true
-			}
-			else
-			{
-				$processorsError = $true
-			}
-		}
-	}
-	
-	# -----------------------------
-	# Clear LicenseGUID value in [GENERAL]
-	# -----------------------------
-	$licenseGuidCleared = $false
-	
-	$genStart = -1
-	for ($i = 0; $i -lt $lines.Length; $i++)
-	{
-		if ($lines[$i] -match '^\s*\[\s*GENERAL\s*\]\s*$')
-		{
-			$genStart = $i
-			break
-		}
-	}
-	
-	if ($genStart -ge 0)
-	{
-		$genEnd = $lines.Length
-		for ($i = $genStart + 1; $i -lt $lines.Length; $i++)
-		{
-			if ($lines[$i] -match '^\s*\[.*\]\s*$')
-			{
-				$genEnd = $i
-				break
-			}
-		}
-		
-		for ($i = $genStart + 1; $i -lt $genEnd; $i++)
-		{
-			# Only change within [GENERAL]
-			if ($lines[$i] -match '^(?<ws>\s*)(?i:LicenseGUID)\s*=\s*(?<val>.*)\s*$')
-			{
-				$ws = $matches['ws']
-				$val = $matches['val']
-				if (-not [string]::IsNullOrEmpty($val))
-				{
-					$lines[$i] = $ws + "LicenseGUID="
-					$licenseGuidCleared = $true
-				}
-				break
-			}
-		}
-	}
-	
-	# -----------------------------
-	# Write back only if changes occurred
-	# -----------------------------
-	$anyChanged = ($processorsChanged -or $licenseGuidCleared)
-	
-	if ($anyChanged)
-	{
-		$outText = ($lines -join $nl)
-		[System.IO.File]::WriteAllText($IniPath, $outText, $enc)
-	}
-	
-	# -----------------------------
-	# Return status
-	# -----------------------------
-	if ($processorsError -and -not $anyChanged)
-	{
-		return @{
-			Success		       = $false
-			Message		       = "Failed to update [PROCESSORS] (not found or no matching entry) and no other changes applied."
-			Path			   = $IniPath
-			OldKey			   = $foundKey
-			NewKey			   = $newKey
-			Changed		       = $false
-			Redir901		   = $redirKey901
-			LicenseGuidCleared = $licenseGuidCleared
-		}
-	}
-	
-	return @{
-		Success = $true
-		Message = ($(if ($anyChanged) { "SmsHttps.INI updated successfully." }
-				else { "No changes were necessary." }))
-		Path    = $IniPath
-		OldKey  = $foundKey
-		NewKey  = $newKey
-		Changed = $anyChanged
-		Redir901 = $redirKey901
-		LicenseGuidCleared = $licenseGuidCleared
 	}
 }
 
@@ -2910,7 +3203,7 @@ $mainLayout.Controls.Add($actionsGroup, 0, 2)
 # ===================================================================================================
 
 ############################################################################
-# 1) Change Machine Name Button
+# 1) Change Machine Name Button (UPDATED: always runs Update_INIs in finally)
 ############################################################################
 $changeMachineNameButton = New-Object System.Windows.Forms.Button
 $changeMachineNameButton.Text = "Change Machine Name"
@@ -2918,7 +3211,6 @@ $changeMachineNameButton.Location = New-Object System.Drawing.Point(10, 120)
 $changeMachineNameButton.Size = New-Object System.Drawing.Size(150, 35)
 $changeMachineNameButton.Add_Click({
 		
-		# Ensure the script is running with administrative privileges
 		if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator))
 		{
 			[System.Windows.Forms.MessageBox]::Show(
@@ -2930,15 +3222,10 @@ $changeMachineNameButton.Add_Click({
 			return
 		}
 		
-		# Capture old machine name for INI matching (before rename takes effect)
 		$oldMachineName = $env:COMPUTERNAME
-		
-		# Get the new machine name from the user
 		$newMachineNameInput = Get_NEW_Machine_Name
-		
 		if ($newMachineNameInput -eq $null)
 		{
-			# Handle cancellation
 			if ($operationStatus -and $operationStatus.ContainsKey("MachineNameChange"))
 			{
 				$operationStatus["MachineNameChange"].Status = "Cancelled"
@@ -2954,20 +3241,14 @@ $changeMachineNameButton.Add_Click({
 			return
 		}
 		
-		# Confirm the change
 		$result = [System.Windows.Forms.MessageBox]::Show(
 			"Are you sure you want to change the machine name to '$newMachineNameInput'?",
 			"Confirm Machine Name Change",
 			[System.Windows.Forms.MessageBoxButtons]::YesNo,
 			[System.Windows.Forms.MessageBoxIcon]::Question
 		)
+		if ($result -ne [System.Windows.Forms.DialogResult]::Yes) { return }
 		
-		if ($result -ne [System.Windows.Forms.DialogResult]::Yes)
-		{
-			return
-		}
-		
-		# Determine the store number once (from INI)
 		$currentStoreNumber = Get_Store_Number_From_INI
 		if (-not $currentStoreNumber)
 		{
@@ -2986,8 +3267,7 @@ $changeMachineNameButton.Add_Click({
 			return
 		}
 		
-		# Robust machine-number extraction (normalize host; allow 1-3 trailing digits; pad to 3)
-		$normalizedHost = $newMachineNameInput
+		$normalizedHost = [string]$newMachineNameInput
 		if ($null -eq $normalizedHost) { $normalizedHost = "" }
 		$normalizedHost = $normalizedHost.Trim()
 		$normalizedHost = $normalizedHost -replace '^[\\\/]+', ''
@@ -3013,7 +3293,6 @@ $changeMachineNameButton.Add_Click({
 		}
 		
 		$machineNumber = ([int]$Matches[1]).ToString("D3")
-		
 		if ($machineNumber -eq "000")
 		{
 			[System.Windows.Forms.MessageBox]::Show(
@@ -3031,15 +3310,13 @@ $changeMachineNameButton.Add_Click({
 			return
 		}
 		
-		# Proceed to change machine name
+		$startupIniPath = "\\localhost\storeman\startup.ini"
+		
 		try
 		{
 			Rename-Computer -NewName $normalizedHost -Force -ErrorAction Stop
-			
-			# Assign to script-level variable
 			$script:newMachineName = $normalizedHost
 			
-			# Update machine name label
 			if ($machineNameLabel)
 			{
 				$machineNameLabel.Text = "The machine name will change from: $env:COMPUTERNAME to $script:newMachineName"
@@ -3048,7 +3325,6 @@ $changeMachineNameButton.Add_Click({
 				[System.Windows.Forms.Application]::DoEvents()
 			}
 			
-			# Update operation status
 			if ($operationStatus -and $operationStatus.ContainsKey("MachineNameChange"))
 			{
 				$operationStatus["MachineNameChange"].Status = "Successful"
@@ -3056,13 +3332,9 @@ $changeMachineNameButton.Add_Click({
 				$operationStatus["MachineNameChange"].Details = "Machine name changed to '$script:newMachineName'."
 			}
 			
-			# Remove old XF/XW folders (call operator protects weird chars in function names)
-			& 'Remove_Old_XF/XW_Folders' -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
+			& 'Remove_Old_XZ_Folders' -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
 			
-			# Update startup.ini after changing machine name
-			$startupIniPath = "\\localhost\storeman\startup.ini"
-			
-			# Build TER and DBSERVER values correctly (preserve instance name if present)
+			# Update TER + DBSERVER in startup.ini
 			$terValue = "TER=$machineNumber"
 			$dbServerValue = $null
 			
@@ -3070,7 +3342,6 @@ $changeMachineNameButton.Add_Click({
 			{
 				$content = Get-Content $startupIniPath
 				
-				# Pull existing DBSERVER= line to preserve instance name if it exists
 				$existingDbLine = $null
 				foreach ($line in $content)
 				{
@@ -3087,7 +3358,6 @@ $changeMachineNameButton.Add_Click({
 					$existingDbServer = $matches[1].Trim()
 				}
 				
-				# Extract instance name (if any)
 				$instance = $null
 				if ($existingDbServer -and ($existingDbServer -match '\\'))
 				{
@@ -3104,7 +3374,6 @@ $changeMachineNameButton.Add_Click({
 					$dbServerValue = "DBSERVER=$($script:newMachineName)"
 				}
 				
-				# Replace TER and DBSERVER (tolerate whitespace/casing)
 				$updatedContent = @()
 				foreach ($line in $content)
 				{
@@ -3131,101 +3400,7 @@ $changeMachineNameButton.Add_Click({
 					$operationStatus["StartupIniUpdate"].Details = "Updated TER to '$terValue' and DBSERVER to '$dbServerValue'."
 				}
 			}
-			else
-			{
-				if ($operationStatus -and $operationStatus.ContainsKey("StartupIniUpdate"))
-				{
-					$operationStatus["StartupIniUpdate"].Status = "Failed"
-					$operationStatus["StartupIniUpdate"].Message = "startup.ini file not found."
-					$operationStatus["StartupIniUpdate"].Details = "File not found at $startupIniPath."
-				}
-			}
 			
-			# -----------------------------------------------------------------------------------------
-			# SmsHttps.INI update (ONLY if the file exists; otherwise skip without error)
-			# -----------------------------------------------------------------------------------------
-			
-			# Capture store before any possible "sync store number" logic happened (best-effort)
-			$oldStoreNumberForSms = $currentStoreNumber
-			
-			# Re-read store in case Get_NEW_Machine_Name updated startup.ini store number
-			$newStoreNumberForSms = Get_Store_Number_From_INI
-			if (-not $newStoreNumberForSms) { $newStoreNumberForSms = $currentStoreNumber }
-			
-			$smsIniPath = $null
-			$smsCandidates = @(
-				"\\localhost\storeman\SmsHttps64\SmsHttps.INI",
-				"C:\storeman\SmsHttps64\SmsHttps.INI",
-				"D:\storeman\SmsHttps64\SmsHttps.INI"
-			)
-			
-			foreach ($p in $smsCandidates)
-			{
-				if (Test-Path $p)
-				{
-					$smsIniPath = $p
-					break
-				}
-			}
-			
-			if (-not $smsIniPath)
-			{
-				if ($operationStatus)
-				{
-					$operationStatus["SmsHttpsIniUpdate"] = [pscustomobject]@{
-						Status  = "Skipped"
-						Message = "SmsHttps.INI not found on this machine. No update performed."
-						Details = "Looked for: $($smsCandidates -join ', ')"
-					}
-				}
-			}
-			else
-			{
-				try
-				{
-					$smsResult = Update_SmsHttpsINI `
-													-IniPath $smsIniPath `
-													-StoreNumber $newStoreNumberForSms `
-													-MachineName $script:newMachineName `
-													-OldStoreNumber $oldStoreNumberForSms `
-													-OldMachineName $oldMachineName `
-													-CreateIfMissing
-					
-					if ($operationStatus)
-					{
-						if ($smsResult -and $smsResult.Success)
-						{
-							$operationStatus["SmsHttpsIniUpdate"] = [pscustomobject]@{
-								Status  = "Successful"
-								Message = "SmsHttps.INI updated."
-								Details = "Path: $smsIniPath | OldKey: $($smsResult.OldKey) | NewKey: $($smsResult.NewKey) | Redir901: $($smsResult.Redir901) | Changed: $($smsResult.Changed) | LicenseGuidCleared: $($smsResult.LicenseGuidCleared)"
-							}
-						}
-						else
-						{
-							$operationStatus["SmsHttpsIniUpdate"] = [pscustomobject]@{
-								Status  = "Failed"
-								Message = "SmsHttps.INI update returned failure."
-								Details = "Path: $smsIniPath | " + ($(if ($smsResult) { $smsResult.Message }
-										else { "No result returned." }))
-							}
-						}
-					}
-				}
-				catch
-				{
-					if ($operationStatus)
-					{
-						$operationStatus["SmsHttpsIniUpdate"] = [pscustomobject]@{
-							Status  = "Failed"
-							Message = "Unhandled error updating SmsHttps.INI."
-							Details = "Path: $smsIniPath | Error: $($_.Exception.Message)"
-						}
-					}
-				}
-			}
-			
-			# SQL update
 			$sqlUpdateResult = Update_SQL_Tables_For_Machine_Name_Change -storeNumber $currentStoreNumber -machineName $script:newMachineName -machineNumber $machineNumber
 			
 			if ($sqlUpdateResult -and $sqlUpdateResult.Success)
@@ -3246,19 +3421,6 @@ $changeMachineNameButton.Add_Click({
 					$operationStatus["SQLDatabaseUpdate"].Details = "SQL update result indicated failure."
 				}
 			}
-			
-			# Prompt reboot
-			$rebootResult = [System.Windows.Forms.MessageBox]::Show(
-				"Machine name changed successfully to '$script:newMachineName'. The system will need to reboot for changes to take effect. Do you want to reboot now?",
-				"Success",
-				[System.Windows.Forms.MessageBoxButtons]::YesNo,
-				[System.Windows.Forms.MessageBoxIcon]::Information
-			)
-			
-			if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
-			{
-				Restart-Computer -Force
-			}
 		}
 		catch
 		{
@@ -3275,6 +3437,37 @@ $changeMachineNameButton.Add_Click({
 				$operationStatus["MachineNameChange"].Status = "Failed"
 				$operationStatus["MachineNameChange"].Message = "Error changing machine name."
 				$operationStatus["MachineNameChange"].Details = "Error: $errorMessage"
+			}
+		}
+		finally
+		{
+			# Always run Update_INIs at the end so INIs reflect the latest intended state
+			$effectiveMachineName = $env:COMPUTERNAME
+			if ($script:newMachineName -and -not [string]::IsNullOrWhiteSpace([string]$script:newMachineName))
+			{
+				$effectiveMachineName = [string]$script:newMachineName
+			}
+			
+			try
+			{
+				$null = Update_INIs -newStoreNumber $currentStoreNumber -MachineName $effectiveMachineName -OldStoreNumber $currentStoreNumber -OldMachineName $oldMachineName -CreateSmsHttpsIfMissing -StartupIniPath $startupIniPath
+			}
+			catch { }
+		}
+		
+		# Reboot prompt only if rename succeeded
+		if ($script:newMachineName -and -not [string]::IsNullOrWhiteSpace([string]$script:newMachineName))
+		{
+			$rebootResult = [System.Windows.Forms.MessageBox]::Show(
+				"Machine name changed successfully to '$script:newMachineName'. The system will need to reboot for changes to take effect. Do you want to reboot now?",
+				"Success",
+				[System.Windows.Forms.MessageBoxButtons]::YesNo,
+				[System.Windows.Forms.MessageBoxIcon]::Information
+			)
+			
+			if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
+			{
+				Restart-Computer -Force
 			}
 		}
 	})
@@ -3488,93 +3681,103 @@ $configureNetworkButton.Add_Click({
 	})
 
 ############################################################################
-# 3) Update Store Number Button
+# 3) Update Store Number Button (UPDATED: always runs Update_INIs using latest intended MachineName)
 ############################################################################
 $updateStoreNumberButton = New-Object System.Windows.Forms.Button
 $updateStoreNumberButton.Text = "Update Store Number"
 $updateStoreNumberButton.Location = New-Object System.Drawing.Point(330, 120)
 $updateStoreNumberButton.Size = New-Object System.Drawing.Size(150, 35)
 $updateStoreNumberButton.Add_Click({
-		# Get the old store number from startup.ini
+		
+		# Get old store number
 		$oldStoreNumber = Get_Store_Number_From_INI
 		
-		if ($oldStoreNumber -ne $null)
-		{
-			# Prompt for new store number
-			$newStoreNumberInput = Get_NEW_Store_Number
-			if ($newStoreNumberInput -ne $null)
-			{
-				# Show warning before updating
-				$warningResult = [System.Windows.Forms.MessageBox]::Show("You are about to change the store number from '$oldStoreNumber' to '$newStoreNumberInput'. Do you want to proceed?", "Warning", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
-				
-				if ($warningResult -eq [System.Windows.Forms.DialogResult]::Yes)
-				{
-					# Update startup.ini
-					if (Test-Path $startupIniPath)
-					{
-						$updateSuccess = Update_Store_Number_In_INI -newStoreNumber $newStoreNumberInput
-						if ($updateSuccess)
-						{
-							# Assign to script-level variable
-							$script:newStoreNumber = $newStoreNumberInput
-							
-							# Update the label
-							$storeNumberLabel.Text = "Store Number changed from: $currentStoreNumber to $script:newStoreNumber"
-							$operationStatus["StoreNumberChange"].Status = "Successful"
-							$operationStatus["StoreNumberChange"].Message = "Store number updated in startup.ini."
-							$operationStatus["StoreNumberChange"].Details = "Store number changed to '$script:newStoreNumber'."
-							
-							# Inform the user about the new store number
-							[System.Windows.Forms.MessageBox]::Show("Store number successfully changed to '$script:newStoreNumber'.", "Store Number Updated", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-							
-							# Call the SQL update function
-							$sqlUpdateResult = Update_SQL_Tables_For_Store_Number_Change -storeNumber $script:newStoreNumber
-							
-							if ($sqlUpdateResult.Success)
-							{
-								$operationStatus["SQLDatabaseUpdate"].Status = "Successful"
-								$operationStatus["SQLDatabaseUpdate"].Message = "STD_TAB updated successfully after store number change."
-								$operationStatus["SQLDatabaseUpdate"].Details = "STD_TAB updated with new store number."
-							}
-							else
-							{
-								$operationStatus["SQLDatabaseUpdate"].Status = "Failed"
-								$operationStatus["SQLDatabaseUpdate"].Message = "Failed to update STD_TAB after store number change."
-								$operationStatus["SQLDatabaseUpdate"].Details = "Failed commands: $($sqlUpdateResult.FailedCommands -join ', ')"
-							}
-							
-						}
-						else
-						{
-							[System.Windows.Forms.MessageBox]::Show("Failed to update startup.ini.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-							$operationStatus["StoreNumberChange"].Status = "Failed"
-							$operationStatus["StoreNumberChange"].Message = "Failed to update store number."
-							$operationStatus["StoreNumberChange"].Details = "Error updating startup.ini."
-						}
-					}
-					else
-					{
-						[System.Windows.Forms.MessageBox]::Show("startup.ini not found at $startupIniPath.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-						$operationStatus["StoreNumberChange"].Status = "Failed"
-						$operationStatus["StoreNumberChange"].Message = "Failed to update store number."
-						$operationStatus["StoreNumberChange"].Details = "startup.ini not found."
-					}
-				}
-				else
-				{
-					$operationStatus["StoreNumberChange"].Status = "Cancelled"
-					$operationStatus["StoreNumberChange"].Message = "Store number change was cancelled by the user."
-					$operationStatus["StoreNumberChange"].Details = "Old store number remains '$oldStoreNumber'."
-				}
-			}
-		}
-		else
+		if ($oldStoreNumber -eq $null)
 		{
 			[System.Windows.Forms.MessageBox]::Show("Store number not found in startup.ini.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 			$operationStatus["StoreNumberChange"].Status = "Failed"
 			$operationStatus["StoreNumberChange"].Message = "Store number not found."
 			$operationStatus["StoreNumberChange"].Details = "startup.ini not found or store number not defined."
+			return
 		}
+		
+		$newStoreNumberInput = Get_NEW_Store_Number
+		if ($newStoreNumberInput -eq $null) { return }
+		
+		$warningResult = [System.Windows.Forms.MessageBox]::Show(
+			"You are about to change the store number from '$oldStoreNumber' to '$newStoreNumberInput'. Do you want to proceed?",
+			"Warning",
+			[System.Windows.Forms.MessageBoxButtons]::YesNo,
+			[System.Windows.Forms.MessageBoxIcon]::Warning
+		)
+		
+		if ($warningResult -ne [System.Windows.Forms.DialogResult]::Yes)
+		{
+			$operationStatus["StoreNumberChange"].Status = "Cancelled"
+			$operationStatus["StoreNumberChange"].Message = "Store number change was cancelled by the user."
+			$operationStatus["StoreNumberChange"].Details = "Old store number remains '$oldStoreNumber'."
+			return
+		}
+		
+		# Prefer the "intended" machine name if you set it elsewhere (rename pending), else current computername
+		$effectiveMachineName = $env:COMPUTERNAME
+		if ($script:newMachineName -and -not [string]::IsNullOrWhiteSpace([string]$script:newMachineName))
+		{
+			$effectiveMachineName = [string]$script:newMachineName
+		}
+		
+		# Always run Update_INIs (best-effort) so INIs are consistent even if other steps later fail
+		$iniOk = $false
+		try
+		{
+			$iniOk = Update_INIs -newStoreNumber $newStoreNumberInput -MachineName $effectiveMachineName -OldStoreNumber $oldStoreNumber -OldMachineName $env:COMPUTERNAME -CreateSmsHttpsIfMissing
+		}
+		catch
+		{
+			$iniOk = $false
+		}
+		
+		if ($iniOk)
+		{
+			$script:newStoreNumber = $newStoreNumberInput
+			$storeNumberLabel.Text = "Store Number changed from: $oldStoreNumber to $script:newStoreNumber"
+			
+			$operationStatus["StoreNumberChange"].Status = "Successful"
+			$operationStatus["StoreNumberChange"].Message = "Store number updated in INIs."
+			$operationStatus["StoreNumberChange"].Details = "Store number changed to '$script:newStoreNumber'."
+			
+			[System.Windows.Forms.MessageBox]::Show("Store number successfully changed to '$script:newStoreNumber'.", "Store Number Updated", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+		}
+		else
+		{
+			$operationStatus["StoreNumberChange"].Status = "Failed"
+			$operationStatus["StoreNumberChange"].Message = "Update_INIs failed."
+			$operationStatus["StoreNumberChange"].Details = "Best-effort update encountered an error."
+			[System.Windows.Forms.MessageBox]::Show("Update_INIs failed (best-effort). Check console/log output.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+		}
+		
+		# SQL update (keep your existing logic)
+		$sqlUpdateResult = Update_SQL_Tables_For_Store_Number_Change -storeNumber $newStoreNumberInput
+		
+		if ($sqlUpdateResult.Success)
+		{
+			$operationStatus["SQLDatabaseUpdate"].Status = "Successful"
+			$operationStatus["SQLDatabaseUpdate"].Message = "STD_TAB updated successfully after store number change."
+			$operationStatus["SQLDatabaseUpdate"].Details = "STD_TAB updated with new store number."
+		}
+		else
+		{
+			$operationStatus["SQLDatabaseUpdate"].Status = "Failed"
+			$operationStatus["SQLDatabaseUpdate"].Message = "Failed to update STD_TAB after store number change."
+			$operationStatus["SQLDatabaseUpdate"].Details = "Failed commands: $($sqlUpdateResult.FailedCommands -join ', ')"
+		}
+		
+		# Run Update_INIs again at the end so INIs always reflect the latest state
+		try
+		{
+			$null = Update_INIs -newStoreNumber $newStoreNumberInput -MachineName $effectiveMachineName -OldStoreNumber $oldStoreNumber -OldMachineName $env:COMPUTERNAME -CreateSmsHttpsIfMissing
+		}
+		catch { }
 	})
 
 ############################################################################
