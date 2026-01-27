@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "1.3.1"
-$VersionDate = "2026-01-19"
+$VersionDate = "2026-01-27"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -944,8 +944,13 @@ function Get_NEW_Store_Number
 # - SmsHttps.INI: enforces exactly ONE processor entry (purges all others), and forces REDIR to <STORE>901
 #
 # FIX INCLUDED:
-# - Startup.ini / SMSStart.ini / INFO_*901_WIN.ini now preserve ORIGINAL encoding + ORIGINAL newline style
+# - Startup.ini / Server.ini / SMSStart.ini / INFO_*901_WIN.ini now preserve ORIGINAL encoding + ORIGINAL newline style
 #   (same approach as SmsHttps.INI: read bytes -> detect encoding -> detect CRLF/LF -> write back with same)
+#
+# NEW INCLUDED:
+# - Updates Server.ini when present in the SAME folder as Startup.ini (and/or known storeman roots)
+#   Updates relevant fields:
+#     STORE=, REDIRMAIL=, REDIRMSG=, TER= (if terminal extracted), SERVERNAME= (token replace mapping as applicable)
 # ===================================================================================================
 
 function Update_INIs
@@ -1034,6 +1039,9 @@ function Update_INIs
 	}
 	
 	$oldStoreDetected = $null
+	$startupDir = $null
+	try { $startupDir = Split-Path -Path $StartupIniPath -Parent }
+	catch { $startupDir = $null }
 	
 	try
 	{
@@ -1178,6 +1186,124 @@ function Update_INIs
 		Write-Host "Failed updating startup.ini: $($_.Exception.Message)" -ForegroundColor Red
 		# still continue to other INIs
 		if (-not $oldStoreDetected) { $oldStoreDetected = $newStoreTrim }
+	}
+	
+	# ===============================================================================================
+	# 1B) Update Server.ini (optional; when present near Startup.ini / storeman root)
+	#     - Same folder as Startup.ini is primary
+	#     - Also tries common roots if not found there
+	#     - Updates: STORE=, REDIRMAIL/REDIRMSG=<store>901, TER= (if terminal extracted)
+	#     - Performs token replace mapping like Startup.ini when old store detected
+	# ===============================================================================================
+	$serverIniCandidates = @()
+	
+	if (-not [string]::IsNullOrWhiteSpace($startupDir))
+	{
+		$serverIniCandidates += (Join-Path $startupDir "Server.ini")
+	}
+	# common roots fallback
+	$serverIniCandidates += @(
+		"\\localhost\storeman\Server.ini",
+		"C:\storeman\Server.ini",
+		"D:\storeman\Server.ini"
+	)
+	
+	$serverIniPath = $null
+	foreach ($p in $serverIniCandidates)
+	{
+		if (-not [string]::IsNullOrWhiteSpace($p) -and (Test-Path $p))
+		{
+			$serverIniPath = $p
+			break
+		}
+	}
+	
+	if (-not [string]::IsNullOrWhiteSpace($serverIniPath) -and (Test-Path $serverIniPath))
+	{
+		try
+		{
+			$bytes = [System.IO.File]::ReadAllBytes($serverIniPath)
+			
+			$encServer = $null
+			if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+			{
+				$encServer = New-Object System.Text.UTF8Encoding($true)
+			}
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
+			{
+				$encServer = [System.Text.Encoding]::Unicode
+			}
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
+			{
+				$encServer = [System.Text.Encoding]::BigEndianUnicode
+			}
+			else
+			{
+				$encServer = [System.Text.Encoding]::Default
+			}
+			
+			$textServer = $encServer.GetString($bytes)
+			
+			$nlServer = "`r`n"
+			if ($textServer -notmatch "`r`n" -and $textServer -match "`n") { $nlServer = "`n" }
+			
+			$serverLines = $textServer -split "\r?\n", -1
+			
+			$doTokenReplaceS = $false
+			$oldTokensS = @()
+			$newTokensS = @()
+			
+			if (-not [string]::IsNullOrWhiteSpace($oldStoreDetected) -and ($oldStoreDetected -match '^\d{3,4}$'))
+			{
+				$doTokenReplaceS = $true
+				$oldStoreIntS = [int]$oldStoreDetected
+				$oldTokensS = @($oldStoreIntS.ToString("D4"), $oldStoreIntS.ToString("D3"))
+				$newTokensS = @($newStore4, $newStore3)
+			}
+			
+			for ($i = 0; $i -lt $serverLines.Count; $i++)
+			{
+				$line = $serverLines[$i]
+				
+				# STORE=
+				$line = $line -replace '^\s*STORE\s*=\s*\d{1,4}\s*$', ("STORE=" + $newStoreTrim)
+				
+				# TER= (only if we extracted terminal)
+				if ($newTerminal)
+				{
+					$line = $line -replace '^\s*TER\s*=\s*\d{1,4}\s*$', ("TER=" + $newTerminal)
+				}
+				
+				# REDIRMAIL / REDIRMSG keep 901 suffix
+				$line = $line -replace '^\s*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$', ('$1=' + $newStoreTrim + '$2')
+				
+				# SERVERNAME= line token replace (and any other occurrences) when old store detected
+				if ($doTokenReplaceS)
+				{
+					for ($t = 0; $t -lt $oldTokensS.Count; $t++)
+					{
+						$oldEsc = [regex]::Escape($oldTokensS[$t])
+						$newTok = $newTokensS[$t]
+						
+						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
+						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
+						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?!\d)"), $newTok
+					}
+				}
+				
+				$serverLines[$i] = $line
+			}
+			
+			$outTextServer = ($serverLines -join $nlServer)
+			[System.IO.File]::WriteAllText($serverIniPath, $outTextServer, $encServer)
+			
+			Write-Host "Updated Server.ini" -ForegroundColor Green
+		}
+		catch
+		{
+			$success = $false
+			Write-Host "Failed updating Server.ini: $($_.Exception.Message)" -ForegroundColor Red
+		}
 	}
 	
 	# ===============================================================================================
@@ -3772,12 +3898,12 @@ $updateStoreNumberButton.Add_Click({
 			$operationStatus["SQLDatabaseUpdate"].Details = "Failed commands: $($sqlUpdateResult.FailedCommands -join ', ')"
 		}
 		
-		# Run Update_INIs again at the end so INIs always reflect the latest state
+		<# Run Update_INIs again at the end so INIs always reflect the latest state
 		try
 		{
 			$null = Update_INIs -newStoreNumber $newStoreNumberInput -MachineName $effectiveMachineName -OldStoreNumber $oldStoreNumber -OldMachineName $env:COMPUTERNAME -CreateSmsHttpsIfMissing
 		}
-		catch { }
+		catch { }#>
 	})
 
 ############################################################################
