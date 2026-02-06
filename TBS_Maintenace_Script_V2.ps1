@@ -191,6 +191,11 @@ $script:BackupSqlPass = "TB`$upp0rT"
 # ---------------------------------------------------------------------------------------------------
 # Locate Base Path: Storeman Folder Detection (case-insensitive)
 # ---------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------
+# Locate Base Path: FAST + STRICT (Share) + TEST fallback (C:\Storeman)
+#   - Prefer local SMB share named "storeman" IF it has INFO + KeyString + KeyValidDate within last 7 days
+#   - Else default to C:\Storeman for testing environments
+# ---------------------------------------------------------------------------------------------------
 $BasePath = $null
 $infoRel  = 'Office\Dbs\INFO_*901_WIN.INI'
 $testPath = 'C:\Storeman'
@@ -223,17 +228,20 @@ if ($share -and -not [string]::IsNullOrWhiteSpace($share.Path))
 			}
 		} catch { }
 
-		# Active key check for SHARE (strict)
+		# Key requirements for SHARE:
+		#   - KeyString present
+		#   - KeyValidDate exists and is NOT older than 7 days
 		$hasKeyString = -not [string]::IsNullOrWhiteSpace($keyString)
-		$keyNotExpired = ($keyValid -isnot [datetime]) -or ($keyValid.Date -ge (Get-Date).Date)
+		$minDate      = (Get-Date).Date.AddDays(-7)
+		$keyWithinWeek = ($keyValid -is [datetime]) -and ($keyValid.Date -ge $minDate)
 
-		if ($hasKeyString -and $keyNotExpired)
+		if ($hasKeyString -and $keyWithinWeek)
 		{
 			$BasePath = $share.Path
 		}
 		else
 		{
-			Write-Warning "Share 'storeman' found but key is missing/expired. Falling back to ${testPath} for testing."
+			Write-Warning "Share 'storeman' found but key is missing or KeyValidDate is older than 7 days. Falling back to ${testPath} for testing."
 		}
 	}
 	else
