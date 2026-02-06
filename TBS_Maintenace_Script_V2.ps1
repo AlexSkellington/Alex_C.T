@@ -12,6 +12,33 @@
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # ===================================================================================================
+#                                       SECTION: Parameters
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Defines the script parameters, allowing users to run the script in silent mode.
+# ===================================================================================================
+
+# Script build version (cunsult with Alex_C.T before changing this)
+$VersionNumber = "2.5.5"
+$VersionDate = "2026-02-05"
+
+# Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
+$major = $PSVersionTable.PSVersion.Major
+$minor = $PSVersionTable.PSVersion.Minor
+$build = $PSVersionTable.PSVersion.Build
+$revision = $PSVersionTable.PSVersion.Revision
+
+# Idle timeout for the whole script
+$script:IdleMinutesAllowed = 15 # <<< adjust as needed
+$script:SuppressClosePrompt = $true
+
+# Combine them into a single version string
+$PowerShellVersion = "$major.$minor.$build.$revision"
+
+# Set Execution Policy to Bypass for the current process
+Set-ExecutionPolicy Bypass -Scope Process -Force
+
+# ===================================================================================================
 #                               SECTION: Ensure Admin Execution
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -94,33 +121,6 @@ else
 	# IMPORTANT: stop the non-elevated instance so you don't run twice
 	exit 0
 }
-
-# ===================================================================================================
-#                                       SECTION: Parameters
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Defines the script parameters, allowing users to run the script in silent mode.
-# ===================================================================================================
-
-# Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.5.5"
-$VersionDate = "2026-02-05"
-
-# Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
-$major = $PSVersionTable.PSVersion.Major
-$minor = $PSVersionTable.PSVersion.Minor
-$build = $PSVersionTable.PSVersion.Build
-$revision = $PSVersionTable.PSVersion.Revision
-
-# Idle timeout for the whole script
-$script:IdleMinutesAllowed = 15 # <<< adjust as needed
-$script:SuppressClosePrompt = $true
-
-# Combine them into a single version string
-$PowerShellVersion = "$major.$minor.$build.$revision"
-
-# Set Execution Policy to Bypass for the current process
-Set-ExecutionPolicy Bypass -Scope Process -Force
 
 # ===================================================================================================
 #                                SECTION: Import Necessary Assemblies
