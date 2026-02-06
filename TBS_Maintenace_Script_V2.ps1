@@ -6734,348 +6734,713 @@ ORDER BY ORDINAL_POSITION
 #                                       FUNCTION: Pump_Tables
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Allows a user to select a subset of tables (from Get_Table_Aliases) to extract from SQL Server
-#   and copy to the specified lanes or hosts. Uses cached protocol (from $script:LaneProtocols)
-#   for each lane to determine protocol or file copy. Uses LaneNumToMachineName mapping.
+#   Lets the user pick lanes + tables, then pumps selected tables from SOURCE SQL to lanes:
+#     - Protocol lanes (Named Pipes/TCP): runs FAST SqlBulkCopy in per-lane window(s) (separate PS instance)
+#     - File-only lanes: generates *_Load.sql files, BUT ONLY for tables <= 1000 rows (prevents clogging lanes)
+#
+# Update (per your latest request):
+#   - Protocol windows now show:
+#       * Rows/sec (average since table start)
+#       * ETA per table (based on rows remaining + current avg speed)
 # ===================================================================================================
 
 function Pump_Tables
 {
+	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
-	
-	# Log function start
+
+	# ------------------------------------------------------------------------------------------------
+	# Required paths (per your request) + ensure they exist
+	# ------------------------------------------------------------------------------------------------
+	$script:SetupFiles = "C:\Tecnica_Systems\Alex_C.T\Setup_Files"
+	$script:ScriptsLog = "C:\Tecnica_Systems\Alex_C.T\Log\"
+
+	if (-not (Test-Path $script:SetupFiles)) { New-Item -Path $script:SetupFiles -ItemType Directory -Force | Out-Null }
+	if (-not (Test-Path $script:ScriptsLog)) { New-Item -Path $script:ScriptsLog -ItemType Directory -Force | Out-Null }
+
+	# "Latest only" log file (overwrite each run)
+	$LatestLogFile = Join-Path $script:ScriptsLog "Pump_Tables_Latest.log"
+	try { Set-Content -Path $LatestLogFile -Value "" -Encoding UTF8 -Force } catch { }
+
+	# Inline best-effort append to latest log (no extra functions added to main script)
+	$logLine = {
+		param([string]$msg)
+		try { Add-Content -Path $LatestLogFile -Value ("[{0}] {1}" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $msg) -Encoding UTF8 } catch { }
+	}
+
+	# ------------------------------------------------------------------------------------------------
+	# Safety knobs (you can tweak)
+	# ------------------------------------------------------------------------------------------------
+	$MaxFileFallbackRowsPerTable = 1000  # FILE-only lanes: block any table above this rowcount
+	$MaxConcurrentProtocolLanes  = 3     # throttle protocol child processes/windows to avoid resource clog
+
+	# ------------------------------------------------------------------------------------------------
+	# Start banner
+	# ------------------------------------------------------------------------------------------------
 	Write_Log "`r`n==================== Starting Pump_Tables Function ====================`r`n" "blue"
-	
-	# Ensure OfficePath is present and valid
+	& $logLine.Invoke("Starting Pump_Tables for StoreNumber=$StoreNumber")
+
+	# ------------------------------------------------------------------------------------------------
+	# Ensure OfficePath exists (your original logic)
+	# ------------------------------------------------------------------------------------------------
 	if (-not (Test-Path $OfficePath))
 	{
 		Write_Log "XF Base Path not found: $OfficePath" "yellow"
+		& $logLine.Invoke("ERROR: OfficePath not found: $OfficePath")
 		return
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
-	# STEP 1: Load and validate lane mappings from Retrieve_Nodes (and allow for all flexible lookups)
+	# Validate lane mappings from Retrieve_Nodes
 	# ------------------------------------------------------------------------------------------------
 	if (-not ($script:FunctionResults.ContainsKey('LaneNumToMachineName')))
 	{
 		Write_Log "Lane mappings not found. Please run Retrieve_Nodes first." "red"
+		& $logLine.Invoke("ERROR: Lane mappings missing. Run Retrieve_Nodes first.")
 		return
 	}
+
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	$MachineNameToLaneNum = $script:FunctionResults['MachineNameToLaneNum']
-	
+
 	# ------------------------------------------------------------------------------------------------
-	# STEP 2: Prompt user for lane selection via GUI
+	# Lane selection GUI
 	# ------------------------------------------------------------------------------------------------
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if ($null -eq $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 	{
 		Write_Log "Lane processing canceled by user." "yellow"
+		& $logLine.Invoke("User cancelled lane selection.")
 		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 		return
 	}
-	
-	# Accept all supported forms (lane number, machine name, POSxxx, etc)
-	$Lanes = $selection.Lanes
-	
-	# Force all selections to 3-digit lane number for folder/DB logic using mappings from Retrieve_Nodes
-	$Lanes = $Lanes | ForEach-Object {
+
+	# Normalize to 3-digit lane numbers using Retrieve_Nodes mappings
+	$Lanes = $selection.Lanes | ForEach-Object {
 		if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber }
 		elseif ($_ -match '^\d{3}$') { $_ }
-		elseif ($MachineNameToLaneNum.ContainsKey($_)) { $MachineNameToLaneNum[$_] }
+		elseif ($MachineNameToLaneNum -and $MachineNameToLaneNum.ContainsKey($_)) { $MachineNameToLaneNum[$_] }
 		else { $_ }
-	}
-	$Lanes = $Lanes | Where-Object { $LaneNumToMachineName.ContainsKey($_) }
-	
+	} | Where-Object { $LaneNumToMachineName.ContainsKey($_) }
+
 	if (-not $Lanes -or $Lanes.Count -eq 0)
 	{
 		Write_Log "No valid lanes to process. Exiting Pump_Tables." "yellow"
+		& $logLine.Invoke("No valid lanes after normalization. Exiting.")
 		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
-	# STEP 3: Retrieve table aliases and prompt for tables to process
+	# Table alias data (must already be present)
 	# ------------------------------------------------------------------------------------------------
-	if ($script:FunctionResults.ContainsKey('Get_Table_Aliases'))
-	{
-		$aliasData = $script:FunctionResults['Get_Table_Aliases']
-		$aliasResults = $aliasData.Aliases
-		$aliasHash = $aliasData.AliasHash
-	}
-	else
+	if (-not $script:FunctionResults.ContainsKey('Get_Table_Aliases'))
 	{
 		Write_Log "Alias data not found. Ensure Get_Table_Aliases has been run." "red"
+		& $logLine.Invoke("ERROR: Get_Table_Aliases results missing.")
 		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 		return
 	}
-	if ($aliasResults.Count -eq 0)
+
+	$aliasData    = $script:FunctionResults['Get_Table_Aliases']
+	$aliasResults = $aliasData.Aliases
+
+	if (-not $aliasResults -or $aliasResults.Count -eq 0)
 	{
 		Write_Log "No tables found to process. Exiting Pump_Tables." "red"
+		& $logLine.Invoke("No alias results returned. Exiting.")
 		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 		return
 	}
-	
-	# Prompt user to select which tables to pump (alias objects or just names)
+
+	# ------------------------------------------------------------------------------------------------
+	# Table selection GUI
+	# ------------------------------------------------------------------------------------------------
 	$selectedTables = Show_Table_Selection_Form -AliasResults $aliasResults
 	if (-not $selectedTables -or $selectedTables.Count -eq 0)
 	{
 		Write_Log "No tables were selected. Exiting Pump_Tables." "yellow"
+		& $logLine.Invoke("User selected no tables. Exiting.")
 		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 		return
 	}
-	
+
+	# Resolve selected tables into alias entries + unique table list
+	$filteredAliasEntries = $aliasResults | Where-Object { $selectedTables -contains $_.Table }
+	$tableNames = @($filteredAliasEntries.Table | Select-Object -Unique)
+
+	if (-not $tableNames -or $tableNames.Count -eq 0)
+	{
+		Write_Log "Selected table list resolved empty after filtering. Exiting." "yellow"
+		& $logLine.Invoke("Selected tables resolved empty. Exiting.")
+		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
+		return
+	}
+
+	& $logLine.Invoke("Selected lanes: $($Lanes -join ', ')")
+	& $logLine.Invoke("Selected tables: $($tableNames -join ', ')")
+
 	# ------------------------------------------------------------------------------------------------
-	# STEP 4: Validate SQL Connection, and load SQL module only once
+	# Source SQL connection string (required)
 	# ------------------------------------------------------------------------------------------------
 	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
 	{
 		Write_Log "Connection string not found. Cannot proceed with Pump_Tables." "red"
+		& $logLine.Invoke("ERROR: Source ConnectionString missing in FunctionResults.")
 		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 		return
 	}
-	$ConnectionString = $script:FunctionResults['ConnectionString']
-	
-	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-	if ($SqlModuleName -and $SqlModuleName -ne "None")
-	{
-		Import-Module $SqlModuleName -ErrorAction Stop
-		$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
-	}
-	else
-	{
-		Write_Log "No valid SQL module available for SQL operations!" "red"
-		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
-		return
-	}
-	$supportsConnectionString = $false
-	if ($InvokeSqlCmd) { $supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString' }
-	
-	# Open SQL connection to source DB (ADO.NET, for schema/data pull)
+
+	$SourceConnectionString = $script:FunctionResults['ConnectionString']
+
+	# ------------------------------------------------------------------------------------------------
+	# Open source SQL connection (ADO.NET) and pre-calc row counts once
+	# ------------------------------------------------------------------------------------------------
 	$srcSqlConnection = New-Object System.Data.SqlClient.SqlConnection
-	$srcSqlConnection.ConnectionString = $ConnectionString
-	$srcSqlConnection.Open()
-	
-	# Prepare for tracking protocol/file status
-	$ProcessedLanes = @()
-	$protocolLanes = @()
-	$fileCopyLanes = @()
-	
-	# Filter alias entries that match user's selection
-	$filteredAliasEntries = $aliasResults | Where-Object { $selectedTables -contains $_.Table }
-	
+	$srcSqlConnection.ConnectionString = $SourceConnectionString
+
+	try
+	{
+		$srcSqlConnection.Open()
+	}
+	catch
+	{
+		Write_Log "Failed to open SOURCE SQL connection: $_" "red"
+		& $logLine.Invoke("ERROR: Failed opening source SQL connection: $($_.Exception.Message)")
+		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
+		return
+	}
+
+	# RowCounts dictionary: TableName -> Int64 count (or -1 if unknown)
+	$tableRowCounts = @{}
+
+	foreach ($t in $tableNames)
+	{
+		try
+		{
+			$tblSafe = $t.Replace(']', ']]')
+			$cmdCnt = $srcSqlConnection.CreateCommand()
+			$cmdCnt.CommandText = "SELECT COUNT_BIG(1) FROM [dbo].[$tblSafe];"
+			$cnt = $cmdCnt.ExecuteScalar()
+			$tableRowCounts[$t] = [int64]$cnt
+		}
+		catch
+		{
+			# Unknown count -> treat as blocked for FILE-only (safer)
+			$tableRowCounts[$t] = -1
+		}
+	}
+
 	# ------------------------------------------------------------------------------------------------
-	# STEP 5: Process each lane: Try protocol (Named Pipes or TCP), else fall back to file copy
+	# Split lanes by protocol vs file-only (using cached $script:LaneProtocols)
 	# ------------------------------------------------------------------------------------------------
+	$protocolLaneList = @()
+	$fileLaneList     = @()
+
+	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{} }
+
 	foreach ($laneNum in $Lanes)
 	{
-		$machineName = $LaneNumToMachineName[$laneNum]
-		
-		if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
+		$protocolType = "File"
+		if ($script:LaneProtocols.ContainsKey($laneNum))
 		{
-			Write_Log "Lane #${laneNum}: Machine name is invalid or unknown. Skipping." "yellow"
-			continue
+			$protocolType = $script:LaneProtocols[$laneNum]
 		}
-		
-		# Retrieve DB connection info for the lane (connection strings, etc)
-		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
-		if (-not $laneInfo)
-		{
-			Write_Log "Could not get DB info for lane $laneNum. Skipping." "yellow"
-			continue
-		}
-		$connString = $laneInfo['ConnectionString']
-		$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-		$tcpConnStr = $laneInfo['TcpConnStr']
-		
-		# Always use numeric lane number for folder path!
-		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${laneNum}"
-		
-		# Use cached protocol type if available, else fallback to File
-		$protocolType = if ($script:LaneProtocols.ContainsKey($laneNum)) { $script:LaneProtocols[$laneNum] }
-		else { "File" }
-		$laneSqlConn = $null
-		$protocolWorked = $false
-		
-		# ----------------------------------------------------------------------------------------
-		# Try direct SQL protocol copy (Named Pipes/TCP)
-		# ----------------------------------------------------------------------------------------
+
 		if ($protocolType -eq "Named Pipes" -or $protocolType -eq "TCP")
 		{
-			try
-			{
-				if ($protocolType -eq "Named Pipes")
-				{
-					$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $namedPipesConnStr
-				}
-				elseif ($protocolType -eq "TCP")
-				{
-					$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $tcpConnStr
-				}
-				$laneSqlConn.Open()
-				if ($laneSqlConn.State -eq 'Open')
-				{
-					Write_Log "`r`nCopying data to Lane $laneNum ($machineName) via SQL protocol [$protocolType]..." "blue"
-					foreach ($aliasEntry in $filteredAliasEntries)
-					{
-						$table = $aliasEntry.Table
-						Write_Log "Pumping table '$table' to lane $laneNum ($machineName) via SQL..." "blue"
-						try
-						{
-							# Build CREATE TABLE from source schema
-							$schemaCmd = $srcSqlConnection.CreateCommand()
-							$schemaCmd.CommandText = @"
+			$protocolLaneList += $laneNum
+		}
+		else
+		{
+			$fileLaneList += $laneNum
+		}
+	}
+
+	# ------------------------------------------------------------------------------------------------
+	# Prepare protocol child runner script (written to SetupFiles; overwritten each run)
+	# ------------------------------------------------------------------------------------------------
+	$childScriptPath = Join-Path $script:SetupFiles "PumpTables_ProtocolChild.ps1"
+
+	# UPDATED: Adds Rows/sec + ETA per table to the protocol window.
+	$childScript = @"
+param(
+	[Parameter(Mandatory = \$true)]
+	[string]\$ConfigPath
+)
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Read config
+\$cfgText = Get-Content -Path \$ConfigPath -Raw -ErrorAction Stop
+\$cfg = \$cfgText | ConvertFrom-Json -ErrorAction Stop
+
+\$LaneNumber   = [string]\$cfg.LaneNumber
+\$MachineName  = [string]\$cfg.MachineName
+\$ProtocolType = [string]\$cfg.ProtocolType
+\$SrcConnStr   = [string]\$cfg.SourceConnectionString
+\$DstConnStr   = [string]\$cfg.LaneConnectionString
+\$Tables       = @(\$cfg.Tables)
+\$RowCounts    = \$cfg.RowCounts
+\$ResultPath   = [string]\$cfg.ResultPath
+\$LogFile      = [string]\$cfg.LogFile
+
+# Best-effort log (append)
+function _log([string]\$m) {
+	try { Add-Content -Path \$LogFile -Value ("[{0}] [Lane {1}] {2}" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), \$LaneNumber, \$m) -Encoding UTF8 } catch { }
+}
+
+# UI
+\$form = New-Object System.Windows.Forms.Form
+\$form.Text = "Pump Tables - Lane \$LaneNumber (\$MachineName) [\$ProtocolType]"
+\$form.Size = New-Object System.Drawing.Size(660, 320)
+\$form.StartPosition = "CenterScreen"
+
+\$lblLane = New-Object System.Windows.Forms.Label
+\$lblLane.AutoSize = \$true
+\$lblLane.Location = New-Object System.Drawing.Point(12, 12)
+\$lblLane.Text = "Lane: \$LaneNumber (\$MachineName)   Protocol: \$ProtocolType"
+\$form.Controls.Add(\$lblLane)
+
+\$lblTable = New-Object System.Windows.Forms.Label
+\$lblTable.AutoSize = \$true
+\$lblTable.Location = New-Object System.Drawing.Point(12, 42)
+\$lblTable.Text = "Current Table: (starting...)"
+\$form.Controls.Add(\$lblTable)
+
+\$lblRows = New-Object System.Windows.Forms.Label
+\$lblRows.AutoSize = \$true
+\$lblRows.Location = New-Object System.Drawing.Point(12, 72)
+\$lblRows.Text = "Rows: 0 / 0"
+\$form.Controls.Add(\$lblRows)
+
+# NEW: Speed + ETA label
+\$lblRateEta = New-Object System.Windows.Forms.Label
+\$lblRateEta.AutoSize = \$true
+\$lblRateEta.Location = New-Object System.Drawing.Point(12, 92)
+\$lblRateEta.Text = "Speed: 0 rows/sec   ETA: --:--:--"
+\$form.Controls.Add(\$lblRateEta)
+
+\$pbRows = New-Object System.Windows.Forms.ProgressBar
+\$pbRows.Location = New-Object System.Drawing.Point(12, 116)
+\$pbRows.Size = New-Object System.Drawing.Size(620, 18)
+\$pbRows.Minimum = 0
+\$pbRows.Maximum = 100
+\$pbRows.Value = 0
+\$form.Controls.Add(\$pbRows)
+
+\$lblTables = New-Object System.Windows.Forms.Label
+\$lblTables.AutoSize = \$true
+\$lblTables.Location = New-Object System.Drawing.Point(12, 146)
+\$lblTables.Text = "Tables: 0 / \$([Math]::Max(1,\$Tables.Count))"
+\$form.Controls.Add(\$lblTables)
+
+\$pbTables = New-Object System.Windows.Forms.ProgressBar
+\$pbTables.Location = New-Object System.Drawing.Point(12, 170)
+\$pbTables.Size = New-Object System.Drawing.Size(620, 18)
+\$pbTables.Minimum = 0
+\$pbTables.Maximum = [Math]::Max(1,\$Tables.Count)
+\$pbTables.Value = 0
+\$form.Controls.Add(\$pbTables)
+
+\$lblStatus = New-Object System.Windows.Forms.Label
+\$lblStatus.AutoSize = \$true
+\$lblStatus.Location = New-Object System.Drawing.Point(12, 200)
+\$lblStatus.Text = "Status: connecting..."
+\$form.Controls.Add(\$lblStatus)
+
+\$form.Show()
+[System.Windows.Forms.Application]::DoEvents()
+
+# Results
+\$result = [ordered]@{
+	LaneNumber   = \$LaneNumber
+	MachineName  = \$MachineName
+	ProtocolType = \$ProtocolType
+	StartedAt    = (Get-Date).ToString("o")
+	FinishedAt   = \$null
+	Success      = \$true
+	Tables       = @()
+}
+
+# Connections
+\$src = New-Object System.Data.SqlClient.SqlConnection \$SrcConnStr
+\$dst = New-Object System.Data.SqlClient.SqlConnection \$DstConnStr
+
+try {
+	\$src.Open()
+	\$dst.Open()
+	\$lblStatus.Text = "Status: pumping..."
+	[System.Windows.Forms.Application]::DoEvents()
+
+	\$tablesTotal = \$Tables.Count
+	\$tablesDone = 0
+
+	foreach (\$t in \$Tables) {
+		\$tablesDone++
+		\$tbl = [string]\$t
+		\$tblSafe = \$tbl.Replace(']', ']]')
+
+		# Total rows (from parent pre-count if available)
+		\$totalRows = 0
+		try {
+			if (\$RowCounts -and \$RowCounts.PSObject.Properties.Name -contains \$tbl) {
+				\$totalRows = [int64]\$RowCounts.\$tbl
+				if (\$totalRows -lt 0) { \$totalRows = 0 }
+			}
+		} catch { \$totalRows = 0 }
+
+		# Reset per-table stats
+		\$script:RowsCopied = 0
+		\$script:TableStart = Get-Date
+
+		# Update UI (table + table progress)
+		\$lblTable.Text   = "Current Table: \$tbl"
+		\$lblTables.Text  = "Tables: \$([Math]::Max(0,\$tablesDone-1)) / \$tablesTotal"
+		\$pbTables.Value  = [Math]::Min(\$pbTables.Maximum, [Math]::Max(0,\$tablesDone-1))
+		\$lblRows.Text    = "Rows: 0 / \$totalRows"
+		\$lblRateEta.Text = "Speed: 0 rows/sec   ETA: --:--:--"
+		\$pbRows.Value    = 0
+		[System.Windows.Forms.Application]::DoEvents()
+
+		# Ensure target table exists (create if missing, columns-only)
+		try {
+			\$cmdExists = \$dst.CreateCommand()
+			\$cmdExists.CommandText = "SELECT CASE WHEN OBJECT_ID(N'dbo.[\$tblSafe]', N'U') IS NULL THEN 0 ELSE 1 END;"
+			\$exists = [int]\$cmdExists.ExecuteScalar()
+
+			if (\$exists -eq 0) {
+				# Build CREATE TABLE from source INFORMATION_SCHEMA
+				\$cmdCols = \$src.CreateCommand()
+				\$cmdCols.CommandText = @"
 SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE
 FROM INFORMATION_SCHEMA.COLUMNS
-WHERE TABLE_NAME = '$table'
+WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME = '\$([\$tbl].Replace("'", "''"))'
 ORDER BY ORDINAL_POSITION
 "@
-							$reader = $schemaCmd.ExecuteReader()
-							$colDefs = @()
-							while ($reader.Read())
-							{
-								$colName = $reader["COLUMN_NAME"]
-								$dataType = $reader["DATA_TYPE"]
-								$isNullable = $reader["IS_NULLABLE"]
-								$nullText = if ($isNullable -eq "NO") { "NOT NULL" }
-								else { "NULL" }
-								switch ($dataType)
-								{
-									'nvarchar' { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "nvarchar($length)" }
-									'varchar'  { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "varchar($length)" }
-									'char'     { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "char($length)" }
-									'nchar'    { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "nchar($length)" }
-									'decimal'  { $prec = $reader["NUMERIC_PRECISION"]; $scale = $reader["NUMERIC_SCALE"]; $typeText = "decimal($prec,$scale)" }
-									'numeric'  { $prec = $reader["NUMERIC_PRECISION"]; $scale = $reader["NUMERIC_SCALE"]; $typeText = "numeric($prec,$scale)" }
-									default    { $typeText = $dataType }
-								}
-								$colDefs += "[$colName] $typeText $nullText"
-							}
-							$reader.Close()
-							$colDefsText = $colDefs -join ", "
-							$createTableSQL = "IF OBJECT_ID(N'[$table]', N'U') IS NOT NULL DROP TABLE [$table]; CREATE TABLE [$table] ($colDefsText);"
-							
-							# Drop/recreate table structure
-							$cmdCreate = $laneSqlConn.CreateCommand()
-							$cmdCreate.CommandText = $createTableSQL
-							$cmdCreate.ExecuteNonQuery() | Out-Null
-							Write_Log "Recreated table structure for '$table' on $machineName" "green"
-							
-							# Select data from source and insert into target lane
-							$dataQuery = "SELECT * FROM [$table]"
-							$cmdSource = $srcSqlConnection.CreateCommand()
-							$cmdSource.CommandText = $dataQuery
-							$readerSource = $cmdSource.ExecuteReader()
-							$schemaTable = $readerSource.GetSchemaTable()
-							$colNames = $schemaTable | ForEach-Object { $_["ColumnName"] }
-							$insertPrefix = "INSERT INTO [$table] ([$($colNames -join '],[')]) VALUES "
-							$rowCountCopied = 0
-							while ($readerSource.Read())
-							{
-								$values = @()
-								foreach ($col in $colNames)
-								{
-									$val = $readerSource[$col]
-									if ($val -eq $null -or $val -is [System.DBNull])
-									{
-										$values += "NULL"
-									}
-									elseif ($val -is [string])
-									{
-										$escaped = $val.Replace("'", "''")
-										$values += "'$escaped'"
-									}
-									elseif ($val -is [datetime])
-									{
-										$values += "'" + $val.ToString("yyyy-MM-dd HH:mm:ss") + "'"
-									}
-									else
-									{
-										$values += $val.ToString()
-									}
-								}
-								$insertCmd = $laneSqlConn.CreateCommand()
-								$insertCmd.CommandText = $insertPrefix + "(" + ($values -join ",") + ")"
-								$insertCmd.ExecuteNonQuery() | Out-Null
-								$rowCountCopied++
-							}
-							$readerSource.Close()
-							Write_Log "Copied $rowCountCopied rows to $table on lane $laneNum ($machineName) (SQL protocol)." "green"
+				\$r = \$cmdCols.ExecuteReader()
+				\$defs = New-Object System.Collections.Generic.List[string]
+				while (\$r.Read()) {
+					\$col = [string]\$r["COLUMN_NAME"]
+					\$dt  = ([string]\$r["DATA_TYPE"]).ToLower()
+					\$nul = if ([string]\$r["IS_NULLABLE"] -eq "NO") { "NOT NULL" } else { "NULL" }
+
+					switch (\$dt) {
+						"nvarchar" {
+							\$len = [int]\$r["CHARACTER_MAXIMUM_LENGTH"]
+							if (\$len -eq -1) { \$type = "nvarchar(max)" } else { \$type = "nvarchar(\$len)" }
 						}
-						catch
-						{
-							Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL: $_" "red"
+						"varchar" {
+							\$len = [int]\$r["CHARACTER_MAXIMUM_LENGTH"]
+							if (\$len -eq -1) { \$type = "varchar(max)" } else { \$type = "varchar(\$len)" }
 						}
+						"nchar"   { \$type = "nchar(\$([int]\$r["CHARACTER_MAXIMUM_LENGTH"]))" }
+						"char"    { \$type = "char(\$([int]\$r["CHARACTER_MAXIMUM_LENGTH"]))" }
+						"varbinary" {
+							\$len = [int]\$r["CHARACTER_MAXIMUM_LENGTH"]
+							if (\$len -eq -1) { \$type = "varbinary(max)" } else { \$type = "varbinary(\$len)" }
+						}
+						"binary"  { \$type = "binary(\$([int]\$r["CHARACTER_MAXIMUM_LENGTH"]))" }
+						"decimal" { \$type = "decimal(\$([int]\$r["NUMERIC_PRECISION"]),\$([int]\$r["NUMERIC_SCALE"]))" }
+						"numeric" { \$type = "numeric(\$([int]\$r["NUMERIC_PRECISION"]),\$([int]\$r["NUMERIC_SCALE"]))" }
+						default   { \$type = \$dt }
 					}
-					$laneSqlConn.Close()
-					$protocolWorked = $true
-					$protocolLanes += $laneNum
-					$ProcessedLanes += $laneNum
+
+					\$colSafe = \$col.Replace(']', ']]')
+					\$defs.Add("[\$colSafe] \$type \$nul")
 				}
+				\$r.Close()
+
+				if (\$defs.Count -eq 0) { throw "No columns returned from INFORMATION_SCHEMA for '\$tbl'." }
+
+				\$cmdCreate = \$dst.CreateCommand()
+				\$cmdCreate.CommandText = "CREATE TABLE [dbo].[\$tblSafe] (" + (\$defs -join ", ") + ");"
+				\$cmdCreate.ExecuteNonQuery() | Out-Null
+				_log "Created missing table: \$tbl"
 			}
-			catch
+		} catch {
+			\$result.Success = \$false
+			\$result.Tables += [ordered]@{ Table=\$tbl; Success=\$false; Error=("Create/Exists failed: " + \$_.Exception.Message) }
+			_log ("ERROR creating/checking '\$tbl': " + \$_.Exception.Message)
+			continue
+		}
+
+		# Clear existing target data (TRUNCATE -> DELETE fallback)
+		try {
+			try {
+				\$cmdTr = \$dst.CreateCommand()
+				\$cmdTr.CommandText = "TRUNCATE TABLE [dbo].[\$tblSafe];"
+				\$cmdTr.ExecuteNonQuery() | Out-Null
+			} catch {
+				\$cmdDel = \$dst.CreateCommand()
+				\$cmdDel.CommandText = "DELETE FROM [dbo].[\$tblSafe];"
+				\$cmdDel.ExecuteNonQuery() | Out-Null
+			}
+		} catch {
+			\$result.Success = \$false
+			\$result.Tables += [ordered]@{ Table=\$tbl; Success=\$false; Error=("Clear failed: " + \$_.Exception.Message) }
+			_log ("ERROR clearing '\$tbl': " + \$_.Exception.Message)
+			continue
+		}
+
+		# Bulk copy with live progress + speed + ETA
+		try {
+			\$cmdSrc = \$src.CreateCommand()
+			\$cmdSrc.CommandText = "SELECT * FROM [dbo].[\$tblSafe];"
+			\$reader = \$cmdSrc.ExecuteReader([System.Data.CommandBehavior]::SequentialAccess)
+
+			\$opts = [System.Data.SqlClient.SqlBulkCopyOptions]::TableLock `
+					-bor [System.Data.SqlClient.SqlBulkCopyOptions]::KeepIdentity `
+					-bor [System.Data.SqlClient.SqlBulkCopyOptions]::KeepNulls
+
+			\$bulk = New-Object System.Data.SqlClient.SqlBulkCopy(\$dst, \$opts, \$null)
+			\$bulk.DestinationTableName = "[dbo].[\$tblSafe]"
+			\$bulk.BatchSize = 5000
+			\$bulk.BulkCopyTimeout = 900
+
+			if (\$totalRows -ge 5000) { \$bulk.NotifyAfter = 500 }
+			elseif (\$totalRows -ge 1000) { \$bulk.NotifyAfter = 100 }
+			else { \$bulk.NotifyAfter = 25 }
+
+			# Map columns by name (safer than relying on ordinal order)
+			\$schema = \$reader.GetSchemaTable()
+			foreach (\$row in \$schema.Rows) {
+				\$cn = [string]\$row["ColumnName"]
+				\$bulk.ColumnMappings.Add(\$cn, \$cn) | Out-Null
+			}
+
+			\$handler = [System.Data.SqlClient.SqlRowsCopiedEventHandler]{
+				param(\$s,\$e)
+
+				\$script:RowsCopied = [int64]\$e.RowsCopied
+				\$lblRows.Text = "Rows: \$script:RowsCopied / \$totalRows"
+
+				# Progress bar
+				if (\$totalRows -gt 0) {
+					\$pct = [int][Math]::Min(100, [Math]::Floor((\$script:RowsCopied / [double]\$totalRows) * 100))
+					\$pbRows.Value = [Math]::Max(0, [Math]::Min(100, \$pct))
+				} else {
+					\$pbRows.Value = [Math]::Min(100, (\$pbRows.Value + 1))
+				}
+
+				# NEW: Speed + ETA (average since table start)
+				\$elapsed = (Get-Date) - \$script:TableStart
+				\$speed = 0.0
+				if (\$elapsed.TotalSeconds -gt 0.2) {
+					\$speed = [Math]::Round((\$script:RowsCopied / [double]\$elapsed.TotalSeconds), 2)
+				}
+
+				if (\$speed -gt 0 -and \$totalRows -gt 0) {
+					\$remaining = [Math]::Max(0, (\$totalRows - \$script:RowsCopied))
+					\$etaSec = [Math]::Ceiling(\$remaining / \$speed)
+					\$eta = [TimeSpan]::FromSeconds(\$etaSec)
+					\$lblRateEta.Text = "Speed: \$speed rows/sec   ETA: " + \$eta.ToString("hh\:mm\:ss")
+				} elseif (\$speed -gt 0) {
+					\$lblRateEta.Text = "Speed: \$speed rows/sec   ETA: --:--:--"
+				} else {
+					\$lblRateEta.Text = "Speed: 0 rows/sec   ETA: --:--:--"
+				}
+
+				[System.Windows.Forms.Application]::DoEvents()
+			}
+
+			\$bulk.add_SqlRowsCopied(\$handler)
+
+			\$bulk.WriteToServer(\$reader)
+
+			\$reader.Close()
+			\$bulk.Close()
+			\$bulk.Dispose()
+
+			# Final UI update after completion
+			\$elapsed = (Get-Date) - \$script:TableStart
+			\$finalSpeed = 0.0
+			if (\$elapsed.TotalSeconds -gt 0.2) {
+				\$finalSpeed = [Math]::Round((\$script:RowsCopied / [double]\$elapsed.TotalSeconds), 2)
+			}
+
+			\$lblRows.Text = "Rows: \$script:RowsCopied / \$totalRows"
+			\$pbRows.Value = 100
+
+			if (\$finalSpeed -gt 0 -and \$totalRows -gt 0) {
+				\$lblRateEta.Text = "Speed: \$finalSpeed rows/sec   ETA: 00:00:00"
+			} elseif (\$finalSpeed -gt 0) {
+				\$lblRateEta.Text = "Speed: \$finalSpeed rows/sec   ETA: --:--:--"
+			} else {
+				\$lblRateEta.Text = "Speed: 0 rows/sec   ETA: --:--:--"
+			}
+
+			[System.Windows.Forms.Application]::DoEvents()
+
+			\$result.Tables += [ordered]@{ Table=\$tbl; Success=\$true; RowsCopied=\$script:RowsCopied; TotalRows=\$totalRows; AvgRowsPerSec=\$finalSpeed }
+			_log "Pumped '\$tbl' rowsCopied=\$script:RowsCopied total=\$totalRows avgRowsPerSec=\$finalSpeed"
+		} catch {
+			\$result.Success = \$false
+			\$result.Tables += [ordered]@{ Table=\$tbl; Success=\$false; Error=("BulkCopy failed: " + \$_.Exception.Message) }
+			_log ("ERROR bulkcopy '\$tbl': " + \$_.Exception.Message)
+		}
+
+		# Update tables progress
+		\$lblTables.Text = "Tables: \$tablesDone / \$tablesTotal"
+		\$pbTables.Value = [Math]::Min(\$pbTables.Maximum, \$tablesDone)
+		[System.Windows.Forms.Application]::DoEvents()
+	}
+
+	\$lblStatus.Text = "Status: done."
+	[System.Windows.Forms.Application]::DoEvents()
+}
+catch {
+	\$result.Success = \$false
+	_log ("FATAL: " + \$_.Exception.Message)
+}
+finally {
+	try { if (\$src.State -eq 'Open') { \$src.Close() } } catch { }
+	try { if (\$dst.State -eq 'Open') { \$dst.Close() } } catch { }
+
+	\$result.FinishedAt = (Get-Date).ToString("o")
+
+	# Write result JSON back for parent summary
+	try { (\$result | ConvertTo-Json -Depth 10) | Set-Content -Path \$ResultPath -Encoding UTF8 -Force } catch { }
+
+	# Close window shortly after completion
+	\$timer = New-Object System.Windows.Forms.Timer
+	\$timer.Interval = 1200
+	\$timer.Add_Tick({ \$timer.Stop(); \$form.Close() })
+	\$timer.Start()
+
+	while (\$form.Visible) {
+		[System.Windows.Forms.Application]::DoEvents()
+		Start-Sleep -Milliseconds 50
+	}
+}
+"@
+
+	try
+	{
+		Set-Content -Path $childScriptPath -Value $childScript -Encoding UTF8 -Force
+		& $logLine.Invoke("Wrote protocol child runner: $childScriptPath")
+	}
+	catch
+	{
+		Write_Log "Failed to write protocol child runner script: $_" "red"
+		& $logLine.Invoke("ERROR: Failed to write child runner script: $($_.Exception.Message)")
+		# We can still proceed with FILE lanes even if protocol runner fails.
+	}
+
+	# ------------------------------------------------------------------------------------------------
+	# Process FILE-only lanes (enforce <= 1000 rows per table)
+	# ------------------------------------------------------------------------------------------------
+	$fileCopyLanes    = @()
+	$skippedFileLanes = @()
+
+	foreach ($laneNum in $fileLaneList)
+	{
+		$machineName = $LaneNumToMachineName[$laneNum]
+		if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
+		{
+			Write_Log "Lane #${laneNum}: Machine name invalid/unknown. Skipping FILE lane." "yellow"
+			& $logLine.Invoke("FILE lane $laneNum skipped: invalid machine name.")
+			continue
+		}
+
+		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${laneNum}"
+		if (-not (Test-Path $LaneLocalPath))
+		{
+			Write_Log "Lane #$laneNum ($machineName) not found at path: $LaneLocalPath (file fallback failed)" "yellow"
+			& $logLine.Invoke("FILE lane $laneNum skipped: path missing: $LaneLocalPath")
+			continue
+		}
+
+		# Build allowed/blocked tables for this FILE lane
+		$allowedTables = @()
+		$blockedTables = @()
+
+		foreach ($t in $tableNames)
+		{
+			$cnt = -1
+			if ($tableRowCounts.ContainsKey($t)) { $cnt = [int64]$tableRowCounts[$t] }
+
+			if ($cnt -lt 0)
 			{
-				Write_Log "SQL protocol copy failed for lane [$laneNum] ($machineName) ($protocolType): $_" "yellow"
-				$protocolWorked = $false
+				$blockedTables += "$t (count unknown)"
+				continue
+			}
+
+			if ($cnt -le $MaxFileFallbackRowsPerTable)
+			{
+				$allowedTables += $t
+			}
+			else
+			{
+				$blockedTables += "$t ($cnt rows)"
 			}
 		}
-		
-		# --------------------------------------------------------------------------------------------
-		# File fallback (if protocol copy not possible)
-		# --------------------------------------------------------------------------------------------
-		if (-not $protocolWorked)
+
+		if ($blockedTables.Count -gt 0)
 		{
-			if (Test-Path $LaneLocalPath)
+			Write_Log "Lane #$laneNum is FILE-only. Blocking tables > $MaxFileFallbackRowsPerTable rows: $($blockedTables -join ', ')" "yellow"
+			& $logLine.Invoke("FILE lane $laneNum blocked tables: $($blockedTables -join ', ')")
+		}
+
+		if ($allowedTables.Count -eq 0)
+		{
+			Write_Log "Lane #$laneNum ($machineName) FILE-only: no eligible tables (<= $MaxFileFallbackRowsPerTable rows). Skipping lane." "yellow"
+			& $logLine.Invoke("FILE lane $laneNum skipped: no eligible tables under limit.")
+			$skippedFileLanes += $laneNum
+			continue
+		}
+
+		Write_Log "`r`nCopying via FILE fallback for Lane #$laneNum ($machineName)..." "blue"
+		& $logLine.Invoke("FILE lane $laneNum starting. Allowed tables: $($allowedTables -join ', ')")
+
+		foreach ($table in $allowedTables)
+		{
+			$baseTable     = $table -replace '_TAB$', ''
+			$sqlFileName   = "${baseTable}_Load.sql"
+			$localTempPath = Join-Path $env:TEMP $sqlFileName
+
+			# Reuse recent file (< 1 hour) for efficiency
+			$useExistingFile = $false
+			if (Test-Path $localTempPath)
 			{
-				Write_Log "`r`nCopying via FILE fallback for Lane #$laneNum ($machineName)..." "blue"
-				foreach ($aliasEntry in $filteredAliasEntries)
+				$fileInfo = Get-Item $localTempPath
+				$fileAge  = (Get-Date) - $fileInfo.LastWriteTime
+				if ($fileAge.TotalHours -le 1) { $useExistingFile = $true }
+			}
+
+			if (-not $useExistingFile)
+			{
+				try
 				{
-					$table = $aliasEntry.Table
-					$baseTable = $table -replace '_TAB$', ''
-					$sqlFileName = "${baseTable}_Load.sql"
-					$localTempPath = Join-Path $env:TEMP $sqlFileName
-					
-					# Optionally reuse an existing file if < 1 hour old (for efficiency)
-					$useExistingFile = $false
-					if (Test-Path $localTempPath)
-					{
-						$fileInfo = Get-Item $localTempPath
-						$fileAge = (Get-Date) - $fileInfo.LastWriteTime
-						if ($fileAge.TotalHours -le 1) { $useExistingFile = $true }
-					}
-					
-					if (-not $useExistingFile)
-					{
-						try
-						{
-							$ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
-							$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $ansiPcEncoding)
-							$streamWriter.NewLine = "`r`n"
-							
-							# Get columns
-							$columnDataTypesQuery = @"
+					$ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
+					$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $ansiPcEncoding)
+					$streamWriter.NewLine = "`r`n"
+
+					# Get columns + data types
+					$columnDataTypesQuery = @"
 SELECT COLUMN_NAME, DATA_TYPE
 FROM INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_NAME = '$table'
 ORDER BY ORDINAL_POSITION
 "@
-							$cmdColumnTypes = $srcSqlConnection.CreateCommand()
-							$cmdColumnTypes.CommandText = $columnDataTypesQuery
-							$readerColumnTypes = $cmdColumnTypes.ExecuteReader()
-							$columnDataTypes = [ordered]@{ }
-							while ($readerColumnTypes.Read())
-							{
-								$colName = $readerColumnTypes["COLUMN_NAME"]
-								$dataType = $readerColumnTypes["DATA_TYPE"]
-								$columnDataTypes[$colName] = $dataType
-							}
-							$readerColumnTypes.Close()
-							
-							# Primary key
-							$pkQuery = @"
+					$cmdColumnTypes = $srcSqlConnection.CreateCommand()
+					$cmdColumnTypes.CommandText = $columnDataTypesQuery
+					$readerColumnTypes = $cmdColumnTypes.ExecuteReader()
+					$columnDataTypes = [ordered]@{}
+					while ($readerColumnTypes.Read())
+					{
+						$colName  = $readerColumnTypes["COLUMN_NAME"]
+						$dataType = $readerColumnTypes["DATA_TYPE"]
+						$columnDataTypes[$colName] = $dataType
+					}
+					$readerColumnTypes.Close()
+
+					# Primary key columns
+					$pkQuery = @"
 SELECT c.COLUMN_NAME
 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
 JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c
@@ -7084,111 +7449,117 @@ JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c
 WHERE tc.TABLE_NAME = '$table' AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
 ORDER BY c.ORDINAL_POSITION
 "@
-							$cmdPK = $srcSqlConnection.CreateCommand()
-							$cmdPK.CommandText = $pkQuery
-							$readerPK = $cmdPK.ExecuteReader()
-							$pkColumns = @()
-							while ($readerPK.Read()) { $pkColumns += $readerPK["COLUMN_NAME"] }
-							$readerPK.Close()
-							
-							if ($pkColumns.Count -eq 0)
-							{
-								$primaryKeyColumns = @()
-								$cmdFirstColumn = $srcSqlConnection.CreateCommand()
-								$cmdFirstColumn.CommandText = "SELECT TOP 1 * FROM [$table]"
-								$readerFirstColumn = $cmdFirstColumn.ExecuteReader()
-								if ($readerFirstColumn.Read())
-								{
-									$primaryKeyColumns = @($readerFirstColumn.GetName(0))
-								}
-								$readerFirstColumn.Close()
-							}
-							else
-							{
-								$primaryKeyColumns = $pkColumns
-							}
-							
-							$keyString = ($primaryKeyColumns | ForEach-Object { "$_=:$_" }) -join " AND "
-							$viewName = $baseTable.Substring(0, 1).ToUpper() + $baseTable.Substring(1).ToLower() + '_Load'
-							$columnList = ($columnDataTypes.Keys) -join ','
-							
-							# Write header
-							$header = @"
+					$cmdPK = $srcSqlConnection.CreateCommand()
+					$cmdPK.CommandText = $pkQuery
+					$readerPK = $cmdPK.ExecuteReader()
+					$pkColumns = @()
+					while ($readerPK.Read()) { $pkColumns += $readerPK["COLUMN_NAME"] }
+					$readerPK.Close()
+
+					# If no PK, fall back to first column
+					if ($pkColumns.Count -eq 0)
+					{
+						$primaryKeyColumns = @()
+						$cmdFirstColumn = $srcSqlConnection.CreateCommand()
+						$cmdFirstColumn.CommandText = "SELECT TOP 1 * FROM [$table]"
+						$readerFirstColumn = $cmdFirstColumn.ExecuteReader()
+						if ($readerFirstColumn.Read())
+						{
+							$primaryKeyColumns = @($readerFirstColumn.GetName(0))
+						}
+						$readerFirstColumn.Close()
+					}
+					else
+					{
+						$primaryKeyColumns = $pkColumns
+					}
+
+					$keyString  = ($primaryKeyColumns | ForEach-Object { "$_=:$_" }) -join " AND "
+					$viewName   = $baseTable.Substring(0, 1).ToUpper() + $baseTable.Substring(1).ToLower() + '_Load'
+					$columnList = ($columnDataTypes.Keys) -join ','
+
+					# Header
+					$header = @"
 @WIZRPL(DBASE_TIMEOUT=E);
 
 CREATE VIEW $viewName AS SELECT $columnList FROM $table;
 
 INSERT INTO $viewName VALUES
 "@
-							$header = $header -replace "(\r\n|\n|\r)", "`r`n"
-							$streamWriter.WriteLine($header.TrimEnd())
-							
-							# Dump data as INSERTs (row by row)
-							$dataQuery = "SELECT * FROM [$table]"
-							$cmdData = $srcSqlConnection.CreateCommand()
-							$cmdData.CommandText = $dataQuery
-							$readerData = $cmdData.ExecuteReader()
-							$firstRow = $true
-							while ($readerData.Read())
+					$header = $header -replace "(\r\n|\n|\r)", "`r`n"
+					$streamWriter.WriteLine($header.TrimEnd())
+
+					# Dump rows
+					$dataQuery = "SELECT * FROM [$table]"
+					$cmdData = $srcSqlConnection.CreateCommand()
+					$cmdData.CommandText = $dataQuery
+					$readerData = $cmdData.ExecuteReader()
+					$firstRow = $true
+
+					while ($readerData.Read())
+					{
+						if ($firstRow) { $firstRow = $false } else { $streamWriter.WriteLine(",") }
+
+						$values = @()
+						foreach ($col in $columnDataTypes.Keys)
+						{
+							$val      = $readerData[$col]
+							$dataType = $columnDataTypes[$col]
+
+							if ($val -eq $null -or $val -is [System.DBNull])
 							{
-								if ($firstRow) { $firstRow = $false }
-								else { $streamWriter.WriteLine(",") }
-								$values = @()
-								foreach ($col in $columnDataTypes.Keys)
-								{
-									$val = $readerData[$col]
-									$dataType = $columnDataTypes[$col]
-									if ($val -eq $null -or $val -is [System.DBNull])
-									{
-										$values += ""
-										continue
-									}
-									switch -Wildcard ($dataType)
-									{
-										{ $_ -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext') } {
-											$escapedVal = $val.ToString().Replace("'", "''")
-											$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
-											$values += "'$escapedVal'"
-											break
-										}
-										{ $_ -in @('datetime', 'smalldatetime', 'date', 'datetime2') } {
-											$dayOfYear = $val.DayOfYear.ToString("D3")
-											$formattedDate = "'{0}{1} {2}'" -f $val.Year, $dayOfYear, $val.ToString("HH:mm:ss")
-											$values += $formattedDate
-											break
-										}
-										{ $_ -eq 'bit' } {
-											$bitVal = if ($val) { "1" }
-											else { "0" }
-											$values += $bitVal
-											break
-										}
-										{ $_ -in @('decimal', 'numeric', 'float', 'real', 'money', 'smallmoney') } {
-											if ([math]::Floor($val) -eq $val) { $values += $val.ToString() }
-											else { $values += $val.ToString("0.00") }
-											break
-										}
-										{ $_ -in @('tinyint', 'smallint', 'int', 'bigint') } {
-											$values += $val.ToString()
-											break
-										}
-										default {
-											$escapedVal = $val.ToString().Replace("'", "''")
-											$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
-											$values += "'$escapedVal'"
-											break
-										}
-									}
-								}
-								$insertStatement = "(" + ($values -join ",") + ")"
-								$insertStatement = $insertStatement -replace "(\r\n|\n|\r)", " "
-								$streamWriter.Write($insertStatement)
+								$values += ""
+								continue
 							}
-							$readerData.Close()
-							$streamWriter.WriteLine(";")
-							$streamWriter.WriteLine()
-							# Footer
-							$footer = @"
+
+							switch -Wildcard ($dataType)
+							{
+								{ $_ -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext') } {
+									$escapedVal = $val.ToString().Replace("'", "''")
+									$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+									$values += "'$escapedVal'"
+									break
+								}
+								{ $_ -in @('datetime', 'smalldatetime', 'date', 'datetime2') } {
+									$dayOfYear = $val.DayOfYear.ToString("D3")
+									$formattedDate = "'{0}{1} {2}'" -f $val.Year, $dayOfYear, $val.ToString("HH:mm:ss")
+									$values += $formattedDate
+									break
+								}
+								{ $_ -eq 'bit' } {
+									$values += (if ($val) { "1" } else { "0" })
+									break
+								}
+								{ $_ -in @('decimal', 'numeric', 'float', 'real', 'money', 'smallmoney') } {
+									if ([math]::Floor($val) -eq $val) { $values += $val.ToString() }
+									else { $values += $val.ToString("0.00") }
+									break
+								}
+								{ $_ -in @('tinyint', 'smallint', 'int', 'bigint') } {
+									$values += $val.ToString()
+									break
+								}
+								default {
+									$escapedVal = $val.ToString().Replace("'", "''")
+									$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+									$values += "'$escapedVal'"
+									break
+								}
+							}
+						}
+
+						$insertStatement = "(" + ($values -join ",") + ")"
+						$insertStatement = $insertStatement -replace "(\r\n|\n|\r)", " "
+						$streamWriter.Write($insertStatement)
+					}
+
+					$readerData.Close()
+
+					$streamWriter.WriteLine(";")
+					$streamWriter.WriteLine()
+
+					# Footer
+					$footer = @"
 @UPDATE_BATCH(JOB=ADDRPL,TAR=$table,
 KEY=$keyString,
 SRC=SELECT * FROM $viewName);
@@ -7199,62 +7570,219 @@ DROP TABLE $viewName;
 
 @WIZCLR(DBASE_TIMEOUT);
 "@
-							$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
-							$streamWriter.WriteLine($footer.TrimEnd())
-							$streamWriter.WriteLine()
-							$streamWriter.Flush()
-							$streamWriter.Close()
-							$streamWriter.Dispose()
-						}
-						catch
-						{
-							Write_Log "Error generating SQL for table '$table' (file fallback): $_" "red"
-							continue
-						}
-					}
-					
-					# Copy file to the lane's folder
-					try
-					{
-						$destinationPath = Join-Path $LaneLocalPath $sqlFileName
-						Copy-Item -Path $localTempPath -Destination $destinationPath -Force -ErrorAction Stop
-						$fileItem = Get-Item $destinationPath
-						if ($fileItem.Attributes -band [System.IO.FileAttributes]::Archive)
-						{
-							$fileItem.Attributes -= [System.IO.FileAttributes]::Archive
-						}
-						Write_Log "Copied $sqlFileName to Lane #$laneNum ($machineName) (file fallback)." "green"
-						$fileCopyLanes += $laneNum
-						$ProcessedLanes += $laneNum
-					}
-					catch
-					{
-						Write_Log "Error copying $sqlFileName to Lane #[$laneNum] ($machineName): $_" "red"
-					}
+					$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
+					$streamWriter.WriteLine($footer.TrimEnd())
+					$streamWriter.WriteLine()
+
+					$streamWriter.Flush()
+					$streamWriter.Close()
+					$streamWriter.Dispose()
+				}
+				catch
+				{
+					Write_Log "Error generating SQL for table '$table' (file fallback): $_" "red"
+					& $logLine.Invoke("ERROR generating FILE sql for table=$table lane=$laneNum: $($_.Exception.Message)")
+					continue
 				}
 			}
-			else
+
+			# Copy file to lane folder
+			try
 			{
-				Write_Log "Lane #$laneNum ($machineName) not found at path: $LaneLocalPath (file fallback failed)" "yellow"
+				$destinationPath = Join-Path $LaneLocalPath $sqlFileName
+				Copy-Item -Path $localTempPath -Destination $destinationPath -Force -ErrorAction Stop
+
+				$fileItem = Get-Item $destinationPath
+				if ($fileItem.Attributes -band [System.IO.FileAttributes]::Archive)
+				{
+					$fileItem.Attributes -= [System.IO.FileAttributes]::Archive
+				}
+
+				Write_Log "Copied $sqlFileName to Lane #$laneNum ($machineName) (file fallback)." "green"
+				& $logLine.Invoke("FILE copied: $sqlFileName -> $destinationPath")
+			}
+			catch
+			{
+				Write_Log "Error copying $sqlFileName to Lane #[$laneNum] ($machineName): $_" "red"
+				& $logLine.Invoke("ERROR copying FILE $sqlFileName to lane=$laneNum: $($_.Exception.Message)")
 			}
 		}
+
+		$fileCopyLanes += $laneNum
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
-	# STEP 6: Clean up and final logging
+	# Process Protocol lanes using separate PS instances + per-lane windows (with speed/ETA)
 	# ------------------------------------------------------------------------------------------------
-	$srcSqlConnection.Close()
-	
-	$uniqueProcessedLanes = $ProcessedLanes | Select-Object -Unique
-	Write_Log "`r`nTotal Lanes processed: $($uniqueProcessedLanes.Count)" "green"
-	if ($protocolLanes.Count -gt 0)
+	$protocolProcesses    = @()
+	$protocolResultFiles  = @()
+	$protocolLanesLaunched = @()
+
+	foreach ($laneNum in $protocolLaneList)
 	{
-		Write_Log "Lanes processed via SQL protocol: $((($protocolLanes | Select-Object -Unique) -join ', '))" "green"
+		$machineName = $LaneNumToMachineName[$laneNum]
+		if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
+		{
+			Write_Log "Lane #${laneNum}: Machine name invalid/unknown. Skipping protocol lane." "yellow"
+			& $logLine.Invoke("PROTOCOL lane $laneNum skipped: invalid machine name.")
+			continue
+		}
+
+		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
+		if (-not $laneInfo)
+		{
+			Write_Log "Could not get DB info for lane $laneNum. Skipping protocol lane." "yellow"
+			& $logLine.Invoke("PROTOCOL lane $laneNum skipped: lane DB info missing.")
+			continue
+		}
+
+		$protocolType = $script:LaneProtocols[$laneNum]
+		$laneConnStr = $null
+
+		if ($protocolType -eq "Named Pipes") { $laneConnStr = $laneInfo['NamedPipesConnStr'] }
+		elseif ($protocolType -eq "TCP")     { $laneConnStr = $laneInfo['TcpConnStr'] }
+
+		if ([string]::IsNullOrWhiteSpace($laneConnStr))
+		{
+			Write_Log "Lane $laneNum ($machineName): Missing lane connection string for [$protocolType]. Skipping." "yellow"
+			& $logLine.Invoke("PROTOCOL lane $laneNum skipped: missing conn string for $protocolType.")
+			continue
+		}
+
+		$configPath = Join-Path $script:SetupFiles ("PumpTables_{0}_{1}.json" -f $StoreNumber, $laneNum)
+		$resultPath = Join-Path $script:SetupFiles ("PumpTables_{0}_{1}.result.json" -f $StoreNumber, $laneNum)
+
+		$configObj = [ordered]@{
+			LaneNumber             = $laneNum
+			MachineName            = $machineName
+			ProtocolType           = $protocolType
+			SourceConnectionString = $SourceConnectionString
+			LaneConnectionString   = $laneConnStr
+			Tables                 = $tableNames
+			RowCounts              = $tableRowCounts
+			ResultPath             = $resultPath
+			LogFile                = $LatestLogFile
+		}
+
+		try
+		{
+			($configObj | ConvertTo-Json -Depth 10) | Set-Content -Path $configPath -Encoding UTF8 -Force
+		}
+		catch
+		{
+			Write_Log "Failed writing protocol config for lane $laneNum: $_" "red"
+			& $logLine.Invoke("ERROR writing protocol config lane=$laneNum: $($_.Exception.Message)")
+			continue
+		}
+
+		# Throttle concurrent protocol windows/processes
+		while ($protocolProcesses.Count -ge $MaxConcurrentProtocolLanes)
+		{
+			$oldest = $protocolProcesses[0]
+			try { Wait-Process -Id $oldest.Id } catch { }
+			$protocolProcesses = $protocolProcesses | Where-Object { $_.Id -ne $oldest.Id }
+		}
+
+		try
+		{
+			Write_Log "Launching protocol pump for Lane $laneNum ($machineName) [$protocolType]..." "blue"
+			& $logLine.Invoke("Launching PROTOCOL child for lane=$laneNum protocol=$protocolType")
+
+			$argList = @(
+				"-NoProfile"
+				"-ExecutionPolicy", "Bypass"
+				"-STA"
+				"-File", "`"$childScriptPath`""
+				"-ConfigPath", "`"$configPath`""
+			)
+
+			$p = Start-Process -FilePath "powershell.exe" -ArgumentList $argList -PassThru -WindowStyle Normal
+			$protocolProcesses += $p
+			$protocolResultFiles += $resultPath
+			$protocolLanesLaunched += $laneNum
+		}
+		catch
+		{
+			Write_Log "Failed launching protocol process for lane $laneNum: $_" "red"
+			& $logLine.Invoke("ERROR launching PROTOCOL child lane=$laneNum: $($_.Exception.Message)")
+		}
 	}
+
+	if ($protocolProcesses.Count -gt 0)
+	{
+		Write_Log "`r`nWaiting for protocol lane window(s) to finish..." "blue"
+		& $logLine.Invoke("Waiting for protocol children to finish...")
+
+		foreach ($p in $protocolProcesses)
+		{
+			try { Wait-Process -Id $p.Id } catch { }
+		}
+	}
+
+	# Parse protocol result files (best effort summary)
+	$protocolSuccessLanes = @()
+	$protocolFailedLanes  = @()
+
+	foreach ($rf in $protocolResultFiles)
+	{
+		if (Test-Path $rf)
+		{
+			try
+			{
+				$r = (Get-Content -Path $rf -Raw) | ConvertFrom-Json
+				if ($r -and $r.LaneNumber)
+				{
+					if ($r.Success -eq $true) { $protocolSuccessLanes += [string]$r.LaneNumber }
+					else { $protocolFailedLanes += [string]$r.LaneNumber }
+				}
+			}
+			catch { }
+		}
+	}
+
+	# Cleanup source SQL connection
+	try { if ($srcSqlConnection.State -eq 'Open') { $srcSqlConnection.Close() } } catch { }
+
+	# Final summary
+	$allProcessed = @()
+	if ($fileCopyLanes.Count -gt 0) { $allProcessed += $fileCopyLanes }
+	if ($protocolLanesLaunched.Count -gt 0) { $allProcessed += $protocolLanesLaunched }
+	$allProcessed = $allProcessed | Select-Object -Unique
+
+	Write_Log "`r`nTotal Lanes targeted: $($Lanes.Count)" "green"
+	Write_Log "Total Lanes processed/launched: $($allProcessed.Count)" "green"
+
+	if ($protocolLanesLaunched.Count -gt 0)
+	{
+		Write_Log "Protocol lanes launched: $((($protocolLanesLaunched | Select-Object -Unique) -join ', '))" "green"
+		& $logLine.Invoke("Protocol lanes launched: $((($protocolLanesLaunched | Select-Object -Unique) -join ', '))")
+	}
+
+	if ($protocolSuccessLanes.Count -gt 0)
+	{
+		Write_Log "Protocol lanes SUCCESS: $((($protocolSuccessLanes | Select-Object -Unique) -join ', '))" "green"
+		& $logLine.Invoke("Protocol lanes SUCCESS: $((($protocolSuccessLanes | Select-Object -Unique) -join ', '))")
+	}
+
+	if ($protocolFailedLanes.Count -gt 0)
+	{
+		Write_Log "Protocol lanes FAILED: $((($protocolFailedLanes | Select-Object -Unique) -join ', '))" "red"
+		& $logLine.Invoke("Protocol lanes FAILED: $((($protocolFailedLanes | Select-Object -Unique) -join ', '))")
+	}
+
 	if ($fileCopyLanes.Count -gt 0)
 	{
-		Write_Log "Lanes processed via FILE fallback: $((($fileCopyLanes | Select-Object -Unique) -join ', '))" "yellow"
+		Write_Log "FILE lanes completed (tables <= $MaxFileFallbackRowsPerTable rows): $((($fileCopyLanes | Select-Object -Unique) -join ', '))" "yellow"
+		& $logLine.Invoke("FILE lanes completed: $((($fileCopyLanes | Select-Object -Unique) -join ', '))")
 	}
+
+	if ($skippedFileLanes.Count -gt 0)
+	{
+		Write_Log "FILE lanes skipped (no eligible tables under limit): $((($skippedFileLanes | Select-Object -Unique) -join ', '))" "yellow"
+		& $logLine.Invoke("FILE lanes skipped (no eligible tables): $((($skippedFileLanes | Select-Object -Unique) -join ', '))")
+	}
+
+	& $logLine.Invoke("Pump_Tables completed.")
 	Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 }
 
