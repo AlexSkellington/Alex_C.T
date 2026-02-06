@@ -192,52 +192,70 @@ $script:BackupSqlPass = "TB`$upp0rT"
 # Locate Base Path: Storeman Folder Detection (case-insensitive)
 # ---------------------------------------------------------------------------------------------------
 $BasePath = $null
-$targetSubPathPattern = 'Office\Dbs\INFO_*901_WIN.INI'
-$storemanDirs = @()
-$fixedDrives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 -and $_.Root -match '^[A-Z]:\\$' }
+$infoRel  = 'Office\Dbs\INFO_*901_WIN.INI'
+$testPath = 'C:\Storeman'
 
-foreach ($drive in $fixedDrives)
-{
-	# Check every top-level directory (no name filter) for the required subpath
-	$dirs = Get-ChildItem -Path "$($drive.Root)" -Directory -ErrorAction SilentlyContinue |
-	ForEach-Object {
-		$candidatePath = Join-Path $_.FullName 'Office\Dbs'
-		$files = Get-ChildItem -Path $candidatePath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue
-		if ($files) { $_ }
-	}
-	if ($dirs) { $storemanDirs += $dirs }
-}
+# 1) Try local SMB share "storeman"
+$share = $null
+try {
+	$share = Get-SmbShare -ErrorAction Stop | Where-Object { $_.Name -ieq 'storeman' } | Select-Object -First 1
+} catch { $share = $null }
 
-if ($storemanDirs.Count -gt 1)
+if ($share -and -not [string]::IsNullOrWhiteSpace($share.Path))
 {
-	# Prefer a path that is actually shared as a Windows share
-	$shares = Get-SmbShare -ErrorAction SilentlyContinue
-	foreach ($dir in $storemanDirs)
+	# Find INFO file in share path
+	$infoFile = Get-ChildItem -Path (Join-Path $share.Path 'Office\Dbs') -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
+	if ($infoFile)
 	{
-		if ($shares.Path -contains $dir.FullName)
+		# Read KeyString + KeyValidDate (inline)
+		$keyString = ""
+		$keyValid  = $null
+
+		try {
+			$txt = Get-Content -Path $infoFile.FullName -Raw -ErrorAction Stop
+
+			$mKey = [regex]::Match($txt, '(?im)^\s*KeyString\s*=\s*(.+?)\s*$')
+			if ($mKey.Success) { $keyString = ($mKey.Groups[1].Value).Trim() }
+
+			$mDt = [regex]::Match($txt, '(?im)^\s*KeyValidDate\s*=\s*(\d{2}/\d{2}/\d{4})\s*$')
+			if ($mDt.Success) {
+				try { $keyValid = [datetime]::ParseExact($mDt.Groups[1].Value, 'MM/dd/yyyy', $null) } catch { $keyValid = $null }
+			}
+		} catch { }
+
+		# Active key check for SHARE (strict)
+		$hasKeyString = -not [string]::IsNullOrWhiteSpace($keyString)
+		$keyNotExpired = ($keyValid -isnot [datetime]) -or ($keyValid.Date -ge (Get-Date).Date)
+
+		if ($hasKeyString -and $keyNotExpired)
 		{
-			$BasePath = $dir.FullName
-			break
+			$BasePath = $share.Path
+		}
+		else
+		{
+			Write-Warning "Share 'storeman' found but key is missing/expired. Falling back to ${testPath} for testing."
 		}
 	}
-	if (-not $BasePath) { $BasePath = $storemanDirs[0].FullName }
-}
-elseif ($storemanDirs.Count -eq 1)
-{
-	$BasePath = $storemanDirs[0].FullName
-}
-
-# Final fallback: Default to C:\storeman if none found
-if (-not $BasePath)
-{
-	$fallback = "C:\storeman"
-	$candidatePath = Join-Path $fallback 'Office\Dbs'
-	$files = Get-ChildItem -Path $candidatePath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue
-	if ($files) { $BasePath = $fallback }
 	else
 	{
-		Write-Warning "Could not locate any storeman folder containing Office\Dbs\INFO_*901_WIN.INI.`nRunning with limited functionality."
-		$BasePath = $fallback
+		Write-Warning "Share 'storeman' found but INFO file missing. Falling back to ${testPath} for testing."
+	}
+}
+else
+{
+	Write-Warning "Storeman share 'storeman' not found. Falling back to ${testPath} for testing."
+}
+
+# 2) Testing fallback
+if (-not $BasePath)
+{
+	$BasePath = $testPath
+
+	# Optional: warn if the testing path still doesn't have INFO
+	$testInfo = Get-ChildItem -Path (Join-Path $BasePath 'Office\Dbs') -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
+	if (-not $testInfo)
+	{
+		Write-Warning "Testing fallback selected (${testPath}) but INFO_*901_WIN.INI was not found. Running with limited functionality."
 	}
 }
 
