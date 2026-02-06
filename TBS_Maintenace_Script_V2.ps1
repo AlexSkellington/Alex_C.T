@@ -182,7 +182,7 @@ $script:credBiyerba = New-Object System.Management.Automation.PSCredential ($biz
 $script:BackupRoot = "C:\Tecnica_Systems\Alex_C.T\Backups\"
 $script:ScriptsFolder = "C:\Tecnica_Systems\Alex_C.T\Scripts\"
 $script:ScriptsLog = "C:\Tecnica_Systems\Alex_C.T\Log\"
-
+$script:SetupFiles = "C:\Tecnica_Systems\Alex_C.T\Setup_Files"
 
 # === SQL Backup/Automation Credentials ===
 $script:BackupSqlUser = "Tecnica"
