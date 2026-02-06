@@ -15,43 +15,84 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 #                               SECTION: Ensure Admin Execution
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Relaunches the script elevated if not already running as Administrator.
-#   Preserves script path and arguments.
+#   Relaunches the script elevated ONLY if not already running as Administrator.
+#   If already admin -> continues normally (NO relaunch).
+#   Preserves script path and original arguments.
 #   Safe for PowerShell 5.1 and Scheduled Tasks.
 # ===================================================================================================
 
-$IsAdmin = ([Security.Principal.WindowsPrincipal] `
-	[Security.Principal.WindowsIdentity]::GetCurrent()
-).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+try
+{
+	$IsAdmin = ([Security.Principal.WindowsPrincipal] `
+		[Security.Principal.WindowsIdentity]::GetCurrent()
+	).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+catch
+{
+	# If we can't determine, assume not admin so we don't fail silently
+	$IsAdmin = $false
+}
 
-if (-not $IsAdmin)
+# If already elevated, do nothing and continue the script
+if ($IsAdmin)
+{
+	# Optional: uncomment if you want a banner
+	# Write-Host "Running elevated (Administrator)." -ForegroundColor Green
+}
+else
 {
 	Write-Host "Not running as Administrator. Relaunching elevated..." -ForegroundColor Yellow
 	
-	# Build argument list (preserve script + params)
+	# If running from a saved .ps1, $PSCommandPath is best.
+	# If launched in a different way, fall back to $MyInvocation.
+	$scriptPath = $PSCommandPath
+	if ([string]::IsNullOrWhiteSpace($scriptPath))
+	{
+		try { $scriptPath = $MyInvocation.MyCommand.Path }
+		catch { $scriptPath = $null }
+	}
+	
+	if ([string]::IsNullOrWhiteSpace($scriptPath) -or -not (Test-Path -LiteralPath $scriptPath))
+	{
+		Write-Host "Cannot relaunch elevated: script path not detected. Please run PowerShell as Administrator." -ForegroundColor Red
+		exit 1
+	}
+	
+	# Preserve original arguments EXACTLY (handles spaces)
+	# PowerShell passes $args already tokenized; re-quote each.
 	$argList = @(
 		"-NoProfile"
-		"-ExecutionPolicy Bypass"
-		"-File `"$PSCommandPath`""
+		"-ExecutionPolicy", "Bypass"
+		"-File", $scriptPath
 	)
 	
-	if ($args.Count -gt 0)
+	if ($args -and $args.Count -gt 0)
 	{
-		$argList += ($args | ForEach-Object { "`"$_`"" })
+		foreach ($a in $args)
+		{
+			$argList += "$a"
+		}
 	}
 	
 	try
 	{
-		Start-Process -FilePath "powershell.exe" `
-					  -ArgumentList ($argList -join " ") `
-					  -Verb RunAs
+		# Use the same bitness PowerShell that launched us (important on some systems)
+		$psExe = (Get-Process -Id $PID).Path
+		if ([string]::IsNullOrWhiteSpace($psExe) -or -not (Test-Path -LiteralPath $psExe))
+		{
+			$psExe = "powershell.exe"
+		}
+		
+		Start-Process -FilePath $psExe -ArgumentList $argList -Verb RunAs | Out-Null
 	}
 	catch
 	{
-		Write-Host "Elevation canceled by user. Exiting." -ForegroundColor Red
+		Write-Host "Elevation canceled or failed. Exiting." -ForegroundColor Red
+		exit 1
 	}
 	
-	exit
+	# IMPORTANT: stop the non-elevated instance so you don't run twice
+	exit 0
 }
 
 # ===================================================================================================
@@ -2673,7 +2714,7 @@ WHERE Active = 'Y'
 }
 
 # ===================================================================================================
-# 									FUNCTION: Clear_XE_Folder
+# 									FUNCTION: Clear_XE_Folder  (FULL FIX)
 # ---------------------------------------------------------------------------------------------------
 # Behavior (per your requirement):
 #   STARTUP CLEAN:
@@ -2684,13 +2725,11 @@ WHERE Active = 'Y'
 #     - Keeps NEW FATAL* while running.
 #     - Deletes everything else except the same valid health files.
 #
-# Requested structure:
+# Structure:
 #   - No nested functions.
-#   - Always runs (no start/stop switches).
-#   - ONE shared keep/delete logic (single scriptblock) used by:
-#       * Created/Changed/Renamed events
-#       * Periodic sweep fallback
-#   - PowerShell 5.1 compatible.
+#   - Always runs (replaces existing watcher job).
+#   - ONE shared scriptblock processor used by events + sweep.
+#   - PS 5.1 compatible.
 # ===================================================================================================
 
 function Clear_XE_Folder
@@ -2713,7 +2752,7 @@ function Clear_XE_Folder
 	if (-not (Test-Path -LiteralPath $FolderPath))
 	{
 		Write_Log "Folder '$FolderPath' (Urgent Messages) does not exist." "red"
-		return
+		return $null
 	}
 	
 	# ------------------------------------------------------------------------------------------------
@@ -2787,10 +2826,7 @@ function Clear_XE_Folder
 						}
 						break
 					}
-					catch
-					{
-						Start-Sleep -Milliseconds 150
-					}
+					catch { Start-Sleep -Milliseconds 150 }
 				}
 			}
 		}
@@ -2804,18 +2840,19 @@ function Clear_XE_Folder
 	# 2) MONITOR (FileSystemWatcher in a background job)
 	#    - Keeps NEW FATAL* while running
 	#    - Deletes everything else except valid health files
-	#    - ONE shared ProcessPath used by events + sweep (no nested functions)
 	# ------------------------------------------------------------------------------------------------
 	try
 	{
 		$jobName = "XEWatcherJob_$StoreNumber"
 		
-		# Replace any existing watcher job (always runs, no stop/start UI)
+		# Replace any existing watcher job
 		$existing = Get-Job -Name $jobName -ErrorAction SilentlyContinue
 		if ($existing)
 		{
-			Stop-Job -Job $existing -Force -ErrorAction SilentlyContinue | Out-Null
-			Remove-Job -Job $existing -Force -ErrorAction SilentlyContinue | Out-Null
+			try { Stop-Job -Job $existing -Force -ErrorAction SilentlyContinue | Out-Null }
+			catch { }
+			try { Remove-Job -Job $existing -Force -ErrorAction SilentlyContinue | Out-Null }
+			catch { }
 		}
 		
 		$job = Start-Job -Name $jobName -ArgumentList $FolderPath, $StoreNumber, $HealthMaxAgeDays, $SweepIntervalSeconds -ScriptBlock {
@@ -2826,6 +2863,8 @@ function Clear_XE_Folder
 				[int]$SweepIntervalSeconds
 			)
 			
+			$ErrorActionPreference = 'SilentlyContinue'
+			
 			# --- Watcher object ---
 			$fsw = New-Object System.IO.FileSystemWatcher
 			$fsw.Path = $FolderPath
@@ -2833,7 +2872,7 @@ function Clear_XE_Folder
 			$fsw.NotifyFilter = [IO.NotifyFilters]'FileName, DirectoryName, LastWrite, CreationTime'
 			
 			# --- Shared processor (MONITOR MODE: keep FATAL*) ---
-			$script:ProcessPath = {
+			$ProcessPath = {
 				param ([string]$Path)
 				
 				if (-not $Path) { return }
@@ -2855,7 +2894,7 @@ function Clear_XE_Folder
 				# Keep NEW FATAL* while running
 				if ($item.Name -like 'FATAL*') { return }
 				
-				# Skip reparse points (junctions/symlinks)
+				# Skip reparse points
 				if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return }
 				
 				$now = Get-Date
@@ -2916,7 +2955,7 @@ function Clear_XE_Folder
 				}
 			}
 			
-			# --- Register events WITHOUT -Action, then actively consume them with Wait-Event (reliable in jobs) ---
+			# Register events (no -Action) and consume them with Wait-Event (best in jobs)
 			$createdId = "XE_Created_$StoreNumber"
 			$changedId = "XE_Changed_$StoreNumber"
 			$renamedId = "XE_Renamed_$StoreNumber"
@@ -2926,31 +2965,29 @@ function Clear_XE_Folder
 			Register-ObjectEvent -InputObject $fsw -EventName Renamed -SourceIdentifier $renamedId | Out-Null
 			
 			$fsw.EnableRaisingEvents = $true
-			
-			# --- Timers for sweep fallback ---
 			$nextSweep = (Get-Date).AddSeconds($SweepIntervalSeconds)
 			
 			while ($true)
 			{
-				# Wait briefly for an event (returns immediately when one arrives)
+				# Wait briefly for an event
 				$e = Wait-Event -Timeout 1
 				
 				if ($e)
 				{
 					try
 					{
-						# FullPath works for Created/Changed/Renamed
 						$path = $e.SourceEventArgs.FullPath
-						& $script:ProcessPath -Path $path
+						& $ProcessPath -Path $path
 					}
 					catch { }
 					finally
 					{
 						# Always remove handled event from queue
-						Remove-Event -EventIdentifier $e.EventIdentifier -ErrorAction SilentlyContinue
+						try { Remove-Event -EventIdentifier $e.EventIdentifier -ErrorAction SilentlyContinue }
+						catch { }
 					}
 					
-					# Drain any burst quickly (no delay)
+					# Drain burst
 					while ($true)
 					{
 						$e2 = Wait-Event -Timeout 0
@@ -2958,17 +2995,18 @@ function Clear_XE_Folder
 						try
 						{
 							$path2 = $e2.SourceEventArgs.FullPath
-							& $script:ProcessPath -Path $path2
+							& $ProcessPath -Path $path2
 						}
 						catch { }
 						finally
 						{
-							Remove-Event -EventIdentifier $e2.EventIdentifier -ErrorAction SilentlyContinue
+							try { Remove-Event -EventIdentifier $e2.EventIdentifier -ErrorAction SilentlyContinue }
+							catch { }
 						}
 					}
 				}
 				
-				# Periodic sweep fallback (keeps new FATAL* automatically because ProcessPath does)
+				# Periodic sweep fallback
 				if ((Get-Date) -ge $nextSweep)
 				{
 					$nextSweep = (Get-Date).AddSeconds($SweepIntervalSeconds)
@@ -2979,54 +3017,21 @@ function Clear_XE_Folder
 						{
 							Get-ChildItem -LiteralPath $FolderPath -Recurse -Force -ErrorAction SilentlyContinue |
 							Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 } |
-							ForEach-Object { & $script:ProcessPath -Path $_.FullName }
+							ForEach-Object { & $ProcessPath -Path $_.FullName }
 						}
 					}
 					catch { }
 				}
 			}
-		
-			# --- ONE handler for all events (calls shared processor) ---
-			$handler = {
-				$path = $Event.SourceEventArgs.FullPath
-				& $script:ProcessPath -Path $path
-			}
-			
-			# Register the SAME handler for Created/Changed/Renamed
-			$null = Register-ObjectEvent -InputObject $fsw -EventName Created -SourceIdentifier "XE_Created_$StoreNumber" -Action $handler
-			$null = Register-ObjectEvent -InputObject $fsw -EventName Changed -SourceIdentifier "XE_Changed_$StoreNumber" -Action $handler
-			$null = Register-ObjectEvent -InputObject $fsw -EventName Renamed -SourceIdentifier "XE_Renamed_$StoreNumber" -Action $handler
-			
-			# Enable watcher
-			$fsw.EnableRaisingEvents = $true
-			
-			# Periodic sweep fallback: feed each path into the SAME processor
-			while ($true)
-			{
-				try
-				{
-					Start-Sleep -Seconds $SweepIntervalSeconds
-					if (-not (Test-Path -LiteralPath $FolderPath)) { continue }
-					
-					$items = Get-ChildItem -LiteralPath $FolderPath -Recurse -Force -ErrorAction SilentlyContinue |
-					Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 }
-					
-					foreach ($it in $items)
-					{
-						& $script:ProcessPath -Path $it.FullName
-					}
-				}
-				catch
-				{
-					# Best-effort; keep the job alive
-				}
-			}
 		}
+		
+		# Write_Log "XE watcher job started: $jobName" "green"
 		return $job
 	}
 	catch
 	{
-		return
+		Write_Log "Failed to start XE watcher job: $_" "red"
+		return $null
 	}
 }
 
@@ -24163,25 +24168,33 @@ if (-not $form)
 	$form.BackColor = [System.Drawing.SystemColors]::ControlLight # Light gray background
 	$form.Font = New-Object System.Drawing.Font("Segoe UI", 9) # Modern font
 	
-	# -------------------- Idle Close (configurable) + Busy-Safe Watchdog --------------------
-	# Config (add these near your other $script: vars)
+	# -------------------- Idle Close (configurable) + Busy-Safe Watchdog (FULL FIX) --------------------
+	
+	# Config / state
 	if (-not $script:LastActivity) { $script:LastActivity = Get-Date }
 	$script:IsBusy = $false
-	
-	# NEW: reason & ignore list for idle logic
 	$script:BusyReason = $null
-	# Add any long-lived background jobs here that you want to IGNORE for idle-close:
-	# e.g. 'ClearXEFolderJob' or any other job name you see via Get-Job
-	$script:IdleIgnoreJobNames = @('ClearXEFolderJob')
-	# Optional: hard-close after this many idle minutes even if still "busy" (0 = disabled)
+	
+	# Jobs you want the idle system to IGNORE (supports wildcards)
+	# IMPORTANT: XE watcher job is named "XEWatcherJob_<StoreNumber>", so we ignore "XEWatcherJob_*"
+	$script:IdleIgnoreJobNames = @(
+		'XEWatcherJob_*',
+		'ClearXEFolderJob'
+	)
+	
+	# Optional: hard-close after X minutes even if still busy (0 = disabled)
 	$script:IdleHardCloseAfterMinutes = 0
 	
-	# Make sure form sees keystrokes even when a control has focus
+	# Make sure the form sees keystrokes even when a control has focus
 	if ($form -and $form -is [System.Windows.Forms.Form])
 	{
 		try { $form.KeyPreview = $true }
 		catch { }
 	}
+	
+	# Helper: wildcard-aware ignore check (NO nested function, pure inline logic)
+	# (Used inside the timers)
+	# ----------------------------------------------------------------------
 	
 	# --- Busy scanner (UI thread) -------------------------------------------------------------
 	$BusyTimer = New-Object System.Windows.Forms.Timer
@@ -24191,9 +24204,9 @@ if (-not $form)
 			$script:IsBusy = $false
 			$script:BusyReason = $null
 			
+			# 1) Lane protocol runspace tasks?
 			try
 			{
-				# 1) Active lane-protocol runspace tasks?
 				if ($script:LaneProtocolJobs)
 				{
 					foreach ($kv in @($script:LaneProtocolJobs.GetEnumerator()))
@@ -24210,11 +24223,11 @@ if (-not $form)
 			}
 			catch { }
 			
+			# 2) Lane protocol pool in-flight work?
 			if (-not $script:IsBusy)
 			{
 				try
 				{
-					# 2) The lane runspace pool still has in-flight work?
 					if ($script:LaneProtocolPool)
 					{
 						$avail = $script:LaneProtocolPool.GetAvailableRunspaces()
@@ -24229,11 +24242,11 @@ if (-not $form)
 				catch { }
 			}
 			
+			# 3) Scale credential helper tasks?
 			if (-not $script:IsBusy)
 			{
 				try
 				{
-					# 3) Scale credential helper tasks?
 					if ($script:ScaleCredTasks)
 					{
 						foreach ($k in @($script:ScaleCredTasks.Keys))
@@ -24251,33 +24264,21 @@ if (-not $form)
 				catch { }
 			}
 			
+			# 4) Any other background jobs (EXCEPT ignored names/patterns)
 			if (-not $script:IsBusy)
 			{
 				try
 				{
-					# 4) The Clear XE job (ignore if whitelisted by name)
-					if ($ClearXEJob -and ($ClearXEJob.State -eq 'Running'))
-					{
-						$name = $null; try { $name = $ClearXEJob.Name }
-						catch { }
-						if (-not $name) { $name = 'ClearXEFolderJob' } # defensive fallback
-						if ($script:IdleIgnoreJobNames -notcontains $name)
+					$jobs = Get-Job -State Running -ErrorAction SilentlyContinue | Where-Object {
+						$nm = $_.Name
+						$ignore = $false
+						foreach ($pat in $script:IdleIgnoreJobNames)
 						{
-							$script:IsBusy = $true
-							$script:BusyReason = "Job: $name"
+							if ($nm -like $pat) { $ignore = $true; break }
 						}
+						-not $ignore
 					}
-				}
-				catch { }
-			}
-			
-			if (-not $script:IsBusy)
-			{
-				try
-				{
-					# 5) Any other background jobs (exclude ignored names)
-					$jobs = Get-Job -State Running -ErrorAction SilentlyContinue |
-					Where-Object { $script:IdleIgnoreJobNames -notcontains $_.Name }
+					
 					if ($jobs)
 					{
 						$script:IsBusy = $true
@@ -24294,45 +24295,49 @@ if (-not $form)
 	$script:IdleTimer.Interval = 30000 # 30s
 	$script:IdleTimer.add_Tick({
 			if ($script:IdleMinutesAllowed -le 0) { return }
+			
 			try
 			{
 				$minsIdle = (New-TimeSpan -Start $script:LastActivity -End (Get-Date)).TotalMinutes
-				
-				# Optionally: hard-close after a longer idle period even if "busy"
 				$hardCloseReady = ($script:IdleHardCloseAfterMinutes -gt 0 -and $minsIdle -ge $script:IdleHardCloseAfterMinutes)
 				
 				if ($minsIdle -ge $script:IdleMinutesAllowed)
 				{
 					if (-not $script:IsBusy -or $hardCloseReady)
 					{
-						# if hard-close, explain why we're overriding
-						if ($hardCloseReady -and $script:IsBusy -and $script:BusyReason)
+						try
 						{
-							try { Write_Log "Idle $([math]::Round($minsIdle, 1)) min; overriding busy ($script:BusyReason) due to hard-close window." "yellow" }
-							catch { }
+							if ($hardCloseReady -and $script:IsBusy -and $script:BusyReason)
+							{
+								Write_Log "Idle $([math]::Round($minsIdle, 1)) min; overriding busy ($script:BusyReason) due to hard-close window." "yellow"
+							}
+							else
+							{
+								Write_Log "Idle for $([math]::Round($minsIdle, 1)) minute(s) - closing." "yellow"
+							}
 						}
-						else
-						{
-							try { Write_Log "Idle for $([math]::Round($minsIdle, 1)) minute(s) - closing." "yellow" }
-							catch { }
-						}
+						catch { }
+						
 						$script:SuppressClosePrompt = $true
 						if ($form -and -not $form.IsDisposed) { $form.Close() }
 					}
 					else
 					{
-						# Busy detected at idle threshold; explain who's blocking
-						if ($script:BusyReason)
+						# Busy detected at idle threshold; log once then reset window
+						try
 						{
-							try { Write_Log "Idle $([math]::Round($minsIdle, 1)) min, but busy: $script:BusyReason (not closing)." "gray" }
-							catch { }
+							if ($script:BusyReason)
+							{
+								Write_Log "Idle $([math]::Round($minsIdle, 1)) min, but busy: $script:BusyReason (not closing)." "gray"
+							}
+							else
+							{
+								Write_Log "Idle $([math]::Round($minsIdle, 1)) min, but busy: <unknown> (not closing)." "gray"
+							}
 						}
-						else
-						{
-							try { Write_Log "Idle $([math]::Round($minsIdle, 1)) min, but busy: <unknown> (not closing)." "gray" }
-							catch { }
-						}
-						# Reset the window so we don't spam checks while still working
+						catch { }
+						
+						# Reset so we don't spam + so user gets another full idle window
 						$script:LastActivity = Get-Date
 					}
 				}
@@ -24351,9 +24356,9 @@ if (-not $form)
 		
 		try
 		{
-			# Recursively attach to current controls
 			$stack = New-Object System.Collections.Stack
 			$stack.Push($form)
+			
 			while ($stack.Count -gt 0)
 			{
 				$parent = [System.Windows.Forms.Control]$stack.Pop()
@@ -24368,6 +24373,36 @@ if (-not $form)
 					if ($ctrl -and $ctrl.HasChildren) { $stack.Push($ctrl) }
 				}
 			}
+		}
+		catch { }
+	}
+	
+	# --- CRITICAL: stop background jobs/timers on exit so PowerShell can terminate cleanly ----
+	if ($form -and $form -is [System.Windows.Forms.Form])
+	{
+		try
+		{
+			$form.add_FormClosing({
+					# Stop timers
+					try { if ($script:IdleTimer) { $script:IdleTimer.Stop(); $script:IdleTimer.Dispose() } }
+					catch { }
+					try { if ($BusyTimer) { $BusyTimer.Stop(); $BusyTimer.Dispose() } }
+					catch { }
+					
+					# Stop XE watcher jobs
+					try
+					{
+						$xeJobs = Get-Job -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'XEWatcherJob_*' }
+						foreach ($j in $xeJobs)
+						{
+							try { Stop-Job -Job $j -Force -ErrorAction SilentlyContinue | Out-Null }
+							catch { }
+							try { Remove-Job -Job $j -Force -ErrorAction SilentlyContinue | Out-Null }
+							catch { }
+						}
+					}
+					catch { }
+				})
 		}
 		catch { }
 	}
