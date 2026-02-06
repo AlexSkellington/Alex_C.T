@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.5.3"
-$VersionDate = "2025-12-18"
+$VersionNumber = "2.5.5"
+$VersionDate = "2026-02-05"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -97,6 +97,8 @@ $script:credBiyerba = New-Object System.Management.Automation.PSCredential ($biz
 # === Directories for Backups and Scripts ===
 $script:BackupRoot = "C:\Tecnica_Systems\Alex_C.T\Backups\"
 $script:ScriptsFolder = "C:\Tecnica_Systems\Alex_C.T\Scripts\"
+$script:ScriptsLog = "C:\Tecnica_Systems\Alex_C.T\Log\"
+
 
 # === SQL Backup/Automation Credentials ===
 $script:BackupSqlUser = "Tecnica"
@@ -1003,15 +1005,29 @@ function Get_All_Lanes_Database_Info
 #                               FUNCTION: Repair_LOC_Databases_On_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Pick lane(s), then choose repair level (Audit / Quick / Deep) in a dialog.
+#   Pick lane(s), choose repair level (Audit / Quick / Deep) in a dialog.
 #   Uses Get_All_Lanes_Database_Info to resolve DB server/name per lane.
-#   Only runs on lanes with cached protocol in $script:LaneProtocols (TCP or Named Pipes).
-#   Connects to master; repairs ONLY the lane DB from Startup.ini.
-#   NEW: If a system DB (master/model/msdb/tempdb) is NOT ONLINE:
-#        • tempdb -> offer to restart SQL service on the lane, then re-probe.
-#        • model/msdb -> offer deep repair with explicit confirmation; else skip with guidance.
-#        • master -> log guidance (restore/rebuild), skip lane (not automated).
-#   Logging matches Process_Lanes; PS 5.1; no nested functions; no ternary; only Write_Log.
+#
+#   IMPORTANT IMPROVEMENTS:
+#     1) Uses Protocol_Results.txt as SOURCE OF TRUTH (TCP / Named Pipes / File)
+#        - If protocol is File or missing -> SKIP (no DB access attempt)
+#     2) Safer DB repair flow:
+#        - Refuses if lane DB resolves to a SYSTEM DB name (master/model/msdb/tempdb)
+#        - Always attempts to restore MULTI_USER (and clear EMERGENCY if used) via finally blocks
+#     3) Works even if Invoke-Sqlcmd lacks -ConnectionString:
+#        - Auto-detects support
+#        - Falls back to .NET SqlClient execution when needed (PS 5.1 safe)
+#     4) Better probe:
+#        - Confirms connection AND checks that target DB exists + state before repair
+#     5) System DB health gate:
+#        - If tempdb not ONLINE, offers to restart SQL service on the lane, then re-check
+#        - If master not ONLINE -> skip with guidance
+#        - If model/msdb not ONLINE -> offers emergency deep repair (explicit prompt)
+#
+# Notes:
+#   - No nested functions.
+#   - Only uses Write_Log for messaging (matches your style).
+#   - CommandTimeout controls DBCC runtime.
 # ===================================================================================================
 
 function Repair_LOC_Databases_On_Lanes
@@ -1028,43 +1044,110 @@ function Repair_LOC_Databases_On_Lanes
 	Write_Log "`r`n==================== Starting Repair_LOC_Databases_On_Lanes Function ====================`r`n" "blue"
 	
 	# ----------------------------------------
-	# Import detected SQL module for Invoke-Sqlcmd usage (same pattern as Process_Lanes)
+	# Normalize store (3 digits) for any labels/logs
+	# ----------------------------------------
+	$StoreNumber = "$StoreNumber".PadLeft(3, '0')
+	
+	# ----------------------------------------
+	# Validate required caches
+	# ----------------------------------------
+	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
+	
+	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+	if (-not $LaneNumToMachineName -or $LaneNumToMachineName.Count -eq 0)
+	{
+		Write_Log "No lanes available. Please retrieve nodes first (LaneNumToMachineName missing/empty)." "red"
+		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	# ----------------------------------------
+	# Import SQL module and capture Invoke-Sqlcmd
 	# ----------------------------------------
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-	if ($SqlModuleName -and $SqlModuleName -ne "None")
-	{
-		try
-		{
-			Import-Module $SqlModuleName -ErrorAction Stop
-			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
-		}
-		catch
-		{
-			Write_Log "Failed to import SQL module or find Invoke-Sqlcmd: $_" "red"
-			Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
-			return
-		}
-	}
-	else
+	if (-not $SqlModuleName -or $SqlModuleName -eq "None")
 	{
 		Write_Log "No valid SQL module available for SQL operations!" "red"
 		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 		return
 	}
 	
-	# ----------------------------------------
-	# Check for available Lane Machines map
-	# ----------------------------------------
-	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-	if (-not $LaneNumToMachineName -or $LaneNumToMachineName.Count -eq 0)
+	$invokeSqlcmdCmd = $null
+	try
 	{
-		Write_Log "No lanes available. Please retrieve nodes first." "red"
+		Import-Module $SqlModuleName -ErrorAction Stop
+		$invokeSqlcmdCmd = Get-Command Invoke-Sqlcmd -ErrorAction Stop
+	}
+	catch
+	{
+		Write_Log "Failed to import SQL module or find Invoke-Sqlcmd: $_" "red"
+		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
+		return
+	}
+	
+	# Detect whether Invoke-Sqlcmd supports -ConnectionString
+	$InvokeSupportsConnString = $false
+	try
+	{
+		if ($invokeSqlcmdCmd -and $invokeSqlcmdCmd.Parameters -and $invokeSqlcmdCmd.Parameters.ContainsKey('ConnectionString'))
+		{
+			$InvokeSupportsConnString = $true
+		}
+	}
+	catch { $InvokeSupportsConnString = $false }
+	
+	# Ensure SqlClient types are available for fallback mode
+	try { Add-Type -AssemblyName System.Data 2>$null }
+	catch { }
+	
+	# ----------------------------------------
+	# Load protocol results file (SOURCE OF TRUTH)
+	# ----------------------------------------
+	$protoFile = $script:ProtocolResultsFile
+	if ([string]::IsNullOrWhiteSpace($protoFile))
+	{
+		# Matches your Start_Lane_Protocol_Jobs default persistence
+		$protoFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
+		$script:ProtocolResultsFile = $protoFile
+	}
+	
+	$LaneProtocolsFromFile = @{ }
+	if (Test-Path $protoFile)
+	{
+		try
+		{
+			$protoLines = Get-Content -LiteralPath $protoFile -ErrorAction SilentlyContinue
+			foreach ($line in $protoLines)
+			{
+				# Format: LANE,PROTOCOL  (you wrote lane,protocol)
+				if ($line -match '^\s*([^,]+)\s*,\s*([^,]+)\s*$')
+				{
+					$laneRaw = $matches[1].Trim()
+					$proto = $matches[2].Trim()
+					
+					$laneNum = (($laneRaw -replace '[^\d]', '')).PadLeft(3, '0')
+					if (-not [string]::IsNullOrWhiteSpace($laneNum))
+					{
+						$LaneProtocolsFromFile[$laneNum] = $proto
+					}
+				}
+			}
+			Write_Log "Loaded protocol results from: $protoFile" "gray"
+		}
+		catch
+		{
+			Write_Log "WARN: Failed reading ProtocolResultsFile '$protoFile'. Error: $_" "yellow"
+		}
+	}
+	else
+	{
+		Write_Log "ProtocolResultsFile not found: $protoFile. Cannot validate DB reachability. Aborting." "red"
 		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 		return
 	}
 	
 	# ----------------------------------------
-	# Get user's lane selection (same UX as Process_Lanes)
+	# Lane selection (same UX pattern)
 	# ----------------------------------------
 	$selection = $null
 	try
@@ -1077,6 +1160,7 @@ function Repair_LOC_Databases_On_Lanes
 		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 		return
 	}
+	
 	if ($selection -eq $null)
 	{
 		Write_Log "Lane DB repair canceled by user." "yellow"
@@ -1090,19 +1174,28 @@ function Repair_LOC_Databases_On_Lanes
 		return
 	}
 	
-	# Support both string and object selections for lanes
+	# Normalize lane list from selection (handles PSCustomObject or strings/ints)
 	$Lanes = @()
 	if ($selection.Lanes[0] -is [PSCustomObject] -and $selection.Lanes[0].PSObject.Properties.Name -contains 'LaneNumber')
 	{
-		foreach ($item in $selection.Lanes) { $Lanes += $item.LaneNumber }
+		foreach ($item in $selection.Lanes)
+		{
+			$ln = "$($item.LaneNumber)" -replace '[^\d]', ''
+			if ($ln) { $Lanes += $ln.PadLeft(3, '0') }
+		}
 	}
 	else
 	{
-		$Lanes = $selection.Lanes
+		foreach ($item in $selection.Lanes)
+		{
+			$ln = "$item" -replace '[^\d]', ''
+			if ($ln) { $Lanes += $ln.PadLeft(3, '0') }
+		}
 	}
+	$Lanes = @($Lanes | Where-Object { $_ } | Select-Object -Unique)
 	
 	# ----------------------------------------
-	# In-function dialog to pick repair level (no external switches)
+	# In-function dialog to pick repair level
 	# ----------------------------------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
@@ -1187,6 +1280,7 @@ function Repair_LOC_Databases_On_Lanes
 	$Level = 'Audit'
 	if ($rbQuick.Checked) { $Level = 'Quick' }
 	if ($rbDeep.Checked) { $Level = 'Deep' }
+	
 	if ($Level -eq 'Deep' -and -not $chkConfirm.Checked)
 	{
 		Write_Log "Deep repair selected but confirmation not checked. Aborting." "yellow"
@@ -1197,66 +1291,53 @@ function Repair_LOC_Databases_On_Lanes
 	Write_Log ("Selected repair level: {0}" -f $Level) "gray"
 	
 	# ----------------------------------------
-	# Ensure protocol cache exists; we will NOT populate it here
-	# ----------------------------------------
-	if (-not $script:LaneProtocols -or $script:LaneProtocols.Keys.Count -eq 0)
-	{
-		Write_Log "Protocol cache is empty. Please run Start_Lane_Protocol_Jobs first. No lanes will be processed." "yellow"
-		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
-		return
-	}
-	
-	# ----------------------------------------
-	# Process lanes one by one (summary like Process_Lanes)
+	# Summary container
 	# ----------------------------------------
 	$laneSummary = New-Object System.Collections.Generic.List[pscustomobject]
 	
+	# ----------------------------------------
+	# Lane processing loop
+	# ----------------------------------------
 	foreach ($LaneNumber in ($Lanes | Sort-Object))
 	{
-		$laneKey = ($LaneNumber -replace '[^\d]', '')
-		$laneKeyP = $laneKey.PadLeft(3, '0')
+		$laneKeyP = ("$LaneNumber" -replace '[^\d]', '').PadLeft(3, '0')
 		
-		# Lookup machine
+		# Resolve machine name
 		$machineName = $null
-		if ($LaneNumToMachineName.ContainsKey($LaneNumber)) { $machineName = $LaneNumToMachineName[$LaneNumber] }
-		if (-not $machineName -and $LaneNumToMachineName.ContainsKey($laneKeyP)) { $machineName = $LaneNumToMachineName[$laneKeyP] }
+		if ($LaneNumToMachineName.ContainsKey($laneKeyP)) { $machineName = $LaneNumToMachineName[$laneKeyP] }
+		elseif ($LaneNumToMachineName.ContainsKey($LaneNumber)) { $machineName = $LaneNumToMachineName[$LaneNumber] }
 		
 		if (-not $machineName)
 		{
-			Write_Log ("Lane {0}: No machine mapping found. Skipping." -f $LaneNumber) "yellow"
+			Write_Log ("Lane {0}: No machine mapping found. Skipping." -f $laneKeyP) "yellow"
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = ''; Protocol = ''; DBServer = ''; DBName = ''; Level = $Level; Result = 'NoMachine' })
 			continue
 		}
 		
-		# Resolve protocol from cache ONLY (do not detect here)
+		# Protocol from ProtocolResultsFile (SOURCE OF TRUTH)
 		$proto = $null
-		if ($script:LaneProtocols.ContainsKey($laneKeyP)) { $proto = $script:LaneProtocols[$laneKeyP] }
-		elseif ($script:LaneProtocols.ContainsKey($LaneNumber)) { $proto = $script:LaneProtocols[$LaneNumber] }
-		elseif ($script:LaneProtocols.ContainsKey($machineName)) { $proto = $script:LaneProtocols[$machineName] }
-		else
-		{
-			$lower = $machineName.ToLower()
-			if ($script:LaneProtocols.ContainsKey($lower)) { $proto = $script:LaneProtocols[$lower] }
-		}
+		if ($LaneProtocolsFromFile.ContainsKey($laneKeyP)) { $proto = $LaneProtocolsFromFile[$laneKeyP] }
 		
-		if (-not $proto)
+		if ([string]::IsNullOrWhiteSpace($proto))
 		{
-			Write_Log ("Lane {0} ({1}): No protocol found in cache. Run Start_Lane_Protocol_Jobs first. Skipping." -f $laneKeyP, $machineName) "yellow"
-			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = ''; DBServer = ''; DBName = ''; Level = $Level; Result = 'NoProtocolCached' })
+			Write_Log ("Lane {0} ({1}): No protocol entry in ProtocolResultsFile. Skipping (cannot validate DB access)." -f $laneKeyP, $machineName) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = ''; DBServer = ''; DBName = ''; Level = $Level; Result = 'NoProtocolInFile' })
 			continue
 		}
 		
 		if ($proto -ne 'TCP' -and $proto -ne 'Named Pipes')
 		{
-			Write_Log ("Lane {0} ({1}): Cached protocol is '{2}'. Only TCP or Named Pipes are supported. Skipping." -f $laneKeyP, $machineName, $proto) "yellow"
-			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = ''; DBName = ''; Level = $Level; Result = 'UnsupportedProtocol' })
+			# File / Unknown -> do not attempt DB operations
+			Write_Log ("Lane {0} ({1}): Protocol from file is '{2}'. Skipping DB repair (not reachable)." -f $laneKeyP, $machineName, $proto) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = ''; DBName = ''; Level = $Level; Result = 'ProtocolNotReachable' })
 			continue
 		}
 		
-		# Resolve DB connection info from your helper (Startup.ini)
+		# Resolve lane DB info (Startup.ini parsing cached by your helper)
 		$dbInfo = $null
 		try { $dbInfo = Get_All_Lanes_Database_Info -LaneNumber $laneKeyP }
 		catch { $dbInfo = $null }
+		
 		if (-not $dbInfo)
 		{
 			Write_Log ("Lane {0} ({1}): Could not get DB info. Skipping." -f $laneKeyP, $machineName) "yellow"
@@ -1279,81 +1360,202 @@ function Repair_LOC_Databases_On_Lanes
 			continue
 		}
 		
-		# Build a connection string to MASTER based on cached protocol (no fallbacks)
+		# Guardrail: refuse if the application DB name is a system DB (protects from bad Startup.ini)
+		$sysDbNames = @('master', 'model', 'msdb', 'tempdb')
+		if ($sysDbNames -contains $dbName.ToLower())
+		{
+			Write_Log ("REFUSING: Startup.ini DBName resolved to system DB '{0}'. Skipping lane." -f $dbName) "red"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'Refused_SystemDbName' })
+			continue
+		}
+		
+		# Choose the correct raw connection string based on protocol from file
 		$rawCs = $null
 		if ($proto -eq 'TCP') { $rawCs = $csTcp }
 		if ($proto -eq 'Named Pipes') { $rawCs = $csNamedPipes }
 		
 		if ([string]::IsNullOrWhiteSpace($rawCs))
 		{
-			Write_Log ("Lane {0} ({1}): Missing {2} connection string. Skipping." -f $laneKeyP, $machineName, $proto) "yellow"
-			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'NoConnStr' })
+			Write_Log ("Lane {0} ({1}): Missing {2} connection string in dbInfo. Skipping." -f $laneKeyP, $machineName, $proto) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'NoConnStrForProtocol' })
 			continue
 		}
 		
+		# Build MASTER connection string for system checks + repairs (no fallbacks: we obey protocol file)
 		$connStr = $rawCs
-		if ($connStr -match 'Database\s*=\s*[^;]+;')
+		if ($connStr -match '(?i)\bDatabase\s*=\s*[^;]+;')
 		{
-			$connStr = [System.Text.RegularExpressions.Regex]::Replace($connStr, 'Database\s*=\s*[^;]+;', 'Database=master;', 'IgnoreCase')
+			$connStr = [regex]::Replace($connStr, '(?i)\bDatabase\s*=\s*[^;]+;', 'Database=master;')
 		}
 		else
 		{
-			if ($connStr.EndsWith(';')) { $connStr = $connStr + 'Database=master;' }
+			if ($connStr.Trim().EndsWith(';')) { $connStr = $connStr + 'Database=master;' }
 			else { $connStr = $connStr + ';Database=master;' }
 		}
-		if ($connStr -notmatch 'TrustServerCertificate\s*=') { $connStr = $connStr + 'TrustServerCertificate=True;' }
-		if ($connStr -notmatch 'Application Name\s*=') { $connStr = $connStr + 'Application Name=TBS_DBRepair;' }
-		if ($connStr -notmatch 'Integrated Security\s*=') { $connStr = $connStr + 'Integrated Security=True;' }
 		
-		# Quick probe using the chosen method ONLY
-		$probeOK = $false
+		# Add safe extras if not already present (do NOT override auth)
+		if ($connStr -notmatch '(?i)\bTrustServerCertificate\s*=') { $connStr += 'TrustServerCertificate=True;' }
+		if ($connStr -notmatch '(?i)\bApplication\s*Name\s*=') { $connStr += 'Application Name=TBS_DBRepair;' }
+		if ($connStr -notmatch '(?i)\bIntegrated\s*Security\s*=' -and $connStr -notmatch '(?i)\bUser\s*ID\s*=') { $connStr += 'Integrated Security=True;' }
+		
+		# Quote db identifier safely for T-SQL
+		$qDb = "[" + ($dbName -replace "]", "]]") + "]"
+		$dbNameQuoted = $dbName.Replace("'", "''")
+		
+		# ----------------------------------------
+		# Unified query execution (Invoke-Sqlcmd if possible; else SqlClient)
+		# ----------------------------------------
+		$ExecError = $null
+		
+		# Probe: connection + DB existence/state
+		$probeRows = $null
+		$probeTsql = @"
+SELECT name, state_desc
+FROM sys.databases
+WHERE name = N'$dbNameQuoted';
+"@
+		
 		try
 		{
-			& $InvokeSqlCmd -ConnectionString $connStr -Query "SELECT 1 AS ok;" -QueryTimeout 8 -ErrorAction Stop | Out-Null
-			$probeOK = $true
+			if ($InvokeSupportsConnString)
+			{
+				$probeRows = Invoke-Sqlcmd -ConnectionString $connStr -Query $probeTsql -QueryTimeout 8 -ErrorAction Stop
+			}
+			else
+			{
+				# SqlClient fallback
+				$dt = New-Object System.Data.DataTable
+				$cn = New-Object System.Data.SqlClient.SqlConnection $connStr
+				try
+				{
+					$cn.Open()
+					$cmd = $cn.CreateCommand()
+					$cmd.CommandText = $probeTsql
+					$cmd.CommandTimeout = 8
+					$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
+					[void]$da.Fill($dt)
+				}
+				finally
+				{
+					try { $cn.Close() }
+					catch { }
+					try { $cn.Dispose() }
+					catch { }
+				}
+				$probeRows = $dt
+			}
 		}
-		catch { $probeOK = $false }
-		
-		if (-not $probeOK)
+		catch
 		{
-			Write_Log ("Lane {0} ({1}): {2} probe failed. Skipping." -f $laneKeyP, $machineName, $proto) "yellow"
+			$ExecError = $_
+		}
+		
+		if ($ExecError)
+		{
+			Write_Log ("Lane {0} ({1}): Probe failed using {2}. Skipping. Error: {3}" -f $laneKeyP, $machineName, $proto, $ExecError.Exception.Message) "yellow"
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'ConnProbeFailed' })
 			continue
 		}
 		
-		# ----------------------------------------
-		# System DB health gate with ACTIONS
-		# ----------------------------------------
-		$sysRows = $null
-		try
+		# Normalize probe result handling for both object array and DataTable
+		$targetDbFound = $false
+		$targetDbState = $null
+		
+		if ($probeRows -is [System.Data.DataTable])
 		{
-			$sysRows = & $InvokeSqlCmd -ConnectionString $connStr `
-									   -Query "SELECT name, state_desc FROM sys.databases WHERE name IN ('master','model','msdb','tempdb');" `
-									   -QueryTimeout 10 -ErrorAction Stop
+			if ($probeRows.Rows.Count -gt 0)
+			{
+				$targetDbFound = $true
+				$targetDbState = [string]$probeRows.Rows[0]['state_desc']
+			}
 		}
-		catch
+		else
 		{
-			Write_Log ("Lane {0} ({1}): WARN: could not query system DB states: {2}" -f $laneKeyP, $machineName, $_.Exception.Message) "yellow"
-			$laneSummary.Add([pscustomobject]@{
-					Lane	    = $laneKeyP
-					Machine	    = $machineName
-					Protocol    = $proto
-					DBServer    = $dbServer
-					DBName	    = $dbName
-					Level	    = $Level
-					QuickRepair = $false
-					DeepRepair  = $false
-					Result	    = 'SystemDbStateUnknown'
-				})
+			if ($probeRows -and ($probeRows | Measure-Object).Count -gt 0)
+			{
+				$targetDbFound = $true
+				$targetDbState = [string]($probeRows | Select-Object -First 1 -ExpandProperty state_desc)
+			}
+		}
+		
+		if (-not $targetDbFound)
+		{
+			Write_Log ("Lane {0} ({1}): Target DB '{2}' not found in sys.databases. Skipping." -f $laneKeyP, $machineName, $dbName) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'DbMissing' })
 			continue
 		}
 		
-		$badSystemDbs = @()
-		foreach ($r in $sysRows)
+		if ([string]::IsNullOrWhiteSpace($targetDbState)) { $targetDbState = 'Unknown' }
+		Write_Log ("Target DB state (pre): {0}" -f $targetDbState) "gray"
+		
+		# ----------------------------------------
+		# System DB health gate (tempdb/model/msdb/master states)
+		# ----------------------------------------
+		$sysRows = $null
+		$sysTsql = "SELECT name, state_desc FROM sys.databases WHERE name IN ('master','model','msdb','tempdb');"
+		
+		$ExecError = $null
+		try
 		{
-			if ($r -and $r.state_desc -and ($r.state_desc.ToString() -ne 'ONLINE'))
+			if ($InvokeSupportsConnString)
 			{
-				$badSystemDbs += [pscustomobject]@{ Name = [string]$r.name; State = [string]$r.state_desc }
+				$sysRows = Invoke-Sqlcmd -ConnectionString $connStr -Query $sysTsql -QueryTimeout 10 -ErrorAction Stop
+			}
+			else
+			{
+				$dt2 = New-Object System.Data.DataTable
+				$cn2 = New-Object System.Data.SqlClient.SqlConnection $connStr
+				try
+				{
+					$cn2.Open()
+					$cmd2 = $cn2.CreateCommand()
+					$cmd2.CommandText = $sysTsql
+					$cmd2.CommandTimeout = 10
+					$da2 = New-Object System.Data.SqlClient.SqlDataAdapter $cmd2
+					[void]$da2.Fill($dt2)
+				}
+				finally
+				{
+					try { $cn2.Close() }
+					catch { }
+					try { $cn2.Dispose() }
+					catch { }
+				}
+				$sysRows = $dt2
+			}
+		}
+		catch { $ExecError = $_ }
+		
+		if ($ExecError)
+		{
+			Write_Log ("Lane {0} ({1}): WARN: could not query system DB states: {2}" -f $laneKeyP, $machineName, $ExecError.Exception.Message) "yellow"
+			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'SystemDbStateUnknown' })
+			continue
+		}
+		
+		# Build list of non-online system DBs
+		$badSystemDbs = @()
+		
+		if ($sysRows -is [System.Data.DataTable])
+		{
+			foreach ($row in $sysRows.Rows)
+			{
+				$n = [string]$row['name']
+				$s = [string]$row['state_desc']
+				if ($s -and $s.ToUpper() -ne 'ONLINE')
+				{
+					$badSystemDbs += [pscustomobject]@{ Name = $n; State = $s }
+				}
+			}
+		}
+		else
+		{
+			foreach ($r in $sysRows)
+			{
+				if ($r -and $r.state_desc -and ($r.state_desc.ToString().ToUpper() -ne 'ONLINE'))
+				{
+					$badSystemDbs += [pscustomobject]@{ Name = [string]$r.name; State = [string]$r.state_desc }
+				}
 			}
 		}
 		
@@ -1362,32 +1564,39 @@ function Repair_LOC_Databases_On_Lanes
 			Write_Log ("Lane {0} ({1}): System DBs not ONLINE detected." -f $laneKeyP, $machineName) "yellow"
 			foreach ($b in $badSystemDbs) { Write_Log ("  - {0}: {1}" -f $b.Name, $b.State) "yellow" }
 			
-			# Determine SQL service name on the remote machine
+			# Determine SQL service name based on instance
 			$svcName = "MSSQLSERVER"
-			if ($instanceName -and ($instanceName.ToUpper() -ne "MSSQLSERVER")) { $svcName = "MSSQL`$$instanceName" }
+			if ($instanceName -and ($instanceName.ToUpper() -ne "MSSQLSERVER"))
+			{
+				$svcName = "MSSQL`$$instanceName"
+			}
 			
-			# Handle tempdb specifically: offer restart of the SQL service on the lane
+			# tempdb handling: offer restart SQL service
 			$hasTempdbIssue = $false
 			foreach ($b in $badSystemDbs) { if ($b.Name -eq 'tempdb') { $hasTempdbIssue = $true } }
 			
 			if ($hasTempdbIssue)
 			{
-				$msg = "Lane $laneKeyP ($machineName): tempdb is not ONLINE (`"$($badSystemDbs | Where-Object { $_.Name -eq 'tempdb' } | Select-Object -First 1).State`").`r`n`r`n" +
-				"Would you like to restart the SQL Server service ($svcName) on $machineName now? This will drop connections and recreate tempdb."
-				$resp = [System.Windows.Forms.MessageBox]::Show($msg, "Restart SQL Service for tempdb", `
-					[System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+				$msg = "Lane $laneKeyP ($machineName): tempdb is not ONLINE.`r`n`r`n" +
+				"Would you like to restart the SQL Server service ($svcName) on $machineName now?`r`n" +
+				"This will drop connections and recreate tempdb."
+				
+				$resp = [System.Windows.Forms.MessageBox]::Show(
+					$msg,
+					"Restart SQL Service for tempdb",
+					[System.Windows.Forms.MessageBoxButtons]::YesNo,
+					[System.Windows.Forms.MessageBoxIcon]::Warning
+				)
 				
 				if ($resp -eq [System.Windows.Forms.DialogResult]::Yes)
 				{
 					Write_Log ("Attempting to restart service {0} on {1}..." -f $svcName, $machineName) "gray"
 					
-					# stop
-					try
-					{
-						& sc.exe "\\$machineName" stop $svcName | Out-Null
-					}
+					# Stop service
+					try { & sc.exe "\\$machineName" stop $svcName | Out-Null }
 					catch { }
-					# wait for stop up to ~60s
+					
+					# Wait for stopped up to ~60s
 					$stopped = $false
 					for ($i = 0; $i -lt 30; $i++)
 					{
@@ -1404,13 +1613,11 @@ function Repair_LOC_Databases_On_Lanes
 					if ($stopped) { Write_Log "Service stopped." "gray" }
 					else { Write_Log "WARN: Service did not report STOPPED in time." "yellow" }
 					
-					# start
-					try
-					{
-						& sc.exe "\\$machineName" start $svcName | Out-Null
-					}
+					# Start service
+					try { & sc.exe "\\$machineName" start $svcName | Out-Null }
 					catch { }
-					# wait for running up to ~90s
+					
+					# Wait for running up to ~90s
 					$running = $false
 					for ($i = 0; $i -lt 45; $i++)
 					{
@@ -1427,352 +1634,455 @@ function Repair_LOC_Databases_On_Lanes
 					if ($running) { Write_Log "Service started." "green" }
 					else { Write_Log "ERROR: Service did not report RUNNING in time." "red" }
 					
-					# re-probe connection (service restart broke previous connection context)
+					# Re-probe system DBs after restart (simple loop)
 					$reprobeOK = $false
 					for ($t = 1; $t -le 60; $t++)
 					{
 						try
 						{
-							& $InvokeSqlCmd -ConnectionString $connStr -Query "SELECT 1 AS ok;" -QueryTimeout 5 -ErrorAction Stop | Out-Null
+							if ($InvokeSupportsConnString)
+							{
+								Invoke-Sqlcmd -ConnectionString $connStr -Query "SELECT 1 AS ok;" -QueryTimeout 5 -ErrorAction Stop | Out-Null
+							}
+							else
+							{
+								$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
+								try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = "SELECT 1"; $cmdx.CommandTimeout = 5; [void]$cmdx.ExecuteScalar() }
+								finally { try { $cnx.Close() }
+									catch { }
+									try { $cnx.Dispose() }
+									catch { } }
+							}
 							$reprobeOK = $true
 							break
 						}
-						catch { Start-Sleep -Milliseconds 2000 }
-					}
-					if ($reprobeOK)
-					{
-						# check system DBs again
-						try
-						{
-							$sysRows = & $InvokeSqlCmd -ConnectionString $connStr `
-													   -Query "SELECT name, state_desc FROM sys.databases WHERE name IN ('master','model','msdb','tempdb');" `
-													   -QueryTimeout 10 -ErrorAction Stop
-							$badSystemDbs = @()
-							foreach ($r in $sysRows) { if ($r -and $r.state_desc -and ($r.state_desc.ToString() -ne 'ONLINE')) { $badSystemDbs += [pscustomobject]@{ Name = [string]$r.name; State = [string]$r.state_desc } } }
-						}
 						catch
 						{
-							Write_Log "WARN: Re-check of system DB states failed after restart." "yellow"
+							Start-Sleep -Milliseconds 2000
 						}
 					}
-					else
+					
+					if (-not $reprobeOK)
 					{
 						Write_Log "ERROR: Could not reconnect after service restart; skipping lane." "red"
-						$laneSummary.Add([pscustomobject]@{
-								Lane	    = $laneKeyP
-								Machine	    = $machineName
-								Protocol    = $proto
-								DBServer    = $dbServer
-								DBName	    = $dbName
-								Level	    = $Level
-								QuickRepair = $false
-								DeepRepair  = $false
-								Result	    = 'ServiceRestartFailed'
-							})
+						$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'ServiceRestartFailed' })
 						continue
 					}
 				}
 				else
 				{
-					Write_Log "User declined SQL service restart for tempdb. Skipping lane with guidance: restart SQL service on the lane to recreate tempdb." "yellow"
-					$laneSummary.Add([pscustomobject]@{
-							Lane	    = $laneKeyP
-							Machine	    = $machineName
-							Protocol    = $proto
-							DBServer    = $dbServer
-							DBName	    = $dbName
-							Level	    = $Level
-							QuickRepair = $false
-							DeepRepair  = $false
-							Result	    = 'TempdbNotOnline_Skipped'
-						})
+					Write_Log "User declined SQL service restart for tempdb. Skipping lane with guidance: restart SQL service to recreate tempdb." "yellow"
+					$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'TempdbNotOnline_Skipped' })
 					continue
 				}
 			}
 			
-			# After potential tempdb handling, if any system DB still not ONLINE, handle model/msdb or master
-			$stillBad = $false
-			foreach ($r in $badSystemDbs) { if ($r.Name -ne 'tempdb') { $stillBad = $true } }
-			if ($badSystemDbs.Count -gt 0 -and -not $stillBad)
+			# If master is bad -> do not automate
+			$hasMaster = $false
+			$hasModel = $false
+			$hasMsdb = $false
+			foreach ($b in $badSystemDbs)
 			{
-				# only tempdb was bad and we handled it; re-check one more time
-				$stillBad = $false
-				foreach ($r in $badSystemDbs) { if ($r.state -ne 'ONLINE') { $stillBad = $true } }
+				if ($b.Name -eq 'master') { $hasMaster = $true }
+				if ($b.Name -eq 'model') { $hasModel = $true }
+				if ($b.Name -eq 'msdb') { $hasMsdb = $true }
 			}
 			
-			if ($stillBad)
+			if ($hasMaster)
 			{
-				# master/model/msdb handling
-				$hasMaster = $false
-				$hasModel = $false
-				$hasMsdb = $false
-				foreach ($r in $badSystemDbs)
-				{
-					if ($r.Name -eq 'master') { $hasMaster = $true }
-					if ($r.Name -eq 'model') { $hasModel = $true }
-					if ($r.Name -eq 'msdb') { $hasMsdb = $true }
-				}
-				
-				if ($hasMaster)
-				{
-					Write_Log "CRITICAL: master is not ONLINE. Automated repair is not supported here." "red"
-					Write_Log "Action: Restore master from a known-good backup OR rebuild system DBs (setup.exe /ACTION=REBUILDDATABASE), then restore." "gray"
-					$laneSummary.Add([pscustomobject]@{
-							Lane	    = $laneKeyP
-							Machine	    = $machineName
-							Protocol    = $proto
-							DBServer    = $dbServer
-							DBName	    = $dbName
-							Level	    = $Level
-							QuickRepair = $false
-							DeepRepair  = $false
-							Result	    = 'MasterNotOnline'
-						})
-					continue
-				}
-				
-				# Offer EMERGENCY deep-repair for model/msdb (with explicit confirmation)
-				$targets = @()
-				if ($hasModel) { $targets += 'model' }
-				if ($hasMsdb) { $targets += 'msdb' }
-				
-				if ($targets.Count -gt 0)
-				{
-					$list = ($targets -join ', ')
-					$warn = "Lane $laneKeyP ($machineName): $list is not ONLINE.`r`n`r`n" +
-					"Attempt DEEP REPAIR (EMERGENCY + REPAIR_ALLOW_DATA_LOSS) for these system DB(s)?`r`n" +
-					"This can cause data loss. Recommended alternative is RESTORE from backup."
-					$resp2 = [System.Windows.Forms.MessageBox]::Show($warn, "Deep Repair system DB(s)?", `
-						[System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
-					if ($resp2 -eq [System.Windows.Forms.DialogResult]::Yes)
-					{
-						foreach ($sysDb in $targets)
-						{
-							Write_Log ("Attempting deep repair on system DB: {0}" -f $sysDb) "yellow"
-							$qSys = "[" + ($sysDb -replace "]", "]]") + "]"
-							try
-							{
-								& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qSys SET EMERGENCY;" -QueryTimeout 30 -ErrorAction Stop | Out-Null
-							}
-							catch { Write_Log ("WARN: EMERGENCY failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
-							try
-							{
-								& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qSys SET SINGLE_USER WITH ROLLBACK IMMEDIATE;" -QueryTimeout 30 -ErrorAction Stop | Out-Null
-							}
-							catch { Write_Log ("WARN: SINGLE_USER failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
-							$okSys = $false
-							try
-							{
-								& $InvokeSqlCmd -ConnectionString $connStr -Query "DBCC CHECKDB ($qSys, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS;" -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
-								$okSys = $true
-								Write_Log ("Deep repair completed on {0}." -f $sysDb) "green"
-							}
-							catch
-							{
-								$okSys = $false
-								Write_Log ("Deep repair failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "red"
-							}
-							try
-							{
-								& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qSys SET MULTI_USER;" -QueryTimeout 30 -ErrorAction Stop | Out-Null
-							}
-							catch { Write_Log ("WARN: MULTI_USER restore failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
-						}
-						
-						# Re-check system DBs after deep repair attempts
-						try
-						{
-							$sysRows = & $InvokeSqlCmd -ConnectionString $connStr `
-													   -Query "SELECT name, state_desc FROM sys.databases WHERE name IN ('master','model','msdb','tempdb');" `
-													   -QueryTimeout 10 -ErrorAction Stop
-							$badSystemDbs = @()
-							foreach ($r in $sysRows) { if ($r -and $r.state_desc -and ($r.state_desc.ToString() -ne 'ONLINE')) { $badSystemDbs += [pscustomobject]@{ Name = [string]$r.name; State = [string]$r.state_desc } } }
-						}
-						catch
-						{
-							Write_Log "WARN: Re-check of system DB states failed after deep repair attempt." "yellow"
-						}
-					}
-					else
-					{
-						Write_Log ("User declined deep repair for system DB(s): {0}. Skipping lane with guidance to RESTORE from backup." -f $list) "yellow"
-						$laneSummary.Add([pscustomobject]@{
-								Lane	    = $laneKeyP
-								Machine	    = $machineName
-								Protocol    = $proto
-								DBServer    = $dbServer
-								DBName	    = $dbName
-								Level	    = $Level
-								QuickRepair = $false
-								DeepRepair  = $false
-								Result	    = 'SystemDbNotOnline_Skipped'
-							})
-						continue
-					}
-				}
-			}
-			
-			# Final gate after any actions: if any system DB still not ONLINE, skip.
-			$finalBad = $false
-			foreach ($r in $badSystemDbs)
-			{
-				if ($r -and $r.State -and ($r.State.ToString() -ne 'ONLINE')) { $finalBad = $true }
-			}
-			if ($finalBad)
-			{
-				Write_Log "System DBs are still not ONLINE after attempted actions. Skipping lane." "yellow"
-				$laneSummary.Add([pscustomobject]@{
-						Lane	    = $laneKeyP
-						Machine	    = $machineName
-						Protocol    = $proto
-						DBServer    = $dbServer
-						DBName	    = $dbName
-						Level	    = $Level
-						QuickRepair = $false
-						DeepRepair  = $false
-						Result	    = 'SystemDbStillNotOnline'
-					})
+				Write_Log "CRITICAL: master is not ONLINE. Automated repair is not supported here." "red"
+				Write_Log "Action: Restore master from known-good backup OR rebuild system DBs (setup.exe /ACTION=REBUILDDATABASE), then restore." "gray"
+				$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'MasterNotOnline' })
 				continue
 			}
-			else
+			
+			# model/msdb -> optional emergency deep repair prompt
+			$targets = @()
+			if ($hasModel) { $targets += 'model' }
+			if ($hasMsdb) { $targets += 'msdb' }
+			
+			if ($targets.Count -gt 0)
 			{
-				Write_Log "All system DBs are ONLINE after remediation. Proceeding with lane DB repair." "green"
+				$list = ($targets -join ', ')
+				$warn = "Lane $laneKeyP ($machineName): $list is not ONLINE.`r`n`r`n" +
+				"Attempt DEEP REPAIR (EMERGENCY + REPAIR_ALLOW_DATA_LOSS) for these system DB(s)?`r`n" +
+				"This can cause data loss. Recommended alternative is RESTORE from backup."
+				
+				$resp2 = [System.Windows.Forms.MessageBox]::Show(
+					$warn,
+					"Deep Repair system DB(s)?",
+					[System.Windows.Forms.MessageBoxButtons]::YesNo,
+					[System.Windows.Forms.MessageBoxIcon]::Warning
+				)
+				
+				if ($resp2 -ne [System.Windows.Forms.DialogResult]::Yes)
+				{
+					Write_Log ("User declined deep repair for system DB(s): {0}. Skipping lane with guidance to RESTORE." -f $list) "yellow"
+					$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'SystemDbNotOnline_Skipped' })
+					continue
+				}
+				
+				foreach ($sysDb in $targets)
+				{
+					Write_Log ("Attempting deep repair on system DB: {0}" -f $sysDb) "yellow"
+					$qSys = "[" + ($sysDb -replace "]", "]]") + "]"
+					
+					# Best-effort sequence
+					try
+					{
+						if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query "ALTER DATABASE $qSys SET EMERGENCY;" -QueryTimeout 30 -ErrorAction Stop | Out-Null }
+						else
+						{
+							$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
+							try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = "ALTER DATABASE $qSys SET EMERGENCY;"; $cmdx.CommandTimeout = 30; [void]$cmdx.ExecuteNonQuery() }
+							finally { try { $cnx.Close() }
+								catch { }
+								try { $cnx.Dispose() }
+								catch { } }
+						}
+					}
+					catch { Write_Log ("WARN: EMERGENCY failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
+					
+					try
+					{
+						if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query "ALTER DATABASE $qSys SET SINGLE_USER WITH ROLLBACK IMMEDIATE;" -QueryTimeout 30 -ErrorAction Stop | Out-Null }
+						else
+						{
+							$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
+							try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = "ALTER DATABASE $qSys SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"; $cmdx.CommandTimeout = 30; [void]$cmdx.ExecuteNonQuery() }
+							finally { try { $cnx.Close() }
+								catch { }
+								try { $cnx.Dispose() }
+								catch { } }
+						}
+					}
+					catch { Write_Log ("WARN: SINGLE_USER failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
+					
+					try
+					{
+						$ts = "DBCC CHECKDB ($qSys, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS;"
+						if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $ts -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null }
+						else
+						{
+							$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
+							try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = $ts; $cmdx.CommandTimeout = $CommandTimeout; [void]$cmdx.ExecuteNonQuery() }
+							finally { try { $cnx.Close() }
+								catch { }
+								try { $cnx.Dispose() }
+								catch { } }
+						}
+						Write_Log ("Deep repair completed on {0}." -f $sysDb) "green"
+					}
+					catch { Write_Log ("Deep repair failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "red" }
+					
+					try
+					{
+						if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query "ALTER DATABASE $qSys SET MULTI_USER;" -QueryTimeout 30 -ErrorAction Stop | Out-Null }
+						else
+						{
+							$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
+							try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = "ALTER DATABASE $qSys SET MULTI_USER;"; $cmdx.CommandTimeout = 30; [void]$cmdx.ExecuteNonQuery() }
+							finally { try { $cnx.Close() }
+								catch { }
+								try { $cnx.Dispose() }
+								catch { } }
+						}
+					}
+					catch { Write_Log ("WARN: MULTI_USER restore failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
+				}
 			}
 		}
 		
 		# ----------------------------------------
-		# Snapshot lane DB state BEFORE (aliased column + fallback)
+		# Snapshot DB state BEFORE repair (sys.databases)
 		# ----------------------------------------
 		$stateBefore = 'Unknown'
 		try
 		{
-			$dbNameQuoted = $dbName.Replace("'", "''")
-			$tsqlStateBefore = @"
-IF EXISTS (SELECT 1 FROM sys.databases WHERE name = N'$dbNameQuoted')
-    SELECT state_desc AS state_desc FROM sys.databases WHERE name = N'$dbNameQuoted';
-ELSE
-    SELECT CAST(DATABASEPROPERTYEX(N'$dbNameQuoted', N'Status') AS nvarchar(60)) AS state_desc;
-"@
-			$rows = & $InvokeSqlCmd -ConnectionString $connStr -Query $tsqlStateBefore -QueryTimeout 10 -ErrorAction Stop
-			if ($rows)
+			$stateTsql = "SELECT state_desc FROM sys.databases WHERE name = N'$dbNameQuoted';"
+			if ($InvokeSupportsConnString)
 			{
-				$stateBefore = ($rows | Select-Object -First 1 -ExpandProperty state_desc)
-				if ([string]::IsNullOrWhiteSpace($stateBefore)) { $stateBefore = 'Unknown' }
+				$r = Invoke-Sqlcmd -ConnectionString $connStr -Query $stateTsql -QueryTimeout 10 -ErrorAction Stop
+				if ($r) { $stateBefore = [string]($r | Select-Object -First 1 -ExpandProperty state_desc) }
+			}
+			else
+			{
+				$dtS = New-Object System.Data.DataTable
+				$cnS = New-Object System.Data.SqlClient.SqlConnection $connStr
+				try
+				{
+					$cnS.Open()
+					$cmdS = $cnS.CreateCommand()
+					$cmdS.CommandText = $stateTsql
+					$cmdS.CommandTimeout = 10
+					$daS = New-Object System.Data.SqlClient.SqlDataAdapter $cmdS
+					[void]$daS.Fill($dtS)
+					if ($dtS.Rows.Count -gt 0) { $stateBefore = [string]$dtS.Rows[0]['state_desc'] }
+				}
+				finally
+				{
+					try { $cnS.Close() }
+					catch { }
+					try { $cnS.Dispose() }
+					catch { }
+				}
 			}
 		}
 		catch { }
+		
+		if ([string]::IsNullOrWhiteSpace($stateBefore)) { $stateBefore = 'Unknown' }
 		Write_Log ("DB state before: {0}" -f $stateBefore) "gray"
 		
 		# ----------------------------------------
-		# Repair the lane's application DB according to chosen level
+		# Repair execution (always try to restore DB to MULTI_USER in finally)
 		# ----------------------------------------
-		$qDb = "[" + ($dbName -replace "]", "]]") + "]"
 		$ok = $false
 		$usedQuick = $false
 		$usedDeep = $false
 		
-		if ($Level -eq 'Audit')
+		# In all repair modes we may toggle SINGLE_USER / EMERGENCY
+		$didSingleUser = $false
+		$didEmergency = $false
+		
+		try
 		{
-			Write_Log ("{0}: Running DBCC CHECKDB (Audit)..." -f $dbName) "gray"
-			try
+			if ($Level -eq 'Audit')
 			{
-				& $InvokeSqlCmd -ConnectionString $connStr -Query "DBCC CHECKDB (N'$dbName') WITH NO_INFOMSGS, ALL_ERRORMSGS, TABLERESULTS;" -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+				Write_Log ("{0}: Running DBCC CHECKDB (Audit)..." -f $dbName) "gray"
+				$ts = "DBCC CHECKDB ($qDb) WITH NO_INFOMSGS, ALL_ERRORMSGS, TABLERESULTS;"
+				if ($InvokeSupportsConnString)
+				{
+					Invoke-Sqlcmd -ConnectionString $connStr -Query $ts -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+				}
+				else
+				{
+					$cnA = New-Object System.Data.SqlClient.SqlConnection $connStr
+					try { $cnA.Open(); $cmdA = $cnA.CreateCommand(); $cmdA.CommandText = $ts; $cmdA.CommandTimeout = $CommandTimeout; [void]$cmdA.ExecuteNonQuery() }
+					finally { try { $cnA.Close() }
+						catch { }
+						try { $cnA.Dispose() }
+						catch { } }
+				}
 				$ok = $true
 				Write_Log "Audit completed." "green"
 			}
-			catch
+			elseif ($Level -eq 'Quick')
 			{
-				$ok = $false
-				Write_Log ("Audit reported errors or failed: $_") "yellow"
-			}
-		}
-		elseif ($Level -eq 'Quick')
-		{
-			Write_Log ("{0}: Quick repair (REPAIR_REBUILD)..." -f $dbName) "gray"
-			try
-			{
-				& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;" -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
-			}
-			catch { Write_Log ("WARN: SINGLE_USER failed: $_") "yellow" }
-			
-			try
-			{
-				& $InvokeSqlCmd -ConnectionString $connStr -Query "DBCC CHECKDB ($qDb, REPAIR_REBUILD) WITH ALL_ERRORMSGS, TABLERESULTS;" -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+				Write_Log ("{0}: Quick repair (REPAIR_REBUILD)..." -f $dbName) "gray"
+				
+				# SINGLE_USER
+				try
+				{
+					$tsSU = "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
+					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsSU -QueryTimeout 60 -ErrorAction Stop | Out-Null }
+					else
+					{
+						$cnQ = New-Object System.Data.SqlClient.SqlConnection $connStr
+						try { $cnQ.Open(); $cmdQ = $cnQ.CreateCommand(); $cmdQ.CommandText = $tsSU; $cmdQ.CommandTimeout = 60; [void]$cmdQ.ExecuteNonQuery() }
+						finally { try { $cnQ.Close() }
+							catch { }
+							try { $cnQ.Dispose() }
+							catch { } }
+					}
+					$didSingleUser = $true
+				}
+				catch
+				{
+					Write_Log ("WARN: SINGLE_USER failed: {0}" -f $_.Exception.Message) "yellow"
+				}
+				
+				# DBCC repair
+				$ts = "DBCC CHECKDB ($qDb, REPAIR_REBUILD) WITH ALL_ERRORMSGS, TABLERESULTS;"
+				if ($InvokeSupportsConnString)
+				{
+					Invoke-Sqlcmd -ConnectionString $connStr -Query $ts -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+				}
+				else
+				{
+					$cnQ2 = New-Object System.Data.SqlClient.SqlConnection $connStr
+					try { $cnQ2.Open(); $cmdQ2 = $cnQ2.CreateCommand(); $cmdQ2.CommandText = $ts; $cmdQ2.CommandTimeout = $CommandTimeout; [void]$cmdQ2.ExecuteNonQuery() }
+					finally { try { $cnQ2.Close() }
+						catch { }
+						try { $cnQ2.Dispose() }
+						catch { } }
+				}
+				
 				$ok = $true
 				$usedQuick = $true
 				Write_Log "Quick repair completed." "green"
 			}
-			catch
+			elseif ($Level -eq 'Deep')
 			{
-				$ok = $false
-				Write_Log ("Quick repair failed: $_") "yellow"
-			}
-			
-			try
-			{
-				& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qDb SET MULTI_USER;" -QueryTimeout 60 -ErrorAction Stop | Out-Null
-			}
-			catch { Write_Log ("WARN: MULTI_USER restore failed: $_") "yellow" }
-		}
-		elseif ($Level -eq 'Deep')
-		{
-			Write_Log ("{0}: Deep repair (EMERGENCY + REPAIR_ALLOW_DATA_LOSS)..." -f $dbName) "gray"
-			try
-			{
-				& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qDb SET EMERGENCY;" -QueryTimeout 60 -ErrorAction Stop | Out-Null
-			}
-			catch { Write_Log ("WARN: EMERGENCY failed: $_") "yellow" }
-			
-			try
-			{
-				& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;" -QueryTimeout 60 -ErrorAction Stop | Out-Null
-			}
-			catch { Write_Log ("WARN: SINGLE_USER failed: $_") "yellow" }
-			
-			try
-			{
-				& $InvokeSqlCmd -ConnectionString $connStr -Query "DBCC CHECKDB ($qDb, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS, TABLERESULTS;" -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+				Write_Log ("{0}: Deep repair (EMERGENCY + REPAIR_ALLOW_DATA_LOSS)..." -f $dbName) "gray"
+				
+				# EMERGENCY
+				try
+				{
+					$tsE = "ALTER DATABASE $qDb SET EMERGENCY;"
+					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsE -QueryTimeout 60 -ErrorAction Stop | Out-Null }
+					else
+					{
+						$cnD = New-Object System.Data.SqlClient.SqlConnection $connStr
+						try { $cnD.Open(); $cmdD = $cnD.CreateCommand(); $cmdD.CommandText = $tsE; $cmdD.CommandTimeout = 60; [void]$cmdD.ExecuteNonQuery() }
+						finally { try { $cnD.Close() }
+							catch { }
+							try { $cnD.Dispose() }
+							catch { } }
+					}
+					$didEmergency = $true
+				}
+				catch
+				{
+					Write_Log ("WARN: EMERGENCY failed: {0}" -f $_.Exception.Message) "yellow"
+				}
+				
+				# SINGLE_USER
+				try
+				{
+					$tsSU = "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
+					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsSU -QueryTimeout 60 -ErrorAction Stop | Out-Null }
+					else
+					{
+						$cnD2 = New-Object System.Data.SqlClient.SqlConnection $connStr
+						try { $cnD2.Open(); $cmdD2 = $cnD2.CreateCommand(); $cmdD2.CommandText = $tsSU; $cmdD2.CommandTimeout = 60; [void]$cmdD2.ExecuteNonQuery() }
+						finally { try { $cnD2.Close() }
+							catch { }
+							try { $cnD2.Dispose() }
+							catch { } }
+					}
+					$didSingleUser = $true
+				}
+				catch
+				{
+					Write_Log ("WARN: SINGLE_USER failed: {0}" -f $_.Exception.Message) "yellow"
+				}
+				
+				# DBCC deep repair
+				$ts = "DBCC CHECKDB ($qDb, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS, TABLERESULTS;"
+				if ($InvokeSupportsConnString)
+				{
+					Invoke-Sqlcmd -ConnectionString $connStr -Query $ts -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+				}
+				else
+				{
+					$cnD3 = New-Object System.Data.SqlClient.SqlConnection $connStr
+					try { $cnD3.Open(); $cmdD3 = $cnD3.CreateCommand(); $cmdD3.CommandText = $ts; $cmdD3.CommandTimeout = $CommandTimeout; [void]$cmdD3.ExecuteNonQuery() }
+					finally { try { $cnD3.Close() }
+						catch { }
+						try { $cnD3.Dispose() }
+						catch { } }
+				}
+				
 				$ok = $true
 				$usedDeep = $true
 				Write_Log "Deep repair completed." "green"
 			}
-			catch
+		}
+		catch
+		{
+			$ok = $false
+			if ($Level -eq 'Audit')
 			{
-				$ok = $false
-				Write_Log ("Deep repair failed: $_") "red"
+				Write_Log ("Audit reported errors or failed: {0}" -f $_.Exception.Message) "yellow"
+			}
+			else
+			{
+				Write_Log ("Repair failed: {0}" -f $_.Exception.Message) "red"
+			}
+		}
+		finally
+		{
+			# ALWAYS attempt to restore MULTI_USER if we toggled SINGLE_USER
+			if ($didSingleUser)
+			{
+				try
+				{
+					$tsMU = "ALTER DATABASE $qDb SET MULTI_USER;"
+					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsMU -QueryTimeout 60 -ErrorAction Stop | Out-Null }
+					else
+					{
+						$cnF = New-Object System.Data.SqlClient.SqlConnection $connStr
+						try { $cnF.Open(); $cmdF = $cnF.CreateCommand(); $cmdF.CommandText = $tsMU; $cmdF.CommandTimeout = 60; [void]$cmdF.ExecuteNonQuery() }
+						finally { try { $cnF.Close() }
+							catch { }
+							try { $cnF.Dispose() }
+							catch { } }
+					}
+				}
+				catch
+				{
+					Write_Log ("WARN: MULTI_USER restore failed: {0}" -f $_.Exception.Message) "yellow"
+				}
 			}
 			
-			try
+			# Best-effort: if we set EMERGENCY, try to clear it by setting ONLINE
+			if ($didEmergency)
 			{
-				& $InvokeSqlCmd -ConnectionString $connStr -Query "ALTER DATABASE $qDb SET MULTI_USER;" -QueryTimeout 60 -ErrorAction Stop | Out-Null
+				try
+				{
+					$tsOn = "ALTER DATABASE $qDb SET ONLINE;"
+					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsOn -QueryTimeout 60 -ErrorAction Stop | Out-Null }
+					else
+					{
+						$cnF2 = New-Object System.Data.SqlClient.SqlConnection $connStr
+						try { $cnF2.Open(); $cmdF2 = $cnF2.CreateCommand(); $cmdF2.CommandText = $tsOn; $cmdF2.CommandTimeout = 60; [void]$cmdF2.ExecuteNonQuery() }
+						finally { try { $cnF2.Close() }
+							catch { }
+							try { $cnF2.Dispose() }
+							catch { } }
+					}
+				}
+				catch
+				{
+					# Not fatal; just log
+					Write_Log ("WARN: ONLINE restore after EMERGENCY failed: {0}" -f $_.Exception.Message) "yellow"
+				}
 			}
-			catch { Write_Log ("WARN: MULTI_USER restore failed: $_") "yellow" }
 		}
 		
 		# ----------------------------------------
-		# Snapshot state AFTER (aliased column + fallback)
+		# Snapshot state AFTER repair
 		# ----------------------------------------
 		$stateAfter = 'Unknown'
 		try
 		{
-			$dbNameQuoted2 = $dbName.Replace("'", "''")
-			$tsqlStateAfter = @"
-IF EXISTS (SELECT 1 FROM sys.databases WHERE name = N'$dbNameQuoted2')
-    SELECT state_desc AS state_desc FROM sys.databases WHERE name = N'$dbNameQuoted2';
-ELSE
-    SELECT CAST(DATABASEPROPERTYEX(N'$dbNameQuoted2', N'Status') AS nvarchar(60)) AS state_desc;
-"@
-			$rows2 = & $InvokeSqlCmd -ConnectionString $connStr -Query $tsqlStateAfter -QueryTimeout 10 -ErrorAction Stop
-			if ($rows2)
+			$stateTsql2 = "SELECT state_desc FROM sys.databases WHERE name = N'$dbNameQuoted';"
+			if ($InvokeSupportsConnString)
 			{
-				$stateAfter = ($rows2 | Select-Object -First 1 -ExpandProperty state_desc)
-				if ([string]::IsNullOrWhiteSpace($stateAfter)) { $stateAfter = 'Unknown' }
+				$r2 = Invoke-Sqlcmd -ConnectionString $connStr -Query $stateTsql2 -QueryTimeout 10 -ErrorAction Stop
+				if ($r2) { $stateAfter = [string]($r2 | Select-Object -First 1 -ExpandProperty state_desc) }
+			}
+			else
+			{
+				$dtS2 = New-Object System.Data.DataTable
+				$cnS2 = New-Object System.Data.SqlClient.SqlConnection $connStr
+				try
+				{
+					$cnS2.Open()
+					$cmdS2 = $cnS2.CreateCommand()
+					$cmdS2.CommandText = $stateTsql2
+					$cmdS2.CommandTimeout = 10
+					$daS2 = New-Object System.Data.SqlClient.SqlDataAdapter $cmdS2
+					[void]$daS2.Fill($dtS2)
+					if ($dtS2.Rows.Count -gt 0) { $stateAfter = [string]$dtS2.Rows[0]['state_desc'] }
+				}
+				finally
+				{
+					try { $cnS2.Close() }
+					catch { }
+					try { $cnS2.Dispose() }
+					catch { }
+				}
 			}
 		}
 		catch { }
+		
+		if ([string]::IsNullOrWhiteSpace($stateAfter)) { $stateAfter = 'Unknown' }
 		Write_Log ("DB state after:  {0}" -f $stateAfter) "gray"
 		
-		# Summarize this lane
+		# ----------------------------------------
+		# Summarize lane result
+		# ----------------------------------------
 		$result = 'OK'
 		if (-not $ok -and $Level -eq 'Audit') { $result = 'AuditFoundErrorsOrFailed' }
 		if (-not $ok -and $Level -ne 'Audit') { $result = 'Failed' }
@@ -1793,7 +2103,7 @@ ELSE
 	}
 	
 	# ----------------------------------------
-	# Final: Summary table + finish banner
+	# Summary table + finish banner
 	# ----------------------------------------
 	Write_Log "`r`n================ Lane DB Repair Summary ================" "blue"
 	if ($laneSummary.Count -gt 0)
@@ -2744,6 +3054,14 @@ EXEC sp_configure 'max server memory (MB)', 1024;
 RECONFIGURE;
 EXEC sp_configure 'show advanced options', 0;
 RECONFIGURE;
+
+/* Create "$BackupSqlUser" user in the database */
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$BackupSqlUser')
+    CREATE LOGIN [$BackupSqlUser] WITH PASSWORD = '$BackupSqlPass', CHECK_POLICY = OFF;
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$BackupSqlUser')
+    CREATE USER [$BackupSqlUser] FOR LOGIN [$BackupSqlUser];
+IF IS_ROLEMEMBER('db_owner', '$BackupSqlUser') = 0
+    EXEC sp_addrolemember 'db_owner', '$BackupSqlUser';
 
 /* Truncate unnecessary tables */
 IF OBJECT_ID('COST_REV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('COST_REV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE COST_REV;
@@ -7208,28 +7526,34 @@ function Close_Open_Transactions
 }
 
 # ===================================================================================================
-#               FUNCTION: Sync_ServerKey_To_Lanes_With_ScheduledTask
+#               FUNCTION: Sync_ServerKey_To_Lanes_With_ScheduledTask  (SELF-SUFFICIENT TASK, ONE PS1)
 # ---------------------------------------------------------------------------------------------------
-# What it does (Interactive):
-#   1) Ask which lanes to deploy to (Show_Node_Selection_Form).
-#   2) Read server key from STORE DB: SELECT TOP 1 F1243 FROM SYS_TAB
-#   3) Update lanes: UPDATE SYS_TAB SET F1243 = 'key'
-#      - SQL first (Named Pipes / TCP depending on $script:LaneProtocols + connection strings)
-#      - Fallback: COPY SQI file into $OfficePath\XF{Store}{Lane}\UPDATE_SERVERKEY.SQI
-#   4) Restart ALL programs on selected lanes after deploy (mailslot)
-#   5) Ask if you want to create/update a Windows Scheduled Task for these lanes:
-#      - Reads existing config + task and shows existing lanes + interval
-#      - Asks for frequency minutes
-#      - Merges new lanes into existing config (does NOT remove old lanes)
+# NEW REQUIREMENTS IMPLEMENTED:
+#   - Uses $script:ScriptsFolder = "C:\Tecnica_Systems\Alex_C.T\Scripts\"
+#   - Uses $script:ScriptsLog    = "C:\Tecnica_Systems\Alex_C.T\Log\"
+#   - Scheduled task creates ONLY ONE .ps1 (no json, no bat, no runner)
+#   - Scheduled .ps1 is self-sufficient (does NOT rely on main script / dot-sourcing)
+#   - Scheduled logging overwrites a single LATEST file (no growth)
 #
-# What it does (NonInteractive - for scheduled runs):
-#   - Uses LaneNumbers passed in (no UI)
-#   - Skips Scheduled Task prompts
-#   - Does NOT restart programs
+# Interactive flow:
+#   1) Prompt Run Now vs Schedule Only
+#   2) Select lanes
+#   3) Run Now: deploy now, then ASK if restart programs (only for successful lanes)
+#   4) Schedule Only: create/update task only (no deploy now)
 #
-# Requires your existing ecosystem:
-#   Write_Log, Retrieve_Nodes, Show_Node_Selection_Form, Get_All_Lanes_Database_Info
-#   $script:FunctionResults, $script:LaneProtocols, [MailslotSender]::SendMailslotCommand(...)
+# Fast execution:
+#   - Reuses pre-collected caches:
+#       $script:FunctionResults['ConnectionString'] (local DB)
+#       $script:FunctionResults['LaneNumToMachineName']
+#       Get_All_Lanes_Database_Info -LaneNumber (already cached by main)
+#       $script:LaneProtocols (already cached by Start_Lane_Protocol_Jobs)
+#   - DOES NOT rerun protocol detection or node collection unless missing
+#
+# FIXES ADDED:
+#   - Scheduled script can connect to lanes via SQL AUTH when protocol != "File"
+#       User: Tecnica  Pass: TB$upp0rT
+#   - Scheduled script correctly accesses JSON keys like "012" via PSObject.Properties (no "$obj.$ln" bug)
+#   - Scheduled script clears archive bit when dropping SQI
 # ===================================================================================================
 
 function Sync_ServerKey_To_Lanes_With_ScheduledTask
@@ -7238,73 +7562,198 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber,
-		# NonInteractive use (Scheduled Task): pass lanes directly
 		[Parameter(Mandatory = $false)]
 		[string[]]$LaneNumbers = $null,
-		# When running from the Scheduled Task runner (headless)
 		[Parameter(Mandatory = $false)]
 		[switch]$NonInteractive,
-		# SQL timeout for queries/updates
 		[Parameter(Mandatory = $false)]
-		[int]$SqlTimeoutSeconds = 30
+		[int]$SqlTimeoutSeconds = 30,
+		[Parameter(Mandatory = $false)]
+		[int]$ConnectTimeoutSeconds = 1
 	)
 	
 	Write_Log "`r`n==================== Starting Sync_ServerKey_To_Lanes_With_ScheduledTask ====================`r`n" "blue"
 	
 	# ------------------------------------------------------------------------------------------------
-	# Normalize store number
+	# Normalize store number (3 digits)
 	# ------------------------------------------------------------------------------------------------
 	$StoreNumber = "$StoreNumber".PadLeft(3, '0')
 	
 	# ------------------------------------------------------------------------------------------------
-	# Ensure we have node mappings (needed for restart mailslots)
+	# Enforce your folders (per requirement)
 	# ------------------------------------------------------------------------------------------------
-	if (-not $script:FunctionResults.ContainsKey('LaneNumToMachineName') -or -not $script:FunctionResults['LaneNumToMachineName'])
-	{
-		$null = Retrieve_Nodes -StoreNumber $StoreNumber
-	}
+	$script:ScriptsFolder = "C:\Tecnica_Systems\Alex_C.T\Scripts\"
+	$script:ScriptsLog = "C:\Tecnica_Systems\Alex_C.T\Log\"
+	if (-not (Test-Path $script:ScriptsFolder)) { New-Item -Path $script:ScriptsFolder -ItemType Directory -Force | Out-Null }
+	if (-not (Test-Path $script:ScriptsLog)) { New-Item -Path $script:ScriptsLog -ItemType Directory -Force | Out-Null }
 	
 	# ------------------------------------------------------------------------------------------------
-	# Validate SQL module availability (Get_Store_And_Database_Info sets this)
+	# Ensure FunctionResults exists
+	# ------------------------------------------------------------------------------------------------
+	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
+	
+	# ------------------------------------------------------------------------------------------------
+	# SQL AUTH creds for lane DB access when protocol != "File"
+	# ------------------------------------------------------------------------------------------------
+	$SqlAuthUser = "Tecnica"
+	$SqlAuthPass = "TB$upp0rT"
+	
+	# ------------------------------------------------------------------------------------------------
+	# Validate SQL module availability (main script uses it elsewhere; keep check)
 	# ------------------------------------------------------------------------------------------------
 	$SqlModule = $script:FunctionResults['SqlModuleName']
-	if (-not $SqlModule -or $SqlModule -eq "None")
+	if ([string]::IsNullOrWhiteSpace($SqlModule) -or $SqlModule -eq "None")
 	{
 		Write_Log "No SQL Server module available (SqlServer or SQLPS). Cannot sync server key." "red"
+		Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
 		return
 	}
-	
-	try
-	{
-		Import-Module $SqlModule -ErrorAction Stop
-	}
+	try { Import-Module $SqlModule -ErrorAction Stop }
 	catch
 	{
 		Write_Log "Failed to import SQL module '$SqlModule'. Error: $_" "red"
+		Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
 		return
 	}
 	
 	# ------------------------------------------------------------------------------------------------
-	# Detect whether Invoke-Sqlcmd supports -ConnectionString (SQLPS often does NOT)
+	# Ensure cached lane map exists (fallback only if missing)
 	# ------------------------------------------------------------------------------------------------
-	$supportsConnStr = $false
-	try
+	if (-not $script:FunctionResults['LaneNumToMachineName'])
 	{
-		$supportsConnStr = (Get-Command Invoke-Sqlcmd -ErrorAction Stop).Parameters.ContainsKey('ConnectionString')
+		Write_Log "LaneNumToMachineName missing; calling Retrieve_Nodes as fallback." "yellow"
+		$null = Retrieve_Nodes -StoreNumber $StoreNumber
 	}
-	catch
+	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+	if (-not $LaneNumToMachineName)
 	{
-		$supportsConnStr = $false
+		Write_Log "LaneNumToMachineName still missing; cannot continue." "red"
+		Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+		return
 	}
 	
 	# ------------------------------------------------------------------------------------------------
-	# Lane selection (interactive) or validation (non-interactive)
+	# OfficePath required for SQI fallback
+	# ------------------------------------------------------------------------------------------------
+	if (-not $OfficePath -or -not (Test-Path $OfficePath))
+	{
+		$guessOffice = "C:\storeman\Office"
+		if (Test-Path $guessOffice) { $OfficePath = $guessOffice }
+	}
+	if (-not $OfficePath -or -not (Test-Path $OfficePath))
+	{
+		Write_Log "OfficePath missing/invalid; SQI fallback would fail. OfficePath='$OfficePath'." "red"
+		Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+		return
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Load protocol preferences FROM protocol results file (source of truth)
+	#   Uses: $script:ProtocolResultsFile created by Start_Lane_Protocol_Jobs
+	#   Populates: $script:LaneProtocols[###] = 'TCP'/'Named Pipes'/'File'
+	# ------------------------------------------------------------------------------------------------
+	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{ } }
+	
+	$protoFile = $script:ProtocolResultsFile
+	if ([string]::IsNullOrWhiteSpace($protoFile))
+	{
+		$protoFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
+		$script:ProtocolResultsFile = $protoFile
+	}
+	
+	if (Test-Path $protoFile)
+	{
+		try
+		{
+			$lines = Get-Content -LiteralPath $protoFile -ErrorAction SilentlyContinue
+			foreach ($line in $lines)
+			{
+				if ($line -match '^\s*([^,]+),\s*([^,]+)\s*$')
+				{
+					$laneRaw = $matches[1].Trim()
+					$proto = $matches[2].Trim()
+					$laneNum = (($laneRaw -replace '[^\d]', '')).PadLeft(3, '0')
+					if (-not [string]::IsNullOrWhiteSpace($laneNum))
+					{
+						$script:LaneProtocols[$laneNum] = $proto
+					}
+				}
+			}
+		}
+		catch
+		{
+			Write_Log "Failed reading ProtocolResultsFile '$protoFile'. Error: $_" "yellow"
+		}
+	}
+	else
+	{
+		Write_Log "ProtocolResultsFile not found: $protoFile (will fall back to LaneProtocols cache if present)" "yellow"
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# MODE selection (Interactive only): Run Now vs Schedule Only
+	# ------------------------------------------------------------------------------------------------
+	$mode = "run"
+	if (-not $NonInteractive)
+	{
+		try { Add-Type -AssemblyName System.Windows.Forms | Out-Null }
+		catch { }
+		
+		$script:__modePick = $null
+		$formMode = New-Object System.Windows.Forms.Form
+		$formMode.Text = "Server Key Sync"
+		$formMode.Size = New-Object System.Drawing.Size(540, 230)
+		$formMode.StartPosition = "CenterScreen"
+		$formMode.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+		$formMode.MaximizeBox = $false
+		$formMode.MinimizeBox = $false
+		
+		$lblMode = New-Object System.Windows.Forms.Label
+		$lblMode.Text = "Choose what you want to do:"
+		$lblMode.AutoSize = $true
+		$lblMode.Location = New-Object System.Drawing.Point(18, 18)
+		$formMode.Controls.Add($lblMode)
+		
+		$btnRunNow = New-Object System.Windows.Forms.Button
+		$btnRunNow.Text = "Run Now"
+		$btnRunNow.Size = New-Object System.Drawing.Size(150, 45)
+		$btnRunNow.Location = New-Object System.Drawing.Point(25, 65)
+		$btnRunNow.Add_Click({ $script:__modePick = "run"; $formMode.DialogResult = [System.Windows.Forms.DialogResult]::OK; $formMode.Close() })
+		$formMode.Controls.Add($btnRunNow)
+		
+		$btnScheduleOnly = New-Object System.Windows.Forms.Button
+		$btnScheduleOnly.Text = "Schedule Task Only"
+		$btnScheduleOnly.Size = New-Object System.Drawing.Size(190, 45)
+		$btnScheduleOnly.Location = New-Object System.Drawing.Point(190, 65)
+		$btnScheduleOnly.Add_Click({ $script:__modePick = "schedule"; $formMode.DialogResult = [System.Windows.Forms.DialogResult]::OK; $formMode.Close() })
+		$formMode.Controls.Add($btnScheduleOnly)
+		
+		$btnCancel = New-Object System.Windows.Forms.Button
+		$btnCancel.Text = "Cancel"
+		$btnCancel.Size = New-Object System.Drawing.Size(110, 45)
+		$btnCancel.Location = New-Object System.Drawing.Point(395, 65)
+		$btnCancel.Add_Click({ $script:__modePick = "cancel"; $formMode.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $formMode.Close() })
+		$formMode.Controls.Add($btnCancel)
+		
+		[void]$formMode.ShowDialog()
+		$mode = $script:__modePick
+		Remove-Variable -Name __modePick -Scope Script -ErrorAction SilentlyContinue
+		
+		if ($mode -eq "cancel" -or [string]::IsNullOrWhiteSpace($mode))
+		{
+			Write_Log "User cancelled Server Key Sync." "yellow"
+			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			return
+		}
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Lane selection (interactive) or normalize lanes (noninteractive)
 	# ------------------------------------------------------------------------------------------------
 	if (-not $NonInteractive)
 	{
 		Write_Log "Opening lane selection..." "yellow"
 		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
-		
 		if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 		{
 			Write_Log "Lane selection cancelled or returned no lanes." "yellow"
@@ -7312,456 +7761,443 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 			return
 		}
 		
-		$LaneNumbers = foreach ($ln in $selection.Lanes)
+		$tmp = @()
+		foreach ($ln in $selection.Lanes)
 		{
-			if ($ln -is [pscustomobject] -and $ln.LaneNumber) { "$($ln.LaneNumber)".PadLeft(3, '0') }
-			else { "$ln".PadLeft(3, '0') }
+			$raw = $null
+			if ($ln -is [pscustomobject] -and $ln.LaneNumber) { $raw = "$($ln.LaneNumber)" }
+			else { $raw = "$ln" }
+			$n = ($raw -replace '[^\d]', '')
+			if (-not [string]::IsNullOrWhiteSpace($n)) { $tmp += $n.PadLeft(3, '0') }
 		}
+		$LaneNumbers = @($tmp | Where-Object { $_ } | Select-Object -Unique)
 	}
 	else
 	{
 		if (-not $LaneNumbers -or $LaneNumbers.Count -eq 0)
 		{
 			Write_Log "NonInteractive run requires -LaneNumbers." "red"
+			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
 			return
 		}
-		$LaneNumbers = $LaneNumbers | ForEach-Object { "$_".PadLeft(3, '0') }
-	}
-	
-	$LaneNumbers = @($LaneNumbers | Where-Object { $_ } | Select-Object -Unique)
-	Write_Log ("Target lanes: " + ($LaneNumbers -join ", ")) "cyan"
-	
-	# =================================================================================================
-	# 1) READ KEY FROM LOCAL DB (MATCH YOUR EXACT MANUAL TEST)
-	#    Use the same SQL you run by hand, then choose the "best" non-empty value in PowerShell.
-	# =================================================================================================
-	$localConnStr = $script:FunctionResults['ConnectionString']
-	$localDbServer = $script:FunctionResults['DBSERVER']
-	$localDbName = $script:FunctionResults['DBNAME']
-	
-	if ([string]::IsNullOrWhiteSpace($localConnStr) -or $localConnStr -eq "N/A")
-	{
-		Write_Log "Local DB ConnectionString is missing (FunctionResults['ConnectionString']). Make sure Get_Store_And_Database_Info ran successfully." "red"
-		return
-	}
-	
-	Write_Log ("Reading SYS_TAB.F1243 from LOCAL DB: Server='{0}' Database='{1}'" -f $localDbServer, $localDbName) "yellow"
-	
-	# IMPORTANT: Match the exact query you confirmed works in SSMS.
-	$selectKeySql = "SELECT F1243 FROM SYS_TAB;"
-	
-	$serverKey = $null
-	$res = $null
-	
-	try
-	{
-		if ($supportsConnStr)
+		$tmp = @()
+		foreach ($ln in $LaneNumbers)
 		{
-			$res = Invoke-Sqlcmd -ConnectionString $localConnStr -Query $selectKeySql -QueryTimeout $SqlTimeoutSeconds -ErrorAction Stop
+			$n = ("$ln" -replace '[^\d]', '')
+			if (-not [string]::IsNullOrWhiteSpace($n)) { $tmp += $n.PadLeft(3, '0') }
 		}
-		else
-		{
-			if ([string]::IsNullOrWhiteSpace($localDbServer) -or [string]::IsNullOrWhiteSpace($localDbName) -or $localDbServer -eq "N/A" -or $localDbName -eq "N/A")
-			{
-				Write_Log "Invoke-Sqlcmd lacks -ConnectionString and DBSERVER/DBNAME are not available. Cannot read key." "red"
-				return
-			}
-			$res = Invoke-Sqlcmd -ServerInstance $localDbServer -Database $localDbName -Query $selectKeySql -QueryTimeout $SqlTimeoutSeconds -ErrorAction Stop
-		}
-	}
-	catch
-	{
-		Write_Log "Failed to run 'SELECT F1243 FROM SYS_TAB' on LOCAL DB. Error: $_" "red"
-		return
+		$LaneNumbers = @($tmp | Where-Object { $_ } | Select-Object -Unique)
 	}
 	
-	# Collect all returned values robustly (handles odd object shapes)
-	$rawValues = @()
-	if ($res)
-	{
-		foreach ($row in $res)
-		{
-			$val = $null
-			
-			# Normal case: property exists
-			try { $val = $row.F1243 }
-			catch { $val = $null }
-			
-			# Fallback: look for any property that is literally named F1243 (sometimes casing differs)
-			if ($val -eq $null)
-			{
-				try
-				{
-					$p = $row.PSObject.Properties | Where-Object { $_.Name -ieq 'F1243' } | Select-Object -First 1
-					if ($p) { $val = $p.Value }
-				}
-				catch { }
-			}
-			
-			if ($val -ne $null)
-			{
-				$rawValues += [string]$val
-			}
-		}
-	}
+	Write_Log ("Selected lanes: " + ($LaneNumbers -join ", ")) "cyan"
 	
-	# Choose the best candidate:
-	# - Trim edges only
-	# - Reject values that are whitespace-only, including non-breaking spaces
-	# - Prefer the longest (your key is long)
-	$candidates = @()
-	foreach ($v in $rawValues)
-	{
-		if ($v -eq $null) { continue }
-		
-		$t = $v.Trim()
-		
-		# Remove ALL whitespace + NBSP for the "is this empty?" test (but keep original formatting for storage)
-		$stripped = [regex]::Replace($t, '[\s\u00A0]+', '')
-		
-		if (-not [string]::IsNullOrWhiteSpace($t) -and -not [string]::IsNullOrWhiteSpace($stripped))
-		{
-			$candidates += [pscustomobject]@{
-				Value = $t
-				Len   = $t.Length
-			}
-		}
-	}
+	# ------------------------------------------------------------------------------------------------
+	# Decide whether to deploy now
+	# ------------------------------------------------------------------------------------------------
+	$doDeployNow = $true
+	if (-not $NonInteractive -and $mode -eq "schedule") { $doDeployNow = $false }
 	
-	if ($candidates.Count -gt 0)
-	{
-		$serverKey = ($candidates | Sort-Object Len -Descending | Select-Object -First 1).Value
-		Write_Log ("Server key retrieved from LOCAL DB (length {0})." -f $serverKey.Length) "green"
-	}
-	else
-	{
-		# Extra visibility if something is still weird
-		Write_Log ("LOCAL DB returned {0} row(s) from SYS_TAB, but none were usable as a key." -f ($rawValues.Count)) "yellow"
-		
-		if ($rawValues.Count -gt 0)
-		{
-			$preview = $rawValues[0]
-			$previewTrim = $preview.Trim()
-			$previewLen = $previewTrim.Length
-			$previewShow = $previewTrim.Substring(0, [Math]::Min(80, $previewTrim.Length))
-			Write_Log ("First returned value preview (trimmed, len={0}): {1}" -f $previewLen, $previewShow) "yellow"
-		}
-		
-		Write_Log "Server key (SYS_TAB.F1243) came back empty/null from LOCAL DB. Aborting." "red"
-		return
-	}
-	
-	# Escape single quotes for SQL literal
-	$safeServerKey = $serverKey.Replace("'", "''")
-	$serverKeySqlLiteral = "'$safeServerKey'"
-	
-	# =================================================================================================
-	# 2) PREPARE SQI FALLBACK FILE ONCE (COPY TO LANES IF SQL UPDATE FAILS)
-	# =================================================================================================
-	$SqiName = "UPDATE_SERVERKEY"
-	$SqiFileName = "$SqiName.SQI"
-	
-	# NOTE: keep it ASCII-ish / ANSI (matches Storeman expectations)
-	$SqiContent = "@dbEXEC(UPDATE SYS_TAB SET F1243 = $serverKeySqlLiteral)`r`n"
-	
-	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
-	$TempDir = if ($script:FunctionResults.ContainsKey('TempDir') -and $script:FunctionResults['TempDir']) { $script:FunctionResults['TempDir'] }
-	else { [System.IO.Path]::GetTempPath() }
-	$TempSqiPath = Join-Path $TempDir $SqiFileName
-	
-	try
-	{
-		[System.IO.File]::WriteAllText($TempSqiPath, $SqiContent, $ansiEncoding)
-		Set-ItemProperty -Path $TempSqiPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-	}
-	catch
-	{
-		Write_Log "Failed to create temp SQI '$TempSqiPath'. Error: $_" "red"
-		return
-	}
-	
-	# =================================================================================================
-	# 3) PUSH KEY TO SELECTED LANES (SQL FIRST, FILE COPY FALLBACK), RESTART PROGRAMS IF MANUAL
-	# =================================================================================================
+	# ------------------------------------------------------------------------------------------------
+	# Results containers
+	# ------------------------------------------------------------------------------------------------
 	$UpdatedViaSql = New-Object System.Collections.Generic.List[string]
 	$UpdatedViaFile = New-Object System.Collections.Generic.List[string]
 	$FailedLanes = New-Object System.Collections.Generic.List[string]
 	
-	foreach ($LaneNumber in $LaneNumbers)
+	# =================================================================================================
+	# DEPLOY NOW  (RUN NOW uses WINDOWS AUTH when protocol is TCP/Named Pipes; else SQI)
+	# =================================================================================================
+	if ($doDeployNow)
 	{
-		Write_Log "`r`n--- Lane $LaneNumber ---" "magenta"
+		try { Add-Type -AssemblyName System.Data 2>$null }
+		catch { }
 		
-		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
-		if (-not $laneInfo)
+		# ------------------------------------------------------------------------------------------------
+		# LOCAL key read
+		# ------------------------------------------------------------------------------------------------
+		$localConnStr = $script:FunctionResults['ConnectionString']
+		if ([string]::IsNullOrWhiteSpace($localConnStr) -or $localConnStr -eq "N/A")
 		{
-			Write_Log "Could not retrieve DB info for lane $LaneNumber. Skipping." "red"
-			$FailedLanes.Add($LaneNumber) | Out-Null
-			continue
+			Write_Log "Local DB ConnectionString missing (FunctionResults['ConnectionString'])." "red"
+			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			return
 		}
 		
-		$dbName = $laneInfo['DBName']
-		$tcpConnStr = $laneInfo['TcpConnStr']
-		$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-		$tcpServer = $laneInfo['TcpServer']
-		
-		# Prefer protocol from your saved mapping, but try both
-		$laneKey = "$LaneNumber".PadLeft(3, '0')
-		$protocolPref = $null
-		if ($script:LaneProtocols.ContainsKey($laneKey)) { $protocolPref = $script:LaneProtocols[$laneKey] }
-		
-		$tryOrder = if ($protocolPref -eq "Named Pipes") { @("Named Pipes", "TCP") }
-		elseif ($protocolPref -eq "TCP") { @("TCP", "Named Pipes") }
-		else { @("TCP", "Named Pipes") }
-		
-		$updateSql = "UPDATE SYS_TAB SET F1243 = $serverKeySqlLiteral"
-		$sqlWorked = $false
-		
-		foreach ($proto in $tryOrder)
+		# Enforce connect timeout on LOCAL conn string
+		$localConnStrEff = $localConnStr
+		if ($localConnStrEff -notmatch '(?i)\bConnect\s*Timeout\s*=')
 		{
+			if ($localConnStrEff.Trim().EndsWith(';')) { $localConnStrEff += "Connect Timeout=$ConnectTimeoutSeconds;" }
+			else { $localConnStrEff += ";Connect Timeout=$ConnectTimeoutSeconds;" }
+		}
+		else
+		{
+			$localConnStrEff = [regex]::Replace($localConnStrEff, '(?i)\bConnect\s*Timeout\s*=\s*\d+\s*', "Connect Timeout=$ConnectTimeoutSeconds")
+		}
+		
+		Write_Log "Reading SYS_TAB.F1243 from LOCAL DB..." "yellow"
+		
+		$rawValues = @()
+		try
+		{
+			$vals = New-Object System.Collections.Generic.List[string]
+			$cn = New-Object System.Data.SqlClient.SqlConnection $localConnStrEff
 			try
 			{
-				if ($supportsConnStr)
+				$cn.Open()
+				$cmd = $cn.CreateCommand()
+				$cmd.CommandText = "SELECT F1243 FROM SYS_TAB;"
+				$cmd.CommandTimeout = $SqlTimeoutSeconds
+				$rdr = $cmd.ExecuteReader()
+				try
 				{
-					$connToUse = if ($proto -eq "Named Pipes") { $namedPipesConnStr }
-					else { $tcpConnStr }
-					Invoke-Sqlcmd -ConnectionString $connToUse -Query $updateSql -QueryTimeout $SqlTimeoutSeconds -ErrorAction Stop
+					while ($rdr.Read())
+					{
+						if (-not $rdr.IsDBNull(0)) { $vals.Add([string]$rdr.GetValue(0)) | Out-Null }
+					}
 				}
-				else
+				finally
 				{
-					Invoke-Sqlcmd -ServerInstance $tcpServer -Database $dbName -Query $updateSql -QueryTimeout $SqlTimeoutSeconds -ErrorAction Stop
+					try { $rdr.Close() }
+					catch { }
+					try { $rdr.Dispose() }
+					catch { }
 				}
-				
-				Write_Log "Updated SYS_TAB.F1243 via SQL ($proto) on lane $LaneNumber." "green"
-				$UpdatedViaSql.Add($LaneNumber) | Out-Null
-				$sqlWorked = $true
-				break
 			}
-			catch
+			finally
 			{
-				Write_Log "SQL update failed ($proto) on lane $LaneNumber. Error: $_" "yellow"
+				try { $cn.Close() }
+				catch { }
+				try { $cn.Dispose() }
+				catch { }
+			}
+			$rawValues = @($vals)
+		}
+		catch { $rawValues = @() }
+		
+		$serverKey = $null
+		$bestLen = -1
+		foreach ($v in $rawValues)
+		{
+			if ($v -eq $null) { continue }
+			$t = ([string]$v).Trim()
+			$stripped = [regex]::Replace($t, '[\s\u00A0]+', '')
+			if (-not [string]::IsNullOrWhiteSpace($t) -and -not [string]::IsNullOrWhiteSpace($stripped))
+			{
+				if ($t.Length -gt $bestLen) { $bestLen = $t.Length; $serverKey = $t }
 			}
 		}
 		
-		# Fallback: copy SQI into the lane XF folder
-		if (-not $sqlWorked)
+		if ([string]::IsNullOrWhiteSpace($serverKey))
 		{
-			$LaneXFDir = Join-Path $OfficePath ("XF{0}{1}" -f $StoreNumber, $LaneNumber)
-			$DestSqiPath = Join-Path $LaneXFDir $SqiFileName
+			Write_Log "Server key (SYS_TAB.F1243) came back empty/null from LOCAL DB. Aborting." "red"
+			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			return
+		}
+		
+		Write_Log ("Server key retrieved (length {0})." -f $serverKey.Length) "green"
+		
+		$safeServerKey = $serverKey.Replace("'", "''")
+		$updateSql = "UPDATE SYS_TAB SET F1243 = '$safeServerKey'"
+		
+		# ------------------------------------------------------------------------------------------------
+		# SQI fallback file (ANSI 1252, no BOM)
+		# ------------------------------------------------------------------------------------------------
+		$SqiFileName = "UPDATE_SERVERKEY.SQI"
+		$SqiContent = "@dbEXEC($updateSql)`r`n"
+		
+		$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
+		$TempSqiPath = Join-Path ([System.IO.Path]::GetTempPath()) $SqiFileName
+		
+		try
+		{
+			[System.IO.File]::WriteAllText($TempSqiPath, $SqiContent, $ansiEncoding)
 			
-			if (-not (Test-Path $LaneXFDir))
+			# Clear archive/readonly on temp file too
+			try { attrib -a -r "$TempSqiPath" 2>$null | Out-Null }
+			catch { }
+			try { Set-ItemProperty -Path $TempSqiPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal) -ErrorAction SilentlyContinue }
+			catch { }
+		}
+		catch
+		{
+			Write_Log "Failed to create temp SQI '$TempSqiPath'. Error: $_" "red"
+			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			return
+		}
+		
+		# ------------------------------------------------------------------------------------------------
+		# LANE LOOP
+		# ------------------------------------------------------------------------------------------------
+		foreach ($LaneNumber in $LaneNumbers)
+		{
+			Write_Log "`r`n--- Lane $LaneNumber ---" "magenta"
+			
+			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
+			if (-not $laneInfo)
 			{
-				Write_Log "Lane XF folder not found: $LaneXFDir (cannot copy SQI fallback)." "red"
+				Write_Log "Could not retrieve cached DB info for lane $LaneNumber. Skipping." "red"
 				$FailedLanes.Add($LaneNumber) | Out-Null
+				continue
 			}
-			else
+			
+			$tcpConnStr = $laneInfo['TcpConnStr']
+			$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
+			
+			# Protocol preference from protocol results (source of truth)
+			$protocolPref = $null
+			if ($script:LaneProtocols.ContainsKey($LaneNumber)) { $protocolPref = $script:LaneProtocols[$LaneNumber] }
+			if ([string]::IsNullOrWhiteSpace($protocolPref)) { $protocolPref = "File" }
+			
+			$sqlWorked = $false
+			
+			# ---------------------------------------------
+			# SQL attempts ONLY when protocol says TCP/NP
+			# RUN NOW: Windows Auth (Integrated Security)
+			# ---------------------------------------------
+			if ($protocolPref -ne "File")
 			{
+				$tryOrder = @("TCP", "Named Pipes")
+				if ($protocolPref -eq "Named Pipes") { $tryOrder = @("Named Pipes", "TCP") }
+				elseif ($protocolPref -eq "TCP") { $tryOrder = @("TCP", "Named Pipes") }
+				
+				foreach ($proto in $tryOrder)
+				{
+					$connToUse = $null
+					if ($proto -eq "Named Pipes") { $connToUse = $namedPipesConnStr }
+					else { $connToUse = $tcpConnStr }
+					if ([string]::IsNullOrWhiteSpace($connToUse)) { continue }
+					
+					# ----- Normalize to WINDOWS AUTH -----
+					$connEff = $connToUse
+					
+					# strip SQL auth tokens if present
+					$connEff = [regex]::Replace($connEff, '(?i)\bUser\s*ID\s*=\s*[^;]*;?', '')
+					$connEff = [regex]::Replace($connEff, '(?i)\bUID\s*=\s*[^;]*;?', '')
+					$connEff = [regex]::Replace($connEff, '(?i)\bPassword\s*=\s*[^;]*;?', '')
+					$connEff = [regex]::Replace($connEff, '(?i)\bPWD\s*=\s*[^;]*;?', '')
+					
+					# remove conflicting flags and force Integrated Security=True
+					$connEff = [regex]::Replace($connEff, '(?i)\bTrusted_Connection\s*=\s*Yes\s*;?', '')
+					$connEff = [regex]::Replace($connEff, '(?i)\bIntegrated\s+Security\s*=\s*False\s*;?', '')
+					
+					if ($connEff -notmatch '(?i)\bIntegrated\s+Security\s*=')
+					{
+						if ($connEff.Trim().EndsWith(';')) { $connEff += "Integrated Security=True;" }
+						else { $connEff += ";Integrated Security=True;" }
+					}
+					else
+					{
+						$connEff = [regex]::Replace($connEff, '(?i)\bIntegrated\s+Security\s*=\s*[^;]*', 'Integrated Security=True')
+					}
+					
+					# ----- Enforce connect timeout -----
+					if ($connEff -notmatch '(?i)\bConnect\s*Timeout\s*=')
+					{
+						if ($connEff.Trim().EndsWith(';')) { $connEff += "Connect Timeout=$ConnectTimeoutSeconds;" }
+						else { $connEff += ";Connect Timeout=$ConnectTimeoutSeconds;" }
+					}
+					else
+					{
+						$connEff = [regex]::Replace($connEff, '(?i)\bConnect\s*Timeout\s*=\s*\d+\s*', "Connect Timeout=$ConnectTimeoutSeconds")
+					}
+					
+					try
+					{
+						$cn2 = New-Object System.Data.SqlClient.SqlConnection $connEff
+						try
+						{
+							$cn2.Open()
+							$cmd2 = $cn2.CreateCommand()
+							$cmd2.CommandText = $updateSql
+							$cmd2.CommandTimeout = $SqlTimeoutSeconds
+							[void]$cmd2.ExecuteNonQuery()
+							$sqlWorked = $true
+						}
+						finally
+						{
+							try { $cn2.Close() }
+							catch { }
+							try { $cn2.Dispose() }
+							catch { }
+						}
+					}
+					catch
+					{
+						$sqlWorked = $false
+						$msg = $_.Exception.Message
+						Write_Log ("SQL update failed on lane {0} via {1} (WinAuth): {2}" -f $LaneNumber, $proto, $msg) "yellow"
+					}
+					
+					if ($sqlWorked)
+					{
+						Write_Log "Updated via SQL ($proto) on lane $LaneNumber (Windows Auth)." "green"
+						$UpdatedViaSql.Add($LaneNumber) | Out-Null
+						break
+					}
+				}
+			}
+			
+			# ---------------------------------------------
+			# SQI fallback (ONLY if SQL didn't work OR protocol is File)
+			# ---------------------------------------------
+			if (-not $sqlWorked)
+			{
+				$LaneXFDir = Join-Path $OfficePath ("XF{0}{1}" -f $StoreNumber, $LaneNumber)
+				$DestSqiPath = Join-Path $LaneXFDir $SqiFileName
+				
+				if (-not (Test-Path $LaneXFDir))
+				{
+					Write_Log "Lane XF folder not found: $LaneXFDir" "red"
+					$FailedLanes.Add($LaneNumber) | Out-Null
+					continue
+				}
+				
 				try
 				{
 					Copy-Item -Path $TempSqiPath -Destination $DestSqiPath -Force
-					Set-ItemProperty -Path $DestSqiPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-					Write_Log "Copied SQI fallback to $DestSqiPath" "yellow"
+					
+					# IMPORTANT: clear archive/readonly on the deployed file
+					try { attrib -a -r "$DestSqiPath" 2>$null | Out-Null }
+					catch { }
+					try { Set-ItemProperty -Path $DestSqiPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal) -ErrorAction SilentlyContinue }
+					catch { }
+					
 					$UpdatedViaFile.Add($LaneNumber) | Out-Null
+					Write_Log "Copied SQI to $DestSqiPath (archive cleared)" "green"
+					
+					# IMPORTANT: DO NOT mark LaneProtocols to File here (that causes "always deploying" later)
+					# $script:LaneProtocols[$LaneNumber] = "File"
 				}
 				catch
 				{
-					Write_Log "Failed to copy SQI fallback for lane $LaneNumber. Error: $_" "red"
+					Write_Log "Failed to copy SQI for lane $LaneNumber. Error: $_" "red"
 					$FailedLanes.Add($LaneNumber) | Out-Null
 				}
 			}
 		}
 		
-		# Manual run only: restart all programs on the lane
-		if (-not $NonInteractive)
+		if ($UpdatedViaSql.Count -gt 0) { Write_Log ("Updated via SQL: " + ($UpdatedViaSql -join ", ")) "green" }
+		if ($UpdatedViaFile.Count -gt 0) { Write_Log ("Updated via SQI: " + ($UpdatedViaFile -join ", ")) "green" }
+		if ($FailedLanes.Count -gt 0) { Write_Log ("Failed lanes: " + ($FailedLanes -join ", ")) "red" }
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Restart prompt (interactive Run Now only; NEVER automatic)
+	# ------------------------------------------------------------------------------------------------
+	if (-not $NonInteractive -and $mode -eq "run" -and $doDeployNow)
+	{
+		$successful = @(@($UpdatedViaSql) + @($UpdatedViaFile) | Where-Object { $_ } | Select-Object -Unique)
+		if ($successful.Count -gt 0)
 		{
-			try
+			try { Add-Type -AssemblyName System.Windows.Forms | Out-Null }
+			catch { }
+			$ansRestart = [System.Windows.Forms.MessageBox]::Show(
+				"Server key deployed successfully to: " + ($successful -join ", ") + "`r`n`r`nRestart ALL programs on these lanes now?",
+				"Restart Programs?",
+				[System.Windows.Forms.MessageBoxButtons]::YesNo,
+				[System.Windows.Forms.MessageBoxIcon]::Question
+			)
+			
+			if ($ansRestart -eq [System.Windows.Forms.DialogResult]::Yes)
 			{
-				$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-				if ($nodes)
+				foreach ($ln in $successful)
 				{
-					$machineName = $nodes.LaneNumToMachineName[$LaneNumber]
-					if ($machineName)
+					$machineName = $LaneNumToMachineName[$ln]
+					if ([string]::IsNullOrWhiteSpace($machineName))
 					{
-						$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
-						$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
-						$sent = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
-						
-						if ($sent) { Write_Log "Restart All Programs sent to $machineName (lane $LaneNumber)." "green" }
-						else { Write_Log "Failed to send restart to $machineName (lane $LaneNumber)." "red" }
+						Write_Log "Could not resolve machine name for lane $ln (restart skipped)." "yellow"
+						continue
 					}
-					else
+					
+					try
 					{
-						Write_Log "Could not resolve machine name for lane $LaneNumber (restart skipped)." "yellow"
+						$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${ln}"
+						$sent = [MailslotSender]::SendMailslotCommand($mailslotAddress, "@exec(RESTART_ALL=PROGRAMS).")
+						if ($sent) { Write_Log "Restart sent to $machineName (lane $ln)." "green" }
+						else { Write_Log "Restart FAILED to $machineName (lane $ln)." "red" }
+					}
+					catch
+					{
+						Write_Log "Restart attempt failed for lane $ln. Error: $_" "red"
 					}
 				}
 			}
-			catch
+			else
 			{
-				Write_Log "Restart attempt failed for lane $LaneNumber. Error: $_" "red"
+				Write_Log "User chose NOT to restart programs after deploy." "yellow"
 			}
 		}
 	}
 	
-	# Summary
-	if ($UpdatedViaSql.Count -gt 0) { Write_Log ("Updated via SQL: " + ($UpdatedViaSql -join ", ")) "green" }
-	if ($UpdatedViaFile.Count -gt 0) { Write_Log ("Updated via SQI fallback: " + ($UpdatedViaFile -join ", ")) "yellow" }
-	if ($FailedLanes.Count -gt 0) { Write_Log ("Failed lanes: " + ($FailedLanes -join ", ")) "red" }
-	
 	# =================================================================================================
-	# 4) OPTIONAL: CREATE/UPDATE WINDOWS SCHEDULED TASK (MERGE LANES + ASK FREQUENCY)
+	# SCHEDULE (interactive only) -> ONE self-sufficient PS1 (no main script dependency)
+	# - Embeds protocol map loaded from ProtocolResultsFile
+	# - Uses SQL AUTH for lane DB updates when protocol != "File"
+	# - FIXES numeric json keys ("012") via PSObject.Properties[]
 	# =================================================================================================
 	if (-not $NonInteractive)
 	{
-		$taskRoot = Join-Path $BasePath "Scripts_by_Alex_C.T"
-		if (-not (Test-Path $taskRoot))
-		{
-			try { New-Item -Path $taskRoot -ItemType Directory -Force | Out-Null }
-			catch { Write_Log "Failed to create task folder '$taskRoot'. Error: $_" "red"; return }
-		}
-		
-		$taskName = "TBS Server Key Sync - Store $StoreNumber"
-		$configPath = Join-Path $taskRoot ("ServerKeySync_Task_Store{0}.json" -f $StoreNumber)
-		$runnerPath = Join-Path $taskRoot ("Run-ServerKeySync_Task_Store{0}.ps1" -f $StoreNumber)
-		$taskLog = Join-Path $taskRoot ("ServerKeySync_TaskLog_Store{0}.txt" -f $StoreNumber)
-		
-		# Read existing config to show lanes/interval
-		$existingCfg = $null
-		if (Test-Path $configPath)
-		{
-			try { $existingCfg = Get-Content $configPath -Raw | ConvertFrom-Json }
-			catch { $existingCfg = $null }
-		}
-		
-		$existingCfgLanes = @()
-		$existingCfgFreqMins = $null
-		if ($existingCfg)
-		{
-			if ($existingCfg.LaneNumbers) { $existingCfgLanes = @($existingCfg.LaneNumbers | ForEach-Object { "$_".PadLeft(3, '0') } | Select-Object -Unique) }
-			if ($existingCfg.FrequencyMinutes) { $existingCfgFreqMins = [int]$existingCfg.FrequencyMinutes }
-		}
-		
-		# Read existing Scheduled Task interval + next run
-		$existingTask = $null
-		$existingTaskIntervalMins = $null
-		$existingTaskNextRun = $null
-		
-		try
-		{
-			$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-			if ($existingTask)
-			{
-				$tr = $existingTask.Triggers | Select-Object -First 1
-				if ($tr -and $tr.Repetition -and $tr.Repetition.Interval)
-				{
-					try
-					{
-						$ts = [System.Xml.XmlConvert]::ToTimeSpan($tr.Repetition.Interval)
-						if ($ts.TotalMinutes -ge 1) { $existingTaskIntervalMins = [int][Math]::Round($ts.TotalMinutes) }
-					}
-					catch { }
-				}
-				
-				try
-				{
-					$info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
-					if ($info) { $existingTaskNextRun = $info.NextRunTime }
-				}
-				catch { }
-			}
-		}
-		catch { }
-		
-		if ($existingCfg)
-		{
-			Write_Log ("Existing task config found: {0}" -f $configPath) "cyan"
-			Write_Log (" - Lanes in config: {0}" -f ($(if ($existingCfgLanes.Count -gt 0) { $existingCfgLanes -join ", " }
-						else { "(none)" }))) "cyan"
-			Write_Log (" - Interval in config (minutes): {0}" -f ($(if ($existingCfgFreqMins) { $existingCfgFreqMins }
-						else { "(not set)" }))) "cyan"
-		}
+		$doSchedule = $false
+		if ($mode -eq "schedule") { $doSchedule = $true }
 		else
 		{
-			Write_Log "No existing task config found (this would be a new task config)." "yellow"
+			try { Add-Type -AssemblyName System.Windows.Forms | Out-Null }
+			catch { }
+			$ansSchedule = [System.Windows.Forms.MessageBox]::Show(
+				"Do you want to create/update a Scheduled Task for the selected lanes?",
+				"Create Scheduled Task?",
+				[System.Windows.Forms.MessageBoxButtons]::YesNo,
+				[System.Windows.Forms.MessageBoxIcon]::Question
+			)
+			if ($ansSchedule -eq [System.Windows.Forms.DialogResult]::Yes) { $doSchedule = $true }
 		}
 		
-		if ($existingTask)
+		if ($doSchedule)
 		{
-			Write_Log ("Existing Scheduled Task found: {0}" -f $taskName) "cyan"
-			Write_Log (" - Interval from task trigger (minutes): {0}" -f ($(if ($existingTaskIntervalMins) { $existingTaskIntervalMins }
-						else { "(not set)" }))) "cyan"
-			if ($existingTaskNextRun) { Write_Log (" - Next run time: {0}" -f $existingTaskNextRun) "cyan" }
-		}
-		else
-		{
-			Write_Log "No existing Scheduled Task found (this would create a new task)." "yellow"
-		}
-		
-		try { Add-Type -AssemblyName System.Windows.Forms | Out-Null }
-		catch { }
-		
-		$ans = [System.Windows.Forms.MessageBox]::Show(
-			"Do you want to create/update a Windows Scheduled Task for these lanes?`r`n`r`nThis will MERGE lanes into the existing task (it won't remove existing lanes).",
-			"Server Key Sync - Scheduled Task",
-			[System.Windows.Forms.MessageBoxButtons]::YesNo,
-			[System.Windows.Forms.MessageBoxIcon]::Question
-		)
-		
-		if ($ans -eq [System.Windows.Forms.DialogResult]::Yes)
-		{
-			# Choose a sensible default interval (existing config > existing task > 60)
-			$defaultMins = 60
-			if ($existingCfgFreqMins -and $existingCfgFreqMins -ge 1) { $defaultMins = $existingCfgFreqMins }
-			elseif ($existingTaskIntervalMins -and $existingTaskIntervalMins -ge 1) { $defaultMins = $existingTaskIntervalMins }
+			try { Add-Type -AssemblyName System.Windows.Forms | Out-Null }
+			catch { }
 			
-			# Simple frequency input UI
-			$form = New-Object System.Windows.Forms.Form
-			$form.Text = "Server Key Sync Frequency"
-			$form.Width = 520
-			$form.Height = 240
-			$form.StartPosition = "CenterScreen"
+			$formFreq = New-Object System.Windows.Forms.Form
+			$formFreq.Text = "Server Key Sync Frequency"
+			$formFreq.Width = 520
+			$formFreq.Height = 240
+			$formFreq.StartPosition = "CenterScreen"
 			
 			$lbl = New-Object System.Windows.Forms.Label
 			$lbl.AutoSize = $true
 			$lbl.Location = New-Object System.Drawing.Point(15, 20)
-			$lbl.Text = "Run every how many minutes?"
-			$form.Controls.Add($lbl)
+			$lbl.Text = "Run every how many minutes? (1 - 1439)"
+			$formFreq.Controls.Add($lbl)
 			
 			$tb = New-Object System.Windows.Forms.TextBox
 			$tb.Location = New-Object System.Drawing.Point(20, 50)
 			$tb.Width = 100
-			$tb.Text = "$defaultMins"
-			$form.Controls.Add($tb)
-			
-			$existingLaneText = if ($existingCfgLanes.Count -gt 0) { $existingCfgLanes -join ", " }
-			else { "(none)" }
+			$tb.Text = "60"
+			$formFreq.Controls.Add($tb)
 			
 			$lbl2 = New-Object System.Windows.Forms.Label
 			$lbl2.AutoSize = $true
 			$lbl2.Location = New-Object System.Drawing.Point(15, 95)
-			$lbl2.Text = "Existing lanes on file: $existingLaneText"
-			$form.Controls.Add($lbl2)
+			$lbl2.Text = "Selected lanes: " + ($LaneNumbers -join ", ")
+			$formFreq.Controls.Add($lbl2)
 			
-			$lbl3 = New-Object System.Windows.Forms.Label
-			$lbl3.AutoSize = $true
-			$lbl3.Location = New-Object System.Drawing.Point(15, 120)
-			$lbl3.Text = "New lanes being added now: " + ($LaneNumbers -join ", ")
-			$form.Controls.Add($lbl3)
+			$okBtn = New-Object System.Windows.Forms.Button
+			$okBtn.Text = "OK"
+			$okBtn.Location = New-Object System.Drawing.Point(300, 160)
+			$okBtn.Add_Click({ $formFreq.DialogResult = [System.Windows.Forms.DialogResult]::OK })
+			$formFreq.Controls.Add($okBtn)
 			
-			$ok = New-Object System.Windows.Forms.Button
-			$ok.Text = "OK"
-			$ok.Location = New-Object System.Drawing.Point(300, 160)
-			$ok.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::OK })
-			$form.Controls.Add($ok)
+			$cancelBtn = New-Object System.Windows.Forms.Button
+			$cancelBtn.Text = "Cancel"
+			$cancelBtn.Location = New-Object System.Drawing.Point(380, 160)
+			$cancelBtn.Add_Click({ $formFreq.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
+			$formFreq.Controls.Add($cancelBtn)
 			
-			$cancel = New-Object System.Windows.Forms.Button
-			$cancel.Text = "Cancel"
-			$cancel.Location = New-Object System.Drawing.Point(380, 160)
-			$cancel.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
-			$form.Controls.Add($cancel)
+			$formFreq.AcceptButton = $okBtn
+			$formFreq.CancelButton = $cancelBtn
 			
-			$form.AcceptButton = $ok
-			$form.CancelButton = $cancel
-			
-			if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
+			if ($formFreq.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
 			{
 				Write_Log "Scheduled Task setup cancelled by user." "yellow"
 				Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
@@ -7769,330 +8205,206 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 			}
 			
 			[int]$freqMinutes = 0
-			if (-not [int]::TryParse($tb.Text, [ref]$freqMinutes) -or $freqMinutes -lt 1)
+			if (-not [int]::TryParse($tb.Text, [ref]$freqMinutes) -or $freqMinutes -lt 1 -or $freqMinutes -gt 1439)
 			{
-				Write_Log "Invalid frequency entered. Using default $defaultMins minutes." "yellow"
-				$freqMinutes = $defaultMins
+				Write_Log "Invalid frequency entered. Using 60 minutes." "yellow"
+				$freqMinutes = 60
 			}
 			
-			# MERGE lanes (do not remove existing lanes)
-			$mergedLanes = @($existingCfgLanes + $LaneNumbers | ForEach-Object { "$_".PadLeft(3, '0') } | Select-Object -Unique)
-			
-			# Store the main script path so the runner can dot-source it
-			$mainScriptPath = $PSCommandPath
-			if ([string]::IsNullOrWhiteSpace($mainScriptPath))
+			# Required cached data for self-sufficient script
+			$localConnStr = $script:FunctionResults['ConnectionString']
+			if ([string]::IsNullOrWhiteSpace($localConnStr) -or $localConnStr -eq "N/A")
 			{
-				try { $mainScriptPath = $MyInvocation.MyCommand.ScriptBlock.File }
-				catch { $mainScriptPath = $null }
-			}
-			
-			$configObj = [pscustomobject]@{
-				StoreNumber	     = $StoreNumber
-				LaneNumbers	     = $mergedLanes
-				FrequencyMinutes = $freqMinutes
-				MainScriptPath   = $mainScriptPath
-				BasePath		 = $BasePath
-				LastUpdated	     = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-			}
-			
-			try
-			{
-				($configObj | ConvertTo-Json -Depth 6) | Set-Content -Path $configPath -Encoding UTF8
-				Write_Log "Saved task config: $configPath" "green"
-				Write_Log ("Config lanes now: " + ($mergedLanes -join ", ")) "green"
-				Write_Log ("Config interval now: every {0} minutes" -f $freqMinutes) "green"
-			}
-			catch
-			{
-				Write_Log "Failed to write config '$configPath'. Error: $_" "red"
+				Write_Log "Cannot schedule because local ConnectionString is missing in FunctionResults['ConnectionString']." "red"
+				Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
 				return
 			}
 			
-			# Runner script (headless run: no UI prompts, no restarts)
-			$runnerContent = @"
-param(
-	[Parameter(Mandatory = `$true)]
-	[string]`$ConfigPath
-)
-
-function Write-TaskLog {
-	param([string]`$Message)
-	try {
-		"`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  `$(hostname)  `$(whoami)  `$(Message)" | Add-Content -Path "$taskLog" -Encoding UTF8
-	} catch { }
-}
-
-Write-TaskLog "Starting ServerKey Sync task. Config=`$ConfigPath"
-
-try {
-	if (-not (Test-Path `$ConfigPath)) { throw "Config not found: `$ConfigPath" }
-	`$cfg = Get-Content `$ConfigPath -Raw | ConvertFrom-Json
-
-	`$scriptPath = `$cfg.MainScriptPath
-	if ([string]::IsNullOrWhiteSpace(`$scriptPath) -or -not (Test-Path `$scriptPath)) {
-		try {
-			`$candidates = Get-ChildItem -Path `$cfg.BasePath -Filter "TBS_Maintenance_Script*.ps1" -File -ErrorAction SilentlyContinue |
-				Sort-Object LastWriteTime -Descending
-			if (`$candidates -and `$candidates.Count -gt 0) { `$scriptPath = `$candidates[0].FullName }
-		} catch { }
-	}
-
-	if ([string]::IsNullOrWhiteSpace(`$scriptPath) -or -not (Test-Path `$scriptPath)) {
-		throw "Main script not found. Stored=`$(`$cfg.MainScriptPath)"
-	}
-
-	. `$scriptPath
-
-	Sync_ServerKey_To_Lanes_With_ScheduledTask -StoreNumber `$cfg.StoreNumber -LaneNumbers `$cfg.LaneNumbers -NonInteractive -SqlTimeoutSeconds 30
-
-	Write-TaskLog ("Completed OK. Lanes=" + (`$cfg.LaneNumbers -join ", ") + " IntervalMins=" + `$cfg.FrequencyMinutes)
-}
-catch {
-	Write-TaskLog ("FAILED: " + `$_)
-	throw
-}
-"@ -replace "`n", "`r`n"
-			
-			try
+			$laneConnMap = @{ }
+			foreach ($ln in $LaneNumbers)
 			{
-				Set-Content -Path $runnerPath -Value $runnerContent -Encoding UTF8
-				Write_Log "Runner script written/updated: $runnerPath" "green"
-			}
-			catch
-			{
-				Write_Log "Failed to write runner '$runnerPath'. Error: $_" "red"
-				return
-			}
-			
-			# Create/Update Scheduled Task (SYSTEM, highest)
-			try
-			{
-				$psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
-				$actionArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$runnerPath`" -ConfigPath `"$configPath`""
-				$action = New-ScheduledTaskAction -Execute $psExe -Argument $actionArgs
-				
-				# Daily trigger + repetition interval (simple + stable)
-				$repInterval = New-TimeSpan -Minutes $freqMinutes
-				$repDuration = New-TimeSpan -Days 1
-				$trigger = New-ScheduledTaskTrigger -Daily -At (Get-Date).Date -RepetitionInterval $repInterval -RepetitionDuration $repDuration
-				
-				$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-				$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
-				
-				$task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings
-				Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
-				
-				Write_Log "Scheduled Task created/updated: $taskName" "green"
-				
-				try
+				$li = Get_All_Lanes_Database_Info -LaneNumber $ln
+				if ($li)
 				{
-					$info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
-					if ($info) { Write_Log ("Next run time: {0}" -f $info.NextRunTime) "cyan" }
+					$laneConnMap[$ln] = @{
+						TcpConnStr	      = $li['TcpConnStr']
+						NamedPipesConnStr = $li['NamedPipesConnStr']
+					}
 				}
-				catch { }
+			}
+			
+			# Protocol map to embed
+			$protoMap = @{ }
+			foreach ($ln in $LaneNumbers)
+			{
+				$p = $null
+				if ($script:LaneProtocols.ContainsKey($ln)) { $p = $script:LaneProtocols[$ln] }
+				if ([string]::IsNullOrWhiteSpace($p)) { $p = "File" }
+				$protoMap[$ln] = $p
+			}
+			
+			$taskScriptPath = Join-Path $script:ScriptsFolder ("ServerKeySync_Task_Store{0}.ps1" -f $StoreNumber)
+			$latestLogPath = Join-Path $script:ScriptsLog ("ServerKeySync_LATEST_Store{0}.txt" -f $StoreNumber)
+			
+			$enc = [System.Text.Encoding]::UTF8
+			$localConnB64 = [Convert]::ToBase64String($enc.GetBytes($localConnStr))
+			$laneConnB64 = [Convert]::ToBase64String($enc.GetBytes(($laneConnMap | ConvertTo-Json -Depth 6)))
+			$protoB64 = [Convert]::ToBase64String($enc.GetBytes(($protoMap | ConvertTo-Json -Depth 4)))
+			
+			$laneListLiteral = ($LaneNumbers | ForEach-Object { "'$_'" }) -join ", "
+			
+			$sb = New-Object System.Text.StringBuilder
+			[void]$sb.AppendLine("# AUTO-GENERATED ServerKeySync task (self-sufficient, one file)")
+			[void]$sb.AppendLine("`$ErrorActionPreference = 'Stop'")
+			[void]$sb.AppendLine("try { Add-Type -AssemblyName System.Data 2>`$null } catch { }")
+			[void]$sb.AppendLine("`$SqlUser = 'Tecnica'")
+			[void]$sb.AppendLine("`$SqlPass = 'TB`$upp0rT'")
+			[void]$sb.AppendLine("`$StoreNumber = '$StoreNumber'")
+			[void]$sb.AppendLine("`$OfficePath  = '$OfficePath'")
+			[void]$sb.AppendLine("`$SqlTimeoutSeconds = $SqlTimeoutSeconds")
+			[void]$sb.AppendLine("`$ConnectTimeoutSeconds = $ConnectTimeoutSeconds")
+			[void]$sb.AppendLine("`$LatestLogPath = '$latestLogPath'")
+			[void]$sb.AppendLine("`$enc = [System.Text.Encoding]::UTF8")
+			[void]$sb.AppendLine("`$LocalConnStr = `$enc.GetString([Convert]::FromBase64String('$localConnB64'))")
+			[void]$sb.AppendLine("`$LaneConnMap  = ConvertFrom-Json (`$enc.GetString([Convert]::FromBase64String('$laneConnB64')))")
+			[void]$sb.AppendLine("`$LaneProtocols = ConvertFrom-Json (`$enc.GetString([Convert]::FromBase64String('$protoB64')))")
+			[void]$sb.AppendLine("`$LaneNumbers = @($laneListLiteral)")
+			[void]$sb.AppendLine("`$UpdatedViaSql  = New-Object System.Collections.Generic.List[string]")
+			[void]$sb.AppendLine("`$UpdatedViaFile = New-Object System.Collections.Generic.List[string]")
+			[void]$sb.AppendLine("`$FailedLanes    = New-Object System.Collections.Generic.List[string]")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("# Enforce connect timeout on LOCAL conn string")
+			[void]$sb.AppendLine("`$localEff = `$LocalConnStr")
+			[void]$sb.AppendLine("if (`$localEff -notmatch '(?i)\bConnect\s*Timeout\s*=') { if (`$localEff.Trim().EndsWith(';')) { `$localEff += ""Connect Timeout=`$ConnectTimeoutSeconds;"" } else { `$localEff += "";Connect Timeout=`$ConnectTimeoutSeconds;"" } }")
+			[void]$sb.AppendLine("else { `$localEff = [regex]::Replace(`$localEff, '(?i)\bConnect\s*Timeout\s*=\s*\d+\s*', ""Connect Timeout=`$ConnectTimeoutSeconds"") }")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("# Read key")
+			[void]$sb.AppendLine("`$rawValues = @()")
+			[void]$sb.AppendLine("try {")
+			[void]$sb.AppendLine("  `$vals = New-Object System.Collections.Generic.List[string]")
+			[void]$sb.AppendLine("  `$cn = New-Object System.Data.SqlClient.SqlConnection `$localEff")
+			[void]$sb.AppendLine("  try { `$cn.Open(); `$cmd = `$cn.CreateCommand(); `$cmd.CommandText = ""SELECT F1243 FROM SYS_TAB;""; `$cmd.CommandTimeout = `$SqlTimeoutSeconds; `$rdr = `$cmd.ExecuteReader();")
+			[void]$sb.AppendLine("    try { while (`$rdr.Read()) { if (-not `$rdr.IsDBNull(0)) { `$vals.Add([string]`$rdr.GetValue(0)) | Out-Null } } } finally { try { `$rdr.Close() } catch { } try { `$rdr.Dispose() } catch { } }")
+			[void]$sb.AppendLine("  } finally { try { `$cn.Close() } catch { } try { `$cn.Dispose() } catch { } }")
+			[void]$sb.AppendLine("  `$rawValues = @(`$vals)")
+			[void]$sb.AppendLine("} catch { `$rawValues = @() }")
+			[void]$sb.AppendLine("`$serverKey = `$null; `$bestLen = -1")
+			[void]$sb.AppendLine("foreach (`$v in `$rawValues) { if (`$v -eq `$null) { continue }; `$t = ([string]`$v).Trim(); `$stripped = [regex]::Replace(`$t,'[\s\u00A0]+',''); if (-not [string]::IsNullOrWhiteSpace(`$t) -and -not [string]::IsNullOrWhiteSpace(`$stripped)) { if (`$t.Length -gt `$bestLen) { `$bestLen = `$t.Length; `$serverKey = `$t } } }")
+			[void]$sb.AppendLine("if ([string]::IsNullOrWhiteSpace(`$serverKey)) { throw ""Server key empty/null from LOCAL DB."" }")
+			[void]$sb.AppendLine("`$safeServerKey = `$serverKey.Replace(""'"",""''"")")
+			[void]$sb.AppendLine("`$updateSql = ""UPDATE SYS_TAB SET F1243 = '"" + `$safeServerKey + ""'""")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("# SQI (ANSI/1252)")
+			[void]$sb.AppendLine("`$SqiFileName = ""UPDATE_SERVERKEY.SQI""")
+			[void]$sb.AppendLine("`$SqiContent  = ""@dbEXEC("" + `$updateSql + "")`r`n""")
+			[void]$sb.AppendLine("`$ansi = [System.Text.Encoding]::GetEncoding(1252)")
+			[void]$sb.AppendLine("`$TempSqiPath = Join-Path ([System.IO.Path]::GetTempPath()) `$SqiFileName")
+			[void]$sb.AppendLine("[System.IO.File]::WriteAllText(`$TempSqiPath, `$SqiContent, `$ansi)")
+			[void]$sb.AppendLine("try { attrib -a -r `"`$TempSqiPath`" 2>`$null | Out-Null } catch { }")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("foreach (`$ln in `$LaneNumbers) {")
+			[void]$sb.AppendLine("  # SAFE: numeric JSON keys like ""012"" must be accessed via PSObject.Properties")
+			[void]$sb.AppendLine("  `$prefProp = `$LaneProtocols.PSObject.Properties[`$ln]")
+			[void]$sb.AppendLine("  `$pref = if (`$prefProp) { [string]`$prefProp.Value } else { """" }")
+			[void]$sb.AppendLine("  if ([string]::IsNullOrWhiteSpace(`$pref)) { `$pref = ""File"" }")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("  `$laneProp = `$LaneConnMap.PSObject.Properties[`$ln]")
+			[void]$sb.AppendLine("  `$laneObj  = if (`$laneProp) { `$laneProp.Value } else { `$null }")
+			[void]$sb.AppendLine("  `$tcpConn  = if (`$laneObj) { [string]`$laneObj.TcpConnStr } else { `$null }")
+			[void]$sb.AppendLine("  `$npConn   = if (`$laneObj) { [string]`$laneObj.NamedPipesConnStr } else { `$null }")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("  `$sqlWorked = `$false")
+			[void]$sb.AppendLine("  if (`$pref -ne ""File"") {")
+			[void]$sb.AppendLine("    `$tryOrder = @(""TCP"",""Named Pipes""); if (`$pref -eq ""Named Pipes"") { `$tryOrder = @(""Named Pipes"",""TCP"") } elseif (`$pref -eq ""TCP"") { `$tryOrder = @(""TCP"",""Named Pipes"") }")
+			[void]$sb.AppendLine("    foreach (`$proto in `$tryOrder) {")
+			[void]$sb.AppendLine("      `$connToUse = if (`$proto -eq ""Named Pipes"") { `$npConn } else { `$tcpConn }")
+			[void]$sb.AppendLine("      if ([string]::IsNullOrWhiteSpace(`$connToUse)) { continue }")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("      # Build SQL-AUTH conn string for lane access")
+			[void]$sb.AppendLine("      `$connEff = `$connToUse")
+			[void]$sb.AppendLine("      `$connEff = [regex]::Replace(`$connEff, '(?i)\bIntegrated\s+Security\s*=\s*True\s*;?', '')")
+			[void]$sb.AppendLine("      `$connEff = [regex]::Replace(`$connEff, '(?i)\bTrusted_Connection\s*=\s*Yes\s*;?', '')")
+			[void]$sb.AppendLine("      if (`$connEff -notmatch '(?i)\bUser\s*ID\s*=') { if (`$connEff.Trim().EndsWith(';')) { `$connEff += ""User ID=`$SqlUser;"" } else { `$connEff += "";User ID=`$SqlUser;"" } }")
+			[void]$sb.AppendLine("      if (`$connEff -notmatch '(?i)\bPassword\s*=') { if (`$connEff.Trim().EndsWith(';')) { `$connEff += ""Password=`$SqlPass;"" } else { `$connEff += "";Password=`$SqlPass;"" } }")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("      if (`$connEff -notmatch '(?i)\bConnect\s*Timeout\s*=') { if (`$connEff.Trim().EndsWith(';')) { `$connEff += ""Connect Timeout=`$ConnectTimeoutSeconds;"" } else { `$connEff += "";Connect Timeout=`$ConnectTimeoutSeconds;"" } }")
+			[void]$sb.AppendLine("      else { `$connEff = [regex]::Replace(`$connEff, '(?i)\bConnect\s*Timeout\s*=\s*\d+\s*', ""Connect Timeout=`$ConnectTimeoutSeconds"") }")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("      try { `$cn2 = New-Object System.Data.SqlClient.SqlConnection `$connEff; try { `$cn2.Open(); `$cmd2 = `$cn2.CreateCommand(); `$cmd2.CommandText = `$updateSql; `$cmd2.CommandTimeout = `$SqlTimeoutSeconds; [void]`$cmd2.ExecuteNonQuery(); `$sqlWorked = `$true } finally { try { `$cn2.Close() } catch { } try { `$cn2.Dispose() } catch { } } } catch { `$sqlWorked = `$false }")
+			[void]$sb.AppendLine("      if (`$sqlWorked) { `$UpdatedViaSql.Add(`$ln) | Out-Null; break }")
+			[void]$sb.AppendLine("    }")
+			[void]$sb.AppendLine("  }")
+			[void]$sb.AppendLine("  if (-not `$sqlWorked) {")
+			[void]$sb.AppendLine("    `$laneXF = Join-Path `$OfficePath (""XF{0}{1}"" -f `$StoreNumber, `$ln)")
+			[void]$sb.AppendLine("    `$dest = Join-Path `$laneXF `$SqiFileName")
+			[void]$sb.AppendLine("    if (-not (Test-Path `$laneXF)) { `$FailedLanes.Add(`$ln) | Out-Null }")
+			[void]$sb.AppendLine("    else { try { Copy-Item -Path `$TempSqiPath -Destination `$dest -Force; try { attrib -a -r `"`$dest`" 2>`$null | Out-Null } catch { }; `$UpdatedViaFile.Add(`$ln) | Out-Null } catch { `$FailedLanes.Add(`$ln) | Out-Null } }")
+			[void]$sb.AppendLine("  }")
+			[void]$sb.AppendLine("}")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("`$okAll = @(@(`$UpdatedViaSql) + @(`$UpdatedViaFile) | Where-Object { `$_ } | Select-Object -Unique)")
+			[void]$sb.AppendLine("`$status = ""FAILED""; if (`$okAll.Count -gt 0) { `$status = ""OK""; if (`$FailedLanes.Count -gt 0) { `$status = ""PARTIAL"" } }")
+			[void]$sb.AppendLine("`$okAllText = ""(none)""; if (`$okAll.Count -gt 0) { `$okAllText = (`$okAll -join "", "") }")
+			[void]$sb.AppendLine("`$sqlText = ""(none)""; if (`$UpdatedViaSql.Count -gt 0) { `$sqlText = (@(`$UpdatedViaSql) -join "", "") }")
+			[void]$sb.AppendLine("`$sqiText = ""(none)""; if (`$UpdatedViaFile.Count -gt 0) { `$sqiText = (@(`$UpdatedViaFile) -join "", "") }")
+			[void]$sb.AppendLine("`$failedText = ""(none)""; if (`$FailedLanes.Count -gt 0) { `$failedText = (@(`$FailedLanes) -join "", "") }")
+			[void]$sb.AppendLine("`$lines = New-Object System.Collections.Generic.List[string]")
+			[void]$sb.AppendLine("`$lines.Add((""Timestamp : {0}"" -f (Get-Date -Format ""yyyy-MM-dd HH:mm:ss""))) | Out-Null")
+			[void]$sb.AppendLine("`$lines.Add((""Computer  : {0}"" -f `$env:COMPUTERNAME)) | Out-Null")
+			[void]$sb.AppendLine("`$lines.Add((""Store     : {0}"" -f `$StoreNumber)) | Out-Null")
+			[void]$sb.AppendLine("`$lines.Add((""Status    : {0}"" -f `$status)) | Out-Null")
+			[void]$sb.AppendLine("`$lines.Add((""Selected  : {0}"" -f (`$LaneNumbers -join "", ""))) | Out-Null")
+			[void]$sb.AppendLine("`$lines.Add((""OK (ALL)  : {0}"" -f `$okAllText)) | Out-Null")
+			[void]$sb.AppendLine("`$lines.Add((""OK (SQL)  : {0}"" -f `$sqlText)) | Out-Null")
+			[void]$sb.AppendLine("`$lines.Add((""OK (SQI)  : {0}"" -f `$sqiText)) | Out-Null")
+			[void]$sb.AppendLine("`$lines.Add((""Failed    : {0}"" -f `$failedText)) | Out-Null")
+			[void]$sb.AppendLine("`$logDir = [System.IO.Path]::GetDirectoryName(`$LatestLogPath)")
+			[void]$sb.AppendLine("if (-not (Test-Path `$logDir)) { New-Item -Path `$logDir -ItemType Directory -Force | Out-Null }")
+			[void]$sb.AppendLine("`$lines | Set-Content -Path `$LatestLogPath -Encoding UTF8")
+			
+			try
+			{
+				Set-Content -Path $taskScriptPath -Value ($sb.ToString() -replace "`n", "`r`n") -Encoding UTF8
+				Write_Log "Task script written/updated (single file): $taskScriptPath" "green"
+				Write_Log "Latest results log (overwrites each run): $latestLogPath" "cyan"
 			}
 			catch
 			{
-				Write_Log "Failed to create/update Scheduled Task '$taskName'. Run as admin. Error: $_" "red"
+				Write_Log "Failed to write task script '$taskScriptPath'. Error: $_" "red"
+				Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+				return
+			}
+			
+			try
+			{
+				$taskName = "TBS Server Key Sync - Store $StoreNumber"
+				$psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+				$tr = "`"$psExe`" -NoProfile -ExecutionPolicy Bypass -File `"$taskScriptPath`""
+				
+				$null = schtasks /Delete /TN "$taskName" /F 2>$null
+				$out = schtasks /Create /TN "$taskName" /TR $tr /SC MINUTE /MO $freqMinutes /RL HIGHEST /F /RU "SYSTEM" 2>&1
+				
+				if ($LASTEXITCODE -eq 0)
+				{
+					Write_Log "Scheduled Task created/updated: $taskName (every $freqMinutes minutes, SYSTEM)." "green"
+				}
+				else
+				{
+					Write_Log "Failed to create scheduled task '$taskName'. schtasks said: $out" "red"
+					Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+					return
+				}
+			}
+			catch
+			{
+				Write_Log "Failed to create/update Scheduled Task. Error: $_" "red"
+				Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
 				return
 			}
 		}
 	}
 	
 	Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
-}
-
-# ===================================================================================================
-#                                  FUNCTION: Ping_All_Nodes
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#    Ping all nodes of a given type (Lanes, Scales, or Backoffices) for a store.
-#    Usage:
-#        Ping_All_Nodes -NodeType "Lane"       -StoreNumber "001"
-#        Ping_All_Nodes -NodeType "Scale"
-#        Ping_All_Nodes -NodeType "Backoffice" -StoreNumber "001"
-#    All context (Lane/Scale/Backoffice lists) are sourced from $script:FunctionResults.
-# ===================================================================================================
-
-function Ping_All_Nodes
-{
-	param (
-		[Parameter(Mandatory = $true)]
-		[ValidateSet("Lane", "Scale", "Backoffice")]
-		[string]$NodeType,
-		[string]$StoreNumber
-	)
-	
-	Write_Log "`r`n==================== Starting Ping_All_Nodes ($NodeType) Function ====================`r`n" "blue"
-	
-	$nodesToPing = @()
-	$nodeLabel = ""
-	$nodeSummary = ""
-	
-	switch ($NodeType)
-	{
-		"Lane" {
-			$nodeLabel = "Lane"
-			$nodeSummary = "Lanes"
-			if (-not $script:FunctionResults.ContainsKey('LaneNumToMachineName'))
-			{
-				Write_Log "Lane mappings not available. Please run Retrieve_Nodes first." "red"
-				return
-			}
-			$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-			foreach ($laneNum in $LaneNumToMachineName.Keys | Where-Object { $_ -match '^\d{3}$' })
-			{
-				$machineName = $LaneNumToMachineName[$laneNum]
-				if ($machineName -and $machineName -notin @("Unknown", "Not Found"))
-				{
-					$nodesToPing += [PSCustomObject]@{
-						Key    = $laneNum
-						Target = $machineName
-						Label  = "" # Do not use $null or $null string
-					}
-				}
-			}
-			$nodesToPing = $nodesToPing | Sort-Object { [int]$_.Key }
-		}
-		
-		"Scale" {
-			$nodeLabel = "Scale"
-			$nodeSummary = "Scales"
-			if (-not $script:FunctionResults.ContainsKey('ScaleCodeToIPInfo') -or $script:FunctionResults['ScaleCodeToIPInfo'].Count -eq 0)
-			{
-				Write_Log "No scales found to ping." "yellow"
-				return
-			}
-			$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
-			foreach ($code in $ScaleCodeToIPInfo.Keys | Where-Object { $_ -match '^\d{1,3}$' })
-			{
-				$scaleObj = $ScaleCodeToIPInfo[$code]
-				$ip = $null
-				if ($scaleObj.PSObject.Properties['FullIP'])
-				{
-					$ip = $scaleObj.FullIP
-				}
-				elseif ($scaleObj.PSObject.Properties['IPNetwork'] -and $scaleObj.PSObject.Properties['IPDevice'])
-				{
-					$ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
-				}
-				if ($ip -and $ip -notin @("Unknown", "Not Found", ""))
-				{
-					$nodesToPing += [PSCustomObject]@{
-						Key    = $code
-						Target = $ip
-						Label  = $scaleObj.ScaleName
-					}
-				}
-			}
-			$nodesToPing = $nodesToPing | Sort-Object { [int]$_.Key }
-			# Remove duplicate IPs
-			$uniqueTargets = @{ }
-			$finalNodesToPing = @()
-			foreach ($node in $nodesToPing)
-			{
-				if (-not $uniqueTargets.ContainsKey($node.Target))
-				{
-					$uniqueTargets[$node.Target] = $true
-					$finalNodesToPing += $node
-				}
-			}
-			$nodesToPing = $finalNodesToPing
-		}
-		
-		"Backoffice" {
-			$nodeLabel = "Backoffice"
-			$nodeSummary = "Backoffices"
-			if (-not $script:FunctionResults.ContainsKey('BackofficeNumToMachineName'))
-			{
-				Write_Log "Backoffice information is not available. Please run Retrieve_Nodes first." "red"
-				return
-			}
-			$BackofficeNumToMachineName = $script:FunctionResults['BackofficeNumToMachineName']
-			foreach ($boNum in $BackofficeNumToMachineName.Keys | Where-Object { $_ -match '^\d{3}$' })
-			{
-				$machineName = $BackofficeNumToMachineName[$boNum]
-				if ($machineName -and $machineName -notin @("Unknown", "Not Found"))
-				{
-					$nodesToPing += [PSCustomObject]@{
-						Key    = $boNum
-						Target = $machineName
-						Label  = "" # Do not use $null or $null string
-					}
-				}
-			}
-			$nodesToPing = $nodesToPing | Sort-Object { [int]$_.Key }
-		}
-	}
-	
-	# Final deduplication by Target (just to be sure)
-	$uniqueTargets = @{ }
-	$finalList = @()
-	foreach ($node in $nodesToPing)
-	{
-		if (-not $uniqueTargets.ContainsKey($node.Target))
-		{
-			$uniqueTargets[$node.Target] = $node
-			$finalList += $node
-		}
-	}
-	$nodesToPing = $finalList
-	
-	if ($nodesToPing.Count -eq 0)
-	{
-		Write_Log "No valid $nodeSummary found to ping." "yellow"
-		return
-	}
-	
-	Write_Log "All $nodeSummary will be pinged." "green"
-	
-	$successCount = 0
-	$failureCount = 0
-	
-	foreach ($node in $nodesToPing)
-	{
-		$primary = $node.Key
-		$target = $node.Target
-		
-		# Compose labelInfo only for scales if present and non-empty
-		$labelInfo = ""
-		if ($NodeType -eq "Scale" -and $node.PSObject.Properties.Name -contains "Label" -and $node.Label -and $node.Label -ne "")
-		{
-			$labelInfo = " [($($node.Label))]"
-		}
-		
-		if ([string]::IsNullOrWhiteSpace($target) -or $target -in @("Unknown", "Not Found"))
-		{
-			# For lanes/backoffices, $labelInfo is always ""
-			Write_Log "$nodeLabel #[$primary]: Target '$target'. Status: Skipped." "yellow"
-			continue
-		}
-		try
-		{
-			$pingResult = Test-Connection -ComputerName $target -Count 1 -Quiet -ErrorAction Stop
-			if ($pingResult)
-			{
-				Write_Log ("$nodeLabel #[$primary]${labelInfo}: Target '$target' is reachable. Status: Success.") "green"
-				$successCount++
-			}
-			else
-			{
-				Write_Log ("$nodeLabel #[$primary]${labelInfo}: Target '$target' is not reachable. Status: Failed.") "red"
-				$failureCount++
-			}
-		}
-		catch
-		{
-			Write_Log ("$nodeLabel #[$primary]${labelInfo}: Failed to ping target '$target'. Error: $($_.Exception.Message)") "red"
-			$failureCount++
-		}
-	}
-	
-	$summaryMsg = "Ping Summary for $nodeSummary"
-	if ($StoreNumber) { $summaryMsg += " (Store Number: $StoreNumber)" }
-	$summaryMsg += " - Success: $successCount, Failed: $failureCount."
-	Write_Log $summaryMsg "blue"
-	Write_Log "`r`n==================== Ping_All_Nodes ($NodeType) Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -14623,42 +14935,58 @@ function Send_SERVER_time_to_Lanes
 			try
 			{
 				$TempDir = $env:TEMP
-				$xfFolder = Join-Path $OfficePath "XF${StoreNumber}${laneNum}"
+				$xfFolder = Join-Path $OfficePath ("XF{0}{1}" -f $StoreNumber, $laneNum)
+				
 				if (-not (Test-Path $xfFolder))
 				{
 					Write_Log "XF folder for lane $laneNum does not exist: $xfFolder" "red"
 					continue
 				}
-				try
+				
+				# Use the server's IP for net time
+				try { $serverIP = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1 -ErrorAction Stop).IPv4Address.IPAddressToString }
+				catch { $serverIP = $env:COMPUTERNAME }
+				
+				# Always-available lane path
+				$remoteShareRoot = "\\$machine\Storeman\Temp"
+				if (-not (Test-Path $remoteShareRoot))
 				{
-					$serverIP = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1 -ErrorAction Stop).IPv4Address.IPAddressToString
+					Write_Log "Lane share not reachable: $remoteShareRoot" "yellow"
+					throw "Storeman\Temp not reachable"
 				}
-				catch
-				{
-					$serverIP = $env:COMPUTERNAME
-				}
-				$remoteTempPath = "\\$machine\C$\Windows\Temp\sync_time.bat"
+				
+				$remoteBatPath = Join-Path $remoteShareRoot "sync_time.bat"
+				
+				# Create local BAT (ASCII)
 				$batContent = "@echo off`r`nnet time \\$serverIP /set /yes"
-				$localBatPath = Join-Path $TempDir "sync_time_$laneNum.bat"
+				$localBatPath = Join-Path $TempDir ("sync_time_{0}.bat" -f $laneNum)
 				Set-Content -Path $localBatPath -Value $batContent -Encoding Ascii
-				Copy-Item -Path $localBatPath -Destination $remoteTempPath -Force -ErrorAction Stop
-				Write_Log "Copied sync_time.bat to temp folder on lane $laneNum." "green"
-				Remove-Item -Path $localBatPath -Force
+				
+				# Copy to lane
+				Copy-Item -Path $localBatPath -Destination $remoteBatPath -Force -ErrorAction Stop
+				Remove-Item -Path $localBatPath -Force -ErrorAction SilentlyContinue
+				Write_Log "Copied sync_time.bat to \\$machine\Storeman\Temp for lane $laneNum." "green"
+				
+				# Drop exec trigger in XF (ASCII)
 				$execFilePath = Join-Path $xfFolder "exec_time_sync.txt"
-				$execContent = "@EXEC(Run='C:\Windows\Temp\sync_time.bat')"
+				$execContent = "@EXEC(Run='C:\Storeman\Temp\sync_time.bat')"
 				Set-Content -Path $execFilePath -Value $execContent -Encoding Ascii -ErrorAction Stop
-				# Clear the archive bit
-				$attr = (Get-Item $execFilePath).Attributes
-				Set-ItemProperty -Path $execFilePath -Name Attributes -Value ($attr -band -bnot [System.IO.FileAttributes]::Archive)
-				Write_Log "Created @EXEC trigger in XF folder for lane $laneNum and cleared archive bit." "green"
-				# Wait for execution (adjust as needed)
+				
+				# Clear archive bit on exec trigger (so SMS processes it cleanly)
+				try { attrib -a -r "$execFilePath" 2>$null | Out-Null }
+				catch { }
+				
+				Write_Log "Created @EXEC trigger in XF folder for lane $laneNum (Storeman\Temp path)." "green"
+				
+				# Optional: cleanup remote bat after a bit
 				Start-Sleep -Seconds 10
-				Remove-Item -Path $remoteTempPath -Force -ErrorAction SilentlyContinue
+				Remove-Item -Path $remoteBatPath -Force -ErrorAction SilentlyContinue
+				
 				$success = $true
 			}
 			catch
 			{
-				Write_Log "File copy/@EXEC fallback failed for lane ${laneNum}: $_" "red"
+				Write_Log "File/@EXEC fallback failed for lane ${laneNum}: $_" "red"
 			}
 		}
 		
@@ -15154,13 +15482,19 @@ function Reboot_Nodes
 #                         FUNCTION: Remove_ArchiveBit_Interactive
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts the user to either run the Remove Archive Bit action immediately or schedule it as a task.
-#   If scheduled, writes a batch file with current script variables (StoreNumber, paths, etc.) and
-#   creates a Windows scheduled task. If run immediately, performs the action using current values.
-#   Uses Write_Log for progress and error reporting.
-# ---------------------------------------------------------------------------------------------------
-# Parameters:
-#   (none - uses variables from main script context)
+#   - Run Now: one-time attrib clear (recursive) using lane map if available, else Ter_Load.sql parsing
+#   - Service: REAL-TIME mode (FileSystemWatcher), ALWAYS reads Ter_Load.sql (like Run Now)
+#              - Full cleanup at startup
+#              - Watches lane roots & server roots for changes and clears archive bit on touched items
+#              - Watches Ter_Load.sql; on change, rebuilds watchers and runs full cleanup
+#   - Adds "Uninstall Service" button
+#   - Caches NSSM for later use in: <ScriptsFolder>\Tools\NSSM\nssm.exe
+#   - Uses Windows auth to lanes by running service as: NT AUTHORITY\NetworkService
+#
+# IMPORTANT (per your request):
+#   - NO helper functions
+#   - NO nested functions
+#   - EVERYTHING inline inside this one function (service PS1 content is generated inline too)
 # ===================================================================================================
 
 function Remove_ArchiveBit_Interactive
@@ -15170,289 +15504,689 @@ function Remove_ArchiveBit_Interactive
 	
 	Write_Log "`r`n==================== Starting Remove_ArchiveBit_Interactive Function ====================`r`n" "blue"
 	
+	# ---------------------------
+	# NO-PROMPT "always sensing" poll interval (seconds)
+	# ---------------------------
+	$AutoPollSeconds = 5
+	
+	# ------------------------------------------------------------------------------------------------
+	# Validate required context
+	# ------------------------------------------------------------------------------------------------
+	if (-not $script:ScriptsFolder -or [string]::IsNullOrWhiteSpace($script:ScriptsFolder))
+	{
+		Write_Log "ERROR: script:ScriptsFolder is not set. Cannot continue." "red"
+		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		return
+	}
+	if (-not $OfficePath -or [string]::IsNullOrWhiteSpace($OfficePath))
+	{
+		Write_Log "ERROR: OfficePath is not set. Cannot continue." "red"
+		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		return
+	}
+	
 	# --- Main context variables
 	$iniFile = $StartupIniPath
 	$storeNumber = $script:FunctionResults['StoreNumber']
 	$terFile = Join-Path $OfficePath "Load\Ter_Load.sql"
 	$scriptFolder = $script:ScriptsFolder
 	
-	# --- Service/NSSM paths
+	# ------------------------------------------------------------------------------------------------
+	# Service/NSSM paths
+	# ------------------------------------------------------------------------------------------------
 	$installRoot = Join-Path $scriptFolder "Remove_Archive_Bit_Service"
 	$svcScripts = Join-Path $installRoot "Scripts"
 	$svcNssmDir = Join-Path $installRoot "NSSM"
+	$svcLogsDir = Join-Path $installRoot "Logs"
+	
 	$svcPS1 = Join-Path $svcScripts "Remove_Archive_Bit_Service.ps1"
+	$svcConfigPath = Join-Path $installRoot "Remove_Archive_Bit_Config.json"
+	
 	$nssmExe = Join-Path $svcNssmDir "nssm.exe"
 	$serviceName = "Remove_Archive_Bit"
 	
-	if (-not (Test-Path $svcScripts)) { New-Item -Path $svcScripts -ItemType Directory -Force | Out-Null }
-	if (-not (Test-Path $svcNssmDir)) { New-Item -Path $svcNssmDir -ItemType Directory -Force | Out-Null }
+	# NSSM cache (saved for later use)
+	$toolsRoot = Join-Path $scriptFolder "Tools"
+	$nssmCacheDir = Join-Path $toolsRoot "NSSM"
+	$nssmCacheExe = Join-Path $nssmCacheDir "nssm.exe"
 	
-	# --------------------- Show Choice Form ---------------------
+	foreach ($d in @($installRoot, $svcScripts, $svcNssmDir, $svcLogsDir, $toolsRoot, $nssmCacheDir))
+	{
+		if (-not (Test-Path $d)) { New-Item -Path $d -ItemType Directory -Force | Out-Null }
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Normalize lane map so we NEVER build "XF003POS006"
+	# Result: $LaneMapNormalized = @{ "006"="POS006"; "013"="pos013"; ... }
+	# Supports keys like: 006, 6, POS006, 0231LANE006, etc.
+	# ------------------------------------------------------------------------------------------------
+	$LaneMapNormalized = $null
+	if ($script:FunctionResults.ContainsKey('LaneNumToMachineName') -and $script:FunctionResults['LaneNumToMachineName'])
+	{
+		$tmp = [ordered]@{ }
+		
+		foreach ($kv in $script:FunctionResults['LaneNumToMachineName'].GetEnumerator())
+		{
+			$k = [string]$kv.Key
+			$v = [string]$kv.Value
+			
+			$l = $null
+			$m = $null
+			
+			# If key is numeric lane (e.g., 6 / 006)
+			if ($k -match '^\d{1,3}$')
+			{
+				$l = ("{0:000}" -f ([int]$k))
+				$m = $v
+			}
+			# If key ends with 3 digits (e.g., POS006 / 0231LANE006 / LANE006)
+			elseif ($k -match '(?i)(\d{3})$')
+			{
+				$l = $matches[1]
+				# Prefer the value as machine name; if missing, fall back to the key itself
+				$m = if (-not [string]::IsNullOrWhiteSpace($v)) { $v }
+				else { $k }
+			}
+			
+			if (-not $l) { continue }
+			if ([string]::IsNullOrWhiteSpace($m)) { continue }
+			if ($m -like '@SMSSERVER') { continue }
+			
+			# Deduplicate by lane number (keep first good hit)
+			if (-not $tmp.Contains($l)) { $tmp[$l] = $m }
+		}
+		
+		if ($tmp.Count -gt 0) { $LaneMapNormalized = $tmp }
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# UI: Run / Install / Uninstall
+	# ------------------------------------------------------------------------------------------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Remove Archive Bit"
-	$form.Size = New-Object System.Drawing.Size(430, 210)
+	$form.Size = New-Object System.Drawing.Size(480, 240)
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
+	$form.Tag = $null
 	
 	$label = New-Object System.Windows.Forms.Label
-	$label.Text = "Do you want to run Remove Archive Bit now, or install it as a repeating background SERVICE?"
-	$label.Location = New-Object System.Drawing.Point(20, 20)
-	$label.Size = New-Object System.Drawing.Size(390, 40)
+	$label.Text = "Choose an action:`r`n- Run Now (one-time)`r`n- Install Service (always-on, Ter_Load driven)`r`n- Uninstall Service"
+	$label.Location = New-Object System.Drawing.Point(20, 15)
+	$label.Size = New-Object System.Drawing.Size(440, 60)
 	$label.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$form.Controls.Add($label)
 	
 	$btnRunNow = New-Object System.Windows.Forms.Button
 	$btnRunNow.Text = "Run Now"
-	$btnRunNow.Location = New-Object System.Drawing.Point(35, 90)
-	$btnRunNow.Size = New-Object System.Drawing.Size(100, 40)
+	$btnRunNow.Location = New-Object System.Drawing.Point(10, 95)
+	$btnRunNow.Size = New-Object System.Drawing.Size(140, 45)
 	$form.Controls.Add($btnRunNow)
 	
 	$btnService = New-Object System.Windows.Forms.Button
 	$btnService.Text = "Install Service"
-	$btnService.Location = New-Object System.Drawing.Point(160, 90)
-	$btnService.Size = New-Object System.Drawing.Size(120, 40)
+	$btnService.Location = New-Object System.Drawing.Point(165, 95)
+	$btnService.Size = New-Object System.Drawing.Size(140, 45)
 	$form.Controls.Add($btnService)
+	
+	$btnUninstall = New-Object System.Windows.Forms.Button
+	$btnUninstall.Text = "Uninstall Service"
+	$btnUninstall.Location = New-Object System.Drawing.Point(315, 95)
+	$btnUninstall.Size = New-Object System.Drawing.Size(140, 45)
+	$form.Controls.Add($btnUninstall)
 	
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = New-Object System.Drawing.Point(305, 90)
-	$btnCancel.Size = New-Object System.Drawing.Size(80, 40)
+	$btnCancel.Location = New-Object System.Drawing.Point(190, 160)
+	$btnCancel.Size = New-Object System.Drawing.Size(90, 32)
 	$form.Controls.Add($btnCancel)
 	
-	# Option tracking
-	$selectedAction = $null
-	$btnRunNow.Add_Click({
-			$script:selectedAction = "run"
-			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
-			$form.Close()
-		})
-	$btnService.Add_Click({
-			$script:selectedAction = "service"
-			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
-			$form.Close()
-		})
-	$btnCancel.Add_Click({
-			$script:selectedAction = "cancel"
-			$form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-			$form.Close()
-		})
+	$btnRunNow.Add_Click({ $form.Tag = "run"; $form.DialogResult = 'OK'; $form.Close() })
+	$btnService.Add_Click({ $form.Tag = "service"; $form.DialogResult = 'OK'; $form.Close() })
+	$btnUninstall.Add_Click({ $form.Tag = "uninstall"; $form.DialogResult = 'OK'; $form.Close() })
+	$btnCancel.Add_Click({ $form.Tag = "cancel"; $form.DialogResult = 'Cancel'; $form.Close() })
 	
 	$form.AcceptButton = $btnRunNow
 	$form.CancelButton = $btnCancel
 	
-	$form.ShowDialog() | Out-Null
-	if ($script:selectedAction -eq "cancel" -or -not $script:selectedAction)
+	[void]$form.ShowDialog()
+	$selectedAction = [string]$form.Tag
+	$form.Dispose()
+	
+	if ($selectedAction -eq "cancel" -or -not $selectedAction)
 	{
 		Write_Log "User cancelled Remove_ArchiveBit_Interactive." "yellow"
 		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
 		return
 	}
 	
-	# --------------------- SERVICE PATH ---------------------
-	if ($script:selectedAction -eq "service")
+	# ------------------------------------------------------------------------------------------------
+	# UNINSTALL SERVICE
+	# ------------------------------------------------------------------------------------------------
+	if ($selectedAction -eq "uninstall")
 	{
-		# Interval prompt
-		$intervalForm = New-Object System.Windows.Forms.Form
-		$intervalForm.Text = "Service Interval"
-		$intervalForm.Size = New-Object System.Drawing.Size(300, 160)
-		$intervalForm.StartPosition = "CenterScreen"
-		$intervalForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-		$intervalForm.MaximizeBox = $false
-		$intervalForm.MinimizeBox = $false
-		
-		$intervalLabel = New-Object System.Windows.Forms.Label
-		$intervalLabel.Text = "Enter the interval in minutes (default 30):"
-		$intervalLabel.Location = New-Object System.Drawing.Point(10, 20)
-		$intervalLabel.Size = New-Object System.Drawing.Size(260, 20)
-		$intervalForm.Controls.Add($intervalLabel)
-		
-		$intervalBox = New-Object System.Windows.Forms.TextBox
-		$intervalBox.Text = "30"
-		$intervalBox.Location = New-Object System.Drawing.Point(10, 50)
-		$intervalBox.Size = New-Object System.Drawing.Size(260, 20)
-		$intervalForm.Controls.Add($intervalBox)
-		
-		$okBtn = New-Object System.Windows.Forms.Button
-		$okBtn.Text = "OK"
-		$okBtn.Location = New-Object System.Drawing.Point(40, 90)
-		$okBtn.Size = New-Object System.Drawing.Size(80, 30)
-		$okBtn.Add_Click({ $intervalForm.DialogResult = [System.Windows.Forms.DialogResult]::OK; $intervalForm.Close() })
-		$intervalForm.Controls.Add($okBtn)
-		
-		$cancelBtn = New-Object System.Windows.Forms.Button
-		$cancelBtn.Text = "Cancel"
-		$cancelBtn.Location = New-Object System.Drawing.Point(160, 90)
-		$cancelBtn.Size = New-Object System.Drawing.Size(80, 30)
-		$cancelBtn.Add_Click({ $intervalForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $intervalForm.Close() })
-		$intervalForm.Controls.Add($cancelBtn)
-		
-		$intervalForm.AcceptButton = $okBtn
-		$intervalForm.CancelButton = $cancelBtn
-		
-		$intervalResult = $intervalForm.ShowDialog()
-		if ($intervalResult -ne [System.Windows.Forms.DialogResult]::OK)
+		$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+			[Security.Principal.WindowsBuiltInRole]::Administrator
+		)
+		if (-not $isAdmin)
 		{
-			Write_Log "User cancelled interval prompt for service install." "yellow"
+			[void][System.Windows.Forms.MessageBox]::Show(
+				"Uninstalling the service requires Administrator rights.`r`n`r`nPlease re-run as Administrator and try again.",
+				"Administrator Required",
+				[System.Windows.Forms.MessageBoxButtons]::OK,
+				[System.Windows.Forms.MessageBoxIcon]::Warning
+			)
+			Write_Log "ERROR: Uninstall requested without Administrator rights." "red"
 			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
 			return
 		}
 		
-		$interval = $intervalBox.Text.Trim()
-		if (-not $interval -or $interval -notmatch "^\d+$" -or [int]$interval -le 0)
+		# Ensure NSSM exists (INLINE)
+		$haveNssm = $false
+		
+		# Cache exists -> copy into service folder (best effort)
+		if (Test-Path $nssmCacheExe)
 		{
-			Write_Log "Invalid interval value for service install." "red"
+			try { Copy-Item -LiteralPath $nssmCacheExe -Destination $nssmExe -Force -ErrorAction SilentlyContinue }
+			catch { }
+			$haveNssm = $true
+		}
+		elseif (Test-Path $nssmExe)
+		{
+			# Local exists -> backfill cache (best effort)
+			try { Copy-Item -LiteralPath $nssmExe -Destination $nssmCacheExe -Force -ErrorAction SilentlyContinue }
+			catch { }
+			$haveNssm = $true
+		}
+		else
+		{
+			# Download + cache (best effort)
+			$url = "https://nssm.cc/download/nssm-2.24.zip"
+			$tempZip = Join-Path $env:TEMP ("nssm_{0}.zip" -f ([guid]::NewGuid().ToString("N")))
+			try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
+			catch { }
+			
+			try
+			{
+				Write_Log "NSSM not found. Downloading to cache for later use..." "yellow"
+				Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
+				
+				$extractDir = Join-Path $nssmCacheDir ("_extract_{0}" -f ([guid]::NewGuid().ToString("N")))
+				New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
+				
+				# Try Expand-Archive then fallback ZipFile (INLINE)
+				$expanded = $false
+				try
+				{
+					Expand-Archive -LiteralPath $tempZip -DestinationPath $extractDir -Force
+					$expanded = $true
+				}
+				catch
+				{
+					try
+					{
+						Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop | Out-Null
+						[System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $extractDir, $true)
+						$expanded = $true
+					}
+					catch { $expanded = $false }
+				}
+				
+				if (-not $expanded) { throw "Failed to extract NSSM zip." }
+				
+				$preferredFolder = if ([Environment]::Is64BitOperatingSystem) { "win64" }
+				else { "win32" }
+				
+				$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
+				Where-Object { $_.FullName -match [regex]::Escape("\$preferredFolder\") } |
+				Select-Object -First 1
+				
+				if (-not $found)
+				{
+					$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
+					Select-Object -First 1
+				}
+				if (-not $found) { throw "nssm.exe not found in extracted archive." }
+				
+				Copy-Item -LiteralPath $found.FullName -Destination $nssmCacheExe -Force
+				try { Copy-Item -LiteralPath $nssmCacheExe -Destination $nssmExe -Force }
+				catch { }
+				
+				try { Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+				catch { }
+				try { Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue }
+				catch { }
+				
+				Write_Log "NSSM cached at: $nssmCacheExe" "green"
+				$haveNssm = $true
+			}
+			catch
+			{
+				Write_Log "ERROR: Could not download/cache NSSM. $($_.Exception.Message)" "red"
+				try { if (Test-Path $tempZip) { Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue } }
+				catch { }
+				$haveNssm = $false
+			}
+		}
+		
+		if (-not $haveNssm -or -not (Test-Path $nssmExe))
+		{
+			Write_Log "ERROR: NSSM unavailable. Cannot uninstall service." "red"
 			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
 			return
 		}
 		
-		# Validate core inputs before installing service
-		if (-not (Test-Path $terFile))
+		$existingSvc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+		if (-not $existingSvc)
 		{
-			Write_Log "ERROR: Ter_Load.sql could not be located at $terFile" "red"
+			Write_Log "Service '$serviceName' is not installed." "yellow"
+			Write_Log "NSSM remains cached at: $nssmCacheExe" "green"
 			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
 			return
 		}
+		
+		& $nssmExe stop $serviceName *> $null
+		& $nssmExe remove $serviceName confirm *> $null
+		
+		Write_Log "Service '$serviceName' uninstalled successfully." "green"
+		Write_Log "NSSM remains cached at: $nssmCacheExe" "green"
+		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		return
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# INSTALL SERVICE (NT AUTHORITY\NetworkService, TER_LOAD DRIVEN + REALTIME WATCHERS)
+	# ------------------------------------------------------------------------------------------------
+	if ($selectedAction -eq "service")
+	{
+		$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+			[Security.Principal.WindowsBuiltInRole]::Administrator
+		)
+		if (-not $isAdmin)
+		{
+			[void][System.Windows.Forms.MessageBox]::Show(
+				"Installing the service requires Administrator rights.`r`n`r`nPlease re-run as Administrator and try again.",
+				"Administrator Required",
+				[System.Windows.Forms.MessageBoxButtons]::OK,
+				[System.Windows.Forms.MessageBoxIcon]::Warning
+			)
+			Write_Log "ERROR: Service install requested without Administrator rights." "red"
+			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			return
+		}
+		
 		if (-not $storeNumber)
 		{
 			Write_Log "ERROR: Store number not present in context." "red"
 			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
 			return
 		}
-		
-		# --- Write the SERVICE script (standalone repeating loop)
-		$svcContent = @"
-`$StoreNumber = "$storeNumber"
-`$TerFile     = "$terFile"
-`$OfficePath  = "$OfficePath"
-`$IntervalMin = [int]"$interval"
-
-function Refresh-AttribPath([string]`$p){
-    if([string]::IsNullOrWhiteSpace(`$p)) { return }
-    if(Test-Path `$p){
-        attrib -a -r "`$p\*.*" >nul 2>&1
-    }
-}
-
-function Process-LanesFromTerFile {
-    if(!(Test-Path `$TerFile)){ return }
-
-    # Regex to capture two paths for Terminal 0 lines
-    `$rx = "^\(\s*'Terminal\s*0'\s*,\s*'([^']+)'\s*(?:,\s*'([^']+)')?"
-
-    foreach(`$line in Get-Content `$TerFile){
-        if(`$line -match `$rx){
-            `$p1 = `$matches[1]
-            `$p2 = `$matches[2]
-            Refresh-AttribPath `$p1
-            Refresh-AttribPath `$p2
-        }
-    }
-}
-
-function Process-ServerXF {
-    foreach(`$suffix in 900,901){
-        `$serverPath = Join-Path `$OfficePath ("XF" + `$StoreNumber + `$suffix)
-        Refresh-AttribPath `$serverPath
-    }
-}
-
-while(`$true){
-    try{
-        Process-LanesFromTerFile
-        Process-ServerXF
-    } catch {}
-
-    Start-Sleep -Seconds (`$IntervalMin * 60)
-}
-"@
-		
-		Set-Content -Path $svcPS1 -Value $svcContent -Encoding UTF8 -Force
-		
-		# --- Ensure NSSM exists (download if missing)
-		if (!(Test-Path $nssmExe))
+		if (-not (Test-Path $terFile))
 		{
+			Write_Log "ERROR: Ter_Load.sql could not be located at $terFile" "red"
+			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			return
+		}
+		
+		# Ensure NSSM exists (INLINE)
+		$haveNssm = $false
+		
+		if (Test-Path $nssmCacheExe)
+		{
+			try { Copy-Item -LiteralPath $nssmCacheExe -Destination $nssmExe -Force -ErrorAction SilentlyContinue }
+			catch { }
+			$haveNssm = $true
+		}
+		elseif (Test-Path $nssmExe)
+		{
+			try { Copy-Item -LiteralPath $nssmExe -Destination $nssmCacheExe -Force -ErrorAction SilentlyContinue }
+			catch { }
+			$haveNssm = $true
+		}
+		else
+		{
+			$url = "https://nssm.cc/download/nssm-2.24.zip"
+			$tempZip = Join-Path $env:TEMP ("nssm_{0}.zip" -f ([guid]::NewGuid().ToString("N")))
 			try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
 			catch { }
-			$tempZip = Join-Path $env:TEMP "nssm.zip"
-			$url = "https://nssm.cc/release/nssm-2.24.zip"
 			
 			try
 			{
-				Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing
-				Expand-Archive -Path $tempZip -DestinationPath $svcNssmDir -Force
+				Write_Log "NSSM not found. Downloading to cache for later use..." "yellow"
+				Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
 				
-				$found = Get-ChildItem $svcNssmDir -Recurse -Filter "nssm.exe" |
-				Where-Object { $_.FullName -match "win64|amd64|x64" } |
+				$extractDir = Join-Path $nssmCacheDir ("_extract_{0}" -f ([guid]::NewGuid().ToString("N")))
+				New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
+				
+				$expanded = $false
+				try
+				{
+					Expand-Archive -LiteralPath $tempZip -DestinationPath $extractDir -Force
+					$expanded = $true
+				}
+				catch
+				{
+					try
+					{
+						Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop | Out-Null
+						[System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $extractDir, $true)
+						$expanded = $true
+					}
+					catch { $expanded = $false }
+				}
+				
+				if (-not $expanded) { throw "Failed to extract NSSM zip." }
+				
+				$preferredFolder = if ([Environment]::Is64BitOperatingSystem) { "win64" }
+				else { "win32" }
+				
+				$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
+				Where-Object { $_.FullName -match [regex]::Escape("\$preferredFolder\") } |
 				Select-Object -First 1
+				
 				if (-not $found)
 				{
-					$found = Get-ChildItem $svcNssmDir -Recurse -Filter "nssm.exe" | Select-Object -First 1
+					$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
+					Select-Object -First 1
 				}
-				Copy-Item $found.FullName $nssmExe -Force
+				if (-not $found) { throw "nssm.exe not found in extracted archive." }
+				
+				Copy-Item -LiteralPath $found.FullName -Destination $nssmCacheExe -Force
+				try { Copy-Item -LiteralPath $nssmCacheExe -Destination $nssmExe -Force }
+				catch { }
+				
+				try { Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+				catch { }
+				try { Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue }
+				catch { }
+				
+				Write_Log "NSSM cached at: $nssmCacheExe" "green"
+				$haveNssm = $true
 			}
 			catch
 			{
-				Write_Log "ERROR: Could not download NSSM. Service install aborted." "red"
-				Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
-				return
+				Write_Log "ERROR: Could not download/cache NSSM. $($_.Exception.Message)" "red"
+				try { if (Test-Path $tempZip) { Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue } }
+				catch { }
+				$haveNssm = $false
 			}
 		}
 		
-		# --- If service exists, ask Uninstall or Reinstall
+		if (-not $haveNssm -or -not (Test-Path $nssmExe))
+		{
+			Write_Log "ERROR: NSSM unavailable. Service install aborted." "red"
+			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			return
+		}
+		
+		# Service config (service ALWAYS uses Ter_Load.sql; lane map is optional/kept for reference)
+		$configObj = [ordered]@{
+			StoreNumber = "$storeNumber"
+			OfficePath  = "$OfficePath"
+			TerFile	    = "$terFile"
+			LogsDir	    = "$svcLogsDir"
+			AutoPollSeconds = [int]$AutoPollSeconds
+			LaneMap	    = $LaneMapNormalized
+		}
+		($configObj | ConvertTo-Json -Depth 7) | Set-Content -LiteralPath $svcConfigPath -Encoding UTF8 -Force
+		Write_Log "Service config saved: $svcConfigPath" "green"
+		
+		# Service script (FULL REALTIME WATCHERS) - generated inline, no functions inside service script either
+		$svcContent = @"
+#requires -Version 5.1
+`$ErrorActionPreference = 'Continue'
+
+# --- Load config ---
+`$configPath = '$($svcConfigPath.Replace("'", "''"))'
+if (-not (Test-Path -LiteralPath `$configPath)) { exit 2 }
+
+try { `$cfg = Get-Content -LiteralPath `$configPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop }
+catch { exit 3 }
+
+`$StoreNumber     = [string]`$cfg.StoreNumber
+`$OfficePath      = [string]`$cfg.OfficePath
+`$TerFile         = [string]`$cfg.TerFile
+`$LogsDir         = [string]`$cfg.LogsDir
+`$AutoPollSeconds = [int]`$cfg.AutoPollSeconds
+if (`$AutoPollSeconds -lt 1) { `$AutoPollSeconds = 5 }
+
+if (-not (Test-Path -LiteralPath `$LogsDir)) { New-Item -Path `$LogsDir -ItemType Directory -Force | Out-Null }
+`$LogFile = Join-Path `$LogsDir 'Remove_Archive_Bit_Service.log'
+
+# --- Simple logger inline ---
+try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Service starting..." -f (Get-Date)) -Encoding UTF8 } catch { }
+
+# --- Helperless: parse Ter_Load.sql (Terminal 0 lines -> quoted paths AFTER 'Terminal 0') ---
+# We keep everything inline by re-running this parsing wherever needed.
+# --- Watcher storage ---
+`$watchers = New-Object System.Collections.ArrayList
+`$terWatcher = `$null
+`$needRebuild = `$true
+`$rebuildRequestedAt = Get-Date
+
+# --- A shared event action: clear attrib on touched item ---
+# NOTE: scriptblock is not a function. It runs attrib best-effort.
+`$onFsEvent = {
+	try {
+		`$p = `$Event.SourceEventArgs.FullPath
+		if ([string]::IsNullOrWhiteSpace(`$p)) { return }
+
+		# If file disappeared quickly, still attempt attrib (cmd handles missing quietly)
+		`$p2 = `$p.Trim().Trim('"')
+
+		# Directory vs file handling:
+		# - If directory exists -> run attrib on dir\* /S /D
+		# - Else -> run attrib on full path (file)
+		if (Test-Path -LiteralPath `$p2 -PathType Container) {
+			`$cmd = 'attrib -a -r "{0}\*" /S /D' -f `$p2
+		} else {
+			`$cmd = 'attrib -a -r "{0}"' -f `$p2
+		}
+
+		& `$env:ComSpec /c `$cmd 2>`$null | Out-Null
+	} catch { }
+}
+
+# --- Ter_Load watcher action: request rebuild ---
+`$onTerEvent = {
+	try {
+		`$needRebuild = `$true
+		`$rebuildRequestedAt = Get-Date
+		try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Ter_Load.sql changed -> rebuild requested" -f (Get-Date)) -Encoding UTF8 } catch { }
+	} catch { }
+}
+
+# --- Main loop: rebuild watchers when requested, run full cleanup at rebuild ---
+while (`$true)
+{
+	if (`$needRebuild)
+	{
+		`$needRebuild = `$false
+
+		# Dispose old watchers
+		try {
+			foreach (`$w in @(`$watchers)) {
+				try { `$w.EnableRaisingEvents = `$false } catch { }
+				try { Unregister-Event -SourceIdentifier (`$w.GetHashCode().ToString()) -ErrorAction SilentlyContinue } catch { }
+				try { `$w.Dispose() } catch { }
+			}
+			`$watchers.Clear() | Out-Null
+		} catch { }
+
+		# Dispose Ter watcher too (we recreate it)
+		try {
+			if (`$terWatcher) {
+				try { `$terWatcher.EnableRaisingEvents = `$false } catch { }
+				try { Unregister-Event -SourceIdentifier 'TER_WATCH' -ErrorAction SilentlyContinue } catch { }
+				try { `$terWatcher.Dispose() } catch { }
+			}
+		} catch { }
+
+		# --- Build lane roots list by parsing Ter_Load.sql ---
+		`$laneRoots = New-Object System.Collections.Generic.List[string]
+		if (Test-Path -LiteralPath `$TerFile)
+		{
+			try {
+				foreach (`$line in Get-Content -LiteralPath `$TerFile -ErrorAction SilentlyContinue)
+				{
+					if (`$line -notmatch 'Terminal\s*0') { continue }
+
+					# Grab quoted tokens
+					`$tokens = [System.Text.RegularExpressions.Regex]::Matches(`$line, "'([^']*)'") | ForEach-Object { `$_.Groups[1].Value }
+
+					# Find exact token "Terminal 0"
+					`$idx = -1
+					for (`$i = 0; `$i -lt `$tokens.Count; `$i++) {
+						if (`$tokens[`$i] -match '^(?i)Terminal\s*0$') { `$idx = `$i; break }
+					}
+
+					# Add tokens after it as paths
+					if (`$idx -ge 0) {
+						for (`$j = `$idx + 1; `$j -lt `$tokens.Count; `$j++) {
+							`$p = [string]`$tokens[`$j]
+							if (-not [string]::IsNullOrWhiteSpace(`$p)) {
+								if (-not `$laneRoots.Contains(`$p)) { [void]`$laneRoots.Add(`$p) }
+							}
+						}
+					}
+				}
+			} catch { }
+		}
+
+		# --- Server roots (always) ---
+		`$serverRoots = New-Object System.Collections.Generic.List[string]
+		`$sr900 = "\\localhost\storeman\office\XF{0}900" -f `$StoreNumber
+		`$sr901 = "\\localhost\storeman\office\XF{0}901" -f `$StoreNumber
+		[void]`$serverRoots.Add(`$sr900)
+		[void]`$serverRoots.Add(`$sr901)
+
+		# --- Full cleanup at startup/rebuild (attrib recursively on each root) ---
+		try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Full cleanup starting..." -f (Get-Date)) -Encoding UTF8 } catch { }
+
+		foreach (`$root in @(`$laneRoots) + @(`$serverRoots))
+		{
+			if ([string]::IsNullOrWhiteSpace(`$root)) { continue }
+			`$r = `$root.Trim().Trim('"')
+			if (-not (Test-Path -LiteralPath `$r)) { continue }
+
+			try {
+				`$cmd = 'attrib -a -r "{0}\*" /S /D' -f `$r
+				& `$env:ComSpec /c `$cmd 2>`$null | Out-Null
+			} catch { }
+		}
+
+		try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Full cleanup done. Building watchers..." -f (Get-Date)) -Encoding UTF8 } catch { }
+
+		# --- Build filesystem watchers for each existing root ---
+		foreach (`$root in @(`$laneRoots) + @(`$serverRoots))
+		{
+			if ([string]::IsNullOrWhiteSpace(`$root)) { continue }
+			`$r = `$root.Trim().Trim('"')
+			if (-not (Test-Path -LiteralPath `$r)) { continue }
+
+			try {
+				`$fsw = New-Object System.IO.FileSystemWatcher
+				`$fsw.Path = `$r
+				`$fsw.Filter = '*'
+				`$fsw.IncludeSubdirectories = `$true
+				`$fsw.NotifyFilter = [System.IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Attributes'
+
+				# Register events (use unique SourceIdentifier based on hash; no functions)
+				`$id = `$fsw.GetHashCode().ToString()
+				Register-ObjectEvent -InputObject `$fsw -EventName Created -SourceIdentifier `$id -Action `$onFsEvent | Out-Null
+				Register-ObjectEvent -InputObject `$fsw -EventName Changed -SourceIdentifier (`$id + '_c') -Action `$onFsEvent | Out-Null
+				Register-ObjectEvent -InputObject `$fsw -EventName Renamed -SourceIdentifier (`$id + '_r') -Action `$onFsEvent | Out-Null
+				Register-ObjectEvent -InputObject `$fsw -EventName Deleted -SourceIdentifier (`$id + '_d') -Action `$onFsEvent | Out-Null
+
+				`$fsw.EnableRaisingEvents = `$true
+				[void]`$watchers.Add(`$fsw)
+			} catch { }
+		}
+
+		# --- Watch Ter_Load.sql itself; on change -> rebuild + full cleanup ---
+		try {
+			`$terDir = Split-Path -Parent `$TerFile
+			if (Test-Path -LiteralPath `$terDir)
+			{
+				`$terWatcher = New-Object System.IO.FileSystemWatcher
+				`$terWatcher.Path = `$terDir
+				`$terWatcher.Filter = (Split-Path -Leaf `$TerFile)
+				`$terWatcher.IncludeSubdirectories = `$false
+				`$terWatcher.NotifyFilter = [System.IO.NotifyFilters]'FileName, LastWrite, Size'
+
+				Register-ObjectEvent -InputObject `$terWatcher -EventName Changed -SourceIdentifier 'TER_WATCH' -Action `$onTerEvent | Out-Null
+				Register-ObjectEvent -InputObject `$terWatcher -EventName Created -SourceIdentifier 'TER_WATCH_C' -Action `$onTerEvent | Out-Null
+				Register-ObjectEvent -InputObject `$terWatcher -EventName Renamed -SourceIdentifier 'TER_WATCH_R' -Action `$onTerEvent | Out-Null
+
+				`$terWatcher.EnableRaisingEvents = `$true
+			}
+		} catch { }
+
+		try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Watchers active: {1}" -f (Get-Date), `$watchers.Count) -Encoding UTF8 } catch { }
+	}
+
+	Start-Sleep -Seconds `$AutoPollSeconds
+}
+"@
+		
+		# Write service script
+		$svcContent | Set-Content -LiteralPath $svcPS1 -Encoding UTF8 -Force
+		Write_Log "Service script saved: $svcPS1" "green"
+		
+		# Prepare service stdout/stderr files
+		$serviceStdOut = Join-Path $svcLogsDir "Remove_Archive_Bit_Service_stdout.log"
+		$serviceStdErr = Join-Path $svcLogsDir "Remove_Archive_Bit_Service_stderr.log"
+		
+		# If service already exists, remove it first (keeps install idempotent)
 		$existingSvc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 		if ($existingSvc)
 		{
-			$msg = "Service '$serviceName' already exists.`r`n`r`nYES = Uninstall`r`nNO = Reinstall/Repair`r`nCANCEL = Abort"
-			$res = [System.Windows.Forms.MessageBox]::Show($msg, "Service Already Installed",
-				[System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
-				[System.Windows.Forms.MessageBoxIcon]::Question)
-			
-			if ($res -eq [System.Windows.Forms.DialogResult]::Cancel)
-			{
-				Write_Log "User aborted service action." "yellow"
-				Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
-				return
-			}
-			
-			if ($res -eq [System.Windows.Forms.DialogResult]::Yes)
-			{
-				# Uninstall
-				& $nssmExe stop $serviceName *> $null
-				& $nssmExe remove $serviceName confirm *> $null
-				
-				Write_Log "Service '$serviceName' uninstalled successfully." "green"
-				Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
-				return
-			}
-			
-			# else NO => reinstall, so remove first
-			& $nssmExe stop $serviceName *> $null
-			& $nssmExe remove $serviceName confirm *> $null
+			try { & $nssmExe stop $serviceName *> $null }
+			catch { }
+			try { & $nssmExe remove $serviceName confirm *> $null }
+			catch { }
 		}
 		
-		# --- Install / start service
-		$psExe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-		$psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$svcPS1`""
+		# Install service
+		# App: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<svcPS1>"
+		& $nssmExe install $serviceName "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+				   -NoProfile -ExecutionPolicy Bypass -File "$svcPS1" *> $null
 		
-		& $nssmExe install $serviceName $psExe $psArgs
-		& $nssmExe set $serviceName AppDirectory $svcScripts
-		& $nssmExe set $serviceName DisplayName "Remove Archive Bit"
-		& $nssmExe set $serviceName Description "Repeating Archive Bit removal every $interval minutes (Store $storeNumber)."
-		& $nssmExe set $serviceName Start SERVICE_AUTO_START
-		& $nssmExe set $serviceName AppRestartDelay 5000
-		& $nssmExe start $serviceName
+		# Set working directory to service scripts folder (helps relative operations)
+		& $nssmExe set $serviceName AppDirectory "$svcScripts" *> $null
 		
-		Write_Log "Service '$serviceName' installed and started. Interval: $interval minutes." "green"
+		# Redirect stdout/stderr
+		& $nssmExe set $serviceName AppStdout "$serviceStdOut" *> $null
+		& $nssmExe set $serviceName AppStderr "$serviceStdErr" *> $null
+		
+		# Auto start
+		& $nssmExe set $serviceName Start SERVICE_AUTO_START *> $null
+		
+		# Run as NetworkService (Windows auth to lanes)
+		& $nssmExe set $serviceName ObjectName "NT AUTHORITY\NetworkService" "" *> $null
+		
+		# Give service a display name/description
+		& $nssmExe set $serviceName DisplayName "Remove Archive Bit (Ter_Load Watcher)" *> $null
+		& $nssmExe set $serviceName Description "Clears archive/read-only bits in lane/server XF folders; watches Ter_Load.sql and filesystem changes." *> $null
+		
+		# Start service
+		& $nssmExe start $serviceName *> $null
+		
+		Write_Log "Service '$serviceName' installed and started as: NT AUTHORITY\NetworkService" "green"
+		Write_Log "Logs: $svcLogsDir" "green"
+		Write_Log "NSSM cached at: $nssmCacheExe" "green"
+		
 		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
 		return
 	}
 	
-	# --------------------- Run Now Path ---------------------
+	# ------------------------------------------------------------------------------------------------
+	# RUN NOW (one-time)
+	# ------------------------------------------------------------------------------------------------
 	if (-not (Test-Path $iniFile))
 	{
 		Write_Log "ERROR: INI file not found - $iniFile" "red"
@@ -15472,38 +16206,111 @@ while(`$true){
 		return
 	}
 	
-	# --- Use lane paths from Retrieve_Nodes ---
-	if (-not $script:FunctionResults.ContainsKey('LaneNumToMachineName') -or -not $script:FunctionResults['LaneNumToMachineName'])
+	# --- Inline attrib clear (recursive) using cmd.exe attrib to ensure wildcard reliability
+	# CHANGE: Use normalized lane map so lane is ALWAYS 3 digits (006), never POS006
+	$didLaneWork = $false
+	
+	if ($LaneMapNormalized)
 	{
-		Write_Log "No lane machine paths found. Did you run Retrieve_Nodes?" "red"
-	}
-	else
-	{
-		foreach ($laneNum in $script:FunctionResults['LaneNumToMachineName'].Keys | Sort-Object { [int]$_ })
+		foreach ($laneNum in ($LaneMapNormalized.Keys | Sort-Object { [int]$_ }))
 		{
-			$machine = $script:FunctionResults['LaneNumToMachineName'][$laneNum]
-			if ($machine -and $machine -notlike '@SMSSERVER' -and $machine -ne '')
+			$machine = [string]$LaneMapNormalized[$laneNum]
+			if ($machine -and $machine -notlike '@SMSSERVER')
 			{
 				$path = "\\$machine\storeman\Office\XF${storeNumber}${laneNum}"
-				Write_Log "Refreshing attributes in $path..." "green"
-				try { attrib -a -r "$path\*.*" 2>&1 | Out-Null }
-				catch { Write_Log "ERROR: Failed to refresh attributes for $path" "red" }
+				if (-not [string]::IsNullOrWhiteSpace($path))
+				{
+					$path = $path.Trim().Trim('"')
+					if (Test-Path $path)
+					{
+						Write_Log "Refreshing attributes (recursive) in $path..." "green"
+						$cmd = 'attrib -a -r "{0}\*" /S /D' -f $path
+						try { & $env:ComSpec /c $cmd 2>$null | Out-Null }
+						catch { Write_Log "ERROR: Failed attrib on: $path" "red" }
+						$didLaneWork = $true
+					}
+					else
+					{
+						Write_Log "Path not found (skip): $path" "yellow"
+					}
+				}
 			}
 		}
 	}
-	
-	foreach ($suffix in 900, 901)
+	else
 	{
-		$serverPath = "\\localhost\storeman\office\XF${storeNumber}${suffix}"
-		if (Test-Path $serverPath)
+		Write_Log "Lane machine map not found/usable. Falling back to Ter_Load.sql parsing..." "yellow"
+	}
+	
+	# Fallback: parse Ter_Load.sql (Terminal 0 lines -> tokens after exact 'Terminal 0')
+	if (-not $didLaneWork)
+	{
+		$lanePaths = New-Object System.Collections.Generic.List[string]
+		
+		foreach ($line in Get-Content -LiteralPath $terFile -ErrorAction SilentlyContinue)
 		{
-			Write_Log "Refreshing attributes in $serverPath" "green"
-			try { attrib -a -r "$serverPath\*.*" 2>&1 | Out-Null }
-			catch { Write_Log "ERROR: Failed to refresh attributes for $serverPath" "red" }
+			if ($line -notmatch "Terminal\s*0") { continue }
+			
+			$tokens = [System.Text.RegularExpressions.Regex]::Matches($line, "'([^']*)'") | ForEach-Object { $_.Groups[1].Value }
+			
+			$idx = -1
+			for ($i = 0; $i -lt $tokens.Count; $i++)
+			{
+				if ($tokens[$i] -match "^(?i)Terminal\s*0$") { $idx = $i; break }
+			}
+			
+			if ($idx -ge 0)
+			{
+				for ($j = $idx + 1; $j -lt $tokens.Count; $j++)
+				{
+					$p = [string]$tokens[$j]
+					if (-not [string]::IsNullOrWhiteSpace($p))
+					{
+						if (-not $lanePaths.Contains($p)) { [void]$lanePaths.Add($p) }
+					}
+				}
+			}
+		}
+		
+		if ($lanePaths.Count -gt 0)
+		{
+			foreach ($p in $lanePaths)
+			{
+				$pp = $p.Trim().Trim('"')
+				if (Test-Path $pp)
+				{
+					Write_Log "Refreshing attributes (recursive) in $pp..." "green"
+					$cmd = 'attrib -a -r "{0}\*" /S /D' -f $pp
+					try { & $env:ComSpec /c $cmd 2>$null | Out-Null }
+					catch { Write_Log "ERROR: Failed attrib on: $pp" "red" }
+				}
+				else
+				{
+					Write_Log "Path not found (skip): $pp" "yellow"
+				}
+			}
 		}
 		else
 		{
-			Write_Log "Server path not found: $serverPath" "yellow"
+			Write_Log "No lane paths found in Ter_Load.sql (Terminal 0 lines)." "yellow"
+		}
+	}
+	
+	# Server roots
+	foreach ($suffix in 900, 901)
+	{
+		$serverPath = "\\localhost\storeman\office\XF${storeNumber}${suffix}"
+		$sp = $serverPath.Trim().Trim('"')
+		if (Test-Path $sp)
+		{
+			Write_Log "Refreshing attributes (recursive) in $sp" "green"
+			$cmd = 'attrib -a -r "{0}\*" /S /D' -f $sp
+			try { & $env:ComSpec /c $cmd 2>$null | Out-Null }
+			catch { Write_Log "ERROR: Failed attrib on: $sp" "red" }
+		}
+		else
+		{
+			Write_Log "Server path not found: $sp" "yellow"
 		}
 	}
 	
@@ -16386,9 +17193,17 @@ function Remove_Duplicate_Files_From_toBizerba
 	$svcStdout = Join-Path $serviceRoot "service_stdout.log"
 	$svcStderr = Join-Path $serviceRoot "service_stderr.log"
 	
+	# Service-folder NSSM (optional; may be locked if service is running)
 	$nssmExe = Join-Path $svcNssmDir "nssm.exe"
 	
-	foreach ($p in @($scriptFolder, $serviceRoot, $svcScripts, $svcNssmDir))
+	# ==========================================================================================
+	# NSSM CACHE PATH (MATCHES "Remove Archive Bit" FUNCTION)
+	# ==========================================================================================
+	$toolsRoot = Join-Path $scriptFolder "Tools"
+	$nssmCacheDir = Join-Path $toolsRoot "NSSM"
+	$nssmCacheExe = Join-Path $nssmCacheDir "nssm.exe"
+	
+	foreach ($p in @($scriptFolder, $serviceRoot, $svcScripts, $svcNssmDir, $toolsRoot, $nssmCacheDir))
 	{
 		if (-not (Test-Path $p)) { New-Item -Path $p -ItemType Directory -Force | Out-Null }
 	}
@@ -16502,6 +17317,7 @@ while (`$true) {
 	# GUI
 	# ==========================================================================================
 	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
 	
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Duplicate File Monitor"
@@ -16582,7 +17398,7 @@ while (`$true) {
 				$monitorJob = Start-Job -ScriptBlock {
 					param ($scriptPath,
 						$interval)
-					& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath -IntervalSeconds $interval
+					& "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $scriptPath -IntervalSeconds $interval
 				} -ArgumentList $psScriptPath, $state.Interval
 				
 				Write_Log "Started duplicate file monitor as job (ID: $($monitorJob.Id)). Script: $psScriptPath" "green"
@@ -16632,9 +17448,8 @@ while (`$true) {
 	# ==========================================================================================
 	if ($state.Action -in @("service", "uninstall"))
 	{
-		$IsAdmin = ([Security.Principal.WindowsPrincipal] `
-			[Security.Principal.WindowsIdentity]::GetCurrent() `
-).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+		$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+		).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 		
 		if (-not $IsAdmin)
 		{
@@ -16645,102 +17460,204 @@ while (`$true) {
 	}
 	
 	# ==========================================================================================
-	# NSSM ACQUISITION (FIXED: multi-source download + offline/bundled fallback)
+	# UNINSTALL (ALWAYS WORKS EVEN IF SERVICE IS RUNNING / NSSM IS LOCKED)
 	# ==========================================================================================
-	if ($state.Action -eq "service" -and -not (Test-Path $nssmExe))
+	if ($state.Action -eq "uninstall")
 	{
-		# 1) If user already bundled nssm.exe in ScriptsFolder, copy it in place (offline-friendly)
-		$bundled1 = Join-Path $scriptFolder "nssm.exe"
-		$bundled2 = Join-Path $serviceRoot "nssm.exe"
+		$existingSvc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+		if (-not $existingSvc)
+		{
+			Write_Log "Service '$serviceName' is not installed." "yellow"
+			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+			return
+		}
 		
-		if (Test-Path $bundled1)
-		{
-			Copy-Item $bundled1 $nssmExe -Force
-			Write_Log "NSSM found bundled at $bundled1 and copied to $nssmExe" "green"
-		}
-		elseif (Test-Path $bundled2)
-		{
-			Copy-Item $bundled2 $nssmExe -Force
-			Write_Log "NSSM found bundled at $bundled2 and copied to $nssmExe" "green"
-		}
-	}
-	
-	if ($state.Action -eq "service" -and -not (Test-Path $nssmExe))
-	{
-		Write_Log "NSSM not found at $nssmExe. Downloading (multi-source)..." "yellow"
-		try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
+		Write_Log "Stopping service '$serviceName' before uninstall..." "yellow"
+		
+		# Try stop
+		try { & $env:ComSpec /c ("sc stop `"{0}`"" -f $serviceName) *> $null }
+		catch { }
+		try { Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue }
 		catch { }
 		
-		$tempZip = Join-Path $env:TEMP "nssm_dupmon.zip"
+		# Wait up to 20s
+		$sw = [System.Diagnostics.Stopwatch]::StartNew()
+		do
+		{
+			Start-Sleep -Milliseconds 500
+			$s = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+		}
+		while ($s -and $s.Status -ne 'Stopped' -and $sw.Elapsed.TotalSeconds -lt 20)
 		
-		# CHANGED: multiple sources. If one is down (503), try the next.
-		$urls = @(
-			"https://nssm.cc/download/nssm-2.24.zip",
-			"https://github.com/kirillkovalenko/nssm/releases/download/v2.24/nssm-2.24.zip"
-		)
-		
-		$downloaded = $false
-		$lastErr = $null
-		
-		foreach ($url in $urls)
+		# Force kill PID if still running
+		$s = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+		if ($s -and $s.Status -ne 'Stopped')
 		{
 			try
 			{
-				Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing
-				$downloaded = $true
-				Write_Log "Downloaded NSSM from: $url" "green"
-				break
+				$svcCim = Get-CimInstance Win32_Service -Filter ("Name='{0}'" -f $serviceName) -ErrorAction SilentlyContinue
+				if ($svcCim -and $svcCim.ProcessId -and $svcCim.ProcessId -gt 0)
+				{
+					Write_Log "Service still running; force-killing PID $($svcCim.ProcessId)..." "yellow"
+					& $env:ComSpec /c ("taskkill /PID {0} /F" -f $svcCim.ProcessId) *> $null
+					Start-Sleep -Seconds 1
+				}
+			}
+			catch { }
+		}
+		
+		# Delete service
+		try { & $env:ComSpec /c ("sc delete `"{0}`"" -f $serviceName) *> $null }
+		catch { }
+		Write_Log "Service '$serviceName' uninstalled (if it existed)." "green"
+		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+		return
+	}
+	
+	# ==========================================================================================
+	# NSSM ACQUISITION (USES SAME CACHE PATH AS Remove Archive Bit)
+	# ==========================================================================================
+	# For install, we ALWAYS use the cached NSSM path (so we never depend on a possibly-locked service-folder nssm.exe)
+	if ($state.Action -eq "service")
+	{
+		# If cache exists, good
+		if (-not (Test-Path $nssmCacheExe))
+		{
+			# Backfill cache from service-folder NSSM if present
+			if (Test-Path $nssmExe)
+			{
+				try
+				{
+					Copy-Item -LiteralPath $nssmExe -Destination $nssmCacheExe -Force
+					Write_Log "NSSM cache backfilled from service folder: $nssmExe -> $nssmCacheExe" "green"
+				}
+				catch { }
+			}
+		}
+		
+		# If still missing, try bundled
+		if (-not (Test-Path $nssmCacheExe))
+		{
+			$bundled1 = Join-Path $scriptFolder "nssm.exe"
+			$bundled2 = Join-Path $serviceRoot  "nssm.exe"
+			
+			if (Test-Path $bundled1)
+			{
+				Copy-Item -LiteralPath $bundled1 -Destination $nssmCacheExe -Force
+				Write_Log "NSSM found bundled at $bundled1 and copied to cache: $nssmCacheExe" "green"
+			}
+			elseif (Test-Path $bundled2)
+			{
+				Copy-Item -LiteralPath $bundled2 -Destination $nssmCacheExe -Force
+				Write_Log "NSSM found bundled at $bundled2 and copied to cache: $nssmCacheExe" "green"
+			}
+		}
+		
+		# If still missing, download to cache (same idea as Remove Archive Bit)
+		if (-not (Test-Path $nssmCacheExe))
+		{
+			Write_Log "NSSM not found in cache. Downloading to: $nssmCacheExe" "yellow"
+			try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
+			catch { }
+			
+			$tempZip = Join-Path $env:TEMP ("nssm_{0}.zip" -f ([guid]::NewGuid().ToString("N")))
+			
+			$urls = @(
+				"https://nssm.cc/download/nssm-2.24.zip",
+				"https://nssm.cc/release/nssm-2.24.zip",
+				"https://github.com/kirillkovalenko/nssm/releases/download/v2.24/nssm-2.24.zip"
+			)
+			
+			$downloaded = $false
+			$lastErr = $null
+			
+			foreach ($url in $urls)
+			{
+				try
+				{
+					Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
+					$downloaded = $true
+					Write_Log "Downloaded NSSM from: $url" "green"
+					break
+				}
+				catch
+				{
+					$lastErr = $_.Exception.Message
+					Write_Log "Download failed from: $url :: $lastErr" "yellow"
+				}
+			}
+			
+			if (-not $downloaded)
+			{
+				Write_Log "ERROR: Could not download NSSM from any source. Last error: $lastErr" "red"
+				Write_Log "Offline fix: place nssm.exe here and re-run:" "yellow"
+				Write_Log "  1) $nssmCacheExe  (preferred cache path)" "yellow"
+				Write_Log "  2) $scriptFolder\nssm.exe" "yellow"
+				Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+				return
+			}
+			
+			try
+			{
+				$extractDir = Join-Path $nssmCacheDir ("_extract_{0}" -f ([guid]::NewGuid().ToString("N")))
+				New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
+				
+				try { Expand-Archive -LiteralPath $tempZip -DestinationPath $extractDir -Force }
+				catch
+				{
+					Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop | Out-Null
+					[System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $extractDir, $true)
+				}
+				
+				$preferredFolder = if ([Environment]::Is64BitOperatingSystem) { "win64" }
+				else { "win32" }
+				
+				$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
+				Where-Object { $_.FullName -match [regex]::Escape("\$preferredFolder\") } |
+				Select-Object -First 1
+				
+				if (-not $found)
+				{
+					$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
+					Select-Object -First 1
+				}
+				if (-not $found) { throw "Zip extracted but nssm.exe not found." }
+				
+				Copy-Item -LiteralPath $found.FullName -Destination $nssmCacheExe -Force
+				Write_Log "NSSM cached at: $nssmCacheExe" "green"
+				
+				try { Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+				catch { }
+				try { Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue }
+				catch { }
 			}
 			catch
 			{
-				$lastErr = $_
-				Write_Log "Download failed from: $url  :: $($_.Exception.Message)" "yellow"
+				Write_Log "ERROR: NSSM zip downloaded but could not be extracted/installed: $($_.Exception.Message)" "red"
+				Write_Log "Offline fix: place nssm.exe here and re-run:" "yellow"
+				Write_Log "  1) $nssmCacheExe  (preferred cache path)" "yellow"
+				Write_Log "  2) $scriptFolder\nssm.exe" "yellow"
+				Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+				return
 			}
 		}
 		
-		if (-not $downloaded)
+		# Best-effort: place NSSM into service folder only if missing (DON'T overwrite)
+		if (-not (Test-Path $nssmExe))
 		{
-			Write_Log "ERROR: Could not download NSSM from any source. Last error: $lastErr" "red"
-			Write_Log "Offline fix: place nssm.exe here and re-run:" "yellow"
-			Write_Log "  1) $scriptFolder\nssm.exe   (preferred)" "yellow"
-			Write_Log "  2) $nssmExe" "yellow"
-			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
-			return
-		}
-		
-		try
-		{
-			Expand-Archive -Path $tempZip -DestinationPath $svcNssmDir -Force
-			
-			$found = Get-ChildItem $svcNssmDir -Recurse -Filter "nssm.exe" |
-			Where-Object { $_.FullName -match "win64|amd64|x64" } |
-			Select-Object -First 1
-			
-			if (-not $found) { $found = Get-ChildItem $svcNssmDir -Recurse -Filter "nssm.exe" | Select-Object -First 1 }
-			if (-not $found) { throw "Zip extracted but nssm.exe not found under $svcNssmDir" }
-			
-			Copy-Item $found.FullName $nssmExe -Force
-			Write_Log "NSSM installed to: $nssmExe (from $($found.FullName))" "green"
-		}
-		catch
-		{
-			Write_Log "ERROR: NSSM zip downloaded but could not be extracted/installed: $_" "red"
-			Write_Log "Offline fix: place nssm.exe here and re-run:" "yellow"
-			Write_Log "  1) $scriptFolder\nssm.exe   (preferred)" "yellow"
-			Write_Log "  2) $nssmExe" "yellow"
-			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
-			return
+			try { Copy-Item -LiteralPath $nssmCacheExe -Destination $nssmExe -Force }
+			catch { }
 		}
 	}
 	
 	# ==========================================================================================
-	# SERVICE INSTALL / REINSTALL
+	# SERVICE INSTALL / REINSTALL (USES CACHED NSSM FOR OPS)
 	# ==========================================================================================
 	if ($state.Action -eq "service")
 	{
-		if (-not (Test-Path $nssmExe))
+		if (-not (Test-Path $nssmCacheExe))
 		{
-			Write_Log "ERROR: NSSM is still missing at $nssmExe. Cannot install service." "red"
+			Write_Log "ERROR: NSSM missing at cache path: $nssmCacheExe. Cannot install service." "red"
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
@@ -16763,8 +17680,37 @@ while (`$true) {
 				return
 			}
 			
-			& $nssmExe stop   $serviceName *> $null
-			& $nssmExe remove $serviceName confirm *> $null
+			# Stop/delete via SC (works even if NSSM binary is locked somewhere)
+			try { & $env:ComSpec /c ("sc stop `"{0}`"" -f $serviceName) *> $null }
+			catch { }
+			try { Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue }
+			catch { }
+			
+			$sw = [System.Diagnostics.Stopwatch]::StartNew()
+			do
+			{
+				Start-Sleep -Milliseconds 500
+				$s = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+			}
+			while ($s -and $s.Status -ne 'Stopped' -and $sw.Elapsed.TotalSeconds -lt 20)
+			
+			$s = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+			if ($s -and $s.Status -ne 'Stopped')
+			{
+				try
+				{
+					$svcCim = Get-CimInstance Win32_Service -Filter ("Name='{0}'" -f $serviceName) -ErrorAction SilentlyContinue
+					if ($svcCim -and $svcCim.ProcessId -and $svcCim.ProcessId -gt 0)
+					{
+						& $env:ComSpec /c ("taskkill /PID {0} /F" -f $svcCim.ProcessId) *> $null
+						Start-Sleep -Seconds 1
+					}
+				}
+				catch { }
+			}
+			
+			try { & $env:ComSpec /c ("sc delete `"{0}`"" -f $serviceName) *> $null }
+			catch { }
 			Start-Sleep -Seconds 1
 			
 			if ($res -eq [System.Windows.Forms.DialogResult]::Yes)
@@ -16776,30 +17722,37 @@ while (`$true) {
 		}
 		
 		$psExe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-		$psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$psScriptPath`" -IntervalSeconds $($state.Interval)"
+		$psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$psScriptPath`" -IntervalSeconds $([int]$state.Interval)"
 		
-		& $nssmExe install $serviceName $psExe $psArgs
+		& $nssmCacheExe install $serviceName $psExe $psArgs
 		if ($LASTEXITCODE -ne 0)
 		{
-			Write_Log "NSSM install failed (ExitCode=$LASTEXITCODE)." "red"
+			Write_Log "NSSM install failed (ExitCode=$LASTEXITCODE). Using: $nssmCacheExe" "red"
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
 		
-		& $nssmExe set $serviceName AppDirectory $svcScripts
-		& $nssmExe set $serviceName DisplayName "Remove Duplicate Files From toBizerba"
-		& $nssmExe set $serviceName Description "Monitors $TargetPath for duplicate files and removes them (interval $($state.Interval) sec)."
-		& $nssmExe set $serviceName Start SERVICE_AUTO_START
-		& $nssmExe set $serviceName AppRestartDelay 5000
+		& $nssmCacheExe set $serviceName AppDirectory $svcScripts
+		& $nssmCacheExe set $serviceName DisplayName "Remove Duplicate Files From toBizerba"
+		& $nssmCacheExe set $serviceName Description "Monitors $TargetPath for duplicate files and removes them (interval $([int]$state.Interval) sec)."
+		& $nssmCacheExe set $serviceName Start SERVICE_AUTO_START
+		& $nssmCacheExe set $serviceName AppRestartDelay 5000
 		
-		& $nssmExe set $serviceName AppStdout $svcStdout
-		& $nssmExe set $serviceName AppStderr $svcStderr
-		& $nssmExe set $serviceName AppRotateFiles 1
-		& $nssmExe set $serviceName AppRotateOnline 1
-		& $nssmExe set $serviceName AppRotateSeconds 86400
-		& $nssmExe set $serviceName AppRotateBytes 1048576
+		# Run as LocalSystem (safe for ProgramData + local folder access)
+		& $nssmCacheExe set $serviceName ObjectName "LocalSystem"
 		
-		& $nssmExe start $serviceName
+		# Always restart on exit
+		& $nssmCacheExe set $serviceName AppExit Default Restart
+		& $nssmCacheExe set $serviceName AppExit 0 Restart
+		
+		& $nssmCacheExe set $serviceName AppStdout $svcStdout
+		& $nssmCacheExe set $serviceName AppStderr $svcStderr
+		& $nssmCacheExe set $serviceName AppRotateFiles 1
+		& $nssmCacheExe set $serviceName AppRotateOnline 1
+		& $nssmCacheExe set $serviceName AppRotateSeconds 86400
+		& $nssmCacheExe set $serviceName AppRotateBytes 1048576
+		
+		& $nssmCacheExe start $serviceName
 		if ($LASTEXITCODE -ne 0)
 		{
 			Write_Log "Service installed but failed to start (ExitCode=$LASTEXITCODE)." "red"
@@ -16808,30 +17761,9 @@ while (`$true) {
 			return
 		}
 		
-		Write_Log "Service '$serviceName' installed and started. Interval: $($state.Interval) seconds." "green"
+		Write_Log "Service '$serviceName' installed and started. Interval: $([int]$state.Interval) seconds." "green"
+		Write_Log "NSSM cache used: $nssmCacheExe" "gray"
 		Write_Log "Service logs: $svcStdout / $svcStderr" "gray"
-		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
-		return
-	}
-	
-	# ==========================================================================================
-	# SERVICE UNINSTALL ONLY
-	# ==========================================================================================
-	if ($state.Action -eq "uninstall")
-	{
-		if (Test-Path $nssmExe)
-		{
-			& $nssmExe stop   $serviceName *> $null
-			& $nssmExe remove $serviceName confirm *> $null
-		}
-		else
-		{
-			# Fallback if NSSM isn't present
-			sc.exe stop   $serviceName *> $null
-			sc.exe delete $serviceName *> $null
-		}
-		
-		Write_Log "Service '$serviceName' uninstalled (if it existed)." "green"
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 		return
 	}
