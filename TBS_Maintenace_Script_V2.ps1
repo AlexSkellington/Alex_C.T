@@ -12,6 +12,49 @@
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # ===================================================================================================
+#                               SECTION: Ensure Admin Execution
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Relaunches the script elevated if not already running as Administrator.
+#   Preserves script path and arguments.
+#   Safe for PowerShell 5.1 and Scheduled Tasks.
+# ===================================================================================================
+
+$IsAdmin = ([Security.Principal.WindowsPrincipal] `
+	[Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $IsAdmin)
+{
+	Write-Host "Not running as Administrator. Relaunching elevated..." -ForegroundColor Yellow
+	
+	# Build argument list (preserve script + params)
+	$argList = @(
+		"-NoProfile"
+		"-ExecutionPolicy Bypass"
+		"-File `"$PSCommandPath`""
+	)
+	
+	if ($args.Count -gt 0)
+	{
+		$argList += ($args | ForEach-Object { "`"$_`"" })
+	}
+	
+	try
+	{
+		Start-Process -FilePath "powershell.exe" `
+					  -ArgumentList ($argList -join " ") `
+					  -Verb RunAs
+	}
+	catch
+	{
+		Write-Host "Elevation canceled by user. Exiting." -ForegroundColor Red
+	}
+	
+	exit
+}
+
+# ===================================================================================================
 #                                       SECTION: Parameters
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -8405,6 +8448,199 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 	}
 	
 	Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#                                  FUNCTION: Ping_All_Nodes
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#    Ping all nodes of a given type (Lanes, Scales, or Backoffices) for a store.
+#    Usage:
+#        Ping_All_Nodes -NodeType "Lane"       -StoreNumber "001"
+#        Ping_All_Nodes -NodeType "Scale"
+#        Ping_All_Nodes -NodeType "Backoffice" -StoreNumber "001"
+#    All context (Lane/Scale/Backoffice lists) are sourced from $script:FunctionResults.
+# ===================================================================================================
+
+function Ping_All_Nodes
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[ValidateSet("Lane", "Scale", "Backoffice")]
+		[string]$NodeType,
+		[string]$StoreNumber
+	)
+	
+	Write_Log "`r`n==================== Starting Ping_All_Nodes ($NodeType) Function ====================`r`n" "blue"
+	
+	$nodesToPing = @()
+	$nodeLabel = ""
+	$nodeSummary = ""
+	
+	switch ($NodeType)
+	{
+		"Lane" {
+			$nodeLabel = "Lane"
+			$nodeSummary = "Lanes"
+			if (-not $script:FunctionResults.ContainsKey('LaneNumToMachineName'))
+			{
+				Write_Log "Lane mappings not available. Please run Retrieve_Nodes first." "red"
+				return
+			}
+			$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+			foreach ($laneNum in $LaneNumToMachineName.Keys | Where-Object { $_ -match '^\d{3}$' })
+			{
+				$machineName = $LaneNumToMachineName[$laneNum]
+				if ($machineName -and $machineName -notin @("Unknown", "Not Found"))
+				{
+					$nodesToPing += [PSCustomObject]@{
+						Key    = $laneNum
+						Target = $machineName
+						Label  = "" # Do not use $null or $null string
+					}
+				}
+			}
+			$nodesToPing = $nodesToPing | Sort-Object { [int]$_.Key }
+		}
+		
+		"Scale" {
+			$nodeLabel = "Scale"
+			$nodeSummary = "Scales"
+			if (-not $script:FunctionResults.ContainsKey('ScaleCodeToIPInfo') -or $script:FunctionResults['ScaleCodeToIPInfo'].Count -eq 0)
+			{
+				Write_Log "No scales found to ping." "yellow"
+				return
+			}
+			$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
+			foreach ($code in $ScaleCodeToIPInfo.Keys | Where-Object { $_ -match '^\d{1,3}$' })
+			{
+				$scaleObj = $ScaleCodeToIPInfo[$code]
+				$ip = $null
+				if ($scaleObj.PSObject.Properties['FullIP'])
+				{
+					$ip = $scaleObj.FullIP
+				}
+				elseif ($scaleObj.PSObject.Properties['IPNetwork'] -and $scaleObj.PSObject.Properties['IPDevice'])
+				{
+					$ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
+				}
+				if ($ip -and $ip -notin @("Unknown", "Not Found", ""))
+				{
+					$nodesToPing += [PSCustomObject]@{
+						Key    = $code
+						Target = $ip
+						Label  = $scaleObj.ScaleName
+					}
+				}
+			}
+			$nodesToPing = $nodesToPing | Sort-Object { [int]$_.Key }
+			# Remove duplicate IPs
+			$uniqueTargets = @{ }
+			$finalNodesToPing = @()
+			foreach ($node in $nodesToPing)
+			{
+				if (-not $uniqueTargets.ContainsKey($node.Target))
+				{
+					$uniqueTargets[$node.Target] = $true
+					$finalNodesToPing += $node
+				}
+			}
+			$nodesToPing = $finalNodesToPing
+		}
+		
+		"Backoffice" {
+			$nodeLabel = "Backoffice"
+			$nodeSummary = "Backoffices"
+			if (-not $script:FunctionResults.ContainsKey('BackofficeNumToMachineName'))
+			{
+				Write_Log "Backoffice information is not available. Please run Retrieve_Nodes first." "red"
+				return
+			}
+			$BackofficeNumToMachineName = $script:FunctionResults['BackofficeNumToMachineName']
+			foreach ($boNum in $BackofficeNumToMachineName.Keys | Where-Object { $_ -match '^\d{3}$' })
+			{
+				$machineName = $BackofficeNumToMachineName[$boNum]
+				if ($machineName -and $machineName -notin @("Unknown", "Not Found"))
+				{
+					$nodesToPing += [PSCustomObject]@{
+						Key    = $boNum
+						Target = $machineName
+						Label  = "" # Do not use $null or $null string
+					}
+				}
+			}
+			$nodesToPing = $nodesToPing | Sort-Object { [int]$_.Key }
+		}
+	}
+	
+	# Final deduplication by Target (just to be sure)
+	$uniqueTargets = @{ }
+	$finalList = @()
+	foreach ($node in $nodesToPing)
+	{
+		if (-not $uniqueTargets.ContainsKey($node.Target))
+		{
+			$uniqueTargets[$node.Target] = $node
+			$finalList += $node
+		}
+	}
+	$nodesToPing = $finalList
+	
+	if ($nodesToPing.Count -eq 0)
+	{
+		Write_Log "No valid $nodeSummary found to ping." "yellow"
+		return
+	}
+	
+	Write_Log "All $nodeSummary will be pinged." "green"
+	
+	$successCount = 0
+	$failureCount = 0
+	
+	foreach ($node in $nodesToPing)
+	{
+		$primary = $node.Key
+		$target = $node.Target
+		
+		# Compose labelInfo only for scales if present and non-empty
+		$labelInfo = ""
+		if ($NodeType -eq "Scale" -and $node.PSObject.Properties.Name -contains "Label" -and $node.Label -and $node.Label -ne "")
+		{
+			$labelInfo = " [($($node.Label))]"
+		}
+		
+		if ([string]::IsNullOrWhiteSpace($target) -or $target -in @("Unknown", "Not Found"))
+		{
+			# For lanes/backoffices, $labelInfo is always ""
+			Write_Log "$nodeLabel #[$primary]: Target '$target'. Status: Skipped." "yellow"
+			continue
+		}
+		try
+		{
+			$pingResult = Test-Connection -ComputerName $target -Count 1 -Quiet -ErrorAction Stop
+			if ($pingResult)
+			{
+				Write_Log ("$nodeLabel #[$primary]${labelInfo}: Target '$target' is reachable. Status: Success.") "green"
+				$successCount++
+			}
+			else
+			{
+				Write_Log ("$nodeLabel #[$primary]${labelInfo}: Target '$target' is not reachable. Status: Failed.") "red"
+				$failureCount++
+			}
+		}
+		catch
+		{
+			Write_Log ("$nodeLabel #[$primary]${labelInfo}: Failed to ping target '$target'. Error: $($_.Exception.Message)") "red"
+			$failureCount++
+		}
+	}
+	
+	$summaryMsg = "Ping Summary for $nodeSummary"
+	if ($StoreNumber) { $summaryMsg += " (Store Number: $StoreNumber)" }
+	$summaryMsg += " - Success: $successCount, Failed: $failureCount."
+	Write_Log $summaryMsg "blue"
+	Write_Log "`r`n==================== Ping_All_Nodes ($NodeType) Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
