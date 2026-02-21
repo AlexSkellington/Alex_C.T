@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.5.6"
-$VersionDate = "2026-02-05"
+$VersionNumber = "2.5.7"
+$VersionDate = "2026-02-20"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -48,7 +48,7 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 #   Safe for PowerShell 5.1 and Scheduled Tasks.
 # ===================================================================================================
 
-try
+<#try
 {
 	$IsAdmin = ([Security.Principal.WindowsPrincipal] `
 		[Security.Principal.WindowsIdentity]::GetCurrent()
@@ -120,7 +120,7 @@ else
 	
 	# IMPORTANT: stop the non-elevated instance so you don't run twice
 	exit 0
-}
+}#>
 
 # ===================================================================================================
 #                                SECTION: Import Necessary Assemblies
@@ -190,87 +190,87 @@ $script:BackupSqlPass = "TB`$upp0rT"
 
 # ---------------------------------------------------------------------------------------------------
 # Storeman selection + cache (Office\Load activity)  ->  $script:SetupFiles\Store_Info.txt
-#   - Cache file: JSON stored in .txt
-#   - Re-query ONLY if cache missing/unreadable/older than 30 days
-#   - Writes ONLY what THIS block collects (selection + core paths + ini matches) (no null fields)
-#   - NO History
 # ---------------------------------------------------------------------------------------------------
-$MaxAgeDays   = 3
+$MaxAgeDays = 3
 $CacheMaxDays = 30
 
 $StoreInfoPath = $null
 if ($script:SetupFiles -and (Test-Path $script:SetupFiles)) { $StoreInfoPath = Join-Path $script:SetupFiles 'Store_Info.txt' }
 
-$storeInfo  = $null
+$storeInfo = $null
 $needsBuild = $true
-$needsSave  = $false
+$needsSave = $false
 
 # ---------- Load cache if fresh ----------
 if ($StoreInfoPath -and (Test-Path $StoreInfoPath))
 {
-	try {
+	try
+	{
 		if (((Get-Date) - (Get-Item -LiteralPath $StoreInfoPath).LastWriteTime).TotalDays -le $CacheMaxDays)
 		{
 			$tmp = (Get-Content -LiteralPath $StoreInfoPath -Raw -ErrorAction Stop) | ConvertFrom-Json -ErrorAction Stop
 			if ($tmp -and -not [string]::IsNullOrWhiteSpace([string]$tmp.BasePath))
 			{
-				$storeInfo  = $tmp
+				$storeInfo = $tmp
 				$needsBuild = $false
 			}
 		}
-	} catch { $storeInfo = $null; $needsBuild = $true }
+	}
+	catch { $storeInfo = $null; $needsBuild = $true }
 }
 
 # ---------- Build selection if needed ----------
 if ($needsBuild)
 {
 	$roots = @()
-	try {
+	try
+	{
 		$roots = @(Get-SmbShare -ErrorAction SilentlyContinue |
 			Where-Object { $_.Name -match '(?i)storeman' -and $_.Path } |
 			Select-Object -ExpandProperty Path)
-	} catch { }
-
+	}
+	catch { }
+	
 	$roots += 'C:\storeman'
 	$roots = $roots | ForEach-Object {
 		$p = ([string]$_).TrimEnd('\')
 		if ((Split-Path $p -Leaf) -ieq 'Office') { $p = Split-Path $p -Parent }
 		$p
 	} | Select-Object -Unique
-
+	
 	$bestRecent = $null; $bestAny = $null
 	foreach ($r in $roots)
 	{
 		$load = Join-Path $r 'Office\Load'
 		if (-not (Test-Path $load)) { continue }
-
+		
 		$f = Get-ChildItem -LiteralPath $load -File -ErrorAction SilentlyContinue |
-			Sort-Object LastWriteTime -Desc | Select-Object -First 1
+		Sort-Object LastWriteTime -Desc | Select-Object -First 1
 		if (-not $f) { continue }
-
+		
 		$age = ((Get-Date) - $f.LastWriteTime).TotalDays
-		if (-not $bestAny -or $f.LastWriteTime -gt $bestAny.Time) { $bestAny = [pscustomobject]@{ Base=$r; Time=$f.LastWriteTime; Age=$age } }
-		if ($age -le $MaxAgeDays -and (-not $bestRecent -or $f.LastWriteTime -gt $bestRecent.Time)) { $bestRecent = [pscustomobject]@{ Base=$r; Time=$f.LastWriteTime; Age=$age } }
+		if (-not $bestAny -or $f.LastWriteTime -gt $bestAny.Time) { $bestAny = [pscustomobject]@{ Base = $r; Time = $f.LastWriteTime; Age = $age } }
+		if ($age -le $MaxAgeDays -and (-not $bestRecent -or $f.LastWriteTime -gt $bestRecent.Time)) { $bestRecent = [pscustomobject]@{ Base = $r; Time = $f.LastWriteTime; Age = $age } }
 	}
-
+	
 	$pickBase = 'C:\storeman'
 	$pickTime = $null
-	$pickAge  = $null
-
+	$pickAge = $null
+	
 	if ($bestRecent) { $pickBase = $bestRecent.Base; $pickTime = $bestRecent.Time; $pickAge = $bestRecent.Age }
 	elseif ($bestAny) { $pickBase = $bestAny.Base; $pickTime = $bestAny.Time; $pickAge = $bestAny.Age }
-
+	
 	# Minimal object (no null fields)
 	$h = [ordered]@{
-		LastUpdated  = (Get-Date).ToString('o')
-		BasePath     = $pickBase
-		SelectedBy   = 'OfficeLoadActivity'
-		MaxAgeDays   = $MaxAgeDays
+		LastUpdated = (Get-Date).ToString('o')
+		BasePath    = $pickBase
+		SelectedBy  = 'OfficeLoadActivity'
+		MaxAgeDays  = $MaxAgeDays
 		CacheMaxDays = $CacheMaxDays
 	}
 	if ($pickTime) { $h['LoadNewestTime'] = $pickTime.ToString('o') }
 	if ($pickAge -ne $null) { $h['LoadNewestAgeDays'] = [math]::Round($pickAge, 2) }
-
+	
 	$storeInfo = [pscustomobject]$h
 	$needsSave = $true
 }
@@ -279,85 +279,41 @@ if ($needsBuild)
 if (-not $storeInfo -or [string]::IsNullOrWhiteSpace([string]$storeInfo.BasePath))
 {
 	$storeInfo = [pscustomobject]([ordered]@{
-		LastUpdated  = (Get-Date).ToString('o')
-		BasePath     = 'C:\storeman'
-		SelectedBy   = 'Fallback'
-		MaxAgeDays   = $MaxAgeDays
-		CacheMaxDays = $CacheMaxDays
-	})
+			LastUpdated = (Get-Date).ToString('o')
+			BasePath    = 'C:\storeman'
+			SelectedBy  = 'Fallback'
+			MaxAgeDays  = $MaxAgeDays
+			CacheMaxDays = $CacheMaxDays
+		})
 	$needsSave = $true
 }
 
 # ---------- Export variables used by the rest of the script ----------
 $script:StoreInfo = $storeInfo
-$StoreInfo        = $storeInfo
-$BasePath         = [string]$storeInfo.BasePath
+$StoreInfo = $storeInfo
+$BasePath = [string]$storeInfo.BasePath
 
 Write-Host "Selected (storeman) folder: '$BasePath'" -ForegroundColor Magenta
 
 # ---------------------------------------------------------------------------------------------------
 # Build All Core Paths and File Locations (and store into Store_Info)
 # ---------------------------------------------------------------------------------------------------
-$OfficePath     = Join-Path $BasePath "Office"
-$LoadPath       = Join-Path $OfficePath "Load"
+$OfficePath = Join-Path $BasePath "Office"
+$LoadPath = Join-Path $OfficePath "Load"
 $StartupIniPath = Join-Path $BasePath "Startup.ini"
-$SystemIniPath  = Join-Path $OfficePath "system.ini"
-$GasInboxPath   = Join-Path $OfficePath "XchGAS\INBOX"
-$DbsPath        = Join-Path $OfficePath "Dbs"
-$TempDir        = [System.IO.Path]::GetTempPath()
+$SystemIniPath = Join-Path $OfficePath "system.ini"
+$GasInboxPath = Join-Path $OfficePath "XchGAS\INBOX"
+$DbsPath = Join-Path $OfficePath "Dbs"
+$TempDir = [System.IO.Path]::GetTempPath()
 
-try {
-	if (-not ($storeInfo.PSObject.Properties.Name -contains 'Paths')) {
-		$storeInfo | Add-Member -NotePropertyName Paths -NotePropertyValue ([pscustomobject]@{}) -Force
-	}
-	$storeInfo.Paths = [pscustomobject]([ordered]@{
-		Office     = $OfficePath
-		Load       = $LoadPath
-		Dbs        = $DbsPath
-		StartupIni = $StartupIniPath
-		SystemIni  = $SystemIniPath
-		GasInbox   = $GasInboxPath
-		TempDir    = $TempDir
-	})
-	$needsSave = $true
-} catch { }
-
-# Find first INFO_*901_WIN.INI and INFO_*901_SMSStart.ini in Office\Dbs (store ONLY if found)
+# Find first INFO_*901_WIN.INI and INFO_*901_SMSStart.ini in Office\Dbs
 $WinIniPath = $null
 $SmsStartIniPath = $null
 
-if (Test-Path $DbsPath)
-{
-	$w = Get-ChildItem -LiteralPath $DbsPath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
-	if ($w) { $WinIniPath = $w.FullName }
-
-	$s = Get-ChildItem -LiteralPath $DbsPath -Filter 'INFO_*901_SMSStart.ini' -ErrorAction SilentlyContinue | Select-Object -First 1
-	if ($s) { $SmsStartIniPath = $s.FullName }
-}
-
-try {
-	# Only write IniFiles node if we actually found something (no nulls)
-	if ($WinIniPath -or $SmsStartIniPath)
-	{
-		if (-not ($storeInfo.PSObject.Properties.Name -contains 'IniFiles')) {
-			$storeInfo | Add-Member -NotePropertyName IniFiles -NotePropertyValue ([pscustomobject]@{}) -Force
-		}
-		$ini = [ordered]@{}
-		if ($WinIniPath) { $ini['WinIni901'] = $WinIniPath }
-		if ($SmsStartIniPath) { $ini['SmsStartIni901'] = $SmsStartIniPath }
-		$storeInfo.IniFiles = [pscustomobject]$ini
-		$needsSave = $true
-	}
-} catch { }
-
-# ---------- Save (ONLY if we had to build or fill missing nodes) ----------
-if ($needsSave -and $StoreInfoPath)
-{
-	try {
-		$storeInfo.LastUpdated = (Get-Date).ToString('o')
-		($storeInfo | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $StoreInfoPath -Encoding UTF8 -Force
-	} catch { }
-}
+$WinIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($WinIniMatch) { $WinIniPath = $WinIniMatch.FullName }
+$SmsStartIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_SMSStart.ini' -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($SmsStartIniMatch) { $SmsStartIniPath = $SmsStartIniMatch.FullName }
 
 # SQI temporary output file paths (used by maintenance routines)
 $LanesqlFilePath = Join-Path $TempDir "Lane_Database_Maintenance.sqi"
@@ -626,13 +582,20 @@ function Write_Log
 }
 
 # ===================================================================================================
-#                               FUNCTION: Get_Store_And_Database_Info
+#                               FUNCTION: Get-Store-And-Db-Info
 # ---------------------------------------------------------------------------------------------------
-# UPDATED:
-#   - Loads cached Store_Info.txt (<= 30 days old) into $script:StoreInfo
-#   - Hydrates $script:FunctionResults from cache first
-#   - Only re-parses INIs if required fields are missing or cache is stale
-#   - Writes back merged StoreAndDatabaseInfo into Store_Info.txt
+# Description:
+#   Uses provided paths to INFO_*901_WIN.INI, INFO_*901_SMSStart.ini, Startup.ini, and optionally
+#   system.ini, to extract:
+#     - Store metadata (store number, name, terminal, address, version, etc.) from WIN.INI
+#     - SQL Server/Database name using any key containing 'ServerName*' or 'DatabaseName*' from SMSStart.ini
+#     - Falls back to Startup.ini for DBSERVER/DBNAME if not found in SMSStart.ini
+#     - Falls back to system.ini [SMS] Name=... for store name if not found in WIN.INI
+#   Builds a SQL Server connection string using trusted authentication and TrustServerCertificate.
+#   **Also checks for available SQL module (SqlServer or SQLPS) and stores result.**
+#   **Resolves the correct INFO_*_WIN.INI that coincides with STORE (and TER) in startup.ini** and saves it to
+#   $script:FunctionResults['ResolvedWinIniPath'].
+#   Populates all results in $script:FunctionResults for downstream use.
 # ===================================================================================================
 
 function Get_Store_And_Database_Info
@@ -643,54 +606,16 @@ function Get_Store_And_Database_Info
 		[string]$StartupIniPath,
 		[string]$SystemIniPath
 	)
-
+	
 	# ------------------------------------------------------------------------------------------------
-	# Cache (per-function file) - only re-run if missing / older than 30 days / unreadable
+	# Detect available SQL PowerShell module (SqlServer preferred, fallback to SQLPS)
 	# ------------------------------------------------------------------------------------------------
-	$CacheMaxDays = 30
-	$CachePath = $null
-	if ($script:SetupFiles -and (Test-Path $script:SetupFiles))
-	{
-		$CachePath = Join-Path $script:SetupFiles 'Get_Store_And_Database_Info.txt'
-	}
-
-	if (-not $script:FunctionResults) { $script:FunctionResults = @{} }
-
-	# Always (fast) detect SQL module so it stays correct even when using cache
 	$availableSqlModule = $null
 	if (Get-Module -ListAvailable -Name SqlServer) { $availableSqlModule = "SqlServer" }
 	elseif (Get-Module -ListAvailable -Name SQLPS) { $availableSqlModule = "SQLPS" }
 	else { $availableSqlModule = "None" }
 	$script:FunctionResults['SqlModuleName'] = $availableSqlModule
-
-	# Use cache if fresh
-	if ($CachePath -and (Test-Path $CachePath))
-	{
-		try
-		{
-			$ageDays = ((Get-Date) - (Get-Item -LiteralPath $CachePath).LastWriteTime).TotalDays
-			if ($ageDays -le $CacheMaxDays)
-			{
-				$raw = Get-Content -LiteralPath $CachePath -Raw -ErrorAction Stop
-				if (-not [string]::IsNullOrWhiteSpace($raw))
-				{
-					$cache = $raw | ConvertFrom-Json -ErrorAction Stop
-					if ($cache -and $cache.Results)
-					{
-						foreach ($p in $cache.Results.PSObject.Properties)
-						{
-							$script:FunctionResults[$p.Name] = $p.Value
-						}
-						# keep current module detection (cheap + accurate)
-						$script:FunctionResults['SqlModuleName'] = $availableSqlModule
-						return
-					}
-				}
-			}
-		}
-		catch { }
-	}
-
+	
 	# ------------------------------------------------------------------------------------------------
 	# Initialize results with N/A for every expected property (+ resolved WIN.INI path)
 	# ------------------------------------------------------------------------------------------------
@@ -700,35 +625,40 @@ function Get_Store_And_Database_Info
 		'DBSERVER', 'DBNAME', 'ConnectionString', 'ResolvedWinIniPath'
 	)
 	foreach ($f in $fields) { $script:FunctionResults[$f] = 'N/A' }
-
+	
 	# ==================================================================================================
 	# Parse Startup.ini first to learn STORE and TER and to derive likely DBs folder(s)
+	# NOTE: FIX - removed invalid trailing 'i' regex flags; PowerShell -match is case-insensitive by default.
 	# ==================================================================================================
-	$startupStore = $null
-	$startupTer = $null
-	$probableDbsRoots = @()
-
+	$startupStore = $null # 3-digit, zero-padded
+	$startupTer = $null # 3-digit terminal (e.g., 901)
+	$probableDbsRoots = @() # candidate roots to search for INFO_*_WIN.INI
+	
 	if ($StartupIniPath -and (Test-Path $StartupIniPath))
 	{
 		try
 		{
+			#	Write_Log "Reading Startup.ini at: $StartupIniPath" "cyan"
 			foreach ($line in Get-Content -LiteralPath $StartupIniPath)
 			{
 				$t = $line.Trim()
 				if ($t.StartsWith(';')) { continue }
-
+				
+				# FIX: removed trailing 'i' after the regex. PowerShell -match is already case-insensitive.
 				if ($t -match '^\s*STORE\s*=\s*(\d+)\s*$')
 				{
-					$startupStore = ($Matches[1] -as [int]).ToString('000')
+					$startupStore = ($Matches[1] -as [int]).ToString('000') # zero-pad
 				}
 				elseif ($t -match '^\s*TER\s*=\s*(\d+)\s*$')
 				{
-					$startupTer = ($Matches[1] -as [int]).ToString('000')
+					$startupTer = ($Matches[1] -as [int]).ToString('000') # zero-pad
 				}
 			}
-
+			
 			if ($startupStore)
 			{
+				#	Write_Log "Startup.ini indicates STORE=$startupStore$(if ($startupTer) { ", TER=$startupTer" })" "green"
+				# Pre-populate UI-friendly values; WIN.INI can refine/confirm later.
 				$script:FunctionResults['StoreNumber'] = $startupStore
 				if ($startupTer) { $script:FunctionResults['Terminal'] = $startupTer }
 			}
@@ -736,8 +666,9 @@ function Get_Store_And_Database_Info
 			{
 				Write_Log "STORE= not found in Startup.ini. Will still attempt WIN.INI path resolution." "yellow"
 			}
-
-			$storemanRoot = Split-Path -Path $StartupIniPath -Parent
+			
+			# Derive most likely DBs path from Startup.ini location (…\storeman\office\dbs)
+			$storemanRoot = Split-Path -Path $StartupIniPath -Parent # typically C:\storeman or \\localhost\storeman
 			if ($storemanRoot)
 			{
 				$derivedOffice = Join-Path $storemanRoot 'office'
@@ -754,19 +685,26 @@ function Get_Store_And_Database_Info
 	{
 		Write_Log "Startup.ini path not provided or not found. Skipping STORE/TER pre-resolution." "yellow"
 	}
-
-	foreach ($fallback in @('C:\storeman\office\dbs','D:\storeman\office\dbs','\\localhost\storeman\office\dbs'))
+	
+	# Add common fallback DBs roots to search (de-duped below)
+	foreach ($fallback in @(
+			'C:\storeman\office\dbs',
+			'D:\storeman\office\dbs',
+			'\\localhost\storeman\office\dbs'
+		))
 	{
 		if (Test-Path $fallback) { $probableDbsRoots += $fallback }
 	}
-	$probableDbsRoots = $probableDbsRoots | Sort-Object -Unique
-
+	$probableDbsRoots = $probableDbsRoots | Sort-Object -Unique # de-dup
+	
 	# ==================================================================================================
-	# Resolve correct INFO_*_WIN.INI matching Startup.ini STORE/TER
+	# Resolve the correct INFO_*_WIN.INI that coincides with the STORE (and preferably TER) from Startup.ini
+	# Priority: exact STORE+TER  > exact STORE+901 > any exact STORE (newest LastWriteTime)
+	# If a supplied $WinIniPath doesn't match, override it and log why.
 	# ==================================================================================================
 	$resolvedWinIni = $null
 	$needResolve = $true
-
+	
 	if ($WinIniPath -and (Test-Path $WinIniPath))
 	{
 		$name = [System.IO.Path]::GetFileName($WinIniPath)
@@ -780,6 +718,7 @@ function Get_Store_And_Database_Info
 			{
 				$resolvedWinIni = $WinIniPath
 				$needResolve = $false
+				#	Write_Log "Using provided WIN.INI (matches Startup.ini): $WinIniPath" "green"
 			}
 			else
 			{
@@ -791,30 +730,39 @@ function Get_Store_And_Database_Info
 			Write_Log "Provided WIN.INI name '$name' does not match expected pattern 'INFO_SSSLLL_WIN.INI'. Will search for the correct one." "yellow"
 		}
 	}
-
+	
 	if ($needResolve -and $probableDbsRoots.Count -gt 0)
 	{
 		try
 		{
+			# Gather all candidates INFO_*_WIN.INI in known DBs roots
 			$candidates = foreach ($root in $probableDbsRoots)
 			{
 				Get-ChildItem -LiteralPath $root -Filter 'INFO_*_WIN.INI' -File -ErrorAction SilentlyContinue
 			}
-
+			
+			# Score and select best candidate according to Startup.ini hints
 			$scored = @(
 				foreach ($f in $candidates)
 				{
+					# Validate expected filename pattern INFO_SSSLLL_WIN.INI, skip others
 					$m = [System.Text.RegularExpressions.Regex]::Match($f.Name, '^INFO_(\d{3})(\d{3})_WIN\.INI$')
 					if (-not $m.Success) { continue }
-
+					
+					# Extract store (SSS) and terminal (LLL)
 					$s = $m.Groups[1].Value
 					$t = $m.Groups[2].Value
-
+					
+					# Score the candidate:
+					# +10 for same STORE as Startup.ini
+					# +5  for exact same TER as Startup.ini
+					# +3  prefer 901 (server) when TER unknown
 					$score = 0
 					if ($startupStore -and $s -eq $startupStore) { $score += 10 }
 					if ($startupTer -and $t -eq $startupTer) { $score += 5 }
 					if (-not $startupTer -and $t -eq '901') { $score += 3 }
-
+					
+					# Emit the scored object
 					[PSCustomObject]@{
 						File  = $f
 						Store = $s
@@ -824,14 +772,17 @@ function Get_Store_And_Database_Info
 					}
 				}
 			) | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, @{ Expression = 'Age'; Descending = $true }
-
+			
 			if ($scored -and $scored[0].Score -gt 0)
 			{
 				$resolvedWinIni = $scored[0].File.FullName
+				#	Write_Log ("Resolved WIN.INI: {0} (STORE={1}, TER={2}, Score={3})" -f $resolvedWinIni, $scored[0].Store, $scored[0].Ter, $scored[0].Score) "green"
 			}
 			elseif ($scored)
 			{
+				# No strong store hint? Take the newest INFO_*_WIN.INI to avoid being stuck.
 				$resolvedWinIni = ($scored | Sort-Object -Property Age -Descending | Select-Object -First 1).File.FullName
+				#	Write_Log "Resolved WIN.INI (no strong STORE hint available): $resolvedWinIni" "yellow"
 			}
 			else
 			{
@@ -840,17 +791,20 @@ function Get_Store_And_Database_Info
 		}
 		catch
 		{
+			# FIX: ensure Try has a proper Catch to avoid "Try statement missing Catch/Finally" parser complaints.
 			Write_Log "Error while resolving WIN.INI: $($_.Exception.Message)" "red"
 		}
 	}
-
+	
 	if ($resolvedWinIni)
 	{
+		# Use the resolved path and publish it
 		$WinIniPath = $resolvedWinIni
 		$script:FunctionResults['ResolvedWinIniPath'] = $resolvedWinIni
 	}
 	else
 	{
+		# Keep the provided one if valid; otherwise warn and continue
 		if (-not ($WinIniPath -and (Test-Path $WinIniPath)))
 		{
 			Write_Log "WIN.INI is unresolved; continuing without store metadata from WIN.INI." "red"
@@ -861,9 +815,9 @@ function Get_Store_And_Database_Info
 			Write_Log "Proceeding with provided WIN.INI (unvalidated): $WinIniPath" "yellow"
 		}
 	}
-
+	
 	# ------------------------------------------------------------------------------------------------
-	# Extract Store Info from WIN.INI
+	# Extract Store Info from WIN.INI (store metadata)
 	# ------------------------------------------------------------------------------------------------
 	if ($WinIniPath -and (Test-Path $WinIniPath))
 	{
@@ -873,11 +827,9 @@ function Get_Store_And_Database_Info
 			$trimmed = $line.Trim()
 			if ($trimmed -match '^\[(.+)\]$') { $currentSection = $Matches[1]; continue }
 			if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
-
 			$parts = $trimmed -split "=", 2
 			$key = $parts[0].Trim()
 			$value = $parts[1].Trim()
-
 			switch ($currentSection)
 			{
 				"ORIGIN" {
@@ -908,12 +860,13 @@ function Get_Store_And_Database_Info
 	{
 		Write_Log "No INFO_*_WIN.INI found at $WinIniPath" "red"
 	}
-
+	
 	# ------------------------------------------------------------------------------------------------
-	# Fallback: StoreName from system.ini ([SMS] Name=...)
+	# Fallback: Get StoreName from system.ini ([SMS] Name=...) if still N/A
 	# ------------------------------------------------------------------------------------------------
 	if (
-		($script:FunctionResults['StoreName'] -eq 'N/A' -or [string]::IsNullOrWhiteSpace($script:FunctionResults['StoreName'])) -and
+		($script:FunctionResults['StoreName'] -eq 'N/A' -or
+			[string]::IsNullOrWhiteSpace($script:FunctionResults['StoreName'])) -and
 		$SystemIniPath -and (Test-Path $SystemIniPath)
 	)
 	{
@@ -921,25 +874,35 @@ function Get_Store_And_Database_Info
 		foreach ($line in Get-Content -LiteralPath $SystemIniPath)
 		{
 			$trimmed = $line.Trim()
-			if ($trimmed -match '^\[SMS\]$') { $inSMSSection = $true; continue }
+			if ($trimmed -match '^\[SMS\]$')
+			{
+				$inSMSSection = $true
+				continue
+			}
 			if ($inSMSSection)
 			{
+				# End of section if new [Section] starts
 				if ($trimmed -match '^\[.+\]$') { break }
+				# Look for Name= (case-flexible)
 				if ($trimmed -match '^\s*Name\s*=(.*)$')
 				{
 					$storeNameBackup = $Matches[1].Trim()
-					if ($storeNameBackup) { $script:FunctionResults['StoreName'] = $storeNameBackup; break }
+					if ($storeNameBackup)
+					{
+						$script:FunctionResults['StoreName'] = $storeNameBackup
+						break
+					}
 				}
 			}
 		}
 	}
-
+	
 	# ------------------------------------------------------------------------------------------------
-	# Extract SQL Server/Database from SMSStart INI
+	# Extract SQL Server/Database from SMSStart INI (first matching ServerName*/DatabaseName*)
 	# ------------------------------------------------------------------------------------------------
 	$dbServer = $null
 	$dbName = $null
-
+	
 	if ($SmsStartIniPath -and (Test-Path $SmsStartIniPath))
 	{
 		foreach ($line in Get-Content -LiteralPath $SmsStartIniPath)
@@ -949,14 +912,14 @@ function Get_Store_And_Database_Info
 			$parts = $trimmed -split "=", 2
 			$key = $parts[0].Trim()
 			$value = $parts[1].Trim()
-			if (-not $dbServer -and $key -match 'ServerName') { $dbServer = $value }
+			if (-not $dbServer -and $key -match 'ServerName') { $dbServer = $value } # -match is CI by default
 			if (-not $dbName -and $key -match 'DatabaseName') { $dbName = $value }
 			if ($dbServer -and $dbName) { break }
 		}
 	}
-
+	
 	# ------------------------------------------------------------------------------------------------
-	# Fallback: Startup.ini for DBSERVER/DBNAME
+	# Fallback: Try Startup.ini for DBSERVER/DBNAME if either is missing
 	# ------------------------------------------------------------------------------------------------
 	if ((!$dbServer -or !$dbName) -and $StartupIniPath -and (Test-Path $StartupIniPath))
 	{
@@ -967,52 +930,25 @@ function Get_Store_And_Database_Info
 			$parts = $trimmed -split "=", 2
 			$key = $parts[0].Trim()
 			$value = $parts[1].Trim()
-			if (-not $dbServer -and $key -match '^DBSERVER$') { $dbServer = $value }
+			if (-not $dbServer -and $key -match '^DBSERVER$') { $dbServer = $value } # FIX: no trailing flag
 			if (-not $dbName -and $key -match '^DBNAME$') { $dbName = $value }
 			if ($dbServer -and $dbName) { break }
 		}
 		if (-not $dbServer) { $dbServer = "localhost" }
 		if (-not $dbName) { $dbName = "STORESQL" }
 	}
-
+	
 	# ------------------------------------------------------------------------------------------------
-	# Finalize connection string
+	# Finalize connection string and store in function results
 	# ------------------------------------------------------------------------------------------------
 	if ($dbServer -and $dbName)
 	{
 		$script:FunctionResults['DBSERVER'] = $dbServer
 		$script:FunctionResults['DBNAME'] = $dbName
 		$script:FunctionResults['ConnectionString'] =
-			"Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
+		"Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
 	}
-
-	# ------------------------------------------------------------------------------------------------
-	# Cache write (store EVERYTHING this function collects)
-	# ------------------------------------------------------------------------------------------------
-	if ($CachePath)
-	{
-		try
-		{
-			$results = [ordered]@{}
-			foreach ($k in ($fields + 'SqlModuleName'))
-			{
-				$v = $script:FunctionResults[$k]
-				if ($null -eq $v -or ($v -is [string] -and [string]::IsNullOrWhiteSpace($v))) { $v = 'N/A' }
-				$results[$k] = $v
-			}
-
-			$cacheOut = [ordered]@{
-				LastUpdated  = (Get-Date).ToString('o')
-				CacheMaxDays = $CacheMaxDays
-				StoreNumber  = $script:FunctionResults['StoreNumber']
-				Results      = $results
-			}
-
-			($cacheOut | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
-		}
-		catch { }
-	}
-
+	
 	# ------------------------------------------------------------------------------------------------
 	# GUI label updates (optional)
 	# ------------------------------------------------------------------------------------------------
@@ -1036,15 +972,10 @@ function Get_Store_And_Database_Info
 # ===================================================================================================
 #                            FUNCTION: Get_All_Lanes_Database_Info
 # ---------------------------------------------------------------------------------------------------
-# CACHING (per your request):
-#   - Cache file per function under $script:SetupFiles:
-#       $script:SetupFiles\Get_All_Lanes_Database_Info.txt   (JSON)
-#   - ONLY queries lanes if cache file is missing OR older than 30 days OR unreadable
-#   - Cache stores ALL fields this function collects per lane (MachineName/DBName/DBServer/etc.)
-#   - Always hydrates $script:FunctionResults['LaneDatabaseInfo'] from cache when fresh
-#   - When cache is stale/missing: builds cache for all lanes (plus requested LaneNumber if provided),
-#     writes file, then returns requested lane if -LaneNumber was used.
-#   - Cache file LaneDatabaseInfo is always WRITTEN ORDERED by lane number (001,002,003...)
+# Description:
+#   Retrieves the DB server names and database names for all lanes in TER_TAB or for a single lane.
+#   If -LaneNumber is supplied, only looks up info for that lane.
+#   Updates $script:FunctionResults['LaneDatabaseInfo'] and returns lane info if single.
 # ===================================================================================================
 
 function Get_All_Lanes_Database_Info
@@ -1052,120 +983,38 @@ function Get_All_Lanes_Database_Info
 	param (
 		[string]$LaneNumber
 	)
-
-	# Ensure bucket exists (unchanged behavior)
+	
 	if (-not $script:FunctionResults.ContainsKey('LaneDatabaseInfo'))
 	{
 		$script:FunctionResults['LaneDatabaseInfo'] = @{ }
 	}
 	$LaneDatabaseInfo = $script:FunctionResults['LaneDatabaseInfo']
-
+	
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	if (-not $LaneNumToMachineName) { return $null }
-
-	# Guard against null OfficePath causing Join-Path errors (fast fail, no guessing)
-	if ([string]::IsNullOrWhiteSpace($OfficePath)) { return $null }
-
-	# ------------------------------------------------------------------------------------------------
-	# Per-function cache file (only run queries if missing/stale)
-	# ------------------------------------------------------------------------------------------------
-	$CacheMaxDays = 30
-	$CachePath = $null
-	if ($script:SetupFiles -and (Test-Path $script:SetupFiles))
-	{
-		$CachePath = Join-Path $script:SetupFiles 'Get_All_Lanes_Database_Info.txt'
-	}
-
-	$cacheFresh = $false
-	if ($CachePath -and (Test-Path $CachePath))
-	{
-		try
-		{
-			$ageDays = ((Get-Date) - (Get-Item -LiteralPath $CachePath).LastWriteTime).TotalDays
-			if ($ageDays -le $CacheMaxDays)
-			{
-				$raw = Get-Content -LiteralPath $CachePath -Raw -ErrorAction Stop
-				if (-not [string]::IsNullOrWhiteSpace($raw))
-				{
-					$cacheObj = $raw | ConvertFrom-Json -ErrorAction Stop
-
-					# Cache format:
-					# { LastUpdated, CacheMaxDays, LaneDatabaseInfo: { "001": {...}, "002": {...} } }
-					if ($cacheObj -and $cacheObj.PSObject.Properties.Name -contains 'LaneDatabaseInfo' -and $cacheObj.LaneDatabaseInfo)
-					{
-						foreach ($p in $cacheObj.LaneDatabaseInfo.PSObject.Properties)
-						{
-							# Merge into memory only if not already present (keeps runtime overrides intact)
-							if (-not $LaneDatabaseInfo.ContainsKey($p.Name))
-							{
-								$LaneDatabaseInfo[$p.Name] = $p.Value
-							}
-						}
-						$cacheFresh = $true
-					}
-				}
-			}
-		}
-		catch { $cacheFresh = $false }
-	}
-
-	# Normalize LaneNumber if provided (keep it simple + safe)
-	$RequestedLane = $null
-	if ($LaneNumber)
-	{
-		$digits = ($LaneNumber -replace '[^\d]', '')
-		if ($digits) { $RequestedLane = $digits.PadLeft(3, '0') }
-	}
-
-	# If cache is fresh, do NOT query anything (per your rule)
-	if ($cacheFresh)
-	{
-		if ($RequestedLane)
-		{
-			if ($LaneDatabaseInfo.ContainsKey($RequestedLane)) { return $LaneDatabaseInfo[$RequestedLane] }
-			return $null
-		}
-		return
-	}
-
-	# ------------------------------------------------------------------------------------------------
-	# Cache is missing/stale/unreadable => query lanes ONCE, then write file so we don't re-run <30 days
-	# ------------------------------------------------------------------------------------------------
-	$lanesToProcess = @()
-
-	# Always build a full cache when stale/missing (so future calls won't re-query within 30 days)
-	$lanesToProcess += $LaneNumToMachineName.Keys
-
-	# Ensure requested lane is included even if it would normally be skipped in "full mode"
-	if ($RequestedLane) { $lanesToProcess = @($RequestedLane) + $lanesToProcess }
-
-	# De-dupe + keep only numeric 3-digit lanes
-	$lanesToProcess = $lanesToProcess | ForEach-Object {
-		$d = ($_.ToString() -replace '[^\d]', '')
-		if ($d) { $d.PadLeft(3, '0') }
-	} | Where-Object { $_ } | Select-Object -Unique
-
-	$changed = $false
-
+	
+	$lanesToProcess = if ($LaneNumber) { @($LaneNumber) }
+	else { $LaneNumToMachineName.Keys }
+	
 	foreach ($laneNumber in $lanesToProcess)
 	{
-		# If cached already in memory, skip
-		if ($LaneDatabaseInfo.ContainsKey($laneNumber)) { continue }
-
-		# Skip unwanted lanes for full mode (same logic as before)
-		# IMPORTANT: If the user explicitly requested a lane, do NOT skip it.
-		if (-not $RequestedLane -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
-		if ($RequestedLane -and $laneNumber -ne $RequestedLane -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
-
+		if ($LaneDatabaseInfo.ContainsKey($laneNumber))
+		{
+			if ($LaneNumber) { return $LaneDatabaseInfo[$laneNumber] }
+			continue
+		}
+		# Skip unwanted lanes for full mode
+		if (-not $LaneNumber -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
+		
 		$machineName = $LaneNumToMachineName[$laneNumber]
 		if (-not $machineName) { continue }
-
+		
 		# ---------- 1. Try LOCAL Startup file (INI\STARTUP.###) ----------
 		$startupLocalPath = Join-Path $OfficePath "INI\STARTUP.$($laneNumber.PadLeft(3, '0'))"
 		$startupIniPath = $null
 		$content = $null
 		$source = $null
-
+		
 		if (Test-Path $startupLocalPath)
 		{
 			try
@@ -1175,7 +1024,7 @@ function Get_All_Lanes_Database_Info
 			}
 			catch { $content = $null }
 		}
-
+		
 		# ---------- 2. Fallback: Try REMOTE Startup.ini ----------
 		if (-not $content)
 		{
@@ -1190,12 +1039,12 @@ function Get_All_Lanes_Database_Info
 				catch { $content = $null }
 			}
 		}
-
+		
 		if (-not $content) { continue }
-
+		
 		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
 		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
-
+		
 		if ($dbNameLine)
 		{
 			$dbName = ($dbNameLine -replace '^DBNAME=', '').Trim()
@@ -1204,7 +1053,7 @@ function Get_All_Lanes_Database_Info
 		{
 			continue
 		}
-
+		
 		if ($dbServerLine)
 		{
 			$dbServerRaw = ($dbServerLine -replace '^DBSERVER=', '').Trim()
@@ -1213,8 +1062,9 @@ function Get_All_Lanes_Database_Info
 		{
 			$dbServerRaw = ""
 		}
-
+		
 		# -------------- PATCH: Remove trailing backslash unless a named instance is present --------------
+		# If it's just 'POS005\' (with no instance), make it 'POS005'
 		if ($dbServerRaw -match '^[^\\]+\\$')
 		{
 			$dbServerRaw = $dbServerRaw.TrimEnd('\')
@@ -1229,7 +1079,7 @@ function Get_All_Lanes_Database_Info
 			$dbServer = $dbServerRaw
 		}
 		# END PATCH --------------------------------------------------------------------------------------
-
+		
 		# Parse instance name for Named Pipes/TCP logic
 		$serverName = $dbServer
 		$instanceName = $null
@@ -1249,7 +1099,7 @@ function Get_All_Lanes_Database_Info
 			$serverName = $dbServer
 			$instanceName = $null
 		}
-
+		
 		# Build connection strings
 		if ($instanceName -and $instanceName.ToUpper() -ne "MSSQLSERVER")
 		{
@@ -1261,11 +1111,11 @@ function Get_All_Lanes_Database_Info
 			$namedPipes = "np:\\$serverName\pipe\sql\query"
 			$tcpServer = $serverName
 		}
-
+		
 		$tcpConnStr = "Server=$tcpServer;Database=$dbName;Integrated Security=True;"
 		$namedPipesConnStr = "Server=$namedPipes;Database=$dbName;Integrated Security=True;"
 		$simpleConnStr = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
-
+		
 		$laneInfo = @{
 			'MachineName'	    = $machineName
 			'DBName'		    = $dbName
@@ -1279,44 +1129,12 @@ function Get_All_Lanes_Database_Info
 			'TcpConnStr'	    = $tcpConnStr
 			'Source'		    = $source
 		}
-
+		
 		$LaneDatabaseInfo[$laneNumber] = $laneInfo
-		$changed = $true
+		
+		if ($LaneNumber) { return $laneInfo }
 	}
-
-	# ------------------------------------------------------------------------------------------------
-	# Write cache ONCE (only if we found anything new)
-	#   IMPORTANT: Write LaneDatabaseInfo ordered by lane number for clean file output.
-	# ------------------------------------------------------------------------------------------------
-	if ($CachePath -and $changed)
-	{
-		try
-		{
-			# Build an ORDERED view for file output only (keep in-memory as normal hashtable for .ContainsKey())
-			$orderedLaneDb = [ordered]@{}
-			$sortedLaneKeys = @($LaneDatabaseInfo.Keys) | Sort-Object { [int]($_) }
-			foreach ($k in $sortedLaneKeys)
-			{
-				$orderedLaneDb[$k] = $LaneDatabaseInfo[$k]
-			}
-
-			$cacheOut = [pscustomobject]@{
-				LastUpdated      = (Get-Date).ToString('o')
-				CacheMaxDays     = $CacheMaxDays
-				LaneDatabaseInfo = $orderedLaneDb
-			}
-
-			($cacheOut | ConvertTo-Json -Depth 12) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
-		}
-		catch { }
-	}
-
-	# Return behavior (same intent as original):
-	if ($RequestedLane)
-	{
-		if ($LaneDatabaseInfo.ContainsKey($RequestedLane)) { return $LaneDatabaseInfo[$RequestedLane] }
-		return $null
-	}
+	if ($LaneNumber) { return $null }
 }
 
 # ===================================================================================================
@@ -1966,10 +1784,13 @@ WHERE name = N'$dbNameQuoted';
 							{
 								$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
 								try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = "SELECT 1"; $cmdx.CommandTimeout = 5; [void]$cmdx.ExecuteScalar() }
-								finally { try { $cnx.Close() }
+								finally
+								{
+									try { $cnx.Close() }
 									catch { }
 									try { $cnx.Dispose() }
-									catch { } }
+									catch { }
+								}
 							}
 							$reprobeOK = $true
 							break
@@ -2053,10 +1874,13 @@ WHERE name = N'$dbNameQuoted';
 						{
 							$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
 							try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = "ALTER DATABASE $qSys SET EMERGENCY;"; $cmdx.CommandTimeout = 30; [void]$cmdx.ExecuteNonQuery() }
-							finally { try { $cnx.Close() }
+							finally
+							{
+								try { $cnx.Close() }
 								catch { }
 								try { $cnx.Dispose() }
-								catch { } }
+								catch { }
+							}
 						}
 					}
 					catch { Write_Log ("WARN: EMERGENCY failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
@@ -2068,10 +1892,13 @@ WHERE name = N'$dbNameQuoted';
 						{
 							$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
 							try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = "ALTER DATABASE $qSys SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"; $cmdx.CommandTimeout = 30; [void]$cmdx.ExecuteNonQuery() }
-							finally { try { $cnx.Close() }
+							finally
+							{
+								try { $cnx.Close() }
 								catch { }
 								try { $cnx.Dispose() }
-								catch { } }
+								catch { }
+							}
 						}
 					}
 					catch { Write_Log ("WARN: SINGLE_USER failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
@@ -2084,10 +1911,13 @@ WHERE name = N'$dbNameQuoted';
 						{
 							$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
 							try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = $ts; $cmdx.CommandTimeout = $CommandTimeout; [void]$cmdx.ExecuteNonQuery() }
-							finally { try { $cnx.Close() }
+							finally
+							{
+								try { $cnx.Close() }
 								catch { }
 								try { $cnx.Dispose() }
-								catch { } }
+								catch { }
+							}
 						}
 						Write_Log ("Deep repair completed on {0}." -f $sysDb) "green"
 					}
@@ -2100,10 +1930,13 @@ WHERE name = N'$dbNameQuoted';
 						{
 							$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
 							try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = "ALTER DATABASE $qSys SET MULTI_USER;"; $cmdx.CommandTimeout = 30; [void]$cmdx.ExecuteNonQuery() }
-							finally { try { $cnx.Close() }
+							finally
+							{
+								try { $cnx.Close() }
 								catch { }
 								try { $cnx.Dispose() }
-								catch { } }
+								catch { }
+							}
 						}
 					}
 					catch { Write_Log ("WARN: MULTI_USER restore failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
@@ -2176,10 +2009,13 @@ WHERE name = N'$dbNameQuoted';
 				{
 					$cnA = New-Object System.Data.SqlClient.SqlConnection $connStr
 					try { $cnA.Open(); $cmdA = $cnA.CreateCommand(); $cmdA.CommandText = $ts; $cmdA.CommandTimeout = $CommandTimeout; [void]$cmdA.ExecuteNonQuery() }
-					finally { try { $cnA.Close() }
+					finally
+					{
+						try { $cnA.Close() }
 						catch { }
 						try { $cnA.Dispose() }
-						catch { } }
+						catch { }
+					}
 				}
 				$ok = $true
 				Write_Log "Audit completed." "green"
@@ -2197,10 +2033,13 @@ WHERE name = N'$dbNameQuoted';
 					{
 						$cnQ = New-Object System.Data.SqlClient.SqlConnection $connStr
 						try { $cnQ.Open(); $cmdQ = $cnQ.CreateCommand(); $cmdQ.CommandText = $tsSU; $cmdQ.CommandTimeout = 60; [void]$cmdQ.ExecuteNonQuery() }
-						finally { try { $cnQ.Close() }
+						finally
+						{
+							try { $cnQ.Close() }
 							catch { }
 							try { $cnQ.Dispose() }
-							catch { } }
+							catch { }
+						}
 					}
 					$didSingleUser = $true
 				}
@@ -2219,10 +2058,13 @@ WHERE name = N'$dbNameQuoted';
 				{
 					$cnQ2 = New-Object System.Data.SqlClient.SqlConnection $connStr
 					try { $cnQ2.Open(); $cmdQ2 = $cnQ2.CreateCommand(); $cmdQ2.CommandText = $ts; $cmdQ2.CommandTimeout = $CommandTimeout; [void]$cmdQ2.ExecuteNonQuery() }
-					finally { try { $cnQ2.Close() }
+					finally
+					{
+						try { $cnQ2.Close() }
 						catch { }
 						try { $cnQ2.Dispose() }
-						catch { } }
+						catch { }
+					}
 				}
 				
 				$ok = $true
@@ -2242,10 +2084,13 @@ WHERE name = N'$dbNameQuoted';
 					{
 						$cnD = New-Object System.Data.SqlClient.SqlConnection $connStr
 						try { $cnD.Open(); $cmdD = $cnD.CreateCommand(); $cmdD.CommandText = $tsE; $cmdD.CommandTimeout = 60; [void]$cmdD.ExecuteNonQuery() }
-						finally { try { $cnD.Close() }
+						finally
+						{
+							try { $cnD.Close() }
 							catch { }
 							try { $cnD.Dispose() }
-							catch { } }
+							catch { }
+						}
 					}
 					$didEmergency = $true
 				}
@@ -2263,10 +2108,13 @@ WHERE name = N'$dbNameQuoted';
 					{
 						$cnD2 = New-Object System.Data.SqlClient.SqlConnection $connStr
 						try { $cnD2.Open(); $cmdD2 = $cnD2.CreateCommand(); $cmdD2.CommandText = $tsSU; $cmdD2.CommandTimeout = 60; [void]$cmdD2.ExecuteNonQuery() }
-						finally { try { $cnD2.Close() }
+						finally
+						{
+							try { $cnD2.Close() }
 							catch { }
 							try { $cnD2.Dispose() }
-							catch { } }
+							catch { }
+						}
 					}
 					$didSingleUser = $true
 				}
@@ -2285,10 +2133,13 @@ WHERE name = N'$dbNameQuoted';
 				{
 					$cnD3 = New-Object System.Data.SqlClient.SqlConnection $connStr
 					try { $cnD3.Open(); $cmdD3 = $cnD3.CreateCommand(); $cmdD3.CommandText = $ts; $cmdD3.CommandTimeout = $CommandTimeout; [void]$cmdD3.ExecuteNonQuery() }
-					finally { try { $cnD3.Close() }
+					finally
+					{
+						try { $cnD3.Close() }
 						catch { }
 						try { $cnD3.Dispose() }
-						catch { } }
+						catch { }
+					}
 				}
 				
 				$ok = $true
@@ -2321,10 +2172,13 @@ WHERE name = N'$dbNameQuoted';
 					{
 						$cnF = New-Object System.Data.SqlClient.SqlConnection $connStr
 						try { $cnF.Open(); $cmdF = $cnF.CreateCommand(); $cmdF.CommandText = $tsMU; $cmdF.CommandTimeout = 60; [void]$cmdF.ExecuteNonQuery() }
-						finally { try { $cnF.Close() }
+						finally
+						{
+							try { $cnF.Close() }
 							catch { }
 							try { $cnF.Dispose() }
-							catch { } }
+							catch { }
+						}
 					}
 				}
 				catch
@@ -2344,10 +2198,13 @@ WHERE name = N'$dbNameQuoted';
 					{
 						$cnF2 = New-Object System.Data.SqlClient.SqlConnection $connStr
 						try { $cnF2.Open(); $cmdF2 = $cnF2.CreateCommand(); $cmdF2.CommandText = $tsOn; $cmdF2.CommandTimeout = 60; [void]$cmdF2.ExecuteNonQuery() }
-						finally { try { $cnF2.Close() }
+						finally
+						{
+							try { $cnF2.Close() }
 							catch { }
 							try { $cnF2.Dispose() }
-							catch { } }
+							catch { }
+						}
 					}
 				}
 				catch
@@ -2527,201 +2384,33 @@ function Retrieve_Nodes
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
-
-	# ------------------------------------------------------------------------------------------------
-	# Per-function cache (small + fast)
-	# ------------------------------------------------------------------------------------------------
-	$CacheMaxDays = 30
-	$CachePath = $null
-	if ($script:SetupFiles -and (Test-Path $script:SetupFiles))
-	{
-		$CachePath = Join-Path $script:SetupFiles 'Retrieve_Nodes.txt'
-	}
-
-	# Normalize store number for cache match only
-	$StoreNumberNorm = $StoreNumber
-	try {
-		$sn = ($StoreNumber -replace '[^\d]', '')
-		if ($sn.Length -gt 0)
-		{
-			if ($sn.Length -le 3) { $StoreNumberNorm = ([int]$sn).ToString('000') }
-			else { $StoreNumberNorm = ([int]$sn).ToString('0000') }
-		}
-	} catch { $StoreNumberNorm = $StoreNumber }
-
-	# Try load cache if fresh
-	$cacheFresh = $false
-	$cacheObj = $null
-	if ($CachePath -and (Test-Path $CachePath))
-	{
-		try
-		{
-			$ageDays = ((Get-Date) - (Get-Item -LiteralPath $CachePath).LastWriteTime).TotalDays
-			if ($ageDays -le $CacheMaxDays)
-			{
-				$raw = Get-Content -LiteralPath $CachePath -Raw -ErrorAction Stop
-				if (-not [string]::IsNullOrWhiteSpace($raw))
-				{
-					$cacheObj = $raw | ConvertFrom-Json -ErrorAction Stop
-					if ($cacheObj -and $cacheObj.StoreNumber -and ($cacheObj.StoreNumber.ToString() -eq $StoreNumberNorm))
-					{
-						$cacheFresh = $true
-					}
-				}
-			}
-		}
-		catch { $cacheFresh = $false; $cacheObj = $null }
-	}
-
-	# If cache is fresh, hydrate FunctionResults + return without doing DB/file work
-	if ($cacheFresh -and $cacheObj -and $cacheObj.Results)
-	{
-		try
-		{
-			$r = $cacheObj.Results
-
-			# Helper inline converter: PSCustomObject -> hashtable
-			$toHash = {
-				param($o)
-				$h = @{}
-				if ($o -and $o.PSObject -and $o.PSObject.Properties)
-				{
-					foreach ($p in $o.PSObject.Properties) { $h[$p.Name] = $p.Value }
-				}
-				$h
-			}
-
-			# Pull scalars/arrays
-			$NumberOfLanes       = [int]$r.NumberOfLanes
-			$NumberOfServers     = [int]$r.NumberOfServers
-			$NumberOfBackoffices = [int]$r.NumberOfBackoffices
-			$NumberOfScales      = [int]$r.NumberOfScales
-
-			$LaneMachineNames    = @($r.LaneMachineNames)
-			$ScaleCodes          = @($r.ScaleCodes)
-
-			# Pull maps as hashtables (critical: other code expects .ContainsKey())
-			$LaneNumToMachineName       = & $toHash $r.LaneNumToMachineName
-			$MachineNameToLaneNum       = & $toHash $r.MachineNameToLaneNum
-			$LaneMachineLabels          = & $toHash $r.LaneMachineLabels
-			$LaneMachinePath            = & $toHash $r.LaneMachinePath
-			$LaneMachineToServerPath    = & $toHash $r.LaneMachineToServerPath
-
-			$ScaleLabels                = & $toHash $r.ScaleLabels
-			$ScaleExePaths              = & $toHash $r.ScaleExePaths
-			$ScaleCodeToIPInfo          = & $toHash $r.ScaleCodeToIPInfo
-			$ScaleNameToCode            = & $toHash $r.ScaleNameToCode
-			$ScaleCodeToPath            = & $toHash $r.ScaleCodeToPath
-			$ScaleNameToPath            = & $toHash $r.ScaleNameToPath
-
-			$BackofficeNumToMachineName = & $toHash $r.BackofficeNumToMachineName
-			$MachineNameToBackofficeNum = & $toHash $r.MachineNameToBackofficeNum
-			$BackofficeNumToLabel       = & $toHash $r.BackofficeNumToLabel
-			$BackofficeNumToPath        = & $toHash $r.BackofficeNumToPath
-			$MachineNameToBackofficePath= & $toHash $r.MachineNameToBackofficePath
-
-			$ServerMachineName          = $r.ServerMachineName
-			$ServerLabel                = $r.ServerLabel
-			$ServerPath                 = $r.ServerPath
-
-			$WindowsScales              = & $toHash $r.WindowsScales
-
-			# Rebuild Nodes object (keeps same shape your script expects)
-			$Nodes = [PSCustomObject]@{
-				NumberOfLanes               = $NumberOfLanes
-				NumberOfServers             = $NumberOfServers
-				NumberOfBackoffices         = $NumberOfBackoffices
-				NumberOfScales              = $NumberOfScales
-				LaneMachineNames            = $LaneMachineNames
-				LaneNumToMachineName        = $LaneNumToMachineName
-				LaneMachineLabels           = $LaneMachineLabels
-				LaneMachinePath             = $LaneMachinePath
-				LaneMachineToServerPath     = $LaneMachineToServerPath
-				ScaleCodes                  = $ScaleCodes
-				ScaleLabels                 = $ScaleLabels
-				ScaleExePaths               = $ScaleExePaths
-				ScaleCodeToIPInfo           = $ScaleCodeToIPInfo
-				BackofficeNumToMachineName  = $BackofficeNumToMachineName
-				BackofficeNumToLabel        = $BackofficeNumToLabel
-				BackofficeNumToPath         = $BackofficeNumToPath
-				ServerMachineName           = $ServerMachineName
-				ServerLabel                 = $ServerLabel
-				ServerPath                  = $ServerPath
-			}
-
-			# Hydrate FunctionResults
-			$script:FunctionResults['NumberOfLanes']               = $NumberOfLanes
-			$script:FunctionResults['NumberOfServers']             = $NumberOfServers
-			$script:FunctionResults['NumberOfBackoffices']         = $NumberOfBackoffices
-			$script:FunctionResults['NumberOfScales']              = $NumberOfScales
-			$script:FunctionResults['LaneMachineNames']            = $LaneMachineNames
-			$script:FunctionResults['LaneNumToMachineName']        = $LaneNumToMachineName
-			$script:FunctionResults['MachineNameToLaneNum']        = $MachineNameToLaneNum
-			$script:FunctionResults['LaneMachineLabels']           = $LaneMachineLabels
-			$script:FunctionResults['LaneMachinePath']             = $LaneMachinePath
-			$script:FunctionResults['LaneMachineToServerPath']     = $LaneMachineToServerPath
-			$script:FunctionResults['ScaleCodes']                  = $ScaleCodes
-			$script:FunctionResults['ScaleLabels']                 = $ScaleLabels
-			$script:FunctionResults['ScaleExePaths']               = $ScaleExePaths
-			$script:FunctionResults['ScaleCodeToIPInfo']           = $ScaleCodeToIPInfo
-			$script:FunctionResults['ScaleNameToCode']             = $ScaleNameToCode
-			$script:FunctionResults['ScaleCodeToPath']             = $ScaleCodeToPath
-			$script:FunctionResults['ScaleNameToPath']             = $ScaleNameToPath
-			$script:FunctionResults['BackofficeNumToMachineName']  = $BackofficeNumToMachineName
-			$script:FunctionResults['MachineNameToBackofficeNum']  = $MachineNameToBackofficeNum
-			$script:FunctionResults['BackofficeNumToLabel']        = $BackofficeNumToLabel
-			$script:FunctionResults['BackofficeNumToPath']         = $BackofficeNumToPath
-			$script:FunctionResults['MachineNameToBackofficePath'] = $MachineNameToBackofficePath
-			$script:FunctionResults['ServerMachineName']           = $ServerMachineName
-			$script:FunctionResults['ServerLabel']                 = $ServerLabel
-			$script:FunctionResults['ServerPath']                  = $ServerPath
-			$script:FunctionResults['WindowsScales']               = $WindowsScales
-			$script:FunctionResults['Nodes']                       = $Nodes
-
-			# Optional GUI refresh
-			if ($NodesHost -ne $null) { $NodesHost.Text = "Number of Servers: $NumberOfServers" }
-			if ($NodesBackoffices -ne $null) { $NodesBackoffices.Text = "Number of Backoffices: $NumberOfBackoffices" }
-			if ($NodesStore -ne $null) { $NodesStore.Text = "Number of Lanes: $NumberOfLanes" }
-			if ($scalesLabel -ne $null) { $scalesLabel.Text = "Number of Scales: $NumberOfScales" }
-			if ($form -ne $null) { $form.Refresh() }
-
-			return $Nodes
-		}
-		catch
-		{
-			# If cache hydrate fails for any reason, fall through to normal logic below
-		}
-	}
-
+	
 	# ====================================================================================
 	# INITIALIZE ALL MAPPING STRUCTURES
 	# ====================================================================================
 	$HostPath = "$OfficePath"
-	$LaneMachineNames = @()
-	$LaneNumToMachineName = @{ }
-	$LaneMachineLabels = @{ }
-	$LaneMachinePath = @{ }
-	$LaneMachineToServerPath = @{ }
-	$ScaleCodes = @()
-	$ScaleLabels = @{ }
-	$ScaleExePaths = @{ }
-	$ScaleCodeToIPInfo = @{ }
-	$BackofficeNumToMachineName = @{ }
-	$BackofficeNumToLabel = @{ }
-	$BackofficeNumToPath = @{ }
-	$ServerMachineName = $null
-	$ServerLabel = $null
-	$ServerPath = $null
-
-	$TerLoadSqlPath = $null
-	if (-not [string]::IsNullOrWhiteSpace($LoadPath)) { $TerLoadSqlPath = Join-Path $LoadPath 'Ter_Load.sql' }
-
+	$LaneMachineNames = @() # List of all lane machine names (order not guaranteed)
+	$LaneNumToMachineName = @{ } # Key: Lane num (008), Value: Machine name (POS008)
+	$LaneMachineLabels = @{ } # Key: Machine name, Value: Label from DB/file
+	$LaneMachinePath = @{ } # Key: Machine name, Value: UNC/physical path
+	$LaneMachineToServerPath = @{ } # Key: Machine name, Value: Server path
+	$ScaleCodes = @() # List of all scale codes
+	$ScaleLabels = @{ } # Key: Scale code, Value: Label
+	$ScaleExePaths = @{ } # Key: Scale code, Value: Path to scale EXE
+	$ScaleCodeToIPInfo = @{ } # Key: Scale code, Value: Scale info object (Bizerba, etc)
+	$BackofficeNumToMachineName = @{ } # Key: Backoffice terminal num (e.g. 902), Value: Name
+	$BackofficeNumToLabel = @{ } # Key: Backoffice terminal num, Value: Label
+	$BackofficeNumToPath = @{ } # Key: Backoffice terminal num, Value: Path
+	$ServerMachineName = $null # Store server machine name
+	$ServerLabel = $null # Server label (from DB/file)
+	$ServerPath = $null # Server path (from DB/file)
+	$TerLoadSqlPath = Join-Path $LoadPath 'Ter_Load.sql'
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$NodesFromDatabase = $false
 	$SqlModule = $script:FunctionResults['SqlModuleName']
 	$server = $script:FunctionResults['DBSERVER']
 	$database = $script:FunctionResults['DBNAME']
-
+	
 	# ====================================================================================
 	# DETECT SQL MODULE
 	# ====================================================================================
@@ -2730,7 +2419,7 @@ function Retrieve_Nodes
 		Write_Log "No SQL PowerShell module found! Cannot query database for node info." "red"
 		$ConnectionString = $null
 	}
-
+	
 	# ====================================================================================
 	# 1. PRIMARY: LOAD FROM DATABASE (TER_TAB, TBS_SCL_ver520)
 	# ====================================================================================
@@ -2740,10 +2429,13 @@ function Retrieve_Nodes
 		$supportsConnStr = $false
 		if ($invokeSqlCmd) { $supportsConnStr = $invokeSqlCmd.Parameters.ContainsKey('ConnectionString') }
 		else { Write_Log "Invoke-Sqlcmd command not found in module $SqlModule." "yellow" }
-
+		
 		$NodesFromDatabase = $true
 		try
 		{
+			# -------------------------------------------------------------------------
+			# LOAD LANES, BACKOFFICES, SERVER FROM TER_TAB
+			# -------------------------------------------------------------------------
 			$queryTerTab = @"
 SELECT F1057, F1058, F1125, F1169
 FROM TER_TAB
@@ -2757,14 +2449,16 @@ WHERE F1056 = '$StoreNumber'
 			{
 				$terTabResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTerTab -ErrorAction Stop
 			}
-
+			
 			foreach ($row in $terTabResult)
 			{
 				$terminal = $row.F1057
 				$label = $row.F1058
 				$path = $row.F1125
 				$hostPath = $row.F1169
-
+				
+				# -------------------------- LANES --------------------------
+				# (terminal is 0xx or path is UNC, but not scale/backoffice)
 				if (
 					($terminal -match '^0\d\d$' -or $path -match '^\\\\[^\\]+\\') -and
 					$terminal -notmatch '^8' -and $terminal -notmatch '^9'
@@ -2775,28 +2469,32 @@ WHERE F1056 = '$StoreNumber'
 					else { $machineName = $terminal }
 					$LaneMachineNames += $machineName
 					if ($terminal -match '^0\d\d$') { $LaneNumToMachineName[$terminal] = $machineName }
+					$LaneNumToMachineName[$machineName] = $machineName
 					$LaneMachineLabels[$machineName] = $label
 					$LaneMachinePath[$machineName] = $path
 					$LaneMachineToServerPath[$machineName] = $hostPath
 				}
+				# -------------------------- SCALES --------------------------
 				elseif ($terminal -match '^8\d\d$' -and $terminal -notmatch '^0' -and $terminal -notmatch '^9' -and $path -match '(?i)^[cC]:\\.*XchScale\\XchScale\.exe$')
 				{
 					$ScaleCodes += $terminal
 					$ScaleLabels[$terminal] = $label
 					$ScaleExePaths[$terminal] = $path
 					$ScaleCodeToIPInfo[$terminal] = [PSCustomObject]@{
-						Code     = $terminal
+						Code	 = $terminal
 						Label    = $label
-						Path     = $path
+						Path	 = $path
 						HostPath = $hostPath
 					}
 				}
+				# -------------------------- SERVER --------------------------
 				elseif ($terminal -eq '901' -and $path -match '^@[^@]+$')
 				{
 					$ServerMachineName = $path -replace '^@', ''
 					$ServerLabel = $label
 					$ServerPath = $path
 				}
+				# -------------------------- BACKOFFICES --------------------------
 				elseif ($terminal -match '^9(0[2-9]|[1-8]\d|9[0-8])$' -and $path -match '^@[^@]+$')
 				{
 					$machineName = $path -replace '^@', ''
@@ -2805,12 +2503,16 @@ WHERE F1056 = '$StoreNumber'
 					$BackofficeNumToPath[$terminal] = $path
 				}
 			}
-
+			
 			$NumberOfLanes = $LaneMachineNames.Count
 			$NumberOfScales = $ScaleCodes.Count
-			$NumberOfServers = if ($ServerMachineName) { 1 } else { 0 }
+			$NumberOfServers = if ($ServerMachineName) { 1 }
+			else { 0 }
 			$NumberOfBackoffices = $BackofficeNumToMachineName.Count
-
+			
+			# -------------------------------------------------------------------------
+			# LOAD SCALES FROM TBS_SCL_ver520 (preferred, for real scale data)
+			# -------------------------------------------------------------------------
 			$queryTbsSclScales = @"
 SELECT ScaleCode, ScaleName, ScaleLocation, IPNetwork, IPDevice, Active, ScaleBrand, ScaleModel
 FROM TBS_SCL_ver520
@@ -2838,7 +2540,7 @@ WHERE Active = 'Y'
 					throw
 				}
 			}
-
+			
 			if ($tbsSclScalesResult)
 			{
 				$NumberOfScales += $tbsSclScalesResult.Count
@@ -2846,13 +2548,13 @@ WHERE Active = 'Y'
 				{
 					$fullIP = "$($row.IPNetwork)$($row.IPDevice)"
 					$scaleObj = [PSCustomObject]@{
-						ScaleCode     = $row.ScaleCode
-						ScaleName     = $row.ScaleName
+						ScaleCode	  = $row.ScaleCode
+						ScaleName	  = $row.ScaleName
 						ScaleLocation = $row.ScaleLocation
-						IPNetwork     = $row.IPNetwork
-						IPDevice      = $row.IPDevice
-						FullIP        = $fullIP
-						Active        = $row.Active
+						IPNetwork	  = $row.IPNetwork
+						IPDevice	  = $row.IPDevice
+						FullIP	      = $fullIP
+						Active	      = $row.Active
 						ScaleBrand    = $row.ScaleBrand
 						ScaleModel    = $row.ScaleModel
 					}
@@ -2866,12 +2568,12 @@ WHERE Active = 'Y'
 			$NodesFromDatabase = $false
 		}
 	}
-
+	
 	# ====================================================================================
 	# 2. FALLBACK: LOAD FROM Ter_Load.sql IF DB IS NOT AVAILABLE
 	# ====================================================================================
 	$TerLoadUsed = $false
-	if ((-not $NodesFromDatabase) -and $TerLoadSqlPath -and (Test-Path $TerLoadSqlPath))
+	if ((-not $NodesFromDatabase) -and (Test-Path $TerLoadSqlPath))
 	{
 		Write_Log "Using Ter_Load.sql as backup for TER_TAB information." "yellow"
 		$TerLoadUsed = $true
@@ -2880,7 +2582,7 @@ WHERE Active = 'Y'
 		{
 			$insertBlock = $matches[1]
 			$values = $insertBlock -split '\),\s*\(' | ForEach-Object { $_.Trim('() ') }
-
+			
 			foreach ($value in $values)
 			{
 				$fields = $value -split "',\s*'" | ForEach-Object { $_.Trim("'") }
@@ -2890,7 +2592,8 @@ WHERE Active = 'Y'
 					$label = $fields[2]
 					$path = $fields[3]
 					$hostPath = $fields[4]
-
+					
+					# Lanes: same rules as above
 					if (
 						($terminal -match '^0\d\d$' -or $path -match '^\\\\[^\\]+\\') -and
 						$terminal -notmatch '^8' -and $terminal -notmatch '^9'
@@ -2901,6 +2604,7 @@ WHERE Active = 'Y'
 						else { $machineName = $terminal }
 						$LaneMachineNames += $machineName
 						if ($terminal -match '^0\d\d$') { $LaneNumToMachineName[$terminal] = $machineName }
+						$LaneNumToMachineName[$machineName] = $machineName
 						$LaneMachineLabels[$machineName] = $label
 						$LaneMachinePath[$machineName] = $path
 						$LaneMachineToServerPath[$machineName] = $hostPath
@@ -2911,9 +2615,9 @@ WHERE Active = 'Y'
 						$ScaleLabels[$terminal] = $label
 						$ScaleExePaths[$terminal] = $path
 						$ScaleCodeToIPInfo[$terminal] = [PSCustomObject]@{
-							Code     = $terminal
+							Code	 = $terminal
 							Label    = $label
-							Path     = $path
+							Path	 = $path
 							HostPath = $hostPath
 						}
 					}
@@ -2935,14 +2639,15 @@ WHERE Active = 'Y'
 		}
 		$NumberOfLanes = $LaneMachineNames.Count
 		$NumberOfScales = $ScaleCodes.Count
-		$NumberOfServers = if ($ServerMachineName) { 1 } else { 0 }
+		$NumberOfServers = if ($ServerMachineName) { 1 }
+		else { 0 }
 		$NumberOfBackoffices = $BackofficeNumToMachineName.Count
 	}
-
+	
 	# ====================================================================================
 	# 3. CLEAN 1:1 MAPPINGS FOR ALL NODES (NO ALIASES, INCLUDE PATHS)
 	# ====================================================================================
-
+	
 	# ---- LANES ----
 	$CleanLaneNumToMachineName = @{ }
 	$CleanMachineNameToLaneNum = @{ }
@@ -2950,14 +2655,14 @@ WHERE Active = 'Y'
 	$CleanMachineNameToPath = @{ }
 	$CleanLaneNumToServerPath = @{ }
 	$CleanMachineNameToServerPath = @{ }
-
+	
 	foreach ($kv in $LaneNumToMachineName.GetEnumerator())
 	{
 		$laneNum = $kv.Key
 		$machine = $kv.Value
 		$CleanLaneNumToMachineName[$laneNum] = $machine
 		$CleanMachineNameToLaneNum[$machine] = $laneNum
-
+		# Paths
 		if ($LaneMachinePath.ContainsKey($machine))
 		{
 			$CleanLaneNumToPath[$laneNum] = $LaneMachinePath[$machine]
@@ -2975,13 +2680,13 @@ WHERE Active = 'Y'
 	$MachineNameToPath = $CleanMachineNameToPath
 	$LaneNumToServerPath = $CleanLaneNumToServerPath
 	$MachineNameToServerPath = $CleanMachineNameToServerPath
-
+	
 	# ---- SCALES ----
 	$CleanScaleCodeToIPInfo = @{ }
 	$CleanScaleNameToCode = @{ }
 	$CleanScaleCodeToPath = @{ }
 	$CleanScaleNameToPath = @{ }
-
+	
 	foreach ($kv in $ScaleCodeToIPInfo.GetEnumerator())
 	{
 		$scaleCode = $kv.Key
@@ -2998,19 +2703,20 @@ WHERE Active = 'Y'
 	$ScaleNameToCode = $CleanScaleNameToCode
 	$ScaleCodeToPath = $CleanScaleCodeToPath
 	$ScaleNameToPath = $CleanScaleNameToPath
-
+	
 	# ---- BACKOFFICES ----
 	$CleanBackofficeNumToMachineName = @{ }
 	$CleanMachineNameToBackofficeNum = @{ }
 	$CleanBackofficeNumToPath = @{ }
 	$CleanMachineNameToBOPath = @{ }
-
+	
 	foreach ($kv in $BackofficeNumToMachineName.GetEnumerator())
 	{
 		$boNum = $kv.Key
 		$machine = $kv.Value
 		$CleanBackofficeNumToMachineName[$boNum] = $machine
 		$CleanMachineNameToBackofficeNum[$machine] = $boNum
+		# Paths
 		if ($BackofficeNumToPath.ContainsKey($boNum))
 		{
 			$CleanBackofficeNumToPath[$boNum] = $BackofficeNumToPath[$boNum]
@@ -3021,59 +2727,57 @@ WHERE Active = 'Y'
 	$MachineNameToBackofficeNum = $CleanMachineNameToBackofficeNum
 	$BackofficeNumToPath = $CleanBackofficeNumToPath
 	$MachineNameToBackofficePath = $CleanMachineNameToBOPath
-
+	
 	# ====================================================================================
 	# 4. BUILD RETURN OBJECT & STORE TO GLOBAL FUNCTIONRESULTS
 	# ====================================================================================
 	$Nodes = [PSCustomObject]@{
-		NumberOfLanes               = $NumberOfLanes
-		NumberOfServers             = $NumberOfServers
-		NumberOfBackoffices         = $NumberOfBackoffices
-		NumberOfScales              = $NumberOfScales
-		LaneMachineNames            = $LaneMachineNames
-		LaneNumToMachineName        = $LaneNumToMachineName
-		LaneMachineLabels           = $LaneMachineLabels
-		LaneMachinePath             = $LaneMachinePath
-		LaneMachineToServerPath     = $LaneMachineToServerPath
-		ScaleCodes                  = $ScaleCodes
-		ScaleLabels                 = $ScaleLabels
-		ScaleExePaths               = $ScaleExePaths
-		ScaleCodeToIPInfo           = $ScaleCodeToIPInfo
-		BackofficeNumToMachineName  = $BackofficeNumToMachineName
-		BackofficeNumToLabel        = $BackofficeNumToLabel
-		BackofficeNumToPath         = $BackofficeNumToPath
-		ServerMachineName           = $ServerMachineName
-		ServerLabel                 = $ServerLabel
-		ServerPath                  = $ServerPath
+		NumberOfLanes			   = $NumberOfLanes
+		NumberOfServers		       = $NumberOfServers
+		NumberOfBackoffices	       = $NumberOfBackoffices
+		NumberOfScales			   = $NumberOfScales
+		LaneMachineNames		   = $LaneMachineNames
+		LaneNumToMachineName	   = $LaneNumToMachineName
+		LaneMachineLabels		   = $LaneMachineLabels
+		LaneMachinePath		       = $LaneMachinePath
+		LaneMachineToServerPath    = $LaneMachineToServerPath
+		ScaleCodes				   = $ScaleCodes
+		ScaleLabels			       = $ScaleLabels
+		ScaleExePaths			   = $ScaleExePaths
+		ScaleCodeToIPInfo		   = $ScaleCodeToIPInfo
+		BackofficeNumToMachineName = $BackofficeNumToMachineName
+		BackofficeNumToLabel	   = $BackofficeNumToLabel
+		BackofficeNumToPath	       = $BackofficeNumToPath
+		ServerMachineName		   = $ServerMachineName
+		ServerLabel			       = $ServerLabel
+		ServerPath				   = $ServerPath
 	}
-
-	$script:FunctionResults['NumberOfLanes']               = $NumberOfLanes
-	$script:FunctionResults['NumberOfServers']             = $NumberOfServers
-	$script:FunctionResults['NumberOfBackoffices']         = $NumberOfBackoffices
-	$script:FunctionResults['NumberOfScales']              = $NumberOfScales
-	$script:FunctionResults['LaneMachineNames']            = $LaneMachineNames
-	$script:FunctionResults['LaneNumToMachineName']        = $LaneNumToMachineName
-	$script:FunctionResults['MachineNameToLaneNum']        = $MachineNameToLaneNum
-	$script:FunctionResults['LaneMachineLabels']           = $LaneMachineLabels
-	$script:FunctionResults['LaneMachinePath']             = $LaneMachinePath
-	$script:FunctionResults['LaneMachineToServerPath']     = $LaneMachineToServerPath
-	$script:FunctionResults['ScaleCodes']                  = $ScaleCodes
-	$script:FunctionResults['ScaleLabels']                 = $ScaleLabels
-	$script:FunctionResults['ScaleExePaths']               = $ScaleExePaths
-	$script:FunctionResults['ScaleCodeToIPInfo']           = $ScaleCodeToIPInfo
-	$script:FunctionResults['ScaleNameToCode']             = $ScaleNameToCode
-	$script:FunctionResults['ScaleCodeToPath']             = $ScaleCodeToPath
-	$script:FunctionResults['ScaleNameToPath']             = $ScaleNameToPath
-	$script:FunctionResults['BackofficeNumToMachineName']  = $BackofficeNumToMachineName
-	$script:FunctionResults['MachineNameToBackofficeNum']  = $MachineNameToBackofficeNum
-	$script:FunctionResults['BackofficeNumToLabel']        = $BackofficeNumToLabel
-	$script:FunctionResults['BackofficeNumToPath']         = $BackofficeNumToPath
-	$script:FunctionResults['MachineNameToBackofficePath'] = $MachineNameToBackofficePath
-	$script:FunctionResults['ServerMachineName']           = $ServerMachineName
-	$script:FunctionResults['ServerLabel']                 = $ServerLabel
-	$script:FunctionResults['ServerPath']                  = $ServerPath
-	$script:FunctionResults['Nodes']                       = $Nodes
-
+	
+	# Write everything into the global FunctionResults for ALL script logic to use!
+	$script:FunctionResults['NumberOfLanes'] = $NumberOfLanes
+	$script:FunctionResults['NumberOfServers'] = $NumberOfServers
+	$script:FunctionResults['NumberOfBackoffices'] = $NumberOfBackoffices
+	$script:FunctionResults['NumberOfScales'] = $NumberOfScales
+	$script:FunctionResults['LaneMachineNames'] = $LaneMachineNames
+	$script:FunctionResults['LaneNumToMachineName'] = $LaneNumToMachineName
+	$script:FunctionResults['MachineNameToLaneNum'] = $MachineNameToLaneNum
+	$script:FunctionResults['LaneMachineLabels'] = $LaneMachineLabels
+	$script:FunctionResults['LaneMachinePath'] = $LaneMachinePath
+	$script:FunctionResults['LaneMachineToServerPath'] = $LaneMachineToServerPath
+	$script:FunctionResults['ScaleCodes'] = $ScaleCodes
+	$script:FunctionResults['ScaleLabels'] = $ScaleLabels
+	$script:FunctionResults['ScaleExePaths'] = $ScaleExePaths
+	$script:FunctionResults['ScaleCodeToIPInfo'] = $ScaleCodeToIPInfo
+	$script:FunctionResults['ScaleNameToCode'] = $ScaleNameToCode
+	$script:FunctionResults['BackofficeNumToMachineName'] = $BackofficeNumToMachineName
+	$script:FunctionResults['MachineNameToBackofficeNum'] = $MachineNameToBackofficeNum
+	$script:FunctionResults['BackofficeNumToLabel'] = $BackofficeNumToLabel
+	$script:FunctionResults['BackofficeNumToPath'] = $BackofficeNumToPath
+	$script:FunctionResults['ServerMachineName'] = $ServerMachineName
+	$script:FunctionResults['ServerLabel'] = $ServerLabel
+	$script:FunctionResults['ServerPath'] = $ServerPath
+	$script:FunctionResults['Nodes'] = $Nodes
+	
 	# ====================================================================================
 	# 5. BUILD WINDOWS SCALES ONLY (EX: Bizerba)
 	# ====================================================================================
@@ -3084,7 +2788,7 @@ WHERE Active = 'Y'
 		if ($scale.ScaleBrand -and $scale.ScaleBrand -match 'bizerba') { $WindowsScales[$code] = $scale }
 	}
 	$script:FunctionResults['WindowsScales'] = $WindowsScales
-
+	
 	# ====================================================================================
 	# 6. OPTIONAL: UPDATE GUI LABELS IF PRESENT
 	# ====================================================================================
@@ -3093,133 +2797,7 @@ WHERE Active = 'Y'
 	if ($NodesStore -ne $null) { $NodesStore.Text = "Number of Lanes: $NumberOfLanes" }
 	if ($scalesLabel -ne $null) { $scalesLabel.Text = "Number of Scales: $NumberOfScales" }
 	if ($form -ne $null) { $form.Refresh() }
-
-	# ====================================================================================
-	# 6.5 CACHE WRITE (ordered by lane numbers for file readability)
-	# ====================================================================================
-	if ($CachePath)
-	{
-		try
-		{
-			# Lane-number ordered maps (only for file output)
-			$sortedLaneNums = @($LaneNumToMachineName.Keys) | Where-Object { $_ -match '^\d{3}$' } | Sort-Object { [int]$_ }
-
-			$outLaneNumToMachineName = [ordered]@{}
-			foreach ($k in $sortedLaneNums) { $outLaneNumToMachineName[$k] = $LaneNumToMachineName[$k] }
-
-			# MachineName->LaneNum ordered by lane number
-			$outMachineNameToLaneNum = [ordered]@{}
-			foreach ($kv in ($MachineNameToLaneNum.GetEnumerator() | Sort-Object { [int]($_.Value) }, { $_.Key }))
-			{
-				$outMachineNameToLaneNum[$kv.Key] = $kv.Value
-			}
-
-			# Machine-keyed lane maps ordered by lane number
-			$outLaneMachineLabels = [ordered]@{}
-			$outLaneMachinePath   = [ordered]@{}
-			$outLaneMachineToServerPath = [ordered]@{}
-			foreach ($ln in $sortedLaneNums)
-			{
-				$m = $LaneNumToMachineName[$ln]
-				if ($m)
-				{
-					if ($LaneMachineLabels.ContainsKey($m)) { $outLaneMachineLabels[$m] = $LaneMachineLabels[$m] }
-					if ($LaneMachinePath.ContainsKey($m)) { $outLaneMachinePath[$m] = $LaneMachinePath[$m] }
-					if ($LaneMachineToServerPath.ContainsKey($m)) { $outLaneMachineToServerPath[$m] = $LaneMachineToServerPath[$m] }
-				}
-			}
-
-			# Scales ordered by numeric code when possible
-			$outScaleLabels = [ordered]@{}
-			foreach ($k in (@($ScaleLabels.Keys) | Sort-Object { [int]($_ -replace '[^\d]', '0') })) { $outScaleLabels[$k] = $ScaleLabels[$k] }
-
-			$outScaleExePaths = [ordered]@{}
-			foreach ($k in (@($ScaleExePaths.Keys) | Sort-Object { [int]($_ -replace '[^\d]', '0') })) { $outScaleExePaths[$k] = $ScaleExePaths[$k] }
-
-			$outScaleCodeToIPInfo = [ordered]@{}
-			foreach ($k in (@($ScaleCodeToIPInfo.Keys) | Sort-Object { [int]($_ -replace '[^\d]', '0') })) { $outScaleCodeToIPInfo[$k] = $ScaleCodeToIPInfo[$k] }
-
-			$outScaleNameToCode = [ordered]@{}
-			foreach ($kv in ($ScaleNameToCode.GetEnumerator() | Sort-Object { [int]($_.Value -replace '[^\d]', '0') }, { $_.Key })) { $outScaleNameToCode[$kv.Key] = $kv.Value }
-
-			$outScaleCodeToPath = [ordered]@{}
-			foreach ($k in (@($ScaleCodeToPath.Keys) | Sort-Object { [int]($_ -replace '[^\d]', '0') })) { $outScaleCodeToPath[$k] = $ScaleCodeToPath[$k] }
-
-			$outScaleNameToPath = [ordered]@{}
-			foreach ($kv in ($ScaleNameToPath.GetEnumerator() | Sort-Object { $_.Key })) { $outScaleNameToPath[$kv.Key] = $kv.Value }
-
-			# Backoffices ordered by terminal number
-			$outBackofficeNumToMachineName = [ordered]@{}
-			foreach ($k in (@($BackofficeNumToMachineName.Keys) | Sort-Object { [int]$_ })) { $outBackofficeNumToMachineName[$k] = $BackofficeNumToMachineName[$k] }
-
-			$outMachineNameToBackofficeNum = [ordered]@{}
-			foreach ($kv in ($MachineNameToBackofficeNum.GetEnumerator() | Sort-Object { [int]($_.Value) }, { $_.Key })) { $outMachineNameToBackofficeNum[$kv.Key] = $kv.Value }
-
-			$outBackofficeNumToLabel = [ordered]@{}
-			foreach ($k in (@($BackofficeNumToLabel.Keys) | Sort-Object { [int]$_ })) { $outBackofficeNumToLabel[$k] = $BackofficeNumToLabel[$k] }
-
-			$outBackofficeNumToPath = [ordered]@{}
-			foreach ($k in (@($BackofficeNumToPath.Keys) | Sort-Object { [int]$_ })) { $outBackofficeNumToPath[$k] = $BackofficeNumToPath[$k] }
-
-			$outMachineNameToBackofficePath = [ordered]@{}
-			foreach ($kv in ($MachineNameToBackofficePath.GetEnumerator() | Sort-Object { $_.Key })) { $outMachineNameToBackofficePath[$kv.Key] = $kv.Value }
-
-			$outWindowsScales = [ordered]@{}
-			foreach ($k in (@($WindowsScales.Keys) | Sort-Object { [int]($_ -replace '[^\d]', '0') })) { $outWindowsScales[$k] = $WindowsScales[$k] }
-
-			# Keep arrays stable in file
-			$outLaneMachineNames = @($LaneMachineNames)
-			try {
-				if ($outLaneMachineNames.Count -gt 0 -and $MachineNameToLaneNum.Count -gt 0)
-				{
-					$outLaneMachineNames = $outLaneMachineNames | Sort-Object {
-						try { [int]($MachineNameToLaneNum[$_] -replace '[^\d]', '0') } catch { 999999 }
-					}, { $_ }
-				}
-			} catch { }
-
-			$outScaleCodes = @($ScaleCodes)
-			try { $outScaleCodes = $outScaleCodes | Sort-Object { [int]($_ -replace '[^\d]', '0') } } catch { }
-
-			$cacheOut = [pscustomobject]@{
-				LastUpdated  = (Get-Date).ToString('o')
-				CacheMaxDays = $CacheMaxDays
-				StoreNumber  = $StoreNumberNorm
-				Results      = [pscustomobject]@{
-					NumberOfLanes               = $NumberOfLanes
-					NumberOfServers             = $NumberOfServers
-					NumberOfBackoffices         = $NumberOfBackoffices
-					NumberOfScales              = $NumberOfScales
-					LaneMachineNames            = $outLaneMachineNames
-					LaneNumToMachineName        = $outLaneNumToMachineName
-					MachineNameToLaneNum        = $outMachineNameToLaneNum
-					LaneMachineLabels           = $outLaneMachineLabels
-					LaneMachinePath             = $outLaneMachinePath
-					LaneMachineToServerPath     = $outLaneMachineToServerPath
-					ScaleCodes                  = $outScaleCodes
-					ScaleLabels                 = $outScaleLabels
-					ScaleExePaths               = $outScaleExePaths
-					ScaleCodeToIPInfo           = $outScaleCodeToIPInfo
-					ScaleNameToCode             = $outScaleNameToCode
-					ScaleCodeToPath             = $outScaleCodeToPath
-					ScaleNameToPath             = $outScaleNameToPath
-					BackofficeNumToMachineName  = $outBackofficeNumToMachineName
-					MachineNameToBackofficeNum  = $outMachineNameToBackofficeNum
-					BackofficeNumToLabel        = $outBackofficeNumToLabel
-					BackofficeNumToPath         = $outBackofficeNumToPath
-					MachineNameToBackofficePath = $outMachineNameToBackofficePath
-					ServerMachineName           = $ServerMachineName
-					ServerLabel                 = $ServerLabel
-					ServerPath                  = $ServerPath
-					WindowsScales               = $outWindowsScales
-				}
-			}
-
-			($cacheOut | ConvertTo-Json -Depth 14) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
-		}
-		catch { }
-	}
-
+	
 	# ====================================================================================
 	# 7. RETURN THE NODES OBJECT FOR SCRIPT CALLERS
 	# ====================================================================================
@@ -3558,119 +3136,52 @@ function Clear_XE_Folder
 function Generate_SQL_Scripts
 {
 	param (
-		[string]$StoreNumber
+		[string]$StoreNumber,
+		[string]$LanesqlFilePath,
+		[string]$StoresqlFilePath
 	)
-
-	# ------------------------------------------------------------------------------------------------
-	# Output folder = $script:SetupFiles\SQL_Scripts   (NO current-location writes)
-	# Cache rule: only (re)write files if missing OR older than 30 days
-	# ------------------------------------------------------------------------------------------------
-	$CacheMaxDays = 30
-
-	if (-not $script:FunctionResults) { $script:FunctionResults = @{} }
-
-	if (-not $script:SetupFiles -or -not (Test-Path $script:SetupFiles))
-	{
-		Write_Log "Generate_SQL_Scripts: `\$script:SetupFiles is missing or invalid. Cannot store SQL scripts." "red"
-		return
-	}
-
-	$outDir = Join-Path $script:SetupFiles 'SQL_Scripts'
-	try { if (-not (Test-Path $outDir)) { New-Item -Path $outDir -ItemType Directory -Force | Out-Null } } catch { }
-
-	# Normalize store number (keep your existing behavior: 3-digit)
-	if (-not [string]::IsNullOrWhiteSpace($StoreNumber) -and $StoreNumber -match '^\d+$')
-	{
-		$StoreNumber = ([int]$StoreNumber).ToString('000')
-	}
-	elseif (-not [string]::IsNullOrWhiteSpace($StoreNumber))
-	{
-		$StoreNumber = $StoreNumber.PadLeft(3, '0')
-	}
-
+	
+	# Ensure StoreNumber is properly formatted (e.g., '005')
+	# $StoreNumber = $StoreNumber.PadLeft(3, '0')
+	
 	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
 	{
 		Write_Log "Failed to retrieve the connection string." "red"
 		return
 	}
-
-	# File set (per store)
-	$laneFile        = Join-Path $outDir ("Lane.sql")
-	$laneFilteredFile= Join-Path $outDir ("Lane_Filtered.sql")
-	$laneMailslotFile = Join-Path $outDir ("Lane_Mailslot.sql")
-	$serverFile      = Join-Path $outDir ("Server.sql")
-	$scheduleFile    = Join-Path $outDir ("Server_Schedule.sql")
-
-	# Track paths for easy reference elsewhere
-	$script:FunctionResults['LaneSqlScriptPath']          = $laneFile
-	$script:FunctionResults['LaneSqlFilteredScriptPath']  = $laneFilteredFile
-	$script:FunctionResults['LaneSqlMailslotScriptPath']  = $laneMailslotFile
-	$script:FunctionResults['ServerSqlScriptPath']        = $serverFile
-	$script:FunctionResults['ServerScheduleSqlScriptPath']= $scheduleFile
-
-	# Helper: load cache if fresh
-	$needBuild = $false
-	$cached = @{
-		Lane        = $false
-		LaneFiltered= $false
-		LaneMailslot= $false
-		Server      = $false
-		Schedule    = $false
-	}
-
-	try {
-		if (Test-Path $laneFile) {
-			$age = ((Get-Date) - (Get-Item $laneFile).LastWriteTime).TotalDays
-			if ($age -le $CacheMaxDays) { $script:LaneSQLScript = Get-Content -LiteralPath $laneFile -Raw; $cached.Lane = $true } else { $needBuild = $true }
-		} else { $needBuild = $true }
-
-		if (Test-Path $laneFilteredFile) {
-			$age = ((Get-Date) - (Get-Item $laneFilteredFile).LastWriteTime).TotalDays
-			if ($age -le $CacheMaxDays) { $script:LaneSQLFiltered = Get-Content -LiteralPath $laneFilteredFile -Raw; $cached.LaneFiltered = $true } else { $needBuild = $true }
-		} else { $needBuild = $true }
-
-		if (Test-Path $laneMailslotFile) {
-			$age = ((Get-Date) - (Get-Item $laneMailslotFile).LastWriteTime).TotalDays
-			if ($age -le $CacheMaxDays) { $script:LaneSQLScript_Mailslot = Get-Content -LiteralPath $laneMailslotFile -Raw; $cached.LaneMailslot = $true } else { $needBuild = $true }
-		} else { $needBuild = $true }
-
-		if (Test-Path $serverFile) {
-			$age = ((Get-Date) - (Get-Item $serverFile).LastWriteTime).TotalDays
-			if ($age -le $CacheMaxDays) { $script:ServerSQLScript = Get-Content -LiteralPath $serverFile -Raw; $cached.Server = $true } else { $needBuild = $true }
-		} else { $needBuild = $true }
-
-		if (Test-Path $scheduleFile) {
-			$age = ((Get-Date) - (Get-Item $scheduleFile).LastWriteTime).TotalDays
-			if ($age -le $CacheMaxDays) { $script:ScheduleServerScript = Get-Content -LiteralPath $scheduleFile -Raw; $cached.Schedule = $true } else { $needBuild = $true }
-		} else { $needBuild = $true }
-	} catch { $needBuild = $true }
-
-	# If everything is fresh, we're done (no regeneration, no rewrites)
-	if (-not $needBuild)
-	{
-		return
-	}
-
-	# ------------------------------------------------------------------------------------------------
-	# Build scripts (same logic as your current function)
-	# ------------------------------------------------------------------------------------------------
+	
 	$ConnectionString = $script:FunctionResults['ConnectionString']
+	
+	# Initialize default database names
 	$defaultStoreDbName = "STORESQL"
-	$defaultLaneDbName  = "LANESQL"
+	$defaultLaneDbName = "LANESQL"
 	$dbServer = $script:FunctionResults['DBSERVER']
-
+	
+	# Retrive the DB name
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
-		$storeDbName = $script:FunctionResults['DBNAME']
+		$dbName = $script:FunctionResults['DBNAME']
+		#	Write_Log "Using DBNAME from FunctionResults: $dbName" "blue"
+		$storeDbName = $dbName
 	}
 	else
 	{
-		Write_Log "No 'DBNAME' in FunctionResults. Defaulting to '$defaultStoreDbName'." "yellow"
+		Write_Log "No 'Database' in $script:FunctionResults. Defaulting to '$defaultStoreDbName'." "yellow"
 		$storeDbName = $defaultStoreDbName
 	}
-	$laneDbName = $defaultLaneDbName
-
-	# ------------------ Lane script ------------------
+	
+	#Always Enforce the Slash
+	$BackupRoot = ($BackupRoot.TrimEnd('\') + '\')
+	$ScriptsFolder = ($ScriptsFolder.TrimEnd('\') + '\')
+	
+	# Define replacements for SQL scripts
+	# $storeDbName is now either the retrieved DBNAME or the default 'STORESQL'
+	# $laneDbName remains as 'LANESQL' unless you wish to make it dynamic as well
+	$laneDbName = $defaultLaneDbName # If LANESQL is also dynamic, you can retrieve it similarly
+	
+	# Write_Log "Generating SQL scripts using Store DB: '$storeDbName' and Lane DB: '$laneDbName'..." "blue"
+	
+	# Generate Lanesql script
 	$LaneSQLScript = @"
 /* Set a long timeout so the entire script runs */
 @WIZRPL(DBASE_TIMEOUT=E);
@@ -3774,10 +3285,15 @@ ALTER DATABASE $laneDbName SET RECOVERY SIMPLE
 /* Clear the long database timeout */
 @WIZCLR(DBASE_TIMEOUT);
 "@
-
+	
+	# Store the LaneSQLScript in the script scope
 	$script:LaneSQLScript = $LaneSQLScript
-
-	# Filtered lane script
+	
+	# -------------------------------
+	# Create a filtered version of LaneSQL by skipping sections using regex
+	# -------------------------------
+	
+	# The dynamic T-SQL memory config we want to use in the *filtered* Lane script
 	$ServerMemoryConfig = @"
 DECLARE @Memory25PercentMB BIGINT;
 SELECT @Memory25PercentMB = (total_physical_memory_kb / 1024) * 25 / 100
@@ -3789,41 +3305,76 @@ RECONFIGURE;
 EXEC sp_configure 'show advanced options', 0;
 RECONFIGURE;
 "@
-
+	
+	# Define the regex pattern to match sections
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-	$sectionsToSkip = @('Set a long timeout so the entire script runs','Clear the long database timeout')
-
+	
+	# Define the names of the sections to skip
+	$sectionsToSkip = @(
+		'Set a long timeout so the entire script runs',
+		'Clear the long database timeout'
+	)
+	
+	# Initialize the filtered script
 	$LaneSQLFiltered = ""
+	
+	# Use regex to parse the script into sections
 	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
+	
 	foreach ($match in $matches)
 	{
 		$sectionName = $match.Groups['SectionName'].Value.Trim()
 		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
-
-		if ($sectionsToSkip -contains $sectionName) { continue }
+		
+		if ($sectionsToSkip -contains $sectionName)
+		{
+			# 1) If it's in the skip list, do nothing (omit).
+			continue
+		}
 		elseif ($sectionName -eq 'Set memory configuration')
 		{
+			# 2) If it's the "Set memory configuration" block, replace it with the dynamic version:
 			$LaneSQLFiltered += "/* $sectionName */`r`n$ServerMemoryConfig`r`n`r`n"
 		}
 		else
 		{
+			# 3) Otherwise, keep the block exactly
+			# Additionally, remove the @dbEXEC() wrappers but keep the inner SQL commands
+			# Use regex to replace @dbEXEC(...) with the content inside the parentheses
+			# This handles both @dbEXEC("...") and @dbEXEC(...) without quotes
 			$sqlCommands = $sqlCommands -replace '@dbEXEC\((?:\"(.*)\"|(.*))\)', '$1$2'
 			$LaneSQLFiltered += "/* $sectionName */`r`n$sqlCommands`r`n`r`n"
 		}
 	}
+	
+	# Store the filtered LaneSQL script in the script scope for later use
 	$script:LaneSQLFiltered = $LaneSQLFiltered
-
-	# Mailslot-friendly lane script
+	
+	# --- New: prepare mailslot-friendly script ---
 	$lines = $script:LaneSQLScript -split "`r?`n"
 	$macroPattern = '^\s*(@|/|\*)'
 	$fixedLines = foreach ($line in $lines)
 	{
-		if ($line -match $macroPattern -or [string]::IsNullOrWhiteSpace($line)) { $line }
-		else { "@EXEC($line)" }
+		if ($line -match $macroPattern -or [string]::IsNullOrWhiteSpace($line))
+		{
+			$line
+		}
+		else
+		{
+			"@EXEC($line)"
+		}
 	}
 	$script:LaneSQLScript_Mailslot = ($fixedLines -join "`r`n")
-
-	# ------------------ Server script ------------------
+	
+	<#
+	# Optionally write to file as fallback
+	if ($LanesqlFilePath)
+	{
+		[System.IO.File]::WriteAllText($LanesqlFilePath, $script:LaneSQLScript, $utf8NoBOM)
+	}
+	#>
+	
+	# Similarly generate Storesql script
 	$ServerSQLScript = @"
 /* Set memory configuration */
 DECLARE @Memory25PercentMB BIGINT;
@@ -3837,24 +3388,121 @@ EXEC sp_configure 'show advanced options', 0;
 RECONFIGURE;
 
 /* Create "$BackupSqlUser" user in the database */
+-- Create SQL Login if not exists
 IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$BackupSqlUser')
     CREATE LOGIN [$BackupSqlUser] WITH PASSWORD = '$BackupSqlPass', CHECK_POLICY = OFF;
+-- Create User in DB if not exists, grant backup rights
 IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$BackupSqlUser')
     CREATE USER [$BackupSqlUser] FOR LOGIN [$BackupSqlUser];
 IF IS_ROLEMEMBER('db_owner', '$BackupSqlUser') = 0
     EXEC sp_addrolemember 'db_owner', '$BackupSqlUser';
 
 /* Create Table TBS_ITM_SMAppUPDATED */
+-----Drop the table if it exist-----
 IF OBJECT_ID('dbo.TBS_ITM_SMAppUPDATED', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('dbo.TBS_ITM_SMAppUPDATED', 'OBJECT', 'ALTER') = 1 BEGIN DROP TABLE dbo.TBS_ITM_SMAppUPDATED END;
+-----Create TBS_ITM_SMAppUPDATED Table with Optional ID Column-----
 CREATE TABLE dbo.TBS_ITM_SMAppUPDATED (
-    Id INT IDENTITY(1,1) PRIMARY KEY,
-    CodeF01 VARCHAR(13) NULL,
-    Sent BIT NOT NULL DEFAULT 0,
-    SentAt DATETIME NOT NULL DEFAULT GETDATE()
+    Id INT IDENTITY(1,1) PRIMARY KEY,   -- Surrogate primary key
+    CodeF01 VARCHAR(13) NULL,      -- Stores the constructed code
+    Sent BIT NOT NULL DEFAULT 0,       -- Indicates if the record has been sent
+    SentAt DATETIME NOT NULL DEFAULT GETDATE() -- Timestamp of insertion
 );
+-----Create Indexes for Performance-----
 CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_CodeF01 ON dbo.TBS_ITM_SMAppUPDATED (CodeF01);
 CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_Sent ON dbo.TBS_ITM_SMAppUPDATED (Sent);
 CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_SentAt ON dbo.TBS_ITM_SMAppUPDATED (SentAt);
+
+/* Create TBS_ITM_SMAppUPDATED Triggers */
+-----Drop existing triggers if they exist-----
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateOBJ%')
+DROP TRIGGER [dbo].[SMApp_UpdateOBJ]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdatePOS%')
+DROP TRIGGER [dbo].[SMApp_UpdatePOS]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdatePrice%')
+DROP TRIGGER [dbo].[SMApp_UpdatePrice]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateSCL%')
+DROP TRIGGER [dbo].[SMApp_UpdateSCL]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateSCL_TXT%')
+DROP TRIGGER [dbo].[SMApp_UpdateSCL_TXT]
+GO
+-----Triggers for OBJ_TAB-----
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdateOBJ]
+   ON  [dbo].[OBJ_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+	INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+	SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+END;
+-----Triggers for POS_TAB-----
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdatePOS]
+   ON  [dbo].[POS_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+		SET NOCOUNT ON;
+		INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+		SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000' 
+END;
+-----Triggers for PRICE_TAB-----
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdatePrice]
+   ON  [dbo].[PRICE_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+		SET NOCOUNT ON;
+		INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+		SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000' 
+END;
+-----Triggers for SCL_TAB-----
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdateSCL]
+   ON  [dbo].[SCL_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+       INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+	SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+END;
+-----Triggers for SCL_TXT_TAB-----
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER  [dbo].[SMApp_UpdateSCL_TXT]
+   ON  [dbo].[SCL_TXT_TAB] 
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+       INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+       SELECT '002'+cast(RIGHT('00000'+ CONVERT(VARCHAR,F267),5) as varchar)+'00000',0, GETDATE() 
+       FROM inserted,OBJ_TAB 
+       WHERE '002'+cast(RIGHT('00000'+ CONVERT(VARCHAR,F267),5) as varchar)+'00000' = F01 
+       and SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+ 
+END;
 
 /* Truncate unnecessary tables */
 IF OBJECT_ID('COST_REV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('COST_REV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE COST_REV;
@@ -3886,6 +3534,43 @@ END;
 CLOSE cmds;
 DEALLOCATE cmds;
 
+/* Cleaning HEADER_SAV */
+IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 'OBJECT', 'DELETE') = 1 
+    DELETE FROM HEADER_SAV 
+    WHERE (F903 = 'SVHOST' OR F903 = 'MPHOST' OR F903 = CONCAT('M', '$StoreNumber', '901')) 
+    AND (DATEDIFF(DAY, F907, GETDATE()) > 30 OR DATEDIFF(DAY, F909, GETDATE()) > 30);
+
+/* Delete bad SMS items */
+DELETE FROM OBJ_TAB WHERE F01='0020000000000' 
+DELETE FROM OBJ_TAB WHERE F01 LIKE '% %' 
+DELETE FROM OBJ_TAB WHERE LEN(F01)<>13
+DELETE FROM OBJ_TAB WHERE SUBSTRING(F01,1,3) = '002' AND SUBSTRING(F01,9,5) > '00000' 
+DELETE FROM OBJ_TAB WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=0 AND SUBSTRING(F01,9,5) = '00000'
+DELETE FROM POS_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)
+DELETE FROM PRICE_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB) 
+DELETE FROM COST_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB) 
+DELETE FROM SCL_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)
+DELETE FROM SCL_TAB WHERE SUBSTRING(F01,1,3) <> '002' 
+DELETE FROM SCL_TAB WHERE SUBSTRING(F01,1,3) = '002' AND SUBSTRING(F01,9,5) > '00000'
+UPDATE SCL_TAB SET SCL_TAB.F267 = SCL_TXT.F267 FROM SCL_TAB SCL JOIN SCL_TXT_TAB SCL_TXT ON (SCL.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000')) 
+UPDATE SCL_TAB SET SCL_TAB.F268 = SCL_NUT.F268 FROM SCL_TAB SCL JOIN SCL_NUT_TAB SCL_NUT ON (SCL.F01=CONCAT('002',FORMAT(SCL_NUT.F268,'00000'),'00000')) 
+DELETE FROM SCL_TXT_TAB WHERE F267 NOT IN (SELECT F267 FROM SCL_TAB)
+DELETE FROM SCL_NUT_TAB WHERE F268 NOT IN (SELECT F268 FROM SCL_TAB) 
+UPDATE SCL_TAB SET F267 = NULL WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F267,'00000'),'00000') FROM SCL_TXT_TAB) 
+UPDATE SCL_TAB SET F268 = NULL WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F268,'00000'),'00000') FROM SCL_NUT_TAB) 
+UPDATE SCL_TXT_TAB SET SCL_TXT_TAB.F04 = POS.F04 FROM SCL_TXT_TAB SCL_TXT JOIN POS_TAB POS ON (POS.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000')) WHERE ISNUMERIC(SCL_TXT.F04)=0
+UPDATE SCL_TAB SET F256 = REPLACE(REPLACE(REPLACE(F256, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
+UPDATE SCL_TAB SET F1952 = REPLACE(REPLACE(REPLACE(F1952, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
+UPDATE SCL_TAB SET F2581 = REPLACE(REPLACE(REPLACE(F2581, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
+UPDATE SCL_TAB SET F2582 = REPLACE(REPLACE(REPLACE(F2582, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
+UPDATE SCL_TXT_TAB SET F297 = REPLACE(REPLACE(REPLACE(F297, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
+
+/* Delete batches older than 14 days from the server */
+DELETE FROM Header_bat WHERE F909 < DATEADD(day, -14, GETDATE());
+DELETE FROM Header_dct WHERE F909 < DATEADD(day, -14, GETDATE());
+DELETE FROM Header_old WHERE F909 < DATEADD(day, -14, GETDATE());
+DELETE FROM Header_sav WHERE F909 < DATEADD(day, -14, GETDATE());
+
 /* Rebuild indexes and update database statistics */
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD';
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN';
@@ -3899,10 +3584,20 @@ DBCC SHRINKFILE (${storeDbName}_Log);
 /* Restrict the indefinite log file growth */
 ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 "@
-
+	
+	# Store the ServerSQLScript in the script scope
 	$script:ServerSQLScript = $ServerSQLScript
-
-	# ------------------ Scheduled maintenance server script ------------------
+	
+	<# Optionally write to file as fallback
+	if ($StoresqlFilePath)
+	{
+		[System.IO.File]::WriteAllText($StoresqlFilePath, $script:ServerSQLScript, $utf8NoBOM)
+	}
+	#>
+	
+	# Write_Log "SQL scripts generated successfully." "green"
+	
+	# Separate server script for the schedule maintenance
 	$ScheduleServerScript = @"
 /* Set a long timeout so the entire script runs */
 @WIZRPL(DBASE_TIMEOUT=E);
@@ -3942,6 +3637,37 @@ END
 CLOSE cmds; 
 DEALLOCATE cmds;
 
+/* Cleaning HEADER_SAV */
+IF OBJECT_ID('HEADER_SAV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('HEADER_SAV', 'OBJECT', 'DELETE') = 1 
+    DELETE FROM HEADER_SAV 
+    WHERE (F903 = 'SVHOST' OR F903 = 'MPHOST' OR F903 = CONCAT('M', '$StoreNumber', '901')) 
+    AND (DATEDIFF(DAY, F907, GETDATE()) > 30 OR DATEDIFF(DAY, F909, GETDATE()) > 30);
+
+/* Delete bad SMS items */
+@dbEXEC(DELETE FROM OBJ_TAB WHERE F01='0020000000000') 
+@dbEXEC(DELETE FROM OBJ_TAB WHERE F01 LIKE '% %') 
+@dbEXEC(DELETE FROM OBJ_TAB WHERE LEN(F01)<>13) 
+@dbEXEC(DELETE FROM OBJ_TAB WHERE SUBSTRING(F01,1,3) = '002' AND SUBSTRING(F01,9,5) > '00000') 
+@dbEXEC(DELETE FROM OBJ_TAB WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=0 AND SUBSTRING(F01,9,5) = '00000') 
+@dbEXEC(DELETE FROM POS_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)) 
+@dbEXEC(DELETE FROM PRICE_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)) 
+@dbEXEC(DELETE FROM COST_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)) 
+@dbEXEC(DELETE FROM SCL_TAB WHERE F01 NOT IN (SELECT F01 FROM OBJ_TAB)) 
+@dbEXEC(DELETE FROM SCL_TAB WHERE SUBSTRING(F01,1,3) <> '002') 
+@dbEXEC(DELETE FROM SCL_TAB WHERE SUBSTRING(F01,1,3) = '002' AND SUBSTRING(F01,9,5) > '00000') 
+@dbEXEC(UPDATE SCL_TAB SET SCL_TAB.F267 = SCL_TXT.F267 FROM SCL_TAB SCL JOIN SCL_TXT_TAB SCL_TXT ON (SCL.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000'))) 
+@dbEXEC(UPDATE SCL_TAB SET SCL_TAB.F268 = SCL_NUT.F268 FROM SCL_TAB SCL JOIN SCL_NUT_TAB SCL_NUT ON (SCL.F01=CONCAT('002',FORMAT(SCL_NUT.F268,'00000'),'00000'))) 
+@dbEXEC(DELETE FROM SCL_TXT_TAB WHERE F267 NOT IN (SELECT F267 FROM SCL_TAB)) 
+@dbEXEC(DELETE FROM SCL_NUT_TAB WHERE F268 NOT IN (SELECT F268 FROM SCL_TAB)) 
+@dbEXEC(UPDATE SCL_TAB SET F267 = NULL WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F267,'00000'),'00000') FROM SCL_TXT_TAB)) 
+@dbEXEC(UPDATE SCL_TAB SET F268 = NULL WHERE F01 NOT IN (SELECT CONCAT('002',FORMAT(F268,'00000'),'00000') FROM SCL_NUT_TAB)) 
+@dbEXEC(UPDATE SCL_TXT_TAB SET SCL_TXT_TAB.F04 = POS.F04 FROM SCL_TXT_TAB SCL_TXT JOIN POS_TAB POS ON (POS.F01=CONCAT('002',FORMAT(SCL_TXT.F267,'00000'),'00000')) WHERE ISNUMERIC(SCL_TXT.F04)=0) 
+@dbEXEC(UPDATE SCL_TAB SET F256 = REPLACE(REPLACE(REPLACE(F256, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
+@dbEXEC(UPDATE SCL_TAB SET F1952 = REPLACE(REPLACE(REPLACE(F1952, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
+@dbEXEC(UPDATE SCL_TAB SET F2581 = REPLACE(REPLACE(REPLACE(F2581, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
+@dbEXEC(UPDATE SCL_TAB SET F2582 = REPLACE(REPLACE(REPLACE(F2582, CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')) 
+@dbEXEC(UPDATE SCL_TXT_TAB SET F297 = REPLACE(REPLACE(REPLACE(F297, CHAR(13),' '), CHAR(10),' '), CHAR(9),' '))
+
 /* Shrink database and log files */
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD'
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN'
@@ -3952,41 +3678,9 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE
 /* Clear the long database timeout */
 @WIZCLR(DBASE_TIMEOUT);
 "@
-
+	
+	# Store in global scope for downstream consumption
 	$script:ScheduleServerScript = $ScheduleServerScript
-
-	# ------------------------------------------------------------------------------------------------
-	# Write ONLY the missing/old files (<= 30 days = do NOT overwrite)
-	# ------------------------------------------------------------------------------------------------
-	$utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
-
-	try {
-		if (-not $cached.Lane) {
-			if ((-not (Test-Path $laneFile)) -or (((Get-Date) - (Get-Item $laneFile).LastWriteTime).TotalDays -gt $CacheMaxDays)) {
-				[System.IO.File]::WriteAllText($laneFile, $script:LaneSQLScript, $utf8NoBOM)
-			}
-		}
-		if (-not $cached.LaneFiltered) {
-			if ((-not (Test-Path $laneFilteredFile)) -or (((Get-Date) - (Get-Item $laneFilteredFile).LastWriteTime).TotalDays -gt $CacheMaxDays)) {
-				[System.IO.File]::WriteAllText($laneFilteredFile, $script:LaneSQLFiltered, $utf8NoBOM)
-			}
-		}
-		if (-not $cached.LaneMailslot) {
-			if ((-not (Test-Path $laneMailslotFile)) -or (((Get-Date) - (Get-Item $laneMailslotFile).LastWriteTime).TotalDays -gt $CacheMaxDays)) {
-				[System.IO.File]::WriteAllText($laneMailslotFile, $script:LaneSQLScript_Mailslot, $utf8NoBOM)
-			}
-		}
-		if (-not $cached.Server) {
-			if ((-not (Test-Path $serverFile)) -or (((Get-Date) - (Get-Item $serverFile).LastWriteTime).TotalDays -gt $CacheMaxDays)) {
-				[System.IO.File]::WriteAllText($serverFile, $script:ServerSQLScript, $utf8NoBOM)
-			}
-		}
-		if (-not $cached.Schedule) {
-			if ((-not (Test-Path $scheduleFile)) -or (((Get-Date) - (Get-Item $scheduleFile).LastWriteTime).TotalDays -gt $CacheMaxDays)) {
-				[System.IO.File]::WriteAllText($scheduleFile, $script:ScheduleServerScript, $utf8NoBOM)
-			}
-		}
-	} catch { }
 }
 
 # ===================================================================================================
@@ -6107,13 +5801,11 @@ function Delete_Files
 # ===================================================================================================
 #                                       FUNCTION: Process_Lanes
 # ---------------------------------------------------------------------------------------------------
-# FIXES APPLIED:
-#   1) Prevents "Format of the initialization string ... index 0" by NEVER overwriting $workingConnStr
-#      with "File" for logging (previously made the protocol path run with Server="File"...)
-#   2) Makes laneInfo robust when returned as PSCustomObject (from JSON cache) vs hashtable:
-#      converts PSCustomObject -> hashtable so $laneInfo['DBName'] etc always work.
-#   3) Guarantees -ServerInstance fallback never receives empty -Database (defaults to LANESQL when missing).
-#   4) Normalizes lane numbers so XF paths and protocol keys always use 3-digit lane numbers.
+# Description:
+#   Processes one or more lanes based on user selection, parses and writes the lane SQL script
+#   (with embedded fixed header/footer), and logs all progress and errors.
+#   Tries protocol execution first (from pre-populated protocol table), falls back to file writing.
+#   Protocol detection is NOT performed here; background jobs must fill $script:LaneProtocols.
 # ===================================================================================================
 
 function Process_Lanes
@@ -6122,42 +5814,37 @@ function Process_Lanes
 		[string]$StoreNumber,
 		[switch]$ProcessAllLanes
 	)
-
+	
+	# ----------------------------------------
+	# Banner: Start
+	# ----------------------------------------
 	Write_Log "`r`n==================== Starting Process_Lanes Function ====================`r`n" "blue"
-
+	
+	# ----------------------------------------
+	# Check for required OfficePath
+	# ----------------------------------------
 	if (-not (Test-Path $OfficePath))
 	{
 		Write_Log "XF Base Path not found: $OfficePath" "yellow"
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-
-	# Make sure ProcessedLanes exists
-	if (-not $script:ProcessedLanes) { $script:ProcessedLanes = @() }
-
+	
 	# ----------------------------------------
 	# Import detected SQL module for Invoke-Sqlcmd usage
 	# ----------------------------------------
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
 	if ($SqlModuleName -and $SqlModuleName -ne "None")
 	{
-		try
-		{
-			Import-Module $SqlModuleName -ErrorAction Stop
-			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
-		}
-		catch
-		{
-			Write_Log "Failed to import SQL module '$SqlModuleName' or find Invoke-Sqlcmd: $_" "red"
-			return
-		}
+		Import-Module $SqlModuleName -ErrorAction Stop
+		$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
 	}
 	else
 	{
 		Write_Log "No valid SQL module available for SQL operations!" "red"
 		return
 	}
-
+	
 	# ----------------------------------------
 	# Check for available Lane Machines
 	# ----------------------------------------
@@ -6168,10 +5855,12 @@ function Process_Lanes
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-
 	$MachineNameToLaneNum = $script:FunctionResults['MachineNameToLaneNum']
-	if (-not $MachineNameToLaneNum) { $MachineNameToLaneNum = @{ } }
-
+	if (-not $MachineNameToLaneNum)
+	{
+		$MachineNameToLaneNum = @{ }
+	}
+	
 	# ----------------------------------------
 	# Get user's lane selection
 	# ----------------------------------------
@@ -6182,10 +5871,11 @@ function Process_Lanes
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-
-	# Support both string and object selections for lanes
+	
+	# Support both string and object selections for lanes (for future-proofing GUI node returns)
 	if ($selection.Lanes -and $selection.Lanes.Count -gt 0)
 	{
+		# Detect if these are node objects or just string numbers
 		if ($selection.Lanes[0] -is [PSCustomObject] -and $selection.Lanes[0].PSObject.Properties.Name -contains 'LaneNumber')
 		{
 			$Lanes = $selection.Lanes | ForEach-Object { $_.LaneNumber }
@@ -6201,7 +5891,7 @@ function Process_Lanes
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-
+	
 	# ----------------------------------------
 	# Parse Lane SQL script sections for processing
 	# ----------------------------------------
@@ -6213,16 +5903,11 @@ function Process_Lanes
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-
 	$fixedSections = @(
 		"Set a long timeout so the entire script runs",
 		"Clear the long database timeout"
 	)
-
-	$allSectionNames = $matches |
-		ForEach-Object { $_.Groups['SectionName'].Value.Trim() } |
-		Where-Object { $fixedSections -notcontains $_ }
-
+	$allSectionNames = $matches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() } | Where-Object { $fixedSections -notcontains $_ }
 	$SectionsToSend = Show_Section_Selection_Form -SectionNames $allSectionNames
 	if (-not $SectionsToSend -or $SectionsToSend.Count -eq 0)
 	{
@@ -6230,7 +5915,7 @@ function Process_Lanes
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-
+	
 	# ----------------------------------------
 	# Pre-build the SQI script for fallback (same for all lanes)
 	# ----------------------------------------
@@ -6238,61 +5923,50 @@ function Process_Lanes
 	"--------------------------------------------------------------------------------`r`n"
 	$bottomBlock = "--------------------------------------------------------------------------------`r`n" +
 	"/* Clear the long database timeout */`r`n@WIZCLR(DBASE_TIMEOUT);"
-
 	$middleBlock = ($matches | Where-Object {
 			$SectionsToSend -contains $_.Groups['SectionName'].Value.Trim()
 		}) | ForEach-Object {
 		"/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())"
 	} | Out-String
-
 	$finalScript = $topBlock + $middleBlock + $bottomBlock
-
+	
 	# ----------------------------------------
 	# MULTIPLE lanes: Always file fallback
 	# ----------------------------------------
 	if ($Lanes.Count -gt 1)
 	{
 		Write_Log "Multiple lanes selected, using file-based fallback for all lanes." "yellow"
-
 		foreach ($LaneNumber in $Lanes)
 		{
-			# Normalize lane number (accept "001" or "POS001" etc)
-			$laneNumCandidate = $LaneNumber
-			if ($MachineNameToLaneNum.ContainsKey($LaneNumber)) { $laneNumCandidate = $MachineNameToLaneNum[$LaneNumber] }
-			elseif ($LaneNumber -match '(\d{1,3})$') { $laneNumCandidate = $Matches[1] }
-
-			if ($laneNumCandidate -match '^\d+$') { $laneNum = $laneNumCandidate.PadLeft(3,'0') } else { $laneNum = $LaneNumber }
-
-			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
+			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
 			if (-not $laneInfo)
 			{
-				Write_Log "Could not get DB info for lane $laneNum. Skipping." "yellow"
+				Write_Log "Could not get DB info for lane $LaneNumber. Skipping." "yellow"
 				continue
 			}
-
-			# Convert PSCustomObject -> hashtable (important when loaded from JSON cache)
-			if ($laneInfo -and ($laneInfo -isnot [System.Collections.IDictionary]))
+			if ($MachineNameToLaneNum -and $MachineNameToLaneNum.ContainsKey($LaneNumber))
 			{
-				$tmp = @{}
-				foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
-				$laneInfo = $tmp
+				$laneNum = $MachineNameToLaneNum[$LaneNumber]
 			}
-
-			$machineName = $laneInfo['MachineName']
-			if (-not $machineName) { $machineName = $LaneNumToMachineName[$laneNum] }
-
+			else
+			{
+				$laneNum = $LaneNumber
+			}
 			$LaneLocalPath = Join-Path $OfficePath ("XF" + $StoreNumber + $laneNum)
-
+			$machineName = $laneInfo['MachineName']
+			# Write_Log "Protocol not attempted (file-based fallback used for all lanes) on $machineName." "gray"
 			if (Test-Path $LaneLocalPath)
 			{
-				Write_Log "Writing Lane_Database_Maintenance.sqi to Lane $laneNum ($machineName)..." "blue"
+				Write_Log "Writing Lane_Database_Maintenance.sqi to Lane $LaneNumber ($machineName)..." "blue"
 				try
 				{
-					Set-Content -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Value $finalScript -Encoding Ascii
-					Set-ItemProperty -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-					Write_Log "Created and wrote to file at Lane #$laneNum ($machineName) successfully. (file copy)" "green"
-
-					if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
+					Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
+					Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+					Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file copy)" "green"
+					if (-not ($script:ProcessedLanes -contains $LaneNumber))
+					{
+						$script:ProcessedLanes += $LaneNumber
+					}
 				}
 				catch
 				{
@@ -6301,7 +5975,7 @@ function Process_Lanes
 			}
 			else
 			{
-				Write_Log "Lane #$laneNum not found at path: $LaneLocalPath" "yellow"
+				Write_Log "Lane #$LaneNumber not found at path: $LaneLocalPath" "yellow"
 			}
 		}
 	}
@@ -6310,60 +5984,43 @@ function Process_Lanes
 		# SINGLE lane: Try protocol, fallback to file
 		foreach ($LaneNumber in $Lanes)
 		{
-			# Normalize lane number (accept "001" or "POS001" etc)
-			$laneNumCandidate = $LaneNumber
-			if ($MachineNameToLaneNum.ContainsKey($LaneNumber)) { $laneNumCandidate = $MachineNameToLaneNum[$LaneNumber] }
-			elseif ($LaneNumber -match '(\d{1,3})$') { $laneNumCandidate = $Matches[1] }
-
-			if ($laneNumCandidate -match '^\d+$') { $laneNum = $laneNumCandidate.PadLeft(3,'0') } else { $laneNum = $LaneNumber }
-
-			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
+			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
 			if (-not $laneInfo)
 			{
-				Write_Log "Could not get DB info for lane $laneNum. Skipping." "yellow"
+				Write_Log "Could not get DB info for lane $LaneNumber. Skipping." "yellow"
 				continue
 			}
-
-			# Convert PSCustomObject -> hashtable (important when loaded from JSON cache)
-			if ($laneInfo -and ($laneInfo -isnot [System.Collections.IDictionary]))
-			{
-				$tmp = @{}
-				foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
-				$laneInfo = $tmp
-			}
-
+			
 			$machineName = $laneInfo['MachineName']
 			$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
 			$tcpConnStr = $laneInfo['TcpConnStr']
-
+			if ($MachineNameToLaneNum -and $MachineNameToLaneNum.ContainsKey($LaneNumber))
+			{
+				$laneNum = $MachineNameToLaneNum[$LaneNumber]
+			}
+			else
+			{
+				$laneNum = $LaneNumber
+			}
 			$LaneLocalPath = Join-Path $OfficePath ("XF" + $StoreNumber + $laneNum)
-
+			
 			# Get protocol for this lane
-			$laneKey = $laneNum.PadLeft(3, '0')
-			$protocolType = $null
-			if ($script:LaneProtocols) { $protocolType = $script:LaneProtocols[$laneKey] }
-
+			$laneKey = $LaneNumber.PadLeft(3, '0')
+			$protocolType = $script:LaneProtocols[$laneKey]
 			$workingConnStr = $null
 			if ($protocolType -eq "Named Pipes") { $workingConnStr = $namedPipesConnStr }
 			elseif ($protocolType -eq "TCP") { $workingConnStr = $tcpConnStr }
-
-			# Validate connection string (DO NOT replace it with "File")
-			$workingConnStrIsValid =
-				(-not [string]::IsNullOrWhiteSpace($workingConnStr)) -and
-				($workingConnStr -match '^\s*Server\s*=') -and
-				($workingConnStr -match 'Database\s*=')
-
-			$displayProtocol = if ([string]::IsNullOrWhiteSpace($protocolType)) { "File" } else { $protocolType }
-			$displayConnStr  = if ($workingConnStrIsValid) { $workingConnStr } else { "<file>" }
-
-			Write_Log "Lane $laneNum uses protocol: $displayProtocol" "gray"
-			Write_Log "Lane $laneNum connection string: $displayConnStr" "gray"
-
-			# If protocol not ready / invalid conn string, fallback to file
-			if (-not $protocolType -or $protocolType -eq "File" -or -not $workingConnStrIsValid)
+			
+			# DEBUG: Show actual conn string to log for this lane
+			if ([string]::IsNullOrEmpty($protocolType)) { $protocolType = "File" }
+			if ([string]::IsNullOrEmpty($workingConnStr)) { $workingConnStr = "File" }
+			Write_Log "Lane $LaneNumber uses protocol: $protocolType" "gray"
+			Write_Log "Lane $LaneNumber connection string: $workingConnStr" "gray"
+			
+			# If protocol not ready, fallback to file
+			if (-not $protocolType -or $protocolType -eq "File" -or -not $workingConnStr)
 			{
-				Write_Log "Protocol not ready/unavailable for $machineName. Skipping protocol and using file copy." "yellow"
-
+				Write_Log "Protocol not ready or unavailable for $machineName. Skipping protocol and using file copy." "yellow"
 				if (Test-Path $LaneLocalPath)
 				{
 					Write_Log "`r`nProcessing $machineName using file fallback..." "blue"
@@ -6371,11 +6028,13 @@ function Process_Lanes
 					Write_Log "Writing Lane_Database_Maintenance.sqi to Lane..." "blue"
 					try
 					{
-						Set-Content -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Value $finalScript -Encoding Ascii
-						Set-ItemProperty -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-						Write_Log "Created and wrote to file at Lane #$laneNum ($machineName) successfully. (file copy)" "green"
-
-						if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
+						Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
+						Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+						Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file copy)" "green"
+						if (-not ($script:ProcessedLanes -contains $LaneNumber))
+						{
+							$script:ProcessedLanes += $LaneNumber
+						}
 					}
 					catch
 					{
@@ -6384,46 +6043,38 @@ function Process_Lanes
 				}
 				else
 				{
-					Write_Log "Lane #$laneNum not found at path: $LaneLocalPath" "yellow"
+					Write_Log "Lane #$LaneNumber not found at path: $LaneLocalPath" "yellow"
 				}
 				continue
 			}
-
+			
 			# ----------------------------------------
 			# Protocol execution: Try SQL via protocol
 			# ----------------------------------------
 			$protocolWorked = $false
-
-			# These MUST be valid for ServerInstance fallback
 			$server = $laneInfo['TcpServer']
 			$database = $laneInfo['DBName']
-			if ([string]::IsNullOrWhiteSpace($database)) { $database = "LANESQL" }  # critical fix
-			if ([string]::IsNullOrWhiteSpace($server) -and $workingConnStr -match 'Server\s*=\s*([^;]+)') { $server = $Matches[1].Trim() }
-
 			$currentLogin = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-
+			
 			try
 			{
 				$matchesFiltered = [regex]::Matches($script:LaneSQLFiltered, $sectionPattern)
 				$sections = ($matchesFiltered | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() })
-
 				foreach ($match in $sections)
 				{
 					$sectionName = $match.Groups['SectionName'].Value.Trim()
 					$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
-
 					Write_Log "Executing section: '$sectionName' on $machineName" "blue"
 					Write_Log "--------------------------------------------------------------------------------"
 					Write_Log "$sqlCommands" "orange"
 					Write_Log "--------------------------------------------------------------------------------"
-
 					$querySucceeded = $false
 					$retriedForMapping = $false
-
 					for ($try = 1; $try -le 2; $try++)
 					{
 						try
 						{
+							# Always use the correct module and per-lane connection string here
 							& $InvokeSqlCmd -ConnectionString $workingConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
 							Write_Log "Section '$sectionName' executed successfully on $machineName using ($protocolType)." "green"
 							$protocolWorked = $true
@@ -6433,18 +6084,15 @@ function Process_Lanes
 						catch
 						{
 							$errorMsg = $_.Exception.Message
-
 							if ($errorMsg -match 'Login failed for user' -and -not $retriedForMapping)
 							{
 								Write_Log "Login failed for $currentLogin on $machineName. Attempting to map user and retry..." "yellow"
 								$checkUserQuery = "SELECT COUNT(*) AS UserExists FROM sys.database_principals WHERE name = '$currentLogin'"
-
 								try
 								{
 									$userExists = (& $InvokeSqlCmd -ServerInstance $server -Database $database -Query $checkUserQuery -ErrorAction Stop).UserExists
 								}
 								catch { $userExists = 0 }
-
 								if ($userExists -eq 0)
 								{
 									$createUserSql = @"
@@ -6464,12 +6112,15 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 								}
 								else
 								{
-									try { & $InvokeSqlCmd -ServerInstance $server -Database $database -Query "ALTER ROLE db_owner ADD MEMBER [$currentLogin];" -ErrorAction SilentlyContinue } catch { }
+									try
+									{
+										& $InvokeSqlCmd -ServerInstance $server -Database $database -Query "ALTER ROLE db_owner ADD MEMBER [$currentLogin];" -ErrorAction Stop
+									}
+									catch { }
 									Write_Log "$currentLogin already mapped in [$database]." "gray"
 								}
-
 								$retriedForMapping = $true
-								continue
+								continue # Retry after mapping
 							}
 							elseif ($errorMsg -match 'Login failed for user')
 							{
@@ -6496,7 +6147,6 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 							}
 						}
 					}
-
 					if (-not $querySucceeded) { break }
 				}
 			}
@@ -6505,13 +6155,15 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 				Write_Log "Failed to execute a section on $machineName via protocol: $_. Falling back to file." "yellow"
 				$protocolWorked = $false
 			}
-
 			if ($protocolWorked)
 			{
-				if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
+				if (-not ($script:ProcessedLanes -contains $LaneNumber))
+				{
+					$script:ProcessedLanes += $LaneNumber
+				}
 				continue
 			}
-
+			
 			# Fallback: Classic file-based method
 			if (Test-Path $LaneLocalPath)
 			{
@@ -6520,11 +6172,13 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 				Write_Log "Writing Lane_Database_Maintenance.sqi to Lane..." "blue"
 				try
 				{
-					Set-Content -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Value $finalScript -Encoding Ascii
-					Set-ItemProperty -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-					Write_Log "Created and wrote to file at Lane #$laneNum ($machineName) successfully. (file copy)" "green"
-
-					if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
+					Set-Content -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Value $finalScript -Encoding Ascii
+					Set-ItemProperty -Path "$LaneLocalPath\Lane_Database_Maintenance.sqi" -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+					Write_Log "Created and wrote to file at Lane #${LaneNumber} ($machineName) successfully. (file copy)" "green"
+					if (-not ($script:ProcessedLanes -contains $LaneNumber))
+					{
+						$script:ProcessedLanes += $LaneNumber
+					}
 				}
 				catch
 				{
@@ -6533,11 +6187,12 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 			}
 			else
 			{
-				Write_Log "Lane #$laneNum not found at path: $LaneLocalPath" "yellow"
+				Write_Log "Lane #$LaneNumber not found at path: $LaneLocalPath" "yellow"
 			}
 		}
 	}
-
+	
+	# Final: Report processed lanes and finish banner
 	Write_Log "`r`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
 	if ($script:ProcessedLanes.Count -gt 0)
 	{
@@ -7185,10 +6840,23 @@ function Pump_Tables
 	# Log function start
 	Write_Log "`r`n==================== Starting Pump_Tables Function ====================`r`n" "blue"
 	
+	# ------------------------------------------------------------------------------------------------
+	# FIX: Initialize tracking arrays locally (prevents null/type issues)
+	# ------------------------------------------------------------------------------------------------
+	$protocolLanes = @()
+	$fileCopyLanes = @()
+	$ProcessedLanes = @()
+	
+	# ------------------------------------------------------------------------------------------------
+	# FIX: Per-run file generation cache (generate each selected table ONCE, then copy to many lanes)
+	#      Key: table name -> temp file path
+	# ------------------------------------------------------------------------------------------------
+	$generatedSqlFiles = @{ }
+	
 	# Ensure OfficePath is present and valid
 	if (-not (Test-Path $OfficePath))
 	{
-		Write_Log "XF Base Path not found: $OfficePath" "yellow"
+		Write_Log "Office path not found (cannot locate XF folders): $OfficePath" "yellow"
 		return
 	}
 	
@@ -7202,6 +6870,7 @@ function Pump_Tables
 	}
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	$MachineNameToLaneNum = $script:FunctionResults['MachineNameToLaneNum']
+	if (-not $MachineNameToLaneNum) { $MachineNameToLaneNum = @{ } }
 	
 	# ------------------------------------------------------------------------------------------------
 	# STEP 2: Prompt user for lane selection via GUI
@@ -7217,14 +6886,15 @@ function Pump_Tables
 	# Accept all supported forms (lane number, machine name, POSxxx, etc)
 	$Lanes = $selection.Lanes
 	
-	# Force all selections to 3-digit lane number for folder/DB logic using mappings from Retrieve_Nodes
+	# FIX: Normalize selection to 3-digit lane numbers using Retrieve_Nodes mappings
 	$Lanes = $Lanes | ForEach-Object {
 		if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber }
 		elseif ($_ -match '^\d{3}$') { $_ }
 		elseif ($MachineNameToLaneNum.ContainsKey($_)) { $MachineNameToLaneNum[$_] }
+		elseif ($_ -match '(\d{1,3})$') { $Matches[1].PadLeft(3, '0') }
 		else { $_ }
 	}
-	$Lanes = $Lanes | Where-Object { $LaneNumToMachineName.ContainsKey($_) }
+	$Lanes = $Lanes | Where-Object { $LaneNumToMachineName.ContainsKey($_) } | Select-Object -Unique
 	
 	if (-not $Lanes -or $Lanes.Count -eq 0)
 	{
@@ -7248,14 +6918,14 @@ function Pump_Tables
 		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 		return
 	}
-	if ($aliasResults.Count -eq 0)
+	if (-not $aliasResults -or $aliasResults.Count -eq 0)
 	{
 		Write_Log "No tables found to process. Exiting Pump_Tables." "red"
 		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
 		return
 	}
 	
-	# Prompt user to select which tables to pump (alias objects or just names)
+	# Prompt user to select which tables to pump (Show_Table_Selection_Form returns TABLE NAMES)
 	$selectedTables = Show_Table_Selection_Form -AliasResults $aliasResults
 	if (-not $selectedTables -or $selectedTables.Count -eq 0)
 	{
@@ -7264,274 +6934,565 @@ function Pump_Tables
 		return
 	}
 	
-    # ------------------------------------------------------------------------------------------------
-    # STEP 4: Validate SQL Connection, and load SQL module only once
-    # ------------------------------------------------------------------------------------------------
-    $ConnectionString = $null
-
-    # 1) Preferred: already in FunctionResults
-    if ($script:FunctionResults.ContainsKey('ConnectionString'))
-    {
-	    $ConnectionString = $script:FunctionResults['ConnectionString']
-    }
-
-    # 2) Fallback: pull from cached JSON in SetupFiles (Get_All_Lanes_Database_Info.txt)
-    if ([string]::IsNullOrWhiteSpace($ConnectionString))
-    {
-	    try
-	    {
-		    $cachePath = Join-Path $script:SetupFiles "Get_All_Lanes_Database_Info.txt"
-		    if (Test-Path $cachePath)
-		    {
-			    $cacheObj = (Get-Content -Path $cachePath -Raw -ErrorAction Stop) | ConvertFrom-Json -ErrorAction Stop
-
-			    if ($cacheObj -and $cacheObj.LaneDatabaseInfo)
-			    {
-				    $laneDbInfo = $cacheObj.LaneDatabaseInfo
-
-				    # Try match the machine we're running on (POS###)
-				    $localMachine = ($env:COMPUTERNAME).ToUpper()
-				    $match = $null
-
-				    foreach ($p in $laneDbInfo.PSObject.Properties)
-				    {
-					    if ($p.Value -and $p.Value.MachineName -and ($p.Value.MachineName.ToString().ToUpper() -eq $localMachine))
-					    {
-						    $match = $p.Value
-						    break
-					    }
-				    }
-
-				    # If still not found and ONLY ONE lane selected, use that lane's cached connstr
-				    if (-not $match -and $Lanes -and $Lanes.Count -eq 1)
-				    {
-					    $laneKey = [string]$Lanes[0]
-					    $prop = $laneDbInfo.PSObject.Properties | Where-Object { $_.Name -eq $laneKey } | Select-Object -First 1
-					    if ($prop) { $match = $prop.Value }
-				    }
-
-				    # Extract the connection string (prefer ConnectionString, then TcpConnStr)
-				    if ($match)
-				    {
-					    if (-not [string]::IsNullOrWhiteSpace([string]$match.ConnectionString))
-					    {
-						    $ConnectionString = [string]$match.ConnectionString
-					    }
-					    elseif (-not [string]::IsNullOrWhiteSpace([string]$match.TcpConnStr))
-					    {
-						    $ConnectionString = [string]$match.TcpConnStr
-					    }
-				    }
-			    }
-		    }
-	    }
-	    catch
-	    {
-		    # Keep silent here; we handle final failure below with your normal logging
-	    }
-    }
-
-    # Final: must have it
-    if ([string]::IsNullOrWhiteSpace($ConnectionString))
-    {
-	    Write_Log "Connection string not found (FunctionResults + ${script:SetupFiles}\Get_All_Lanes_Database_Info.txt). Cannot proceed with Pump_Tables." "red"
-	    Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
-	    return
-    }
-
-    # Normalize + cache it so nothing else in your function needs to change
-    $ConnectionString = $ConnectionString.Trim().Trim('"')
-    $script:FunctionResults['ConnectionString'] = $ConnectionString
+	# FIX: Build the actual alias entries to loop (was missing in previous version)
+	$selectedTables = @($selectedTables | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+	$filteredAliasEntries = @($aliasResults | Where-Object { $selectedTables -contains $_.Table })
+	if (-not $filteredAliasEntries -or $filteredAliasEntries.Count -eq 0)
+	{
+		Write_Log "Selected tables did not match alias list. Nothing to pump." "yellow"
+		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
+		return
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# STEP 4: Resolve LOCAL source ConnectionString (where we read tables FROM)
+	# ------------------------------------------------------------------------------------------------
+	$ConnectionString = $null
+	
+	# 1) Preferred: already in FunctionResults
+	if ($script:FunctionResults.ContainsKey('ConnectionString'))
+	{
+		$ConnectionString = $script:FunctionResults['ConnectionString']
+	}
+	
+	# 2) Fallback: pull from cached JSON in SetupFiles (Get_All_Lanes_Database_Info.txt)
+	if ([string]::IsNullOrWhiteSpace($ConnectionString))
+	{
+		try
+		{
+			$cachePath = Join-Path $script:SetupFiles "Get_All_Lanes_Database_Info.txt"
+			if (Test-Path $cachePath)
+			{
+				$cacheObj = (Get-Content -Path $cachePath -Raw -ErrorAction Stop) | ConvertFrom-Json -ErrorAction Stop
+				if ($cacheObj -and $cacheObj.LaneDatabaseInfo)
+				{
+					$laneDbInfo = $cacheObj.LaneDatabaseInfo
+					$localMachine = ($env:COMPUTERNAME).ToUpper()
+					$match = $null
+					foreach ($p in $laneDbInfo.PSObject.Properties)
+					{
+						if ($p.Value -and $p.Value.MachineName -and ($p.Value.MachineName.ToString().ToUpper() -eq $localMachine))
+						{
+							$match = $p.Value
+							break
+						}
+					}
+					# If ONLY ONE lane selected, use that lane's cached connstr as last resort
+					if (-not $match -and $Lanes -and $Lanes.Count -eq 1)
+					{
+						$laneKey = [string]$Lanes[0]
+						$prop = $laneDbInfo.PSObject.Properties | Where-Object { $_.Name -eq $laneKey } | Select-Object -First 1
+						if ($prop) { $match = $prop.Value }
+					}
+					if ($match)
+					{
+						if (-not [string]::IsNullOrWhiteSpace([string]$match.ConnectionString))
+						{
+							$ConnectionString = [string]$match.ConnectionString
+						}
+						elseif (-not [string]::IsNullOrWhiteSpace([string]$match.TcpConnStr))
+						{
+							$ConnectionString = [string]$match.TcpConnStr
+						}
+					}
+				}
+			}
+		}
+		catch
+		{
+			# Silent here; we handle final failure below
+		}
+	}
+	
+	# Final: must have source connection
+	if ([string]::IsNullOrWhiteSpace($ConnectionString))
+	{
+		Write_Log "Connection string not found (FunctionResults + ${script:SetupFiles}\Get_All_Lanes_Database_Info.txt). Cannot proceed with Pump_Tables." "red"
+		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
+		return
+	}
+	
+	# Normalize + cache it so nothing else needs to change
+	$ConnectionString = $ConnectionString.Trim().Trim('"')
+	$script:FunctionResults['ConnectionString'] = $ConnectionString
+	
+	# ------------------------------------------------------------------------------------------------
+	# STEP 4b: Open SOURCE SQL connection ONCE (was missing before)
+	# ------------------------------------------------------------------------------------------------
+	$srcSqlConnection = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
+	try
+	{
+		$srcSqlConnection.Open()
+		if ($srcSqlConnection.State -ne 'Open')
+		{
+			Write_Log "Source SQL connection did not open. Cannot proceed." "red"
+			Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
+			return
+		}
+	}
+	catch
+	{
+		Write_Log "Source SQL connection failed: $_" "red"
+		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
+		return
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# FIX: Pre-calc row counts ONCE (used for file-lane 1000-row rule + better logging)
+	# ------------------------------------------------------------------------------------------------
+	$tableRowCounts = @{ }
+	foreach ($aliasEntry in $filteredAliasEntries)
+	{
+		$tableName = [string]$aliasEntry.Table
+		if ([string]::IsNullOrWhiteSpace($tableName)) { continue }
+		if ($tableRowCounts.ContainsKey($tableName)) { continue }
+		
+		# Table-name sanity (prevents weird alias entries from breaking queries)
+		if ($tableName -notmatch '^[A-Za-z0-9_]+$')
+		{
+			Write_Log "Skipping invalid table name (bad characters): '$tableName'" "yellow"
+			continue
+		}
+		
+		try
+		{
+			$cntCmd = $srcSqlConnection.CreateCommand()
+			$cntCmd.CommandTimeout = 60
+			$cntCmd.CommandText = "SELECT COUNT(1) FROM [dbo].[$tableName]"
+			$tableRowCounts[$tableName] = [int]$cntCmd.ExecuteScalar()
+		}
+		catch
+		{
+			Write_Log "Could not read rowcount for table '$tableName' from SOURCE. Skipping table. Error: $_" "yellow"
+			$tableRowCounts[$tableName] = $null
+		}
+	}
 	
 	# ------------------------------------------------------------------------------------------------
 	# STEP 5: Process each lane: Try protocol (Named Pipes or TCP), else fall back to file copy
+	# RULE: File-only lanes must ONLY pump tables <= 1000 rows
 	# ------------------------------------------------------------------------------------------------
+	$MaxFileRows = 1000
+	
 	foreach ($laneNum in $Lanes)
 	{
-		$machineName = $LaneNumToMachineName[$laneNum]
+		$laneNum = [string]$laneNum
+		if ($laneNum -match '^\d+$') { $laneNum = $laneNum.PadLeft(3, '0') }
 		
+		$machineName = $LaneNumToMachineName[$laneNum]
 		if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
 		{
 			Write_Log "Lane #${laneNum}: Machine name is invalid or unknown. Skipping." "yellow"
 			continue
 		}
 		
-		# Retrieve DB connection info for the lane (connection strings, etc)
+		# Retrieve DB connection info for the lane
 		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
 		if (-not $laneInfo)
 		{
 			Write_Log "Could not get DB info for lane $laneNum. Skipping." "yellow"
 			continue
 		}
-		$connString = $laneInfo['ConnectionString']
-		$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-		$tcpConnStr = $laneInfo['TcpConnStr']
 		
-		# Always use numeric lane number for folder path!
+		# FIX: Convert PSCustomObject -> hashtable for consistent indexing (matches your Process_Lanes fix)
+		if ($laneInfo -and ($laneInfo -isnot [System.Collections.IDictionary]))
+		{
+			$tmp = @{ }
+			foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
+			$laneInfo = $tmp
+		}
+		
+		$namedPipesConnStr = [string]$laneInfo['NamedPipesConnStr']
+		$tcpConnStr = [string]$laneInfo['TcpConnStr']
+		
+		# Always use numeric lane number for folder path
 		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${laneNum}"
 		
-		# Use cached protocol type if available, else fallback to File
-		$protocolType = if ($script:LaneProtocols.ContainsKey($laneNum)) { $script:LaneProtocols[$laneNum] }
-		else { "File" }
+		# FIX: Robust protocol lookup (Start_Lane_Protocol_Jobs stores several keys)
+		$protocolType = $null
+		if ($script:LaneProtocols)
+		{
+			if ($script:LaneProtocols.ContainsKey($laneNum)) { $protocolType = $script:LaneProtocols[$laneNum] }
+			elseif ($script:LaneProtocols.ContainsKey($laneNum.PadLeft(3, '0'))) { $protocolType = $script:LaneProtocols[$laneNum.PadLeft(3, '0')] }
+			elseif ($script:LaneProtocols.ContainsKey($machineName)) { $protocolType = $script:LaneProtocols[$machineName] }
+			elseif ($script:LaneProtocols.ContainsKey($machineName.ToLower())) { $protocolType = $script:LaneProtocols[$machineName.ToLower()] }
+		}
+		if ([string]::IsNullOrWhiteSpace($protocolType)) { $protocolType = 'File' }
+		
 		$laneSqlConn = $null
 		$protocolWorked = $false
 		
 		# ----------------------------------------------------------------------------------------
-		# Try direct SQL protocol copy (Named Pipes/TCP)
+		# Try direct SQL protocol copy (Named Pipes/TCP) using FAST SqlBulkCopy
 		# ----------------------------------------------------------------------------------------
 		if ($protocolType -eq "Named Pipes" -or $protocolType -eq "TCP")
 		{
-			try
+			$workingConnStr = $null
+			if ($protocolType -eq 'Named Pipes') { $workingConnStr = $namedPipesConnStr }
+			elseif ($protocolType -eq 'TCP') { $workingConnStr = $tcpConnStr }
+			
+			$workingConnStrIsValid =
+			(-not [string]::IsNullOrWhiteSpace($workingConnStr)) -and
+			($workingConnStr -match '^\s*Server\s*=') -and
+			($workingConnStr -match 'Database\s*=')
+			
+			if ($workingConnStrIsValid)
 			{
-				if ($protocolType -eq "Named Pipes")
+				try
 				{
-					$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $namedPipesConnStr
-				}
-				elseif ($protocolType -eq "TCP")
-				{
-					$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $tcpConnStr
-				}
-				$laneSqlConn.Open()
-				if ($laneSqlConn.State -eq 'Open')
-				{
-					Write_Log "`r`nCopying data to Lane $laneNum ($machineName) via SQL protocol [$protocolType]..." "blue"
-					foreach ($aliasEntry in $filteredAliasEntries)
+					$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $workingConnStr
+					$laneSqlConn.Open()
+					if ($laneSqlConn.State -eq 'Open')
 					{
-						$table = $aliasEntry.Table
-						Write_Log "Pumping table '$table' to lane $laneNum ($machineName) via SQL..." "blue"
-						try
+						Write_Log "`r`nCopying data to Lane $laneNum ($machineName) via SQL protocol [$protocolType]..." "blue"
+						
+						foreach ($aliasEntry in $filteredAliasEntries)
 						{
-							# Build CREATE TABLE from source schema
-							$schemaCmd = $srcSqlConnection.CreateCommand()
-							$schemaCmd.CommandText = @"
-SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE
-FROM INFORMATION_SCHEMA.COLUMNS
-WHERE TABLE_NAME = '$table'
-ORDER BY ORDINAL_POSITION
+							$table = [string]$aliasEntry.Table
+							if ([string]::IsNullOrWhiteSpace($table)) { continue }
+							
+							# Skip tables that we could not count / validate
+							if (-not $tableRowCounts.ContainsKey($table) -or $null -eq $tableRowCounts[$table])
+							{
+								Write_Log "Skipping table '$table' (rowcount/validation failed on SOURCE)." "yellow"
+								continue
+							}
+							
+							Write_Log "Pumping table '$table' to lane $laneNum ($machineName) via SQL (SqlBulkCopy)..." "blue"
+							
+							try
+							{
+								# -----------------------------
+								# 1) Get SOURCE column metadata (sys.columns) so we can:
+								#    - create table if missing
+								#    - identify identity/computed/rowversion columns
+								# -----------------------------
+								$metaCmd = $srcSqlConnection.CreateCommand()
+								$metaCmd.CommandTimeout = 60
+								$metaCmd.CommandText = @"
+SELECT
+	c.name AS ColumnName,
+	t.name AS DataType,
+	c.max_length AS MaxLength,
+	c.precision AS [Precision],
+	c.scale AS [Scale],
+	c.is_nullable AS IsNullable,
+	c.is_identity AS IsIdentity,
+	c.is_computed AS IsComputed,
+	ic.seed_value AS IdentitySeed,
+	ic.increment_value AS IdentityIncrement
+FROM sys.columns c
+JOIN sys.types t
+	ON c.user_type_id = t.user_type_id
+LEFT JOIN sys.identity_columns ic
+	ON c.object_id = ic.object_id
+	AND c.column_id = ic.column_id
+WHERE c.object_id = OBJECT_ID(@obj)
+ORDER BY c.column_id;
 "@
-							$reader = $schemaCmd.ExecuteReader()
-							$colDefs = @()
-							while ($reader.Read())
-							{
-								$colName = $reader["COLUMN_NAME"]
-								$dataType = $reader["DATA_TYPE"]
-								$isNullable = $reader["IS_NULLABLE"]
-								$nullText = if ($isNullable -eq "NO") { "NOT NULL" }
-								else { "NULL" }
-								switch ($dataType)
+								$null = $metaCmd.Parameters.Clear()
+								$param = $metaCmd.Parameters.Add("@obj", [System.Data.SqlDbType]::NVarChar, 256)
+								$param.Value = "dbo.$table"
+								$metaRows = @()
+								$metaReader = $metaCmd.ExecuteReader()
+								while ($metaReader.Read())
 								{
-									'nvarchar' { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "nvarchar($length)" }
-									'varchar'  { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "varchar($length)" }
-									'char'     { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "char($length)" }
-									'nchar'    { $length = $reader["CHARACTER_MAXIMUM_LENGTH"]; $typeText = "nchar($length)" }
-									'decimal'  { $prec = $reader["NUMERIC_PRECISION"]; $scale = $reader["NUMERIC_SCALE"]; $typeText = "decimal($prec,$scale)" }
-									'numeric'  { $prec = $reader["NUMERIC_PRECISION"]; $scale = $reader["NUMERIC_SCALE"]; $typeText = "numeric($prec,$scale)" }
-									default    { $typeText = $dataType }
-								}
-								$colDefs += "[$colName] $typeText $nullText"
-							}
-							$reader.Close()
-							$colDefsText = $colDefs -join ", "
-							$createTableSQL = "IF OBJECT_ID(N'[$table]', N'U') IS NOT NULL DROP TABLE [$table]; CREATE TABLE [$table] ($colDefsText);"
-							
-							# Drop/recreate table structure
-							$cmdCreate = $laneSqlConn.CreateCommand()
-							$cmdCreate.CommandText = $createTableSQL
-							$cmdCreate.ExecuteNonQuery() | Out-Null
-							Write_Log "Recreated table structure for '$table' on $machineName" "green"
-							
-							# Select data from source and insert into target lane
-							$dataQuery = "SELECT * FROM [$table]"
-							$cmdSource = $srcSqlConnection.CreateCommand()
-							$cmdSource.CommandText = $dataQuery
-							$readerSource = $cmdSource.ExecuteReader()
-							$schemaTable = $readerSource.GetSchemaTable()
-							$colNames = $schemaTable | ForEach-Object { $_["ColumnName"] }
-							$insertPrefix = "INSERT INTO [$table] ([$($colNames -join '],[')]) VALUES "
-							$rowCountCopied = 0
-							while ($readerSource.Read())
-							{
-								$values = @()
-								foreach ($col in $colNames)
-								{
-									$val = $readerSource[$col]
-									if ($val -eq $null -or $val -is [System.DBNull])
-									{
-										$values += "NULL"
-									}
-									elseif ($val -is [string])
-									{
-										$escaped = $val.Replace("'", "''")
-										$values += "'$escaped'"
-									}
-									elseif ($val -is [datetime])
-									{
-										$values += "'" + $val.ToString("yyyy-MM-dd HH:mm:ss") + "'"
-									}
-									else
-									{
-										$values += $val.ToString()
+									$metaRows += [pscustomobject]@{
+										ColumnName = [string]$metaReader['ColumnName']
+										DataType   = [string]$metaReader['DataType']
+										MaxLength  = [int]$metaReader['MaxLength']
+										Precision  = [int]$metaReader['Precision']
+										Scale	   = [int]$metaReader['Scale']
+										IsNullable = [bool]$metaReader['IsNullable']
+										IsIdentity = [bool]$metaReader['IsIdentity']
+										IsComputed = [bool]$metaReader['IsComputed']
+										IdentitySeed = $metaReader['IdentitySeed']
+										IdentityIncrement = $metaReader['IdentityIncrement']
 									}
 								}
-								$insertCmd = $laneSqlConn.CreateCommand()
-								$insertCmd.CommandText = $insertPrefix + "(" + ($values -join ",") + ")"
-								$insertCmd.ExecuteNonQuery() | Out-Null
-								$rowCountCopied++
+								$metaReader.Close()
+								
+								if (-not $metaRows -or $metaRows.Count -eq 0)
+								{
+									throw "Source table metadata not found (OBJECT_ID failed)."
+								}
+								
+								# Identify special columns
+								$computedCols = @($metaRows | Where-Object { $_.IsComputed })
+								$identityCols = @($metaRows | Where-Object { $_.IsIdentity })
+								
+								# Copy columns: exclude computed + rowversion/timestamp (SQL Server won't allow explicit insert)
+								$copyCols = @($metaRows | Where-Object { -not $_.IsComputed -and $_.DataType -notin @('timestamp', 'rowversion') })
+								
+								# -----------------------------
+								# 2) Ensure destination table exists and is empty
+								#    - If exists: TRUNCATE (fallback to DELETE)
+								#    - If missing: CREATE from source columns (computed columns cannot be created here -> fail)
+								# -----------------------------
+								$existsCmd = $laneSqlConn.CreateCommand()
+								$existsCmd.CommandTimeout = 30
+								$existsCmd.CommandText = "SELECT OBJECT_ID(N'[dbo].[$table]', N'U')"
+								$destObjId = $existsCmd.ExecuteScalar()
+								$destExists = ($destObjId -ne $null -and $destObjId -ne [DBNull]::Value)
+								
+								if ($destExists)
+								{
+									# Empty the table
+									try
+									{
+										$emptyCmd = $laneSqlConn.CreateCommand()
+										$emptyCmd.CommandTimeout = 60
+										$emptyCmd.CommandText = "TRUNCATE TABLE [dbo].[$table]"
+										$emptyCmd.ExecuteNonQuery() | Out-Null
+									}
+									catch
+									{
+										# TRUNCATE can fail (FKs). Fallback to DELETE.
+										$emptyCmd2 = $laneSqlConn.CreateCommand()
+										$emptyCmd2.CommandTimeout = 120
+										$emptyCmd2.CommandText = "DELETE FROM [dbo].[$table]"
+										$emptyCmd2.ExecuteNonQuery() | Out-Null
+									}
+								}
+								else
+								{
+									# Cannot recreate computed columns without expressions; fail fast if source has them
+									if ($computedCols.Count -gt 0)
+									{
+										throw "Destination table missing and source has computed columns. Cannot safely CREATE."
+									}
+									
+									# Build CREATE TABLE from source metadata
+									$colDefs = @()
+									foreach ($c in $metaRows)
+									{
+										$colName = $c.ColumnName
+										$dataType = $c.DataType
+										$maxLen = [int]$c.MaxLength
+										$prec = [int]$c.Precision
+										$scale = [int]$c.Scale
+										$isNull = [bool]$c.IsNullable
+										$isIdent = [bool]$c.IsIdentity
+										
+										# Skip computed + rowversion for CREATE when destination is missing
+										if ($c.IsComputed -or $dataType -in @('timestamp', 'rowversion')) { continue }
+										
+										# Type formatting
+										$typeText = $dataType
+										switch ($dataType)
+										{
+											'nvarchar' {
+												if ($maxLen -eq -1) { $typeText = 'nvarchar(max)' }
+												else { $typeText = "nvarchar($([int]($maxLen/2)))" }
+											}
+											'varchar'  {
+												if ($maxLen -eq -1) { $typeText = 'varchar(max)' }
+												else { $typeText = "varchar($maxLen)" }
+											}
+											'nchar'    { $typeText = "nchar($([int]($maxLen/2)))" }
+											'char'     { $typeText = "char($maxLen)" }
+											'varbinary' {
+												if ($maxLen -eq -1) { $typeText = 'varbinary(max)' }
+												else { $typeText = "varbinary($maxLen)" }
+											}
+											'binary'   { $typeText = "binary($maxLen)" }
+											'decimal'  { $typeText = "decimal($prec,$scale)" }
+											'numeric'  { $typeText = "numeric($prec,$scale)" }
+											'datetime2' {
+												$typeText = if ($scale -ge 0) { "datetime2($scale)" }
+												else { 'datetime2' }
+											}
+											'time' {
+												$typeText = if ($scale -ge 0) { "time($scale)" }
+												else { 'time' }
+											}
+											'datetimeoffset' {
+												$typeText = if ($scale -ge 0) { "datetimeoffset($scale)" }
+												else { 'datetimeoffset' }
+											}
+											'float' {
+												$typeText = if ($prec -and $prec -ne 53) { "float($prec)" }
+												else { 'float' }
+											}
+										}
+										
+										# Identity
+										$identityText = ''
+										if ($isIdent)
+										{
+											$seed = $c.IdentitySeed
+											$inc = $c.IdentityIncrement
+											if ($seed -ne $null -and $seed -ne [DBNull]::Value -and $inc -ne $null -and $inc -ne [DBNull]::Value)
+											{
+												$identityText = " IDENTITY($seed,$inc)"
+											}
+											else
+											{
+												$identityText = " IDENTITY(1,1)"
+											}
+										}
+										
+										$nullText = if ($isNull) { 'NULL' }
+										else { 'NOT NULL' }
+										$colDefs += "[$colName] $typeText$identityText $nullText"
+									}
+									
+									if (-not $colDefs -or $colDefs.Count -eq 0)
+									{
+										throw "No creatable columns discovered for '$table'."
+									}
+									
+									$createSql = "CREATE TABLE [dbo].[$table] (" + ($colDefs -join ', ') + ")"
+									$createCmd = $laneSqlConn.CreateCommand()
+									$createCmd.CommandTimeout = 120
+									$createCmd.CommandText = "IF OBJECT_ID(N'[dbo].[$table]', N'U') IS NOT NULL DROP TABLE [dbo].[$table]; $createSql;"
+									$createCmd.ExecuteNonQuery() | Out-Null
+									Write_Log "Created table '$table' on $machineName" "green"
+								}
+								
+								# -----------------------------
+								# 3) Bulk copy data
+								# -----------------------------
+								$identityInsertEnabled = $false
+								if ($identityCols.Count -gt 0)
+								{
+									try
+									{
+										$identOn = $laneSqlConn.CreateCommand()
+										$identOn.CommandTimeout = 30
+										$identOn.CommandText = "SET IDENTITY_INSERT [dbo].[$table] ON"
+										$identOn.ExecuteNonQuery() | Out-Null
+										$identityInsertEnabled = $true
+									}
+									catch
+									{
+										Write_Log "Could not enable IDENTITY_INSERT for '$table' on $machineName. Will copy without identity columns. Error: $_" "yellow"
+										$copyCols = @($copyCols | Where-Object { -not $_.IsIdentity })
+									}
+								}
+								
+								if (-not $copyCols -or $copyCols.Count -eq 0)
+								{
+									throw "No columns available to copy (computed/rowversion filtered everything)."
+								}
+								
+								$colListSql = ($copyCols | ForEach-Object { "[" + $_.ColumnName + "]" }) -join ','
+								$srcCmd = $srcSqlConnection.CreateCommand()
+								$srcCmd.CommandTimeout = 0
+								$srcCmd.CommandText = "SELECT $colListSql FROM [dbo].[$table]"
+								$srcReader = $srcCmd.ExecuteReader()
+								
+								try
+								{
+									$bulkOptions = [System.Data.SqlClient.SqlBulkCopyOptions]::TableLock
+									if ($identityInsertEnabled) { $bulkOptions = $bulkOptions -bor [System.Data.SqlClient.SqlBulkCopyOptions]::KeepIdentity }
+									
+									$bulk = New-Object System.Data.SqlClient.SqlBulkCopy($laneSqlConn, $bulkOptions, $null)
+									$bulk.DestinationTableName = "[dbo].[$table]"
+									$bulk.BatchSize = 5000
+									$bulk.BulkCopyTimeout = 0
+									
+									foreach ($c in $copyCols)
+									{
+										$bulk.ColumnMappings.Add($c.ColumnName, $c.ColumnName) | Out-Null
+									}
+									
+									$bulk.WriteToServer($srcReader)
+								}
+								finally
+								{
+									try { $srcReader.Close() }
+									catch { }
+									try { $bulk.Close() }
+									catch { }
+								}
+								
+								if ($identityInsertEnabled)
+								{
+									try
+									{
+										$identOff = $laneSqlConn.CreateCommand()
+										$identOff.CommandTimeout = 30
+										$identOff.CommandText = "SET IDENTITY_INSERT [dbo].[$table] OFF"
+										$identOff.ExecuteNonQuery() | Out-Null
+									}
+									catch { }
+								}
+								
+								$rowCountCopied = $tableRowCounts[$table]
+								Write_Log "Copied $rowCountCopied rows to '$table' on lane $laneNum ($machineName) (SQL protocol)." "green"
 							}
-							$readerSource.Close()
-							Write_Log "Copied $rowCountCopied rows to $table on lane $laneNum ($machineName) (SQL protocol)." "green"
+							catch
+							{
+								Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL: $_" "red"
+							}
 						}
-						catch
-						{
-							Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL: $_" "red"
-						}
+						
+						$protocolWorked = $true
+						$protocolLanes += $laneNum
+						$ProcessedLanes += $laneNum
 					}
-					$laneSqlConn.Close()
-					$protocolWorked = $true
-					$protocolLanes += $laneNum
-					$ProcessedLanes += $laneNum
+				}
+				catch
+				{
+					Write_Log "SQL protocol copy failed for lane [$laneNum] ($machineName) ($protocolType): $_" "yellow"
+					$protocolWorked = $false
+				}
+				finally
+				{
+					try { if ($laneSqlConn) { $laneSqlConn.Close() } }
+					catch { }
+					try { if ($laneSqlConn) { $laneSqlConn.Dispose() } }
+					catch { }
 				}
 			}
-			catch
+			else
 			{
-				Write_Log "SQL protocol copy failed for lane [$laneNum] ($machineName) ($protocolType): $_" "yellow"
-				$protocolWorked = $false
+				Write_Log "Lane $laneNum ($machineName) protocol cached as '$protocolType' but connection string is invalid. Using file fallback." "yellow"
 			}
 		}
 		
 		# --------------------------------------------------------------------------------------------
 		# File fallback (if protocol copy not possible)
+		# RULE: File-only lanes must ONLY pump tables <= 1000 rows
 		# --------------------------------------------------------------------------------------------
 		if (-not $protocolWorked)
 		{
 			if (Test-Path $LaneLocalPath)
 			{
 				Write_Log "`r`nCopying via FILE fallback for Lane #$laneNum ($machineName)..." "blue"
+				
 				foreach ($aliasEntry in $filteredAliasEntries)
 				{
-					$table = $aliasEntry.Table
-					$baseTable = $table -replace '_TAB$', ''
-					$sqlFileName = "${baseTable}_Load.sql"
-					$localTempPath = Join-Path $env:TEMP $sqlFileName
+					$table = [string]$aliasEntry.Table
+					if ([string]::IsNullOrWhiteSpace($table)) { continue }
 					
-					# Optionally reuse an existing file if < 1 hour old (for efficiency)
-					$useExistingFile = $false
-					if (Test-Path $localTempPath)
+					$rowCount = $null
+					if ($tableRowCounts.ContainsKey($table)) { $rowCount = $tableRowCounts[$table] }
+					if ($null -eq $rowCount)
 					{
-						$fileInfo = Get-Item $localTempPath
-						$fileAge = (Get-Date) - $fileInfo.LastWriteTime
-						if ($fileAge.TotalHours -le 1) { $useExistingFile = $true }
+						Write_Log "Skipping '$table' for FILE lane $[laneNum]: rowcount unknown." "yellow"
+						continue
+					}
+					if ($rowCount -gt $MaxFileRows)
+					{
+						Write_Log "Skipping '$table' for FILE lane $[laneNum]: $rowCount rows (> $MaxFileRows rule)." "yellow"
+						continue
 					}
 					
-					if (-not $useExistingFile)
+					$baseTable = $table -replace '_TAB$', ''
+					$sqlFileName = "${baseTable}_Load.sql"
+					
+					if (-not $generatedSqlFiles.ContainsKey($table))
 					{
+						$localTempPath = Join-Path $env:TEMP ("${StoreNumber}_${sqlFileName}")
+						
 						try
 						{
 							$ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
 							$streamWriter = New-Object System.IO.StreamWriter($localTempPath, $false, $ansiPcEncoding)
 							$streamWriter.NewLine = "`r`n"
 							
-							# Get columns
 							$columnDataTypesQuery = @"
 SELECT COLUMN_NAME, DATA_TYPE
 FROM INFORMATION_SCHEMA.COLUMNS
@@ -7544,19 +7505,50 @@ ORDER BY ORDINAL_POSITION
 							$columnDataTypes = [ordered]@{ }
 							while ($readerColumnTypes.Read())
 							{
-								$colName = $readerColumnTypes["COLUMN_NAME"]
-								$dataType = $readerColumnTypes["DATA_TYPE"]
+								$colName = [string]$readerColumnTypes["COLUMN_NAME"]
+								$dataType = [string]$readerColumnTypes["DATA_TYPE"]
 								$columnDataTypes[$colName] = $dataType
 							}
 							$readerColumnTypes.Close()
 							
-							# Primary key
+							$filterCmd = $srcSqlConnection.CreateCommand()
+							$filterCmd.CommandTimeout = 60
+							$filterCmd.CommandText = @"
+SELECT c.name AS ColumnName, t.name AS DataType, c.is_computed AS IsComputed
+FROM sys.columns c
+JOIN sys.types t ON c.user_type_id = t.user_type_id
+WHERE c.object_id = OBJECT_ID(@obj)
+"@
+							$null = $filterCmd.Parameters.Clear()
+							$p2 = $filterCmd.Parameters.Add("@obj", [System.Data.SqlDbType]::NVarChar, 256)
+							$p2.Value = "dbo.$table"
+							$filterReader = $filterCmd.ExecuteReader()
+							$skipCols = @{ }
+							while ($filterReader.Read())
+							{
+								$cn = [string]$filterReader['ColumnName']
+								$dt = [string]$filterReader['DataType']
+								$ic = [bool]$filterReader['IsComputed']
+								if ($ic -or $dt -in @('timestamp', 'rowversion')) { $skipCols[$cn] = $true }
+							}
+							$filterReader.Close()
+							
+							foreach ($k in @($skipCols.Keys))
+							{
+								if ($columnDataTypes.Contains($k)) { $columnDataTypes.Remove($k) }
+							}
+							
+							if ($columnDataTypes.Count -eq 0)
+							{
+								throw "No eligible columns to pump after filtering computed/rowversion."
+							}
+							
 							$pkQuery = @"
 SELECT c.COLUMN_NAME
 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
 JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c
-    ON c.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
-    AND c.TABLE_NAME = tc.TABLE_NAME
+	ON c.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+	AND c.TABLE_NAME = tc.TABLE_NAME
 WHERE tc.TABLE_NAME = '$table' AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
 ORDER BY c.ORDINAL_POSITION
 "@
@@ -7564,14 +7556,14 @@ ORDER BY c.ORDINAL_POSITION
 							$cmdPK.CommandText = $pkQuery
 							$readerPK = $cmdPK.ExecuteReader()
 							$pkColumns = @()
-							while ($readerPK.Read()) { $pkColumns += $readerPK["COLUMN_NAME"] }
+							while ($readerPK.Read()) { $pkColumns += [string]$readerPK["COLUMN_NAME"] }
 							$readerPK.Close()
 							
 							if ($pkColumns.Count -eq 0)
 							{
 								$primaryKeyColumns = @()
 								$cmdFirstColumn = $srcSqlConnection.CreateCommand()
-								$cmdFirstColumn.CommandText = "SELECT TOP 1 * FROM [$table]"
+								$cmdFirstColumn.CommandText = "SELECT TOP 1 * FROM [dbo].[$table]"
 								$readerFirstColumn = $cmdFirstColumn.ExecuteReader()
 								if ($readerFirstColumn.Read())
 								{
@@ -7588,7 +7580,6 @@ ORDER BY c.ORDINAL_POSITION
 							$viewName = $baseTable.Substring(0, 1).ToUpper() + $baseTable.Substring(1).ToLower() + '_Load'
 							$columnList = ($columnDataTypes.Keys) -join ','
 							
-							# Write header
 							$header = @"
 @WIZRPL(DBASE_TIMEOUT=E);
 
@@ -7596,11 +7587,13 @@ CREATE VIEW $viewName AS SELECT $columnList FROM $table;
 
 INSERT INTO $viewName VALUES
 "@
-							$header = $header -replace "(\r\n|\n|\r)", "`r`n"
+							$header = $header -replace "(
+|
+|
+)", "`r`n"
 							$streamWriter.WriteLine($header.TrimEnd())
 							
-							# Dump data as INSERTs (row by row)
-							$dataQuery = "SELECT * FROM [$table]"
+							$dataQuery = "SELECT $columnList FROM [dbo].[$table]"
 							$cmdData = $srcSqlConnection.CreateCommand()
 							$cmdData.CommandText = $dataQuery
 							$readerData = $cmdData.ExecuteReader()
@@ -7623,7 +7616,10 @@ INSERT INTO $viewName VALUES
 									{
 										{ $_ -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext') } {
 											$escapedVal = $val.ToString().Replace("'", "''")
-											$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+											$escapedVal = $escapedVal -replace "(
+|
+|
+)", " "
 											$values += "'$escapedVal'"
 											break
 										}
@@ -7640,8 +7636,7 @@ INSERT INTO $viewName VALUES
 											break
 										}
 										{ $_ -in @('decimal', 'numeric', 'float', 'real', 'money', 'smallmoney') } {
-											if ([math]::Floor($val) -eq $val) { $values += $val.ToString() }
-											else { $values += $val.ToString("0.00") }
+											$values += ([string]::Format([System.Globalization.CultureInfo]::InvariantCulture, "{0}", $val))
 											break
 										}
 										{ $_ -in @('tinyint', 'smallint', 'int', 'bigint') } {
@@ -7650,20 +7645,26 @@ INSERT INTO $viewName VALUES
 										}
 										default {
 											$escapedVal = $val.ToString().Replace("'", "''")
-											$escapedVal = $escapedVal -replace "(\r\n|\n|\r)", " "
+											$escapedVal = $escapedVal -replace "(
+|
+|
+)", " "
 											$values += "'$escapedVal'"
 											break
 										}
 									}
 								}
 								$insertStatement = "(" + ($values -join ",") + ")"
-								$insertStatement = $insertStatement -replace "(\r\n|\n|\r)", " "
+								$insertStatement = $insertStatement -replace "(
+|
+|
+)", " "
 								$streamWriter.Write($insertStatement)
 							}
 							$readerData.Close()
 							$streamWriter.WriteLine(";")
 							$streamWriter.WriteLine()
-							# Footer
+							
 							$footer = @"
 @UPDATE_BATCH(JOB=ADDRPL,TAR=$table,
 KEY=$keyString,
@@ -7675,30 +7676,50 @@ DROP TABLE $viewName;
 
 @WIZCLR(DBASE_TIMEOUT);
 "@
-							$footer = $footer -replace "(\r\n|\n|\r)", "`r`n"
+							$footer = $footer -replace "(
+|
+|
+)", "`r`n"
 							$streamWriter.WriteLine($footer.TrimEnd())
 							$streamWriter.WriteLine()
 							$streamWriter.Flush()
 							$streamWriter.Close()
 							$streamWriter.Dispose()
+							
+							$generatedSqlFiles[$table] = $localTempPath
+							Write_Log "Generated $sqlFileName (FILE mode) from SOURCE ($rowCount rows)." "green"
 						}
 						catch
 						{
+							try { if ($streamWriter) { $streamWriter.Close(); $streamWriter.Dispose() } }
+							catch { }
 							Write_Log "Error generating SQL for table '$table' (file fallback): $_" "red"
 							continue
 						}
 					}
 					
-					# Copy file to the lane's folder
 					try
 					{
+						$localTempPath = $generatedSqlFiles[$table]
+						if (-not (Test-Path $localTempPath))
+						{
+							Write_Log "Temp SQL file missing for '$table' ($localTempPath). Skipping copy." "yellow"
+							continue
+						}
+						
 						$destinationPath = Join-Path $LaneLocalPath $sqlFileName
 						Copy-Item -Path $localTempPath -Destination $destinationPath -Force -ErrorAction Stop
-						$fileItem = Get-Item $destinationPath
-						if ($fileItem.Attributes -band [System.IO.FileAttributes]::Archive)
+						
+						try
 						{
-							$fileItem.Attributes -= [System.IO.FileAttributes]::Archive
+							$fileItem = Get-Item $destinationPath -ErrorAction Stop
+							if ($fileItem.Attributes -band [System.IO.FileAttributes]::Archive)
+							{
+								$fileItem.Attributes -= [System.IO.FileAttributes]::Archive
+							}
 						}
+						catch { }
+						
 						Write_Log "Copied $sqlFileName to Lane #$laneNum ($machineName) (file fallback)." "green"
 						$fileCopyLanes += $laneNum
 						$ProcessedLanes += $laneNum
@@ -7719,9 +7740,12 @@ DROP TABLE $viewName;
 	# ------------------------------------------------------------------------------------------------
 	# STEP 6: Clean up and final logging
 	# ------------------------------------------------------------------------------------------------
-	$srcSqlConnection.Close()
+	try { if ($srcSqlConnection) { $srcSqlConnection.Close() } }
+	catch { }
+	try { if ($srcSqlConnection) { $srcSqlConnection.Dispose() } }
+	catch { }
 	
-	$uniqueProcessedLanes = $ProcessedLanes | Select-Object -Unique
+	$uniqueProcessedLanes = @($ProcessedLanes | Select-Object -Unique)
 	Write_Log "`r`nTotal Lanes processed: $($uniqueProcessedLanes.Count)" "green"
 	if ($protocolLanes.Count -gt 0)
 	{
@@ -15071,8 +15095,11 @@ function Repair_BMS
 		# Re-kill once more (still no waits)
 		try { cmd /c 'taskkill /F /T /FI "SERVICES eq BMS" >nul 2>&1' }
 		catch { }
-		foreach ($img in $killImages) { try { cmd /c ("taskkill /F /T /IM {0} >nul 2>&1" -f $img) }
-			catch { } }
+		foreach ($img in $killImages)
+		{
+			try { cmd /c ("taskkill /F /T /IM {0} >nul 2>&1" -f $img) }
+			catch { }
+		}
 	}
 	else
 	{
@@ -15145,8 +15172,11 @@ function Repair_BMS
 		# Pre-kill again (helps with "marked for deletion" locks)
 		try { cmd /c 'taskkill /F /T /FI "SERVICES eq BMS" >nul 2>&1' }
 		catch { }
-		foreach ($img in $killImages) { try { cmd /c ("taskkill /F /T /IM {0} >nul 2>&1" -f $img) }
-			catch { } }
+		foreach ($img in $killImages)
+		{
+			try { cmd /c ("taskkill /F /T /IM {0} >nul 2>&1" -f $img) }
+			catch { }
+		}
 		
 		cmd /c ("sc.exe delete {0} >nul 2>&1" -f $serviceName)
 		Write_Log "Issued: sc delete $serviceName (silent)" "yellow"
@@ -21820,16 +21850,26 @@ function Pick_And_Update_IshidaSDPs
 	)
 	
 	# ---------------- Logging shim (Write_Log if present, else host) ----------------
-	$logInfo = { param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'cyan' }
-		else { Write-Host "[INFO] $m" -ForegroundColor Cyan } }
-	$logWarn = { param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'yellow' }
-		else { Write-Host "[WARN] $m" -ForegroundColor Yellow } }
-	$logErr = { param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'red' }
-		else { Write-Host "[ERR ] $m" -ForegroundColor Red } }
-	$logOk = { param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'green' }
-		else { Write-Host "[ OK ] $m" -ForegroundColor Green } }
-	$logBlue = { param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'blue' }
-		else { Write-Host $m -ForegroundColor Blue } }
+	$logInfo = {
+		param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'cyan' }
+		else { Write-Host "[INFO] $m" -ForegroundColor Cyan }
+	}
+	$logWarn = {
+		param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'yellow' }
+		else { Write-Host "[WARN] $m" -ForegroundColor Yellow }
+	}
+	$logErr = {
+		param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'red' }
+		else { Write-Host "[ERR ] $m" -ForegroundColor Red }
+	}
+	$logOk = {
+		param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'green' }
+		else { Write-Host "[ OK ] $m" -ForegroundColor Green }
+	}
+	$logBlue = {
+		param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'blue' }
+		else { Write-Host $m -ForegroundColor Blue }
+	}
 	
 	& $logBlue "`r`n==================== Starting Pick_And_Update_IshidaSDPs ====================`r`n"
 	
@@ -24448,8 +24488,11 @@ ORDER BY e.F01;
 		if ($deployTriggerName)
 		{
 			$tp = Join-Path $GlobalToBizerba $deployTriggerName
-			if (Test-Path -LiteralPath $tp) { try { Remove-Item -LiteralPath $tp -Force -ErrorAction SilentlyContinue }
-				catch { } }
+			if (Test-Path -LiteralPath $tp)
+			{
+				try { Remove-Item -LiteralPath $tp -Force -ErrorAction SilentlyContinue }
+				catch { }
+			}
 		}
 		
 		# Create DBatch trigger
@@ -25879,7 +25922,7 @@ public static class NativeWin {
 			Schedule_Storeman_Zip_Backup
 		})
 	[void]$ContextMenuServer.Items.Add($ServerScheduleStoremanZipBackupItem)
-		
+	
 	############################################################################
 	# 5) Manage SQL 'sa' Account Menu Item
 	############################################################################
