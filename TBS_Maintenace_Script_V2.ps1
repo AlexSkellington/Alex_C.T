@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.5.6"
-$VersionDate = "2026-02-05"
+$VersionNumber = "2.5.9"
+$VersionDate = "2026-02-24"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -3186,6 +3186,484 @@ WHERE Active = 'Y'
 	# 7. RETURN THE NODES OBJECT FOR SCRIPT CALLERS
 	# ====================================================================================
 	return $Nodes
+}
+
+# ===================================================================================================
+#                                   FUNCTION: Retrive_Transactions
+# ---------------------------------------------------------------------------------------------------
+# Purpose:
+#   PowerShell version of trs_clt_reprocess.sqi:
+#     - Builds a per-lane transaction list table (SAL_HDR_SUS@TER) from SAL_HDR
+#     - Filters by date range (START/STOP) and transaction range (FIL1/FIL2)
+#
+# Connection correctness:
+#   - Uses Get_All_Lanes_Database_Info to obtain DBName + DBSERVER-derived TCP/NP targets
+#   - Honors Start_Lane_Protocol_Jobs preference: 'TCP' | 'Named Pipes' | 'File'
+#
+# Direct connection requirement:
+#   - Uses Invoke-Sqlcmd with -ServerInstance and -Database only
+#
+# Fallback:
+#   - If protocol is File OR SQL fails => writes:
+#       XF<Store><Lane>\trs_clt_reprocess_auto.sqi
+#     in the exact format requested.
+# ===================================================================================================
+
+function Retrive_Transactions
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[Parameter(Mandatory = $false)]
+		[switch]$ForceSQI
+	)
+	
+	# -----------------------------
+	# Logging fallback (PS 5.1 safe)
+	# -----------------------------
+	$hasWriteLog = [bool](Get-Command Write_Log -ErrorAction SilentlyContinue)
+	$log = {
+		param ([string]$Msg,
+			[string]$Color = "white")
+		if ($hasWriteLog) { Write_Log $Msg $Color }
+		else { Write-Host $Msg }
+	}
+	
+	& $log "`r`n==================== Starting Retrive_Transactions ====================`r`n" "blue"
+	
+	# -----------------------------
+	# Resolve OfficePath
+	# -----------------------------
+	$office = $null
+	if ($script:OfficePath -and (Test-Path $script:OfficePath)) { $office = $script:OfficePath }
+	elseif ($global:OfficePath -and (Test-Path $global:OfficePath)) { $office = $global:OfficePath }
+	elseif ($OfficePath -and (Test-Path $OfficePath)) { $office = $OfficePath }
+	else { $office = "C:\Storeman\Office" }
+	
+	if (-not $script:OfficePath -or -not (Test-Path $script:OfficePath)) { $script:OfficePath = $office }
+	$OfficePath = $script:OfficePath
+	
+	$st = $StoreNumber.Trim()
+	if ($st -match '^\d+$') { $st = $st.PadLeft(3, '0') }
+	
+	# -----------------------------
+	# Ensure Invoke-Sqlcmd exists
+	# -----------------------------
+	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
+	{
+		$modName = $null
+		if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('SqlModuleName'))
+		{
+			$modName = $script:FunctionResults['SqlModuleName']
+		}
+		foreach ($m in @($modName, "SqlServer", "SQLPS") | Where-Object { $_ })
+		{
+			try { Import-Module $m -ErrorAction Stop; break }
+			catch { }
+		}
+	}
+	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
+	{
+		& $log "Invoke-Sqlcmd not available. Install/Import the SqlServer module first." "red"
+		return
+	}
+	
+	if (-not (Get-Command Get_All_Lanes_Database_Info -ErrorAction SilentlyContinue))
+	{
+		& $log "Get_All_Lanes_Database_Info not found. Cannot guarantee correct DB connections." "red"
+		return
+	}
+	
+	# -----------------------------
+	# UI: Date range + transaction range (FIL1/FIL2)
+	# -----------------------------
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+	
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = "TRS CLT Reprocess - Select Range"
+	$form.Size = New-Object System.Drawing.Size(420, 240)
+	$form.StartPosition = "CenterScreen"
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+	$form.FormBorderStyle = 'FixedDialog'
+	
+	$lblStart = New-Object System.Windows.Forms.Label
+	$lblStart.Text = "Start Date:"
+	$lblStart.Location = New-Object System.Drawing.Point(12, 20)
+	$lblStart.AutoSize = $true
+	$form.Controls.Add($lblStart)
+	
+	$dtStart = New-Object System.Windows.Forms.DateTimePicker
+	$dtStart.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
+	$dtStart.Location = New-Object System.Drawing.Point(120, 16)
+	$dtStart.Width = 120
+	$form.Controls.Add($dtStart)
+	
+	$lblStop = New-Object System.Windows.Forms.Label
+	$lblStop.Text = "Stop Date:"
+	$lblStop.Location = New-Object System.Drawing.Point(12, 55)
+	$lblStop.AutoSize = $true
+	$form.Controls.Add($lblStop)
+	
+	$dtStop = New-Object System.Windows.Forms.DateTimePicker
+	$dtStop.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
+	$dtStop.Location = New-Object System.Drawing.Point(120, 51)
+	$dtStop.Width = 120
+	$form.Controls.Add($dtStop)
+	
+	$lblFil1 = New-Object System.Windows.Forms.Label
+	$lblFil1.Text = "Tran Start (FIL1):"
+	$lblFil1.Location = New-Object System.Drawing.Point(12, 92)
+	$lblFil1.AutoSize = $true
+	$form.Controls.Add($lblFil1)
+	
+	$numFil1 = New-Object System.Windows.Forms.NumericUpDown
+	$numFil1.Location = New-Object System.Drawing.Point(160, 88)
+	$numFil1.Width = 140
+	$numFil1.Minimum = 0
+	$numFil1.Maximum = 99999999
+	$numFil1.Value = 0
+	$form.Controls.Add($numFil1)
+	
+	$lblFil2 = New-Object System.Windows.Forms.Label
+	$lblFil2.Text = "Tran Stop (FIL2):"
+	$lblFil2.Location = New-Object System.Drawing.Point(12, 127)
+	$lblFil2.AutoSize = $true
+	$form.Controls.Add($lblFil2)
+	
+	$numFil2 = New-Object System.Windows.Forms.NumericUpDown
+	$numFil2.Location = New-Object System.Drawing.Point(160, 123)
+	$numFil2.Width = 140
+	$numFil2.Minimum = 0
+	$numFil2.Maximum = 99999999
+	$numFil2.Value = 99999999
+	$form.Controls.Add($numFil2)
+	
+	$btnOk = New-Object System.Windows.Forms.Button
+	$btnOk.Text = "OK"
+	$btnOk.Location = New-Object System.Drawing.Point(95, 165)
+	$btnOk.Add_Click({
+			if ([int]$numFil1.Value -gt [int]$numFil2.Value)
+			{
+				[System.Windows.Forms.MessageBox]::Show(
+					"FIL1 must be <= FIL2.",
+					"Invalid Range",
+					[System.Windows.Forms.MessageBoxButtons]::OK,
+					[System.Windows.Forms.MessageBoxIcon]::Warning
+				) | Out-Null
+				return
+			}
+			
+			$form.Tag = @{
+				Start = $dtStart.Value
+				Stop  = $dtStop.Value
+				FIL1  = [int]$numFil1.Value
+				FIL2  = [int]$numFil2.Value
+			}
+			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+			$form.Close()
+		})
+	$form.Controls.Add($btnOk)
+	
+	$btnCancel = New-Object System.Windows.Forms.Button
+	$btnCancel.Text = "Cancel"
+	$btnCancel.Location = New-Object System.Drawing.Point(210, 165)
+	$btnCancel.Add_Click({
+			$form.Tag = $null
+			$form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+			$form.Close()
+		})
+	$form.Controls.Add($btnCancel)
+	
+	$form.AcceptButton = $btnOk
+	$form.CancelButton = $btnCancel
+	
+	$dlg = $form.ShowDialog()
+	if ($dlg -ne [System.Windows.Forms.DialogResult]::OK -or -not $form.Tag)
+	{
+		& $log "User cancelled range selection." "yellow"
+		& $log "==================== Retrive_Transactions Completed ====================" "blue"
+		return
+	}
+	
+	$startDate = $form.Tag.Start.Date
+	$stopDate = $form.Tag.Stop.Date
+	$startDT = $startDate
+	$stopDT = $stopDate.AddDays(1).AddSeconds(-1)
+	
+	$fil1 = [int]$form.Tag.FIL1
+	$fil2 = [int]$form.Tag.FIL2
+	
+	# ALWAYS clear (no duplicates allowed)
+	$doClear = $true
+	
+	& $log ("Range: {0} 00:00:00  ->  {1} 23:59:59 | FIL1={2} FIL2={3} | ClearExisting=True (forced)" -f `
+		$startDate.ToString("MM/dd/yyyy"), $stopDate.ToString("MM/dd/yyyy"), $fil1, $fil2) "green"
+	
+	# -----------------------------
+	# Lane selection
+	# -----------------------------
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Lanes to Build Transaction List"
+	if (-not $selection -or -not $selection.ContainsKey('Lanes') -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
+	{
+		& $log "Lane selection cancelled / empty." "yellow"
+		return
+	}
+	
+	$lanes = @($selection.Lanes)
+	& $log ("Target lanes: {0}" -f ($lanes -join ', ')) "yellow"
+	
+	# -----------------------------
+	# Processing
+	# -----------------------------
+	$summary = New-Object System.Collections.Generic.List[object]
+	
+	foreach ($laneRaw in $lanes)
+	{
+		$l = $laneRaw.ToString().Trim()
+		if ($l -match '^\d+$') { $l = ("{0:D3}" -f [int]$l) }
+		$lane = $l
+		
+		$laneInfo = $null
+		try { $laneInfo = Get_All_Lanes_Database_Info -LaneNumber $lane }
+		catch { $laneInfo = $null }
+		
+		if ($laneInfo -and ($laneInfo -isnot [hashtable]))
+		{
+			$tmp = @{ }
+			foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
+			$laneInfo = $tmp
+		}
+		
+		$dbName = $null
+		if ($laneInfo -and $laneInfo.ContainsKey('DBName')) { $dbName = [string]$laneInfo['DBName'] }
+		
+		$machine = $null
+		if ($laneInfo -and $laneInfo.ContainsKey('MachineName')) { $machine = [string]$laneInfo['MachineName'] }
+		if ([string]::IsNullOrWhiteSpace($machine) -and $script:FunctionResults -and $script:FunctionResults.ContainsKey('LaneNumToMachineName'))
+		{
+			try { $machine = [string]$script:FunctionResults['LaneNumToMachineName'][$lane] }
+			catch { }
+		}
+		
+		$preferredProtocolRaw = $null
+		if ($script:LaneProtocols)
+		{
+			$tryKeys = @($lane, $laneRaw)
+			if ($machine) { $tryKeys += @($machine, $machine.ToLower()) }
+			foreach ($k in $tryKeys)
+			{
+				if ($script:LaneProtocols.ContainsKey($k)) { $preferredProtocolRaw = [string]$script:LaneProtocols[$k]; break }
+			}
+		}
+		$protoNorm = if ($preferredProtocolRaw) { $preferredProtocolRaw.Trim().ToLower() }
+		else { $null }
+		
+		$useSql = $true
+		if ($ForceSQI) { $useSql = $false }
+		elseif ($protoNorm -eq 'file') { $useSql = $false }
+		elseif ([string]::IsNullOrWhiteSpace($dbName)) { $useSql = $false }
+		
+		$transListTable = "SAL_HDR_SUS$lane"
+		$targetTbl = "dbo.$transListTable"
+		
+		$startIso = $startDT.ToString("yyyy-MM-ddTHH:mm:ss")
+		$stopIso = $stopDT.ToString("yyyy-MM-ddTHH:mm:ss")
+		
+		$sql = @"
+SET NOCOUNT ON;
+
+DECLARE @StartDate datetime = CONVERT(datetime, '$startIso', 126);
+DECLARE @StopDate  datetime = CONVERT(datetime, '$stopIso', 126);
+DECLARE @Deleted int = 0;
+DECLARE @Inserted int = 0;
+
+IF OBJECT_ID('$targetTbl','U') IS NULL
+BEGIN
+    SELECT TOP 0 * INTO $targetTbl FROM dbo.SAL_HDR;
+END
+
+DELETE FROM $targetTbl;
+SET @Deleted = @@ROWCOUNT;
+
+INSERT INTO $targetTbl
+SELECT *
+FROM dbo.SAL_HDR
+WHERE F1067 = 'CLOSE'
+  AND F254 >= @StartDate
+  AND F254 <= @StopDate
+  AND F1032 >= $fil1
+  AND F1032 <= $fil2;
+
+SET @Inserted = @@ROWCOUNT;
+
+SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
+"@
+		
+		$method = $null
+		$usedProtoDisplay = $preferredProtocolRaw
+		$inserted = $null
+		$deleted = $null
+		$sqiPath = $null
+		$errText = $null
+		
+		if ($useSql)
+		{
+			$npServer = if ($laneInfo -and $laneInfo.ContainsKey('NamedPipes')) { [string]$laneInfo['NamedPipes'] }
+			else { $null }
+			$tcpServer = if ($laneInfo -and $laneInfo.ContainsKey('TcpServer')) { [string]$laneInfo['TcpServer'] }
+			else { $null }
+			
+			$attempts = @()
+			if ($protoNorm -eq 'tcp')
+			{
+				$attempts += [pscustomobject]@{ Proto = 'TCP'; Server = $tcpServer }
+				$attempts += [pscustomobject]@{ Proto = 'Named Pipes'; Server = $npServer }
+			}
+			elseif ($protoNorm -eq 'named pipes' -or $protoNorm -match 'pipe')
+			{
+				$attempts += [pscustomobject]@{ Proto = 'Named Pipes'; Server = $npServer }
+				$attempts += [pscustomobject]@{ Proto = 'TCP'; Server = $tcpServer }
+			}
+			else
+			{
+				$attempts += [pscustomobject]@{ Proto = 'Named Pipes'; Server = $npServer }
+				$attempts += [pscustomobject]@{ Proto = 'TCP'; Server = $tcpServer }
+			}
+			
+			$connected = $false
+			foreach ($a in $attempts)
+			{
+				if ([string]::IsNullOrWhiteSpace($a.Server)) { continue }
+				
+				try
+				{
+					$res = Invoke-Sqlcmd -ServerInstance $a.Server -Database $dbName -Query $sql -ErrorAction Stop
+					
+					# Robust parse
+					$row = $null
+					if ($res -is [System.Data.DataSet])
+					{
+						if ($res.Tables.Count -gt 0 -and $res.Tables[0].Rows.Count -gt 0) { $row = $res.Tables[0].Rows[0] }
+					}
+					elseif ($res -is [System.Data.DataTable])
+					{
+						if ($res.Rows.Count -gt 0) { $row = $res.Rows[0] }
+					}
+					elseif ($res -is [System.Array])
+					{
+						if ($res.Count -gt 0) { $row = $res[0] }
+					}
+					else { $row = $res }
+					
+					if ($row -is [System.Data.DataRow])
+					{
+						if ($row.Table.Columns.Contains('InsertedRows')) { $inserted = [int]$row['InsertedRows'] }
+						if ($row.Table.Columns.Contains('DeletedRows')) { $deleted = [int]$row['DeletedRows'] }
+					}
+					elseif ($row)
+					{
+						try { if ($row.PSObject.Properties.Match('InsertedRows').Count -gt 0) { $inserted = [int]$row.InsertedRows } }
+						catch { }
+						try { if ($row.PSObject.Properties.Match('DeletedRows').Count -gt 0) { $deleted = [int]$row.DeletedRows } }
+						catch { }
+					}
+					
+					$connected = $true
+					$method = "SQL"
+					$usedProtoDisplay = $a.Proto
+					break
+				}
+				catch
+				{
+					$errText = $_.Exception.Message
+					$connected = $false
+				}
+			}
+			
+			if (-not $connected)
+			{
+				& $log ("SQL failed on lane {0} ({1}). Falling back to SQI. Error: {2}" -f $lane, $machine, $errText) "yellow"
+				$useSql = $false
+			}
+		}
+		
+		if (-not $useSql)
+		{
+			$method = "SQI"
+			
+			$xfDir = Join-Path $office ("XF{0}{1}" -f $st, $lane)
+			if (-not (Test-Path $xfDir))
+			{
+				try { New-Item -Path $xfDir -ItemType Directory -Force | Out-Null }
+				catch { }
+			}
+			
+			$sqiPath = Join-Path $xfDir "trs_clt_reprocess_auto.sqi"
+			
+			$startFmt = $startDate.ToString("MM/dd/yyyy")
+			$stopFmt = $stopDate.ToString("MM/dd/yyyy")
+			
+			$sqi = New-Object System.Text.StringBuilder
+			[void]$sqi.AppendLine("@WIZSET(START=$startFmt);")
+			[void]$sqi.AppendLine("@WIZSET(STOP=$stopFmt);")
+			[void]$sqi.AppendLine("@WIZSET(FIL1=$fil1);")
+			[void]$sqi.AppendLine("@WIZSET(FIL2=$fil2);")
+			[void]$sqi.AppendLine("")
+			[void]$sqi.AppendLine("@WIZRPL(TRANS_LIST=SAL_HDR_SUS@TER);")
+			[void]$sqi.AppendLine("@CREATE(@WIZGET(TRANS_LIST),HDRSAL);")
+			[void]$sqi.AppendLine("")
+			# Always clear (forced)
+			[void]$sqi.AppendLine("DELETE FROM @WIZGET(TRANS_LIST);")
+			[void]$sqi.AppendLine("")
+			[void]$sqi.AppendLine("INSERT INTO @WIZGET(TRANS_LIST) SELECT @DBFLD(@WIZGET(TRANS_LIST)) FROM SAL_HDR@WIZGET(TRANS_LOCAL)")
+			[void]$sqi.AppendLine("WHERE F1067='CLOSE' and F254>='@WIZGET(START)' and F254<='@WIZGET(STOP)' AND")
+			[void]$sqi.AppendLine("F1032>=@WIZGET(FIL1) and F1032<=@WIZGET(FIL2);")
+			
+			try
+			{
+				$sqi.ToString() | Out-File -FilePath $sqiPath -Encoding ASCII -Force
+				$usedProtoDisplay = "File"
+				# We can't know the rowcount from SQI here
+				$deleted = "N/A"
+				& $log ("SQI deployed for lane {0} -> {1}" -f $lane, $sqiPath) "green"
+			}
+			catch
+			{
+				$errText = $_.Exception.Message
+				& $log ("Failed to write SQI for lane {0} ({1}): {2}" -f $lane, $machine, $errText) "red"
+			}
+		}
+		
+		$protoOut = $usedProtoDisplay
+		if ([string]::IsNullOrWhiteSpace($protoOut)) { $protoOut = $preferredProtocolRaw }
+		if ([string]::IsNullOrWhiteSpace($protoOut)) { $protoOut = "Unknown" }
+		
+		$summary.Add([pscustomobject]@{
+				Lane	 = $lane
+				Machine  = $machine
+				Protocol = $protoOut
+				Method   = $method
+				Deleted  = $deleted
+				Inserted = $inserted
+				SQIPath  = $sqiPath
+				Error    = $errText
+			})
+	}
+	
+	& $log "`r`n----- Build Summary -----" "yellow"
+	try { $summary | Sort-Object Lane | Format-Table -AutoSize | Out-String | ForEach-Object { & $log $_ "blue" } }
+	catch { & $log ("Could not format summary table: {0}" -f $_.Exception.Message) "red" }
+	
+	$totInserted = ($summary | Where-Object { $_.Method -eq 'SQL' -and $_.Inserted -ne $null } | Measure-Object Inserted -Sum).Sum
+	$totDeleted = ($summary | Where-Object { $_.Method -eq 'SQL' -and $_.Deleted -ne $null -and $_.Deleted -is [int] } | Measure-Object Deleted -Sum).Sum
+	& $log ("Totals (SQL lanes): Deleted={0}  Inserted={1}" -f ($totDeleted -as [int]), ($totInserted -as [int])) "green"
+	
+	& $log "`r`n==================== Retrive_Transactions Completed ====================`r`n" "blue"
+	
+	return [pscustomobject]@{ Summary = $summary }
 }
 
 # ===================================================================================================
@@ -8558,37 +9036,16 @@ function Close_Open_Transactions
 }
 
 # ===================================================================================================
-#               FUNCTION: Sync_ServerKey_To_Lanes_With_ScheduledTask  (SELF-SUFFICIENT TASK, ONE PS1)
+#               FUNCTION: Send_SMS_Key_to_Lanes  
 # ---------------------------------------------------------------------------------------------------
-# NEW REQUIREMENTS IMPLEMENTED:
-#   - Uses $script:ScriptsFolder = "C:\Tecnica_Systems\Alex_C.T\Scripts\"
-#   - Uses $script:ScriptsLog    = "C:\Tecnica_Systems\Alex_C.T\Log\"
-#   - Scheduled task creates ONLY ONE .ps1 (no json, no bat, no runner)
-#   - Scheduled .ps1 is self-sufficient (does NOT rely on main script / dot-sourcing)
-#   - Scheduled logging overwrites a single LATEST file (no growth)
-#
-# Interactive flow:
-#   1) Prompt Run Now vs Schedule Only
-#   2) Select lanes
-#   3) Run Now: deploy now, then ASK if restart programs (only for successful lanes)
-#   4) Schedule Only: create/update task only (no deploy now)
-#
-# Fast execution:
-#   - Reuses pre-collected caches:
-#       $script:FunctionResults['ConnectionString'] (local DB)
-#       $script:FunctionResults['LaneNumToMachineName']
-#       Get_All_Lanes_Database_Info -LaneNumber (already cached by main)
-#       $script:LaneProtocols (already cached by Start_Lane_Protocol_Jobs)
-#   - DOES NOT rerun protocol detection or node collection unless missing
-#
-# FIXES ADDED:
-#   - Scheduled script can connect to lanes via SQL AUTH when protocol != "File"
-#       User: Tecnica  Pass: TB$upp0rT
-#   - Scheduled script correctly accesses JSON keys like "012" via PSObject.Properties (no "$obj.$ln" bug)
-#   - Scheduled script clears archive bit when dropping SQI
+# FIXED BEHAVIOR:
+#   - RUN NOW uses ONLY $script:LaneProtocols (already populated). DEFAULT = File.
+#   - Scheduled Task uses ONLY Protocol_Results.txt at runtime. DEFAULT = File.
+#   - RUN NOW tries WinAuth first, then SQL Auth (Tecnica), THEN SQI fallback.
+#   - Scheduled Task uses SQL Auth for lane DB updates when protocol != File (as required).
 # ===================================================================================================
 
-function Sync_ServerKey_To_Lanes_With_ScheduledTask
+function Send_SMS_Key_to_Lanes
 {
 	[CmdletBinding()]
 	param (
@@ -8604,53 +9061,41 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 		[int]$ConnectTimeoutSeconds = 1
 	)
 	
-	Write_Log "`r`n==================== Starting Sync_ServerKey_To_Lanes_With_ScheduledTask ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Send_SMS_Key_to_Lanes ====================`r`n" "blue"
 	
-	# ------------------------------------------------------------------------------------------------
 	# Normalize store number (3 digits)
-	# ------------------------------------------------------------------------------------------------
 	$StoreNumber = "$StoreNumber".PadLeft(3, '0')
 	
-	# ------------------------------------------------------------------------------------------------
-	# Enforce your folders (per requirement)
-	# ------------------------------------------------------------------------------------------------
+	# Enforce your folders
 	$script:ScriptsFolder = "C:\Tecnica_Systems\Alex_C.T\Scripts\"
 	$script:ScriptsLog = "C:\Tecnica_Systems\Alex_C.T\Log\"
 	if (-not (Test-Path $script:ScriptsFolder)) { New-Item -Path $script:ScriptsFolder -ItemType Directory -Force | Out-Null }
 	if (-not (Test-Path $script:ScriptsLog)) { New-Item -Path $script:ScriptsLog -ItemType Directory -Force | Out-Null }
 	
-	# ------------------------------------------------------------------------------------------------
 	# Ensure FunctionResults exists
-	# ------------------------------------------------------------------------------------------------
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 	
-	# ------------------------------------------------------------------------------------------------
-	# SQL AUTH creds for lane DB access when protocol != "File"
-	# ------------------------------------------------------------------------------------------------
+	# SQL AUTH creds (used for scheduled; and as fallback for Run Now if WinAuth fails)
 	$SqlAuthUser = "Tecnica"
 	$SqlAuthPass = "TB$upp0rT"
 	
-	# ------------------------------------------------------------------------------------------------
-	# Validate SQL module availability (main script uses it elsewhere; keep check)
-	# ------------------------------------------------------------------------------------------------
+	# Validate SQL module availability
 	$SqlModule = $script:FunctionResults['SqlModuleName']
 	if ([string]::IsNullOrWhiteSpace($SqlModule) -or $SqlModule -eq "None")
 	{
 		Write_Log "No SQL Server module available (SqlServer or SQLPS). Cannot sync server key." "red"
-		Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+		Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 		return
 	}
 	try { Import-Module $SqlModule -ErrorAction Stop }
 	catch
 	{
 		Write_Log "Failed to import SQL module '$SqlModule'. Error: $_" "red"
-		Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+		Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 		return
 	}
 	
-	# ------------------------------------------------------------------------------------------------
 	# Ensure cached lane map exists (fallback only if missing)
-	# ------------------------------------------------------------------------------------------------
 	if (-not $script:FunctionResults['LaneNumToMachineName'])
 	{
 		Write_Log "LaneNumToMachineName missing; calling Retrieve_Nodes as fallback." "yellow"
@@ -8660,13 +9105,11 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 	if (-not $LaneNumToMachineName)
 	{
 		Write_Log "LaneNumToMachineName still missing; cannot continue." "red"
-		Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+		Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 		return
 	}
 	
-	# ------------------------------------------------------------------------------------------------
 	# OfficePath required for SQI fallback
-	# ------------------------------------------------------------------------------------------------
 	if (-not $OfficePath -or -not (Test-Path $OfficePath))
 	{
 		$guessOffice = "C:\storeman\Office"
@@ -8675,56 +9118,22 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 	if (-not $OfficePath -or -not (Test-Path $OfficePath))
 	{
 		Write_Log "OfficePath missing/invalid; SQI fallback would fail. OfficePath='$OfficePath'." "red"
-		Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+		Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 		return
 	}
 	
-	# ------------------------------------------------------------------------------------------------
-	# Load protocol preferences FROM protocol results file (source of truth)
-	#   Uses: $script:ProtocolResultsFile created by Start_Lane_Protocol_Jobs
-	#   Populates: $script:LaneProtocols[###] = 'TCP'/'Named Pipes'/'File'
-	# ------------------------------------------------------------------------------------------------
+	# IMPORTANT:
+	# - RUN NOW uses ONLY this variable. DEFAULT = File unless explicitly TCP/Named Pipes.
 	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{ } }
 	
+	# Protocol results file path (Scheduled Task will read this at runtime)
+	if ([string]::IsNullOrWhiteSpace($script:ProtocolResultsFile))
+	{
+		$script:ProtocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
+	}
 	$protoFile = $script:ProtocolResultsFile
-	if ([string]::IsNullOrWhiteSpace($protoFile))
-	{
-		$protoFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
-		$script:ProtocolResultsFile = $protoFile
-	}
 	
-	if (Test-Path $protoFile)
-	{
-		try
-		{
-			$lines = Get-Content -LiteralPath $protoFile -ErrorAction SilentlyContinue
-			foreach ($line in $lines)
-			{
-				if ($line -match '^\s*([^,]+),\s*([^,]+)\s*$')
-				{
-					$laneRaw = $matches[1].Trim()
-					$proto = $matches[2].Trim()
-					$laneNum = (($laneRaw -replace '[^\d]', '')).PadLeft(3, '0')
-					if (-not [string]::IsNullOrWhiteSpace($laneNum))
-					{
-						$script:LaneProtocols[$laneNum] = $proto
-					}
-				}
-			}
-		}
-		catch
-		{
-			Write_Log "Failed reading ProtocolResultsFile '$protoFile'. Error: $_" "yellow"
-		}
-	}
-	else
-	{
-		Write_Log "ProtocolResultsFile not found: $protoFile (will fall back to LaneProtocols cache if present)" "yellow"
-	}
-	
-	# ------------------------------------------------------------------------------------------------
 	# MODE selection (Interactive only): Run Now vs Schedule Only
-	# ------------------------------------------------------------------------------------------------
 	$mode = "run"
 	if (-not $NonInteractive)
 	{
@@ -8774,14 +9183,12 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 		if ($mode -eq "cancel" -or [string]::IsNullOrWhiteSpace($mode))
 		{
 			Write_Log "User cancelled Server Key Sync." "yellow"
-			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 			return
 		}
 	}
 	
-	# ------------------------------------------------------------------------------------------------
 	# Lane selection (interactive) or normalize lanes (noninteractive)
-	# ------------------------------------------------------------------------------------------------
 	if (-not $NonInteractive)
 	{
 		Write_Log "Opening lane selection..." "yellow"
@@ -8789,7 +9196,7 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 		if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
 		{
 			Write_Log "Lane selection cancelled or returned no lanes." "yellow"
-			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 			return
 		}
 		
@@ -8799,6 +9206,7 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 			$raw = $null
 			if ($ln -is [pscustomobject] -and $ln.LaneNumber) { $raw = "$($ln.LaneNumber)" }
 			else { $raw = "$ln" }
+			
 			$n = ($raw -replace '[^\d]', '')
 			if (-not [string]::IsNullOrWhiteSpace($n)) { $tmp += $n.PadLeft(3, '0') }
 		}
@@ -8809,7 +9217,7 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 		if (-not $LaneNumbers -or $LaneNumbers.Count -eq 0)
 		{
 			Write_Log "NonInteractive run requires -LaneNumbers." "red"
-			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 			return
 		}
 		$tmp = @()
@@ -8823,35 +9231,32 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 	
 	Write_Log ("Selected lanes: " + ($LaneNumbers -join ", ")) "cyan"
 	
-	# ------------------------------------------------------------------------------------------------
 	# Decide whether to deploy now
-	# ------------------------------------------------------------------------------------------------
 	$doDeployNow = $true
 	if (-not $NonInteractive -and $mode -eq "schedule") { $doDeployNow = $false }
 	
-	# ------------------------------------------------------------------------------------------------
 	# Results containers
-	# ------------------------------------------------------------------------------------------------
 	$UpdatedViaSql = New-Object System.Collections.Generic.List[string]
 	$UpdatedViaFile = New-Object System.Collections.Generic.List[string]
 	$FailedLanes = New-Object System.Collections.Generic.List[string]
 	
 	# =================================================================================================
-	# DEPLOY NOW  (RUN NOW uses WINDOWS AUTH when protocol is TCP/Named Pipes; else SQI)
+	# DEPLOY NOW
+	#   - Uses ONLY $script:LaneProtocols (already populated)
+	#   - DEFAULT = File unless explicitly TCP/Named Pipes
+	#   - Tries WinAuth first, then SQL Auth, then SQI
 	# =================================================================================================
 	if ($doDeployNow)
 	{
 		try { Add-Type -AssemblyName System.Data 2>$null }
 		catch { }
 		
-		# ------------------------------------------------------------------------------------------------
 		# LOCAL key read
-		# ------------------------------------------------------------------------------------------------
 		$localConnStr = $script:FunctionResults['ConnectionString']
 		if ([string]::IsNullOrWhiteSpace($localConnStr) -or $localConnStr -eq "N/A")
 		{
 			Write_Log "Local DB ConnectionString missing (FunctionResults['ConnectionString'])." "red"
-			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 			return
 		}
 		
@@ -8923,7 +9328,7 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 		if ([string]::IsNullOrWhiteSpace($serverKey))
 		{
 			Write_Log "Server key (SYS_TAB.F1243) came back empty/null from LOCAL DB. Aborting." "red"
-			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 			return
 		}
 		
@@ -8932,20 +9337,15 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 		$safeServerKey = $serverKey.Replace("'", "''")
 		$updateSql = "UPDATE SYS_TAB SET F1243 = '$safeServerKey'"
 		
-		# ------------------------------------------------------------------------------------------------
 		# SQI fallback file (ANSI 1252, no BOM)
-		# ------------------------------------------------------------------------------------------------
-		$SqiFileName = "UPDATE_SERVERKEY.SQI"
+		$SqiFileName = "UPDATE_SMS_KEY.SQI"
 		$SqiContent = "@dbEXEC($updateSql)`r`n"
-		
 		$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
 		$TempSqiPath = Join-Path ([System.IO.Path]::GetTempPath()) $SqiFileName
 		
 		try
 		{
 			[System.IO.File]::WriteAllText($TempSqiPath, $SqiContent, $ansiEncoding)
-			
-			# Clear archive/readonly on temp file too
 			try { attrib -a -r "$TempSqiPath" 2>$null | Out-Null }
 			catch { }
 			try { Set-ItemProperty -Path $TempSqiPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal) -ErrorAction SilentlyContinue }
@@ -8954,18 +9354,17 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 		catch
 		{
 			Write_Log "Failed to create temp SQI '$TempSqiPath'. Error: $_" "red"
-			Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+			Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 			return
 		}
 		
-		# ------------------------------------------------------------------------------------------------
-		# LANE LOOP
-		# ------------------------------------------------------------------------------------------------
 		foreach ($LaneNumber in $LaneNumbers)
 		{
 			Write_Log "`r`n--- Lane $LaneNumber ---" "magenta"
 			
-			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
+			$laneInfo = $null
+			try { $laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber }
+			catch { $laneInfo = $null }
 			if (-not $laneInfo)
 			{
 				Write_Log "Could not retrieve cached DB info for lane $LaneNumber. Skipping." "red"
@@ -8973,70 +9372,81 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 				continue
 			}
 			
+			# Normalize PSCustomObject -> hashtable (so ['TcpConnStr'] works)
+			if ($laneInfo -isnot [hashtable])
+			{
+				$h = @{ }
+				foreach ($p in $laneInfo.PSObject.Properties) { $h[$p.Name] = $p.Value }
+				$laneInfo = $h
+			}
+			
 			$tcpConnStr = $laneInfo['TcpConnStr']
 			$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
 			
-			# Protocol preference from protocol results (source of truth)
+			# RUN NOW: protocol comes ONLY from $script:LaneProtocols; DEFAULT = File
+			$machineName = $LaneNumToMachineName[$LaneNumber]
 			$protocolPref = $null
-			if ($script:LaneProtocols.ContainsKey($LaneNumber)) { $protocolPref = $script:LaneProtocols[$LaneNumber] }
-			if ([string]::IsNullOrWhiteSpace($protocolPref)) { $protocolPref = "File" }
+			if ($script:LaneProtocols.ContainsKey($LaneNumber)) { $protocolPref = [string]$script:LaneProtocols[$LaneNumber] }
+			elseif ($machineName -and $script:LaneProtocols.ContainsKey($machineName)) { $protocolPref = [string]$script:LaneProtocols[$machineName] }
+			elseif ($machineName -and $script:LaneProtocols.ContainsKey($machineName.ToLower())) { $protocolPref = [string]$script:LaneProtocols[$machineName.ToLower()] }
+			
+			$protocolPrefNorm = "File"
+			if (-not [string]::IsNullOrWhiteSpace($protocolPref))
+			{
+				$t = $protocolPref.Trim()
+				if ($t -match '(?i)^tcp$') { $protocolPrefNorm = "TCP" }
+				elseif ($t -match '(?i)pipe') { $protocolPrefNorm = "Named Pipes" }
+				else { $protocolPrefNorm = "File" }
+			}
 			
 			$sqlWorked = $false
 			
-			# ---------------------------------------------
-			# SQL attempts ONLY when protocol says TCP/NP
-			# RUN NOW: Windows Auth (Integrated Security)
-			# ---------------------------------------------
-			if ($protocolPref -ne "File")
+			# SQL attempts ONLY when protocol explicitly says TCP/Named Pipes
+			if ($protocolPrefNorm -ne "File")
 			{
 				$tryOrder = @("TCP", "Named Pipes")
-				if ($protocolPref -eq "Named Pipes") { $tryOrder = @("Named Pipes", "TCP") }
-				elseif ($protocolPref -eq "TCP") { $tryOrder = @("TCP", "Named Pipes") }
+				if ($protocolPrefNorm -eq "Named Pipes") { $tryOrder = @("Named Pipes", "TCP") }
 				
 				foreach ($proto in $tryOrder)
 				{
-					$connToUse = $null
-					if ($proto -eq "Named Pipes") { $connToUse = $namedPipesConnStr }
-					else { $connToUse = $tcpConnStr }
+					$connToUse = if ($proto -eq "Named Pipes") { $namedPipesConnStr }
+					else { $tcpConnStr }
 					if ([string]::IsNullOrWhiteSpace($connToUse)) { continue }
 					
-					# ----- Normalize to WINDOWS AUTH -----
-					$connEff = $connToUse
+					# -----------------------
+					# Attempt 1: Windows Auth
+					# -----------------------
+					$connWin = $connToUse
+					$connWin = [regex]::Replace($connWin, '(?i)\bUser\s*ID\s*=\s*[^;]*;?', '')
+					$connWin = [regex]::Replace($connWin, '(?i)\bUID\s*=\s*[^;]*;?', '')
+					$connWin = [regex]::Replace($connWin, '(?i)\bPassword\s*=\s*[^;]*;?', '')
+					$connWin = [regex]::Replace($connWin, '(?i)\bPWD\s*=\s*[^;]*;?', '')
+					$connWin = [regex]::Replace($connWin, '(?i)\bTrusted_Connection\s*=\s*Yes\s*;?', '')
+					$connWin = [regex]::Replace($connWin, '(?i)\bIntegrated\s+Security\s*=\s*False\s*;?', '')
 					
-					# strip SQL auth tokens if present
-					$connEff = [regex]::Replace($connEff, '(?i)\bUser\s*ID\s*=\s*[^;]*;?', '')
-					$connEff = [regex]::Replace($connEff, '(?i)\bUID\s*=\s*[^;]*;?', '')
-					$connEff = [regex]::Replace($connEff, '(?i)\bPassword\s*=\s*[^;]*;?', '')
-					$connEff = [regex]::Replace($connEff, '(?i)\bPWD\s*=\s*[^;]*;?', '')
-					
-					# remove conflicting flags and force Integrated Security=True
-					$connEff = [regex]::Replace($connEff, '(?i)\bTrusted_Connection\s*=\s*Yes\s*;?', '')
-					$connEff = [regex]::Replace($connEff, '(?i)\bIntegrated\s+Security\s*=\s*False\s*;?', '')
-					
-					if ($connEff -notmatch '(?i)\bIntegrated\s+Security\s*=')
+					if ($connWin -notmatch '(?i)\bIntegrated\s+Security\s*=')
 					{
-						if ($connEff.Trim().EndsWith(';')) { $connEff += "Integrated Security=True;" }
-						else { $connEff += ";Integrated Security=True;" }
+						if ($connWin.Trim().EndsWith(';')) { $connWin += "Integrated Security=True;" }
+						else { $connWin += ";Integrated Security=True;" }
 					}
 					else
 					{
-						$connEff = [regex]::Replace($connEff, '(?i)\bIntegrated\s+Security\s*=\s*[^;]*', 'Integrated Security=True')
+						$connWin = [regex]::Replace($connWin, '(?i)\bIntegrated\s+Security\s*=\s*[^;]*', 'Integrated Security=True')
 					}
 					
-					# ----- Enforce connect timeout -----
-					if ($connEff -notmatch '(?i)\bConnect\s*Timeout\s*=')
+					if ($connWin -notmatch '(?i)\bConnect\s*Timeout\s*=')
 					{
-						if ($connEff.Trim().EndsWith(';')) { $connEff += "Connect Timeout=$ConnectTimeoutSeconds;" }
-						else { $connEff += ";Connect Timeout=$ConnectTimeoutSeconds;" }
+						if ($connWin.Trim().EndsWith(';')) { $connWin += "Connect Timeout=$ConnectTimeoutSeconds;" }
+						else { $connWin += ";Connect Timeout=$ConnectTimeoutSeconds;" }
 					}
 					else
 					{
-						$connEff = [regex]::Replace($connEff, '(?i)\bConnect\s*Timeout\s*=\s*\d+\s*', "Connect Timeout=$ConnectTimeoutSeconds")
+						$connWin = [regex]::Replace($connWin, '(?i)\bConnect\s*Timeout\s*=\s*\d+\s*', "Connect Timeout=$ConnectTimeoutSeconds")
 					}
 					
 					try
 					{
-						$cn2 = New-Object System.Data.SqlClient.SqlConnection $connEff
+						$cn2 = New-Object System.Data.SqlClient.SqlConnection $connWin
 						try
 						{
 							$cn2.Open()
@@ -9045,6 +9455,9 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 							$cmd2.CommandTimeout = $SqlTimeoutSeconds
 							[void]$cmd2.ExecuteNonQuery()
 							$sqlWorked = $true
+							Write_Log "Updated via SQL ($proto) on lane $LaneNumber (Windows Auth)." "green"
+							$UpdatedViaSql.Add($LaneNumber) | Out-Null
+							break
 						}
 						finally
 						{
@@ -9057,22 +9470,71 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 					catch
 					{
 						$sqlWorked = $false
-						$msg = $_.Exception.Message
-						Write_Log ("SQL update failed on lane {0} via {1} (WinAuth): {2}" -f $LaneNumber, $proto, $msg) "yellow"
 					}
 					
-					if ($sqlWorked)
+					if ($sqlWorked) { break }
+					
+					# -----------------------
+					# Attempt 2: SQL Auth
+					# -----------------------
+					$connSql = $connToUse
+					$connSql = [regex]::Replace($connSql, '(?i)\bIntegrated\s+Security\s*=\s*True\s*;?', '')
+					$connSql = [regex]::Replace($connSql, '(?i)\bTrusted_Connection\s*=\s*Yes\s*;?', '')
+					
+					if ($connSql -notmatch '(?i)\bUser\s*ID\s*=')
 					{
-						Write_Log "Updated via SQL ($proto) on lane $LaneNumber (Windows Auth)." "green"
-						$UpdatedViaSql.Add($LaneNumber) | Out-Null
-						break
+						if ($connSql.Trim().EndsWith(';')) { $connSql += "User ID=$SqlAuthUser;" }
+						else { $connSql += ";User ID=$SqlAuthUser;" }
 					}
+					if ($connSql -notmatch '(?i)\bPassword\s*=')
+					{
+						if ($connSql.Trim().EndsWith(';')) { $connSql += "Password=$SqlAuthPass;" }
+						else { $connSql += ";Password=$SqlAuthPass;" }
+					}
+					
+					if ($connSql -notmatch '(?i)\bConnect\s*Timeout\s*=')
+					{
+						if ($connSql.Trim().EndsWith(';')) { $connSql += "Connect Timeout=$ConnectTimeoutSeconds;" }
+						else { $connSql += ";Connect Timeout=$ConnectTimeoutSeconds;" }
+					}
+					else
+					{
+						$connSql = [regex]::Replace($connSql, '(?i)\bConnect\s*Timeout\s*=\s*\d+\s*', "Connect Timeout=$ConnectTimeoutSeconds")
+					}
+					
+					try
+					{
+						$cn3 = New-Object System.Data.SqlClient.SqlConnection $connSql
+						try
+						{
+							$cn3.Open()
+							$cmd3 = $cn3.CreateCommand()
+							$cmd3.CommandText = $updateSql
+							$cmd3.CommandTimeout = $SqlTimeoutSeconds
+							[void]$cmd3.ExecuteNonQuery()
+							$sqlWorked = $true
+							Write_Log "Updated via SQL ($proto) on lane $LaneNumber (SQL Auth)." "green"
+							$UpdatedViaSql.Add($LaneNumber) | Out-Null
+							break
+						}
+						finally
+						{
+							try { $cn3.Close() }
+							catch { }
+							try { $cn3.Dispose() }
+							catch { }
+						}
+					}
+					catch
+					{
+						$sqlWorked = $false
+					}
+					
+					if ($sqlWorked) { break }
 				}
 			}
 			
-			# ---------------------------------------------
-			# SQI fallback (ONLY if SQL didn't work OR protocol is File)
-			# ---------------------------------------------
+			# SQI fallback (protocol File OR SQL failed)
 			if (-not $sqlWorked)
 			{
 				$LaneXFDir = Join-Path $OfficePath ("XF{0}{1}" -f $StoreNumber, $LaneNumber)
@@ -9088,8 +9550,6 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 				try
 				{
 					Copy-Item -Path $TempSqiPath -Destination $DestSqiPath -Force
-					
-					# IMPORTANT: clear archive/readonly on the deployed file
 					try { attrib -a -r "$DestSqiPath" 2>$null | Out-Null }
 					catch { }
 					try { Set-ItemProperty -Path $DestSqiPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal) -ErrorAction SilentlyContinue }
@@ -9097,9 +9557,6 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 					
 					$UpdatedViaFile.Add($LaneNumber) | Out-Null
 					Write_Log "Copied SQI to $DestSqiPath (archive cleared)" "green"
-					
-					# IMPORTANT: DO NOT mark LaneProtocols to File here (that causes "always deploying" later)
-					# $script:LaneProtocols[$LaneNumber] = "File"
 				}
 				catch
 				{
@@ -9114,9 +9571,7 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 		if ($FailedLanes.Count -gt 0) { Write_Log ("Failed lanes: " + ($FailedLanes -join ", ")) "red" }
 	}
 	
-	# ------------------------------------------------------------------------------------------------
-	# Restart prompt (interactive Run Now only; NEVER automatic)
-	# ------------------------------------------------------------------------------------------------
+	# Restart prompt (interactive Run Now only)
 	if (-not $NonInteractive -and $mode -eq "run" -and $doDeployNow)
 	{
 		$successful = @(@($UpdatedViaSql) + @($UpdatedViaFile) | Where-Object { $_ } | Select-Object -Unique)
@@ -9163,10 +9618,9 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 	}
 	
 	# =================================================================================================
-	# SCHEDULE (interactive only) -> ONE self-sufficient PS1 (no main script dependency)
-	# - Embeds protocol map loaded from ProtocolResultsFile
-	# - Uses SQL AUTH for lane DB updates when protocol != "File"
-	# - FIXES numeric json keys ("012") via PSObject.Properties[]
+	# SCHEDULE (interactive only) -> ONE self-sufficient PS1
+	#   - Uses SQL AUTH for lane DB updates when protocol != File
+	#   - Reads Protocol_Results.txt at runtime (DEFAULT File unless explicitly TCP/Named Pipes)
 	# =================================================================================================
 	if (-not $NonInteractive)
 	{
@@ -9232,7 +9686,7 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 			if ($formFreq.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
 			{
 				Write_Log "Scheduled Task setup cancelled by user." "yellow"
-				Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+				Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 				return
 			}
 			
@@ -9248,16 +9702,25 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 			if ([string]::IsNullOrWhiteSpace($localConnStr) -or $localConnStr -eq "N/A")
 			{
 				Write_Log "Cannot schedule because local ConnectionString is missing in FunctionResults['ConnectionString']." "red"
-				Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+				Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 				return
 			}
 			
 			$laneConnMap = @{ }
 			foreach ($ln in $LaneNumbers)
 			{
-				$li = Get_All_Lanes_Database_Info -LaneNumber $ln
+				$li = $null
+				try { $li = Get_All_Lanes_Database_Info -LaneNumber $ln }
+				catch { $li = $null }
 				if ($li)
 				{
+					if ($li -isnot [hashtable])
+					{
+						$h2 = @{ }
+						foreach ($p in $li.PSObject.Properties) { $h2[$p.Name] = $p.Value }
+						$li = $h2
+					}
+					
 					$laneConnMap[$ln] = @{
 						TcpConnStr	      = $li['TcpConnStr']
 						NamedPipesConnStr = $li['NamedPipesConnStr']
@@ -9265,28 +9728,17 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 				}
 			}
 			
-			# Protocol map to embed
-			$protoMap = @{ }
-			foreach ($ln in $LaneNumbers)
-			{
-				$p = $null
-				if ($script:LaneProtocols.ContainsKey($ln)) { $p = $script:LaneProtocols[$ln] }
-				if ([string]::IsNullOrWhiteSpace($p)) { $p = "File" }
-				$protoMap[$ln] = $p
-			}
-			
-			$taskScriptPath = Join-Path $script:ScriptsFolder ("ServerKeySync_Task_Store{0}.ps1" -f $StoreNumber)
-			$latestLogPath = Join-Path $script:ScriptsLog ("ServerKeySync_LATEST_Store{0}.txt" -f $StoreNumber)
+			$taskScriptPath = Join-Path $script:ScriptsFolder ("Send_SMS_Key_Task_Store{0}.ps1" -f $StoreNumber)
+			$latestLogPath = Join-Path $script:ScriptsLog    ("Send_SMS_Key_LATEST_Store{0}.txt" -f $StoreNumber)
 			
 			$enc = [System.Text.Encoding]::UTF8
 			$localConnB64 = [Convert]::ToBase64String($enc.GetBytes($localConnStr))
 			$laneConnB64 = [Convert]::ToBase64String($enc.GetBytes(($laneConnMap | ConvertTo-Json -Depth 6)))
-			$protoB64 = [Convert]::ToBase64String($enc.GetBytes(($protoMap | ConvertTo-Json -Depth 4)))
 			
 			$laneListLiteral = ($LaneNumbers | ForEach-Object { "'$_'" }) -join ", "
 			
 			$sb = New-Object System.Text.StringBuilder
-			[void]$sb.AppendLine("# AUTO-GENERATED ServerKeySync task (self-sufficient, one file)")
+			[void]$sb.AppendLine("# AUTO-GENERATED Send_SMS_Key task (self-sufficient, one file)")
 			[void]$sb.AppendLine("`$ErrorActionPreference = 'Stop'")
 			[void]$sb.AppendLine("try { Add-Type -AssemblyName System.Data 2>`$null } catch { }")
 			[void]$sb.AppendLine("`$SqlUser = 'Tecnica'")
@@ -9296,14 +9748,29 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 			[void]$sb.AppendLine("`$SqlTimeoutSeconds = $SqlTimeoutSeconds")
 			[void]$sb.AppendLine("`$ConnectTimeoutSeconds = $ConnectTimeoutSeconds")
 			[void]$sb.AppendLine("`$LatestLogPath = '$latestLogPath'")
+			[void]$sb.AppendLine("`$ProtocolFile = '$protoFile'")
 			[void]$sb.AppendLine("`$enc = [System.Text.Encoding]::UTF8")
 			[void]$sb.AppendLine("`$LocalConnStr = `$enc.GetString([Convert]::FromBase64String('$localConnB64'))")
 			[void]$sb.AppendLine("`$LaneConnMap  = ConvertFrom-Json (`$enc.GetString([Convert]::FromBase64String('$laneConnB64')))")
-			[void]$sb.AppendLine("`$LaneProtocols = ConvertFrom-Json (`$enc.GetString([Convert]::FromBase64String('$protoB64')))")
 			[void]$sb.AppendLine("`$LaneNumbers = @($laneListLiteral)")
 			[void]$sb.AppendLine("`$UpdatedViaSql  = New-Object System.Collections.Generic.List[string]")
 			[void]$sb.AppendLine("`$UpdatedViaFile = New-Object System.Collections.Generic.List[string]")
 			[void]$sb.AppendLine("`$FailedLanes    = New-Object System.Collections.Generic.List[string]")
+			[void]$sb.AppendLine("")
+			[void]$sb.AppendLine("# Load protocol map from txt (DEFAULT = File unless explicitly TCP/Named Pipes)")
+			[void]$sb.AppendLine("`$ProtoMap = @{}")
+			[void]$sb.AppendLine("if (Test-Path `$ProtocolFile) {")
+			[void]$sb.AppendLine("  try {")
+			[void]$sb.AppendLine("    foreach (`$line in (Get-Content -LiteralPath `$ProtocolFile -ErrorAction SilentlyContinue)) {")
+			[void]$sb.AppendLine("      if (`$line -match '^\s*([^,]+),\s*([^,]+)\s*$') {")
+			[void]$sb.AppendLine("        `$laneRaw = `$matches[1].Trim()")
+			[void]$sb.AppendLine("        `$protoRaw = `$matches[2].Trim()")
+			[void]$sb.AppendLine("        `$num = (`$laneRaw -replace '[^\d]','').PadLeft(3,'0')")
+			[void]$sb.AppendLine("        if (-not [string]::IsNullOrWhiteSpace(`$num)) { `$ProtoMap[`$num] = `$protoRaw }")
+			[void]$sb.AppendLine("      }")
+			[void]$sb.AppendLine("    }")
+			[void]$sb.AppendLine("  } catch { }")
+			[void]$sb.AppendLine("}")
 			[void]$sb.AppendLine("")
 			[void]$sb.AppendLine("# Enforce connect timeout on LOCAL conn string")
 			[void]$sb.AppendLine("`$localEff = `$LocalConnStr")
@@ -9335,10 +9802,10 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 			[void]$sb.AppendLine("try { attrib -a -r `"`$TempSqiPath`" 2>`$null | Out-Null } catch { }")
 			[void]$sb.AppendLine("")
 			[void]$sb.AppendLine("foreach (`$ln in `$LaneNumbers) {")
-			[void]$sb.AppendLine("  # SAFE: numeric JSON keys like ""012"" must be accessed via PSObject.Properties")
-			[void]$sb.AppendLine("  `$prefProp = `$LaneProtocols.PSObject.Properties[`$ln]")
-			[void]$sb.AppendLine("  `$pref = if (`$prefProp) { [string]`$prefProp.Value } else { """" }")
-			[void]$sb.AppendLine("  if ([string]::IsNullOrWhiteSpace(`$pref)) { `$pref = ""File"" }")
+			[void]$sb.AppendLine("  `$pref = 'File'")
+			[void]$sb.AppendLine("  if (`$ProtoMap.ContainsKey(`$ln)) { `$pref = [string]`$ProtoMap[`$ln] }")
+			[void]$sb.AppendLine("  `$prefNorm = 'File'")
+			[void]$sb.AppendLine("  if (-not [string]::IsNullOrWhiteSpace(`$pref)) { if (`$pref -match '(?i)^tcp$') { `$prefNorm='TCP' } elseif (`$pref -match '(?i)pipe') { `$prefNorm='Named Pipes' } }")
 			[void]$sb.AppendLine("")
 			[void]$sb.AppendLine("  `$laneProp = `$LaneConnMap.PSObject.Properties[`$ln]")
 			[void]$sb.AppendLine("  `$laneObj  = if (`$laneProp) { `$laneProp.Value } else { `$null }")
@@ -9346,22 +9813,18 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 			[void]$sb.AppendLine("  `$npConn   = if (`$laneObj) { [string]`$laneObj.NamedPipesConnStr } else { `$null }")
 			[void]$sb.AppendLine("")
 			[void]$sb.AppendLine("  `$sqlWorked = `$false")
-			[void]$sb.AppendLine("  if (`$pref -ne ""File"") {")
-			[void]$sb.AppendLine("    `$tryOrder = @(""TCP"",""Named Pipes""); if (`$pref -eq ""Named Pipes"") { `$tryOrder = @(""Named Pipes"",""TCP"") } elseif (`$pref -eq ""TCP"") { `$tryOrder = @(""TCP"",""Named Pipes"") }")
+			[void]$sb.AppendLine("  if (`$prefNorm -ne 'File') {")
+			[void]$sb.AppendLine("    `$tryOrder = @('TCP','Named Pipes'); if (`$prefNorm -eq 'Named Pipes') { `$tryOrder=@('Named Pipes','TCP') }")
 			[void]$sb.AppendLine("    foreach (`$proto in `$tryOrder) {")
-			[void]$sb.AppendLine("      `$connToUse = if (`$proto -eq ""Named Pipes"") { `$npConn } else { `$tcpConn }")
+			[void]$sb.AppendLine("      `$connToUse = if (`$proto -eq 'Named Pipes') { `$npConn } else { `$tcpConn }")
 			[void]$sb.AppendLine("      if ([string]::IsNullOrWhiteSpace(`$connToUse)) { continue }")
-			[void]$sb.AppendLine("")
-			[void]$sb.AppendLine("      # Build SQL-AUTH conn string for lane access")
 			[void]$sb.AppendLine("      `$connEff = `$connToUse")
 			[void]$sb.AppendLine("      `$connEff = [regex]::Replace(`$connEff, '(?i)\bIntegrated\s+Security\s*=\s*True\s*;?', '')")
 			[void]$sb.AppendLine("      `$connEff = [regex]::Replace(`$connEff, '(?i)\bTrusted_Connection\s*=\s*Yes\s*;?', '')")
 			[void]$sb.AppendLine("      if (`$connEff -notmatch '(?i)\bUser\s*ID\s*=') { if (`$connEff.Trim().EndsWith(';')) { `$connEff += ""User ID=`$SqlUser;"" } else { `$connEff += "";User ID=`$SqlUser;"" } }")
 			[void]$sb.AppendLine("      if (`$connEff -notmatch '(?i)\bPassword\s*=') { if (`$connEff.Trim().EndsWith(';')) { `$connEff += ""Password=`$SqlPass;"" } else { `$connEff += "";Password=`$SqlPass;"" } }")
-			[void]$sb.AppendLine("")
 			[void]$sb.AppendLine("      if (`$connEff -notmatch '(?i)\bConnect\s*Timeout\s*=') { if (`$connEff.Trim().EndsWith(';')) { `$connEff += ""Connect Timeout=`$ConnectTimeoutSeconds;"" } else { `$connEff += "";Connect Timeout=`$ConnectTimeoutSeconds;"" } }")
 			[void]$sb.AppendLine("      else { `$connEff = [regex]::Replace(`$connEff, '(?i)\bConnect\s*Timeout\s*=\s*\d+\s*', ""Connect Timeout=`$ConnectTimeoutSeconds"") }")
-			[void]$sb.AppendLine("")
 			[void]$sb.AppendLine("      try { `$cn2 = New-Object System.Data.SqlClient.SqlConnection `$connEff; try { `$cn2.Open(); `$cmd2 = `$cn2.CreateCommand(); `$cmd2.CommandText = `$updateSql; `$cmd2.CommandTimeout = `$SqlTimeoutSeconds; [void]`$cmd2.ExecuteNonQuery(); `$sqlWorked = `$true } finally { try { `$cn2.Close() } catch { } try { `$cn2.Dispose() } catch { } } } catch { `$sqlWorked = `$false }")
 			[void]$sb.AppendLine("      if (`$sqlWorked) { `$UpdatedViaSql.Add(`$ln) | Out-Null; break }")
 			[void]$sb.AppendLine("    }")
@@ -9384,6 +9847,7 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 			[void]$sb.AppendLine("`$lines.Add((""Timestamp : {0}"" -f (Get-Date -Format ""yyyy-MM-dd HH:mm:ss""))) | Out-Null")
 			[void]$sb.AppendLine("`$lines.Add((""Computer  : {0}"" -f `$env:COMPUTERNAME)) | Out-Null")
 			[void]$sb.AppendLine("`$lines.Add((""Store     : {0}"" -f `$StoreNumber)) | Out-Null")
+			[void]$sb.AppendLine("`$lines.Add((""ProtocolFile : {0}"" -f `$ProtocolFile)) | Out-Null")
 			[void]$sb.AppendLine("`$lines.Add((""Status    : {0}"" -f `$status)) | Out-Null")
 			[void]$sb.AppendLine("`$lines.Add((""Selected  : {0}"" -f (`$LaneNumbers -join "", ""))) | Out-Null")
 			[void]$sb.AppendLine("`$lines.Add((""OK (ALL)  : {0}"" -f `$okAllText)) | Out-Null")
@@ -9403,13 +9867,13 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 			catch
 			{
 				Write_Log "Failed to write task script '$taskScriptPath'. Error: $_" "red"
-				Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+				Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 				return
 			}
 			
 			try
 			{
-				$taskName = "TBS Server Key Sync - Store $StoreNumber"
+				$taskName = "Send_SMS_Key - Store $StoreNumber"
 				$psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 				$tr = "`"$psExe`" -NoProfile -ExecutionPolicy Bypass -File `"$taskScriptPath`""
 				
@@ -9423,20 +9887,20 @@ function Sync_ServerKey_To_Lanes_With_ScheduledTask
 				else
 				{
 					Write_Log "Failed to create scheduled task '$taskName'. schtasks said: $out" "red"
-					Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+					Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 					return
 				}
 			}
 			catch
 			{
 				Write_Log "Failed to create/update Scheduled Task. Error: $_" "red"
-				Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+				Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 				return
 			}
 		}
 	}
 	
-	Write_Log "`r`n==================== Sync_ServerKey_To_Lanes_With_ScheduledTask Completed ====================" "blue"
+	Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -26777,7 +27241,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			try
 			{
-				Sync_ServerKey_To_Lanes_With_ScheduledTask -StoreNumber "$StoreNumber"
+				Send_SMS_Key_to_Lanes -StoreNumber "$StoreNumber"
 			}
 			catch
 			{
@@ -26789,7 +27253,20 @@ public static class NativeWin {
 	[void]$ContextMenuLane.Items.Add($SyncServerKeyItem)
 	
 	############################################################################
-	# 16) Reboot Lane Menu Item
+	# 16) TRS CLT Reprocess (Build SAL_HDR_SUS@TER) Menu Item  ✅ (same style as your example)
+	############################################################################
+	$TrsCltReprocessItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions from Lnaes")
+	$TrsCltReprocessItem.ToolTipText = "Creates/refreshes SAL_HDR_SUS@TER (per lane) from SAL_HDR CLOSED by date + tran range, using NP/TCP/File protocol logic."
+	$TrsCltReprocessItem.Add_Click({
+			$script:LastActivity = Get-Date
+			Retrive_Transactions -StoreNumber $StoreNumber
+		})
+	
+	# Add it to the SAME lane context menu you used for Reboot Lane
+	[void]$ContextMenuLane.Items.Add($TrsCltReprocessItem)
+	
+	############################################################################
+	# 17) Reboot Lane Menu Item
 	############################################################################
 	$RebootLaneItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Lane")
 	$RebootLaneItem.ToolTipText = "Reboot the selected lane/s."
