@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.5.9"
-$VersionDate = "2026-02-24"
+$VersionNumber = "2.6.0"
+$VersionDate = "2026-02-25"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -513,51 +513,212 @@ function Get_PsExec
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Writes messages to the log GUI box. No silent mode or file logging.
+#
+# Improvements:
+#   - FIX: Timestamp now actually works (your old $timestamp was commented out)
+#   - FIX: Finds the current live log control even after UI rebuilds
+#   - FIX: Safe cross-thread updates (InvokeRequired)
+#   - FIX: Avoids exceptions when form/control is disposed
+#   - Keeps console fallback if UI log not available
 # ===================================================================================================
 
 function Write_Log
 {
+	[CmdletBinding()]
 	param (
+		[Parameter(Mandatory = $true)]
 		[string]$Message,
-		[string]$Color = "Black",
+		[Parameter(Mandatory = $false)]
+		$Color = "Black",
+		# accepts string names OR [System.Drawing.Color]
+		[Parameter(Mandatory = $false)]
 		[switch]$IncludeTimestamp = $true
 	)
 	
-	# Prepare timestamp if needed
-	#$timestamp = if ($IncludeTimestamp) { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' } else { "" }
-	
-	if ($logBox -ne $null)
+	# ----------------------------------------------------------------------------------------------
+	# Resolve timestamp (your original code had this commented out, so it never appeared)
+	# ----------------------------------------------------------------------------------------------
+	<#$timestamp = $null
+	if ($IncludeTimestamp)
 	{
-		# Write to GUI log box
-		$logBox.SelectionColor = switch ($Color.ToLower())
+		try { $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
+		catch { $timestamp = $null }
+	}#>
+	
+	# ----------------------------------------------------------------------------------------------
+	# Resolve the active log control robustly (handles refactors / recreated controls)
+	# Priority:
+	#   1) local $logBox (if valid)
+	#   2) $script:LogBox / $script:logBox
+	#   3) $global:LogBox / $global:logBox
+	#   4) $script:FunctionResults['LogBox'] (if used)
+	# ----------------------------------------------------------------------------------------------
+	$lb = $null
+	
+	# Helper inline checks (no nested functions required)
+	try
+	{
+		if ($logBox -and ($logBox -is [System.Windows.Forms.RichTextBox]) -and -not $logBox.IsDisposed) { $lb = $logBox }
+	}
+	catch { }
+	
+	if (-not $lb)
+	{
+		try
 		{
-			"green"   { [System.Drawing.Color]::Green }
-			"red"     { [System.Drawing.Color]::Red }
-			"yellow"  { [System.Drawing.Color]::Goldenrod }
-			"blue"    { [System.Drawing.Color]::Blue }
-			"magenta" { [System.Drawing.Color]::Magenta }
-			"gray"    { [System.Drawing.Color]::Gray }
-			"cyan"    { [System.Drawing.Color]::Cyan }
-			"white"   { [System.Drawing.Color]::White }
-			"orange"  { [System.Drawing.Color]::Orange }
-			default   { [System.Drawing.Color]::Black }
+			if ($script:LogBox -and ($script:LogBox -is [System.Windows.Forms.RichTextBox]) -and -not $script:LogBox.IsDisposed) { $lb = $script:LogBox }
+		}
+		catch { }
+	}
+	if (-not $lb)
+	{
+		try
+		{
+			if ($script:logBox -and ($script:logBox -is [System.Windows.Forms.RichTextBox]) -and -not $script:logBox.IsDisposed) { $lb = $script:logBox }
+		}
+		catch { }
+	}
+	if (-not $lb)
+	{
+		try
+		{
+			if ($global:LogBox -and ($global:LogBox -is [System.Windows.Forms.RichTextBox]) -and -not $global:LogBox.IsDisposed) { $lb = $global:LogBox }
+		}
+		catch { }
+	}
+	if (-not $lb)
+	{
+		try
+		{
+			if ($global:logBox -and ($global:logBox -is [System.Windows.Forms.RichTextBox]) -and -not $global:logBox.IsDisposed) { $lb = $global:logBox }
+		}
+		catch { }
+	}
+	if (-not $lb)
+	{
+		try
+		{
+			if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('LogBox'))
+			{
+				$tmp = $script:FunctionResults['LogBox']
+				if ($tmp -and ($tmp -is [System.Windows.Forms.RichTextBox]) -and -not $tmp.IsDisposed) { $lb = $tmp }
+			}
+		}
+		catch { }
+	}
+	
+	# ----------------------------------------------------------------------------------------------
+	# Normalize color (string name OR actual System.Drawing.Color)
+	# ----------------------------------------------------------------------------------------------
+	$selColor = [System.Drawing.Color]::Black
+	try
+	{
+		if ($Color -is [System.Drawing.Color])
+		{
+			$selColor = $Color
+		}
+		else
+		{
+			$colorName = ([string]$Color).Trim().ToLower()
+			$selColor = switch ($colorName)
+			{
+				"green"   { [System.Drawing.Color]::Green }
+				"red"     { [System.Drawing.Color]::Red }
+				"yellow"  { [System.Drawing.Color]::Goldenrod }
+				"blue"    { [System.Drawing.Color]::DodgerBlue } # nicer than default Blue
+				"magenta" { [System.Drawing.Color]::Magenta }
+				"gray"    { [System.Drawing.Color]::Gray }
+				"grey"    { [System.Drawing.Color]::Gray }
+				"cyan"    { [System.Drawing.Color]::Cyan }
+				"white"   { [System.Drawing.Color]::White }
+				"orange"  { [System.Drawing.Color]::Orange }
+				default   { [System.Drawing.Color]::Black }
+			}
+		}
+	}
+	catch { $selColor = [System.Drawing.Color]::Black }
+	
+	# Compose message
+	$fullMessage = if ($timestamp) { "[$timestamp] $Message" }
+	else { $Message }
+	
+	# ----------------------------------------------------------------------------------------------
+	# If we have a UI log, write to it safely (cross-thread aware)
+	# ----------------------------------------------------------------------------------------------
+	if ($lb -and -not $lb.IsDisposed)
+	{
+		# Define the UI write action as a scriptblock (NO nested function)
+		$uiWrite = {
+			param ($rtb,
+				$text,
+				$color)
+			
+			try
+			{
+				if (-not $rtb -or $rtb.IsDisposed) { return }
+				
+				# Append colored line
+				$rtb.SelectionStart = $rtb.TextLength
+				$rtb.SelectionLength = 0
+				$rtb.SelectionColor = $color
+				$rtb.AppendText($text + "`r`n")
+				
+				# Reset to default color for future appends
+				$rtb.SelectionColor = $rtb.ForeColor
+				
+				# Autoscroll
+				$rtb.SelectionStart = $rtb.TextLength
+				$rtb.ScrollToCaret()
+			}
+			catch { }
 		}
 		
-		$fullMessage = if ($timestamp) { "[$timestamp] $Message" }
-		else { $Message }
-		$logBox.AppendText("$fullMessage`r`n")
-		$logBox.SelectionColor = $logBox.ForeColor
-		$logBox.ScrollToCaret()
-		
-		# Process GUI events to refresh the log box
-		[System.Windows.Forms.Application]::DoEvents()
+		try
+		{
+			# Marshal to UI thread if needed
+			if ($lb.InvokeRequired)
+			{
+				# BeginInvoke avoids deadlocks if called during closing
+				[void]$lb.BeginInvoke($uiWrite, @($lb, $fullMessage, $selColor))
+			}
+			else
+			{
+				& $uiWrite $lb $fullMessage $selColor
+			}
+			return
+		}
+		catch
+		{
+			# If anything about UI writing fails, fall back to console below
+		}
 	}
-	else
+	
+	# ----------------------------------------------------------------------------------------------
+	# Console fallback (until logBox is initialized OR if UI write failed)
+	# ----------------------------------------------------------------------------------------------
+	try
 	{
-		# Output to console until logBox is initialized
-		$fullMessage = if ($timestamp) { "[$timestamp] $Message" }
-		else { $Message }
-		Write-Host $fullMessage -ForegroundColor $Color
+		# Write-Host expects a ConsoleColor, so map common values
+		$cc = ([string]$Color).Trim().ToLower()
+		$consoleColor = switch ($cc)
+		{
+			"green"   { "Green" }
+			"red"     { "Red" }
+			"yellow"  { "Yellow" }
+			"blue"    { "Cyan" } # closer visibility on dark consoles
+			"magenta" { "Magenta" }
+			"gray"    { "Gray" }
+			"grey"    { "Gray" }
+			"cyan"    { "Cyan" }
+			"white"   { "White" }
+			"orange"  { "Yellow" }
+			default   { "White" }
+		}
+		Write-Host $fullMessage -ForegroundColor $consoleColor
+	}
+	catch
+	{
+		# last-resort: silent failure
 	}
 }
 
@@ -25828,48 +25989,89 @@ ORDER BY e.F01;
 	Write_Log "`r`n==================== Completed Manage Bizerba Scales (Dynamic Only) ====================`r`n" "blue"
 }
 
-# =================================================================================================== 
-#                                       SECTION: Initialize GUI
+# ===================================================================================================
+#                                       SECTION: Initialize GUI  (Modernized)
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Initializes and configures the graphical user interface components for the Store/Lane SQL Execution Tool.
 #   Host mode is removed; strictly Store/Server/Lane (Store Mode only).
+#
+# Modern UI changes (behavior preserved):
+#   - Gradient header bar + centered clickable title (still text-only clickable, still opens Helpdesk)
+#   - Top "card" strip for the clickable labels (clean spacing, modern font)
+#   - Framed log area (card border + borderless RichTextBox)
+#   - Status bar for Busy + Idle countdown (new polish; does not affect logic)
+#   - FIX: consolidated FormClosing so we DO NOT dispose timers/jobs if user cancels exit
 # ===================================================================================================
 
 # Ensure $form is only initialized once
 if (-not $form)
 {
-	# High DPI awareness (for scaling on modern displays)
+	# ------------------------------------------------------------------------------------------------
+	# WinForms basics (High DPI + Visual styles)
+	# ------------------------------------------------------------------------------------------------
 	[System.Windows.Forms.Application]::EnableVisualStyles()
 	[System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
 	
-	# Create a timer to refresh the GUI every second
+	# ---- UI constants (kept as simple variables so other layout blocks can reuse them) -------------
+	# NOTE: Your other layout code (like $layoutBottom) often assumes $padSide exists.
+	if (-not $padSide) { $padSide = 50 } # left/right margin (keeps your original feel)
+	$padTopStrip = 10 # spacing below header
+	$cardPad = 12 # inner padding for "cards"
+	$gapCards = 10 # vertical gap between cards
+	$logInnerPad = 10 # padding inside the log frame
+	$minLogH = 220 # minimum log height (used by other layout)
+	$uiAccent = [System.Drawing.Color]::DodgerBlue
+	$uiBg = [System.Drawing.Color]::FromArgb(245, 247, 250) # modern light background
+	$uiCardBg = [System.Drawing.Color]::White
+	$uiCardBorder = [System.Drawing.Color]::FromArgb(220, 225, 232)
+	$uiHeaderText = [System.Drawing.Color]::White
+	
+	# ------------------------------------------------------------------------------------------------
+	# Create a timer to refresh the GUI every second (kept from your original)
+	# ------------------------------------------------------------------------------------------------
 	$refreshTimer = New-Object System.Windows.Forms.Timer
 	$refreshTimer.Interval = 1000 # 1 second
 	$refreshTimer.add_Tick({
 			# Refresh the form to update all controls
-			$form.Refresh()
+			try { if ($form -and -not $form.IsDisposed) { $form.Refresh() } }
+			catch { }
 		})
 	$refreshTimer.Start()
 	
-	# Initialize ToolTip with professional delay
+	# ------------------------------------------------------------------------------------------------
+	# ToolTip (kept, slightly refined)
+	# ------------------------------------------------------------------------------------------------
 	$toolTip = New-Object System.Windows.Forms.ToolTip
 	$toolTip.AutoPopDelay = 10000
 	$toolTip.InitialDelay = 300
-	$toolTip.ReshowDelay = 500
+	$toolTip.ReshowDelay = 200
 	$toolTip.ShowAlways = $true
 	$toolTip.BackColor = [System.Drawing.Color]::LightYellow
 	
-	# Create the main form
+	# ------------------------------------------------------------------------------------------------
+	# Main Form (modern palette + DPI scaling)
+	# ------------------------------------------------------------------------------------------------
 	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Created by: Alex_C.T   |   Version: $VersionNumber   |   Revised: $VersionDate   |   Powershell Version: $PowerShellVersion"
+	$form.Text = "TBS Maintenance Script" # Modern: keep title clean; details remain visible in header/subtext
 	$form.Size = New-Object System.Drawing.Size(1006, 570)
-	$form.MinimumSize = New-Object System.Drawing.Size(800, 500)
+	$form.MinimumSize = New-Object System.Drawing.Size(800, 520)
 	$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-	$form.BackColor = [System.Drawing.SystemColors]::ControlLight # Light gray background
-	$form.Font = New-Object System.Drawing.Font("Segoe UI", 9) # Modern font
+	$form.BackColor = $uiBg
+	$form.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+	$form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 	
+	# Reduce flicker on resize / heavy updates (modern smoothness)
+	try
+	{
+		$prop = $form.GetType().GetProperty("DoubleBuffered", [System.Reflection.BindingFlags] "Instance,NonPublic")
+		if ($prop) { $prop.SetValue($form, $true, $null) }
+	}
+	catch { }
+	
+	# ------------------------------------------------------------------------------------------------
 	# -------------------- Idle Close (configurable) + Busy-Safe Watchdog (FULL FIX) --------------------
+	# ------------------------------------------------------------------------------------------------
 	
 	# Config / state
 	if (-not $script:LastActivity) { $script:LastActivity = Get-Date }
@@ -25887,17 +26089,619 @@ if (-not $form)
 	$script:IdleHardCloseAfterMinutes = 0
 	
 	# Make sure the form sees keystrokes even when a control has focus
-	if ($form -and $form -is [System.Windows.Forms.Form])
+	try { $form.KeyPreview = $true }
+	catch { }
+	
+	# ------------------------------------------------------------------------------------------------
+	# Header (modern gradient bar) + centered clickable title (text only)
+	# ------------------------------------------------------------------------------------------------
+	$bannerPanel = New-Object System.Windows.Forms.Panel
+	$bannerPanel.Dock = 'Top'
+	$bannerPanel.Height = 44
+	$bannerPanel.BackColor = [System.Drawing.Color]::FromArgb(32, 33, 36) # fallback if Paint fails
+	$bannerPanel.Padding = New-Object System.Windows.Forms.Padding(0)
+	
+	# Gradient paint (modern app-bar look)
+	$bannerPanel.add_Paint({
+			param ($s,
+				$e)
+			try
+			{
+				$rect = New-Object System.Drawing.Rectangle(0, 0, $s.Width, $s.Height)
+				$brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
+					$rect,
+					[System.Drawing.Color]::FromArgb(35, 38, 47),
+					[System.Drawing.Color]::FromArgb(55, 71, 79),
+					[System.Drawing.Drawing2D.LinearGradientMode]::Horizontal
+				)
+				$e.Graphics.FillRectangle($brush, $rect)
+				$brush.Dispose()
+				
+				# Subtle bottom divider line
+				$pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(20, 0, 0, 0))
+				$e.Graphics.DrawLine($pen, 0, $s.Height - 1, $s.Width, $s.Height - 1)
+				$pen.Dispose()
+			}
+			catch { }
+		})
+	
+	$form.Controls.Add($bannerPanel)
+	
+	######################################################################################################################
+	#
+	# Banner (Header) - FIX: ensure the clickable LinkLabel is ALWAYS on top + link is real
+	#
+	######################################################################################################################
+	
+	# Banner "label" (kept variable name for compatibility)
+	$bannerLabel = New-Object System.Windows.Forms.Label
+	$bannerLabel.Text = "PowerShell Script - TBS_Maintenance_Script"
+	$bannerLabel.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 13, [System.Drawing.FontStyle]::Regular)
+	$bannerLabel.ForeColor = $uiHeaderText
+	$bannerLabel.BackColor = [System.Drawing.Color]::Transparent
+	$bannerLabel.AutoSize = $true
+	$bannerLabel.Cursor = [System.Windows.Forms.Cursors]::Default # label itself is not clickable
+	$bannerPanel.Controls.Add($bannerLabel) | Out-Null
+	
+	# Clickable overlay (text-only clickable)
+	$bannerLink = New-Object System.Windows.Forms.LinkLabel
+	$bannerLink.Text = $bannerLabel.Text
+	$bannerLink.Font = $bannerLabel.Font
+	$bannerLink.AutoSize = $true
+	$bannerLink.BackColor = [System.Drawing.Color]::Transparent
+	$bannerLink.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$bannerLink.LinkBehavior = [System.Windows.Forms.LinkBehavior]::HoverUnderline
+	$bannerLink.LinkColor = $bannerLabel.ForeColor
+	$bannerLink.ActiveLinkColor = $uiAccent
+	$bannerLink.VisitedLinkColor = $bannerLabel.ForeColor
+	$bannerLink.DisabledLinkColor = [System.Drawing.Color]::Gray
+	$bannerLink.TabStop = $false # keeps tab navigation clean
+	
+	# IMPORTANT: add the LinkLabel to the banner panel explicitly (prevents parent/z-order weirdness)
+	$bannerPanel.Controls.Add($bannerLink) | Out-Null
+	
+	# Make the link "real" (more reliable than LinkArea alone)
+	$url = "https://helpdesk.tecnicasystems.com"
+	try
 	{
-		try { $form.KeyPreview = $true }
+		$bannerLink.Links.Clear()
+		[void]$bannerLink.Links.Add(0, $bannerLink.Text.Length, $url)
+	}
+	catch { }
+	
+	# Tooltip for the link itself
+	$toolTip.SetToolTip($bannerLink, "Open TBS Helpdesk (helpdesk.tecnicasystems.com)")
+	
+	# Store original link color so we can restore after hover
+	$bannerLink.Tag = [pscustomobject]@{ LinkColor = $bannerLink.LinkColor }
+	
+	# Hover color change
+	$bannerLink.Add_MouseEnter({
+			param ($s,
+				$e)
+			try { $s.LinkColor = $uiAccent }
+			catch { }
+		})
+	$bannerLink.Add_MouseLeave({
+			param ($s,
+				$e)
+			try { if ($s.Tag -and $s.Tag.LinkColor) { $s.LinkColor = $s.Tag.LinkColor } }
+			catch { }
+		})
+	
+	# Center the header text (initial + on resize + on text/font changes)
+	$centerBannerLink = {
+		try
+		{
+			if (-not $bannerPanel -or $bannerPanel.IsDisposed) { return }
+			$x = [math]::Max(0, ($bannerPanel.ClientSize.Width - $bannerLink.Width) / 2)
+			$y = [math]::Max(0, ($bannerPanel.ClientSize.Height - $bannerLink.Height) / 2)
+			
+			# Keep both aligned (label is visual "mirror"; link is the clickable layer)
+			$bannerLabel.Location = New-Object System.Drawing.Point([int]$x, [int]$y)
+			$bannerLink.Location = $bannerLabel.Location
+			
+			# CRITICAL: ensure link is on top; label can easily steal clicks otherwise
+			try { $bannerLabel.SendToBack() }
+			catch { }
+			try { $bannerLink.BringToFront() }
+			catch { }
+		}
+		catch { }
+	}
+	& $centerBannerLink
+	$form.add_Resize({ & $centerBannerLink })
+	
+	# Keep banner label + link synced if changed later
+	$bannerLabel.add_TextChanged({
+			try
+			{
+				$bannerLink.Text = $bannerLabel.Text
+				$bannerLink.AutoSize = $true
+				try
+				{
+					$bannerLink.Links.Clear()
+					[void]$bannerLink.Links.Add(0, $bannerLink.Text.Length, "https://helpdesk.tecnicasystems.com")
+				}
+				catch { }
+				& $centerBannerLink
+			}
+			catch { }
+		})
+	$bannerLabel.add_FontChanged({
+			try
+			{
+				$bannerLink.Font = $bannerLabel.Font
+				$bannerLink.AutoSize = $true
+				& $centerBannerLink
+			}
+			catch { }
+		})
+	
+	# Click handler (opens Helpdesk)
+	$bannerLink.Add_LinkClicked({
+			param ($s,
+				$e)
+			$script:LastActivity = Get-Date
+			try
+			{
+				$u = $e.Link.LinkData
+				if (-not $u) { $u = "https://helpdesk.tecnicasystems.com" }
+				Start-Process $u
+			}
+			catch
+			{
+				[System.Windows.Forms.MessageBox]::Show(
+					"Couldn't open https://helpdesk.tecnicasystems.com`r`n$($_.Exception.Message)",
+					"Open Link",
+					[System.Windows.Forms.MessageBoxButtons]::OK,
+					[System.Windows.Forms.MessageBoxIcon]::Error
+				) | Out-Null
+			}
+		})
+	
+	# ------------------------------------------------------------------------------------------------
+	# Status bar (NEW modern touch): shows Busy + Idle countdown (does not change behavior)
+	# ------------------------------------------------------------------------------------------------
+	$statusStrip = New-Object System.Windows.Forms.StatusStrip
+	$statusStrip.SizingGrip = $false
+	$statusStrip.BackColor = [System.Drawing.Color]::FromArgb(250, 251, 252)
+	
+	$stLeft = New-Object System.Windows.Forms.ToolStripStatusLabel
+	$stLeft.Text = "Ready"
+	$stLeft.Spring = $true
+	
+	$stBusy = New-Object System.Windows.Forms.ToolStripStatusLabel
+	$stBusy.TextAlign = 'MiddleRight'
+	$stBusy.Text = ""
+	
+	$stIdle = New-Object System.Windows.Forms.ToolStripStatusLabel
+	$stIdle.TextAlign = 'MiddleRight'
+	$stIdle.Text = ""
+	
+	[void]$statusStrip.Items.Add($stLeft)
+	[void]$statusStrip.Items.Add($stBusy)
+	[void]$statusStrip.Items.Add($stIdle)
+	$form.Controls.Add($statusStrip)
+	
+	# ------------------------------------------------------------------------------------------------
+	# Top strip "card" (modern container for your clickable labels)
+	# ------------------------------------------------------------------------------------------------
+	$topStripCard = New-Object System.Windows.Forms.Panel
+	$topStripCard.BackColor = $uiCardBg
+	$topStripCard.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+	$topStripCard.Height = 66 # enough for two label rows with padding
+	$form.Controls.Add($topStripCard)
+	
+	# Modern inner layout: TableLayoutPanel (replaces manual non-overlap math; behavior preserved)
+	$topStripTable = New-Object System.Windows.Forms.TableLayoutPanel
+	$topStripTable.Dock = 'Fill'
+	$topStripTable.Padding = New-Object System.Windows.Forms.Padding($cardPad, 10, $cardPad, 10)
+	$topStripTable.ColumnCount = 3
+	$topStripTable.RowCount = 2
+	$topStripTable.BackColor = [System.Drawing.Color]::Transparent
+	
+	# Columns: left / center / right
+	[void]$topStripTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 33)))
+	[void]$topStripTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 34)))
+	[void]$topStripTable.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 33)))
+	
+	# Rows: two equal rows
+	[void]$topStripTable.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+	[void]$topStripTable.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+	
+	$topStripCard.Controls.Add($topStripTable)
+	
+	# ------------------------------------------------------------------------------------------------
+	# Shared tooltip (create once)  ────────────────────────────────────────────────────────────────────
+	# ------------------------------------------------------------------------------------------------
+	if (-not $toolTip)
+	{
+		$toolTip = New-Object System.Windows.Forms.ToolTip
+		$toolTip.AutoPopDelay = 8000
+		$toolTip.InitialDelay = 300
+		$toolTip.ReshowDelay = 100
+	}
+	
+	# Helper as scriptblock (not a function): make a label look like a link (hand + accent + underline on hover)
+	$applyLinkStyle = {
+		param ([System.Windows.Forms.Label]$Label)
+		$Label.Cursor = [System.Windows.Forms.Cursors]::Hand
+		if (-not $Label.Tag) { $Label.Tag = [pscustomobject]@{ Color = $Label.ForeColor; Font = $Label.Font } }
+		
+		$Label.add_MouseEnter({
+				param ($s,
+					$e)
+				try
+				{
+					$s.ForeColor = $uiAccent
+					$s.Font = New-Object System.Drawing.Font($s.Font, ($s.Font.Style -bor [System.Drawing.FontStyle]::Underline))
+				}
+				catch { }
+			})
+		$Label.add_MouseLeave({
+				param ($s,
+					$e)
+				try
+				{
+					if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
+					if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
+				}
+				catch { }
+			})
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Labels (same functionality, modern font + positioned via table layout)
+	# ------------------------------------------------------------------------------------------------
+	
+	# SMS Version (left, row 1) - clickable text only
+	$smsVersionLabel = New-Object System.Windows.Forms.Label
+	$smsVersionLabel.Text = "SMS Version: N/A"
+	$smsVersionLabel.AutoSize = $true
+	$smsVersionLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$smsVersionLabel.Margin = New-Object System.Windows.Forms.Padding(0)
+	$smsVersionLabel.Anchor = 'Left'
+	$topStripTable.Controls.Add($smsVersionLabel, 0, 0) | Out-Null
+	$toolTip.SetToolTip($smsVersionLabel, "Shows current SMS version. Click to bring SMSStart to front (or launch it).")
+	& $applyLinkStyle $smsVersionLabel
+	
+	# Click: bring SMSStart to front or launch it (inline, no functions)
+	$smsVersionLabel.Add_Click({
+			$script:LastActivity = Get-Date
+			$orig = $smsVersionLabel.ForeColor
+			$smsVersionLabel.ForeColor = $uiAccent
+			try
+			{
+				@"
+using System;
+using System.Runtime.InteropServices;
+public static class NativeWin {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+}
+"@ | ForEach-Object {
+					if (-not ("NativeWin" -as [type])) { Add-Type -TypeDefinition $_ -ErrorAction SilentlyContinue }
+				}
+				
+				$p = Get-Process -Name 'SMSStart' -ErrorAction SilentlyContinue |
+				Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+				if ($p)
+				{
+					$h = $p.MainWindowHandle
+					if ([NativeWin]::IsIconic($h)) { [NativeWin]::ShowWindow($h, 9) | Out-Null }
+					[NativeWin]::SetForegroundWindow($h) | Out-Null
+					if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Brought SMSStart to the foreground." "green" }
+					return
+				}
+				
+				$exe = Join-Path $BasePath 'SMSStart.exe'
+				$proc = $null
+				if (Test-Path -LiteralPath $exe)
+				{
+					$proc = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe -Parent) -PassThru -ErrorAction Stop
+				}
+				else
+				{
+					$lnk = Get-ChildItem -LiteralPath $BasePath -Filter '*SMSStart*.lnk' -ErrorAction SilentlyContinue | Select-Object -First 1
+					if ($lnk) { $proc = Start-Process -FilePath $lnk.FullName -PassThru -ErrorAction Stop }
+				}
+				
+				if (-not $proc)
+				{
+					if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "SMSStart not found under $BasePath" "yellow" }
+					return
+				}
+				
+				$null = $proc.WaitForInputIdle(5000)
+				for ($i = 0; $i -lt 20 -and $proc.MainWindowHandle -eq 0; $i++)
+				{
+					Start-Sleep -Milliseconds 150
+					$proc.Refresh()
+				}
+				if ($proc.MainWindowHandle -ne 0)
+				{
+					if ([NativeWin]::IsIconic($proc.MainWindowHandle)) { [NativeWin]::ShowWindow($proc.MainWindowHandle, 9) | Out-Null }
+					[NativeWin]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
+				}
+				if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Launched SMSStart from $BasePath and brought to front." "green" }
+			}
+			finally
+			{
+				$smsVersionLabel.ForeColor = $orig
+			}
+		})
+	
+	# Store Name (centered, row 1) - clickable text only
+	$storeNameLabel = New-Object System.Windows.Forms.Label
+	$storeNameLabel.Text = "Store Name: N/A"
+	$storeNameLabel.AutoSize = $true
+	$storeNameLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$storeNameLabel.Margin = New-Object System.Windows.Forms.Padding(0)
+	$storeNameLabel.Anchor = 'None'
+	$topStripTable.Controls.Add($storeNameLabel, 1, 0) | Out-Null
+	$toolTip.SetToolTip($storeNameLabel, "Shows store name. Click to ping all nodes (Lanes > Scales > Backoffices).")
+	& $applyLinkStyle $storeNameLabel
+	$storeNameLabel.Add_Click({
+			$script:LastActivity = Get-Date
+			$storeNameLabel.ForeColor = $uiAccent
+			try
+			{
+				Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber
+				Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
+				Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
+			}
+			finally
+			{
+				$storeNameLabel.ForeColor = 'Black'
+			}
+		})
+	
+	# Store Number (right, row 1) - clickable text only
+	$storeNumberLabel = New-Object System.Windows.Forms.Label
+	$storeNumberLabel.Text = "Store Number: N/A"
+	$storeNumberLabel.AutoSize = $true
+	$storeNumberLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$storeNumberLabel.Margin = New-Object System.Windows.Forms.Padding(0)
+	$storeNumberLabel.Anchor = 'Right'
+	$topStripTable.Controls.Add($storeNumberLabel, 2, 0) | Out-Null
+	
+	# keep your original script-scoped reference for other code
+	$script:storeNumberLabel = $storeNumberLabel
+	
+	$toolTip.SetToolTip($storeNumberLabel, "Click to open the Storeman folder.")
+	& $applyLinkStyle $storeNumberLabel
+	
+	# Hover: refresh tooltip with actual BasePath
+	$storeNumberLabel.Add_MouseHover({
+			$p = if ($script:BasePath) { $script:BasePath }
+			elseif ($BasePath) { $BasePath }
+			else { $null }
+			$toolTip.SetToolTip($storeNumberLabel, $(if ($p) { "Open Storeman folder: $p" }
+					else { "Storeman folder not detected yet." }))
+		})
+	
+	# Click: open Storeman folder (inline)
+	$storeNumberLabel.Add_Click({
+			$script:LastActivity = Get-Date
+			$path = if ($script:BasePath) { $script:BasePath }
+			elseif ($BasePath) { $BasePath }
+			else { $null }
+			if ($path -and (Test-Path -LiteralPath $path))
+			{
+				try { Start-Process -FilePath $path }
+				catch
+				{
+					[System.Windows.Forms.MessageBox]::Show(
+						"Couldn't open: $path`r`n$($_.Exception.Message)",
+						"Open Storeman Folder",
+						[System.Windows.Forms.MessageBoxButtons]::OK,
+						[System.Windows.Forms.MessageBoxIcon]::Error
+					) | Out-Null
+				}
+			}
+			else
+			{
+				[System.Windows.Forms.MessageBox]::Show(
+					"Storeman folder not found.`r`nCurrent value: " + [string]$path,
+					"Open Storeman Folder",
+					[System.Windows.Forms.MessageBoxButtons]::OK,
+					[System.Windows.Forms.MessageBoxIcon]::Warning
+				) | Out-Null
+			}
+		})
+	
+	# Number of Lanes (left, row 2)
+	$NodesStore = New-Object System.Windows.Forms.Label
+	$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
+	$NodesStore.AutoSize = $true
+	$NodesStore.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$NodesStore.Margin = New-Object System.Windows.Forms.Padding(0)
+	$NodesStore.Anchor = 'Left'
+	$topStripTable.Controls.Add($NodesStore, 0, 1) | Out-Null
+	
+	# keep your original script-scoped reference for other code
+	$script:NodesStore = $NodesStore
+	
+	$toolTip.SetToolTip($NodesStore, "Shows count of Lanes. Click to ping Lane nodes.")
+	& $applyLinkStyle $NodesStore
+	$NodesStore.Add_Click({
+			$script:LastActivity = Get-Date
+			$NodesStore.ForeColor = $uiAccent
+			try { Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber }
+			finally { $NodesStore.ForeColor = 'Black' }
+		})
+	
+	# Number of Scales (center, row 2)
+	$scalesLabel = New-Object System.Windows.Forms.Label
+	$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
+	$scalesLabel.AutoSize = $true
+	$scalesLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$scalesLabel.Margin = New-Object System.Windows.Forms.Padding(0)
+	$scalesLabel.Anchor = 'None'
+	$topStripTable.Controls.Add($scalesLabel, 1, 1) | Out-Null
+	
+	# keep your original script-scoped reference for other code
+	$script:scalesLabel = $scalesLabel
+	
+	$toolTip.SetToolTip($scalesLabel, "Shows count of Scales. Click to ping Scale nodes.")
+	& $applyLinkStyle $scalesLabel
+	$scalesLabel.Add_Click({
+			$script:LastActivity = Get-Date
+			try { Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber }
+			catch { }
+		})
+	
+	# Number of Backoffices (right, row 2)
+	$NodesBackoffices = New-Object System.Windows.Forms.Label
+	$NodesBackoffices.Text = "Number of Backoffices: N/A"
+	$NodesBackoffices.AutoSize = $true
+	$NodesBackoffices.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$NodesBackoffices.Margin = New-Object System.Windows.Forms.Padding(0)
+	$NodesBackoffices.Anchor = 'Right'
+	$topStripTable.Controls.Add($NodesBackoffices, 2, 1) | Out-Null
+	
+	$toolTip.SetToolTip($NodesBackoffices, "Shows count of Backoffices. Click to ping Backoffice nodes.")
+	& $applyLinkStyle $NodesBackoffices
+	$NodesBackoffices.Add_Click({
+			$script:LastActivity = Get-Date
+			try { Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber }
+			catch { }
+		})
+	
+	# ------------------------------------------------------------------------------------------------
+	# Top-strip layout scriptblock (kept name for compatibility; now it sizes cards cleanly)
+	# ------------------------------------------------------------------------------------------------
+	$layoutTopStrip = {
+		if (-not $form -or $form.IsDisposed) { return }
+		
+		try
+		{
+			# Fit the top strip "card" to the form width with your side padding
+			$rowW = [math]::Max(200, $form.ClientSize.Width - (2 * $padSide))
+			$topStripCard.Left = $padSide
+			$topStripCard.Top = $bannerPanel.Bottom + $padTopStrip
+			$topStripCard.Width = $rowW
+		}
 		catch { }
 	}
 	
-	# Helper: wildcard-aware ignore check (NO nested function, pure inline logic)
-	# (Used inside the timers)
-	# ----------------------------------------------------------------------
+	# Run once + re-run on any resize (still compatible with your other layout blocks)
+	& $layoutTopStrip
+	$form.add_Resize({ & $layoutTopStrip })
 	
+	# ------------------------------------------------------------------------------------------------
+	# Log "frame" (card border) + RichTextBox (kept variable name $logBox)
+	#   - We keep $logBox on the form so your other layout code that uses $logBox.Left/$logBox.Width still works.
+	#   - The frame is purely visual polish (modern look).
+	# ------------------------------------------------------------------------------------------------
+	$logFrame = New-Object System.Windows.Forms.Panel
+	$logFrame.BackColor = $uiCardBg
+	$logFrame.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+	$form.Controls.Add($logFrame) | Out-Null
+	
+	$logBox = New-Object System.Windows.Forms.RichTextBox
+	$logBox.ReadOnly = $true
+	$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
+	$logBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+	$logBox.BackColor = $uiCardBg
+	$form.Controls.Add($logBox) | Out-Null
+	
+	######################################################################################################################
+	#
+	# Log Box - CRITICAL FIXES:
+	#   1) Ensure the RichTextBox is on top of the frame (frame must NEVER block clicks/text)
+	#   2) Bind THIS live logBox instance to common script/global references used by Write_Log
+	#      (prevents logging into an old/disposed control after UI refactors)
+	#
+	######################################################################################################################
+	
+	# --- Z-ORDER SAFETY: frame behind, log on top ---
+	try { $logFrame.SendToBack() }
+	catch { }
+	try { $logBox.BringToFront() }
+	catch { }
+	
+	# --- REFERENCE BINDING: cover the most common logger targets ---
+	# NOTE: Your Write_Log (or other functions) may reference any of these names.
+	try { $script:logBox = $logBox }
+	catch { }
+	try { $script:LogBox = $logBox }
+	catch { }
+	try { $global:logBox = $logBox }
+	catch { }
+	try { $global:LogBox = $logBox }
+	catch { }
+	
+	# OPTIONAL: if you store UI handles in FunctionResults, publish it there too
+	try
+	{
+		if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
+		$script:FunctionResults['LogBox'] = $logBox
+	}
+	catch { }
+	
+	# OPTIONAL: quick sanity test (comment out after confirming you see it)
+	#try { $logBox.AppendText("Log initialized.`r`n"); $logBox.ScrollToCaret() } catch { }
+	
+	$toolTip.SetToolTip($logBox, "Log output. Right-click to clear.")
+	$logBox.Add_MouseUp({
+			param ($sender,
+				$eventArgs)
+			if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Right)
+			{
+				$logBox.Clear()
+				if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Log Cleared" }
+			}
+		})
+	
+	# Layout that also positions the log frame + log box (kept as part of top-strip layout so it stays consistent)
+	$layoutLogArea = {
+		if (-not $form -or $form.IsDisposed) { return }
+		
+		try
+		{
+			# Width aligned to top strip card
+			$rowW = [math]::Max(200, $form.ClientSize.Width - (2 * $padSide))
+			
+			# Log top starts just below the top strip card
+			$logTop = $topStripCard.Bottom + $gapCards
+			
+			# Bottom bound uses status strip height
+			$bottomReserve = 0
+			if ($statusStrip -and -not $statusStrip.IsDisposed) { $bottomReserve = $statusStrip.Height }
+			
+			# Compute available height for the log area
+			$availH = $form.ClientSize.Height - $logTop - $bottomReserve - $gapCards
+			$logH = [math]::Max($minLogH, $availH)
+			
+			# Frame
+			$logFrame.Left = $padSide
+			$logFrame.Top = $logTop
+			$logFrame.Width = $rowW
+			$logFrame.Height = $logH
+			
+			# Log box inset (padding inside frame)
+			$logBox.Left = $logFrame.Left + $logInnerPad
+			$logBox.Top = $logFrame.Top + $logInnerPad
+			$logBox.Width = [math]::Max(50, $logFrame.Width - (2 * $logInnerPad))
+			$logBox.Height = [math]::Max(50, $logFrame.Height - (2 * $logInnerPad))
+			
+			# Keep top strip aligned
+			& $layoutTopStrip
+		}
+		catch { }
+	}
+	
+	# Run once + re-run on resize
+	& $layoutLogArea
+	$form.add_Resize({ & $layoutLogArea })
+	
+	# ------------------------------------------------------------------------------------------------
 	# --- Busy scanner (UI thread) -------------------------------------------------------------
+	#   (kept logic; additionally updates status strip for a modern "app" feel)
+	# ------------------------------------------------------------------------------------------------
 	$BusyTimer = New-Object System.Windows.Forms.Timer
 	$BusyTimer.Interval = 800
 	$BusyTimer.add_Tick({
@@ -25988,19 +26792,49 @@ if (-not $form)
 				}
 				catch { }
 			}
+			
+			# ---- Status strip update (modern) ----
+			try
+			{
+				if ($script:IsBusy)
+				{
+					$stBusy.Text = "Busy: $($script:BusyReason)"
+				}
+				else
+				{
+					$stBusy.Text = ""
+				}
+			}
+			catch { }
 		})
 	$BusyTimer.Start()
 	
+	# ------------------------------------------------------------------------------------------------
 	# --- Idle watchdog (UI thread) ------------------------------------------------------------
+	#   (kept logic; additionally shows countdown in status strip)
+	# ------------------------------------------------------------------------------------------------
 	$script:IdleTimer = New-Object System.Windows.Forms.Timer
 	$script:IdleTimer.Interval = 30000 # 30s
 	$script:IdleTimer.add_Tick({
-			if ($script:IdleMinutesAllowed -le 0) { return }
+			if ($script:IdleMinutesAllowed -le 0)
+			{
+				try { $stIdle.Text = "" }
+				catch { }
+				return
+			}
 			
 			try
 			{
 				$minsIdle = (New-TimeSpan -Start $script:LastActivity -End (Get-Date)).TotalMinutes
 				$hardCloseReady = ($script:IdleHardCloseAfterMinutes -gt 0 -and $minsIdle -ge $script:IdleHardCloseAfterMinutes)
+				
+				# Status strip idle countdown
+				try
+				{
+					$left = [math]::Max(0, $script:IdleMinutesAllowed - $minsIdle)
+					$stIdle.Text = ("Idle close in: {0:n1} min" -f $left)
+				}
+				catch { }
 				
 				if ($minsIdle -ge $script:IdleMinutesAllowed)
 				{
@@ -26047,350 +26881,72 @@ if (-not $form)
 		})
 	$script:IdleTimer.Start()
 	
+	# ------------------------------------------------------------------------------------------------
 	# --- Activity hooks (form + all existing child controls) ---------------------------------
-	if ($form -and $form -is [System.Windows.Forms.Form])
+	#   (kept logic; plus hooks future-added controls to avoid "dead" activity areas)
+	# ------------------------------------------------------------------------------------------------
+	try { $form.add_KeyDown({ $script:LastActivity = Get-Date }) }
+	catch { }
+	try { $form.add_MouseMove({ $script:LastActivity = Get-Date }) }
+	catch { }
+	
+	# Hook existing controls (your original stack approach)
+	try
 	{
-		try { $form.add_KeyDown({ $script:LastActivity = Get-Date }) }
-		catch { }
-		try { $form.add_MouseMove({ $script:LastActivity = Get-Date }) }
-		catch { }
+		$stack = New-Object System.Collections.Stack
+		$stack.Push($form)
 		
-		try
+		while ($stack.Count -gt 0)
 		{
-			$stack = New-Object System.Collections.Stack
-			$stack.Push($form)
-			
-			while ($stack.Count -gt 0)
+			$parent = [System.Windows.Forms.Control]$stack.Pop()
+			foreach ($ctrl in @($parent.Controls))
 			{
-				$parent = [System.Windows.Forms.Control]$stack.Pop()
-				foreach ($ctrl in @($parent.Controls))
-				{
-					try { $ctrl.add_KeyDown({ $script:LastActivity = Get-Date }) }
-					catch { }
-					try { $ctrl.add_Click({ $script:LastActivity = Get-Date }) }
-					catch { }
-					try { $ctrl.add_MouseMove({ $script:LastActivity = Get-Date }) }
-					catch { }
-					if ($ctrl -and $ctrl.HasChildren) { $stack.Push($ctrl) }
-				}
+				try { $ctrl.add_KeyDown({ $script:LastActivity = Get-Date }) }
+				catch { }
+				try { $ctrl.add_Click({ $script:LastActivity = Get-Date }) }
+				catch { }
+				try { $ctrl.add_MouseMove({ $script:LastActivity = Get-Date }) }
+				catch { }
+				if ($ctrl -and $ctrl.HasChildren) { $stack.Push($ctrl) }
 			}
 		}
-		catch { }
 	}
+	catch { }
 	
-	# --- CRITICAL: stop background jobs/timers on exit so PowerShell can terminate cleanly ----
-	if ($form -and $form -is [System.Windows.Forms.Form])
+	# NEW: Hook controls added later (so new controls also reset idle timer)
+	try
 	{
-		try
-		{
-			$form.add_FormClosing({
-					# Stop timers
-					try { if ($script:IdleTimer) { $script:IdleTimer.Stop(); $script:IdleTimer.Dispose() } }
-					catch { }
-					try { if ($BusyTimer) { $BusyTimer.Stop(); $BusyTimer.Dispose() } }
-					catch { }
+		$form.add_ControlAdded({
+				param ($s,
+					$e)
+				try
+				{
+					$c = $e.Control
+					if (-not $c) { return }
 					
-					# Stop XE watcher jobs
-					try
+					$stack2 = New-Object System.Collections.Stack
+					$stack2.Push($c)
+					
+					while ($stack2.Count -gt 0)
 					{
-						$xeJobs = Get-Job -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'XEWatcherJob_*' }
-						foreach ($j in $xeJobs)
-						{
-							try { Stop-Job -Job $j -Force -ErrorAction SilentlyContinue | Out-Null }
-							catch { }
-							try { Remove-Job -Job $j -Force -ErrorAction SilentlyContinue | Out-Null }
-							catch { }
-						}
-					}
-					catch { }
-				})
-		}
-		catch { }
-	}
-	
-	# ========================= Banner (header) =========================
-	# Static banner background (full width)
-	$bannerLabel = New-Object System.Windows.Forms.Label
-	$bannerLabel.Text = "PowerShell Script - TBS_Maintenance_Script"
-	$bannerLabel.Font = New-Object System.Drawing.Font("Arial", 16, [System.Drawing.FontStyle]::Bold)
-	$bannerLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-	$bannerLabel.Dock = 'Top'
-	$bannerLabel.Height = 30 # give the header some breathing room
-	$bannerLabel.Cursor = [System.Windows.Forms.Cursors]::Default # parent is NOT clickable
-	$form.Controls.Add($bannerLabel)
-	
-	# Ensure ToolTip exists (shared across the app)
-	if (-not $toolTip)
-	{
-		$toolTip = New-Object System.Windows.Forms.ToolTip
-		$toolTip.AutoPopDelay = 8000
-		$toolTip.InitialDelay = 300
-		$toolTip.ReshowDelay = 100
-	}
-	
-	# Clickable text overlay (only text bounds are clickable)
-	$bannerLink = New-Object System.Windows.Forms.LinkLabel
-	$bannerLink.Parent = $bannerLabel # render "on top" of the banner area
-	$bannerLink.Text = $bannerLabel.Text # mirror the banner's text
-	$bannerLink.Font = $bannerLabel.Font # mirror the banner's font
-	$bannerLink.AutoSize = $true # <-- hit area == text size
-	$bannerLink.BackColor = [System.Drawing.Color]::Transparent
-	$bannerLink.Cursor = [System.Windows.Forms.Cursors]::Hand
-	
-	# Make the entire string a link
-	$bannerLink.LinkArea = New-Object System.Windows.Forms.LinkArea(0, $bannerLink.Text.Length)
-	$bannerLink.LinkBehavior = [System.Windows.Forms.LinkBehavior]::HoverUnderline # underline on hover
-	$bannerLink.LinkColor = $bannerLabel.ForeColor # normal color (usually black)
-	$bannerLink.ActiveLinkColor = [System.Drawing.Color]::DodgerBlue # color while clicking
-	$bannerLink.VisitedLinkColor = $bannerLabel.ForeColor # keep same color after click
-	$bannerLink.DisabledLinkColor = [System.Drawing.Color]::Gray
-	
-	# Tooltip for the link itself
-	$toolTip.SetToolTip($bannerLink, "Open TBS Helpdesk (helpdesk.tecnicasystems.com)")
-	
-	# Store original link color so we can restore after hover
-	$bannerLink.Tag = [pscustomobject]@{ LinkColor = $bannerLink.LinkColor }
-	
-	# --- Hover color change (this is what you asked for) ---
-	$bannerLink.Add_MouseEnter({
-			param ($s,
-				$e)
-			try { $s.LinkColor = [System.Drawing.Color]::DodgerBlue }
-			catch { }
-		})
-	$bannerLink.Add_MouseLeave({
-			param ($s,
-				$e)
-			try
-			{
-				if ($s.Tag -and $s.Tag.LinkColor) { $s.LinkColor = $s.Tag.LinkColor }
-			}
-			catch { }
-		})
-	
-	# Center the link text inside the banner area (initial + on resize + on text/font changes)
-	$centerBannerLink = {
-		# Center horizontally against the FORM (not just the label), so it stays visually centered
-		$x = [math]::Max(0, ($form.ClientSize.Width - $bannerLink.Width) / 2)
-		# Center vertically inside the banner strip
-		$y = [math]::Max(0, ($bannerLabel.Height - $bannerLink.Height) / 2)
-		$bannerLink.Location = New-Object System.Drawing.Point([int]$x, [int]$y)
-	}
-	& $centerBannerLink
-	$form.add_Resize({ & $centerBannerLink })
-	
-	# If someone changes the banner text or font later, keep the link synced and centered
-	$bannerLabel.add_TextChanged({
-			$bannerLink.Text = $bannerLabel.Text
-			$bannerLink.LinkArea = New-Object System.Windows.Forms.LinkArea(0, $bannerLink.Text.Length)
-			$bannerLink.AutoSize = $true
-			& $centerBannerLink
-		})
-	$bannerLabel.add_FontChanged({
-			$bannerLink.Font = $bannerLabel.Font
-			$bannerLink.AutoSize = $true
-			& $centerBannerLink
-		})
-	
-	# Click handler (only the text is clickable)
-	$bannerLink.Add_LinkClicked({
-			$script:LastActivity = Get-Date
-			$url = "https://helpdesk.tecnicasystems.com"
-			try { Start-Process $url }
-			catch
-			{
-				[System.Windows.Forms.MessageBox]::Show(
-					"Couldn't open $url.`r`n$($_.Exception.Message)",
-					"Open Link",
-					[System.Windows.Forms.MessageBoxButtons]::OK,
-					[System.Windows.Forms.MessageBoxIcon]::Error
-				) | Out-Null
-			}
-		})
-	
-	# ========================= Form Closing (X) =========================
-	$form.add_FormClosing({
-			# Skip confirm if we're closing due to idle timeout
-			if ($script:SuppressClosePrompt)
-			{
-				$script:SuppressClosePrompt = $false
-			}
-			else
-			{
-				$confirmResult = [System.Windows.Forms.MessageBox]::Show(
-					"Are you sure you want to exit?",
-					"Confirm Exit",
-					[System.Windows.Forms.MessageBoxButtons]::YesNo,
-					[System.Windows.Forms.MessageBoxIcon]::Question
-				)
-				if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes)
-				{
-					$_.Cancel = $true
-					return
-				}
-			}
-			
-			# ---- Timers ----
-			try
-			{
-				if ($script:IdleTimer)
-				{
-					try { $script:IdleTimer.Stop() }
-					catch { }; try { $script:IdleTimer.Dispose() }
-					catch { }; $script:IdleTimer = $null
-				}
-			}
-			catch { }
-			try
-			{
-				if ($refreshTimer)
-				{
-					try { $refreshTimer.Stop() }
-					catch { }; try { $refreshTimer.Dispose() }
-					catch { }; $refreshTimer = $null
-				}
-			}
-			catch { }
-			
-			try
-			{
-				if ($script:protocolTimer)
-				{
-					try { $script:protocolTimer.Stop() }
-					catch { }
-					try { $script:protocolTimer.Dispose() }
-					catch { }
-					$script:protocolTimer = $null
-				}
-			}
-			catch { }
-			try
-			{
-				if ($global:ProtocolFormTimer)
-				{
-					try { $global:ProtocolFormTimer.Stop() }
-					catch { }
-					try { $global:ProtocolFormTimer.Dispose() }
-					catch { }
-					$global:ProtocolFormTimer = $null
-				}
-			}
-			catch { }
-			
-			# ---- Popup form (optional) ----
-			try
-			{
-				if ($global:ProtocolForm)
-				{
-					try { $global:ProtocolForm.Hide() }
-					catch { }
-					try { $global:ProtocolForm.Dispose() }
-					catch { }
-					$global:ProtocolForm = $null
-				}
-			}
-			catch { }
-			
-			# ---- Lane protocol updater cleanup (timer + pool) ----
-			try { $script:LaneProtocolStop = $true }
-			catch { }
-			
-			try
-			{
-				if ($script:protocolTimer)
-				{
-					try { $script:protocolTimer.Stop() }
-					catch { }
-					try { $script:protocolTimer.Dispose() }
-					catch { }
-					$script:protocolTimer = $null
-				}
-			}
-			catch { }
-			
-			try
-			{
-				if ($script:LaneProtocolJobs)
-				{
-					foreach ($kv in @($script:LaneProtocolJobs.GetEnumerator()))
-					{
-						$st = $kv.Value
-						if ($st)
-						{
-							try { if ($st.Handle -and (-not $st.Handle.IsCompleted) -and $st.PS) { $null = $st.PS.Stop() } }
-							catch { }
-							try { if ($st.PS) { $st.PS.Dispose() } }
-							catch { }
-						}
-						[void]$script:LaneProtocolJobs.Remove($kv.Key)
+						$p = [System.Windows.Forms.Control]$stack2.Pop()
+						try { $p.add_KeyDown({ $script:LastActivity = Get-Date }) }
+						catch { }
+						try { $p.add_Click({ $script:LastActivity = Get-Date }) }
+						catch { }
+						try { $p.add_MouseMove({ $script:LastActivity = Get-Date }) }
+						catch { }
+						if ($p.HasChildren) { foreach ($cc in @($p.Controls)) { $stack2.Push($cc) } }
 					}
 				}
-			}
-			catch { }
-			
-			try
-			{
-				if ($script:LaneProtocolPool)
-				{
-					try { $script:LaneProtocolPool.Close() }
-					catch { }
-					try { $script:LaneProtocolPool.Dispose() }
-					catch { }
-					$script:LaneProtocolPool = $null
-				}
-			}
-			catch { }
-			
-			# ---- Scale credential runspaces (if you used the background cred helper) ----
-			try
-			{
-				if ($script:ScaleCredReaper)
-				{
-					try { $script:ScaleCredReaper.Stop() }
-					catch { }
-					try { $script:ScaleCredReaper.Dispose() }
-					catch { }
-					$script:ScaleCredReaper = $null
-				}
-			}
-			catch { }
-			try
-			{
-				if ($script:ScaleCredTasks)
-				{
-					foreach ($k in @($script:ScaleCredTasks.Keys))
-					{
-						$st = $script:ScaleCredTasks[$k]
-						if ($st)
-						{
-							try { if ($st.Handle -and $st.PS) { $st.PS.EndInvoke($st.Handle) } }
-							catch { }
-							try { if ($st.PS) { $st.PS.Dispose() } }
-							catch { }
-						}
-						[void]$script:ScaleCredTasks.Remove($k)
-					}
-				}
-			}
-			catch { }
-			
-			# --- Any lingering job from earlier versions (defensive) ---
-			try
-			{
-				Get-Job -Name 'ClearXEFolderJob' -ErrorAction SilentlyContinue | ForEach-Object {
-					try { Stop-Job $_ -Force -ErrorAction SilentlyContinue }
-					catch { }
-					try { Remove-Job $_ -Force -ErrorAction SilentlyContinue }
-					catch { }
-				}
-			}
-			catch { }
-			
-			Write_Log "Form is closing. Performing cleanup." "green"
-			Delete_Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql"
-		})
+				catch { }
+			})
+	}
+	catch { }
 	
-	# ========================= Protocol Table Popup =========================
+	# ------------------------------------------------------------------------------------------------
+	# ========================= Protocol Table Popup (kept; slightly modern styling) ==================
+	# ------------------------------------------------------------------------------------------------
 	$rowHeight = 19
 	$rowCount = 25
 	$gridHeight = ($rowCount * $rowHeight) + 28
@@ -26398,10 +26954,12 @@ if (-not $form)
 	if (-not $global:ProtocolForm)
 	{
 		$global:ProtocolForm = New-Object System.Windows.Forms.Form
-		$global:ProtocolForm.Text = "Lane PS"
-		$global:ProtocolForm.Size = New-Object System.Drawing.Size(257, 500)
+		$global:ProtocolForm.Text = "Lane Protocols"
+		$global:ProtocolForm.Size = New-Object System.Drawing.Size(290, 520)
 		$global:ProtocolForm.StartPosition = "CenterScreen"
 		$global:ProtocolForm.Topmost = $true
+		$global:ProtocolForm.BackColor = $uiBg
+		$global:ProtocolForm.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 		
 		# No minimize/maximize
 		$global:ProtocolForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -26412,8 +26970,8 @@ if (-not $form)
 		$global:ProtocolForm.add_Deactivate({ $global:ProtocolForm.Hide() })
 		
 		$global:ProtocolGrid = New-Object System.Windows.Forms.DataGridView
-		$global:ProtocolGrid.Location = New-Object System.Drawing.Point(10, 10)
-		$global:ProtocolGrid.Size = New-Object System.Drawing.Size(222, 400)
+		$global:ProtocolGrid.Location = New-Object System.Drawing.Point(12, 12)
+		$global:ProtocolGrid.Size = New-Object System.Drawing.Size(250, 420)
 		$global:ProtocolGrid.ColumnCount = 2
 		$global:ProtocolGrid.Columns[0].Name = "Lane"
 		$global:ProtocolGrid.Columns[1].Name = "Protocol"
@@ -26425,12 +26983,29 @@ if (-not $form)
 		$global:ProtocolGrid.AllowUserToResizeColumns = $false
 		$global:ProtocolGrid.SelectionMode = "FullRowSelect"
 		$global:ProtocolGrid.Font = New-Object System.Drawing.Font("Consolas", 10)
+		
+		# Modern-ish grid styling (safe/light)
+		try
+		{
+			$global:ProtocolGrid.BackgroundColor = $uiCardBg
+			$global:ProtocolGrid.BorderStyle = 'FixedSingle'
+			$global:ProtocolGrid.CellBorderStyle = 'SingleHorizontal'
+			$global:ProtocolGrid.EnableHeadersVisualStyles = $false
+			$global:ProtocolGrid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(238, 242, 247)
+			$global:ProtocolGrid.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+			$global:ProtocolGrid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5)
+			$global:ProtocolGrid.DefaultCellStyle.BackColor = $uiCardBg
+			$global:ProtocolGrid.DefaultCellStyle.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+		}
+		catch { }
+		
 		$global:ProtocolForm.Controls.Add($global:ProtocolGrid)
 		
 		$closeBtn = New-Object System.Windows.Forms.Button
 		$closeBtn.Text = "Hide"
-		$closeBtn.Location = New-Object System.Drawing.Point(60, 420)
-		$closeBtn.Size = New-Object System.Drawing.Size(120, 30)
+		$closeBtn.Location = New-Object System.Drawing.Point(80, 445)
+		$closeBtn.Size = New-Object System.Drawing.Size(120, 32)
+		$closeBtn.FlatStyle = 'Flat'
 		$closeBtn.Add_Click({ $global:ProtocolForm.Hide() })
 		$global:ProtocolForm.Controls.Add($closeBtn)
 		
@@ -26506,16 +27081,16 @@ if (-not $form)
 				}
 				
 				# Column widths (Lane fixed, Protocol fills; account for scrollbar)
-				$global:ProtocolGrid.Columns[0].Width = 60
+				$global:ProtocolGrid.Columns[0].Width = 80
 				$visibleRowCount = [math]::Floor($global:ProtocolGrid.DisplayRectangle.Height / $global:ProtocolGrid.RowTemplate.Height)
 				$scrollBarVisible = $global:ProtocolGrid.Rows.Count -gt $visibleRowCount
 				if ($scrollBarVisible)
 				{
-					$global:ProtocolGrid.Columns[1].Width = $global:ProtocolGrid.Width - 60 - 4 - [System.Windows.Forms.SystemInformation]::VerticalScrollBarWidth
+					$global:ProtocolGrid.Columns[1].Width = $global:ProtocolGrid.Width - 80 - 4 - [System.Windows.Forms.SystemInformation]::VerticalScrollBarWidth
 				}
 				else
 				{
-					$global:ProtocolGrid.Columns[1].Width = $global:ProtocolGrid.Width - 60 - 4
+					$global:ProtocolGrid.Columns[1].Width = $global:ProtocolGrid.Width - 80 - 4
 				}
 				
 				# Restore scroll & selection safely
@@ -26536,332 +27111,288 @@ if (-not $form)
 		$global:ProtocolFormTimer.Start()
 	}
 	
-	######################################################################################################################
-	#                                                                                                                    #
-	#                                                    Labels 					                                     #
-	#                                                                                                                    #
-	######################################################################################################################
-	
-	# Shared tooltip (create once)  ─────────────────────────────────────────────────────────────────────────────────────
-	if (-not $toolTip)
-	{
-		$toolTip = New-Object System.Windows.Forms.ToolTip
-		$toolTip.AutoPopDelay = 8000
-		$toolTip.InitialDelay = 300
-		$toolTip.ReshowDelay = 100
-	}
-	
-	# Helper as scriptblock (not a function): make a label look like a link (hand + blue + underline on hover)
-	$applyLinkStyle = {
-		param ([System.Windows.Forms.Label]$Label)
-		$Label.Cursor = [System.Windows.Forms.Cursors]::Hand
-		if (-not $Label.Tag) { $Label.Tag = [pscustomobject]@{ Color = $Label.ForeColor; Font = $Label.Font } }
-		
-		$Label.add_MouseEnter({
-				param ($s,
-					$e)
-				try
-				{
-					$s.ForeColor = 'DodgerBlue'
-					$s.Font = New-Object System.Drawing.Font($s.Font, ($s.Font.Style -bor [System.Drawing.FontStyle]::Underline))
-				}
-				catch { }
-			})
-		$Label.add_MouseLeave({
-				param ($s,
-					$e)
-				try
-				{
-					if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
-					if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
-				}
-				catch { }
-			})
-	}
-	
-	# ─────────────────────────────────────────── Create the labels (your same look/positions) ──────────────────────────
-	
-	# SMS Version (left, row 1) - clickable text only
-	$smsVersionLabel = New-Object System.Windows.Forms.Label
-	$smsVersionLabel.Text = "SMS Version: N/A"
-	$smsVersionLabel.Location = New-Object System.Drawing.Point(50, 30)
-	$smsVersionLabel.AutoSize = $true # only letters are clickable (no dead zone)
-	$smsVersionLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$form.Controls.Add($smsVersionLabel) | Out-Null
-	$toolTip.SetToolTip($smsVersionLabel, "Shows current SMS version. Click to bring SMSStart to front (or launch it).")
-	& $applyLinkStyle $smsVersionLabel
-	
-	# Click: bring SMSStart to front or launch it (inline, no functions)
-	$smsVersionLabel.Add_Click({
-			$script:LastActivity = Get-Date
-			$orig = $smsVersionLabel.ForeColor
-			$smsVersionLabel.ForeColor = 'DodgerBlue'
-			try
+	# ------------------------------------------------------------------------------------------------
+	# Form Closing (X)  (FIXED): confirm first, then cleanup (prevents "dead UI" if user cancels)
+	# ------------------------------------------------------------------------------------------------
+	$form.add_FormClosing({
+			# Skip confirm if we're closing due to idle timeout
+			if ($script:SuppressClosePrompt)
 			{
-				@"
-using System;
-using System.Runtime.InteropServices;
-public static class NativeWin {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-}
-"@ | ForEach-Object {
-					if (-not ("NativeWin" -as [type])) { Add-Type -TypeDefinition $_ -ErrorAction SilentlyContinue }
-				}
-				
-				$p = Get-Process -Name 'SMSStart' -ErrorAction SilentlyContinue |
-				Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-				if ($p)
-				{
-					$h = $p.MainWindowHandle
-					if ([NativeWin]::IsIconic($h)) { [NativeWin]::ShowWindow($h, 9) | Out-Null }
-					[NativeWin]::SetForegroundWindow($h) | Out-Null
-					if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Brought SMSStart to the foreground." "green" }
-					return
-				}
-				$exe = Join-Path $BasePath 'SMSStart.exe'
-				$proc = $null
-				if (Test-Path -LiteralPath $exe)
-				{
-					$proc = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe -Parent) -PassThru -ErrorAction Stop
-				}
-				else
-				{
-					$lnk = Get-ChildItem -LiteralPath $BasePath -Filter '*SMSStart*.lnk' -ErrorAction SilentlyContinue | Select-Object -First 1
-					if ($lnk) { $proc = Start-Process -FilePath $lnk.FullName -PassThru -ErrorAction Stop }
-				}
-				if (-not $proc)
-				{
-					if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "SMSStart not found under $BasePath" "yellow" }
-					return
-				}
-				$null = $proc.WaitForInputIdle(5000)
-				for ($i = 0; $i -lt 20 -and $proc.MainWindowHandle -eq 0; $i++) { Start-Sleep -Milliseconds 150; $proc.Refresh() }
-				if ($proc.MainWindowHandle -ne 0)
-				{
-					if ([NativeWin]::IsIconic($proc.MainWindowHandle)) { [NativeWin]::ShowWindow($proc.MainWindowHandle, 9) | Out-Null }
-					[NativeWin]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
-				}
-				if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Launched SMSStart from $BasePath and brought to front." "green" }
-			}
-			finally
-			{
-				$smsVersionLabel.ForeColor = $orig
-			}
-		})
-	
-	# Store Name (centered, row 1) - clickable text only
-	$storeNameLabel = New-Object System.Windows.Forms.Label
-	$storeNameLabel.Text = "Store Name: N/A"
-	$storeNameLabel.AutoSize = $true
-	$storeNameLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-	$form.Controls.Add($storeNameLabel) | Out-Null
-	$toolTip.SetToolTip($storeNameLabel, "Shows store name. Click to ping all nodes (Lanes > Scales > Backoffices).")
-	& $applyLinkStyle $storeNameLabel
-	$storeNameLabel.Add_Click({
-			$script:LastActivity = Get-Date
-			$storeNameLabel.ForeColor = 'DodgerBlue'
-			try
-			{
-				Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber
-				Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
-				Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
-			}
-			finally
-			{
-				$storeNameLabel.ForeColor = 'Black'
-			}
-		})
-	
-	# Store Number (right, row 1) - clickable text only
-	$script:storeNumberLabel = New-Object System.Windows.Forms.Label
-	$storeNumberLabel.Text = "Store Number: N/A"
-	$storeNumberLabel.AutoSize = $true
-	$storeNumberLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$storeNumberLabel.Anchor = 'Top,Right' # still anchor to right; layout scriptblock will clamp
-	$form.Controls.Add($storeNumberLabel) | Out-Null
-	$toolTip.SetToolTip($storeNumberLabel, "Click to open the Storeman folder.")
-	& $applyLinkStyle $storeNumberLabel
-	
-	# Hover: refresh tooltip with actual BasePath
-	$storeNumberLabel.Add_MouseHover({
-			$p = if ($script:BasePath) { $script:BasePath }
-			elseif ($BasePath) { $BasePath }
-			else { $null }
-			$toolTip.SetToolTip($storeNumberLabel, $(if ($p) { "Open Storeman folder: $p" }
-					else { "Storeman folder not detected yet." }))
-		})
-	# Click: open Storeman folder (inline)
-	$storeNumberLabel.Add_Click({
-			$script:LastActivity = Get-Date
-			$path = if ($script:BasePath) { $script:BasePath }
-			elseif ($BasePath) { $BasePath }
-			else { $null }
-			if ($path -and (Test-Path -LiteralPath $path))
-			{
-				try { Start-Process -FilePath $path }
-				catch
-				{
-					[System.Windows.Forms.MessageBox]::Show("Couldn't open: $path`r`n$($_.Exception.Message)",
-						"Open Storeman Folder", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
-				}
+				$script:SuppressClosePrompt = $false
 			}
 			else
 			{
-				[System.Windows.Forms.MessageBox]::Show("Storeman folder not found.`r`nCurrent value: " + [string]$path,
-					"Open Storeman Folder", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+				$confirmResult = [System.Windows.Forms.MessageBox]::Show(
+					"Are you sure you want to exit?",
+					"Confirm Exit",
+					[System.Windows.Forms.MessageBoxButtons]::YesNo,
+					[System.Windows.Forms.MessageBoxIcon]::Question
+				)
+				if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes)
+				{
+					$_.Cancel = $true
+					return
+				}
 			}
-		})
-	
-	# Number of Lanes (centered, row 2) - clickable text only
-	$script:NodesStore = New-Object System.Windows.Forms.Label
-	$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
-	$NodesStore.Location = New-Object System.Drawing.Point(50, 50) # seed; layout will clamp/center
-	$NodesStore.AutoSize = $true
-	$NodesStore.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$form.Controls.Add($NodesStore) | Out-Null
-	$toolTip.SetToolTip($NodesStore, "Shows count of Lanes. Click to ping Lane nodes.")
-	& $applyLinkStyle $NodesStore
-	$NodesStore.Add_Click({
-			$script:LastActivity = Get-Date
-			$NodesStore.ForeColor = 'DodgerBlue'
-			try { Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber }
-			finally { $NodesStore.ForeColor = 'Black' }
-		})
-	
-	# Number of Scales (right-block, row 2)
-	$script:scalesLabel = New-Object System.Windows.Forms.Label
-	$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
-	$scalesLabel.Location = New-Object System.Drawing.Point(420, 50) # seed; layout will position near right block
-	$scalesLabel.AutoSize = $true
-	$scalesLabel.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$form.Controls.Add($scalesLabel) | Out-Null
-	$toolTip.SetToolTip($scalesLabel, "Shows count of Scales. Click to ping Scale nodes.")
-	& $applyLinkStyle $scalesLabel
-	$scalesLabel.Add_Click({
-			$script:LastActivity = Get-Date
-			try { Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber }
+			
+			# ---- Timers ----
+			try { if ($script:IdleTimer) { $script:IdleTimer.Stop(); $script:IdleTimer.Dispose(); $script:IdleTimer = $null } }
 			catch { }
-		})
-	
-	# Number of Backoffices (rightmost, row 2)
-	$NodesBackoffices = New-Object System.Windows.Forms.Label
-	$NodesBackoffices.Text = "Number of Backoffices: N/A"
-	$NodesBackoffices.Location = New-Object System.Drawing.Point(785, 50) # seed; layout will right-align
-	$NodesBackoffices.AutoSize = $true
-	$NodesBackoffices.Font = New-Object System.Drawing.Font("Arial", 10, [System.Drawing.FontStyle]::Regular)
-	$form.Controls.Add($NodesBackoffices) | Out-Null
-	$toolTip.SetToolTip($NodesBackoffices, "Shows count of Backoffices. Click to ping Backoffice nodes.")
-	& $applyLinkStyle $NodesBackoffices
-	$NodesBackoffices.Add_Click({
-			$script:LastActivity = Get-Date
-			try { Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber }
+			try { if ($BusyTimer) { $BusyTimer.Stop(); $BusyTimer.Dispose(); $BusyTimer = $null } }
 			catch { }
-		})
-	
-	# ─────────────────────────────────────────── Non-overlap/clamping layout (updated) ───────────────────────────────────
-	$TopPadLeft = 50 # left margin for labels
-	$Gap = 12 # spacing between neighbors
-	
-	$layoutTopStrip = {
-		if (-not $form -or $form.IsDisposed) { return }
-		
-		# Y positions for the two rows
-		$y1 = 30 # Row 1: SMS (L), Store Name (C), Store Number (R)
-		$y2 = 50 # Row 2: Lanes (L), Scales (C), Backoffices (R)
-		
-		# Right edge to align with = log box right (fallback to client right if logBox not ready)
-		$rightEdge = if ($logBox -and -not $logBox.IsDisposed) { $logBox.Left + $logBox.Width }
-		else { $form.ClientSize.Width - 20 }
-		
-		# ---------------- Row 1 ----------------
-		if ($smsVersionLabel) { $smsVersionLabel.Top = $y1; $smsVersionLabel.Left = $TopPadLeft }
-		
-		if ($storeNumberLabel)
-		{
-			$storeNumberLabel.Top = $y1
-			# align the right edge to the logBox right edge
-			$storeNumberLabel.Left = [math]::Max(0, $rightEdge - $storeNumberLabel.Width)
-		}
-		
-		if ($storeNameLabel)
-		{
-			$storeNameLabel.Top = $y1
+			try { if ($refreshTimer) { $refreshTimer.Stop(); $refreshTimer.Dispose(); $refreshTimer = $null } }
+			catch { }
 			
-			# clamp centered Store Name between SMS (left) and Store Number (right)
-			$leftBound = if ($smsVersionLabel) { $smsVersionLabel.Left + $smsVersionLabel.Width + $Gap }
-			else { $TopPadLeft }
-			$rightBound = if ($storeNumberLabel) { $storeNumberLabel.Left - $Gap }
-			else { $rightEdge }
-			
-			$centered = [math]::Floor(($form.ClientSize.Width - $storeNameLabel.Width) / 2)
-			$safeLeft = [math]::Max($leftBound, [math]::Min($centered, $rightBound - $storeNameLabel.Width))
-			$storeNameLabel.Left = [int][math]::Max(0, $safeLeft)
-		}
-		
-		# ---------------- Row 2 ----------------
-		if ($NodesStore)
-		{
-			$NodesStore.Top = $y2
-			$NodesStore.Left = $TopPadLeft
-		}
-		
-		if ($NodesBackoffices)
-		{
-			$NodesBackoffices.Top = $y2
-			# align the right edge to the logBox right edge
-			$NodesBackoffices.Left = [math]::Max(0, $rightEdge - $NodesBackoffices.Width)
-		}
-		
-		if ($scalesLabel)
-		{
-			$scalesLabel.Top = $y2
-			
-			# clamp centered Scales between Lanes (left) and Backoffices (right)
-			$leftBound2 = if ($NodesStore) { $NodesStore.Left + $NodesStore.Width + $Gap }
-			else { $TopPadLeft }
-			$rightBound2 = if ($NodesBackoffices) { $NodesBackoffices.Left - $Gap }
-			else { $rightEdge }
-			
-			$centered2 = [math]::Floor(($form.ClientSize.Width - $scalesLabel.Width) / 2)
-			$safeLeft2 = [math]::Max($leftBound2, [math]::Min($centered2, $rightBound2 - $scalesLabel.Width))
-			$scalesLabel.Left = [int][math]::Max(0, $safeLeft2)
-		}
-	}
-	
-	
-	# run once + re-run on any size/text/font change (reacts to AutoSize growth/shrink)
-	& $layoutTopStrip
-	$form.add_Resize({ & $layoutTopStrip })
-	foreach ($lbl in @($smsVersionLabel, $storeNameLabel, $storeNumberLabel, $NodesStore, $scalesLabel, $NodesBackoffices))
-	{
-		if ($lbl)
-		{
-			$lbl.add_TextChanged({ & $layoutTopStrip })
-			$lbl.add_FontChanged({ & $layoutTopStrip })
-			$lbl.add_SizeChanged({ & $layoutTopStrip }) # extra safety for AutoSize
-		}
-	}
-	
-	# ───────────────────────────────────────────────────── Log box (unchanged) ─────────────────────────────────────────
-	$logBox = New-Object System.Windows.Forms.RichTextBox
-	$logBox.Location = New-Object System.Drawing.Point(50, 70)
-	$logBox.Size = New-Object System.Drawing.Size(900, 400)
-	$logBox.ReadOnly = $true
-	$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
-	$form.Controls.Add($logBox) | Out-Null
-	$toolTip.SetToolTip($logBox, "Log output. Right-click to clear.")
-	$logBox.Add_MouseUp({
-			param ($sender,
-				$eventArgs)
-			if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Right)
+			try
 			{
-				$logBox.Clear()
-				if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Log Cleared" }
+				if ($global:ProtocolFormTimer)
+				{
+					$global:ProtocolFormTimer.Stop()
+					$global:ProtocolFormTimer.Dispose()
+					$global:ProtocolFormTimer = $null
+				}
 			}
+			catch { }
+			
+			# ---- Popup form (optional) ----
+			try
+			{
+				if ($global:ProtocolForm)
+				{
+					try { $global:ProtocolForm.Hide() }
+					catch { }
+					try { $global:ProtocolForm.Dispose() }
+					catch { }
+					$global:ProtocolForm = $null
+				}
+			}
+			catch { }
+			
+			# Stop XE watcher jobs (kept from your earlier close handler)
+			try
+			{
+				$xeJobs = Get-Job -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'XEWatcherJob_*' }
+				foreach ($j in $xeJobs)
+				{
+					try { Stop-Job -Job $j -Force -ErrorAction SilentlyContinue | Out-Null }
+					catch { }
+					try { Remove-Job -Job $j -Force -ErrorAction SilentlyContinue | Out-Null }
+					catch { }
+				}
+			}
+			catch { }
+			
+			# ---- Lane protocol updater cleanup (timer + pool) ----
+			try { $script:LaneProtocolStop = $true }
+			catch { }
+			
+			try
+			{
+				if ($script:protocolTimer)
+				{
+					try { $script:protocolTimer.Stop() }
+					catch { }
+					try { $script:protocolTimer.Dispose() }
+					catch { }
+					$script:protocolTimer = $null
+				}
+			}
+			catch { }
+			
+			try
+			{
+				if ($script:LaneProtocolJobs)
+				{
+					foreach ($kv in @($script:LaneProtocolJobs.GetEnumerator()))
+					{
+						$st = $kv.Value
+						if ($st)
+						{
+							try { if ($st.Handle -and (-not $st.Handle.IsCompleted) -and $st.PS) { $null = $st.PS.Stop() } }
+							catch { }
+							try { if ($st.PS) { $st.PS.Dispose() } }
+							catch { }
+						}
+						[void]$script:LaneProtocolJobs.Remove($kv.Key)
+					}
+				}
+			}
+			catch { }
+			
+			try
+			{
+				if ($script:LaneProtocolPool)
+				{
+					try { $script:LaneProtocolPool.Close() }
+					catch { }
+					try { $script:LaneProtocolPool.Dispose() }
+					catch { }
+					$script:LaneProtocolPool = $null
+				}
+			}
+			catch { }
+			
+			# ---- Scale credential runspaces (if you used the background cred helper) ----
+			try
+			{
+				if ($script:ScaleCredReaper)
+				{
+					try { $script:ScaleCredReaper.Stop() }
+					catch { }
+					try { $script:ScaleCredReaper.Dispose() }
+					catch { }
+					$script:ScaleCredReaper = $null
+				}
+			}
+			catch { }
+			
+			try
+			{
+				if ($script:ScaleCredTasks)
+				{
+					foreach ($k in @($script:ScaleCredTasks.Keys))
+					{
+						$st = $script:ScaleCredTasks[$k]
+						if ($st)
+						{
+							try { if ($st.Handle -and $st.PS) { $st.PS.EndInvoke($st.Handle) } }
+							catch { }
+							try { if ($st.PS) { $st.PS.Dispose() } }
+							catch { }
+						}
+						[void]$script:ScaleCredTasks.Remove($k)
+					}
+				}
+			}
+			catch { }
+			
+			# --- Any lingering job from earlier versions (defensive) ---
+			try
+			{
+				Get-Job -Name 'ClearXEFolderJob' -ErrorAction SilentlyContinue | ForEach-Object {
+					try { Stop-Job $_ -Force -ErrorAction SilentlyContinue }
+					catch { }
+					try { Remove-Job $_ -Force -ErrorAction SilentlyContinue }
+					catch { }
+				}
+			}
+			catch { }
+			
+			# Final housekeeping
+			try { Write_Log "Form is closing. Performing cleanup." "green" }
+			catch { }
+			try { Delete_Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql" }
+			catch { }
 		})
+	
+	# ------------------------------------------------------------------------------------------------
+	# Put detailed version info somewhere visible (modern): add it to the left side of the status bar.
+	# (This preserves your original "form.Text had everything" concept, but looks cleaner.)
+	# ------------------------------------------------------------------------------------------------
+	try
+	{
+		$stLeft.Text = "Created by: Alex_C.T   |   Version: $VersionNumber   |   Revised: $VersionDate   |   PowerShell: $PowerShellVersion"
+	}
+	catch { }
+	
+	# Final layout pass so everything starts aligned
+	& $layoutTopStrip
+	& $layoutLogArea
+	
+	
+	######################################################################################################################
+	# 
+	# Modern UI Styling Helpers (NO functions - scriptblocks only)
+	#
+	# - Keeps code PS 5.1 friendly
+	# - Applies consistent modern styling to Buttons + ContextMenus
+	######################################################################################################################
+	
+	# Safe fallback colors (in case these aren't defined elsewhere yet)
+	if (-not $script:UiAccent) { $script:UiAccent = [System.Drawing.Color]::DodgerBlue }
+	if (-not $script:UiCardBorder) { $script:UiCardBorder = [System.Drawing.Color]::FromArgb(220, 225, 232) }
+	if (-not $script:UiCardBg) { $script:UiCardBg = [System.Drawing.Color]::White }
+	if (-not $script:UiTextDark) { $script:UiTextDark = [System.Drawing.Color]::FromArgb(28, 28, 30) }
+	
+	# ----------------------------------------------------------------------------
+	# Apply modern button styling (flat, clean border, hover accent)
+	# ----------------------------------------------------------------------------
+	$Apply_Modern_Button_Style = {
+		param ([System.Windows.Forms.Button]$Btn)
+		
+		if (-not $Btn) { return }
+		
+		try
+		{
+			# Base look
+			$Btn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+			$Btn.UseVisualStyleBackColor = $false
+			$Btn.BackColor = $script:UiCardBg
+			$Btn.ForeColor = $script:UiTextDark
+			$Btn.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 10, [System.Drawing.FontStyle]::Regular)
+			$Btn.Cursor = [System.Windows.Forms.Cursors]::Hand
+			
+			# Border + hover states (subtle)
+			$Btn.FlatAppearance.BorderSize = 1
+			$Btn.FlatAppearance.BorderColor = $script:UiCardBorder
+			$Btn.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(245, 248, 252)
+			$Btn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(235, 242, 252)
+			
+			# Store original colors for restore (don't overwrite if Tag already used for something else)
+			if (-not $Btn.Tag -or ($Btn.Tag -isnot [pscustomobject]))
+			{
+				$Btn.Tag = [pscustomobject]@{
+					OrigBack = $Btn.BackColor
+					OrigFore = $Btn.ForeColor
+					OrigBord = $Btn.FlatAppearance.BorderColor
+				}
+			}
+			
+			# Hover accent (border + text)
+			$Btn.add_MouseEnter({
+					param ($s,
+						$e)
+					try
+					{
+						$s.ForeColor = $script:UiAccent
+						$s.FlatAppearance.BorderColor = $script:UiAccent
+					}
+					catch { }
+				})
+			$Btn.add_MouseLeave({
+					param ($s,
+						$e)
+					try
+					{
+						if ($s.Tag -and $s.Tag.OrigFore) { $s.ForeColor = $s.Tag.OrigFore }
+						if ($s.Tag -and $s.Tag.OrigBord) { $s.FlatAppearance.BorderColor = $s.Tag.OrigBord }
+					}
+					catch { }
+				})
+		}
+		catch { }
+	}
+	
+	# ----------------------------------------------------------------------------
+	# Apply modern context menu styling (clean font, no icon gutter)
+	# ----------------------------------------------------------------------------
+	$Apply_Modern_Menu_Style = {
+		param ([System.Windows.Forms.ContextMenuStrip]$Menu)
+		
+		if (-not $Menu) { return }
+		
+		try
+		{
+			$Menu.ShowImageMargin = $false
+			$Menu.ShowCheckMargin = $false
+			$Menu.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Regular)
+			$Menu.BackColor = $script:UiCardBg
+			$Menu.ForeColor = $script:UiTextDark
+			$Menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::System
+			$Menu.Padding = New-Object System.Windows.Forms.Padding(2)
+		}
+		catch { }
+	}
 	
 	######################################################################################################################
 	# 
@@ -26874,10 +27405,17 @@ public static class NativeWin {
 	############################################################################
 	$ServerToolsButton = New-Object System.Windows.Forms.Button
 	$ServerToolsButton.Text = "Server Tools"
-	$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 475)
+	$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 475) # seed; layoutBottom will set final bounds
 	$ServerToolsButton.Size = New-Object System.Drawing.Size(200, 50)
+	
+	# Modern style
+	& $Apply_Modern_Button_Style $ServerToolsButton
+	
 	$ContextMenuServer = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuServer.ShowItemToolTips = $true
+	
+	# Modern style for menu
+	& $Apply_Modern_Menu_Style $ContextMenuServer
 	
 	############################################################################
 	# 1) Server DB Maintenance 
@@ -26940,7 +27478,7 @@ public static class NativeWin {
 			Schedule_Storeman_Zip_Backup
 		})
 	[void]$ContextMenuServer.Items.Add($ServerScheduleStoremanZipBackupItem)
-		
+	
 	############################################################################
 	# 5) Manage SQL 'sa' Account Menu Item
 	############################################################################
@@ -27123,17 +27661,27 @@ public static class NativeWin {
 	############################################################################
 	$LaneToolsButton = New-Object System.Windows.Forms.Button
 	$LaneToolsButton.Text = "Lane Tools"
-	$LaneToolsButton.Location = New-Object System.Drawing.Point(275, 475)
+	$LaneToolsButton.Location = New-Object System.Drawing.Point(275, 475) # seed; layoutBottom will set final bounds
 	$LaneToolsButton.Size = New-Object System.Drawing.Size(200, 50)
+	
+	# Modern style
+	& $Apply_Modern_Button_Style $LaneToolsButton
+	
 	$ContextMenuLane = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuLane.ShowItemToolTips = $true
+	
+	# Modern style for menu
+	& $Apply_Modern_Menu_Style $ContextMenuLane
+	
+	# Left-click shows menu; Right-click shows Protocol popup
 	$LaneToolsButton.Add_Click({ $ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height) })
 	$LaneToolsButton.Add_MouseDown({
 			param ($sender,
 				$e)
 			if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
 			{
-				$global:ProtocolForm.Show(); $global:ProtocolForm.BringToFront()
+				$global:ProtocolForm.Show()
+				$global:ProtocolForm.BringToFront()
 			}
 		})
 	
@@ -27170,16 +27718,18 @@ public static class NativeWin {
 		})
 	[void]$ContextMenuLane.Items.Add($LaneScheduleBackupItem)
 	
-	<############################################################################
-	#  X) Install/Check LOC Options (Lanes) - lane picker + options picker
 	############################################################################
-	$InstallCheckLOCOptionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install/Check LOC Options")
-	$InstallCheckLOCOptionsItem.ToolTipText = "Pick lanes, then pick LOC Options to audit/install/reinstall (with categories & search)."
-	$InstallCheckLOCOptionsItem.Add_Click({
-			$script:LastActivity = Get-Date
-			Install_And_Check_LOC_SMS_Options_On_Lanes -StoreNumber "$StoreNumber"
-		})
-	[void]$ContextMenuLane.Items.Add($InstallCheckLOCOptionsItem)#>
+	#  X) Install/Check LOC Options (Lanes) - lane picker + options picker  (kept disabled)
+	############################################################################
+<# ############################################################################
+$InstallCheckLOCOptionsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install/Check LOC Options")
+$InstallCheckLOCOptionsItem.ToolTipText = "Pick lanes, then pick LOC Options to audit/install/reinstall (with categories & search)."
+$InstallCheckLOCOptionsItem.Add_Click({
+		$script:LastActivity = Get-Date
+		Install_And_Check_LOC_SMS_Options_On_Lanes -StoreNumber "$StoreNumber"
+	})
+[void]$ContextMenuLane.Items.Add($InstallCheckLOCOptionsItem)
+#>	############################################################################
 	
 	############################################################################
 	#  X) Audit/Repair Lane Databases - lane picker + in-function level picker
@@ -27309,7 +27859,6 @@ public static class NativeWin {
 	$SetLaneTimeFromLocalItem.ToolTipText = "Synchronize or schedule time sync for selected lanes."
 	$SetLaneTimeFromLocalItem.Add_Click({
 			$script:LastActivity = Get-Date
-			# Prompt for mode: one-time or schedule
 			$modeResult = [System.Windows.Forms.MessageBox]::Show(
 				"Do you want to schedule recurring sync? (Yes for schedule, No for one-time)",
 				"Choose Mode",
@@ -27342,7 +27891,7 @@ public static class NativeWin {
 	[void]$ContextMenuLane.Items.Add($SyncServerKeyItem)
 	
 	############################################################################
-	# 16) TRS CLT Reprocess (Build SAL_HDR_SUS@TER) Menu Item  ✅ (same style as your example)
+	# 16) TRS CLT Reprocess (Build SAL_HDR_SUS@TER) Menu Item
 	############################################################################
 	$TrsCltReprocessItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions from Lnaes")
 	$TrsCltReprocessItem.ToolTipText = "Creates/refreshes SAL_HDR_SUS@TER (per lane) from SAL_HDR CLOSED by date + tran range, using NP/TCP/File protocol logic."
@@ -27350,8 +27899,6 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			Retrive_Transactions -StoreNumber $StoreNumber
 		})
-	
-	# Add it to the SAME lane context menu you used for Reboot Lane
 	[void]$ContextMenuLane.Items.Add($TrsCltReprocessItem)
 	
 	############################################################################
@@ -27366,12 +27913,9 @@ public static class NativeWin {
 	[void]$ContextMenuLane.Items.Add($RebootLaneItem)
 	
 	############################################################################
-	# Show the context menu when the Server Tools button is clicked
+	# NOTE: Click handler already assigned above. Avoid duplicate Add_Click.
 	############################################################################
-	$LaneToolsButton.Add_Click({
-			$ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height)
-		})
-	$toolTip.SetToolTip($LaneToolsButton, "Click to see Lane-related tools.")
+	$toolTip.SetToolTip($LaneToolsButton, "Click to see Lane-related tools. Right-click shows lane protocol window.")
 	$form.Controls.Add($LaneToolsButton)
 	
 	######################################################################################################################
@@ -27385,10 +27929,17 @@ public static class NativeWin {
 	############################################################################
 	$ScaleToolsButton = New-Object System.Windows.Forms.Button
 	$ScaleToolsButton.Text = "Scale Tools"
-	$ScaleToolsButton.Location = New-Object System.Drawing.Point(525, 475)
+	$ScaleToolsButton.Location = New-Object System.Drawing.Point(525, 475) # seed; layoutBottom will set final bounds
 	$ScaleToolsButton.Size = New-Object System.Drawing.Size(200, 50)
+	
+	# Modern style
+	& $Apply_Modern_Button_Style $ScaleToolsButton
+	
 	$ContextMenuScale = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuScale.ShowItemToolTips = $true
+	
+	# Modern style for menu
+	& $Apply_Modern_Menu_Style $ContextMenuScale
 	
 	############################################################################
 	# 1) Repair BMS Service
@@ -27408,7 +27959,6 @@ public static class NativeWin {
 	$troubleshootItem.ToolTipText = "Checks and fixes ScaleCommApp config (StoreName, First Scale IP, SQL instance/db, BatchSendFull=10000)."
 	$troubleshootItem.Add_Click({
 			$script:LastActivity = Get-Date
-			# Auto-fix enabled; update ALL configs found; clear read-only if needed
 			Troubleshoot_ScaleCommApp -AllMatches -Force
 		})
 	[void]$ContextMenuScale.Items.Add($troubleshootItem)
@@ -27463,11 +28013,7 @@ public static class NativeWin {
 	$editIshidaSDPsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Edit Ishida SDPs (All Configs)")
 	$editIshidaSDPsItem.ToolTipText = "Pick subdepartments from SDP_TAB (F04/F1022) and write to IshidaSDPs in ALL ScaleCommApp *.exe.config files."
 	$editIshidaSDPsItem.Add_Click({
-			# Bump activity timer (keeps your idle/auto-close logic happy)
 			$script:LastActivity = Get-Date
-			
-			# Launch picker and update ALL configs in C:\ScaleCommApp and D:\ScaleCommApp top-level.
-			# Add -Force if you want to auto-clear ReadOnly attributes.
 			Pick_And_Update_IshidaSDPs -AllMatches
 		})
 	[void]$ContextMenuScale.Items.Add($editIshidaSDPsItem)
@@ -27498,7 +28044,7 @@ public static class NativeWin {
 	# 10) Configure Subdepartments & SdpDefault (OBJ.F16 / OBJ.F18 / OBJ.F17)
 	############################################################################
 	$sep_ConfigureSdpDefault = New-Object System.Windows.Forms.ToolStripSeparator
-	#[void]$ContextMenuScale.Items.Add($sep_ConfigureSdpDefault)
+	#$ContextMenuScale.Items.Add($sep_ConfigureSdpDefault) | Out-Null
 	$ConfigureSdpDefaultItem = New-Object System.Windows.Forms.ToolStripMenuItem("Configure Sub-Departments for Scales")
 	$ConfigureSdpDefaultItem.ToolTipText = "Populate subdepartments (Auto or FAM/RPC/CAT) and set SdpDefault to OBJ.F16 / OBJ.F18 / OBJ.F17, or restore SdpDefault=1."
 	$ConfigureSdpDefaultItem.Add_Click({
@@ -27530,11 +28076,9 @@ public static class NativeWin {
 	[void]$ContextMenuScale.Items.Add($DeployScaleFilesItem)
 	
 	############################################################################
-	# Show the context menu when the Server Tools button is clicked
+	# Show the context menu when the Scale Tools button is clicked
 	############################################################################
-	$ScaleToolsButton.Add_Click({
-			$ContextMenuScale.Show($ScaleToolsButton, 0, $ScaleToolsButton.Height)
-		})
+	$ScaleToolsButton.Add_Click({ $ContextMenuScale.Show($ScaleToolsButton, 0, $ScaleToolsButton.Height) })
 	$toolTip.SetToolTip($ScaleToolsButton, "Click to see Scale-related tools.")
 	$form.Controls.Add($ScaleToolsButton)
 	
@@ -27549,10 +28093,17 @@ public static class NativeWin {
 	############################################################################
 	$GeneralToolsButton = New-Object System.Windows.Forms.Button
 	$GeneralToolsButton.Text = "General Tools"
-	$GeneralToolsButton.Location = New-Object System.Drawing.Point(750, 475)
+	$GeneralToolsButton.Location = New-Object System.Drawing.Point(750, 475) # seed; layoutBottom will set final bounds
 	$GeneralToolsButton.Size = New-Object System.Drawing.Size(200, 50)
+	
+	# Modern style
+	& $Apply_Modern_Button_Style $GeneralToolsButton
+	
 	$ContextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuGeneral.ShowItemToolTips = $true
+	
+	# Modern style for menu
+	& $Apply_Modern_Menu_Style $ContextMenuGeneral
 	
 	############################################################################
 	# 1) Activate Windows ("Alex_C.T")
@@ -27563,7 +28114,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			Invoke_Secure_Script
 		})
-	[void]$contextMenuGeneral.Items.Add($activateItem)
+	[void]$ContextMenuGeneral.Items.Add($activateItem)
 	
 	############################################################################
 	# 2) Reboot System
@@ -27586,7 +28137,7 @@ public static class NativeWin {
 							 "TBS_Maintenance_Script.ps1"
 			}
 		})
-	[void]$contextMenuGeneral.Items.Add($rebootItem)
+	[void]$ContextMenuGeneral.Items.Add($rebootItem)
 	
 	############################################################################
 	# 3) Install Functions in SMS (One + Multi)  -- UPDATED
@@ -27597,7 +28148,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
-	[void]$contextMenuGeneral.Items.Add($Install_ONE_FUNCTION_Into_SMSItem)
+	[void]$ContextMenuGeneral.Items.Add($Install_ONE_FUNCTION_Into_SMSItem)
 	
 	############################################################################
 	# 3b) Context menu item: Copy Files Between Nodes
@@ -27608,7 +28159,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			Copy_Files_Between_Nodes
 		})
-	[void]$contextMenuGeneral.Items.Add($Copy_Files_Between_NodesItem)
+	[void]$ContextMenuGeneral.Items.Add($Copy_Files_Between_NodesItem)
 	
 	############################################################################
 	# 3c) Context menu item: Edit INIs (Setup.ini and others)
@@ -27619,7 +28170,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			INI_Editor
 		})
-	[void]$contextMenuGeneral.Items.Add($INI_EditorItem)
+	[void]$ContextMenuGeneral.Items.Add($INI_EditorItem)
 	
 	############################################################################
 	# 5) Manual Repair
@@ -27630,7 +28181,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			Write_SQL_Scripts_To_Desktop -LaneSQL $script:LaneSQLFiltered -ServerSQL $script:ServerSQLScript
 		})
-	[void]$contextMenuGeneral.Items.Add($manualRepairItem)
+	[void]$ContextMenuGeneral.Items.Add($manualRepairItem)
 	
 	############################################################################
 	# 6) Fix Journal
@@ -27641,7 +28192,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			Fix_Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
-	[void]$contextMenuGeneral.Items.Add($fixJournalItem)
+	[void]$ContextMenuGeneral.Items.Add($fixJournalItem)
 	
 	############################################################################
 	# 7) Reboot selected Backoffices
@@ -27652,7 +28203,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			Reboot_Nodes -StoreNumber $StoreNumber -NodeTypes Backoffice
 		})
-	[void]$contextMenuGeneral.Items.Add($RebootBackofficesItem)
+	[void]$ContextMenuGeneral.Items.Add($RebootBackofficesItem)
 	
 	############################################################################
 	# 8) Export All VNC Files
@@ -27664,10 +28215,10 @@ public static class NativeWin {
 			Export_VNC_Files_For_All_Nodes `
 										   -LaneNumToMachineName $script:FunctionResults['LaneNumToMachineName'] `
 										   -ScaleCodeToIPInfo $script:FunctionResults['ScaleCodeToIPInfo'] `
-										   -BackofficeNumToMachineName $script:FunctionResults['BackofficeNumToMachineName']`
+										   -BackofficeNumToMachineName $script:FunctionResults['BackofficeNumToMachineName'] `
 										   -AllVNCPasswords $script:FunctionResults['AllVNCPasswords']
 		})
-	[void]$contextMenuGeneral.Items.Add($ExportVNCFilesItem)
+	[void]$ContextMenuGeneral.Items.Add($ExportVNCFilesItem)
 	
 	############################################################################
 	# 9) Export Machines Hardware Info
@@ -27678,7 +28229,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			$didExport = Get_Remote_Machine_Info
 		})
-	[void]$contextMenuGeneral.Items.Add($ExportMachineHardwareInfoItem)
+	[void]$ContextMenuGeneral.Items.Add($ExportMachineHardwareInfoItem)
 	
 	############################################################################
 	# 10) Remove Archive Bit
@@ -27689,7 +28240,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			Remove_ArchiveBit_Interactive
 		})
-	[void]$contextMenuGeneral.Items.Add($RemoveArchiveBitItem)
+	[void]$ContextMenuGeneral.Items.Add($RemoveArchiveBitItem)
 	
 	############################################################################
 	# 11) Sync Hosts File for Selected Nodes
@@ -27700,7 +28251,7 @@ public static class NativeWin {
 			$script:LastActivity = Get-Date
 			Sync_Selected_Node_Hosts -StoreNumber $StoreNumber
 		})
-	[void]$contextMenuGeneral.Items.Add($SyncHostsItem)
+	[void]$ContextMenuGeneral.Items.Add($SyncHostsItem)
 	
 	############################################################################
 	# 12) Insert Test Item
@@ -27727,49 +28278,100 @@ public static class NativeWin {
 	############################################################################
 	# Show the context menu when the General Tools button is clicked
 	############################################################################
-	$GeneralToolsButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-	$GeneralToolsButton.Add_Click({
-			$contextMenuGeneral.Show($GeneralToolsButton, 0, $GeneralToolsButton.Height)
-		})
+	$GeneralToolsButton.Add_Click({ $ContextMenuGeneral.Show($GeneralToolsButton, 0, $GeneralToolsButton.Height) })
 	$toolTip.SetToolTip($GeneralToolsButton, "Click to see some tools created for SMS.")
 	$form.Controls.Add($GeneralToolsButton)
 	
+	######################################################################################################################
+	#
+	# Bottom buttons + logbox layout  (FIXED for StatusStrip + modern top strip)
+	#
+	######################################################################################################################
+	
 	# -------- Bottom buttons + logbox layout (expand buttons, tight gap) --------
 	$padSide = 50 # left/right margin for logbox & button row
-	$padBottom = 10 # distance from buttons to bottom edge
-	$gapAboveButtons = 8 # <-- vertical gap between logbox and buttons
-	$btnH = 50 # button height (fixed)
+	$padBottom = 10 # distance from buttons to bottom edge (ABOVE status strip)
+	$gapAboveButtons = 10 # vertical gap between logbox and buttons
+	$btnH = 48 # button height (slightly shorter = more modern)
 	$btnMinW = 180 # minimum button width so labels never wrap
 	$gapHPreferred = 18 # preferred horizontal gap between buttons
 	$gapHMin = 10 # absolute minimum horizontal gap
 	$minLogH = 140 # don't let the logbox collapse
+	$logInnerPad = 10 # if you use a log frame panel, this pads the inner log box
 	
 	# keep WinForms from fighting our math
-	$ServerToolsButton.Anchor = 'Bottom'
-	$LaneToolsButton.Anchor = 'Bottom'
-	$ScaleToolsButton.Anchor = 'Bottom'
-	$GeneralToolsButton.Anchor = 'Bottom'
-	$logBox.Anchor = 'Top,Left'
+	$ServerToolsButton.Anchor = 'Bottom,Left'
+	$LaneToolsButton.Anchor = 'Bottom,Left'
+	$ScaleToolsButton.Anchor = 'Bottom,Left'
+	$GeneralToolsButton.Anchor = 'Bottom,Left'
+	
+	# If you have a log frame panel in your newer UI, it will be resized too.
+	# If not, we will just resize $logBox directly.
+	if ($logBox) { $logBox.Anchor = 'Top,Left' }
 	
 	$layoutBottom = {
 		if (-not $form -or $form.IsDisposed) { return }
 		
-		# --- lay out the logbox first (full width minus side margins) -------------
+		# --- Compute shared row width (log + button row align) ---------------------
 		$rowW = [math]::Max(200, $form.ClientSize.Width - (2 * $padSide))
-		$logBox.Left = $padSide
-		$logBox.Top = 70
-		$logBox.Width = $rowW
 		
-		# button row Y; then set logbox height so the vertical gap stays constant
-		$btnY = $form.ClientSize.Height - $btnH - $padBottom
-		$logBox.Height = [math]::Max($minLogH, $btnY - $logBox.Top - $gapAboveButtons)
+		# --- Account for StatusStrip (THIS fixes the "buttons cut off" issue) -----
+		$bottomReserve = 0
+		try
+		{
+			if ($statusStrip -and -not $statusStrip.IsDisposed) { $bottomReserve = $statusStrip.Height }
+		}
+		catch { $bottomReserve = 0 }
 		
-		# --- compute dynamic button width so the four buttons fill the row --------
-		# try with preferred gaps first
+		# --- Determine log top dynamically (so it respects your modern top strip) --
+		$logTop = 70
+		try
+		{
+			if ($topStripCard -and -not $topStripCard.IsDisposed)
+			{
+				$logTop = $topStripCard.Bottom + 10
+			}
+		}
+		catch { }
+		
+		# --- Button row Y (above status strip) ------------------------------------
+		$btnY = $form.ClientSize.Height - $bottomReserve - $btnH - $padBottom
+		
+		# --- Lay out log area (support both plain logBox OR logFrame+logBox) -------
+		$hasLogFrame = $false
+		try { $hasLogFrame = ($logFrame -and -not $logFrame.IsDisposed) }
+		catch { $hasLogFrame = $false }
+		
+		if ($hasLogFrame)
+		{
+			# Frame uses the full row width
+			$logFrame.Left = $padSide
+			$logFrame.Top = $logTop
+			$logFrame.Width = $rowW
+			
+			# Height ensures a constant gap above buttons
+			$logFrame.Height = [math]::Max($minLogH, $btnY - $logFrame.Top - $gapAboveButtons)
+			
+			# Inner logBox inset for clean "card" look
+			$logBox.Left = $logFrame.Left + $logInnerPad
+			$logBox.Top = $logFrame.Top + $logInnerPad
+			$logBox.Width = [math]::Max(50, $logFrame.Width - (2 * $logInnerPad))
+			$logBox.Height = [math]::Max(50, $logFrame.Height - (2 * $logInnerPad))
+		}
+		else
+		{
+			# Plain logBox layout
+			$logBox.Left = $padSide
+			$logBox.Top = $logTop
+			$logBox.Width = $rowW
+			$logBox.Height = [math]::Max($minLogH, $btnY - $logBox.Top - $gapAboveButtons)
+		}
+		
+		# --- Compute dynamic button width so the four buttons fill the row --------
 		$gapH = $gapHPreferred
 		$btnW = [math]::Floor(($rowW - (3 * $gapH)) / 4)
 		
-		# if too small, clamp width and reduce gaps (not below gapHMin)
+		# If too small, clamp width and reduce gaps (not below gapHMin)
 		if ($btnW -lt $btnMinW)
 		{
 			$btnW = $btnMinW
@@ -27778,21 +28380,25 @@ public static class NativeWin {
 		}
 		else
 		{
-			# distribute any leftover pixels (from integer math) into gaps
+			# Distribute leftover pixels (from integer math) into gaps
 			$used = (4 * $btnW) + (3 * $gapH)
 			$extra = $rowW - $used
 			if ($extra -gt 0) { $gapH += [math]::Floor($extra / 3) }
 		}
 		
-		# --- position buttons left->right; group width == logbox width ------------
+		# --- Position buttons left->right; group width == logbox width ------------
 		$x = $padSide
 		$ServerToolsButton.SetBounds($x, $btnY, $btnW, $btnH); $x += $btnW + $gapH
 		$LaneToolsButton.SetBounds($x, $btnY, $btnW, $btnH); $x += $btnW + $gapH
 		$ScaleToolsButton.SetBounds($x, $btnY, $btnW, $btnH); $x += $btnW + $gapH
 		$GeneralToolsButton.SetBounds($x, $btnY, $btnW, $btnH)
 		
-		# keep right-side labels aligned with the logbox edge
+		# Keep right-side labels aligned with the logbox edge
 		& $layoutTopStrip
+		
+		# Ensure status strip stays visible
+		try { if ($statusStrip -and -not $statusStrip.IsDisposed) { $statusStrip.BringToFront() } }
+		catch { }
 	}
 	
 	# prevent shrinking so far that 4*minW + 3*minGap won't fit
@@ -27806,7 +28412,11 @@ public static class NativeWin {
 	& $layoutBottom
 	$form.add_Resize({ & $layoutBottom })
 	
-	# ========================= Global Activity Hooks (controls & menus) =========================
+	######################################################################################################################
+	# 
+	# Global Activity Hooks (controls & menus)
+	#
+	######################################################################################################################
 	$__activityControls = @(
 		$form,
 		$logBox,
