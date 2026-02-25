@@ -24404,15 +24404,21 @@ function Show_Section_Selection_Form
 }
 
 # ===================================================================================================
-#                                FUNCTION: Start_Lane_Protocol_Jobs (Runspaces + Polling)
+#                                	FUNCTION: Start_Lane_Protocol_Jobs
 # ---------------------------------------------------------------------------------------------------
-# Parallel SQL protocol detector (PS 5.1):
-#   - Tries SqlClient to tcp:<lane> then np:<lane>, else "File"
-#   - Connect Timeout=1 (fast)
-#   - Results cached to: C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt
-#   - Updates $script:LaneProtocolJobs, $script:LaneProtocols, $script:ProtocolResults
-#   - Polling loop keeps WinForms UI responsive (Application.DoEvents)
-# ---------------------------------------------------------------------------------------------------.
+# Behavior:
+#   - Call ONCE from your main script
+#   - Returns immediately (non-blocking)
+#   - Continuously rescans lane SQL protocol every 1 minute:
+#       TCP -> Named Pipes -> else File
+#
+# Writes:
+#   - $script:LaneProtocols  (SYNCHRONIZED hashtable, safe cross-runspace)
+#   - C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt  (UTF8 no BOM)
+#
+# Notes:
+#   - If called again, it updates the lane map and keeps the existing background loop.
+# ===================================================================================================
 
 function Start_Lane_Protocol_Jobs
 {
@@ -24420,173 +24426,226 @@ function Start_Lane_Protocol_Jobs
 		[Parameter(Mandatory)]
 		[hashtable]$LaneNumToMachineName,
 		[Parameter(Mandatory)]
-		[string]$SqlModuleName # kept for signature compatibility, not used inside workers
+		[string]$SqlModuleName
 	)
 	
-	# -------- Paths / setup ----------
+	# ---------- assemblies ----------
+	try { Add-Type -AssemblyName System.Windows.Forms 2>$null }
+	catch { }
+	try { Add-Type -AssemblyName System.Data 2>$null }
+	catch { }
+	
+	# ---------- paths ----------
 	$script:ProtocolResultsFile = 'C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt'
 	$resultsDir = [System.IO.Path]::GetDirectoryName($script:ProtocolResultsFile)
 	if (-not (Test-Path $resultsDir)) { New-Item -Path $resultsDir -ItemType Directory -Force | Out-Null }
 	if (-not (Test-Path $script:ProtocolResultsFile)) { New-Item -Path $script:ProtocolResultsFile -ItemType File -Force | Out-Null }
 	
-	try { Add-Type -AssemblyName System.Data }
-	catch { }
-	
-	# -------- Globals ----------
-	$script:LaneProtocolJobs = @{ }
+	# ---------- globals ----------
+	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{ } }
 	if (-not $script:ProtocolResults) { $script:ProtocolResults = @() }
+	if (-not $script:LaneProtocolJobs) { $script:LaneProtocolJobs = @{ } }
 	
-	# Warm cache from file (if any)
-	$existing = (Get-Content -LiteralPath $script:ProtocolResultsFile -ErrorAction SilentlyContinue)
-	if ($existing)
+	# store lane map for repeated runs
+	$script:LaneProtocolLaneMap = $LaneNumToMachineName
+	
+	# stop flag
+	$script:LaneProtocolStop = $false
+	
+	# ---------- prevent double start ----------
+	if ($script:protocolTimer)
 	{
-		foreach ($line in $existing)
+		try { Write_Log "Lane protocol updater already running." "yellow" }
+		catch { }
+		return
+	}
+	
+	# ---------- warm from file (best effort) ----------
+	try
+	{
+		$existing = Get-Content -LiteralPath $script:ProtocolResultsFile -ErrorAction SilentlyContinue
+		if ($existing)
 		{
-			if ($line -match '^\s*([^,]+),\s*([^,]+)\s*$')
+			foreach ($line in $existing)
 			{
-				$lane = $matches[1].Trim()
-				$protocol = $matches[2].Trim()
-				$script:LaneProtocols[$lane] = $protocol
-				$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $lane })
-				$script:ProtocolResults += [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
+				if ($line -match '^\s*([^,]+),\s*([^,]+)\s*$')
+				{
+					$laneRaw = $matches[1].Trim()
+					$proto = $matches[2].Trim()
+					$laneNum = (($laneRaw -replace '[^\d]', '')).PadLeft(3, '0')
+					if ([string]::IsNullOrWhiteSpace($laneNum)) { continue }
+					
+					$script:LaneProtocols[$laneNum] = $proto
+					$script:LaneProtocols[$laneRaw] = $proto
+					
+					$mn = $LaneNumToMachineName[$laneNum]
+					if ($mn)
+					{
+						$script:LaneProtocols[$mn] = $proto
+						$script:LaneProtocols[$mn.ToLower()] = $proto
+					}
+					
+					$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
+					$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = $proto }
+				}
 			}
 		}
 	}
-	
-	# -------- RunspacePool ----------
-	$minThreads = 1
-	$maxThreads = [Math]::Max(8, [Environment]::ProcessorCount * 2)
-	$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-	$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($minThreads, $maxThreads, $iss, $Host)
-	try { $pool.ApartmentState = 'MTA' }
 	catch { }
-	$pool.Open()
 	
-	# -------- Worker script (single-quoted; no outer $ expansion) ----------
-	$worker = @'
+	# ---------- runspace pool (kept alive) ----------
+	if (-not $script:LaneProtocolPool)
+	{
+		$minThreads = 1
+		$maxThreads = [Math]::Max(8, [Environment]::ProcessorCount * 2)
+		$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+		$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($minThreads, $maxThreads, $iss, $Host)
+		try { $pool.ApartmentState = 'MTA' }
+		catch { }
+		$pool.Open()
+		$script:LaneProtocolPool = $pool
+	}
+	
+	# ---------- worker script (NO nested functions) ----------
+	$script:LaneProtocolWorker = @'
 param([string]$machine,[string]$lane)
 
 Add-Type -AssemblyName System.Data 2>$null
 
-function Test-SqlConn([string]$dataSource) {
-    $cs = 'Data Source=' + $dataSource + ';Initial Catalog=master;Integrated Security=True;Connect Timeout=1'
-    $cn = New-Object System.Data.SqlClient.SqlConnection $cs
-    try { $cn.Open(); $cn.Close(); return $true }
-    catch { return $false }
-    finally { $cn.Dispose() }
-}
-
 $protocol = 'File'
-if (Test-SqlConn ('tcp:' + $machine)) {
-    $protocol = 'TCP'
-}
-elseif (Test-SqlConn ('np:' + $machine)) {
+
+$cn = $null
+try {
+  $cs = "Data Source=tcp:$machine;Initial Catalog=master;Integrated Security=True;Connect Timeout=1"
+  $cn = New-Object System.Data.SqlClient.SqlConnection $cs
+  $cn.Open()
+  $protocol = 'TCP'
+} catch { }
+finally { try { if ($cn) { $cn.Close() } } catch { }; try { if ($cn) { $cn.Dispose() } } catch { } }
+
+if ($protocol -eq 'File') {
+  $cn2 = $null
+  try {
+    $cs2 = "Data Source=np:$machine;Initial Catalog=master;Integrated Security=True;Connect Timeout=1"
+    $cn2 = New-Object System.Data.SqlClient.SqlConnection $cs2
+    $cn2.Open()
     $protocol = 'Named Pipes'
+  } catch { }
+  finally { try { if ($cn2) { $cn2.Close() } } catch { }; try { if ($cn2) { $cn2.Dispose() } } catch { } }
 }
 
 [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
 '@
 	
-	# -------- Queue workers ----------
-	$pending = @{ }
-	foreach ($k in $LaneNumToMachineName.Keys)
-	{
-		$numStr = ($k -replace '[^\d]', '')
-		if (-not $numStr) { continue }
-		$laneNum = $numStr.PadLeft(3, '0')
-		$machine = $LaneNumToMachineName[$k]
-		if (-not $machine) { continue }
-		
-		$ps = [System.Management.Automation.PowerShell]::Create()
-		$ps.RunspacePool = $pool
-		$null = $ps.AddScript($worker).AddArgument([string]$machine).AddArgument([string]$laneNum)
-		$handle = $ps.BeginInvoke()
-		$script:LaneProtocolJobs[$laneNum] = @{ PS = $ps; Handle = $handle }
-		$pending[$laneNum] = @{ PS = $ps; Handle = $handle }
-	}
+	# ---------- cadence ----------
+	if (-not $script:LaneProtocolLastRun) { $script:LaneProtocolLastRun = (Get-Date).AddYears(-10) }
 	
-	# -------- Poll until done; update file as results come in ----------
-	$lastWriteCount = -1
-	while ($pending.Count -gt 0)
-	{
-		
-		$lanesDone = @()
-		foreach ($lane in $pending.Keys)
-		{
-			$task = $pending[$lane]
-			$handle = $task.Handle
-			if ($handle -and $handle.IsCompleted)
+	# ---------- timer (UI thread, safe) ----------
+	$script:protocolTimer = New-Object System.Windows.Forms.Timer
+	$script:protocolTimer.Interval = 200
+	
+	$script:protocolTimer.add_Tick({
+			
+			if ($script:LaneProtocolStop) { return }
+			
+			# 1) harvest completed jobs
+			$changed = $false
+			if ($script:LaneProtocolJobs -and $script:LaneProtocolJobs.Count -gt 0)
 			{
-				$ps = $task.PS
-				$resultList = $null
-				try { $resultList = $ps.EndInvoke($handle) }
-				catch { $resultList = $null }
-				finally
+				foreach ($laneKey in @($script:LaneProtocolJobs.Keys))
 				{
-					try { $ps.Dispose() }
-					catch { }
-				}
-				
-				$result = $null
-				if ($resultList -and $resultList.Count -ge 1) { $result = $resultList[0] }
-				if (-not $result) { $result = [PSCustomObject]@{ Lane = $lane; Protocol = 'File' } }
-				
-				$rawLane = [string]$result.Lane
-				$numericLane = ($rawLane -replace '[^\d]', '').PadLeft(3, '0')
-				$protocol = [string]$result.Protocol
-				
-				# Update caches (multiple keys for convenience)
-				$script:LaneProtocols[$numericLane] = $protocol
-				$script:LaneProtocols[$rawLane] = $protocol
-				if ($script:FunctionResults -and $script:FunctionResults['LaneNumToMachineName'])
-				{
-					$machineName = $script:FunctionResults['LaneNumToMachineName'][$numericLane]
-					if ($machineName)
+					$st = $script:LaneProtocolJobs[$laneKey]
+					if (-not $st) { continue }
+					
+					$handle = $st.Handle
+					if ($handle -and $handle.IsCompleted)
 					{
-						$script:LaneProtocols[$machineName] = $protocol
-						$script:LaneProtocols[$machineName.ToLower()] = $protocol
+						$ps = $st.PS
+						$resultList = $null
+						try { $resultList = $ps.EndInvoke($handle) }
+						catch { $resultList = $null }
+						try { if ($ps) { $ps.Dispose() } }
+						catch { }
+						
+						[void]$script:LaneProtocolJobs.Remove($laneKey)
+						
+						$result = $null
+						if ($resultList -and $resultList.Count -ge 1) { $result = $resultList[0] }
+						if (-not $result) { $result = [pscustomobject]@{ Lane = $laneKey; Protocol = 'File' } }
+						
+						$rawLane = [string]$result.Lane
+						$laneNum = (($rawLane -replace '[^\d]', '')).PadLeft(3, '0')
+						if ([string]::IsNullOrWhiteSpace($laneNum)) { $laneNum = $laneKey }
+						
+						$proto = [string]$result.Protocol
+						if ([string]::IsNullOrWhiteSpace($proto)) { $proto = 'File' }
+						
+						$laneMap = $script:LaneProtocolLaneMap
+						$mn = $null
+						if ($laneMap) { $mn = $laneMap[$laneNum] }
+						
+						$script:LaneProtocols[$laneNum] = $proto
+						$script:LaneProtocols[$rawLane] = $proto
+						if ($mn)
+						{
+							$script:LaneProtocols[$mn] = $proto
+							$script:LaneProtocols[$mn.ToLower()] = $proto
+						}
+						
+						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
+						$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = $proto }
+						
+						$changed = $true
 					}
 				}
-				
-				$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $rawLane })
-				$script:ProtocolResults += [PSCustomObject]@{ Lane = $rawLane; Protocol = $protocol }
-				
-				$lanesDone += $lane
-			}
-		}
-		
-		if ($lanesDone.Count -gt 0)
-		{
-			foreach ($d in $lanesDone)
-			{
-				$pending.Remove($d) | Out-Null
-				$script:LaneProtocolJobs.Remove($d) | Out-Null
 			}
 			
-			# Write results (sorted by numeric lane)
-			$sorted = $script:ProtocolResults | Sort-Object { ($_.Lane -replace '[^\d]', '') -as [int] }
-			$lines = foreach ($row in $sorted) { '{0},{1}' -f $row.Lane, $row.Protocol }
-			[System.IO.File]::WriteAllLines($script:ProtocolResultsFile, $lines, [System.Text.Encoding]::UTF8)
-			$lastWriteCount = $script:ProtocolResults.Count
-		}
-		
-		# Keep UI responsive if WinForms is around
-		try
-		{
-			if ([System.Windows.Forms.Application]::MessageLoop)
+			# 2) write file when something changed
+			if ($changed)
 			{
-				[System.Windows.Forms.Application]::DoEvents()
+				try
+				{
+					$sorted = $script:ProtocolResults | Sort-Object { ($_.Lane -replace '[^\d]', '') -as [int] }
+					$lines = foreach ($r in $sorted) { '{0},{1}' -f $r.Lane, $r.Protocol }
+					[System.IO.File]::WriteAllLines($script:ProtocolResultsFile, $lines, [System.Text.Encoding]::UTF8)
+				}
+				catch { }
 			}
-		}
-		catch { }
-		
-		Start-Sleep -Milliseconds 150
-	}
+			
+			# 3) start a new scan every 60s ONLY if no jobs running
+			if ($script:LaneProtocolJobs.Count -eq 0)
+			{
+				$age = (Get-Date) - $script:LaneProtocolLastRun
+				if ($age.TotalSeconds -ge 60)
+				{
+					$script:LaneProtocolLastRun = Get-Date
+					
+					$laneMap = $script:LaneProtocolLaneMap
+					if ($laneMap)
+					{
+						foreach ($k in $laneMap.Keys)
+						{
+							$numStr = ($k -replace '[^\d]', '')
+							if (-not $numStr) { continue }
+							
+							$laneNum = $numStr.PadLeft(3, '0')
+							$machine = $laneMap[$k]
+							if ([string]::IsNullOrWhiteSpace($machine)) { continue }
+							
+							$ps = [System.Management.Automation.PowerShell]::Create()
+							$ps.RunspacePool = $script:LaneProtocolPool
+							$null = $ps.AddScript($script:LaneProtocolWorker).AddArgument([string]$machine).AddArgument([string]$laneNum)
+							$handle = $ps.BeginInvoke()
+							
+							$script:LaneProtocolJobs[$laneNum] = @{ PS = $ps; Handle = $handle }
+						}
+					}
+				}
+			}
+		})
 	
-	# Done; close pool
-	try { $pool.Close(); $pool.Dispose() }
-	catch { }
+	$script:protocolTimer.Start()
 }
 
 # ===================================================================================================
@@ -26232,29 +26291,35 @@ if (-not $form)
 			}
 			catch { }
 			
-			# ---- Lane protocol runspaces ----
+			# ---- Lane protocol updater cleanup (timer + pool) ----
+			try { $script:LaneProtocolStop = $true }
+			catch { }
+			
+			try
+			{
+				if ($script:protocolTimer)
+				{
+					try { $script:protocolTimer.Stop() }
+					catch { }
+					try { $script:protocolTimer.Dispose() }
+					catch { }
+					$script:protocolTimer = $null
+				}
+			}
+			catch { }
+			
 			try
 			{
 				if ($script:LaneProtocolJobs)
 				{
 					foreach ($kv in @($script:LaneProtocolJobs.GetEnumerator()))
 					{
-						$state = $kv.Value
-						if ($state)
+						$st = $kv.Value
+						if ($st)
 						{
-							try
-							{
-								if ($state.Handle -and (-not $state.Handle.IsCompleted))
-								{
-									try
-									{
-										if ($state.PS) { $null = $state.PS.Stop() }
-									}
-									catch { }
-								}
-							}
+							try { if ($st.Handle -and (-not $st.Handle.IsCompleted) -and $st.PS) { $null = $st.PS.Stop() } }
 							catch { }
-							try { if ($state.PS) { $state.PS.Dispose() } }
+							try { if ($st.PS) { $st.PS.Dispose() } }
 							catch { }
 						}
 						[void]$script:LaneProtocolJobs.Remove($kv.Key)
@@ -26262,6 +26327,7 @@ if (-not $form)
 				}
 			}
 			catch { }
+			
 			try
 			{
 				if ($script:LaneProtocolPool)
@@ -26399,21 +26465,44 @@ if (-not $form)
 				$global:ProtocolGrid.Rows.Clear()
 				
 				$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-				if ($script:ProtocolResults)
+				
+				# Prefer the new map (best), else fall back to LaneProtocols
+				$map = $script:ProtocolResultsMap
+				if (-not $map) { $map = $script:LaneProtocols }
+				
+				if ($map -and $map.Count -gt 0)
 				{
-					# Sort by lane number if numeric, otherwise lexical
-					$sorted = $script:ProtocolResults | Sort-Object {
-						($_.Lane -replace '[^\d]', '') -as [int]
-					}
-					foreach ($rowObj in $sorted)
+					# Only numeric 3-digit lanes (LaneProtocols can also contain machine-name keys)
+					$laneKeys = @($map.Keys | Where-Object { "$_" -match '^\d{3}$' } | Sort-Object { [int]$_ })
+					
+					foreach ($ln in $laneKeys)
 					{
+						$proto = [string]$map[$ln]
+						if ([string]::IsNullOrWhiteSpace($proto)) { $proto = "File" }
+						
+						$machineName = $ln
+						if ($LaneNumToMachineName)
+						{
+							try
+							{
+								$mn = $LaneNumToMachineName[$ln]
+								if (-not [string]::IsNullOrWhiteSpace($mn)) { $machineName = $mn }
+							}
+							catch { }
+						}
+						
 						$r = $global:ProtocolGrid.Rows.Add()
-						$machineName = $null
-						if ($LaneNumToMachineName) { $machineName = $LaneNumToMachineName[$rowObj.Lane] }
-						if (-not $machineName) { $machineName = $rowObj.Lane }
 						$global:ProtocolGrid.Rows[$r].Cells[0].Value = $machineName
-						$global:ProtocolGrid.Rows[$r].Cells[1].Value = $rowObj.Protocol
+						$global:ProtocolGrid.Rows[$r].Cells[1].Value = $proto
 					}
+					
+					# Optional: rebuild $script:ProtocolResults so any other old code keeps working
+					$script:ProtocolResults = @(
+						foreach ($ln in $laneKeys)
+						{
+							[pscustomobject]@{ Lane = $ln; Protocol = [string]$map[$ln] }
+						}
+					)
 				}
 				
 				# Column widths (Lane fixed, Protocol fills; account for scrollbar)
