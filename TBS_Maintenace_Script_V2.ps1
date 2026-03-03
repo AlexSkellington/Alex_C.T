@@ -20,7 +20,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.6.0"
-$VersionDate = "2026-02-25"
+$VersionDate = "2026-03-02"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -505,6 +505,460 @@ function Get_PsExec
 	{
 		Write-Host "ERROR: PsExec.exe was not found after extraction. Check above for errors."
 		return $null
+	}
+}
+
+# ===================================================================================================
+# 										Function Download_NSSM
+# ---------------------------------------------------------------------------------------------------
+# What this does:
+#   - Ensures NSSM exists BEFORE any function tries to install/manage services
+#   - BACKGROUND mode (non-blocking): starts a hidden PowerShell worker process and returns immediately
+#   - WAIT mode (blocking only when requested): waits for NSSM to appear (or timeout) and returns status
+#   - Always writes a Status JSON + Log (log overwritten per run)
+#
+# Why this fixes your "ISE vs App" issue:
+#   - A separate hidden powershell.exe process is far more reliable than runspace BeginInvoke in hosted apps
+#   - Timeouts prevent silent hangs that look like "does nothing"
+# ===================================================================================================
+
+function Download_NSSM
+{
+	[CmdletBinding()]
+	param (
+		# Where tools live. Defaults to C:\Tecnica_Systems\Alex_C.T\Tools
+		# If $script:SetupFiles exists, derive Tools next to it:
+		#   C:\Tecnica_Systems\Alex_C.T\Setup_Files -> C:\Tecnica_Systems\Alex_C.T\Tools
+		[string]$ToolsRoot = $(
+			try
+			{
+				if ($script:SetupFiles -and (Test-Path $script:SetupFiles))
+				{
+					Join-Path (Split-Path $script:SetupFiles -Parent) 'Tools'
+				}
+				else { 'C:\Tecnica_Systems\Alex_C.T\Tools' }
+			}
+			catch { 'C:\Tecnica_Systems\Alex_C.T\Tools' }
+		),
+		# Force redownload even if nssm.exe already exists
+		[switch]$ForceDownload,
+		# Start download in background and RETURN immediately (non-blocking)
+		[switch]$Background,
+		# Wait until NSSM exists (blocks only when requested)
+		[switch]$Wait,
+		# Max wait time when -Wait is used
+		[int]$WaitTimeoutSeconds = 120,
+		# Poll rate when -Wait is used
+		[int]$WaitPollMilliseconds = 250,
+		# If you want failures to throw
+		[switch]$ThrowOnFail
+	)
+	
+	# ------------------------------------------------------------------------------------------------
+	# Logs: single file under $script:ScriptsLog (overwrite each run)
+	# ------------------------------------------------------------------------------------------------
+	if (-not $script:ScriptsLog -or [string]::IsNullOrWhiteSpace($script:ScriptsLog))
+	{
+		$script:ScriptsLog = 'C:\Tecnica_Systems\Alex_C.T\Log\'
+	}
+	
+	# Normalize trailing slash
+	try { if ($script:ScriptsLog[-1] -ne '\') { $script:ScriptsLog += '\' } }
+	catch { }
+	
+	# Ensure log folder exists
+	try
+	{
+		if (-not (Test-Path $script:ScriptsLog)) { New-Item -Path $script:ScriptsLog -ItemType Directory -Force | Out-Null }
+	}
+	catch
+	{
+		if ($ThrowOnFail) { throw "Download_NSSM: Cannot create ScriptsLog folder '$script:ScriptsLog'. $($_.Exception.Message)" }
+		return @{ Success = $false; Note = 'Cannot create ScriptsLog folder'; Error = $_.Exception.Message }
+	}
+	
+	# Single log path (overwrite each run)
+	$script:NssmDownloadLog = Join-Path $script:ScriptsLog 'Download_NSSM_LOG.txt'
+	
+	# ------------------------------------------------------------------------------------------------
+	# Target paths
+	# ------------------------------------------------------------------------------------------------
+	$script:NssmDir = Join-Path $ToolsRoot 'NSSM'
+	$script:NssmExe = Join-Path $script:NssmDir 'nssm.exe'
+	
+	# Publish paths for other functions
+	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
+	$script:FunctionResults['NssmDir'] = $script:NssmDir
+	$script:FunctionResults['NssmExe'] = $script:NssmExe
+	
+	# Ensure tools folders exist
+	try
+	{
+		if (-not (Test-Path $ToolsRoot)) { New-Item -Path $ToolsRoot -ItemType Directory -Force | Out-Null }
+		if (-not (Test-Path $script:NssmDir)) { New-Item -Path $script:NssmDir -ItemType Directory -Force | Out-Null }
+	}
+	catch
+	{
+		if ($ThrowOnFail) { throw "Download_NSSM: Failed creating tools folder(s). $($_.Exception.Message)" }
+		return @{ Success = $false; Path = $script:NssmExe; Note = 'Tools folder create failed'; Error = $_.Exception.Message; Log = $script:NssmDownloadLog }
+	}
+	
+	# Fast return if already present and not forcing
+	if (-not $ForceDownload -and (Test-Path $script:NssmExe))
+	{
+		return @{ Success = $true; Path = $script:NssmExe; Note = 'Already present'; Log = $script:NssmDownloadLog }
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Download script (runs in current session OR a background runspace)
+	#   - NO nested functions (uses scriptblocks)
+	#   - Writes only to $LogFile (overwritten each run)
+	# ------------------------------------------------------------------------------------------------
+	$downloadScriptText = @'
+param(
+	[string]$ToolsRoot,
+	[bool]$ForceDownload,
+	[string]$NssmDir,
+	[string]$NssmExe,
+	[string]$LogFile
+)
+
+$ErrorActionPreference = "Stop"
+
+# Log writer (scriptblock, not a function)
+$logLine = {
+	param([string]$Line)
+	try
+	{
+		$ts = (Get-Date -Format "M/d/yyyy h:mm:ss tt")
+		("[{0}] {1}" -f $ts, $Line) | Add-Content -Path $LogFile -Encoding UTF8
+	}
+	catch { }
+}
+
+# Overwrite log at start (latest results only)
+try { "" | Set-Content -Path $LogFile -Encoding UTF8 -Force } catch { }
+
+& $logLine "Worker start"
+& $logLine ("ToolsRoot = {0}" -f $ToolsRoot)
+& $logLine ("NssmDir   = {0}" -f $NssmDir)
+& $logLine ("NssmExe   = {0}" -f $NssmExe)
+
+try
+{
+	# Ensure dirs exist
+	if (-not (Test-Path $ToolsRoot)) { New-Item -Path $ToolsRoot -ItemType Directory -Force | Out-Null }
+	if (-not (Test-Path $NssmDir))   { New-Item -Path $NssmDir   -ItemType Directory -Force | Out-Null }
+
+	# If already present and not forcing
+	if (-not $ForceDownload -and (Test-Path $NssmExe))
+	{
+		& $logLine "Already present. Done."
+		return @{ Success = $true; Path = $NssmExe; Note = 'Already present' }
+	}
+
+	# TLS 1.2
+	try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+
+	$is64 = [Environment]::Is64BitOperatingSystem
+
+	# URLs (multiple sources)
+	$urls = @()
+	if ($is64) { $urls += "https://github.com/fawno/nssm.cc/releases/download/v2.24.1/nssm-v2.24.1-Win64.zip" }
+	else       { $urls += "https://github.com/fawno/nssm.cc/releases/download/v2.24.1/nssm-v2.24.1-Win32.zip" }
+	$urls += "https://nssm.cc/release/nssm-2.24.zip"
+	$urls += "https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip"
+
+	# Temp workspace
+	$tempRoot = Join-Path $env:TEMP ("NSSM_" + [Guid]::NewGuid().ToString("N"))
+	$tempZip  = Join-Path $tempRoot "nssm.zip"
+	$tempOut  = Join-Path $tempRoot "out"
+	New-Item -Path $tempRoot -ItemType Directory -Force | Out-Null
+	New-Item -Path $tempOut  -ItemType Directory -Force | Out-Null
+
+	$downloaded = $false
+	$lastErr    = ""
+
+	foreach ($u in $urls)
+	{
+		& $logLine ("Trying URL: {0}" -f $u)
+
+		# wipe old zip
+		try { if (Test-Path $tempZip) { Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue } } catch { }
+
+		# Method 1: Invoke-WebRequest (timeout)
+		try
+		{
+			Invoke-WebRequest -Uri $u -OutFile $tempZip -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
+
+			# IMPORTANT FIX: parentheses so "-and" is an operator
+			if ((Test-Path $tempZip) -and ((Get-Item $tempZip).Length -gt 0))
+			{
+				$downloaded = $true
+				& $logLine "Download OK via Invoke-WebRequest"
+				break
+			}
+		}
+		catch
+		{
+			$lastErr = $_.Exception.Message
+			& $logLine ("Invoke-WebRequest failed: {0}" -f $lastErr)
+		}
+
+		# Method 2: BITS (if available)
+		try
+		{
+			if (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue)
+			{
+				Start-BitsTransfer -Source $u -Destination $tempZip -Priority Foreground -ErrorAction Stop
+
+				# IMPORTANT FIX: parentheses so "-and" is an operator
+				if ((Test-Path $tempZip) -and ((Get-Item $tempZip).Length -gt 0))
+				{
+					$downloaded = $true
+					& $logLine "Download OK via BITS"
+					break
+				}
+			}
+		}
+		catch
+		{
+			$lastErr = $_.Exception.Message
+			& $logLine ("BITS failed: {0}" -f $lastErr)
+		}
+
+		# Method 3: WebClient fallback
+		try
+		{
+			$wc = New-Object System.Net.WebClient
+			$wc.DownloadFile($u, $tempZip)
+
+			# IMPORTANT FIX: parentheses so "-and" is an operator
+			if ((Test-Path $tempZip) -and ((Get-Item $tempZip).Length -gt 0))
+			{
+				$downloaded = $true
+				& $logLine "Download OK via WebClient"
+				break
+			}
+		}
+		catch
+		{
+			$lastErr = $_.Exception.Message
+			& $logLine ("WebClient failed: {0}" -f $lastErr)
+		}
+	}
+
+	if (-not $downloaded)
+	{
+		try { Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+		& $logLine ("RESULT: FAILED - Download failed from all sources. Last error: {0}" -f $lastErr)
+		return @{ Success = $false; Path = $NssmExe; Note = 'Download failed'; Error = $lastErr }
+	}
+
+	# Unblock zip
+	try { Unblock-File -Path $tempZip -ErrorAction SilentlyContinue } catch { }
+
+	# Extract
+	$extracted = $false
+	try
+	{
+		Expand-Archive -Path $tempZip -DestinationPath $tempOut -Force -ErrorAction Stop
+		$extracted = $true
+		& $logLine "Extract OK via Expand-Archive"
+	}
+	catch
+	{
+		try
+		{
+			Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+			[System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $tempOut)
+			$extracted = $true
+			& $logLine "Extract OK via ZipFile"
+		}
+		catch
+		{
+			$extracted = $false
+			& $logLine ("Extract failed: {0}" -f $_.Exception.Message)
+		}
+	}
+
+	if (-not $extracted)
+	{
+		try { Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+		& $logLine "RESULT: FAILED - Extraction failed."
+		return @{ Success = $false; Path = $NssmExe; Note = 'Extraction failed' }
+	}
+
+	# Find nssm.exe
+	$exeCandidates = Get-ChildItem -Path $tempOut -Recurse -Filter "nssm.exe" -File -ErrorAction SilentlyContinue
+	if (-not $exeCandidates -or $exeCandidates.Count -eq 0)
+	{
+		try { Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+		& $logLine "RESULT: FAILED - nssm.exe not found in extracted content."
+		return @{ Success = $false; Path = $NssmExe; Note = 'nssm.exe not found' }
+	}
+
+	# Choose proper binary
+	$chosen = $null
+	if ($is64)
+	{
+		$chosen = $exeCandidates | Where-Object { $_.FullName -match "(\\|/)(win64|x64|amd64)(\\|/)" } | Select-Object -First 1
+		if (-not $chosen) { $chosen = $exeCandidates | Select-Object -First 1 }
+	}
+	else
+	{
+		$chosen = $exeCandidates | Where-Object { $_.FullName -match "(\\|/)(win32|x86|i386)(\\|/)" } | Select-Object -First 1
+		if (-not $chosen) { $chosen = $exeCandidates | Select-Object -First 1 }
+	}
+
+	if (-not $chosen -or -not (Test-Path $chosen.FullName))
+	{
+		try { Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+		& $logLine "RESULT: FAILED - Could not select a valid nssm.exe candidate."
+		return @{ Success = $false; Path = $NssmExe; Note = 'Selection failed' }
+	}
+
+	& $logLine ("Selected: {0}" -f $chosen.FullName)
+
+	# Copy to stable location
+	Copy-Item -Path $chosen.FullName -Destination $NssmExe -Force -ErrorAction Stop
+
+	# Validate
+	if (-not (Test-Path $NssmExe) -or ((Get-Item $NssmExe).Length -lt 50KB))
+	{
+		try { Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+		& $logLine ("RESULT: FAILED - Validation failed after copy to '{0}'." -f $NssmExe)
+		return @{ Success = $false; Path = $NssmExe; Note = 'Validation failed' }
+	}
+
+	# Cleanup
+	try { Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+
+	& $logLine ("RESULT: SUCCESS - NSSM ready at {0}" -f $NssmExe)
+	return @{ Success = $true; Path = $NssmExe; Note = 'Downloaded/Updated' }
+}
+catch
+{
+	& $logLine ("RESULT: FAILED - Unhandled exception: {0}" -f $_.Exception.Message)
+	return @{ Success = $false; Path = $NssmExe; Note = 'Exception'; Error = $_.Exception.Message }
+}
+'@
+	
+	# ------------------------------------------------------------------------------------------------
+	# Background job (in-process runspace) - avoids hidden spawned PowerShell that AV hates
+	# ------------------------------------------------------------------------------------------------
+	if ($Background)
+	{
+		# If a job is already running, don't start another
+		if ($script:NssmDownloadJob -and $script:NssmDownloadJob.Handle -and (-not $script:NssmDownloadJob.Handle.IsCompleted))
+		{
+			return @{ Success = $true; Path = $script:NssmExe; Note = 'Already downloading in background'; Log = $script:NssmDownloadLog }
+		}
+		
+		try
+		{
+			# Create a 1-thread runspace pool
+			$pool = [RunspaceFactory]::CreateRunspacePool(1, 1)
+			$pool.ApartmentState = 'MTA'
+			$pool.ThreadOptions = 'ReuseThread'
+			$pool.Open()
+			
+			$ps = [PowerShell]::Create()
+			$ps.RunspacePool = $pool
+			
+			$null = $ps.AddScript($downloadScriptText)
+			$null = $ps.AddArgument($ToolsRoot)
+			$null = $ps.AddArgument([bool]$ForceDownload.IsPresent)
+			$null = $ps.AddArgument($script:NssmDir)
+			$null = $ps.AddArgument($script:NssmExe)
+			$null = $ps.AddArgument($script:NssmDownloadLog)
+			
+			$handle = $ps.BeginInvoke()
+			
+			# Keep a handle so we can wait later if needed
+			$script:NssmDownloadJob = @{
+				PS	    = $ps
+				Pool    = $pool
+				Handle  = $handle
+				Started = Get-Date
+				Log	    = $script:NssmDownloadLog
+				Exe	    = $script:NssmExe
+			}
+			
+			# Return immediately unless -Wait is also requested
+			if (-not $Wait)
+			{
+				return @{ Success = $true; Path = $script:NssmExe; Note = 'Started background download'; Log = $script:NssmDownloadLog }
+			}
+		}
+		catch
+		{
+			if ($ThrowOnFail) { throw "Download_NSSM: Failed to start background runspace. $($_.Exception.Message)" }
+			return @{ Success = $false; Path = $script:NssmExe; Note = 'Background start failed'; Error = $_.Exception.Message; Log = $script:NssmDownloadLog }
+		}
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Wait mode (only blocks when asked)
+	# ------------------------------------------------------------------------------------------------
+	if ($Wait)
+	{
+		$deadline = (Get-Date).AddSeconds($WaitTimeoutSeconds)
+		
+		while ((Get-Date) -lt $deadline)
+		{
+			if (Test-Path $script:NssmExe)
+			{
+				# Cleanup completed job if present
+				if ($script:NssmDownloadJob -and $script:NssmDownloadJob.Handle)
+				{
+					try
+					{
+						if ($script:NssmDownloadJob.Handle.IsCompleted)
+						{
+							$null = $script:NssmDownloadJob.PS.EndInvoke($script:NssmDownloadJob.Handle)
+							$script:NssmDownloadJob.PS.Dispose()
+							$script:NssmDownloadJob.Pool.Close()
+							$script:NssmDownloadJob.Pool.Dispose()
+							$script:NssmDownloadJob = $null
+						}
+					}
+					catch { }
+				}
+				
+				return @{ Success = $true; Path = $script:NssmExe; Note = 'NSSM ready'; Log = $script:NssmDownloadLog }
+			}
+			
+			# Keep WinForms responsive if applicable
+			try { [System.Windows.Forms.Application]::DoEvents() }
+			catch { }
+			Start-Sleep -Milliseconds $WaitPollMilliseconds
+		}
+		
+		if ($ThrowOnFail) { throw "Download_NSSM: Timed out waiting for NSSM. Check log: $script:NssmDownloadLog" }
+		return @{ Success = $false; Path = $script:NssmExe; Note = 'Timed out waiting for NSSM'; Log = $script:NssmDownloadLog }
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# Synchronous (blocking) if neither -Background nor -Wait
+	# ------------------------------------------------------------------------------------------------
+	try
+	{
+		$sb = [ScriptBlock]::Create($downloadScriptText)
+		$result = & $sb $ToolsRoot ([bool]$ForceDownload.IsPresent) $script:NssmDir $script:NssmExe $script:NssmDownloadLog
+		
+		if ($result -and $result.Success)
+		{
+			return @{ Success = $true; Path = $script:NssmExe; Note = $result.Note; Log = $script:NssmDownloadLog }
+		}
+		
+		if ($ThrowOnFail) { throw "Download_NSSM: Failed. Check log: $script:NssmDownloadLog" }
+		return @{ Success = $false; Path = $script:NssmExe; Note = 'Failed'; Log = $script:NssmDownloadLog }
+	}
+	catch
+	{
+		if ($ThrowOnFail) { throw "Download_NSSM: Exception. $($_.Exception.Message). Log: $script:NssmDownloadLog" }
+		return @{ Success = $false; Path = $script:NssmExe; Note = 'Exception'; Error = $_.Exception.Message; Log = $script:NssmDownloadLog }
 	}
 }
 
@@ -17329,7 +17783,7 @@ function Reboot_Nodes
 }
 
 # ===================================================================================================
-#                         FUNCTION: Remove_ArchiveBit_Interactive
+#                         FUNCTION: Remove_Archive_Bit
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   - Run Now: one-time attrib clear (recursive) using lane map if available, else Ter_Load.sql parsing
@@ -17340,21 +17794,24 @@ function Reboot_Nodes
 #              - Watches Ter_Load.sql; on change, rebuilds watchers and runs full cleanup
 #              - Uses LOCAL OfficePath + LOCAL Ter_Load path (no UNC dependency)
 #   - Adds "Uninstall Service" button
-#   - Caches NSSM for later use in: <ScriptsFolder>\Tools\NSSM\nssm.exe
-#   - Runs service as LocalSystem (LOCAL filesystem access; avoids UNC auth problems)
 #
 # IMPORTANT (per your request):
 #   - NO helper functions
 #   - NO nested functions
 #   - EVERYTHING inline inside this one function (service PS1 content is generated inline too)
+#
+# NSSM RULE (per your request):
+#   - This function does NOT download NSSM.
+#   - It ONLY uses an already-downloaded nssm.exe.
+#   - If nssm.exe is missing when needed (install/uninstall fallback), it errors and stops that action.
 # ===================================================================================================
 
-function Remove_ArchiveBit_Interactive
+function Remove_Archive_Bit
 {
 	[CmdletBinding()]
 	param ()
 	
-	Write_Log "`r`n==================== Starting Remove_ArchiveBit_Interactive Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Remove_Archive_Bit Function ====================`r`n" "blue"
 	
 	# ---------------------------
 	# NO-PROMPT "always sensing" poll interval (seconds)
@@ -17367,13 +17824,13 @@ function Remove_ArchiveBit_Interactive
 	if (-not $script:ScriptsFolder -or [string]::IsNullOrWhiteSpace($script:ScriptsFolder))
 	{
 		Write_Log "ERROR: script:ScriptsFolder is not set. Cannot continue." "red"
-		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
 	if (-not $OfficePath -or [string]::IsNullOrWhiteSpace($OfficePath))
 	{
 		Write_Log "ERROR: OfficePath is not set. Cannot continue." "red"
-		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
 	
@@ -17457,40 +17914,56 @@ function Remove_ArchiveBit_Interactive
 	Write_Log "Ter_Load (selected): $terFile" "yellow"
 	
 	# ------------------------------------------------------------------------------------------------
-	# Service/NSSM paths
+	# Service install paths
 	# ------------------------------------------------------------------------------------------------
 	$installRoot = Join-Path $scriptFolder "Remove_Archive_Bit_Service"
 	$svcScripts = Join-Path $installRoot "Scripts"
-	$svcNssmDir = Join-Path $installRoot "NSSM"
 	$svcLogsDir = Join-Path $installRoot "Logs"
-	
 	$svcPS1 = Join-Path $svcScripts "Remove_Archive_Bit_Service.ps1"
 	$svcConfigPath = Join-Path $installRoot "Remove_Archive_Bit_Config.json"
-	
-	$nssmExe = Join-Path $svcNssmDir "nssm.exe"
 	$serviceName = "Remove_Archive_Bit"
 	
-	# NSSM cache (saved for later use)
-	$toolsRoot = Join-Path $scriptFolder "Tools"
-	$nssmCacheDir = Join-Path $toolsRoot "NSSM"
-	$nssmCacheExe = Join-Path $nssmCacheDir "nssm.exe"
-	
-	# ------------------------------------------------------------------------------------------------
-	# NSSM download fallbacks (stable-ish URLs)
-	# ------------------------------------------------------------------------------------------------
-	$NssmZipUrls = @(
-		$(if ([Environment]::Is64BitOperatingSystem)
-			{ "https://github.com/fawno/nssm.cc/releases/download/v2.24.1/nssm-v2.24.1-Win64.zip" }
-			else
-			{ "https://github.com/fawno/nssm.cc/releases/download/v2.24.1/nssm-v2.24.1-Win32.zip" }
-		),
-		"https://nssm.cc/release/nssm-2.24.zip",
-		"https://nssm.cc/download/nssm-2.24.zip"
-	)
-	
-	foreach ($d in @($installRoot, $svcScripts, $svcNssmDir, $svcLogsDir, $toolsRoot, $nssmCacheDir))
+	foreach ($d in @($installRoot, $svcScripts, $svcLogsDir))
 	{
-		if (-not (Test-Path $d)) { New-Item -Path $d -ItemType Directory -Force | Out-Null }
+		if (-not (Test-Path -LiteralPath $d)) { New-Item -Path $d -ItemType Directory -Force | Out-Null }
+	}
+	
+	# ------------------------------------------------------------------------------------------------
+	# NSSM: Use already-downloaded NSSM only (NO downloads here)
+	#   We will accept:
+	#     - $script:FunctionResults['NssmExe'] (if your startup Download_NSSM set it)
+	#     - $script:NssmExe (if set globally)
+	#     - Default global path: C:\Tecnica_Systems\Alex_C.T\Tools\NSSM\nssm.exe
+	# ------------------------------------------------------------------------------------------------
+	$nssmExe = $null
+	$nssmCandidates = @()
+	
+	try
+	{
+		if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('NssmExe') -and $script:FunctionResults['NssmExe'])
+		{
+			$nssmCandidates += [string]$script:FunctionResults['NssmExe']
+		}
+	}
+	catch { }
+	
+	try
+	{
+		if ($script:NssmExe) { $nssmCandidates += [string]$script:NssmExe }
+	}
+	catch { }
+	
+	# Preferred default location from your Download_NSSM function
+	$nssmCandidates += 'C:\Tecnica_Systems\Alex_C.T\Tools\NSSM\nssm.exe'
+	
+	foreach ($p in $nssmCandidates)
+	{
+		if ([string]::IsNullOrWhiteSpace($p)) { continue }
+		if (Test-Path -LiteralPath $p)
+		{
+			$nssmExe = $p
+			break
+		}
 	}
 	
 	# ------------------------------------------------------------------------------------------------
@@ -17591,8 +18064,8 @@ function Remove_ArchiveBit_Interactive
 	
 	if ($selectedAction -eq "cancel" -or -not $selectedAction)
 	{
-		Write_Log "User cancelled Remove_ArchiveBit_Interactive." "yellow"
-		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		Write_Log "User cancelled Remove_Archive_Bit." "yellow"
+		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
 	
@@ -17613,7 +18086,7 @@ function Remove_ArchiveBit_Interactive
 				[System.Windows.Forms.MessageBoxIcon]::Warning
 			)
 			Write_Log "ERROR: Uninstall requested without Administrator rights." "red"
-			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
 		
@@ -17621,8 +18094,7 @@ function Remove_ArchiveBit_Interactive
 		if (-not $existingSvc)
 		{
 			Write_Log "Service '$serviceName' is not installed." "yellow"
-			Write_Log "NSSM remains cached at: $nssmCacheExe" "green"
-			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
 		
@@ -17636,110 +18108,16 @@ function Remove_ArchiveBit_Interactive
 		if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue))
 		{
 			Write_Log "Service '$serviceName' removed via sc.exe (no NSSM required)." "green"
-			Write_Log "NSSM remains cached at: $nssmCacheExe" "green"
-			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
 		
-		# If sc.exe didn't fully remove it, fall back to NSSM
-		$haveNssm = $false
-		
-		if (Test-Path $nssmCacheExe)
+		# If sc.exe didn't fully remove it, fall back to NSSM - but ONLY if NSSM exists (NO downloads)
+		if (-not $nssmExe -or -not (Test-Path -LiteralPath $nssmExe))
 		{
-			try { Copy-Item -LiteralPath $nssmCacheExe -Destination $nssmExe -Force -ErrorAction SilentlyContinue }
-			catch { }
-			$haveNssm = $true
-		}
-		elseif (Test-Path $nssmExe)
-		{
-			try { Copy-Item -LiteralPath $nssmExe -Destination $nssmCacheExe -Force -ErrorAction SilentlyContinue }
-			catch { }
-			$haveNssm = $true
-		}
-		else
-		{
-			$tempZip = Join-Path $env:TEMP ("nssm_{0}.zip" -f ([guid]::NewGuid().ToString("N")))
-			try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
-			catch { }
-			
-			$downloaded = $false
-			$lastErr = $null
-			
-			foreach ($url in $NssmZipUrls)
-			{
-				try
-				{
-					Write_Log "Attempting NSSM download: $url" "yellow"
-					Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
-					$downloaded = $true
-					break
-				}
-				catch
-				{
-					$lastErr = $_.Exception.Message
-					Write_Log "NSSM download failed for: $url  ($lastErr)" "yellow"
-				}
-			}
-			
-			if ($downloaded)
-			{
-				$extractDir = Join-Path $nssmCacheDir ("_extract_{0}" -f ([guid]::NewGuid().ToString("N")))
-				New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
-				
-				$expanded = $false
-				try { Expand-Archive -LiteralPath $tempZip -DestinationPath $extractDir -Force; $expanded = $true }
-				catch
-				{
-					try
-					{
-						Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop | Out-Null
-						[System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $extractDir)
-						$expanded = $true
-					}
-					catch { $expanded = $false }
-				}
-				
-				if ($expanded)
-				{
-					$preferredFolder = if ([Environment]::Is64BitOperatingSystem) { "win64" }
-					else { "win32" }
-					
-					$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
-					Where-Object { $_.FullName -match [regex]::Escape("\$preferredFolder\") } |
-					Select-Object -First 1
-					
-					if (-not $found)
-					{
-						$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
-						Select-Object -First 1
-					}
-					
-					if ($found)
-					{
-						Copy-Item -LiteralPath $found.FullName -Destination $nssmCacheExe -Force
-						try { Copy-Item -LiteralPath $nssmCacheExe -Destination $nssmExe -Force }
-						catch { }
-						$haveNssm = $true
-						Write_Log "NSSM cached at: $nssmCacheExe" "green"
-					}
-				}
-				
-				try { Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
-				catch { }
-				try { Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue }
-				catch { }
-			}
-			else
-			{
-				Write_Log "ERROR: All NSSM download sources failed. Last error: $lastErr" "red"
-				$haveNssm = $false
-			}
-		}
-		
-		if (-not $haveNssm -or -not (Test-Path $nssmExe))
-		{
-			Write_Log "ERROR: NSSM unavailable. Cannot uninstall service." "red"
-			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			Write_Log "ERROR: sc.exe did not fully remove the service, and NSSM is missing." "red"
+			Write_Log "Expected NSSM at: C:\Tecnica_Systems\Alex_C.T\Tools\NSSM\nssm.exe (or provided by Download_NSSM at startup)" "yellow"
+			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
 		
@@ -17748,9 +18126,18 @@ function Remove_ArchiveBit_Interactive
 		try { & $nssmExe remove $serviceName confirm *> $null }
 		catch { }
 		
+		Start-Sleep -Milliseconds 700
+		if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
+		{
+			Write_Log "ERROR: NSSM attempted removal but service still exists. Check Services.msc for '$serviceName'." "red"
+			Write_Log "NSSM used: $nssmExe" "yellow"
+			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
+			return
+		}
+		
 		Write_Log "Service '$serviceName' uninstalled successfully." "green"
-		Write_Log "NSSM remains cached at: $nssmCacheExe" "green"
-		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		Write_Log "NSSM used: $nssmExe" "green"
+		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
 	
@@ -17771,136 +18158,33 @@ function Remove_ArchiveBit_Interactive
 				[System.Windows.Forms.MessageBoxIcon]::Warning
 			)
 			Write_Log "ERROR: Service install requested without Administrator rights." "red"
-			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
 		
 		if (-not $storeNumber)
 		{
 			Write_Log "ERROR: Store number not present in context." "red"
-			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
 		if (-not (Test-Path -LiteralPath $terFile))
 		{
 			Write_Log "ERROR: Ter_Load.sql could not be located at $terFile" "red"
-			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
 		
-		# Ensure NSSM exists (INLINE)
-		$haveNssm = $false
-		
-		if (Test-Path $nssmCacheExe)
+		# NSSM must exist for install (NO downloads here)
+		if (-not $nssmExe -or -not (Test-Path -LiteralPath $nssmExe))
 		{
-			try { Copy-Item -LiteralPath $nssmCacheExe -Destination $nssmExe -Force -ErrorAction SilentlyContinue }
-			catch { }
-			$haveNssm = $true
-		}
-		elseif (Test-Path $nssmExe)
-		{
-			try { Copy-Item -LiteralPath $nssmExe -Destination $nssmCacheExe -Force -ErrorAction SilentlyContinue }
-			catch { }
-			$haveNssm = $true
-		}
-		else
-		{
-			$tempZip = Join-Path $env:TEMP ("nssm_{0}.zip" -f ([guid]::NewGuid().ToString("N")))
-			try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
-			catch { }
-			
-			$downloaded = $false
-			$lastErr = $null
-			
-			foreach ($url in $NssmZipUrls)
-			{
-				try
-				{
-					Write_Log "Attempting NSSM download: $url" "yellow"
-					Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
-					$downloaded = $true
-					break
-				}
-				catch
-				{
-					$lastErr = $_.Exception.Message
-					Write_Log "NSSM download failed for: $url  ($lastErr)" "yellow"
-				}
-			}
-			
-			if (-not $downloaded)
-			{
-				Write_Log "ERROR: All NSSM download sources failed. Last error: $lastErr" "red"
-				$haveNssm = $false
-			}
-			else
-			{
-				$extractDir = Join-Path $nssmCacheDir ("_extract_{0}" -f ([guid]::NewGuid().ToString("N")))
-				New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
-				
-				$expanded = $false
-				try { Expand-Archive -LiteralPath $tempZip -DestinationPath $extractDir -Force; $expanded = $true }
-				catch
-				{
-					try
-					{
-						Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop | Out-Null
-						[System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $extractDir)
-						$expanded = $true
-					}
-					catch { $expanded = $false }
-				}
-				
-				if (-not $expanded)
-				{
-					Write_Log "ERROR: Failed to extract NSSM zip." "red"
-					$haveNssm = $false
-				}
-				else
-				{
-					$preferredFolder = if ([Environment]::Is64BitOperatingSystem) { "win64" }
-					else { "win32" }
-					
-					$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
-					Where-Object { $_.FullName -match [regex]::Escape("\$preferredFolder\") } |
-					Select-Object -First 1
-					
-					if (-not $found)
-					{
-						$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
-						Select-Object -First 1
-					}
-					
-					if (-not $found)
-					{
-						Write_Log "ERROR: nssm.exe not found in extracted archive." "red"
-						$haveNssm = $false
-					}
-					else
-					{
-						Copy-Item -LiteralPath $found.FullName -Destination $nssmCacheExe -Force
-						try { Copy-Item -LiteralPath $nssmCacheExe -Destination $nssmExe -Force }
-						catch { }
-						Write_Log "NSSM cached at: $nssmCacheExe" "green"
-						$haveNssm = $true
-					}
-				}
-				
-				try { Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
-				catch { }
-				try { Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue }
-				catch { }
-			}
-		}
-		
-		if (-not $haveNssm -or -not (Test-Path $nssmExe))
-		{
-			Write_Log "ERROR: NSSM unavailable. Service install aborted." "red"
-			Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+			Write_Log "ERROR: NSSM is missing. This function will not download it." "red"
+			Write_Log "Expected NSSM at: C:\Tecnica_Systems\Alex_C.T\Tools\NSSM\nssm.exe (or provided by Download_NSSM at startup)" "yellow"
+			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
 		
-		# Service config (store BOTH raw and resolved local OfficePath + LOCAL Ter_Load)
+		# Service config
 		$configObj = [ordered]@{
 			StoreNumber = "$storeNumber"
 			OfficePathRaw = "$OfficePath"
@@ -17913,7 +18197,7 @@ function Remove_ArchiveBit_Interactive
 		($configObj | ConvertTo-Json -Depth 7) | Set-Content -LiteralPath $svcConfigPath -Encoding UTF8 -Force
 		Write_Log "Service config saved: $svcConfigPath" "green"
 		
-		# Service script (LOCAL paths only) - FIXED lane detection (regex over Terminal 0 lines)
+		# Service script (LOCAL paths only)
 		$svcContent = @"
 #requires -Version 5.1
 `$ErrorActionPreference = 'Continue'
@@ -18046,11 +18330,8 @@ while (`$true)
 		try { `$picked = `$lines | Where-Object { `$_ -match 'Terminal\s*0' } } catch { }
 
 		`$text = ""
-		if (`$picked -and `$picked.Count -gt 0) {
-			`$text = (`$picked -join "`n")
-		} else {
-			`$text = (`$lines -join "`n")
-		}
+		if (`$picked -and `$picked.Count -gt 0) { `$text = (`$picked -join "`n") }
+		else { `$text = (`$lines -join "`n") }
 
 		if (-not [string]::IsNullOrWhiteSpace(`$text))
 		{
@@ -18061,8 +18342,6 @@ while (`$true)
 				foreach (`$m in [regex]::Matches(`$text, `$rx))
 				{
 					`$folder = ([string]`$m.Value).ToUpper()
-
-					# Skip server roots here (handled separately)
 					if (`$folder.EndsWith('900') -or `$folder.EndsWith('901')) { continue }
 
 					`$local = Join-Path `$OfficePath `$folder
@@ -18071,7 +18350,7 @@ while (`$true)
 			} catch { }
 		}
 
-		# Fallback: if Ter_Load format is weird, just enumerate local XF folders for this store
+		# Fallback: enumerate local XF folders for this store
 		if (`$laneRoots.Count -eq 0)
 		{
 			try {
@@ -18093,7 +18372,6 @@ while (`$true)
 		[void]`$serverRoots.Add(`$sr900)
 		[void]`$serverRoots.Add(`$sr901)
 
-		# Combine roots SAFELY (enumerate lists)
 		`$allRoots = @()
 		try { `$allRoots += `$laneRoots.ToArray() } catch { }
 		try { `$allRoots += `$serverRoots.ToArray() } catch { }
@@ -18114,14 +18392,6 @@ while (`$true)
 
 		try {
 			Add-Content -LiteralPath `$LogFile -Value ("[{0}] Full cleanup done. LaneRoots={1}, ServerRoots={2}. Building watchers..." -f (Get-Date), `$laneRoots.Count, `$serverRoots.Count) -Encoding UTF8
-		} catch { }
-
-		# Optional: show first few lane roots for proof
-		try {
-			if (`$laneRoots.Count -gt 0) {
-				`$sample = (`$laneRoots.ToArray() | Select-Object -First 6) -join ' | '
-				Add-Content -LiteralPath `$LogFile -Value ("[{0}] Lane sample: {1}" -f (Get-Date), `$sample) -Encoding UTF8
-			}
 		} catch { }
 
 		# --- Build filesystem watchers ---
@@ -18208,31 +18478,31 @@ while (`$true)
 		
 		Write_Log "Service '$serviceName' installed and started as: LocalSystem" "green"
 		Write_Log "Logs: $svcLogsDir" "green"
-		Write_Log "NSSM cached at: $nssmCacheExe" "green"
+		Write_Log "NSSM used: $nssmExe" "green"
 		
-		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
 	
 	# ------------------------------------------------------------------------------------------------
 	# RUN NOW (one-time)
 	# ------------------------------------------------------------------------------------------------
-	if (-not (Test-Path $iniFile))
+	if (-not (Test-Path -LiteralPath $iniFile))
 	{
 		Write_Log "ERROR: INI file not found - $iniFile" "red"
-		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
 	if (-not $storeNumber)
 	{
 		Write_Log "ERROR: Store number not present in context." "red"
-		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
 	if (-not (Test-Path -LiteralPath $terFile))
 	{
 		Write_Log "ERROR: Ter_Load.sql could not be located at $terFile" "red"
-		Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
 	
@@ -18246,7 +18516,7 @@ while (`$true)
 			$localLanePath = Join-Path $OfficePathLocalResolved ("XF{0}{1}" -f $storeNumber, $laneNum)
 			$lp = $localLanePath.Trim().Trim('"')
 			
-			if (Test-Path $lp)
+			if (Test-Path -LiteralPath $lp)
 			{
 				Write_Log "Refreshing attributes (recursive) in $lp..." "green"
 				$cmd = 'attrib -a -r "{0}\*" /S /D' -f $lp
@@ -18265,13 +18535,14 @@ while (`$true)
 		Write_Log "Lane map not found/usable. Falling back to Ter_Load.sql parsing (LOCAL rebuild)..." "yellow"
 	}
 	
-	# Fallback: robust Ter_Load scan for XF<store><lane> (same as service)
+	# Fallback: robust Ter_Load scan for XF<store><lane>
 	if (-not $didLaneWork)
 	{
 		$lanePaths = New-Object System.Collections.Generic.List[string]
 		$lines = @()
 		try { $lines = Get-Content -LiteralPath $terFile -ErrorAction SilentlyContinue }
 		catch { }
+		
 		$picked = @()
 		try { $picked = $lines | Where-Object { $_ -match 'Terminal\s*0' } }
 		catch { }
@@ -18321,7 +18592,7 @@ while (`$true)
 			foreach ($p in $lanePaths)
 			{
 				$pp = $p.Trim().Trim('"')
-				if (Test-Path $pp)
+				if (Test-Path -LiteralPath $pp)
 				{
 					Write_Log "Refreshing attributes (recursive) in $pp..." "green"
 					$cmd = 'attrib -a -r "{0}\*" /S /D' -f $pp
@@ -18336,7 +18607,7 @@ while (`$true)
 		}
 		else
 		{
-			Write_Log "No LOCAL lane paths could be derived from Ter_Load.sql (Terminal 0 lines) and no XF lane folders found locally." "yellow"
+			Write_Log "No LOCAL lane paths could be derived from Ter_Load.sql and no XF lane folders found locally." "yellow"
 		}
 	}
 	
@@ -18345,7 +18616,7 @@ while (`$true)
 	{
 		$serverPath = Join-Path $OfficePathLocalResolved ("XF{0}{1}" -f $storeNumber, $suffix)
 		$sp = $serverPath.Trim().Trim('"')
-		if (Test-Path $sp)
+		if (Test-Path -LiteralPath $sp)
 		{
 			Write_Log "Refreshing attributes (recursive) in $sp" "green"
 			$cmd = 'attrib -a -r "{0}\*" /S /D' -f $sp
@@ -18358,7 +18629,7 @@ while (`$true)
 		}
 	}
 	
-	Write_Log "`r`n==================== Remove_ArchiveBit_Interactive Function Completed ====================" "blue"
+	Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -19199,15 +19470,16 @@ function Add_Scale_Credentials
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Prompts the user to either run the Duplicate File Monitor now (as a background job, controllable via the GUI) or
-#   schedule it as a Windows scheduled task (runs at logon, hidden, always-on).
-#   Monitors the folder 'C:\Bizerba\RetailConnect\BMS\toBizerba' for duplicate files by content
-#   (using hash), and deletes all but the oldest file (by CreationTime).
-#   Writes PowerShell script to disk and manages the Windows scheduled task.
-#   For "Run Now", starts as a job tied to the session, keeps the GUI open with a "Stop" button, and stops the job on close/stop.
-#   Author: Alex_C.T
-# ---------------------------------------------------------------------------------------------------
-# Parameters:
-#   (none - uses script context)
+#   install it as a Windows service (runs at startup, always-on).
+#   Monitors: C:\Bizerba\RetailConnect\BMS\toBizerba
+#     - Removes duplicates by CONTENT hash (keeps oldest by CreationTime)
+#     - Also removes files whose non-empty lines are fully contained in another file
+#   Writes the watcher PowerShell script to disk under ProgramData, and manages the Windows service.
+#
+# NSSM RULE (per your request):
+#   - This function does NOT download NSSM.
+#   - It ONLY uses an already-downloaded nssm.exe.
+#   - If nssm.exe is missing when needed (install, or uninstall fallback), it errors and stops that action.
 # ===================================================================================================
 
 function Remove_Duplicate_Files_From_toBizerba
@@ -19218,139 +19490,253 @@ function Remove_Duplicate_Files_From_toBizerba
 	Write_Log "`r`n==================== Starting Remove_Duplicate_Files_From_toBizerba Function ====================`r`n" "blue"
 	
 	# ==========================================================================================
-	# CORE PATHS (service assets in ProgramData so LocalSystem can access)
+	# CORE PATHS
 	# ==========================================================================================
 	$TargetPath = "C:\Bizerba\RetailConnect\BMS\toBizerba"
-	
-	$scriptFolder = $script:ScriptsFolder
-	if (-not $scriptFolder) { $scriptFolder = "C:\Tecnica_Systems\Alex_C.T\Scripts" }
-	
 	$serviceName = "Remove_Duplicate_Files_From_toBizerba"
+	
 	$serviceRoot = "C:\ProgramData\Tecnica_Systems\Alex_C.T\Duplicate_File_Monitor_Service"
 	$svcScripts = Join-Path $serviceRoot "Scripts"
-	$svcNssmDir = Join-Path $serviceRoot "NSSM"
 	
 	$psScriptName = "Remove_Duplicate_Files_From_toBizerba.ps1"
 	$psScriptPath = Join-Path $svcScripts $psScriptName
 	
-	$logPath = Join-Path $serviceRoot "Remove_Duplicates.log"
-	$svcStdout = Join-Path $serviceRoot "service_stdout.log"
-	$svcStderr = Join-Path $serviceRoot "service_stderr.log"
-	
-	# Service-folder NSSM (optional; may be locked if service is running)
-	$nssmExe = Join-Path $svcNssmDir "nssm.exe"
-	
 	# ==========================================================================================
-	# NSSM CACHE PATH (MATCHES "Remove Archive Bit" FUNCTION)
+	# ONE LOG FILE (same place as your other logs)
 	# ==========================================================================================
-	$toolsRoot = Join-Path $scriptFolder "Tools"
-	$nssmCacheDir = Join-Path $toolsRoot "NSSM"
-	$nssmCacheExe = Join-Path $nssmCacheDir "nssm.exe"
-	
-	foreach ($p in @($scriptFolder, $serviceRoot, $svcScripts, $svcNssmDir, $toolsRoot, $nssmCacheDir))
+	if (-not $script:ScriptsLog -or [string]::IsNullOrWhiteSpace($script:ScriptsLog))
 	{
-		if (-not (Test-Path $p)) { New-Item -Path $p -ItemType Directory -Force | Out-Null }
+		$script:ScriptsLog = "C:\Tecnica_Systems\Alex_C.T\Log\"
+	}
+	try { if ($script:ScriptsLog[-1] -ne '\') { $script:ScriptsLog += '\' } }
+	catch { }
+	
+	if (-not (Test-Path -LiteralPath $script:ScriptsLog))
+	{
+		try { New-Item -Path $script:ScriptsLog -ItemType Directory -Force | Out-Null }
+		catch { }
+	}
+	
+	# CHANGE: single combined log for everything (service script + NSSM stdout/stderr)
+	$singleLog = Join-Path $script:ScriptsLog "Remove_Duplicate_Files_From_toBizerba.log"
+	
+	# ==========================================================================================
+	# Ensure folders exist
+	# ==========================================================================================
+	foreach ($p in @($serviceRoot, $svcScripts))
+	{
+		if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -ItemType Directory -Force | Out-Null }
 	}
 	
 	# ==========================================================================================
-	# WRITE WATCHER SCRIPT
+	# Resolve NSSM executable (NO downloads)
 	# ==========================================================================================
-	$psScriptContent = @"
-param([int]`$IntervalSeconds = 5)
-
-`$Path    = '$TargetPath'
-`$LogPath = '$logPath'
-
-if (-not (Test-Path `$Path)) { exit 0 }
-
-if (-not (Test-Path (Split-Path -Parent `$LogPath))) {
-	New-Item -ItemType Directory -Path (Split-Path -Parent `$LogPath) -Force | Out-Null
-}
-
-function Remove-DuplicateFilesByContentAndLines {
-	param([string]`$Path)
-
-	`$files = Get-ChildItem -Path `$Path -File -ErrorAction SilentlyContinue
-	`$hashTable = @{}
-	foreach (`$file in `$files) {
-		try { `$hash = (Get-FileHash -Path `$file.FullName -Algorithm SHA256).Hash }
-		catch { continue }
-		if (-not `$hashTable.ContainsKey(`$hash)) { `$hashTable[`$hash] = @() }
-		`$hashTable[`$hash] += `$file
-	}
-
-	foreach (`$entry in `$hashTable.GetEnumerator()) {
-		`$fileList = `$entry.Value
-		if (`$fileList.Count -gt 1) {
-			Add-Content -Path `$LogPath -Value "`$(Get-Date): Found duplicates for hash `$($entry.Key): `$(`$fileList.Count) files"
-			`$fileList = `$fileList | Sort-Object CreationTime
-			`$original = `$fileList[0]
-			`$duplicates = `$fileList[1..(`$fileList.Count - 1)]
-			foreach (`$dup in `$duplicates) {
-				try {
-					Remove-Item `$dup.FullName -Force
-					Add-Content -Path `$LogPath -Value "`$(Get-Date): Removed duplicate `$($dup.FullName), kept `$($original.FullName)"
-				} catch {
-					Add-Content -Path `$LogPath -Value "`$(Get-Date): Failed to remove `$($dup.FullName): `$_"
-				}
-			}
+	$nssmExe = $null
+	$nssmCandidates = @()
+	
+	try
+	{
+		if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('NssmExe') -and $script:FunctionResults['NssmExe'])
+		{
+			$nssmCandidates += [string]$script:FunctionResults['NssmExe']
 		}
 	}
+	catch { }
+	
+	try
+	{
+		if ($script:NssmExe) { $nssmCandidates += [string]$script:NssmExe }
+	}
+	catch { }
+	
+	$nssmCandidates += 'C:\Tecnica_Systems\Alex_C.T\Tools\NSSM\nssm.exe'
+	
+	foreach ($c in $nssmCandidates)
+	{
+		if ([string]::IsNullOrWhiteSpace($c)) { continue }
+		if (Test-Path -LiteralPath $c) { $nssmExe = $c; break }
+	}
+	
+	# ==========================================================================================
+	# WRITE WATCHER SCRIPT (NO interpolation bugs; concise logging; never exits)
+	# ==========================================================================================
+	$psScriptContent = @'
+#requires -Version 5.1
+param([int]$IntervalSeconds = 5)
 
-	`$files = Get-ChildItem -Path `$Path -File -ErrorAction SilentlyContinue
+$ErrorActionPreference = 'Continue'
 
-	for (`$i = 0; `$i -lt `$files.Count; `$i++) {
-		`$fileA = `$files[`$i]
-		`$linesA = Get-Content -LiteralPath `$fileA.FullName -ErrorAction SilentlyContinue | Where-Object { `$_.Trim() -ne "" }
-		if (-not `$linesA -or `$linesA.Count -eq 0) { continue }
+$Path    = '__TARGETPATH__'
+$LogFile = '__LOGFILE__'
 
-		for (`$j = 0; `$j -lt `$files.Count; `$j++) {
-			if (`$i -eq `$j) { continue }
-			`$fileB = `$files[`$j]
-			`$linesB = Get-Content -LiteralPath `$fileB.FullName -ErrorAction SilentlyContinue | Where-Object { `$_.Trim() -ne "" }
-			if (`$linesB.Count -lt `$linesA.Count) { continue }
+# Ensure log dir exists
+try {
+	$ld = Split-Path -Parent $LogFile
+	if (-not (Test-Path -LiteralPath $ld)) { New-Item -Path $ld -ItemType Directory -Force | Out-Null }
+} catch { }
 
-			`$setB = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-			foreach (`$lb in `$linesB) { [void]`$setB.Add(`$lb.Trim()) }
+# Concise log helper (scriptblock, not a function)
+$log = {
+	param([string]$m)
+	try { Add-Content -LiteralPath $LogFile -Value ("[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $m) -Encoding UTF8 } catch { }
+}
 
-			`$allFound = `$true
-			foreach (`$la in `$linesA) {
-				if (-not `$setB.Contains(`$la.Trim())) { `$allFound = `$false; break }
-			}
+# Ensure target folder exists (don't exit if missing)
+try {
+	if (-not (Test-Path -LiteralPath $Path)) { New-Item -Path $Path -ItemType Directory -Force | Out-Null }
+} catch { }
 
-			if (`$allFound) {
-				`$canDelete = `$true
-				try {
-					`$stream = [System.IO.File]::Open(`$fileA.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-					`$stream.Close()
-				} catch { `$canDelete = `$false }
+& $log ("Service script started. Interval={0}s Path={1}" -f $IntervalSeconds, $Path)
 
-				if (`$canDelete) {
-					try {
-						Remove-Item `$fileA.FullName -Force
-						Add-Content -Path `$LogPath -Value "`$(Get-Date): Removed `$($fileA.FullName) (all lines found in `$($fileB.FullName))"
-					} catch {
-						Add-Content -Path `$LogPath -Value "`$(Get-Date): Failed to remove `$($fileA.FullName): `$_"
+while ($true)
+{
+	try
+	{
+		# Re-create folder if deleted
+		if (-not (Test-Path -LiteralPath $Path))
+		{
+			try { New-Item -Path $Path -ItemType Directory -Force | Out-Null } catch { }
+			Start-Sleep -Seconds $IntervalSeconds
+			continue
+		}
+
+		$removedHash = 0
+		$removedLine = 0
+		$removedSamples = New-Object System.Collections.Generic.List[string]
+
+		# --------------------------
+		# 1) Remove duplicates by SHA256 hash (keep oldest by CreationTime)
+		# --------------------------
+		$files = Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue
+		$hashTable = @{}
+
+		foreach ($file in $files)
+		{
+			try { if ($file.Length -eq 0) { continue } } catch { }
+
+			try { $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash }
+			catch { continue }
+
+			if (-not $hashTable.ContainsKey($hash)) { $hashTable[$hash] = @() }
+			$hashTable[$hash] += $file
+		}
+
+		foreach ($entry in $hashTable.GetEnumerator())
+		{
+			$list = $entry.Value
+			if ($list.Count -gt 1)
+			{
+				$list = $list | Sort-Object CreationTime
+				$keep = $list[0]
+				$dups = $list[1..($list.Count - 1)]
+
+				foreach ($d in $dups)
+				{
+					try
+					{
+						Remove-Item -LiteralPath $d.FullName -Force -ErrorAction Stop
+						$removedHash++
+						if ($removedSamples.Count -lt 5) { [void]$removedSamples.Add(("HASH:{0}" -f $d.Name)) }
 					}
-				} else {
-					Add-Content -Path `$LogPath -Value "`$(Get-Date): `$($fileA.FullName) is in use, skipped deletion"
+					catch { }
 				}
-
-				`$files = Get-ChildItem -Path `$Path -File -ErrorAction SilentlyContinue
-				`$i = -1
-				break
 			}
 		}
-	}
-}
 
-Add-Content -Path `$LogPath -Value "`$(Get-Date): Monitor started with interval `$IntervalSeconds seconds"
-while (`$true) {
-	try { Remove-DuplicateFilesByContentAndLines -Path `$Path } catch {}
-	Start-Sleep -Seconds `$IntervalSeconds
+		# --------------------------
+		# 2) Remove by line containment
+		# --------------------------
+		$files = Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue
+
+		for ($i = 0; $i -lt $files.Count; $i++)
+		{
+			$fileA = $files[$i]
+
+			$linesA = Get-Content -LiteralPath $fileA.FullName -ErrorAction SilentlyContinue |
+				Where-Object { $_ -and $_.Trim() -ne "" }
+
+			if (-not $linesA -or $linesA.Count -eq 0) { continue }
+
+			for ($j = 0; $j -lt $files.Count; $j++)
+			{
+				if ($i -eq $j) { continue }
+				$fileB = $files[$j]
+
+				$linesB = Get-Content -LiteralPath $fileB.FullName -ErrorAction SilentlyContinue |
+					Where-Object { $_ -and $_.Trim() -ne "" }
+
+				if (-not $linesB) { continue }
+				if ($linesB.Count -lt $linesA.Count) { continue }
+
+				$setB = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+				foreach ($lb in $linesB) { [void]$setB.Add($lb.Trim()) }
+
+				$allFound = $true
+				foreach ($la in $linesA)
+				{
+					if (-not $setB.Contains($la.Trim())) { $allFound = $false; break }
+				}
+
+				if ($allFound)
+				{
+					$canDelete = $true
+					try
+					{
+						$s = [System.IO.File]::Open($fileA.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+						$s.Close()
+					}
+					catch { $canDelete = $false }
+
+					if ($canDelete)
+					{
+						try
+						{
+							Remove-Item -LiteralPath $fileA.FullName -Force -ErrorAction Stop
+							$removedLine++
+							if ($removedSamples.Count -lt 5) { [void]$removedSamples.Add(("LINES:{0}" -f $fileA.Name)) }
+
+							# Refresh and restart to keep indexing safe
+							$files = Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue
+							$i = -1
+							break
+						}
+						catch { }
+					}
+				}
+			}
+		}
+
+		# Concise: only log when something was removed
+		if (($removedHash + $removedLine) -gt 0)
+		{
+			$sampleText = ""
+			if ($removedSamples.Count -gt 0) { $sampleText = " Samples: " + ($removedSamples -join ", ") }
+			& $log ("Removed: Hash={0}, Lines={1}.{2}" -f $removedHash, $removedLine, $sampleText)
+		}
+	}
+	catch
+	{
+		& $log ("ERROR: " + $_.Exception.Message)
+	}
+
+	Start-Sleep -Seconds $IntervalSeconds
 }
-"@
-	Set-Content -Path $psScriptPath -Value $psScriptContent -Encoding UTF8 -Force
+'@
+	
+	# Inject paths safely into the single-quoted script (escape single quotes for PS literals)
+	$tpEsc = $TargetPath.Replace("'", "''")
+	$lfEsc = $singleLog.Replace("'", "''")
+	
+	$psScriptContent = $psScriptContent.Replace('__TARGETPATH__', $tpEsc)
+	$psScriptContent = $psScriptContent.Replace('__LOGFILE__', $lfEsc)
+	
+	Set-Content -LiteralPath $psScriptPath -Value $psScriptContent -Encoding UTF8 -Force
+	if (-not (Test-Path -LiteralPath $psScriptPath))
+	{
+		Write_Log "ERROR: Failed to write watcher script: $psScriptPath" "red"
+		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+		return
+	}
 	
 	# ==========================================================================================
 	# SERVICE EXISTS?
@@ -19424,14 +19810,14 @@ while (`$true) {
 			if ($monitorJob -and $monitorJob.State -eq 'Running')
 			{
 				try { Stop-Job -Job $monitorJob -Force; Remove-Job -Job $monitorJob -Force; Write_Log "Monitor job stopped on form close." "yellow" }
-				catch { Write_Log "Failed to stop monitor job on close: $_" "red" }
+				catch { }
 			}
 			
 			Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
 				$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
 			} | ForEach-Object {
 				try { Stop-Process -Id $_.ProcessId -Force; Write_Log "Stopped powershell.exe PID $($_.ProcessId) on form close" "yellow" }
-				catch { Write_Log "Failed to stop powershell.exe PID $($_.ProcessId) on close" "red" }
+				catch { }
 			}
 		})
 	
@@ -19439,13 +19825,17 @@ while (`$true) {
 			if ($btnRunNow.Text -eq "Run Now (as Job)")
 			{
 				$state.Interval = [int]$numSec.Value
+				try { "" | Set-Content -LiteralPath $singleLog -Encoding UTF8 -Force }
+				catch { }
+				
 				$monitorJob = Start-Job -ScriptBlock {
 					param ($scriptPath,
-						$interval)
-					& "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $scriptPath -IntervalSeconds $interval
-				} -ArgumentList $psScriptPath, $state.Interval
+						$interval,
+						$logFile)
+					& "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $scriptPath -IntervalSeconds $interval *>> $logFile
+				} -ArgumentList $psScriptPath, $state.Interval, $singleLog
 				
-				Write_Log "Started duplicate file monitor as job (ID: $($monitorJob.Id)). Script: $psScriptPath" "green"
+				Write_Log "Started monitor job (ID: $($monitorJob.Id)). Log: $singleLog" "green"
 				
 				$btnRunNow.Text = "Stop Monitor"
 				$btnService.Enabled = $false
@@ -19457,14 +19847,14 @@ while (`$true) {
 				if ($monitorJob -and $monitorJob.State -eq 'Running')
 				{
 					try { Stop-Job -Job $monitorJob -Force; Remove-Job -Job $monitorJob -Force; Write_Log "Monitor job stopped by user." "yellow" }
-					catch { Write_Log "Failed to stop monitor job: $_" "red" }
+					catch { }
 				}
 				
 				Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
 					$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
 				} | ForEach-Object {
 					try { Stop-Process -Id $_.ProcessId -Force; Write_Log "Stopped powershell.exe PID $($_.ProcessId) by user stop" "yellow" }
-					catch { Write_Log "Failed to stop powershell.exe PID $($_.ProcessId)" "red" }
+					catch { }
 				}
 				
 				$btnRunNow.Text = "Run Now (as Job)"
@@ -19497,19 +19887,18 @@ while (`$true) {
 		
 		if (-not $IsAdmin)
 		{
-			Write_Log "Service install/uninstall requires Administrator. Re-run the tool as Admin." "red"
+			Write_Log "Service install/uninstall requires Administrator. Re-run as Admin." "red"
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
 	}
 	
 	# ==========================================================================================
-	# UNINSTALL (ALWAYS WORKS EVEN IF SERVICE IS RUNNING / NSSM IS LOCKED)
+	# UNINSTALL (SC.EXE ONLY)
 	# ==========================================================================================
 	if ($state.Action -eq "uninstall")
 	{
-		$existingSvc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-		if (-not $existingSvc)
+		if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue))
 		{
 			Write_Log "Service '$serviceName' is not installed." "yellow"
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
@@ -19517,300 +19906,111 @@ while (`$true) {
 		}
 		
 		Write_Log "Stopping service '$serviceName' before uninstall..." "yellow"
-		
-		# Try stop
 		try { & $env:ComSpec /c ("sc stop `"{0}`"" -f $serviceName) *> $null }
 		catch { }
 		try { Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue }
 		catch { }
-		
-		# Wait up to 20s
-		$sw = [System.Diagnostics.Stopwatch]::StartNew()
-		do
-		{
-			Start-Sleep -Milliseconds 500
-			$s = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-		}
-		while ($s -and $s.Status -ne 'Stopped' -and $sw.Elapsed.TotalSeconds -lt 20)
-		
-		# Force kill PID if still running
-		$s = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-		if ($s -and $s.Status -ne 'Stopped')
-		{
-			try
-			{
-				$svcCim = Get-CimInstance Win32_Service -Filter ("Name='{0}'" -f $serviceName) -ErrorAction SilentlyContinue
-				if ($svcCim -and $svcCim.ProcessId -and $svcCim.ProcessId -gt 0)
-				{
-					Write_Log "Service still running; force-killing PID $($svcCim.ProcessId)..." "yellow"
-					& $env:ComSpec /c ("taskkill /PID {0} /F" -f $svcCim.ProcessId) *> $null
-					Start-Sleep -Seconds 1
-				}
-			}
-			catch { }
-		}
-		
-		# Delete service
 		try { & $env:ComSpec /c ("sc delete `"{0}`"" -f $serviceName) *> $null }
 		catch { }
-		Write_Log "Service '$serviceName' uninstalled (if it existed)." "green"
+		
+		Start-Sleep -Milliseconds 800
+		if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
+		{
+			Write_Log "ERROR: Service still exists after sc delete. Remove manually in Services.msc." "red"
+			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
+			return
+		}
+		
+		Write_Log "Service '$serviceName' uninstalled successfully." "green"
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 		return
 	}
 	
 	# ==========================================================================================
-	# NSSM ACQUISITION (USES SAME CACHE PATH AS Remove Archive Bit)
-	# ==========================================================================================
-	# For install, we ALWAYS use the cached NSSM path (so we never depend on a possibly-locked service-folder nssm.exe)
-	if ($state.Action -eq "service")
-	{
-		# If cache exists, good
-		if (-not (Test-Path $nssmCacheExe))
-		{
-			# Backfill cache from service-folder NSSM if present
-			if (Test-Path $nssmExe)
-			{
-				try
-				{
-					Copy-Item -LiteralPath $nssmExe -Destination $nssmCacheExe -Force
-					Write_Log "NSSM cache backfilled from service folder: $nssmExe -> $nssmCacheExe" "green"
-				}
-				catch { }
-			}
-		}
-		
-		# If still missing, try bundled
-		if (-not (Test-Path $nssmCacheExe))
-		{
-			$bundled1 = Join-Path $scriptFolder "nssm.exe"
-			$bundled2 = Join-Path $serviceRoot  "nssm.exe"
-			
-			if (Test-Path $bundled1)
-			{
-				Copy-Item -LiteralPath $bundled1 -Destination $nssmCacheExe -Force
-				Write_Log "NSSM found bundled at $bundled1 and copied to cache: $nssmCacheExe" "green"
-			}
-			elseif (Test-Path $bundled2)
-			{
-				Copy-Item -LiteralPath $bundled2 -Destination $nssmCacheExe -Force
-				Write_Log "NSSM found bundled at $bundled2 and copied to cache: $nssmCacheExe" "green"
-			}
-		}
-		
-		# If still missing, download to cache (same idea as Remove Archive Bit)
-		if (-not (Test-Path $nssmCacheExe))
-		{
-			Write_Log "NSSM not found in cache. Downloading to: $nssmCacheExe" "yellow"
-			try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
-			catch { }
-			
-			$tempZip = Join-Path $env:TEMP ("nssm_{0}.zip" -f ([guid]::NewGuid().ToString("N")))
-			
-			$urls = @(
-				"https://nssm.cc/download/nssm-2.24.zip",
-				"https://nssm.cc/release/nssm-2.24.zip",
-				"https://github.com/kirillkovalenko/nssm/releases/download/v2.24/nssm-2.24.zip"
-			)
-			
-			$downloaded = $false
-			$lastErr = $null
-			
-			foreach ($url in $urls)
-			{
-				try
-				{
-					Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
-					$downloaded = $true
-					Write_Log "Downloaded NSSM from: $url" "green"
-					break
-				}
-				catch
-				{
-					$lastErr = $_.Exception.Message
-					Write_Log "Download failed from: $url :: $lastErr" "yellow"
-				}
-			}
-			
-			if (-not $downloaded)
-			{
-				Write_Log "ERROR: Could not download NSSM from any source. Last error: $lastErr" "red"
-				Write_Log "Offline fix: place nssm.exe here and re-run:" "yellow"
-				Write_Log "  1) $nssmCacheExe  (preferred cache path)" "yellow"
-				Write_Log "  2) $scriptFolder\nssm.exe" "yellow"
-				Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
-				return
-			}
-			
-			try
-			{
-				$extractDir = Join-Path $nssmCacheDir ("_extract_{0}" -f ([guid]::NewGuid().ToString("N")))
-				New-Item -Path $extractDir -ItemType Directory -Force | Out-Null
-				
-				try { Expand-Archive -LiteralPath $tempZip -DestinationPath $extractDir -Force }
-				catch
-				{
-					Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop | Out-Null
-					[System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $extractDir, $true)
-				}
-				
-				$preferredFolder = if ([Environment]::Is64BitOperatingSystem) { "win64" }
-				else { "win32" }
-				
-				$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
-				Where-Object { $_.FullName -match [regex]::Escape("\$preferredFolder\") } |
-				Select-Object -First 1
-				
-				if (-not $found)
-				{
-					$found = Get-ChildItem -Path $extractDir -Recurse -Filter "nssm.exe" -ErrorAction SilentlyContinue |
-					Select-Object -First 1
-				}
-				if (-not $found) { throw "Zip extracted but nssm.exe not found." }
-				
-				Copy-Item -LiteralPath $found.FullName -Destination $nssmCacheExe -Force
-				Write_Log "NSSM cached at: $nssmCacheExe" "green"
-				
-				try { Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
-				catch { }
-				try { Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue }
-				catch { }
-			}
-			catch
-			{
-				Write_Log "ERROR: NSSM zip downloaded but could not be extracted/installed: $($_.Exception.Message)" "red"
-				Write_Log "Offline fix: place nssm.exe here and re-run:" "yellow"
-				Write_Log "  1) $nssmCacheExe  (preferred cache path)" "yellow"
-				Write_Log "  2) $scriptFolder\nssm.exe" "yellow"
-				Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
-				return
-			}
-		}
-		
-		# Best-effort: place NSSM into service folder only if missing (DON'T overwrite)
-		if (-not (Test-Path $nssmExe))
-		{
-			try { Copy-Item -LiteralPath $nssmCacheExe -Destination $nssmExe -Force }
-			catch { }
-		}
-	}
-	
-	# ==========================================================================================
-	# SERVICE INSTALL / REINSTALL (USES CACHED NSSM FOR OPS)
+	# INSTALL SERVICE (requires NSSM present - NO downloads)
 	# ==========================================================================================
 	if ($state.Action -eq "service")
 	{
-		if (-not (Test-Path $nssmCacheExe))
+		if (-not $nssmExe -or -not (Test-Path -LiteralPath $nssmExe))
 		{
-			Write_Log "ERROR: NSSM missing at cache path: $nssmCacheExe. Cannot install service." "red"
+			Write_Log "ERROR: NSSM is missing. This function will not download it." "red"
+			Write_Log "Expected: C:\Tecnica_Systems\Alex_C.T\Tools\NSSM\nssm.exe" "yellow"
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
 		
-		$existingSvc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-		if ($existingSvc)
+		# Fresh log for easy debugging
+		try { "" | Set-Content -LiteralPath $singleLog -Encoding UTF8 -Force }
+		catch { }
+		
+		# Remove existing service (clean reinstall)
+		if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
 		{
-			$msg = "Service '$serviceName' already exists.`r`n`r`nYES = Uninstall`r`nNO = Reinstall/Repair`r`nCANCEL = Abort"
-			$res = [System.Windows.Forms.MessageBox]::Show(
-				$msg,
-				"Service Already Installed",
-				[System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
-				[System.Windows.Forms.MessageBoxIcon]::Question
-			)
-			
-			if ($res -eq [System.Windows.Forms.DialogResult]::Cancel)
-			{
-				Write_Log "User aborted service action for Duplicate File Monitor." "yellow"
-				Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
-				return
-			}
-			
-			# Stop/delete via SC (works even if NSSM binary is locked somewhere)
 			try { & $env:ComSpec /c ("sc stop `"{0}`"" -f $serviceName) *> $null }
 			catch { }
 			try { Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue }
 			catch { }
-			
-			$sw = [System.Diagnostics.Stopwatch]::StartNew()
-			do
-			{
-				Start-Sleep -Milliseconds 500
-				$s = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-			}
-			while ($s -and $s.Status -ne 'Stopped' -and $sw.Elapsed.TotalSeconds -lt 20)
-			
-			$s = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-			if ($s -and $s.Status -ne 'Stopped')
-			{
-				try
-				{
-					$svcCim = Get-CimInstance Win32_Service -Filter ("Name='{0}'" -f $serviceName) -ErrorAction SilentlyContinue
-					if ($svcCim -and $svcCim.ProcessId -and $svcCim.ProcessId -gt 0)
-					{
-						& $env:ComSpec /c ("taskkill /PID {0} /F" -f $svcCim.ProcessId) *> $null
-						Start-Sleep -Seconds 1
-					}
-				}
-				catch { }
-			}
-			
 			try { & $env:ComSpec /c ("sc delete `"{0}`"" -f $serviceName) *> $null }
 			catch { }
 			Start-Sleep -Seconds 1
-			
-			if ($res -eq [System.Windows.Forms.DialogResult]::Yes)
-			{
-				Write_Log "Service '$serviceName' uninstalled successfully." "green"
-				Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
-				return
-			}
 		}
 		
 		$psExe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-		$psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$psScriptPath`" -IntervalSeconds $([int]$state.Interval)"
+		$interval = [int]$state.Interval
 		
-		& $nssmCacheExe install $serviceName $psExe $psArgs
+		# Install with args as separate tokens (no quoting issues)
+		& $nssmExe install $serviceName $psExe `
+				   '-NoProfile' `
+				   '-ExecutionPolicy' 'Bypass' `
+				   '-File' $psScriptPath `
+				   '-IntervalSeconds' "$interval"
+		
 		if ($LASTEXITCODE -ne 0)
 		{
-			Write_Log "NSSM install failed (ExitCode=$LASTEXITCODE). Using: $nssmCacheExe" "red"
+			Write_Log "ERROR: NSSM install failed (ExitCode=$LASTEXITCODE). NSSM: $nssmExe" "red"
+			Write_Log "Log: $singleLog" "yellow"
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
 		
-		& $nssmCacheExe set $serviceName AppDirectory $svcScripts
-		& $nssmCacheExe set $serviceName DisplayName "Remove Duplicate Files From toBizerba"
-		& $nssmCacheExe set $serviceName Description "Monitors $TargetPath for duplicate files and removes them (interval $([int]$state.Interval) sec)."
-		& $nssmCacheExe set $serviceName Start SERVICE_AUTO_START
-		& $nssmCacheExe set $serviceName AppRestartDelay 5000
+		# Configure service
+		& $nssmExe set $serviceName AppDirectory $svcScripts *> $null
+		& $nssmExe set $serviceName Start SERVICE_AUTO_START *> $null
+		& $nssmExe set $serviceName ObjectName "LocalSystem" *> $null
 		
-		# Run as LocalSystem (safe for ProgramData + local folder access)
-		& $nssmCacheExe set $serviceName ObjectName "LocalSystem"
+		# ONE log file for NSSM stdout + stderr
+		& $nssmExe set $serviceName AppStdout $singleLog *> $null
+		& $nssmExe set $serviceName AppStderr $singleLog *> $null
+		& $nssmExe set $serviceName AppRotateFiles 0 *> $null
 		
-		# Always restart on exit
-		& $nssmCacheExe set $serviceName AppExit Default Restart
-		& $nssmCacheExe set $serviceName AppExit 0 Restart
-		
-		& $nssmCacheExe set $serviceName AppStdout $svcStdout
-		& $nssmCacheExe set $serviceName AppStderr $svcStderr
-		& $nssmCacheExe set $serviceName AppRotateFiles 1
-		& $nssmCacheExe set $serviceName AppRotateOnline 1
-		& $nssmCacheExe set $serviceName AppRotateSeconds 86400
-		& $nssmCacheExe set $serviceName AppRotateBytes 1048576
-		
-		& $nssmCacheExe start $serviceName
+		& $nssmExe start $serviceName *> $null
 		if ($LASTEXITCODE -ne 0)
 		{
-			Write_Log "Service installed but failed to start (ExitCode=$LASTEXITCODE)." "red"
-			Write_Log "Check service error log: $svcStderr" "yellow"
+			Write_Log "ERROR: Service installed but failed to start (ExitCode=$LASTEXITCODE)." "red"
+			Write_Log "Log: $singleLog" "yellow"
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
 		
-		Write_Log "Service '$serviceName' installed and started. Interval: $([int]$state.Interval) seconds." "green"
-		Write_Log "NSSM cache used: $nssmCacheExe" "gray"
-		Write_Log "Service logs: $svcStdout / $svcStderr" "gray"
+		Start-Sleep -Milliseconds 800
+		$s = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+		if ($s -and $s.Status -ne 'Running')
+		{
+			Write_Log "WARNING: Service not Running (Status=$($s.Status)). Check log: $singleLog" "yellow"
+		}
+		else
+		{
+			Write_Log "Service '$serviceName' installed and started. Interval: $interval sec." "green"
+			Write_Log "Single log: $singleLog" "green"
+			Write_Log "NSSM used: $nssmExe" "gray"
+		}
+		
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 		return
 	}
+	
+	Write_Log "No valid action selected. Exiting." "yellow"
+	Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -28238,7 +28438,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
 	$RemoveArchiveBitItem.Add_Click({
 			$script:LastActivity = Get-Date
-			Remove_ArchiveBit_Interactive
+			Remove_Archive_Bit
 		})
 	[void]$ContextMenuGeneral.Items.Add($RemoveArchiveBitItem)
 	
@@ -28450,6 +28650,9 @@ $InstallCheckLOCOptionsItem.Add_Click({
 
 # Check for the precense of PsExec for later use
 # $GetPsExec = Get_PsExec
+
+# Starts download in background (returns immediately)
+Download_NSSM -Background | Out-Null
 
 # Get SQL Connection String
 Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
