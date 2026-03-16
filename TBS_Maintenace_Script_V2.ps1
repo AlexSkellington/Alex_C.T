@@ -4899,7 +4899,7 @@ IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$BackupSqlUse
 IF IS_ROLEMEMBER('db_owner', '$BackupSqlUser') = 0
     EXEC sp_addrolemember 'db_owner', '$BackupSqlUser';
 
-/* Create Table TBS_ITM_SMAppUPDATED */
+/* Create/Refresh ScaleCommApp Triggers */
 IF OBJECT_ID('dbo.TBS_ITM_SMAppUPDATED', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('dbo.TBS_ITM_SMAppUPDATED', 'OBJECT', 'ALTER') = 1 BEGIN DROP TABLE dbo.TBS_ITM_SMAppUPDATED END;
 CREATE TABLE dbo.TBS_ITM_SMAppUPDATED (
     Id INT IDENTITY(1,1) PRIMARY KEY,
@@ -4907,6 +4907,102 @@ CREATE TABLE dbo.TBS_ITM_SMAppUPDATED (
     Sent BIT NOT NULL DEFAULT 0,
     SentAt DATETIME NOT NULL DEFAULT GETDATE()
 );
+
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateOBJ%')
+DROP TRIGGER [dbo].[SMApp_UpdateOBJ]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdatePOS%')
+DROP TRIGGER [dbo].[SMApp_UpdatePOS]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdatePrice%')
+DROP TRIGGER [dbo].[SMApp_UpdatePrice]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateSCL%')
+DROP TRIGGER [dbo].[SMApp_UpdateSCL]
+GO
+IF EXISTS (select * from sysobjects where name like '%SMApp_UpdateSCL_TXT%')
+DROP TRIGGER [dbo].[SMApp_UpdateSCL_TXT]
+GO
+
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdateOBJ]
+   ON  [dbo].[OBJ_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+
+	INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+	SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+END
+
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdatePOS]
+   ON  [dbo].[POS_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+		SET NOCOUNT ON;
+		INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+		SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000' 
+END
+
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdatePrice]
+   ON  [dbo].[PRICE_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+		SET NOCOUNT ON;
+		INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+		SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000' 
+END
+
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TRIGGER [dbo].[SMApp_UpdateSCL]
+   ON  [dbo].[SCL_TAB]
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+       SET NOCOUNT ON;
+       INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+	SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+END
+
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TRIGGER  [dbo].[SMApp_UpdateSCL_TXT]
+ 
+   ON  [dbo].[SCL_TXT_TAB] 
+   AFTER INSERT,UPDATE
+AS 
+BEGIN
+
+       SET NOCOUNT ON;
+
+       INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
+       SELECT '002'+cast(RIGHT('00000'+ CONVERT(VARCHAR,F267),5) as varchar)+'00000',0, GETDATE() 
+       FROM inserted,OBJ_TAB 
+       WHERE '002'+cast(RIGHT('00000'+ CONVERT(VARCHAR,F267),5) as varchar)+'00000' = F01 
+       and SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+ 
+END
+
 CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_CodeF01 ON dbo.TBS_ITM_SMAppUPDATED (CodeF01);
 CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_Sent ON dbo.TBS_ITM_SMAppUPDATED (Sent);
 CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_SentAt ON dbo.TBS_ITM_SMAppUPDATED (SentAt);
@@ -11531,7 +11627,6 @@ function Refresh_PIN_Pad_Files
 # Description:
 #   Always installs BOTH single-function and multi-function deploy artifacts for SMS:
 #     - DEPLOY_SYS.sql            (includes "Multiple Functions" menu entry)
-#     - DEPLOY_ONE_FCT.sqm        (single function deployment)
 #     - DEPLOY_MULTI_FCT.sqm      (CSV / ranges like 123,234,300-305)
 #
 # Encoding/format:
@@ -11652,7 +11747,7 @@ ORDER BY STO.F1000"));
 "@
 	
 	# ===============================================================================================================
-	#                                      DEPLOY_FCT.sqm (template)
+	#                                      DEPLOY_MULTI_FCT.sqm (template)
 	#   Supports CSV and ranges (e.g., 123,234,300-305).
 	# ===============================================================================================================
 	$DeployMultiFctContent = @"
@@ -11777,866 +11872,6 @@ ORDER BY F1000,F1063;
 	}
 	
 	Write_Log "`r`n==================== Install_FUNCTIONS_Into_SMS Completed ====================`r`n" "blue"
-}
-
-# ===================================================================================================
-#  FUNCTION: Install_And_Check_LOC_SMS_Options_On_Lanes  (PowerShell 5.1)
-# ---------------------------------------------------------------------------------------------------
-#  Key behaviors:
-#    • Reinstall: uses FirstLoad to rewrite files, but NEVER deletes folders (no Remove-Item, no robocopy /MIR or /PURGE).
-#    • Install: first-time uses FirstLoad; if already present, just overwrite/add missing files (no deletes).
-#    • Root Inbox (Options\<Option>\Inbox) goes to Office\XF<Store><Lane>.
-#    • FirstLoad\Inbox -> XF, FirstLoad\Lbz -> Office\Lbz, Xch* -> Storeman\Xch* (FirstLoad Xch* if first-install/reinstall).
-#    • Cgi -> Office\CGI; Htm/Html -> Office\HTM (english only; ignore Cgi_* / Htm_*).
-#    • Generic top-level folders (e.g. Images, Layouts…): copy to lane's existing Office\<Folder> or Storeman\<Folder>;
-#      if neither exists, create Office\<Folder> and copy there.
-#    • Options\<Option> content is copied to Storeman\Options\<Option> (no duplication, no deletes).
-#    • Action picker enables "Reinstall" ONLY if at least one selected option already exists on at least one selected lane.
-#    • No ternary operator anywhere. Robust UNC copies via robocopy /E (no purge).
-# ===================================================================================================
-
-function Install_And_Check_LOC_SMS_Options_On_Lanes
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber,
-		[string]$BasePath,
-		[string]$OptionsRoot,
-		[ValidateSet('All', 'Bank', 'Device', 'Link', 'Plugin', 'Promo', 'Xchange', 'Option', 'Others')]
-		[string]$Category = 'All',
-		[string[]]$OptionName,
-		[int]$MaxConcurrency = 6
-	)
-	
-	Write_Log "Install_And_Check_LOC_SMS_Options_On_Lanes: starting..." 'Cyan'
-	
-	# ---------------- base paths ----------------
-	if ([string]::IsNullOrWhiteSpace($BasePath))
-	{
-		if ($script:BasePath) { $BasePath = $script:BasePath }
-		else { $BasePath = 'C:\storeman' } # comment: default base
-	}
-	if ([string]::IsNullOrWhiteSpace($OptionsRoot))
-	{
-		$OptionsRoot = Join-Path $BasePath 'Install\Options' # comment: default repo
-	}
-	Write_Log ("Local BasePath : {0}" -f $BasePath)  'Cyan'
-	Write_Log ("Options Root   : {0}" -f $OptionsRoot) 'Cyan'
-	if (-not (Test-Path $OptionsRoot)) { Write_Log ("OptionsRoot not found: {0}" -f $OptionsRoot) 'Red'; return }
-	
-	# ---------------- zip support ----------------
-	$zipLoaded = $false
-	try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop; $zipLoaded = $true }
-	catch { Write_Log "ZIP library unavailable - .zip options will be skipped." 'Yellow' }
-	
-	# ---------------- scan repo ----------------
-	$knownCats = @('Bank', 'Device', 'Link', 'Plugin', 'Promo', 'Xchange', 'Option', 'Others')
-	$optionFS = @()
-	try
-	{
-		$optionFS = Get-ChildItem -Path $OptionsRoot -Force -ErrorAction SilentlyContinue |
-		Where-Object { $_.PSIsContainer -or $_.Extension -match '\.zip$' }
-	}
-	catch { }
-	if (-not $optionFS -or $optionFS.Count -eq 0) { Write_Log "No options found in repository." 'Yellow'; return }
-	
-	$optionEntries = @()
-	foreach ($it in $optionFS)
-	{
-		$bn = $it.BaseName
-		$cat = 'Others'
-		if ($bn -match '^([A-Za-z]+)_')
-		{
-			$pref = $matches[1]
-			if ($pref -match '^(?i)application$') { $pref = 'Option' } # normalize
-			foreach ($kc in $knownCats) { if ($kc -ieq $pref) { $cat = $kc; break } }
-		}
-		else
-		{
-			$leaf = Split-Path -Path $it.DirectoryName -Leaf
-			if ($leaf) { foreach ($kc in $knownCats) { if ($kc -ieq $leaf) { $cat = $kc; break } } }
-		}
-		if ($Category -ne 'All' -and $cat -ne $Category) { continue }
-		if ($OptionName -and $OptionName.Count -gt 0)
-		{
-			$ok = $false; foreach ($p in $OptionName) { if ($bn -like $p) { $ok = $true; break } }
-			if (-not $ok) { continue }
-		}
-		$e = [PSCustomObject]@{ Name = $bn; Category = $cat; SourcePath = $it.FullName; DisplayName = ("$cat\$bn") }
-		$e | Add-Member ScriptMethod ToString { $this.DisplayName } -Force
-		$optionEntries += $e
-	}
-	if (-not $optionEntries -or $optionEntries.Count -eq 0) { Write_Log "No options matched current filters." 'Yellow'; return }
-	
-	# ---------------- OPTIONS PICKER ----------------
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
-	
-	$formOpt = New-Object System.Windows.Forms.Form
-	$formOpt.Text = "Select LOC Options"
-	$formOpt.Size = New-Object System.Drawing.Size(780, 560)
-	$formOpt.StartPosition = "CenterScreen"
-	$formOpt.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-	$formOpt.MaximizeBox = $false; $formOpt.MinimizeBox = $false; $formOpt.ShowInTaskbar = $true
-	
-	$panelCats = New-Object System.Windows.Forms.Panel
-	$panelCats.Location = New-Object System.Drawing.Point(12, 12)
-	$panelCats.Size = New-Object System.Drawing.Size(744, 36)
-	$formOpt.Controls.Add($panelCats)
-	
-	$catNames = @('All', 'Bank', 'Device', 'Link', 'Plugin', 'Promo', 'Xchange', 'Option', 'Others')
-	$presentCats = @('All'); $presentSet = @{ }
-	foreach ($e in $optionEntries) { if (-not $presentSet.ContainsKey($e.Category)) { $presentSet[$e.Category] = $true; $presentCats += $e.Category } }
-	
-	$catButtons = @{ }; $btnX = 0
-	foreach ($cn in $catNames)
-	{
-		$b = New-Object System.Windows.Forms.Button
-		$b.Text = $cn; $b.Tag = $cn
-		$b.Location = New-Object System.Drawing.Point($btnX, 4)
-		$b.Size = New-Object System.Drawing.Size(82, 28)
-		if (($cn -ne 'All') -and (-not ($presentCats -contains $cn))) { $b.Enabled = $false }
-		else { $b.Enabled = $true }
-		[void]$panelCats.Controls.Add($b); $catButtons[$cn] = $b
-		$btnX = $btnX + 84
-	}
-	
-	$lblSearch = New-Object System.Windows.Forms.Label
-	$lblSearch.Text = "Search:"; $lblSearch.AutoSize = $true
-	$lblSearch.Location = New-Object System.Drawing.Point(12, 56)
-	$formOpt.Controls.Add($lblSearch)
-	
-	$txtSearch = New-Object System.Windows.Forms.TextBox
-	$txtSearch.Location = New-Object System.Drawing.Point(72, 52)
-	$txtSearch.Size = New-Object System.Drawing.Size(684, 24)
-	$formOpt.Controls.Add($txtSearch)
-	
-	$clbOpts = New-Object System.Windows.Forms.CheckedListBox
-	$clbOpts.Location = New-Object System.Drawing.Point(12, 84)
-	$clbOpts.Size = New-Object System.Drawing.Size(744, 380)
-	$clbOpts.CheckOnClick = $true
-	$formOpt.Controls.Add($clbOpts)
-	
-	$btnSelAll = New-Object System.Windows.Forms.Button
-	$btnSelAll.Text = "Select All (Filtered)"
-	$btnSelAll.Location = New-Object System.Drawing.Point(12, 472)
-	$btnSelAll.Size = New-Object System.Drawing.Size(160, 30)
-	$formOpt.Controls.Add($btnSelAll)
-	
-	$btnDesAll = New-Object System.Windows.Forms.Button
-	$btnDesAll.Text = "Deselect All (Filtered)"
-	$btnDesAll.Location = New-Object System.Drawing.Point(178, 472)
-	$btnDesAll.Size = New-Object System.Drawing.Size(170, 30)
-	$formOpt.Controls.Add($btnDesAll)
-	
-	$lblCount = New-Object System.Windows.Forms.Label
-	$lblCount.Text = "Selected: 0"; $lblCount.AutoSize = $true
-	$lblCount.Location = New-Object System.Drawing.Point(358, 478)
-	$formOpt.Controls.Add($lblCount)
-	
-	$btnOK = New-Object System.Windows.Forms.Button
-	$btnOK.Text = "OK"; $btnOK.Location = New-Object System.Drawing.Point(538, 472)
-	$btnOK.Size = New-Object System.Drawing.Size(90, 30)
-	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$formOpt.Controls.Add($btnOK); $formOpt.AcceptButton = $btnOK
-	
-	$btnCancel = New-Object System.Windows.Forms.Button
-	$btnCancel.Text = "Cancel"; $btnCancel.Location = New-Object System.Drawing.Point(646, 472)
-	$btnCancel.Size = New-Object System.Drawing.Size(90, 30)
-	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$formOpt.Controls.Add($btnCancel); $formOpt.CancelButton = $btnCancel
-	
-	$currentCategory = 'All'; $checkedState = @{ }
-	
-	if ($OptionName -and $OptionName.Count -gt 0)
-	{
-		foreach ($e in $optionEntries) { foreach ($p in $OptionName) { if ($e.Name -like $p) { $checkedState[$e.Name] = $true; break } } }
-	}
-	
-	$updateCountLabel = {
-		$n = 0; foreach ($kv in $checkedState.GetEnumerator()) { if ($kv.Value) { $n = $n + 1 } }
-		$lblCount.Text = ("Selected: {0}" -f $n)
-	}
-	$refreshList = {
-		$q = ""; if ($txtSearch.Text) { $q = "$($txtSearch.Text)".Trim() }
-		$filtered = @()
-		foreach ($e in $optionEntries)
-		{
-			if ($currentCategory -ne 'All' -and $e.Category -ne $currentCategory) { continue }
-			if ($q -ne "")
-			{
-				$hay = ($e.Name + " " + $e.Category + " " + $e.DisplayName)
-				if ($hay.ToLower().IndexOf($q.ToLower()) -lt 0) { continue }
-			}
-			$filtered += $e
-		}
-		$clbOpts.BeginUpdate(); $clbOpts.Items.Clear()
-		foreach ($e in ($filtered | Sort-Object Category, Name))
-		{
-			$idx = $clbOpts.Items.Add($e)
-			if ($checkedState.ContainsKey($e.Name)) { if ($checkedState[$e.Name]) { $clbOpts.SetItemChecked($idx, $true) } }
-		}
-		$clbOpts.EndUpdate()
-		& $updateCountLabel
-	}
-	
-	foreach ($cn in $catNames)
-	{
-		$b = $catButtons[$cn]; [void]$b.Add_Click({
-				param ($s,
-					$e) $currentCategory = [string]$s.Tag; & $refreshList
-			})
-	}
-	[void]$txtSearch.Add_TextChanged({ & $refreshList })
-	[void]$clbOpts.Add_ItemCheck({
-			$i = $_.Index
-			if ($i -ge 0 -and $i -lt $clbOpts.Items.Count)
-			{
-				$it = $clbOpts.Items[$i]
-				if ($it -and $it.PSObject.Properties['Name'])
-				{
-					if ($_.NewValue -eq [System.Windows.Forms.CheckState]::Checked) { $checkedState[$it.Name] = $true }
-					else { $checkedState[$it.Name] = $false }
-					& $updateCountLabel
-				}
-			}
-		})
-	[void]$btnSelAll.Add_Click({
-			$i = 0; while ($i -lt $clbOpts.Items.Count)
-			{
-				$checkedState[$clbOpts.Items[$i].Name] = $true
-				$clbOpts.SetItemChecked($i, $true)
-				$i = $i + 1
-			}
-			& $updateCountLabel
-		})
-	[void]$btnDesAll.Add_Click({
-			$i = 0; while ($i -lt $clbOpts.Items.Count)
-			{
-				$item = $clbOpts.Items[$i]
-				if ($item -and $item.PSObject.Properties['Name']) { $checkedState[$item.Name] = $false }
-				$clbOpts.SetItemChecked($i, $false)
-				$i = $i + 1
-			}
-			& $updateCountLabel
-		})
-	
-	& $refreshList
-	if ($formOpt.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { Write_Log "No options selected. Aborting." 'Yellow'; return }
-	$selectedNames = @(); foreach ($kv in $checkedState.GetEnumerator()) { if ($kv.Value) { $selectedNames += $kv.Key } }
-	if (-not $selectedNames -or $selectedNames.Count -eq 0) { Write_Log "No options checked. Aborting." 'Yellow'; return }
-	Write_Log ("Options selected: {0}" -f (($selectedNames | Sort-Object) -join ", ")) 'DarkCyan'
-	
-	# ---------------- LANE PICKER ----------------
-	$sel = $null
-	try { $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Lanes for LOC Options" }
-	catch { Write_Log ("Lane picker failed: {0}" -f $_.Exception.Message) 'Red'; return }
-	if (-not $sel -or -not $sel.Lanes -or $sel.Lanes.Count -eq 0) { Write_Log "No lanes selected. Aborting." 'Yellow'; return }
-	
-	$laneNumToMachine = @{ }
-	if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('LaneNumToMachineName')) { $laneNumToMachine = $script:FunctionResults['LaneNumToMachineName'] }
-	
-	$lanePlan = @()
-	foreach ($ln in ($sel.Lanes | Sort-Object))
-	{
-		$m = $null; if ($laneNumToMachine.ContainsKey($ln)) { $m = $laneNumToMachine[$ln] }
-		if ([string]::IsNullOrWhiteSpace($m)) { Write_Log ("Lane {0} has no machine mapping - skipping." -f $ln) 'Yellow' }
-		else { $lanePlan += (New-Object PSObject -Property @{ Lane = $ln; Machine = $m }) }
-	}
-	if ($lanePlan.Count -eq 0) { Write_Log "No lanes resolved to machine names - aborting." 'Red'; return }
-	$pairs = @(); foreach ($lp in $lanePlan) { $pairs += ("{0}={1}" -f $lp.Lane, $lp.Machine) }
-	Write_Log ("Lanes selected : {0}" -f ($pairs -join ", ")) 'DarkCyan'
-	
-	# ---------------- resolve remote paths ----------------
-	$laneTargets = @()
-	foreach ($lp in $lanePlan)
-	{
-		$mach = $lp.Machine
-		$candidates = @("\\$mach\storeman", "\\$mach\c$\Storeman", "\\$mach\d$\Storeman")
-		$storemanRoot = $null
-		foreach ($p in $candidates)
-		{
-			try { if (Test-Path $p) { $storemanRoot = $p; break } }
-			catch { }
-		}
-		if (-not $storemanRoot) { Write_Log ("Lane {0} ({1}): Storeman root not reachable." -f $lp.Lane, $mach) 'Yellow'; continue }
-		
-		$officeRoot = Join-Path $storemanRoot 'Office'
-		if (-not (Test-Path $officeRoot)) { Write_Log ("Lane {0} ({1}): missing Office. Skipping." -f $lp.Lane, $mach) 'Yellow'; continue }
-		
-		$optionsRootLane = Join-Path $storemanRoot 'Options'
-		if (-not (Test-Path $optionsRootLane)) { Write_Log ("Lane {0} ({1}): missing Options. Skipping." -f $lp.Lane, $mach) 'Yellow'; continue }
-		
-		$laneTargets += (New-Object PSObject -Property @{
-				Lane			   = $lp.Lane
-				Machine		       = $mach
-				RemoteStoremanRoot = $storemanRoot
-				RemoteOfficePath   = $officeRoot
-				RemoteOptionsRoot  = $optionsRootLane
-			})
-	}
-	if ($laneTargets.Count -eq 0) { Write_Log "No reachable lanes with Office/Options present." 'Red'; return }
-	
-	Write_Log "Remote Office/Storeman paths per lane:" 'Blue'
-	Write_Log ((
-			$laneTargets | Select-Object Lane, Machine, RemoteStoremanRoot, RemoteOfficePath, RemoteOptionsRoot |
-			Sort-Object Lane | Format-Table -AutoSize | Out-String
-		)) 'Gray'
-	
-	# ---------------- stage: extract + parse ----------------
-	$selectedFS = @(); foreach ($it in $optionFS) { if ($selectedNames -contains $it.BaseName) { $selectedFS += $it } }
-	
-	$stagingRecords = @(); $tempDirs = New-Object System.Collections.Generic.List[string]
-	foreach ($item in $selectedFS)
-	{
-		$bn = $item.BaseName
-		
-		# extract zip if needed
-		$extractedRoot = $item.FullName
-		try
-		{
-			if (-not $item.PSIsContainer)
-			{
-				if ($zipLoaded)
-				{
-					$dest = Join-Path $env:TEMP ("LOC_Option_" + $bn + "_" + (Get-Date -Format 'yyyyMMdd_HHmmssfff'))
-					New-Item -ItemType Directory -Path $dest -Force | Out-Null
-					[System.IO.Compression.ZipFile]::ExtractToDirectory($item.FullName, $dest)
-					$extractedRoot = $dest
-					[void]$tempDirs.Add($dest)
-				}
-				else { Write_Log ("Skipping ZIP option '{0}' (no ZIP lib)." -f $item.Name) 'Yellow'; continue }
-			}
-		}
-		catch { Write_Log ("Extraction failed for '{0}': {1}" -f $bn, $_.Exception.Message) 'Yellow'; continue }
-		
-		# inner vendor root: Options\<Option>\...
-		$scanBase = $null
-		try { $lvl1 = Join-Path $extractedRoot 'Options'; $lvl2 = Join-Path $lvl1 $bn; if (Test-Path $lvl2 -PathType Container) { $scanBase = $lvl2 } }
-		catch { }
-		if (-not $scanBase)
-		{
-			try
-			{
-				$cand = Get-ChildItem -Path $extractedRoot -Directory -Recurse -Force -ErrorAction SilentlyContinue |
-				Where-Object { (Split-Path $_.Parent.FullName -Leaf) -ieq 'Options' -and $_.Name -ieq $bn } |
-				Select-Object -First 1
-				if ($cand) { $scanBase = $cand.FullName }
-			}
-			catch { }
-		}
-		if (-not $scanBase) { $scanBase = $extractedRoot }
-		
-		# collect top-level (english only Cgi/Htm)
-		$TopCgiDir = $null; $TopHtmDir = $null; $RootInboxDir = $null; $TopOfficeDir = $null
-		$XchDirs = @(); $FirstLoadXchDirs = @(); $FirstLoadInboxFiles = @(); $LbzFiles = @(); $OtherTopDirs = @()
-		try
-		{
-			$top = Get-ChildItem -Path $scanBase -Force -ErrorAction SilentlyContinue
-			foreach ($e in $top)
-			{
-				if (-not $e.PSIsContainer) { continue }
-				$nmLower = $e.Name.ToLower()
-				
-				if ($nmLower -eq 'cgi') { $TopCgiDir = $e.FullName; continue }
-				if ($nmLower -eq 'htm' -or $nmLower -eq 'html') { $TopHtmDir = $e.FullName; continue }
-				if ($nmLower -eq 'inbox') { $RootInboxDir = $e.FullName; continue }
-				if ($nmLower -eq 'office') { $TopOfficeDir = $e.FullName; continue }
-				
-				if ($nmLower -eq 'firstload')
-				{
-					$fl = Get-ChildItem -Path $e.FullName -Force -ErrorAction SilentlyContinue
-					foreach ($fd in $fl)
-					{
-						$sn = $fd.Name.ToLower()
-						if ($sn -eq 'inbox')
-						{
-							$FirstLoadInboxFiles += Get-ChildItem -Path $fd.FullName -Recurse -File -Force -ErrorAction SilentlyContinue |
-							Where-Object { @('.sqi', '.sqm', '.sql', '.txt') -contains $_.Extension.ToLower() } |
-							Select-Object -ExpandProperty FullName
-						}
-						elseif ($sn -eq 'lbz')
-						{
-							$LbzFiles += Get-ChildItem -Path $fd.FullName -Recurse -File -Force -ErrorAction SilentlyContinue |
-							Where-Object { @('.lbz', '.lbt') -contains $_.Extension.ToLower() } |
-							Select-Object -ExpandProperty FullName
-						}
-						elseif ($sn.Length -ge 3 -and ($sn.Substring(0, 3)) -eq 'xch')
-						{
-							$FirstLoadXchDirs += $fd.FullName
-						}
-					}
-					continue
-				}
-				
-				if ($nmLower.Length -ge 3 -and ($nmLower.Substring(0, 3)) -eq 'xch') { $XchDirs += $e.FullName; continue }
-				
-				# generic top-level folder (Images, Layouts, etc.)
-				$OtherTopDirs += $e.FullName
-			}
-		}
-		catch { }
-		
-		# XF sets (Office + Root Inbox + loose root)
-		$XF_Office = @(); $XF_RootInbox = @(); $XF_LooseRoot = @()
-		try
-		{
-			if ($TopOfficeDir)
-			{
-				$XF_Office += Get-ChildItem -Path $TopOfficeDir -Recurse -File -Force -ErrorAction SilentlyContinue |
-				Where-Object { @('.sqi', '.sqm', '.sql', '.txt') -contains $_.Extension.ToLower() } |
-				Select-Object -ExpandProperty FullName
-			}
-		}
-		catch { }
-		try
-		{
-			if ($RootInboxDir)
-			{
-				$XF_RootInbox += Get-ChildItem -Path $RootInboxDir -Recurse -File -Force -ErrorAction SilentlyContinue |
-				Where-Object { @('.sqi', '.sqm', '.sql', '.txt') -contains $_.Extension.ToLower() } |
-				Select-Object -ExpandProperty FullName
-			}
-		}
-		catch { }
-		try
-		{
-			$rootFiles = Get-ChildItem -Path $scanBase -File -Force -ErrorAction SilentlyContinue
-			foreach ($rf in $rootFiles)
-			{
-				$lx = ($rf.Extension).ToLower()
-				$ok = $false; foreach ($x in @('.sqi', '.sqm', '.sql', '.txt')) { if ($lx -eq $x) { $ok = $true; break } }
-				if ($ok) { $XF_LooseRoot += $rf.FullName }
-			}
-		}
-		catch { }
-		
-		$stagingRecords += (New-Object PSObject -Property @{
-				Name			    = $bn
-				ScanBase		    = $scanBase
-				TopCgiDir		    = $TopCgiDir
-				TopHtmDir		    = $TopHtmDir
-				RootInboxDir	    = $RootInboxDir
-				TopOfficeDir	    = $TopOfficeDir
-				XchDirs			    = $XchDirs
-				FirstLoadXchDirs    = $FirstLoadXchDirs
-				FirstLoadInboxFiles = $FirstLoadInboxFiles
-				LbzFiles		    = $LbzFiles
-				XF_Office		    = $XF_Office
-				XF_RootInbox	    = $XF_RootInbox
-				XF_LooseRoot	    = $XF_LooseRoot
-				OtherTopDirs	    = $OtherTopDirs
-			})
-	}
-	if (-not $stagingRecords -or $stagingRecords.Count -eq 0) { Write_Log "Selected options contained no usable content." 'Yellow'; return }
-	
-	# ---------------- check if Reinstall allowed ----------------
-	$reinstallAllowed = $false
-	foreach ($lt in $laneTargets)
-	{
-		foreach ($st in $stagingRecords)
-		{
-			$candidate = Join-Path $lt.RemoteOptionsRoot $st.Name
-			if (Test-Path $candidate) { $reinstallAllowed = $true; break }
-		}
-		if ($reinstallAllowed) { break }
-	}
-	if ($reinstallAllowed) { $reinstallStatus = 'Yes' }
-	else { $reinstallStatus = 'No' }
-	Write_Log ("Reinstall available for selection: {0}" -f $reinstallStatus) 'DarkGray'
-	
-	# ---------------- ACTION PICKER ----------------
-	$formMode = New-Object System.Windows.Forms.Form
-	$formMode.Text = "Action"
-	$formMode.Size = New-Object System.Drawing.Size(440, 220)
-	$formMode.StartPosition = "CenterScreen"
-	$formMode.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-	$formMode.MaximizeBox = $false; $formMode.MinimizeBox = $false; $formMode.ShowInTaskbar = $true
-	
-	$grp = New-Object System.Windows.Forms.GroupBox
-	$grp.Text = "What do you want to do?"
-	$grp.Location = New-Object System.Drawing.Point(12, 12)
-	$grp.Size = New-Object System.Drawing.Size(410, 120)
-	$formMode.Controls.Add($grp)
-	
-	$rbAudit = New-Object System.Windows.Forms.RadioButton
-	$rbAudit.Text = "Audit only"
-	$rbAudit.AutoSize = $true
-	$rbAudit.Location = New-Object System.Drawing.Point(16, 25)
-	$grp.Controls.Add($rbAudit)
-	
-	$rbInstall = New-Object System.Windows.Forms.RadioButton
-	$rbInstall.Text = "Install / Repair (outside only if already installed)"
-	$rbInstall.AutoSize = $true
-	$rbInstall.Location = New-Object System.Drawing.Point(16, 50)
-	$rbInstall.Checked = $true
-	$grp.Controls.Add($rbInstall)
-	
-	$rbReinstall = New-Object System.Windows.Forms.RadioButton
-	$rbReinstall.Text = "First Load / Reinstall (FirstLoad + outside; FirstLoad wins)"
-	$rbReinstall.AutoSize = $true
-	$rbReinstall.Location = New-Object System.Drawing.Point(16, 75)
-	$rbReinstall.Enabled = $reinstallAllowed
-	$grp.Controls.Add($rbReinstall)
-	
-	$btnModeOK = New-Object System.Windows.Forms.Button
-	$btnModeOK.Text = "OK"; $btnModeOK.Location = New-Object System.Drawing.Point(240, 150)
-	$btnModeOK.Size = New-Object System.Drawing.Size(80, 28)
-	$btnModeOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$formMode.Controls.Add($btnModeOK); $formMode.AcceptButton = $btnModeOK
-	
-	$btnModeCancel = New-Object System.Windows.Forms.Button
-	$btnModeCancel.Text = "Cancel"; $btnModeCancel.Location = New-Object System.Drawing.Point(332, 150)
-	$btnModeCancel.Size = New-Object System.Drawing.Size(80, 28)
-	$btnModeCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$formMode.Controls.Add($btnModeCancel); $formMode.CancelButton = $btnModeCancel
-	
-	$modeDlg = $formMode.ShowDialog()
-	if ($modeDlg -ne [System.Windows.Forms.DialogResult]::OK) { Write_Log "User cancelled action selection." 'Yellow'; return }
-	$ActionMode = 1
-	if ($rbAudit.Checked) { $ActionMode = 0 }
-	if ($rbInstall.Checked) { $ActionMode = 1 }
-	if ($rbReinstall.Checked) { $ActionMode = 2 }
-	
-	# ---------------- per-lane processing ----------------
-	$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-	$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, [Math]::Max(1, $MaxConcurrency), $iss, $Host)
-	$pool.Open()
-	$asyncHandles = New-Object System.Collections.Generic.List[System.IAsyncResult]
-	$psList = New-Object System.Collections.Generic.List[System.Management.Automation.PowerShell]
-	
-	foreach ($lt in $laneTargets)
-	{
-		$ps = [PowerShell]::Create(); $ps.RunspacePool = $pool
-		[void]$ps.AddScript({
-				param ($laneRec,
-					$stagedOptions,
-					[int]$actionMode,
-					[string]$storeNumberArg)
-				
-				$lane = $laneRec.Lane; $machine = $laneRec.Machine
-				$storemanRoot = $laneRec.RemoteStoremanRoot
-				$officeRoot = $laneRec.RemoteOfficePath
-				$optionsRoot = $laneRec.RemoteOptionsRoot
-				
-				$laneMsgs = New-Object System.Collections.Generic.List[string]
-				$laneRows = New-Object System.Collections.Generic.List[psobject]
-				
-				# XF name (must already exist; we don't create)
-				$laneInt = $null; $lanePadded = $null
-				try { $laneInt = [int]$lane }
-				catch { }
-				if ($laneInt -ne $null) { $lanePadded = ('{0:D3}' -f $laneInt) }
-				else { $lanePadded = "$lane" }
-				$xfFolderName = ("XF{0}{1}" -f $storeNumberArg, $lanePadded)
-				$xfFolderPath = Join-Path $officeRoot $xfFolderName
-				
-				foreach ($opt in $stagedOptions)
-				{
-					$name = $opt.Name
-					$scanBase = $opt.ScanBase
-					$cgiDir = $opt.TopCgiDir
-					$htmDir = $opt.TopHtmDir
-					$rootInboxDir = $opt.RootInboxDir
-					$officeDir = $opt.TopOfficeDir
-					$xchDirsOutside = $opt.XchDirs
-					$xchDirsFirst = $opt.FirstLoadXchDirs
-					$lbzFilesFirst = $opt.LbzFiles
-					$xfOffice = $opt.XF_Office
-					$xfRootInbox = $opt.XF_RootInbox
-					$xfLooseRoot = $opt.XF_LooseRoot
-					$otherTopDirs = $opt.OtherTopDirs
-					
-					$optFolderPath = Join-Path $optionsRoot $name
-					$installedBefore = Test-Path $optFolderPath
-					
-					$doAudit = $false; $doInstall = $false; $doReinstall = $false
-					if ($actionMode -eq 0) { $doAudit = $true }
-					if ($actionMode -eq 1) { $doInstall = $true }
-					if ($actionMode -eq 2) { $doReinstall = $true }
-					
-					# First load if reinstall OR not installed yet
-					$useFirstLoad = $false
-					if ($doReinstall) { $useFirstLoad = $true }
-					if ($doInstall -and -not $installedBefore) { $useFirstLoad = $true }
-					
-					$failed = 0
-					$copiedOpt = 0; $copiedCgi = 0; $copiedHtm = 0; $copiedXch = 0; $copiedLBZ = 0; $copiedXF = 0; $copiedOther = 0
-					
-					if (-not $doAudit)
-					{
-						# 1) Options\<Option> - safe to create option subfolder
-						try
-						{
-							if (-not (Test-Path $optFolderPath)) { New-Item -ItemType Directory -Path $optFolderPath -Force | Out-Null }
-							$rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" `
-												-ArgumentList @("`"$scanBase`"", "`"$optFolderPath`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1") `
-												-NoNewWindow -PassThru -Wait
-							$copiedOpt = 1
-						}
-						catch { $failed = $failed + 1 }
-						
-						# 2) Cgi -> Office\Cgi  (english only; do not create dest)
-						if ($cgiDir)
-						{
-							$destCgi = Join-Path $officeRoot 'Cgi'
-							if (Test-Path $destCgi)
-							{
-								try
-								{
-									$rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" `
-														-ArgumentList @("`"$cgiDir`"", "`"$destCgi`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1") `
-														-NoNewWindow -PassThru -Wait
-									$copiedCgi = 1
-								}
-								catch { $failed = $failed + 1 }
-							}
-							else
-							{
-								$laneMsgs.Add(("[WARN] {0} {1} | {2}: Office\Cgi not found. Skipped Cgi copy." -f $lane, $machine, $name))
-							}
-						}
-						
-						# 3) Htm/Html -> Office\Htm  (english only; do not create dest)
-						if ($htmDir)
-						{
-							$destHtm = Join-Path $officeRoot 'Htm'
-							if (Test-Path $destHtm)
-							{
-								try
-								{
-									$rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" `
-														-ArgumentList @("`"$htmDir`"", "`"$destHtm`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1") `
-														-NoNewWindow -PassThru -Wait
-									$copiedHtm = 1
-								}
-								catch { $failed = $failed + 1 }
-							}
-							else
-							{
-								$laneMsgs.Add(("[WARN] {0} {1} | {2}: Office\Htm not found. Skipped Htm copy." -f $lane, $machine, $name))
-							}
-						}
-						
-						# 4) Xch*  -- merge logic
-						#    First load: copy FirstLoad Xch* first, then copy outside Xch* with /XC so FL wins.
-						#    Repair: copy only outside Xch*.
-						$srcXchSetOrder = @()
-						if ($useFirstLoad)
-						{
-							foreach ($p in $xchDirsFirst) { $srcXchSetOrder += ('FL|' + $p) }
-							foreach ($p in $xchDirsOutside) { $srcXchSetOrder += ('OUT|' + $p) }
-						}
-						else
-						{
-							foreach ($p in $xchDirsOutside) { $srcXchSetOrder += ('OUT|' + $p) }
-						}
-						foreach ($tagged in $srcXchSetOrder)
-						{
-							$parts = $tagged.Split('|', 2)
-							$kind = $parts[0]; $srcDir = $parts[1]
-							$xname = Split-Path -Path $srcDir -Leaf
-							$destX = Join-Path $storemanRoot $xname
-							try
-							{
-								if (-not (Test-Path $destX)) { New-Item -ItemType Directory -Path $destX -Force | Out-Null } # allowed to create Xch*
-								$args = @("`"$srcDir`"", "`"$destX`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1")
-								if ($kind -eq 'OUT' -and $useFirstLoad)
-								{
-									# After FL, do not overwrite changed files from outside
-									$args += "/XC"
-								}
-								$rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" -ArgumentList $args -NoNewWindow -PassThru -Wait
-								$copiedXch = $copiedXch + 1
-							}
-							catch { $failed = $failed + 1 }
-						}
-						
-						# 5) LBZ (FirstLoad only, first load) -> Office\Lbz (do not create dest)
-						if ($useFirstLoad -and $lbzFilesFirst -and $lbzFilesFirst.Count -gt 0)
-						{
-							$destLBZ = Join-Path $officeRoot 'Lbz'
-							if (Test-Path $destLBZ)
-							{
-								foreach ($f in $lbzFilesFirst)
-								{
-									try { Copy-Item -Path $f -Destination (Join-Path $destLBZ (Split-Path $f -Leaf)) -Force; $copiedLBZ = $copiedLBZ + 1 }
-									catch { $failed = $failed + 1 }
-								}
-							}
-							else
-							{
-								$laneMsgs.Add(("[WARN] {0} {1} | {2}: Office\Lbz not found. Skipped LBZ." -f $lane, $machine, $name))
-							}
-						}
-						
-						# 6) XF drops - file-by-file control to honor "outside if not duplicate; FL wins"
-						if (Test-Path $xfFolderPath)
-						{
-							try
-							{
-								# Build FirstLoad name set (leaf names only; XF has no subfolders)
-								$flLeaf = New-Object System.Collections.Generic.HashSet[string]
-								if ($useFirstLoad -and $opt.FirstLoadInboxFiles -and $opt.FirstLoadInboxFiles.Count -gt 0)
-								{
-									foreach ($f in $opt.FirstLoadInboxFiles)
-									{
-										try { [void]$flLeaf.Add((Split-Path $f -Leaf).ToLower()) }
-										catch { }
-									}
-								}
-								# Outside set (Office + Root Inbox + Loose Root): skip if leaf collides with FL set (when in FL mode)
-								$outsideFiles = @()
-								if ($opt.XF_Office) { $outsideFiles += $opt.XF_Office }
-								if ($opt.XF_RootInbox) { $outsideFiles += $opt.XF_RootInbox }
-								if ($opt.XF_LooseRoot) { $outsideFiles += $opt.XF_LooseRoot }
-								
-								foreach ($src in $outsideFiles)
-								{
-									$leaf = (Split-Path $src -Leaf)
-									$skip = $false
-									if ($useFirstLoad)
-									{
-										if ($flLeaf.Contains($leaf.ToLower())) { $skip = $true }
-									}
-									if (-not $skip)
-									{
-										try { Copy-Item -Path $src -Destination (Join-Path $xfFolderPath $leaf) -Force; $copiedXF = $copiedXF + 1 }
-										catch { $failed = $failed + 1 }
-									}
-								}
-								# FirstLoad inbox files last (they win)
-								if ($useFirstLoad -and $opt.FirstLoadInboxFiles)
-								{
-									foreach ($src in $opt.FirstLoadInboxFiles)
-									{
-										$leaf = (Split-Path $src -Leaf)
-										try { Copy-Item -Path $src -Destination (Join-Path $xfFolderPath $leaf) -Force; $copiedXF = $copiedXF + 1 }
-										catch { $failed = $failed + 1 }
-									}
-								}
-							}
-							catch { $failed = $failed + 1 }
-						}
-						else
-						{
-							$laneMsgs.Add(("[WARN] {0} {1} | {2}: XF folder {3} not found. Skipped XF drops." -f $lane, $machine, $name, $xfFolderName))
-						}
-						
-						# 7) Other generic top-level folders - copy only if dest already exists; do NOT create
-						foreach ($srcOther in $otherTopDirs)
-						{
-							$oname = Split-Path -Path $srcOther -Leaf
-							$destOffice = Join-Path $officeRoot $oname
-							$destStore = Join-Path  $storemanRoot $oname
-							$target = $null
-							if (Test-Path $destOffice) { $target = $destOffice }
-							elseif (Test-Path $destStore) { $target = $destStore }
-							
-							if ($target -ne $null)
-							{
-								try
-								{
-									$rc = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" `
-														-ArgumentList @("`"$srcOther`"", "`"$target`"", "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/R:1", "/W:1") `
-														-NoNewWindow -PassThru -Wait
-									$copiedOther = $copiedOther + 1
-								}
-								catch { $failed = $failed + 1 }
-							}
-							else
-							{
-								$laneMsgs.Add(("[WARN] {0} {1} | {2}: Neither Office\{3} nor Storeman\{3} exists. Skipped." -f $lane, $machine, $name, $oname))
-							}
-						}
-					}
-					
-					# after
-					$optFolderAfter = Test-Path $optFolderPath
-					$installedAfter = $optFolderAfter
-					
-					# mode text
-					$modeTxt = 'Audit'
-					if ($actionMode -eq 1) { $modeTxt = 'Install' }
-					if ($actionMode -eq 2) { $modeTxt = 'Reinstall' }
-					
-					# concise summary
-					$summary = ("{0} {1} | {2}: Opt={3} Cgi={4} Htm={5} Xch={6} LBZ={7} XF={8} Other={9} {10}" -f `
-						$lane, $machine, $name, $copiedOpt, $copiedCgi, $copiedHtm, $copiedXch, $copiedLBZ, $copiedXF, $copiedOther, $modeTxt)
-					$laneMsgs.Add($summary)
-					
-					$laneRows.Add((New-Object PSObject -Property @{
-								Lane		    = $lane
-								Machine		    = $machine
-								Option		    = $name
-								InstalledBefore = $installedBefore
-								InstalledAfter  = $installedAfter
-								Copy_Options    = $copiedOpt
-								Copy_Cgi	    = $copiedCgi
-								Copy_Htm	    = $copiedHtm
-								Copy_Xch	    = $copiedXch
-								Copy_LBZ	    = $copiedLBZ
-								Copy_XF		    = $copiedXF
-								Copy_OtherDirs  = $copiedOther
-								Failures	    = $failed
-								Mode		    = $modeTxt
-							}))
-				}
-				
-				New-Object PSObject -Property @{ Messages = $laneMsgs; Items = $laneRows }
-			}).AddArgument($lt).AddArgument($stagingRecords).AddArgument([int]$ActionMode).AddArgument([string]$StoreNumber)
-		
-		$async = $ps.BeginInvoke()
-		[void]$asyncHandles.Add($async)
-		[void]$psList.Add($ps)
-	}
-	
-	# ---------------- collect ----------------
-	$allMessages = New-Object System.Collections.Generic.List[string]
-	$allItems = New-Object System.Collections.Generic.List[psobject]
-	$i = 0
-	while ($i -lt $asyncHandles.Count)
-	{
-		$ar = $asyncHandles[$i]
-		try
-		{
-			[void]$ar.AsyncWaitHandle.WaitOne()
-			$output = $psList[$i].EndInvoke($ar)
-			foreach ($block in $output)
-			{
-				if ($block -and $block.Messages) { foreach ($m in $block.Messages) { [void]$allMessages.Add($m) } }
-				if ($block -and $block.Items) { foreach ($it in $block.Items) { [void]$allItems.Add($it) } }
-			}
-		}
-		catch { Write_Log ("Runspace error: {0}" -f $_.Exception.Message) 'Yellow' }
-		finally
-		{
-			try { $psList[$i].Dispose() }
-			catch { }
-		}
-		$i = $i + 1
-	}
-	try { $pool.Close(); $pool.Dispose() }
-	catch { }
-	
-	foreach ($m in ($allMessages | Sort-Object)) { Write_Log $m 'Gray' }
-	
-	Write_Log "=================== Summary ===================" 'Blue'
-	Write_Log ((
-			$allItems | Sort-Object Lane, Option |
-			Select-Object Lane, Machine, Option, InstalledBefore, InstalledAfter, Copy_Options, Copy_Cgi, Copy_Htm, Copy_Xch, Copy_LBZ, Copy_XF, Copy_OtherDirs, Failures, Mode |
-			Format-Table -AutoSize | Out-String
-		)) 'Gray'
-	
-	foreach ($d in $tempDirs)
-	{
-		try { if (Test-Path $d) { Remove-Item -Path $d -Recurse -Force -ErrorAction SilentlyContinue } }
-		catch { }
-	}
-	
-	Write_Log "Install_And_Check_LOC_SMS_Options_On_Lanes: done." 'Cyan'
-	return $allItems
 }
 
 # ===================================================================================================
@@ -28677,7 +27912,7 @@ Start_Lane_Protocol_Jobs -LaneNumToMachineName $LaneNumToMachineName -SqlModuleN
 $AliasToTable = Get_Table_Aliases
 
 # Generate SQL scripts
-Generate_SQL_Scripts -StoreNumber $StoreNumber -LanesqlFilePath $LanesqlFilePath -StoresqlFilePath $StoresqlFilePath
+Generate_SQL_Scripts -StoreNumber $StoreNumber
 
 # Add all the Scales to the credential manager
 Add_Scale_Credentials -ScaleCodeToIPInfo $script:FunctionResults['WindowsScales']
