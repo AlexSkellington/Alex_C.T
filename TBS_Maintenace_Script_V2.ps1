@@ -4899,7 +4899,7 @@ IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$BackupSqlUse
 IF IS_ROLEMEMBER('db_owner', '$BackupSqlUser') = 0
     EXEC sp_addrolemember 'db_owner', '$BackupSqlUser';
 
-/* Create/Refresh ScaleCommApp Triggers */
+/* Create-Refresh ScaleCommApp Triggers */
 IF OBJECT_ID('dbo.TBS_ITM_SMAppUPDATED', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('dbo.TBS_ITM_SMAppUPDATED', 'OBJECT', 'ALTER') = 1 BEGIN DROP TABLE dbo.TBS_ITM_SMAppUPDATED END;
 CREATE TABLE dbo.TBS_ITM_SMAppUPDATED (
     Id INT IDENTITY(1,1) PRIMARY KEY,
