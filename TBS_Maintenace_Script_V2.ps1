@@ -4608,6 +4608,12 @@ function Clear_XE_Folder
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Generates SQL scripts for Lanes and Stores, including memory configuration and maintenance tasks.
+#   Updated behavior:
+#     - Always rebuilds the expected SQL text in memory from current script variables
+#     - Rewrites cached files if:
+#         1) file is missing
+#         2) file is older than 30 days
+#         3) file content differs from the newly generated script text
 # ===================================================================================================
 
 function Generate_SQL_Scripts
@@ -4615,25 +4621,36 @@ function Generate_SQL_Scripts
 	param (
 		[string]$StoreNumber
 	)
-
+	
 	# ------------------------------------------------------------------------------------------------
-	# Output folder = $script:SetupFiles\SQL_Scripts   (NO current-location writes)
-	# Cache rule: only (re)write files if missing OR older than 30 days
+	# Output folder = $script:SetupFiles\SQL_Scripts
+	# Files are rewritten only when missing, stale, or different from the current generated content
 	# ------------------------------------------------------------------------------------------------
 	$CacheMaxDays = 30
-
-	if (-not $script:FunctionResults) { $script:FunctionResults = @{} }
-
+	
+	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
+	
 	if (-not $script:SetupFiles -or -not (Test-Path $script:SetupFiles))
 	{
 		Write_Log "Generate_SQL_Scripts: `\$script:SetupFiles is missing or invalid. Cannot store SQL scripts." "red"
 		return
 	}
-
+	
 	$outDir = Join-Path $script:SetupFiles 'SQL_Scripts'
-	try { if (-not (Test-Path $outDir)) { New-Item -Path $outDir -ItemType Directory -Force | Out-Null } } catch { }
-
-	# Normalize store number (keep your existing behavior: 3-digit)
+	try
+	{
+		if (-not (Test-Path $outDir))
+		{
+			New-Item -Path $outDir -ItemType Directory -Force | Out-Null
+		}
+	}
+	catch
+	{
+		Write_Log "Generate_SQL_Scripts: Failed to create SQL output folder: $outDir" "red"
+		return
+	}
+	
+	# Normalize store number (existing behavior preserved: 3-digit format)
 	if (-not [string]::IsNullOrWhiteSpace($StoreNumber) -and $StoreNumber -match '^\d+$')
 	{
 		$StoreNumber = ([int]$StoreNumber).ToString('000')
@@ -4642,78 +4659,38 @@ function Generate_SQL_Scripts
 	{
 		$StoreNumber = $StoreNumber.PadLeft(3, '0')
 	}
-
+	
 	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
 	{
 		Write_Log "Failed to retrieve the connection string." "red"
 		return
 	}
-
-	# File set (per store)
-	$laneFile        = Join-Path $outDir ("Lane.sql")
-	$laneFilteredFile= Join-Path $outDir ("Lane_Filtered.sql")
-	$laneMailslotFile = Join-Path $outDir ("Lane_Mailslot.sql")
-	$serverFile      = Join-Path $outDir ("Server.sql")
-	$scheduleFile    = Join-Path $outDir ("Server_Schedule.sql")
-
-	# Track paths for easy reference elsewhere
-	$script:FunctionResults['LaneSqlScriptPath']          = $laneFile
-	$script:FunctionResults['LaneSqlFilteredScriptPath']  = $laneFilteredFile
-	$script:FunctionResults['LaneSqlMailslotScriptPath']  = $laneMailslotFile
-	$script:FunctionResults['ServerSqlScriptPath']        = $serverFile
-	$script:FunctionResults['ServerScheduleSqlScriptPath']= $scheduleFile
-
-	# Helper: load cache if fresh
-	$needBuild = $false
-	$cached = @{
-		Lane        = $false
-		LaneFiltered= $false
-		LaneMailslot= $false
-		Server      = $false
-		Schedule    = $false
-	}
-
-	try {
-		if (Test-Path $laneFile) {
-			$age = ((Get-Date) - (Get-Item $laneFile).LastWriteTime).TotalDays
-			if ($age -le $CacheMaxDays) { $script:LaneSQLScript = Get-Content -LiteralPath $laneFile -Raw; $cached.Lane = $true } else { $needBuild = $true }
-		} else { $needBuild = $true }
-
-		if (Test-Path $laneFilteredFile) {
-			$age = ((Get-Date) - (Get-Item $laneFilteredFile).LastWriteTime).TotalDays
-			if ($age -le $CacheMaxDays) { $script:LaneSQLFiltered = Get-Content -LiteralPath $laneFilteredFile -Raw; $cached.LaneFiltered = $true } else { $needBuild = $true }
-		} else { $needBuild = $true }
-
-		if (Test-Path $laneMailslotFile) {
-			$age = ((Get-Date) - (Get-Item $laneMailslotFile).LastWriteTime).TotalDays
-			if ($age -le $CacheMaxDays) { $script:LaneSQLScript_Mailslot = Get-Content -LiteralPath $laneMailslotFile -Raw; $cached.LaneMailslot = $true } else { $needBuild = $true }
-		} else { $needBuild = $true }
-
-		if (Test-Path $serverFile) {
-			$age = ((Get-Date) - (Get-Item $serverFile).LastWriteTime).TotalDays
-			if ($age -le $CacheMaxDays) { $script:ServerSQLScript = Get-Content -LiteralPath $serverFile -Raw; $cached.Server = $true } else { $needBuild = $true }
-		} else { $needBuild = $true }
-
-		if (Test-Path $scheduleFile) {
-			$age = ((Get-Date) - (Get-Item $scheduleFile).LastWriteTime).TotalDays
-			if ($age -le $CacheMaxDays) { $script:ScheduleServerScript = Get-Content -LiteralPath $scheduleFile -Raw; $cached.Schedule = $true } else { $needBuild = $true }
-		} else { $needBuild = $true }
-	} catch { $needBuild = $true }
-
-	# If everything is fresh, we're done (no regeneration, no rewrites)
-	if (-not $needBuild)
-	{
-		return
-	}
-
+	
 	# ------------------------------------------------------------------------------------------------
-	# Build scripts (same logic as your current function)
+	# File set
+	# ------------------------------------------------------------------------------------------------
+	$laneFile = Join-Path $outDir "Lane.sql"
+	$laneFilteredFile = Join-Path $outDir "Lane_Filtered.sql"
+	$laneMailslotFile = Join-Path $outDir "Lane_Mailslot.sql"
+	$serverFile = Join-Path $outDir "Server.sql"
+	$scheduleFile = Join-Path $outDir "Server_Schedule.sql"
+	
+	# Track paths for use elsewhere
+	$script:FunctionResults['LaneSqlScriptPath'] = $laneFile
+	$script:FunctionResults['LaneSqlFilteredScriptPath'] = $laneFilteredFile
+	$script:FunctionResults['LaneSqlMailslotScriptPath'] = $laneMailslotFile
+	$script:FunctionResults['ServerSqlScriptPath'] = $serverFile
+	$script:FunctionResults['ServerScheduleSqlScriptPath'] = $scheduleFile
+	
+	# ------------------------------------------------------------------------------------------------
+	# Build scripts from CURRENT variables every time
+	# This ensures the cached files are updated if the main script variables changed
 	# ------------------------------------------------------------------------------------------------
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$defaultStoreDbName = "STORESQL"
-	$defaultLaneDbName  = "LANESQL"
+	$defaultLaneDbName = "LANESQL"
 	$dbServer = $script:FunctionResults['DBSERVER']
-
+	
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
 		$storeDbName = $script:FunctionResults['DBNAME']
@@ -4723,8 +4700,9 @@ function Generate_SQL_Scripts
 		Write_Log "No 'DBNAME' in FunctionResults. Defaulting to '$defaultStoreDbName'." "yellow"
 		$storeDbName = $defaultStoreDbName
 	}
+	
 	$laneDbName = $defaultLaneDbName
-
+	
 	# ------------------ Lane script ------------------
 	$LaneSQLScript = @"
 /* Set a long timeout so the entire script runs */
@@ -4829,10 +4807,10 @@ ALTER DATABASE $laneDbName SET RECOVERY SIMPLE
 /* Clear the long database timeout */
 @WIZCLR(DBASE_TIMEOUT);
 "@
-
+	
 	$script:LaneSQLScript = $LaneSQLScript
-
-	# Filtered lane script
+	
+	# ------------------ Filtered lane script ------------------
 	$ServerMemoryConfig = @"
 DECLARE @Memory25PercentMB BIGINT;
 SELECT @Memory25PercentMB = (total_physical_memory_kb / 1024) * 25 / 100
@@ -4844,18 +4822,25 @@ RECONFIGURE;
 EXEC sp_configure 'show advanced options', 0;
 RECONFIGURE;
 "@
-
+	
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-	$sectionsToSkip = @('Set a long timeout so the entire script runs','Clear the long database timeout')
-
+	$sectionsToSkip = @(
+		'Set a long timeout so the entire script runs',
+		'Clear the long database timeout'
+	)
+	
 	$LaneSQLFiltered = ""
 	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
+	
 	foreach ($match in $matches)
 	{
 		$sectionName = $match.Groups['SectionName'].Value.Trim()
 		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
-
-		if ($sectionsToSkip -contains $sectionName) { continue }
+		
+		if ($sectionsToSkip -contains $sectionName)
+		{
+			continue
+		}
 		elseif ($sectionName -eq 'Set memory configuration')
 		{
 			$LaneSQLFiltered += "/* $sectionName */`r`n$ServerMemoryConfig`r`n`r`n"
@@ -4866,18 +4851,27 @@ RECONFIGURE;
 			$LaneSQLFiltered += "/* $sectionName */`r`n$sqlCommands`r`n`r`n"
 		}
 	}
+	
 	$script:LaneSQLFiltered = $LaneSQLFiltered
-
-	# Mailslot-friendly lane script
+	
+	# ------------------ Mailslot-friendly lane script ------------------
 	$lines = $script:LaneSQLScript -split "`r?`n"
 	$macroPattern = '^\s*(@|/|\*)'
+	
 	$fixedLines = foreach ($line in $lines)
 	{
-		if ($line -match $macroPattern -or [string]::IsNullOrWhiteSpace($line)) { $line }
-		else { "@EXEC($line)" }
+		if ($line -match $macroPattern -or [string]::IsNullOrWhiteSpace($line))
+		{
+			$line
+		}
+		else
+		{
+			"@EXEC($line)"
+		}
 	}
+	
 	$script:LaneSQLScript_Mailslot = ($fixedLines -join "`r`n")
-
+	
 	# ------------------ Server script ------------------
 	$ServerSQLScript = @"
 /* Set memory configuration */
@@ -4971,41 +4965,31 @@ SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
-CREATE TRIGGER [dbo].[SMApp_UpdateSCL]
-   ON  [dbo].[SCL_TAB]
-   AFTER INSERT,UPDATE
-AS 
+CREATE TRIGGER [dbo].[SMApp_UpdateSCL_TXT]
+ON [dbo].[SCL_TXT_TAB]
+AFTER INSERT, UPDATE
+AS
 BEGIN
-       SET NOCOUNT ON;
-       INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
-	SELECT F01,0, GETDATE() FROM inserted WHERE SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
+    SET NOCOUNT ON;
+
+    INSERT INTO dbo.TBS_ITM_SMAppUPDATED (CodeF01, Sent, SentAt)
+    SELECT
+        '002' + RIGHT('00000' + CONVERT(varchar(5), F267), 5) + '00000',
+        0,
+        GETDATE()
+    FROM inserted
+    JOIN dbo.OBJ_TAB
+        ON '002' + RIGHT('00000' + CONVERT(varchar(5), inserted.F267), 5) + '00000' = OBJ_TAB.F01
+    WHERE SUBSTRING(OBJ_TAB.F01,1,3) = '002'
+      AND ISNUMERIC(SUBSTRING(OBJ_TAB.F01,4,5)) = 1
+      AND SUBSTRING(OBJ_TAB.F01,9,5) = '00000';
 END
-
-SET ANSI_NULLS ON
-GO
-SET QUOTED_IDENTIFIER ON
 GO
 
-CREATE TRIGGER  [dbo].[SMApp_UpdateSCL_TXT]
- 
-   ON  [dbo].[SCL_TXT_TAB] 
-   AFTER INSERT,UPDATE
-AS 
-BEGIN
-
-       SET NOCOUNT ON;
-
-       INSERT INTO TBS_ITM_SMAppUPDATED (CodeF01,Sent,SentAt)
-       SELECT '002'+cast(RIGHT('00000'+ CONVERT(VARCHAR,F267),5) as varchar)+'00000',0, GETDATE() 
-       FROM inserted,OBJ_TAB 
-       WHERE '002'+cast(RIGHT('00000'+ CONVERT(VARCHAR,F267),5) as varchar)+'00000' = F01 
-       and SUBSTRING(F01,1,3) = '002' AND ISNUMERIC(SUBSTRING(F01,4,5))=1 AND SUBSTRING(F01,9,5) = '00000'
- 
-END
-
-CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_CodeF01 ON dbo.TBS_ITM_SMAppUPDATED (CodeF01);
-CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_Sent ON dbo.TBS_ITM_SMAppUPDATED (Sent);
-CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_SentAt ON dbo.TBS_ITM_SMAppUPDATED (SentAt);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.TBS_ITM_SMAppUPDATED') AND name = 'IDX_TBS_ITM_SMAppUPDATED_CodeF01') CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_CodeF01 ON dbo.TBS_ITM_SMAppUPDATED (CodeF01);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.TBS_ITM_SMAppUPDATED') AND name = 'IDX_TBS_ITM_SMAppUPDATED_Sent') CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_Sent ON dbo.TBS_ITM_SMAppUPDATED (Sent);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.TBS_ITM_SMAppUPDATED') AND name = 'IDX_TBS_ITM_SMAppUPDATED_SentAt') CREATE INDEX IDX_TBS_ITM_SMAppUPDATED_SentAt ON dbo.TBS_ITM_SMAppUPDATED (SentAt);
+GO
 
 /* Truncate unnecessary tables */
 IF OBJECT_ID('COST_REV', 'U') IS NOT NULL AND HAS_PERMS_BY_NAME('COST_REV', 'OBJECT', 'ALTER') = 1 TRUNCATE TABLE COST_REV;
@@ -5066,6 +5050,13 @@ DEALLOCATE cmds;
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD';
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN';
 
+/* Set database to highest compatibility level supported by this SQL Server version */
+DECLARE @ProductVersion varchar(128), @MajorVersion int, @CompatLevel int, @sql nvarchar(4000);
+SET @ProductVersion = CONVERT(varchar(128), SERVERPROPERTY('ProductVersion'));
+SET @MajorVersion = CONVERT(int, LEFT(@ProductVersion, CHARINDEX('.', @ProductVersion + '.') - 1));
+SET @CompatLevel = CASE @MajorVersion WHEN 17 THEN 170 WHEN 16 THEN 160 WHEN 15 THEN 150 WHEN 14 THEN 140 WHEN 13 THEN 130 WHEN 12 THEN 120 WHEN 11 THEN 110 WHEN 10 THEN 100 WHEN 9 THEN 90 ELSE NULL END;
+IF @CompatLevel IS NOT NULL BEGIN SET @sql = N'ALTER DATABASE [$storeDbName] SET COMPATIBILITY_LEVEL = ' + CONVERT(varchar(3), @CompatLevel); EXEC(@sql); END
+
 /* Shrink the main database file */
 DBCC SHRINKFILE ($storeDbName);
 
@@ -5075,9 +5066,9 @@ DBCC SHRINKFILE (${storeDbName}_Log);
 /* Restrict the indefinite log file growth */
 ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 "@
-
+	
 	$script:ServerSQLScript = $ServerSQLScript
-
+	
 	# ------------------ Scheduled maintenance server script ------------------
 	$ScheduleServerScript = @"
 /* Set a long timeout so the entire script runs */
@@ -5128,41 +5119,80 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE
 /* Clear the long database timeout */
 @WIZCLR(DBASE_TIMEOUT);
 "@
-
+	
 	$script:ScheduleServerScript = $ScheduleServerScript
-
+	
 	# ------------------------------------------------------------------------------------------------
-	# Write ONLY the missing/old files (<= 30 days = do NOT overwrite)
+	# Write files only when needed:
+	#   - missing
+	#   - older than CacheMaxDays
+	#   - content differs from current generated script
 	# ------------------------------------------------------------------------------------------------
 	$utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
-
-	try {
-		if (-not $cached.Lane) {
-			if ((-not (Test-Path $laneFile)) -or (((Get-Date) - (Get-Item $laneFile).LastWriteTime).TotalDays -gt $CacheMaxDays)) {
-				[System.IO.File]::WriteAllText($laneFile, $script:LaneSQLScript, $utf8NoBOM)
+	
+	try
+	{
+		$targets = @(
+			@{ Path = $laneFile; Content = $script:LaneSQLScript; Name = "Lane.sql" },
+			@{ Path = $laneFilteredFile; Content = $script:LaneSQLFiltered; Name = "Lane_Filtered.sql" },
+			@{ Path = $laneMailslotFile; Content = $script:LaneSQLScript_Mailslot; Name = "Lane_Mailslot.sql" },
+			@{ Path = $serverFile; Content = $script:ServerSQLScript; Name = "Server.sql" },
+			@{ Path = $scheduleFile; Content = $script:ScheduleServerScript; Name = "Server_Schedule.sql" }
+		)
+		
+		foreach ($target in $targets)
+		{
+			$shouldWrite = $false
+			$reason = $null
+			$existingContent = $null
+			
+			if (-not (Test-Path $target.Path))
+			{
+				$shouldWrite = $true
+				$reason = "missing"
+			}
+			else
+			{
+				try
+				{
+					$fileItem = Get-Item -LiteralPath $target.Path -ErrorAction Stop
+					$fileAgeDays = ((Get-Date) - $fileItem.LastWriteTime).TotalDays
+					
+					if ($fileAgeDays -gt $CacheMaxDays)
+					{
+						$shouldWrite = $true
+						$reason = "older than $CacheMaxDays days"
+					}
+					else
+					{
+						$existingContent = [System.IO.File]::ReadAllText($target.Path)
+						
+						if ($existingContent -ne $target.Content)
+						{
+							$shouldWrite = $true
+							$reason = "content differs from current generated script"
+						}
+					}
+				}
+				catch
+				{
+					# If the file cannot be read/checked, force rewrite
+					$shouldWrite = $true
+					$reason = "read/check failed"
+				}
+			}
+			
+			if ($shouldWrite)
+			{
+				[System.IO.File]::WriteAllText($target.Path, $target.Content, $utf8NoBOM)
+				Write_Log "Updated SQL script: $($target.Name) ($reason)." "darkcyan"
 			}
 		}
-		if (-not $cached.LaneFiltered) {
-			if ((-not (Test-Path $laneFilteredFile)) -or (((Get-Date) - (Get-Item $laneFilteredFile).LastWriteTime).TotalDays -gt $CacheMaxDays)) {
-				[System.IO.File]::WriteAllText($laneFilteredFile, $script:LaneSQLFiltered, $utf8NoBOM)
-			}
-		}
-		if (-not $cached.LaneMailslot) {
-			if ((-not (Test-Path $laneMailslotFile)) -or (((Get-Date) - (Get-Item $laneMailslotFile).LastWriteTime).TotalDays -gt $CacheMaxDays)) {
-				[System.IO.File]::WriteAllText($laneMailslotFile, $script:LaneSQLScript_Mailslot, $utf8NoBOM)
-			}
-		}
-		if (-not $cached.Server) {
-			if ((-not (Test-Path $serverFile)) -or (((Get-Date) - (Get-Item $serverFile).LastWriteTime).TotalDays -gt $CacheMaxDays)) {
-				[System.IO.File]::WriteAllText($serverFile, $script:ServerSQLScript, $utf8NoBOM)
-			}
-		}
-		if (-not $cached.Schedule) {
-			if ((-not (Test-Path $scheduleFile)) -or (((Get-Date) - (Get-Item $scheduleFile).LastWriteTime).TotalDays -gt $CacheMaxDays)) {
-				[System.IO.File]::WriteAllText($scheduleFile, $script:ScheduleServerScript, $utf8NoBOM)
-			}
-		}
-	} catch { }
+	}
+	catch
+	{
+		Write_Log "Generate_SQL_Scripts: Failed while writing SQL scripts. $($_.Exception.Message)" "red"
+	}
 }
 
 # ===================================================================================================
