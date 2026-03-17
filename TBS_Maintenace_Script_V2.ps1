@@ -5059,7 +5059,7 @@ DEALLOCATE cmds;
 EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD';
 EXEC sp_MSforeachtable 'UPDATE STATISTICS ? WITH FULLSCAN';
 
-/* Set database to highest compatibility level supported by this SQL Server version */
+/* Set DB to highest compatibility level supported by this SQL Server version */
 DECLARE @ProductVersion varchar(128), @MajorVersion int, @CompatLevel int, @sql nvarchar(4000);
 SET @ProductVersion = CONVERT(varchar(128), SERVERPROPERTY('ProductVersion'));
 SET @MajorVersion = CONVERT(int, LEFT(@ProductVersion, CHARINDEX('.', @ProductVersion + '.') - 1));
