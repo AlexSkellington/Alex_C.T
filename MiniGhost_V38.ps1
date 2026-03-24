@@ -19,8 +19,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.3.1"
-$VersionDate = "2026-01-27"
+$VersionNumber = "1.3.4"
+$VersionDate = "2026-03-24"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -151,6 +151,13 @@ $GlobalSmsStartIniPath = Join-Path $BasePath "SMSStart.ini"
 $SystemIniPath = Join-Path $OfficePath "system.ini"
 $GasInboxPath = Join-Path $OfficePath "XchGAS\INBOX"
 $DbsPath = Join-Path $OfficePath "Dbs"
+# SmsHttps.ini (auto)
+$SmsHttpsIniPath = Join-Path $BasePath "SmsHttps64\SmsHttps.INI"
+if (-not (Test-Path $SmsHttpsIniPath)) { $SmsHttpsIniPath = Join-Path $BasePath "SmsHttps64\SmsHttps.ini" }
+if (-not (Test-Path $SmsHttpsIniPath)) { $SmsHttpsIniPath = Join-Path $BasePath "SmsHttps32\SmsHttps.ini" }
+if (-not (Test-Path $SmsHttpsIniPath)) { $SmsHttpsIniPath = Join-Path $BasePath "SmsHttps\SmsHttps.ini" }
+if (-not (Test-Path $SmsHttpsIniPath)) { $SmsHttpsIniPath = $null }
+
 $TempDir = [System.IO.Path]::GetTempPath()
 
 # Initialize variables for the INFO_*901 files
@@ -939,18 +946,33 @@ function Get_NEW_Store_Number
 # Always-best-effort behavior:
 # - Does NOT prompt
 # - If MachineName missing -> uses $env:COMPUTERNAME
-# - If terminal digits cannot be extracted -> still updates other INIs; skips SmsHttps Processor update
+# - If terminal digits cannot be extracted -> still updates other INIs; skips TER insertion where unsafe
 # - If old store cannot be detected -> still forces STORE= and REDIR lines; skips token-replace mapping
-# - SmsHttps.INI: enforces exactly ONE processor entry (purges all others), and forces REDIR to <STORE>901
+# - Startup.ini / Server.ini / SMSStart.ini / INFO_*901_WIN.ini preserve ORIGINAL encoding + ORIGINAL newline style
+# - Updates Server.ini when present (same folder as Startup.ini first, then common roots)
 #
-# FIX INCLUDED:
-# - Startup.ini / Server.ini / SMSStart.ini / INFO_*901_WIN.ini now preserve ORIGINAL encoding + ORIGINAL newline style
-#   (same approach as SmsHttps.INI: read bytes -> detect encoding -> detect CRLF/LF -> write back with same)
+# IMPORTANT SAFETY RULE:
+# - If MachineName contains "SERVER" (anywhere, case-insensitive), we MUST NOT change terminal numbers.
+#   That means:
+#     * Do NOT derive terminal from name
+#     * Do NOT rewrite TER= lines in Startup.ini / Server.ini / SMSStart.ini
+#     * DO still update STORE= and REDIRMAIL/REDIRMSG to <STORE>901
 #
-# NEW INCLUDED:
-# - Updates Server.ini when present in the SAME folder as Startup.ini (and/or known storeman roots)
-#   Updates relevant fields:
-#     STORE=, REDIRMAIL=, REDIRMSG=, TER= (if terminal extracted), SERVERNAME= (token replace mapping as applicable)
+# SmsHttps.INI behavior:
+# - SERVER moniker:
+#     * KEEP multiple processor entries
+#     * ONLY update the store prefix in:
+#         - processor key (e.g., 0231901 -> 0242901)
+#         - REDIRMAIL/REDIRMSG values (e.g., 0231901 -> 0242901)
+#     * Clear LicenseGUID (always)
+# - NON-SERVER moniker:
+#     * (Safe default here) we DO NOT touch processors (to avoid accidental changes)
+#     * Clear LicenseGUID (always)
+#
+# NEW:
+# - SMSStart.ini may contain PARAMETERS=/ini=Startup902 (or Startup902.ini).
+#   We resolve that referenced INI and update it too (Store/Redir/token-replace).
+#   We DO NOT force TER changes in the referenced Startup*.ini (we generally leave TER as-is).
 # ===================================================================================================
 
 function Update_INIs
@@ -980,6 +1002,73 @@ function Update_INIs
 	
 	$success = $true
 	
+	# ------------------------------------------------------------------------------------------------
+	# Prefer already-built variables for paths (no hardcoded probing)
+	# ------------------------------------------------------------------------------------------------
+	try
+	{
+		if ([string]::IsNullOrWhiteSpace($StartupIniPath))
+		{
+			foreach ($sc in @('Script', 'Global'))
+			{
+				$v = Get-Variable -Name StartupIniPath -Scope $sc -ErrorAction SilentlyContinue
+				if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value)) { $StartupIniPath = [string]$v.Value; break }
+			}
+		}
+		if ([string]::IsNullOrWhiteSpace($GlobalSmsStartIniPath))
+		{
+			foreach ($sc in @('Script', 'Global'))
+			{
+				$v = Get-Variable -Name GlobalSmsStartIniPath -Scope $sc -ErrorAction SilentlyContinue
+				if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value)) { $GlobalSmsStartIniPath = [string]$v.Value; break }
+			}
+		}
+		if ([string]::IsNullOrWhiteSpace($WinIniPath))
+		{
+			foreach ($sc in @('Script', 'Global'))
+			{
+				$v = Get-Variable -Name WinIniPath -Scope $sc -ErrorAction SilentlyContinue
+				if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value)) { $WinIniPath = [string]$v.Value; break }
+			}
+		}
+		if ([string]::IsNullOrWhiteSpace($SmsHttpsIniPath))
+		{
+			foreach ($sc in @('Script', 'Global'))
+			{
+				$v = Get-Variable -Name SmsHttpsIniPath -Scope $sc -ErrorAction SilentlyContinue
+				if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value)) { $SmsHttpsIniPath = [string]$v.Value; break }
+			}
+		}
+	}
+	catch { }
+	
+	# Optional: reuse already-built core paths if present (does not rebuild new ones)
+	$BasePath = $null
+	$DbsPath = $null
+	$SystemIniVar = $null
+	try
+	{
+		foreach ($sc in @('Script', 'Global'))
+		{
+			if (-not $BasePath)
+			{
+				$v = Get-Variable -Name BasePath -Scope $sc -ErrorAction SilentlyContinue
+				if ($v -and $v.Value) { $BasePath = [string]$v.Value }
+			}
+			if (-not $DbsPath)
+			{
+				$v = Get-Variable -Name DbsPath -Scope $sc -ErrorAction SilentlyContinue
+				if ($v -and $v.Value) { $DbsPath = [string]$v.Value }
+			}
+			if (-not $SystemIniVar)
+			{
+				$v = Get-Variable -Name SystemIniPath -Scope $sc -ErrorAction SilentlyContinue
+				if ($v -and $v.Value) { $SystemIniVar = [string]$v.Value }
+			}
+		}
+	}
+	catch { }
+	
 	# If caller didn't supply MachineName, use current machine name (no prompt, no rename)
 	if ([string]::IsNullOrWhiteSpace($MachineName))
 	{
@@ -987,54 +1076,54 @@ function Update_INIs
 	}
 	
 	# ------------------------------------------------------------------------------------------------
-	# Normalize NEW store (preserve user width for REDIR/STORE lines)
+	# Normalize NEW store (preserve user width for STORE=/REDIR lines)
 	# ------------------------------------------------------------------------------------------------
-	$newStoreTrim = $newStoreNumber
-	if ($null -eq $newStoreTrim) { $newStoreTrim = "" }
-	$newStoreTrim = $newStoreTrim.Trim()
-	
+	$newStoreTrim = ($newStoreNumber + "").Trim()
 	$newStoreInt = [int]$newStoreTrim
 	$newStore3 = $newStoreInt.ToString("D3")
 	$newStore4 = $newStoreInt.ToString("D4")
 	
 	# ------------------------------------------------------------------------------------------------
-	# Normalize machine -> extract terminal (last 1-3 digits) padded to 3 (used for SmsHttps key)
-	# If not possible, we still update other INIs; just skip SmsHttps processor update.
+	# Normalize machine name (strip UNC/path + domain) + ALWAYS uppercase
 	# ------------------------------------------------------------------------------------------------
-	$mn = $MachineName
-	if ($null -eq $mn) { $mn = "" }
-	$mn = $mn.Trim()
+	$mn = ($MachineName + "").Trim()
 	$mn = $mn -replace '^[\\\/]+', ''
 	if ($mn -match '[\\\/]') { $mn = ($mn -split '[\\\/]')[0] }
 	if ($mn -match '\.') { $mn = ($mn -split '\.')[0] }
 	$mn = $mn.Trim().ToUpper()
 	
+	# ------------------------------------------------------------------------------------------------
+	# SERVER MONIKER RULE: if name contains SERVER anywhere -> NEVER change terminal numbers
+	# ------------------------------------------------------------------------------------------------
+	$isServerMoniker = $false
+	if ($mn -match '(?i)SERVER') { $isServerMoniker = $true }
+	
+	# ------------------------------------------------------------------------------------------------
+	# Derive terminal ONLY for NON-server moniker machines
+	# ------------------------------------------------------------------------------------------------
 	$newTerminal = $null
-	if ($mn -match '(\d{1,3})$')
+	if (-not $isServerMoniker -and ($mn -match '(\d{1,3})$'))
 	{
 		$newTerminal = ([int]$Matches[1]).ToString("D3")
 		if ($newTerminal -eq "000") { $newTerminal = $null }
 	}
 	
 	# ===============================================================================================
-	# 1) Resolve + Update Startup.ini (required)
+	# 1) Resolve + Update Startup.ini (required)  (no hardcoded probing; must already be set)
 	# ===============================================================================================
-	if ([string]::IsNullOrWhiteSpace($StartupIniPath))
+	if ([string]::IsNullOrWhiteSpace($StartupIniPath) -and $BasePath)
 	{
-		$startupCandidates = @(
-			"\\localhost\storeman\Startup.ini",
-			"C:\storeman\Startup.ini",
-			"D:\storeman\Startup.ini"
-		)
-		foreach ($c in $startupCandidates)
+		try
 		{
-			if (Test-Path $c) { $StartupIniPath = $c; break }
+			$p = Join-Path $BasePath "Startup.ini"
+			if (Test-Path $p) { $StartupIniPath = $p }
 		}
+		catch { }
 	}
 	
 	if ([string]::IsNullOrWhiteSpace($StartupIniPath) -or -not (Test-Path $StartupIniPath))
 	{
-		Write-Host "startup.ini not found. Provide -StartupIniPath or ensure it exists in default locations." -ForegroundColor Red
+		Write-Host "startup.ini not found. Ensure `$StartupIniPath is already set (or pass -StartupIniPath)." -ForegroundColor Red
 		return $false
 	}
 	
@@ -1045,26 +1134,17 @@ function Update_INIs
 	
 	try
 	{
-		# --- Read preserving encoding + newline (SmsHttps-style) ---
 		$bytes = [System.IO.File]::ReadAllBytes($StartupIniPath)
 		
 		$encStartup = $null
 		if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-		{
-			$encStartup = New-Object System.Text.UTF8Encoding($true)
-		}
+		{ $encStartup = New-Object System.Text.UTF8Encoding($true) }
 		elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
-		{
-			$encStartup = [System.Text.Encoding]::Unicode
-		}
+		{ $encStartup = [System.Text.Encoding]::Unicode }
 		elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
-		{
-			$encStartup = [System.Text.Encoding]::BigEndianUnicode
-		}
+		{ $encStartup = [System.Text.Encoding]::BigEndianUnicode }
 		else
-		{
-			$encStartup = [System.Text.Encoding]::Default
-		}
+		{ $encStartup = [System.Text.Encoding]::Default }
 		
 		$textStartup = $encStartup.GetString($bytes)
 		
@@ -1076,65 +1156,39 @@ function Update_INIs
 		# Detect OLD store number (prefer STORE=)
 		foreach ($l in $startupLines)
 		{
-			if ($l -match '^\s*STORE\s*=\s*(\d{3,4})\s*$')
-			{
-				$oldStoreDetected = $matches[1]
-				break
-			}
+			if ($l -match '^\s*STORE\s*=\s*(\d{3,4})\s*$') { $oldStoreDetected = $matches[1]; break }
 		}
-		
 		if (-not $oldStoreDetected)
 		{
 			foreach ($l in $startupLines)
 			{
-				if ($l -match '^\s*SERVERNAME\s*=\s*(\d{3,4})[A-Za-z]')
-				{
-					$oldStoreDetected = $matches[1]
-					break
-				}
+				if ($l -match '^\s*SERVERNAME\s*=\s*(\d{3,4})[A-Za-z]') { $oldStoreDetected = $matches[1]; break }
 			}
 		}
-		
 		if (-not $oldStoreDetected)
 		{
 			foreach ($l in $startupLines)
 			{
-				if ($l -match '\\\\(\d{3,4})[A-Za-z]')
-				{
-					$oldStoreDetected = $matches[1]
-					break
-				}
+				if ($l -match '\\\\(\d{3,4})[A-Za-z]') { $oldStoreDetected = $matches[1]; break }
 			}
 		}
 		
-		# If user provided OldStoreNumber, it overrides detection (as long as valid)
+		# If user provided OldStoreNumber, override detection (if valid)
 		if (-not [string]::IsNullOrWhiteSpace($OldStoreNumber))
 		{
 			$os = $OldStoreNumber.Trim()
-			if ($os -match '^(?!0+$)\d{3,4}$')
-			{
-				$oldStoreDetected = $os
-			}
+			if ($os -match '^(?!0+$)\d{3,4}$') { $oldStoreDetected = $os }
 		}
 		
-		# If still not detected, do NOT abort - we can still force STORE=/REDIR= lines.
 		$doTokenReplace = $true
-		if (-not $oldStoreDetected)
-		{
-			$doTokenReplace = $false
-		}
+		if (-not $oldStoreDetected) { $doTokenReplace = $false }
 		
 		$oldTokens = @()
 		$newTokens = @()
-		
 		if ($doTokenReplace)
 		{
 			$oldStoreInt = [int]$oldStoreDetected
-			$oldStore3 = $oldStoreInt.ToString("D3")
-			$oldStore4 = $oldStoreInt.ToString("D4")
-			
-			# Replace order: 4-digit first, then 3-digit
-			$oldTokens = @($oldStore4, $oldStore3)
+			$oldTokens = @($oldStoreInt.ToString("D4"), $oldStoreInt.ToString("D3"))
 			$newTokens = @($newStore4, $newStore3)
 		}
 		
@@ -1142,13 +1196,24 @@ function Update_INIs
 		{
 			$line = $startupLines[$i]
 			
-			# Force STORE=
 			$line = $line -replace '^\s*STORE\s*=\s*\d{1,4}\s*$', ("STORE=" + $newStoreTrim)
-			
-			# REDIRMAIL/REDIRMSG=<store>901 (keep 901 suffix)
 			$line = $line -replace '^\s*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$', ('$1=' + $newStoreTrim + '$2')
 			
-			# Replace store token wherever it appears (only if we detected old store)
+			# TER only when NON-server and we have a derived terminal
+			if (-not $isServerMoniker -and $newTerminal)
+			{
+				$line = $line -replace '^\s*TER\s*=\s*\d{1,4}\s*$', ("TER=" + $newTerminal)
+			}
+			
+			# Always uppercase SERVERNAME value if present
+			if ($line -match '^(?<ws>\s*)(?i:SERVERNAME)\s*=\s*(?<val>.*)\s*$')
+			{
+				$ws = $matches['ws']
+				$val = ($matches['val'] + "").Trim()
+				if ($val.Length -gt 0) { $line = $ws + "SERVERNAME=" + $val.ToUpper() }
+			}
+			
+			# Token replace mapping (SAFE: do not rewrite terminal suffixes like SERVER001)
 			if ($doTokenReplace)
 			{
 				for ($t = 0; $t -lt $oldTokens.Count; $t++)
@@ -1156,67 +1221,45 @@ function Update_INIs
 					$oldEsc = [regex]::Escape($oldTokens[$t])
 					$newTok = $newTokens[$t]
 					
-					# before letters: 0242SERVER001
 					$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
-					# before 3 digits: 0242901, XF0242901
 					$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-					# standalone token
-					$line = $line -replace ("(?<!\d)" + $oldEsc + "(?!\d)"), $newTok
+					$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
 				}
 			}
 			
 			$startupLines[$i] = $line
 		}
 		
-		# --- Write preserving encoding + newline ---
-		$outTextStartup = ($startupLines -join $nlStartup)
-		[System.IO.File]::WriteAllText($StartupIniPath, $outTextStartup, $encStartup)
-		
+		[System.IO.File]::WriteAllText($StartupIniPath, ($startupLines -join $nlStartup), $encStartup)
 		Write-Host "Updated startup.ini" -ForegroundColor Green
 		
-		# If old store wasn't detected, keep OldStoreNumber fallback for downstream (optional use)
-		if (-not $oldStoreDetected)
-		{
-			$oldStoreDetected = $newStoreTrim
-		}
+		if (-not $oldStoreDetected) { $oldStoreDetected = $newStoreTrim }
 	}
 	catch
 	{
 		$success = $false
 		Write-Host "Failed updating startup.ini: $($_.Exception.Message)" -ForegroundColor Red
-		# still continue to other INIs
 		if (-not $oldStoreDetected) { $oldStoreDetected = $newStoreTrim }
 	}
 	
 	# ===============================================================================================
-	# 1B) Update Server.ini (optional; when present near Startup.ini / storeman root)
-	#     - Same folder as Startup.ini is primary
-	#     - Also tries common roots if not found there
-	#     - Updates: STORE=, REDIRMAIL/REDIRMSG=<store>901, TER= (if terminal extracted)
-	#     - Performs token replace mapping like Startup.ini when old store detected
+	# 1B) Update Server.ini (optional) (relative to Startup.ini / BasePath only)
 	# ===============================================================================================
-	$serverIniCandidates = @()
-	
-	if (-not [string]::IsNullOrWhiteSpace($startupDir))
-	{
-		$serverIniCandidates += (Join-Path $startupDir "Server.ini")
-	}
-	# common roots fallback
-	$serverIniCandidates += @(
-		"\\localhost\storeman\Server.ini",
-		"C:\storeman\Server.ini",
-		"D:\storeman\Server.ini"
-	)
-	
 	$serverIniPath = $null
-	foreach ($p in $serverIniCandidates)
+	try
 	{
-		if (-not [string]::IsNullOrWhiteSpace($p) -and (Test-Path $p))
+		if ($startupDir)
 		{
-			$serverIniPath = $p
-			break
+			$p = Join-Path $startupDir "Server.ini"
+			if (Test-Path $p) { $serverIniPath = $p }
+		}
+		if (-not $serverIniPath -and $BasePath)
+		{
+			$p = Join-Path $BasePath "Server.ini"
+			if (Test-Path $p) { $serverIniPath = $p }
 		}
 	}
+	catch { $serverIniPath = $null }
 	
 	if (-not [string]::IsNullOrWhiteSpace($serverIniPath) -and (Test-Path $serverIniPath))
 	{
@@ -1226,24 +1269,15 @@ function Update_INIs
 			
 			$encServer = $null
 			if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-			{
-				$encServer = New-Object System.Text.UTF8Encoding($true)
-			}
+			{ $encServer = New-Object System.Text.UTF8Encoding($true) }
 			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
-			{
-				$encServer = [System.Text.Encoding]::Unicode
-			}
+			{ $encServer = [System.Text.Encoding]::Unicode }
 			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
-			{
-				$encServer = [System.Text.Encoding]::BigEndianUnicode
-			}
+			{ $encServer = [System.Text.Encoding]::BigEndianUnicode }
 			else
-			{
-				$encServer = [System.Text.Encoding]::Default
-			}
+			{ $encServer = [System.Text.Encoding]::Default }
 			
 			$textServer = $encServer.GetString($bytes)
-			
 			$nlServer = "`r`n"
 			if ($textServer -notmatch "`r`n" -and $textServer -match "`n") { $nlServer = "`n" }
 			
@@ -1252,12 +1286,11 @@ function Update_INIs
 			$doTokenReplaceS = $false
 			$oldTokensS = @()
 			$newTokensS = @()
-			
 			if (-not [string]::IsNullOrWhiteSpace($oldStoreDetected) -and ($oldStoreDetected -match '^\d{3,4}$'))
 			{
 				$doTokenReplaceS = $true
-				$oldStoreIntS = [int]$oldStoreDetected
-				$oldTokensS = @($oldStoreIntS.ToString("D4"), $oldStoreIntS.ToString("D3"))
+				$osi = [int]$oldStoreDetected
+				$oldTokensS = @($osi.ToString("D4"), $osi.ToString("D3"))
 				$newTokensS = @($newStore4, $newStore3)
 			}
 			
@@ -1265,19 +1298,21 @@ function Update_INIs
 			{
 				$line = $serverLines[$i]
 				
-				# STORE=
 				$line = $line -replace '^\s*STORE\s*=\s*\d{1,4}\s*$', ("STORE=" + $newStoreTrim)
+				$line = $line -replace '^\s*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$', ('$1=' + $newStoreTrim + '$2')
 				
-				# TER= (only if we extracted terminal)
-				if ($newTerminal)
+				if (-not $isServerMoniker -and $newTerminal)
 				{
 					$line = $line -replace '^\s*TER\s*=\s*\d{1,4}\s*$', ("TER=" + $newTerminal)
 				}
 				
-				# REDIRMAIL / REDIRMSG keep 901 suffix
-				$line = $line -replace '^\s*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$', ('$1=' + $newStoreTrim + '$2')
+				if ($line -match '^(?<ws>\s*)(?i:SERVERNAME)\s*=\s*(?<val>.*)\s*$')
+				{
+					$ws = $matches['ws']
+					$val = ($matches['val'] + "").Trim()
+					if ($val.Length -gt 0) { $line = $ws + "SERVERNAME=" + $val.ToUpper() }
+				}
 				
-				# SERVERNAME= line token replace (and any other occurrences) when old store detected
 				if ($doTokenReplaceS)
 				{
 					for ($t = 0; $t -lt $oldTokensS.Count; $t++)
@@ -1287,16 +1322,14 @@ function Update_INIs
 						
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?!\d)"), $newTok
+						$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
 					}
 				}
 				
 				$serverLines[$i] = $line
 			}
 			
-			$outTextServer = ($serverLines -join $nlServer)
-			[System.IO.File]::WriteAllText($serverIniPath, $outTextServer, $encServer)
-			
+			[System.IO.File]::WriteAllText($serverIniPath, ($serverLines -join $nlServer), $encServer)
 			Write-Host "Updated Server.ini" -ForegroundColor Green
 		}
 		catch
@@ -1307,49 +1340,157 @@ function Update_INIs
 	}
 	
 	# ===============================================================================================
-	# 2) Update Global SMSStart.ini (optional; skip if missing)
-	#    FIX: also update/ensure TER=<terminal> inside [SMSSTART]
+	# 1C) Update Office\System.ini (optional) using existing $SystemIniPath if available
 	# ===============================================================================================
-	if ([string]::IsNullOrWhiteSpace($GlobalSmsStartIniPath))
+	$systemIniPath = $null
+	if (-not [string]::IsNullOrWhiteSpace($SystemIniVar) -and (Test-Path $SystemIniVar))
 	{
-		$smsStartCandidates = @(
-			"\\localhost\storeman\SMSStart.ini",
-			"C:\storeman\SMSStart.ini",
-			"D:\storeman\SMSStart.ini"
-		)
-		foreach ($c in $smsStartCandidates)
-		{
-			if (Test-Path $c) { $GlobalSmsStartIniPath = $c; break }
-		}
+		$systemIniPath = $SystemIniVar
+	}
+	elseif ($startupDir)
+	{
+		$p = Join-Path $startupDir "Office\System.ini"
+		if (Test-Path $p) { $systemIniPath = $p }
 	}
 	
-	if (-not [string]::IsNullOrWhiteSpace($GlobalSmsStartIniPath) -and (Test-Path $GlobalSmsStartIniPath))
+	if (-not [string]::IsNullOrWhiteSpace($systemIniPath) -and (Test-Path $systemIniPath))
 	{
 		try
 		{
-			# --- Read preserving encoding + newline (SmsHttps-style) ---
+			$bytes = [System.IO.File]::ReadAllBytes($systemIniPath)
+			
+			$encSys = $null
+			if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+			{ $encSys = New-Object System.Text.UTF8Encoding($true) }
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
+			{ $encSys = [System.Text.Encoding]::Unicode }
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
+			{ $encSys = [System.Text.Encoding]::BigEndianUnicode }
+			else
+			{ $encSys = [System.Text.Encoding]::Default }
+			
+			$textSys = $encSys.GetString($bytes)
+			
+			$nlSys = "`r`n"
+			if ($textSys -notmatch "`r`n" -and $textSys -match "`n") { $nlSys = "`n" }
+			
+			$linesSys = $textSys -split "\r?\n", -1
+			
+			$newStoreIsOne = $false
+			try { if ([int]$newStoreTrim -eq 1) { $newStoreIsOne = $true } }
+			catch { $newStoreIsOne = $false }
+			
+			$oldTokensSys = @()
+			if (-not [string]::IsNullOrWhiteSpace($oldStoreDetected) -and ($oldStoreDetected -match '^\d{3,4}$'))
+			{
+				$osi = [int]$oldStoreDetected
+				$oldTokensSys = @($osi.ToString("D4"), $osi.ToString("D3"))
+			}
+			
+			$inSmsSection = $false
+			$changedSys = $false
+			
+			for ($i = 0; $i -lt $linesSys.Count; $i++)
+			{
+				$line = $linesSys[$i]
+				
+				if ($line -match '^\s*\[(?<sec>.+?)\]\s*$')
+				{
+					$sec = $matches['sec'].Trim()
+					$inSmsSection = ($sec -ieq 'SMS')
+					continue
+				}
+				
+				if (-not $inSmsSection) { continue }
+				
+				if ($line -match '^(?<ws>\s*)(?i:Name)\s*=\s*(?<val>.*)\s*$')
+				{
+					$ws = $matches['ws']
+					$val = $matches['val']
+					$origVal = $val
+					
+					$val2 = ($val + "").Trim()
+					
+					if ($newStoreIsOne)
+					{
+						$val2 = [regex]::Replace($val2, '\s+(?:0001|001|01|1)\s*$', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+						foreach ($tok in @('0001', '001', '01', '1'))
+						{
+							$val2 = [regex]::Replace($val2, '\s+' + [regex]::Escape($tok) + '\s*$', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+						}
+						$val2 = $val2.Trim()
+					}
+					else
+					{
+						$replaced = $false
+						foreach ($tok in $oldTokensSys)
+						{
+							if (-not [string]::IsNullOrWhiteSpace($tok) -and ($val2 -match ("(?<!\d)" + [regex]::Escape($tok) + "(?!\d)")))
+							{
+								$val2 = [regex]::Replace($val2, "(?<!\d)" + [regex]::Escape($tok) + "(?!\d)", $newStoreTrim)
+								$replaced = $true
+							}
+						}
+						
+						if (-not $replaced -and ($val2 -match '\s+\d{3,4}\s*$'))
+						{
+							$val2 = [regex]::Replace($val2, '\s+\d{3,4}\s*$', (" " + $newStoreTrim))
+							$replaced = $true
+						}
+						
+						if (-not $replaced)
+						{
+							$val2 = ($val2.TrimEnd() + " " + $newStoreTrim).Trim()
+						}
+					}
+					
+					if ($val2 -ne $origVal)
+					{
+						$linesSys[$i] = ($ws + "Name=" + $val2)
+						$changedSys = $true
+					}
+					
+					break
+				}
+			}
+			
+			if ($changedSys)
+			{
+				[System.IO.File]::WriteAllText($systemIniPath, ($linesSys -join $nlSys), $encSys)
+				Write-Host "Updated Office\System.ini (SMS Name)" -ForegroundColor Green
+			}
+		}
+		catch
+		{
+			$success = $false
+			Write-Host "Failed updating Office\System.ini: $($_.Exception.Message)" -ForegroundColor Red
+		}
+	}
+	
+	# ===============================================================================================
+	# 2) Update Global SMSStart.ini (optional)
+	#     + NEW: detect PARAMETERS=/ini=Startup### and update referenced INI too
+	#     + NEW: update [TIMESYNC] SERVER=... (store prefix) + ENABLE=1 (insert if missing)
+	# ===============================================================================================
+	if (-not [string]::IsNullOrWhiteSpace($GlobalSmsStartIniPath) -and (Test-Path $GlobalSmsStartIniPath))
+	{
+		$referencedIniNames = @()
+		
+		try
+		{
 			$bytes = [System.IO.File]::ReadAllBytes($GlobalSmsStartIniPath)
 			
 			$encSmsStart = $null
 			if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-			{
-				$encSmsStart = New-Object System.Text.UTF8Encoding($true)
-			}
+			{ $encSmsStart = New-Object System.Text.UTF8Encoding($true) }
 			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
-			{
-				$encSmsStart = [System.Text.Encoding]::Unicode
-			}
+			{ $encSmsStart = [System.Text.Encoding]::Unicode }
 			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
-			{
-				$encSmsStart = [System.Text.Encoding]::BigEndianUnicode
-			}
+			{ $encSmsStart = [System.Text.Encoding]::BigEndianUnicode }
 			else
-			{
-				$encSmsStart = [System.Text.Encoding]::Default
-			}
+			{ $encSmsStart = [System.Text.Encoding]::Default }
 			
 			$textSmsStart = $encSmsStart.GetString($bytes)
-			
 			$nlSmsStart = "`r`n"
 			if ($textSmsStart -notmatch "`r`n" -and $textSmsStart -match "`n") { $nlSmsStart = "`n" }
 			
@@ -1358,12 +1499,11 @@ function Update_INIs
 			$doTokenReplace = $false
 			$oldTokens = @()
 			$newTokens = @()
-			
 			if (-not [string]::IsNullOrWhiteSpace($oldStoreDetected) -and ($oldStoreDetected -match '^\d{3,4}$'))
 			{
 				$doTokenReplace = $true
-				$oldStoreInt = [int]$oldStoreDetected
-				$oldTokens = @($oldStoreInt.ToString("D4"), $oldStoreInt.ToString("D3"))
+				$osi = [int]$oldStoreDetected
+				$oldTokens = @($osi.ToString("D4"), $osi.ToString("D3"))
 				$newTokens = @($newStore4, $newStore3)
 			}
 			
@@ -1371,25 +1511,54 @@ function Update_INIs
 			$inSmsStartSection = $false
 			$terFound = $false
 			$terLine = $null
-			if ($newTerminal) { $terLine = "TER=$newTerminal" }
+			if (-not $isServerMoniker -and $newTerminal) { $terLine = "TER=$newTerminal" }
+			
+			$inTimeSyncSection = $false
+			$tsEnableFound = $false
 			
 			foreach ($raw in $globalLines)
 			{
 				$line = $raw
 				
-				# Section header?
+				# Detect PARAMETERS=/ini=Startup902 (or Startup902.ini)
+				if ($line -match '^\s*(?i:PARAMETERS)\s*=\s*(?<p>.*)\s*$')
+				{
+					$p = $matches['p']
+					if (-not [string]::IsNullOrWhiteSpace($p))
+					{
+						if ($p -match '(?i)(?:^|\s)/ini\s*=\s*(?<ini>[^\s"]+)')
+						{
+							$iniName = $matches['ini'].Trim().Trim('"').Trim("'")
+							if (-not [string]::IsNullOrWhiteSpace($iniName))
+							{
+								$referencedIniNames += $iniName
+							}
+						}
+					}
+				}
+				
 				if ($line -match '^\s*\[(.+?)\]\s*$')
 				{
-					# Leaving [SMSSTART] -> ensure TER exists (if we can build it)
+					# Leaving [SMSSTART] -> ensure TER inserted if needed
 					if ($inSmsStartSection -and -not $terFound -and $terLine)
 					{
 						$out += $terLine
 						$terFound = $true
 					}
 					
+					# Leaving [TIMESYNC] -> ensure ENABLE=1 if missing
+					if ($inTimeSyncSection -and -not $tsEnableFound)
+					{
+						$out += "ENABLE=1"
+						$tsEnableFound = $true
+					}
+					
 					$sectionName = $matches[1].Trim()
 					$inSmsStartSection = ($sectionName -ieq 'SMSSTART')
 					if ($inSmsStartSection) { $terFound = $false }
+					
+					$inTimeSyncSection = ($sectionName -ieq 'TIMESYNC')
+					if ($inTimeSyncSection) { $tsEnableFound = $false }
 					
 					$out += $line
 					continue
@@ -1397,144 +1566,280 @@ function Update_INIs
 				
 				if ($inSmsStartSection)
 				{
-					# Force STORE= inside [SMSSTART]
 					$line = $line -replace '^\s*STORE\s*=\s*\d{1,4}\s*$', ("STORE=" + $newStoreTrim)
+					$line = $line -replace '^\s*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$', ('$1=' + $newStoreTrim + '$2')
 					
-					# Keep 901 suffix
-					$line = $line -replace '^\s*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$',
-					('$1=' + $newStoreTrim + '$2')
-					
-					# FIX: Update TER= inside [SMSSTART] (only if terminal was extracted)
+					# TER only when allowed (non-server)
 					if ($terLine -and ($line -match '^\s*(?i:TER)\s*='))
 					{
 						$line = $terLine
 						$terFound = $true
 					}
 					
-					# Replace store token contexts (if present in this section)
 					if ($doTokenReplace)
 					{
 						for ($t = 0; $t -lt $oldTokens.Count; $t++)
 						{
 							$oldEsc = [regex]::Escape($oldTokens[$t])
 							$newTok = $newTokens[$t]
-							
 							$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 							$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-							$line = $line -replace ("(?<!\d)" + $oldEsc + "(?!\d)"), $newTok
+							$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
 						}
+					}
+				}
+				elseif ($inTimeSyncSection)
+				{
+					# Force ENABLE=1 (and mark found)
+					if ($line -match '^\s*(?i:ENABLE)\s*=')
+					{
+						$line = "ENABLE=1"
+						$tsEnableFound = $true
+					}
+					
+					# Update SERVER= store prefix (and force uppercase)
+					if ($line -match '^\s*(?i:SERVER)\s*=\s*(?<sv>.*)\s*$')
+					{
+						$sv = ($matches['sv'] + "").Trim()
+						
+						if ($sv -match '^(?<st>\d{3,4})(?<rest>.*)$')
+						{
+							$st = $matches['st']
+							$rest = $matches['rest']
+							$newSt = ([int]$newStoreTrim).ToString(("D{0}" -f $st.Length))
+							$sv = $newSt + $rest
+						}
+						else
+						{
+							if ($doTokenReplace)
+							{
+								for ($t = 0; $t -lt $oldTokens.Count; $t++)
+								{
+									$oldEsc = [regex]::Escape($oldTokens[$t])
+									$newTok = $newTokens[$t]
+									$sv = $sv -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
+									$sv = $sv -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
+									$sv = $sv -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+								}
+							}
+						}
+						
+						$line = "SERVER=" + $sv.ToUpper()
 					}
 				}
 				
 				$out += $line
 			}
 			
-			# EOF while still in [SMSSTART] -> ensure TER exists
+			# If file ended while still in sections
 			if ($inSmsStartSection -and -not $terFound -and $terLine)
 			{
 				$out += $terLine
 			}
+			if ($inTimeSyncSection -and -not $tsEnableFound)
+			{
+				$out += "ENABLE=1"
+			}
 			
-			# --- Write preserving encoding + newline ---
-			$outTextSmsStart = ($out -join $nlSmsStart)
-			[System.IO.File]::WriteAllText($GlobalSmsStartIniPath, $outTextSmsStart, $encSmsStart)
-			
-			Write-Host "Updated SMSStart.ini" -ForegroundColor Green
+			[System.IO.File]::WriteAllText($GlobalSmsStartIniPath, ($out -join $nlSmsStart), $encSmsStart)
+			Write-Host "Updated SMSStart.ini (SMSSTART + TIMESYNC)" -ForegroundColor Green
 		}
 		catch
 		{
 			$success = $false
 			Write-Host "Failed updating SMSStart.ini: $($_.Exception.Message)" -ForegroundColor Red
 		}
+		
+		# ---- Update referenced Startup*.ini files (PARAMETERS=/ini=...) ----
+		if ($referencedIniNames -and $referencedIniNames.Count -gt 0)
+		{
+			$smsStartDir = $null
+			try { $smsStartDir = Split-Path -Path $GlobalSmsStartIniPath -Parent }
+			catch { $smsStartDir = $null }
+			
+			foreach ($iniRef in ($referencedIniNames | Select-Object -Unique))
+			{
+				try
+				{
+					$iniTarget = ($iniRef + "").Trim()
+					if ([string]::IsNullOrWhiteSpace($iniTarget)) { continue }
+					if ($iniTarget -notmatch '\.ini$') { $iniTarget = ($iniTarget + ".ini") }
+					
+					$candidatePaths = @()
+					
+					if ($iniTarget -match '^[A-Za-z]:\\' -or $iniTarget -match '^\\\\')
+					{
+						$candidatePaths += $iniTarget
+					}
+					else
+					{
+						if ($smsStartDir) { $candidatePaths += (Join-Path $smsStartDir $iniTarget) }
+						if ($BasePath) { $candidatePaths += (Join-Path $BasePath    $iniTarget) }
+						if ($startupDir) { $candidatePaths += (Join-Path $startupDir  $iniTarget) }
+					}
+					
+					$resolved = $null
+					foreach ($cp in $candidatePaths)
+					{
+						if (-not [string]::IsNullOrWhiteSpace($cp) -and (Test-Path $cp))
+						{
+							$resolved = $cp
+							break
+						}
+					}
+					
+					if (-not $resolved) { continue }
+					
+					$b = [System.IO.File]::ReadAllBytes($resolved)
+					
+					$encRef = $null
+					if ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)
+					{ $encRef = New-Object System.Text.UTF8Encoding($true) }
+					elseif ($b.Length -ge 2 -and $b[0] -eq 0xFF -and $b[1] -eq 0xFE)
+					{ $encRef = [System.Text.Encoding]::Unicode }
+					elseif ($b.Length -ge 2 -and $b[0] -eq 0xFE -and $b[1] -eq 0xFF)
+					{ $encRef = [System.Text.Encoding]::BigEndianUnicode }
+					else
+					{ $encRef = [System.Text.Encoding]::Default }
+					
+					$txt = $encRef.GetString($b)
+					$nlRef = "`r`n"
+					if ($txt -notmatch "`r`n" -and $txt -match "`n") { $nlRef = "`n" }
+					
+					$lines = $txt -split "\r?\n", -1
+					
+					$doTR = $false
+					$ot = @()
+					$nt = @()
+					if (-not [string]::IsNullOrWhiteSpace($oldStoreDetected) -and ($oldStoreDetected -match '^\d{3,4}$'))
+					{
+						$doTR = $true
+						$osi = [int]$oldStoreDetected
+						$ot = @($osi.ToString("D4"), $osi.ToString("D3"))
+						$nt = @($newStore4, $newStore3)
+					}
+					
+					for ($i = 0; $i -lt $lines.Count; $i++)
+					{
+						$line = $lines[$i]
+						
+						$line = [regex]::Replace($line, '^\s*(?i:STORE)\s*=\s*\d{1,4}\s*$', ("STORE=" + $newStoreTrim))
+						$line = [regex]::Replace($line, '^\s*(?i:Store)\s*=\s*\d{1,4}\s*$', ("Store=" + $newStoreTrim))
+						
+						$line = [regex]::Replace(
+							$line,
+							'^\s*(?i:REDIRMAIL|REDIRMSG|RedirMail|RedirMsg)\s*=\s*\d{1,4}(901)\s*$',
+							{
+								param ($m)
+								$key = $m.Value.Split('=')[0].Trim()
+								return ($key + "=" + $newStoreTrim + "901")
+							}
+						)
+						
+						if ($line -match '^(?<ws>\s*)(?i:SERVERNAME)\s*=\s*(?<val>.*)\s*$')
+						{
+							$ws = $matches['ws']
+							$val = ($matches['val'] + "").Trim()
+							if ($val.Length -gt 0) { $line = $ws + "SERVERNAME=" + $val.ToUpper() }
+						}
+						
+						# Do NOT force TER changes in referenced Startup*.ini
+						
+						if ($doTR)
+						{
+							for ($t = 0; $t -lt $ot.Count; $t++)
+							{
+								$oldEsc = [regex]::Escape($ot[$t])
+								$newTok = $nt[$t]
+								$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
+								$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
+								$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+							}
+						}
+						
+						$lines[$i] = $line
+					}
+					
+					[System.IO.File]::WriteAllText($resolved, ($lines -join $nlRef), $encRef)
+					Write-Host ("Updated referenced INI: " + $resolved) -ForegroundColor Green
+				}
+				catch
+				{
+					$success = $false
+					Write-Host ("Failed updating referenced INI '" + $iniRef + "': " + $_.Exception.Message) -ForegroundColor Red
+				}
+			}
+		}
 	}
 	
 	# ===============================================================================================
-	# 3) Update INFO_*901_WIN.ini (optional; skip if missing)
+	# 3) Update INFO_*901_WIN.ini (optional) (use variable; small fallback via $DbsPath only)
 	# ===============================================================================================
-	if ([string]::IsNullOrWhiteSpace($WinIniPath))
+	if ([string]::IsNullOrWhiteSpace($WinIniPath) -and $DbsPath -and (Test-Path $DbsPath))
 	{
-		$officeBases = @("\\localhost\storeman\office", "C:\storeman\office", "D:\storeman\office")
-		foreach ($b in $officeBases)
+		try
 		{
-			if (Test-Path $b)
-			{
-				$f = Get-ChildItem -Path $b -File -Filter "INFO_*901_WIN.ini" -ErrorAction SilentlyContinue | Select-Object -First 1
-				if ($f) { $WinIniPath = $f.FullName; break }
-			}
+			$f = Get-ChildItem -Path $DbsPath -File -Filter "INFO_*901_WIN.ini" -ErrorAction SilentlyContinue | Select-Object -First 1
+			if ($f) { $WinIniPath = $f.FullName }
 		}
+		catch { }
 	}
 	
 	if (-not [string]::IsNullOrWhiteSpace($WinIniPath) -and (Test-Path $WinIniPath))
 	{
 		try
 		{
-			# --- Read preserving encoding + newline (SmsHttps-style) ---
 			$bytes = [System.IO.File]::ReadAllBytes($WinIniPath)
 			
 			$encWin = $null
 			if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-			{
-				$encWin = New-Object System.Text.UTF8Encoding($true)
-			}
+			{ $encWin = New-Object System.Text.UTF8Encoding($true) }
 			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
-			{
-				$encWin = [System.Text.Encoding]::Unicode
-			}
+			{ $encWin = [System.Text.Encoding]::Unicode }
 			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
-			{
-				$encWin = [System.Text.Encoding]::BigEndianUnicode
-			}
+			{ $encWin = [System.Text.Encoding]::BigEndianUnicode }
 			else
-			{
-				$encWin = [System.Text.Encoding]::Default
-			}
+			{ $encWin = [System.Text.Encoding]::Default }
 			
 			$textWin = $encWin.GetString($bytes)
-			
 			$nlWin = "`r`n"
 			if ($textWin -notmatch "`r`n" -and $textWin -match "`n") { $nlWin = "`n" }
 			
 			$winLines = $textWin -split "\r?\n", -1
 			
-			$doTokenReplace = $false
-			$oldTokens = @()
-			$newTokens = @()
-			
+			$doTokenReplaceW = $false
+			$oldTokensW = @()
+			$newTokensW = @()
 			if (-not [string]::IsNullOrWhiteSpace($oldStoreDetected) -and ($oldStoreDetected -match '^\d{3,4}$'))
 			{
-				$doTokenReplace = $true
-				$oldStoreInt = [int]$oldStoreDetected
-				$oldTokens = @($oldStoreInt.ToString("D4"), $oldStoreInt.ToString("D3"))
-				$newTokens = @($newStore4, $newStore3)
+				$doTokenReplaceW = $true
+				$osi = [int]$oldStoreDetected
+				$oldTokensW = @($osi.ToString("D4"), $osi.ToString("D3"))
+				$newTokensW = @($newStore4, $newStore3)
 			}
 			
 			for ($j = 0; $j -lt $winLines.Count; $j++)
 			{
 				$line = $winLines[$j]
-				
 				$line = $line -replace '^\s*STORE\s*=\s*\d{1,4}\s*$', ("STORE=" + $newStoreTrim)
 				$line = $line -replace '^\s*(REDIRMAIL|REDIRMSG)\s*=\s*\d{1,4}(901)\s*$', ('$1=' + $newStoreTrim + '$2')
 				
-				if ($doTokenReplace)
+				if ($doTokenReplaceW)
 				{
-					for ($t = 0; $t -lt $oldTokens.Count; $t++)
+					for ($t = 0; $t -lt $oldTokensW.Count; $t++)
 					{
-						$oldEsc = [regex]::Escape($oldTokens[$t])
-						$newTok = $newTokens[$t]
-						
+						$oldEsc = [regex]::Escape($oldTokensW[$t])
+						$newTok = $newTokensW[$t]
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?!\d)"), $newTok
+						$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
 					}
 				}
 				
 				$winLines[$j] = $line
 			}
 			
-			# --- Write preserving encoding + newline ---
-			$outTextWin = ($winLines -join $nlWin)
-			[System.IO.File]::WriteAllText($WinIniPath, $outTextWin, $encWin)
-			
+			[System.IO.File]::WriteAllText($WinIniPath, ($winLines -join $nlWin), $encWin)
 			Write-Host "Updated INFO_*901_WIN.ini" -ForegroundColor Green
 		}
 		catch
@@ -1545,55 +1850,63 @@ function Update_INIs
 	}
 	
 	# ===============================================================================================
-	# 4) Update SmsHttps.INI (optional; skip if missing)
-	#     - Update [PROCESSORS] / [PROCESSOR] to EXACTLY ONE entry matching <STORE><LANE>
-	#     - Purge any other processor entries
-	#     - Force REDIRMAIL/REDIRMSG=<STORE>901
-	#     - Clear LicenseGUID in [GENERAL]
+	# 4) Update SmsHttps.INI (FORCED)
+	#   - SERVER moniker:
+	#       * KEEP multiple processors
+	#       * ONLY update store prefix in processor keys + REDIRMAIL/REDIRMSG values
+	#       * Always clear LicenseGUID
+	#   - NON-SERVER:
+	#       * Enforce EXACTLY ONE processor entry keyed <STORE><TER> (store width inferred from file when possible)
+	#       * Purge other processor lines
+	#       * Force REDIRMAIL/REDIRMSG=<STORE>901
+	#       * Always clear LicenseGUID
+	#   - ALWAYS writes the file (even if identical), so it "triggers" every run.
 	# ===============================================================================================
+	
+	# --- Resolve SmsHttpsIniPath if missing (fast, no broad probing) ---
 	if ([string]::IsNullOrWhiteSpace($SmsHttpsIniPath))
 	{
-		$smsHttpsCandidates = @(
-			"\\localhost\storeman\SmsHttps64\SmsHttps.INI",
-			"C:\storeman\SmsHttps64\SmsHttps.INI",
-			"D:\storeman\SmsHttps64\SmsHttps.INI"
-		)
-		foreach ($c in $smsHttpsCandidates)
+		try
 		{
-			if (Test-Path $c) { $SmsHttpsIniPath = $c; break }
+			$startupDirLocal = $null
+			if (-not [string]::IsNullOrWhiteSpace($StartupIniPath))
+			{
+				try { $startupDirLocal = Split-Path -Path $StartupIniPath -Parent }
+				catch { $startupDirLocal = $null }
+			}
 		}
+		catch { }
 	}
-	
 	if (-not [string]::IsNullOrWhiteSpace($SmsHttpsIniPath) -and (Test-Path $SmsHttpsIniPath))
 	{
 		try
 		{
-			# If we can't extract a lane number, skip processor update (but still clear LicenseGUID)
-			$canUpdateProcessor = $true
-			if ([string]::IsNullOrWhiteSpace($newTerminal))
+			# If terminal couldn't be derived from machine name, try TER= in Startup.ini (NON-server only)
+			if (-not $isServerMoniker -and -not $newTerminal -and -not [string]::IsNullOrWhiteSpace($StartupIniPath) -and (Test-Path $StartupIniPath))
 			{
-				$canUpdateProcessor = $false
+				try
+				{
+					$terLine = (Get-Content -Path $StartupIniPath -ErrorAction Stop | Where-Object { $_ -match '^\s*TER\s*=\s*\d{1,4}\s*$' } | Select-Object -First 1)
+					if ($terLine -and ($terLine -match '^\s*TER\s*=\s*(\d{1,4})\s*$'))
+					{
+						$tmpTer = $matches[1]
+						if ($tmpTer -match '^\d{1,3}$')
+						{
+							$newTerminal = ([int]$tmpTer).ToString("D3")
+							if ($newTerminal -eq "000") { $newTerminal = $null }
+						}
+					}
+				}
+				catch { }
 			}
 			
 			$bytes = [System.IO.File]::ReadAllBytes($SmsHttpsIniPath)
 			
 			$enc = $null
-			if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-			{
-				$enc = New-Object System.Text.UTF8Encoding($true)
-			}
-			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
-			{
-				$enc = [System.Text.Encoding]::Unicode
-			}
-			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
-			{
-				$enc = [System.Text.Encoding]::BigEndianUnicode
-			}
-			else
-			{
-				$enc = [System.Text.Encoding]::Default
-			}
+			if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { $enc = New-Object System.Text.UTF8Encoding($true) }
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $enc = [System.Text.Encoding]::Unicode }
+			elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { $enc = [System.Text.Encoding]::BigEndianUnicode }
+			else { $enc = [System.Text.Encoding]::Default }
 			
 			$text = $enc.GetString($bytes)
 			
@@ -1602,78 +1915,133 @@ function Update_INIs
 			
 			$lines = $text -split "\r?\n", -1
 			
-			$storeWidth = $newStoreTrim.Length
-			$storeNorm = ([int]$newStoreTrim).ToString(("D{0}" -f $storeWidth))
-			
-			$newKey = $null
-			if ($canUpdateProcessor)
-			{
-				$newKey = $storeNorm + $newTerminal
-			}
-			$redirKey901 = $storeNorm + "901"
-			
-			# oldTerminal (optional)
-			$oldTerminal = $null
-			if (-not [string]::IsNullOrWhiteSpace($OldMachineName))
-			{
-				$omn = $OldMachineName
-				if ($null -eq $omn) { $omn = "" }
-				$omn = $omn.Trim()
-				$omn = $omn -replace '^[\\\/]+', ''
-				if ($omn -match '[\\\/]') { $omn = ($omn -split '[\\\/]')[0] }
-				if ($omn -match '\.') { $omn = ($omn -split '\.')[0] }
-				$omn = $omn.Trim().ToUpper()
-				
-				if ($omn -match '(\d{1,3})$')
-				{
-					$oldTerminal = ([int]$Matches[1]).ToString("D3")
-					if ($oldTerminal -eq "000") { $oldTerminal = $null }
-				}
-			}
-			
-			$oldKeyExact = $null
-			if (-not [string]::IsNullOrWhiteSpace($OldStoreNumber) -and $oldTerminal)
-			{
-				$osn = $OldStoreNumber.Trim()
-				if ($osn -match '^(?!0+$)\d{3,4}$')
-				{
-					$osWidth = $osn.Length
-					$oldKeyExact = ([int]$osn).ToString(("D{0}" -f $osWidth)) + $oldTerminal
-				}
-			}
-			
-			# Find section [PROCESSORS] or [PROCESSOR]
-			$secStart = -1
+			# --- Ensure/clear [GENERAL] LicenseGUID ---
+			$genStart = -1
 			for ($i = 0; $i -lt $lines.Length; $i++)
 			{
-				if ($lines[$i] -match '^\s*\[\s*PROCESSORS?\s*\]\s*$')
-				{
-					$secStart = $i
-					break
-				}
+				if ($lines[$i] -match '^\s*\[\s*GENERAL\s*\]\s*$') { $genStart = $i; break }
 			}
-			
-			$secEnd = $lines.Length
-			if ($secStart -ge 0)
+			if ($genStart -lt 0)
 			{
-				for ($i = $secStart + 1; $i -lt $lines.Length; $i++)
+				$lines = @("[GENERAL]", "LicenseGUID=", "") + $lines
+			}
+			else
+			{
+				$genEnd = $lines.Length
+				for ($i = $genStart + 1; $i -lt $lines.Length; $i++)
 				{
-					if ($lines[$i] -match '^\s*\[.*\]\s*$')
+					if ($lines[$i] -match '^\s*\[.*\]\s*$') { $genEnd = $i; break }
+				}
+				
+				$lgFound = $false
+				for ($i = $genStart + 1; $i -lt $genEnd; $i++)
+				{
+					if ($lines[$i] -match '^(?<ws>\s*)(?i:LicenseGUID)\s*=\s*(?<val>.*)\s*$')
 					{
-						$secEnd = $i
+						$lines[$i] = ($matches['ws'] + "LicenseGUID=")
+						$lgFound = $true
 						break
 					}
 				}
+				if (-not $lgFound)
+				{
+					$pre = @()
+					$post = @()
+					for ($k = 0; $k -lt $genEnd; $k++) { $pre += $lines[$k] }
+					for ($k = $genEnd; $k -lt $lines.Length; $k++) { $post += $lines[$k] }
+					$lines = @($pre + "LicenseGUID=" + $post)
+				}
 			}
 			
-			$processorsChanged = $false
-			$licenseGuidCleared = $false
-			
-			# ---- Processor enforcement (ONLY if we can build the newKey)
-			if ($canUpdateProcessor)
+			# --- Find [PROCESSORS] section (create if missing) ---
+			$secStart = -1
+			for ($i = 0; $i -lt $lines.Length; $i++)
 			{
-				if ($secStart -ge 0)
+				if ($lines[$i] -match '^\s*\[\s*PROCESSORS?\s*\]\s*$') { $secStart = $i; break }
+			}
+			
+			if ($secStart -lt 0)
+			{
+				# Always create it (forced behavior)
+				$lines = @($lines + "" + "[PROCESSORS]")
+				$secStart = ($lines.Length - 1)
+			}
+			
+			$secEnd = $lines.Length
+			for ($i = $secStart + 1; $i -lt $lines.Length; $i++)
+			{
+				if ($lines[$i] -match '^\s*\[.*\]\s*$') { $secEnd = $i; break }
+			}
+			
+			# --- Infer store width from existing processor keys when possible (6=3+3, 7=4+3) ---
+			$storeWidth = $newStoreTrim.Length
+			try
+			{
+				for ($i = $secStart + 1; $i -lt $secEnd; $i++)
 				{
+					if ($lines[$i] -match '^\s*(\d{6,7})\s*=')
+					{
+						$keyLen = $matches[1].Length
+						if ($keyLen -eq 7) { $storeWidth = 4; break }
+						if ($keyLen -eq 6) { $storeWidth = 3; break }
+					}
+				}
+			}
+			catch { }
+			
+			$storeNorm = ([int]$newStoreTrim).ToString(("D{0}" -f $storeWidth))
+			$redirKey901 = $storeNorm + "901"
+			
+			# =========================
+			# SERVER: keep many processors; update store prefix in key + REDIR store prefix
+			# =========================
+			if ($isServerMoniker)
+			{
+				for ($i = $secStart + 1; $i -lt $secEnd; $i++)
+				{
+					$line = $lines[$i]
+					if ($line -match '^(?<ws>\s*)(?<store>\d{3,4})(?<term>\d{3})\s*=\s*(?<rhs>.*)$')
+					{
+						$ws = $matches['ws']
+						$st = $matches['store']
+						$term = $matches['term']
+						$rhs = $matches['rhs']
+						
+						$newStorePart = ([int]$newStoreTrim).ToString(("D{0}" -f $st.Length))
+						$newKey = $newStorePart + $term
+						
+						$rhs2 = $rhs
+						$rhs2 = [regex]::Replace($rhs2, '(?i)\b(REDIRMAIL)\s*=\s*(\d{3,4})(\d{3})\b', {
+								param ($m)
+								$k = $m.Groups[1].Value
+								$st2 = $m.Groups[2].Value
+								$tr2 = $m.Groups[3].Value
+								$nst2 = ([int]$newStoreTrim).ToString(("D{0}" -f $st2.Length))
+								return ($k + "=" + $nst2 + $tr2)
+							})
+						$rhs2 = [regex]::Replace($rhs2, '(?i)\b(REDIRMSG)\s*=\s*(\d{3,4})(\d{3})\b', {
+								param ($m)
+								$k = $m.Groups[1].Value
+								$st2 = $m.Groups[2].Value
+								$tr2 = $m.Groups[3].Value
+								$nst2 = ([int]$newStoreTrim).ToString(("D{0}" -f $st2.Length))
+								return ($k + "=" + $nst2 + $tr2)
+							})
+						
+						$lines[$i] = ($ws + $newKey + "=" + $rhs2)
+					}
+				}
+			}
+			# =========================
+			# NON-SERVER: enforce ONE processor keyed <STORE><TER> and force REDIRs to <STORE>901
+			# =========================
+			else
+			{
+				if ($newTerminal)
+				{
+					$newKey = $storeNorm + $newTerminal
+					
+					# Collect existing processor entries (numeric)
 					$entries = @()
 					for ($i = $secStart + 1; $i -lt $secEnd; $i++)
 					{
@@ -1688,25 +2056,11 @@ function Update_INIs
 						}
 					}
 					
-					# pick a source rhs
+					# Pick a source rhs (same logic as you had, but without requiring old info to exist)
 					$source = $null
-					if ($oldKeyExact)
+					foreach ($e in $entries)
 					{
-						foreach ($e in $entries) { if ($e.Key -eq $oldKeyExact) { $source = $e; break } }
-					}
-					if (-not $source -and $oldTerminal)
-					{
-						foreach ($e in $entries)
-						{
-							if ($e.Key.Length -ge 3 -and $e.Key.Substring($e.Key.Length - 3) -eq $oldTerminal) { $source = $e; break }
-						}
-					}
-					if (-not $source)
-					{
-						foreach ($e in $entries)
-						{
-							if ($e.Key.Length -ge 3 -and $e.Key.Substring($e.Key.Length - 3) -eq $newTerminal) { $source = $e; break }
-						}
+						if ($e.Key.Length -ge 3 -and $e.Key.Substring($e.Key.Length - 3) -eq $newTerminal) { $source = $e; break }
 					}
 					if (-not $source -and $entries.Count -gt 0) { $source = $entries[0] }
 					
@@ -1718,20 +2072,15 @@ function Update_INIs
 						$wsToUse = $source.Ws
 					}
 					
-					# Replace any old processor keys inside RHS -> newKey (fixes 2222004... lingering)
+					# Replace any old processor keys inside RHS -> newKey
 					foreach ($e in $entries)
 					{
 						$rhsUpdated = $rhsUpdated -replace ("(?<!\d)" + [regex]::Escape($e.Key) + "(?!\d)"), $newKey
 					}
-					if ($oldKeyExact)
-					{
-						$rhsUpdated = $rhsUpdated -replace ("(?<!\d)" + [regex]::Escape($oldKeyExact) + "(?!\d)"), $newKey
-					}
 					
-					# Strip existing REDIRMAIL/REDIRMSG then enforce correct
+					# Strip existing REDIRMAIL/REDIRMSG then enforce <STORE>901
 					$rhsUpdated = [regex]::Replace($rhsUpdated, '\bREDIRMAIL\s*=\s*\d{6,7}', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 					$rhsUpdated = [regex]::Replace($rhsUpdated, '\bREDIRMSG\s*=\s*\d{6,7}', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-					
 					$rhsUpdated = $rhsUpdated -replace ',{2,}', ','
 					$rhsUpdated = $rhsUpdated.Trim().Trim(',').Trim()
 					
@@ -1746,121 +2095,31 @@ function Update_INIs
 					
 					$newProcessorLine = $wsToUse + $newKey + "=" + $rhsUpdated
 					
-					# Purge all entries; insert ONE
-					$insertAt = $secStart + 1
-					if ($entries.Count -gt 0)
-					{
-						$min = $entries[0].Index
-						foreach ($e in $entries) { if ($e.Index -lt $min) { $min = $e.Index } }
-						$insertAt = $min
-					}
-					
+					# Purge all numeric processor lines; insert ONE just after section header
 					$out = @()
-					$inserted = $false
-					
 					for ($i = 0; $i -lt $lines.Length; $i++)
 					{
-						if ($i -ge ($secStart + 1) -and $i -lt $secEnd)
+						$out += $lines[$i]
+						
+						if ($i -eq $secStart)
 						{
-							if ($i -eq $insertAt -and -not $inserted)
-							{
-								$out += $newProcessorLine
-								$inserted = $true
-							}
-							
-							if ($lines[$i] -match '^\s*\d{6,7}\s*=')
-							{
-								continue
-							}
-							
-							$out += $lines[$i]
+							$out += $newProcessorLine
 							continue
 						}
 						
-						$out += $lines[$i]
+						if ($i -gt $secStart -and $i -lt $secEnd)
+						{
+							if ($lines[$i] -match '^\s*\d{6,7}\s*=') { $out = $out[0 .. ($out.Count - 2)]; continue } # remove what we just added
+						}
 					}
 					
-					if (-not $inserted)
-					{
-						$out2 = @()
-						for ($i = 0; $i -lt $out.Length; $i++)
-						{
-							$out2 += $out[$i]
-							if ($i -eq $secStart)
-							{
-								$out2 += $newProcessorLine
-								$inserted = $true
-							}
-						}
-						$out = $out2
-					}
-					
-					if (($out -join $nl) -ne ($lines -join $nl))
-					{
-						$lines = $out
-						$processorsChanged = $true
-					}
-				}
-				else
-				{
-					# Section missing: create only if requested
-					if ($CreateSmsHttpsIfMissing)
-					{
-						$add = @()
-						$add += ""
-						$add += "[PROCESSORS]"
-						$add += ($newKey + "=REDIRMAIL=" + $redirKey901 + ",REDIRMSG=" + $redirKey901 + ",TARGETSEND=,TARGETRECV=,DEADLOCKPRIORITY=")
-						$lines = @($lines + $add)
-						$processorsChanged = $true
-					}
+					$lines = $out
 				}
 			}
 			
-			# ---- Clear LicenseGUID in [GENERAL] (always attempt)
-			$genStart = -1
-			for ($i = 0; $i -lt $lines.Length; $i++)
-			{
-				if ($lines[$i] -match '^\s*\[\s*GENERAL\s*\]\s*$')
-				{
-					$genStart = $i
-					break
-				}
-			}
-			
-			if ($genStart -ge 0)
-			{
-				$genEnd = $lines.Length
-				for ($i = $genStart + 1; $i -lt $lines.Length; $i++)
-				{
-					if ($lines[$i] -match '^\s*\[.*\]\s*$')
-					{
-						$genEnd = $i
-						break
-					}
-				}
-				
-				for ($i = $genStart + 1; $i -lt $genEnd; $i++)
-				{
-					if ($lines[$i] -match '^(?<ws>\s*)(?i:LicenseGUID)\s*=\s*(?<val>.*)\s*$')
-					{
-						$ws = $matches['ws']
-						$val = $matches['val']
-						if ($val -ne "")
-						{
-							$lines[$i] = $ws + "LicenseGUID="
-							$licenseGuidCleared = $true
-						}
-						break
-					}
-				}
-			}
-			
-			if ($processorsChanged -or $licenseGuidCleared)
-			{
-				$outText = ($lines -join $nl)
-				[System.IO.File]::WriteAllText($SmsHttpsIniPath, $outText, $enc)
-				Write-Host "Updated SmsHttps.INI" -ForegroundColor Green
-			}
+			# ---- FORCED write (always) ----
+			[System.IO.File]::WriteAllText($SmsHttpsIniPath, ($lines -join $nl), $enc)
+			Write-Host ("Updated SmsHttps.INI (forced): " + $SmsHttpsIniPath) -ForegroundColor Green
 		}
 		catch
 		{
@@ -1868,7 +2127,6 @@ function Update_INIs
 			Write-Host "Failed updating SmsHttps.INI: $($_.Exception.Message)" -ForegroundColor Red
 		}
 	}
-	
 	return $success
 }
 
@@ -1964,9 +2222,9 @@ WHERE F1057 = '901';
 # ---------------------------------------------------------------------------------------------------
 # Description:
 # Prompts user for a new machine name via GUI.
-# Supports: 
-#   - Classic: PREFIX + 3 digits (e.g. LANE003, SCO012)
-#   - Prefixed: optional 1-4 digit store + PREFIX + 3 digits (e.g. 0231LANE006)
+# Supports:
+#   - Classic: PREFIX + 3 digits (e.g. LANE003, SCO012, SERVER001)
+#   - Prefixed: optional 1-4 digit store + PREFIX + 3 digits (e.g. 0231LANE006, 0231SERVER001)
 # If prefixed format used → offers to sync store number
 # Returns uppercase validated name or $null if cancelled
 # ===================================================================================================
@@ -1977,7 +2235,7 @@ function Get_NEW_Machine_Name
 	{
 		$form = New-Object System.Windows.Forms.Form
 		$form.Text = "Enter New Machine Name"
-		$form.Size = New-Object System.Drawing.Size(420, 190)
+		$form.Size = New-Object System.Drawing.Size(420, 205)
 		$form.StartPosition = "CenterParent"
 		$form.FormBorderStyle = 'FixedDialog'
 		$form.MaximizeBox = $false
@@ -1985,24 +2243,25 @@ function Get_NEW_Machine_Name
 		$form.ShowInTaskbar = $false
 		
 		$label = New-Object System.Windows.Forms.Label
-		$label.Text = "Machine Name examples:`nPOS003  -  SCO012  -  LANE005 - 0231LANE006  -  1234POS999"
+		# Updated examples to include SERVER formats
+		$label.Text = "Machine Name examples:`nPOS003  -  SCO012  -  LANE005  -  SERVER001  -  0231LANE006  -  0231SERVER001"
 		$label.Location = New-Object System.Drawing.Point(10, 15)
-		$label.Size = New-Object System.Drawing.Size(395, 45)
+		$label.Size = New-Object System.Drawing.Size(395, 55)
 		$label.AutoSize = $false
 		
 		$textBox = New-Object System.Windows.Forms.TextBox
-		$textBox.Location = New-Object System.Drawing.Point(10, 70)
+		$textBox.Location = New-Object System.Drawing.Point(10, 80)
 		$textBox.Size = New-Object System.Drawing.Size(395, 22)
 		
 		$okBtn = New-Object System.Windows.Forms.Button
 		$okBtn.Text = "OK"
-		$okBtn.Location = New-Object System.Drawing.Point(130, 110)
+		$okBtn.Location = New-Object System.Drawing.Point(130, 125)
 		$okBtn.Size = New-Object System.Drawing.Size(70, 28)
 		$okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
 		
 		$cancelBtn = New-Object System.Windows.Forms.Button
 		$cancelBtn.Text = "Cancel"
-		$cancelBtn.Location = New-Object System.Drawing.Point(215, 110)
+		$cancelBtn.Location = New-Object System.Drawing.Point(215, 125)
 		$cancelBtn.Size = New-Object System.Drawing.Size(70, 28)
 		$cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 		
@@ -2031,12 +2290,38 @@ function Get_NEW_Machine_Name
 			continue
 		}
 		
-		# Regex: optional 1-4 digits + 2-8 letters + exactly 3 digits
-		if ($userInput -match '^(\d{1,4})?([A-Z]{2,8})(\d{3})$')
+		# ------------------------------------------------------------------------------------------------
+		# Allowed prefixes (optional hardening)
+		# - Set to $null to allow ANY letters (original behavior, just more flexible length).
+		# - Add/remove items as your environment grows.
+		# ------------------------------------------------------------------------------------------------
+		$AllowedPrefixes = @(
+			"LANE",
+			"POS",
+			"SCO",
+			"SERVER"
+		)
+		
+		# Regex: optional 1-4 digits + 2-12 letters + exactly 3 digits
+		# - Expanded prefix length from 2-8 to 2-12 to be more future-proof.
+		# - SERVER fits either way, but this prevents future weird rework.
+		if ($userInput -match '^(\d{1,4})?([A-Z]{2,12})(\d{3})$')
 		{
 			$storePrefixRaw = $matches[1] # may be empty
 			$namePrefix = $matches[2]
 			$terminal = $matches[3]
+			
+			# Enforce allowed prefixes if list is present
+			if ($AllowedPrefixes -and ($AllowedPrefixes -notcontains $namePrefix))
+			{
+				[void][System.Windows.Forms.MessageBox]::Show(
+					"Invalid prefix '$namePrefix'.`nAllowed: $($AllowedPrefixes -join ', ')",
+					"Invalid Machine Name",
+					[System.Windows.Forms.MessageBoxButtons]::OK,
+					[System.Windows.Forms.MessageBoxIcon]::Error
+				)
+				continue
+			}
 			
 			if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 			
@@ -2108,9 +2393,9 @@ function Get_NEW_Machine_Name
 					{
 						$iniParams = @{
 							newStoreNumber = $storePrefixNorm
-							MachineName    = $normalizedName # <-- IMPORTANT: new lane digits (002)
-							OldStoreNumber = $currentStoreNorm # best-effort (may be $null)
-							OldMachineName = $env:COMPUTERNAME # old lane digits (004)
+							MachineName    = $normalizedName
+							OldStoreNumber = $currentStoreNorm
+							OldMachineName = $env:COMPUTERNAME
 						}
 						if ($currentStoreNorm) { $iniParams["OldStoreNumber"] = $currentStoreNorm }
 						
@@ -2149,7 +2434,7 @@ function Get_NEW_Machine_Name
 		}
 		
 		[void][System.Windows.Forms.MessageBox]::Show(
-			"Invalid format.`n`nValid examples:`n  LANE003`n  SCO012`n  0231LANE006`n  1234POS999`n`nRule: [optional 1-4 digits] + [2-8 letters] + [3 digits]",
+			"Invalid format.`n`nValid examples:`n  LANE003`n  SCO012`n  SERVER001`n  0231LANE006`n  0231SERVER001`n`nRule: [optional 1-4 digits] + [2-12 letters] + [3 digits]",
 			"Invalid Machine Name",
 			[System.Windows.Forms.MessageBoxButtons]::OK,
 			[System.Windows.Forms.MessageBoxIcon]::Error
@@ -2161,194 +2446,980 @@ function Get_NEW_Machine_Name
 #                       FUNCTION: Update_SQL_Tables_For_Machine_Name_Change
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Updates STO_TAB, TER_TAB, LNK_TAB, and RUN_TAB in the SQL database after machine name change.
+#   Updates TER_TAB, STO_TAB, LNK_TAB, RUN_TAB, and STD_TAB after machine name change / store change.
+#
+# Auto DB context detection (based on Startup.ini DBNAME already gathered via Get_Database_Connection_String):
+#   - LANESQL             => LocalTerminalDB (lane/POS/SCO cleanup in same store is allowed)
+#   - STORESQL or HOSTSQL => ServerStoreDB  (do NOT lane-cleanup other terminals)
+#
+# STD_TAB enhancement:
+#   - Also updates F1531 (CompanyName) store suffix when present (e.g., "Company Name 231" or "Company #0231")
+#
+# FIXES:
+#   - Non-server runs preserve/copy TER_TAB 901 into the NEW store before deleting old-store rows.
+#   - STO_TAB now always ensures the 901 row exists.
+#   - LNK_TAB now preserves/copies 901 into the NEW store before cleanup, so the server side is not left empty.
 # ===================================================================================================
 
 function Update_SQL_Tables_For_Machine_Name_Change
 {
+	[CmdletBinding()]
 	param (
+		[Parameter(Mandatory = $true)]
+		[ValidatePattern('^(?!0+$)\d{3,4}$')]
 		[string]$storeNumber,
+		[Parameter(Mandatory = $true)]
 		[string]$machineName,
-		[string]$machineNumber
+		[Parameter(Mandatory = $true)]
+		[string]$machineNumber,
+		[Parameter(Mandatory = $false)]
+		[string]$OldMachineName,
+		[Parameter(Mandatory = $false)]
+		[string]$OldMachineNumber,
+		[Parameter(Mandatory = $false)]
+		[ValidateSet('Auto', 'LocalTerminalDB', 'ServerStoreDB')]
+		[string]$DatabaseContext = 'Auto'
 	)
 	
-	# Variables
+	# ---------------------------
+	# Constants / normalization
+	# ---------------------------
+	$hostStoreNumber = "999"
+	$serverTerminal = "901"
+	$protectedMinTerminal = 940
+	
+	$storeNumber = (($storeNumber | ForEach-Object { if ($null -eq $_) { "" }
+				else { $_.ToString() } }).Trim())
+	$machineName = (($machineName | ForEach-Object { if ($null -eq $_) { "" }
+				else { $_.ToString() } }).Trim())
+	$machineNumber = (($machineNumber | ForEach-Object { if ($null -eq $_) { "" }
+				else { $_.ToString() } }).Trim())
+	
+	# Detect SERVER moniker (example: 0242SERVER001)
+	$isServerMoniker = $false
+	if (-not [string]::IsNullOrWhiteSpace($machineName) -and ($machineName -match '(?i)SERVER'))
+	{
+		$isServerMoniker = $true
+	}
+	
+	# ---------------------------
+	# Pull DBNAME (already gathered by Get_Database_Connection_String) for better Auto context
+	# ---------------------------
+	$dbNameDetected = $null
+	try
+	{
+		if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['DBNAME']))
+		{
+			$dbNameDetected = ([string]$script:FunctionResults['DBNAME']).Trim()
+		}
+	}
+	catch { }
+	
+	# Fallback: parse from ConnectionString if present
+	if ([string]::IsNullOrWhiteSpace($dbNameDetected))
+	{
+		try
+		{
+			if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('ConnectionString'))
+			{
+				$cs = [string]$script:FunctionResults['ConnectionString']
+				if ($cs -match '(?i)\bDatabase\s*=\s*([^;]+)') { $dbNameDetected = $Matches[1].Trim() }
+				elseif ($cs -match '(?i)\bInitial\s+Catalog\s*=\s*([^;]+)') { $dbNameDetected = $Matches[1].Trim() }
+			}
+		}
+		catch { }
+	}
+	
+	# ---------------------------
+	# Normalize NEW/OLD server host string (for matching TER_TAB.F1125 and replacing STO_TAB.F1018)
+	# ---------------------------
+	$newServerNameNorm = $machineName
+	if ($null -eq $newServerNameNorm) { $newServerNameNorm = "" }
+	$newServerNameNorm = $newServerNameNorm.Trim()
+	$newServerNameNorm = $newServerNameNorm -replace '^[\\\/]+', ''
+	if ($newServerNameNorm -match '[\\\/]') { $newServerNameNorm = ($newServerNameNorm -split '[\\\/]')[0] }
+	if ($newServerNameNorm -match '\.') { $newServerNameNorm = ($newServerNameNorm -split '\.')[0] }
+	$newServerNameNorm = $newServerNameNorm.Trim().ToUpper()
+	
+	$oldServerNameNorm = $OldMachineName
+	if ([string]::IsNullOrWhiteSpace($oldServerNameNorm)) { $oldServerNameNorm = $env:COMPUTERNAME }
+	if ($null -eq $oldServerNameNorm) { $oldServerNameNorm = "" }
+	$oldServerNameNorm = $oldServerNameNorm.Trim()
+	$oldServerNameNorm = $oldServerNameNorm -replace '^[\\\/]+', ''
+	if ($oldServerNameNorm -match '[\\\/]') { $oldServerNameNorm = ($oldServerNameNorm -split '[\\\/]')[0] }
+	if ($oldServerNameNorm -match '\.') { $oldServerNameNorm = ($oldServerNameNorm -split '\.')[0] }
+	$oldServerNameNorm = $oldServerNameNorm.Trim().ToUpper()
+	
+	# ---------------------------
+	# Normalize NEW terminal to 3 digits
+	# ---------------------------
+	$newTerminal = $null
+	if ($machineNumber -match '^\d{1,3}$')
+	{
+		$newTerminal = ([int]$machineNumber).ToString("D3")
+		if ($newTerminal -eq "000") { $newTerminal = $null }
+	}
+	else
+	{
+		$tmp = $machineNumber
+		if ($null -eq $tmp) { $tmp = "" }
+		$tmp = $tmp.Trim()
+		$tmp = $tmp -replace '^[\\\/]+', ''
+		if ($tmp -match '[\\\/]') { $tmp = ($tmp -split '[\\\/]')[0] }
+		if ($tmp -match '\.') { $tmp = ($tmp -split '\.')[0] }
+		$tmp = $tmp.Trim().ToUpper()
+		
+		if ($tmp -match '(\d{1,3})$')
+		{
+			$newTerminal = ([int]$Matches[1]).ToString("D3")
+			if ($newTerminal -eq "000") { $newTerminal = $null }
+		}
+	}
+	
+	# Determine OLD terminal for safe RUN_TAB swap (used only when NOT server)
+	if ([string]::IsNullOrWhiteSpace($OldMachineName)) { $OldMachineName = $env:COMPUTERNAME }
+	
+	$oldTerminal = $null
+	
+	if (-not [string]::IsNullOrWhiteSpace($OldMachineNumber))
+	{
+		if ($OldMachineNumber -match '^\d{1,3}$')
+		{
+			$oldTerminal = ([int]$OldMachineNumber).ToString("D3")
+			if ($oldTerminal -eq "000") { $oldTerminal = $null }
+		}
+		else
+		{
+			$tmpOld = $OldMachineNumber
+			if ($null -eq $tmpOld) { $tmpOld = "" }
+			$tmpOld = $tmpOld.Trim()
+			$tmpOld = $tmpOld -replace '^[\\\/]+', ''
+			if ($tmpOld -match '[\\\/]') { $tmpOld = ($tmpOld -split '[\\\/]')[0] }
+			if ($tmpOld -match '\.') { $tmpOld = ($tmpOld -split '\.')[0] }
+			$tmpOld = $tmpOld.Trim().ToUpper()
+			
+			if ($tmpOld -match '(\d{1,3})$')
+			{
+				$oldTerminal = ([int]$Matches[1]).ToString("D3")
+				if ($oldTerminal -eq "000") { $oldTerminal = $null }
+			}
+		}
+	}
+	
+	if (-not $oldTerminal)
+	{
+		$tmpOld2 = $OldMachineName
+		if ($null -eq $tmpOld2) { $tmpOld2 = "" }
+		$tmpOld2 = $tmpOld2.Trim()
+		$tmpOld2 = $tmpOld2 -replace '^[\\\/]+', ''
+		if ($tmpOld2 -match '[\\\/]') { $tmpOld2 = ($tmpOld2 -split '[\\\/]')[0] }
+		if ($tmpOld2 -match '\.') { $tmpOld2 = ($tmpOld2 -split '\.')[0] }
+		$tmpOld2 = $tmpOld2.Trim().ToUpper()
+		
+		if ($tmpOld2 -match '(\d{1,3})$')
+		{
+			$oldTerminal = ([int]$Matches[1]).ToString("D3")
+			if ($oldTerminal -eq "000") { $oldTerminal = $null }
+		}
+	}
+	
+	# ---------------------------
+	# Decide DB context
+	# ---------------------------
+	$isLocalTerminalDB = $false
+	
+	if ($DatabaseContext -eq 'LocalTerminalDB')
+	{
+		$isLocalTerminalDB = $true
+	}
+	elseif ($DatabaseContext -eq 'ServerStoreDB')
+	{
+		$isLocalTerminalDB = $false
+	}
+	else
+	{
+		# Auto: prefer DBNAME
+		if (-not [string]::IsNullOrWhiteSpace($dbNameDetected) -and ($dbNameDetected -match '^(?i)LANESQL$'))
+		{
+			$isLocalTerminalDB = $true
+		}
+		elseif (-not [string]::IsNullOrWhiteSpace($dbNameDetected) -and ($dbNameDetected -match '^(?i)(STORESQL|HOSTSQL)$'))
+		{
+			$isLocalTerminalDB = $false
+		}
+		else
+		{
+			# Fallback heuristic: if targeting this box, assume local terminal DB
+			$execHostNorm = $env:COMPUTERNAME
+			if ($null -eq $execHostNorm) { $execHostNorm = "" }
+			$execHostNorm = ($execHostNorm + "").Trim()
+			$execHostNorm = $execHostNorm -replace '^[\\\/]+', ''
+			if ($execHostNorm -match '[\\\/]') { $execHostNorm = ($execHostNorm -split '[\\\/]')[0] }
+			if ($execHostNorm -match '\.') { $execHostNorm = ($execHostNorm -split '\.')[0] }
+			$execHostNorm = $execHostNorm.Trim().ToUpper()
+			
+			$targetHostNorm = $machineName
+			if ($null -eq $targetHostNorm) { $targetHostNorm = "" }
+			$targetHostNorm = ($targetHostNorm + "").Trim()
+			$targetHostNorm = $targetHostNorm -replace '^[\\\/]+', ''
+			if ($targetHostNorm -match '[\\\/]') { $targetHostNorm = ($targetHostNorm -split '[\\\/]')[0] }
+			if ($targetHostNorm -match '\.') { $targetHostNorm = ($targetHostNorm -split '\.')[0] }
+			$targetHostNorm = $targetHostNorm.Trim().ToUpper()
+			
+			$isLocalTerminalDB = ($targetHostNorm -eq $execHostNorm)
+		}
+	}
+	
+	# SAFETY: Non-server mode must have a terminal, otherwise we can't safely upsert/cleanup.
+	if (-not $isServerMoniker -and -not $newTerminal)
+	{
+		return @{
+			Success		    = $false
+			FailedCommands  = @("Refusing to run: could not derive a valid NEW terminal from -machineNumber/-machineName for non-server mode.")
+			IsServerMoniker = $false
+			RunTabUpdated   = $false
+			OldTerminalUsed = $oldTerminal
+			NewTerminalUsed = $newTerminal
+			DatabaseContext = $DatabaseContext
+			LocalTerminalDB = $isLocalTerminalDB
+			DBNAME		    = $dbNameDetected
+		}
+	}
+	
+	# ---------------------------
+	# Table names
+	# ---------------------------
 	$terTableName = "TER_TAB"
-	$runTableName = "RUN_TAB"
 	$stoTableName = "STO_TAB"
 	$lnkTableName = "LNK_TAB"
+	$runTableName = "RUN_TAB"
 	$stdTableName = "STD_TAB"
 	
-	# Prepare SQL commands
+	# ===============================================================================================
+	# TER_TAB
+	# ===============================================================================================
 	
-	# ---------------------------
-	# TER_TAB commands
-	# ---------------------------
 	$createViewCommandTer = @"
+IF OBJECT_ID('Ter_Load', 'V') IS NOT NULL DROP VIEW Ter_Load;
 CREATE VIEW Ter_Load AS
 SELECT F1056, F1057, F1058, F1125, F1169
 FROM $terTableName;
 "@
 	
-	$deleteOldRecordCommand = @"
-DELETE FROM $terTableName 
-WHERE F1057 NOT IN ('$machineNumber', '901');
+	$moveProtectedTer_ToNewStore = @"
+DECLARE @NewStore  varchar(10) = '$storeNumber';
+DECLARE @HostStore varchar(10) = '$hostStoreNumber';
+DECLARE @ProtectedMin int = $protectedMinTerminal;
+
+INSERT INTO $terTableName (F1056, F1057, F1058, F1125, F1169)
+SELECT @NewStore, t.F1057, t.F1058, t.F1125, t.F1169
+FROM $terTableName t
+WHERE t.F1056 NOT IN (@NewStore, @HostStore)
+  AND TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) >= @ProtectedMin
+  AND NOT EXISTS (
+      SELECT 1
+      FROM $terTableName x
+      WHERE x.F1056 = @NewStore
+        AND x.F1057 = t.F1057
+  );
+
+DELETE t
+FROM $terTableName t
+WHERE t.F1056 NOT IN (@NewStore, @HostStore)
+  AND TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) >= @ProtectedMin;
 "@
 	
-	$insertOrUpdateCommand = @"
-IF EXISTS (SELECT 1 FROM $terTableName WHERE F1056='$storeNumber' AND F1057='$machineNumber')
+	$moveServerNodes902_920_ToNewStore_AndUpdate = @"
+DECLARE @NewStore  varchar(10) = '$storeNumber';
+DECLARE @HostStore varchar(10) = '$hostStoreNumber';
+DECLARE @NewServer varchar(200) = '$newServerNameNorm';
+DECLARE @OldServer varchar(200) = '$oldServerNameNorm';
+
+;WITH Candidates AS
+(
+    SELECT t.*
+    FROM $terTableName t
+    WHERE t.F1056 NOT IN (@NewStore, @HostStore)
+      AND TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) BETWEEN 902 AND 920
+      AND t.F1125 IS NOT NULL
+      AND
+      (
+          UPPER(t.F1125) LIKE '%\\' + @OldServer + '%'
+          OR UPPER(t.F1125) LIKE '%\\' + @NewServer + '%'
+          OR UPPER(t.F1125) LIKE '%@' + @OldServer + '%'
+          OR UPPER(t.F1125) LIKE '%@' + @NewServer + '%'
+          OR UPPER(t.F1125) LIKE '%' + @OldServer + '%'
+          OR UPPER(t.F1125) LIKE '%' + @NewServer + '%'
+      )
+)
+INSERT INTO $terTableName (F1056, F1057, F1058, F1125, F1169)
+SELECT @NewStore, c.F1057, c.F1058, c.F1125, c.F1169
+FROM Candidates c
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM $terTableName x
+    WHERE x.F1056 = @NewStore
+      AND x.F1057 = c.F1057
+);
+
+UPDATE t
+SET
+    t.F1125 = CASE
+                WHEN t.F1125 IS NULL THEN t.F1125
+                WHEN LEFT(LTRIM(RTRIM(t.F1125)),1)='@' THEN '@' + @NewServer
+                ELSE REPLACE(UPPER(t.F1125), @OldServer, @NewServer)
+              END,
+    t.F1169 = CASE
+                WHEN t.F1169 IS NULL THEN t.F1169
+                ELSE '\\' + @NewServer + '\storeman\office\XF' + @NewStore + '901\'
+              END
+FROM $terTableName t
+WHERE t.F1056 = @NewStore
+  AND TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) BETWEEN 902 AND 920;
+
+DELETE t
+FROM $terTableName t
+WHERE t.F1056 NOT IN (@NewStore, @HostStore)
+  AND TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) BETWEEN 902 AND 920
+  AND t.F1125 IS NOT NULL
+  AND
+  (
+      UPPER(t.F1125) LIKE '%\\' + @OldServer + '%'
+      OR UPPER(t.F1125) LIKE '%\\' + @NewServer + '%'
+      OR UPPER(t.F1125) LIKE '%@' + @OldServer + '%'
+      OR UPPER(t.F1125) LIKE '%@' + @NewServer + '%'
+      OR UPPER(t.F1125) LIKE '%' + @OldServer + '%'
+      OR UPPER(t.F1125) LIKE '%' + @NewServer + '%'
+  );
+"@
+	
+	$deleteOtherStoresTer = @"
+DELETE FROM $terTableName
+WHERE F1056 NOT IN ('$storeNumber', '$hostStoreNumber');
+"@
+	
+	$deleteNonServerRowsForNewStore = @"
+DECLARE @NewStore varchar(10) = '$storeNumber';
+DECLARE @ServerTerm varchar(10) = '$serverTerminal';
+DECLARE @ProtectedMin int = $protectedMinTerminal;
+DECLARE @NewServer varchar(200) = '$newServerNameNorm';
+DECLARE @OldServer varchar(200) = '$oldServerNameNorm';
+
+DELETE t
+FROM $terTableName t
+WHERE t.F1056 = @NewStore
+  AND t.F1057 <> @ServerTerm
+  AND
+  (
+      (
+          TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) IS NULL
+          OR TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) < @ProtectedMin
+      )
+      AND
+      (
+          NOT (
+              TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) BETWEEN 902 AND 920
+              AND t.F1125 IS NOT NULL
+              AND
+              (
+                  UPPER(t.F1125) LIKE '%\\' + @NewServer + '%'
+                  OR UPPER(t.F1125) LIKE '%\\' + @OldServer + '%'
+                  OR UPPER(t.F1125) LIKE '%@' + @NewServer + '%'
+                  OR UPPER(t.F1125) LIKE '%@' + @OldServer + '%'
+                  OR UPPER(t.F1125) LIKE '%' + @NewServer + '%'
+                  OR UPPER(t.F1125) LIKE '%' + @OldServer + '%'
+              )
+          )
+      )
+  );
+"@
+	
+	$upsertLaneTer = @"
+IF EXISTS (SELECT 1 FROM $terTableName WHERE F1056='$storeNumber' AND F1057='$newTerminal')
 BEGIN
     UPDATE $terTableName
-    SET F1058='Terminal $machineNumber', 
-        F1125='\\$machineName\storeman\office\XF$storeNumber$machineNumber\', 
-        F1169='\\$machineName\storeman\office\XF${storeNumber}901\' 
-    WHERE F1056='$storeNumber' AND F1057='$machineNumber';
+    SET F1058='Terminal $newTerminal',
+        F1125='\\$machineName\storeman\office\XF$storeNumber$newTerminal\',
+        F1169='\\$machineName\storeman\office\XF$storeNumber$serverTerminal\'
+    WHERE F1056='$storeNumber' AND F1057='$newTerminal';
 END
 ELSE
 BEGIN
     INSERT INTO $terTableName (F1056, F1057, F1058, F1125, F1169) VALUES
-    ('$storeNumber', '$machineNumber', 
-     'Terminal $machineNumber', 
-     '\\$machineName\storeman\office\XF$storeNumber$machineNumber\', 
-     '\\$machineName\storeman\office\XF${storeNumber}901\');
+    ('$storeNumber', '$newTerminal',
+     'Terminal $newTerminal',
+     '\\$machineName\storeman\office\XF$storeNumber$newTerminal\',
+     '\\$machineName\storeman\office\XF$storeNumber$serverTerminal\');
 END
 "@
 	
-	$dropViewCommandTer = "DROP VIEW Ter_Load;"
-	
-	# ---------------------------
-	# RUN_TAB commands
-	# ---------------------------
-	$createViewCommandRun = @"
-CREATE VIEW Run_Load AS
-SELECT F1000, F1104
-FROM $runTableName;
-"@
-	
-	$updateRunTabCommand = @"
-UPDATE $runTableName 
-SET F1000 = '$machineNumber'
-WHERE F1000 <> 'SMS';
+	$preserve901ForNonServerStoreChange = @"
+DECLARE @NewStore   varchar(10) = '$storeNumber';
+DECLARE @HostStore  varchar(10) = '$hostStoreNumber';
+DECLARE @ServerTerm varchar(10) = '$serverTerminal';
 
-UPDATE $runTableName 
-SET F1104 = '$machineNumber'
-WHERE F1104 <> '901';
+IF NOT EXISTS (
+    SELECT 1
+    FROM $terTableName
+    WHERE F1056 = @NewStore
+      AND F1057 = @ServerTerm
+)
+BEGIN
+    INSERT INTO $terTableName (F1056, F1057, F1058, F1125, F1169)
+    SELECT TOP 1
+           @NewStore,
+           @ServerTerm,
+           CASE
+               WHEN NULLIF(LTRIM(RTRIM(t.F1058)), '') IS NULL THEN 'Server'
+               ELSE t.F1058
+           END,
+           t.F1125,
+           t.F1169
+    FROM $terTableName t
+    WHERE t.F1057 = @ServerTerm
+      AND t.F1056 <> @HostStore
+    ORDER BY
+        CASE WHEN t.F1125 IS NOT NULL AND LTRIM(RTRIM(t.F1125)) <> '' THEN 0 ELSE 1 END,
+        t.F1056;
+END
+
+UPDATE $terTableName
+SET F1058 = CASE
+                WHEN NULLIF(LTRIM(RTRIM(F1058)), '') IS NULL THEN 'Server'
+                ELSE F1058
+            END
+WHERE F1056 = @NewStore
+  AND F1057 = @ServerTerm;
 "@
 	
-	$dropViewCommandRun = "DROP VIEW Run_Load;"
+	$cleanupTer_ForLocalTerminalDB = @"
+DECLARE @NewStore varchar(10) = '$storeNumber';
+DECLARE @KeepTerm varchar(10) = '$newTerminal';
+DECLARE @ServerTerm varchar(10) = '$serverTerminal';
+DECLARE @ProtectedMin int = $protectedMinTerminal;
+
+DELETE t
+FROM $terTableName t
+WHERE t.F1056 = @NewStore
+  AND t.F1057 NOT IN (@KeepTerm, @ServerTerm)
+  AND (TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) IS NULL OR TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) < @ProtectedMin);
+"@
 	
-	# ---------------------------
-	# STO_TAB commands
-	# ---------------------------
+	$upsertServer901Ter_ForNewStoreOnly = @"
+IF EXISTS (SELECT 1 FROM $terTableName WHERE F1056='$storeNumber' AND F1057='$serverTerminal')
+BEGIN
+    UPDATE $terTableName
+    SET F1058='Server',
+        F1125='@$machineName',
+        F1169=NULL
+    WHERE F1056='$storeNumber' AND F1057='$serverTerminal';
+END
+ELSE
+BEGIN
+    INSERT INTO $terTableName (F1056, F1057, F1058, F1125, F1169) VALUES
+    ('$storeNumber', '$serverTerminal',
+     'Server',
+     '@$machineName',
+     NULL);
+END
+"@
+	
+	$dropViewCommandTer = @"
+IF OBJECT_ID('Ter_Load', 'V') IS NOT NULL DROP VIEW Ter_Load;
+"@
+	
+	# ===============================================================================================
+	# STO_TAB
+	# ===============================================================================================
+	
 	$createViewCommandSto = @"
+IF OBJECT_ID('Sto_Load', 'V') IS NOT NULL DROP VIEW Sto_Load;
 CREATE VIEW Sto_Load AS
-SELECT F1000, F1018, F1180, F1181, F1182
+SELECT F1000, F1018, F1180, F1181, F1182, F1937, F1965, F1966, F2691
 FROM $stoTableName;
 "@
 	
-	$insertOrUpdateStoCommand = @"
+	$upsertStoTerminal = @"
 MERGE INTO $stoTableName AS target
-USING (VALUES 
-    ('$machineNumber', 'Terminal $machineNumber', 1, 1, 1)
-) AS source (F1000, F1018, F1180, F1181, F1182)
+USING (VALUES
+    ('$newTerminal', 'Terminal $newTerminal', 1, 1, 1, NULL, NULL, NULL, NULL)
+) AS source (F1000, F1018, F1180, F1181, F1182, F1937, F1965, F1966, F2691)
 ON target.F1000 = source.F1000
 WHEN MATCHED THEN
-    UPDATE SET 
+    UPDATE SET
         F1018 = source.F1018,
         F1180 = source.F1180,
         F1181 = source.F1181,
         F1182 = source.F1182
 WHEN NOT MATCHED THEN
-    INSERT (F1000, F1018, F1180, F1181, F1182)
-    VALUES (source.F1000, source.F1018, source.F1180, source.F1181, source.F1182);
+    INSERT (F1000, F1018, F1180, F1181, F1182, F1937, F1965, F1966, F2691)
+    VALUES (source.F1000, source.F1018, source.F1180, source.F1181, source.F1182, source.F1937, source.F1965, source.F1966, source.F2691);
 "@
 	
-	$deleteOldStoTabEntries = @"
-DELETE FROM $stoTableName 
-WHERE F1000 <> '$machineNumber'
-AND F1000 NOT LIKE 'DSM%' 
-AND F1000 NOT LIKE 'PAL%' 
-AND F1000 NOT LIKE 'RAL%' 
-AND F1000 NOT LIKE 'XAL%';
+	$upsertStoServer901 = @"
+MERGE INTO $stoTableName AS target
+USING (VALUES
+    ('$serverTerminal', 'Server', 1, 1, 1, NULL, NULL, NULL, NULL)
+) AS source (F1000, F1018, F1180, F1181, F1182, F1937, F1965, F1966, F2691)
+ON target.F1000 = source.F1000
+WHEN MATCHED THEN
+    UPDATE SET
+        F1018 = CASE
+                    WHEN NULLIF(LTRIM(RTRIM(target.F1018)), '') IS NULL THEN source.F1018
+                    ELSE target.F1018
+                END,
+        F1180 = ISNULL(target.F1180, source.F1180),
+        F1181 = ISNULL(target.F1181, source.F1181),
+        F1182 = ISNULL(target.F1182, source.F1182)
+WHEN NOT MATCHED THEN
+    INSERT (F1000, F1018, F1180, F1181, F1182, F1937, F1965, F1966, F2691)
+    VALUES (source.F1000, source.F1018, source.F1180, source.F1181, source.F1182, source.F1937, source.F1965, source.F1966, source.F2691);
 "@
 	
-	$dropViewCommandSto = "DROP VIEW Sto_Load;"
+	$cleanupSto_ForLocalTerminalDB = @"
+DECLARE @KeepTerm varchar(10) = '$newTerminal';
+
+DELETE FROM $stoTableName
+WHERE F1000 <> @KeepTerm
+  AND F1000 NOT IN ('DSM','PAL','RAL','XAL','901','999');
+"@
 	
-	# ---------------------------
-	# LNK_TAB commands
-	# ---------------------------
+	$cleanupSto_ForServer = @"
+;WITH StoNums AS
+(
+    SELECT
+        F1000,
+        F1018,
+        TRY_CONVERT(int, LTRIM(RTRIM(F1000))) AS NumVal
+    FROM $stoTableName
+    WHERE ISNUMERIC(F1000) = 1
+)
+DELETE s
+FROM $stoTableName s
+JOIN StoNums n ON n.F1000 = s.F1000
+WHERE
+    n.F1000 NOT IN ('901','999')
+    AND
+    (
+        (n.NumVal BETWEEN 1 AND 99)
+        OR
+        (
+            n.NumVal BETWEEN 902 AND 920
+            AND (n.F1018 IS NULL OR UPPER(n.F1018) NOT LIKE '%SERVER%')
+        )
+    );
+
+DECLARE @NewServer varchar(200) = '$newServerNameNorm';
+DECLARE @OldServer varchar(200) = '$oldServerNameNorm';
+
+UPDATE $stoTableName
+SET F1018 = REPLACE(UPPER(F1018), @OldServer, @NewServer)
+WHERE ISNUMERIC(F1000) = 1
+  AND TRY_CONVERT(int, LTRIM(RTRIM(F1000))) BETWEEN 902 AND 920
+  AND F1018 IS NOT NULL
+  AND UPPER(F1018) LIKE '%' + @OldServer + '%';
+"@
+	
+	$dropViewCommandSto = @"
+IF OBJECT_ID('Sto_Load', 'V') IS NOT NULL DROP VIEW Sto_Load;
+"@
+	
+	# ===============================================================================================
+	# LNK_TAB
+	# ===============================================================================================
+	
 	$createViewCommandLnk = @"
+IF OBJECT_ID('Lnk_Load', 'V') IS NOT NULL DROP VIEW Lnk_Load;
 CREATE VIEW Lnk_Load AS
 SELECT F1000, F1056, F1057
 FROM $lnkTableName;
 "@
 	
-	$insertOrUpdateLnkCommand = @"
-MERGE INTO $lnkTableName AS target
-USING (VALUES 
-    ('$machineNumber', '$storeNumber', '$machineNumber'),
-    ('DSM', '$storeNumber', '$machineNumber'),
-    ('PAL', '$storeNumber', '$machineNumber'),
-    ('RAL', '$storeNumber', '$machineNumber'),
-    ('XAL', '$storeNumber', '$machineNumber')
-) AS source (F1000, F1056, F1057)
-ON target.F1000 = source.F1000 AND target.F1056 = source.F1056 AND target.F1057 = source.F1057
-WHEN NOT MATCHED THEN
-    INSERT (F1000, F1056, F1057) VALUES (source.F1000, source.F1056, source.F1057);
+	$preserve901LnkForNewStore = @"
+DECLARE @NewStore   varchar(10) = '$storeNumber';
+DECLARE @HostStore  varchar(10) = '$hostStoreNumber';
+DECLARE @ServerTerm varchar(10) = '$serverTerminal';
+
+INSERT INTO $lnkTableName (F1000, F1056, F1057)
+SELECT DISTINCT
+       l.F1000,
+       @NewStore,
+       @ServerTerm
+FROM $lnkTableName l
+WHERE l.F1057 = @ServerTerm
+  AND l.F1056 <> @HostStore
+  AND l.F1000 IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM $lnkTableName x
+      WHERE x.F1000 = l.F1000
+        AND x.F1056 = @NewStore
+        AND x.F1057 = @ServerTerm
+  );
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM $lnkTableName
+    WHERE F1056 = @NewStore
+      AND F1057 = @ServerTerm
+)
+BEGIN
+    INSERT INTO $lnkTableName (F1000, F1056, F1057)
+    VALUES (@ServerTerm, @NewStore, @ServerTerm);
+END
 "@
 	
-	$deleteOldLnkTabEntries = @"
-DELETE FROM $lnkTableName 
-WHERE F1057 <> '$machineNumber';
+	$rebuildLnkForTerminal = @"
+DECLARE @NewStore  varchar(10) = '$storeNumber';
+DECLARE @HostStore varchar(10) = '$hostStoreNumber';
+DECLARE @Term      varchar(10) = '$newTerminal';
+DECLARE @ProtectedMin int = $protectedMinTerminal;
+
+DECLARE @NewServer varchar(200) = '$newServerNameNorm';
+DECLARE @OldServer varchar(200) = '$oldServerNameNorm';
+
+DECLARE @SourceStore varchar(10);
+
+SELECT TOP 1 @SourceStore = F1056
+FROM $lnkTableName
+WHERE F1057 = @Term
+  AND F1056 <> @HostStore
+  AND F1056 <> @NewStore
+ORDER BY F1056;
+
+IF @SourceStore IS NULL
+BEGIN
+    SELECT TOP 1 @SourceStore = F1056
+    FROM $lnkTableName
+    WHERE F1057 = @Term
+      AND F1056 = @NewStore;
+END
+
+DECLARE @Codes TABLE (F1000 varchar(50) NOT NULL PRIMARY KEY);
+
+IF @SourceStore IS NOT NULL
+BEGIN
+    INSERT INTO @Codes(F1000)
+    SELECT DISTINCT F1000
+    FROM $lnkTableName
+    WHERE F1056 = @SourceStore
+      AND F1057 = @Term
+      AND F1000 IS NOT NULL;
+END
+
+IF EXISTS (SELECT 1 FROM $terTableName WHERE F1056=@NewStore AND TRY_CONVERT(int, LTRIM(RTRIM(F1057))) BETWEEN 902 AND 920)
+BEGIN
+    DECLARE @ServerTerms TABLE (Term varchar(10) NOT NULL PRIMARY KEY);
+
+    INSERT INTO @ServerTerms(Term)
+    SELECT DISTINCT t.F1057
+    FROM $terTableName t
+    WHERE t.F1056 = @NewStore
+      AND TRY_CONVERT(int, LTRIM(RTRIM(t.F1057))) BETWEEN 902 AND 920
+      AND t.F1125 IS NOT NULL
+      AND
+      (
+          UPPER(t.F1125) LIKE '%\\' + @NewServer + '%'
+          OR UPPER(t.F1125) LIKE '%\\' + @OldServer + '%'
+          OR UPPER(t.F1125) LIKE '%@' + @NewServer + '%'
+          OR UPPER(t.F1125) LIKE '%@' + @OldServer + '%'
+          OR UPPER(t.F1125) LIKE '%' + @NewServer + '%'
+          OR UPPER(t.F1125) LIKE '%' + @OldServer + '%'
+      );
+
+    INSERT INTO $lnkTableName (F1000, F1056, F1057)
+    SELECT l.F1000, @NewStore, l.F1057
+    FROM $lnkTableName l
+    JOIN @ServerTerms st ON st.Term = l.F1057
+    WHERE l.F1056 NOT IN (@NewStore, @HostStore)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM $lnkTableName x
+          WHERE x.F1000 = l.F1000
+            AND x.F1056 = @NewStore
+            AND x.F1057 = l.F1057
+      );
+
+    DELETE l
+    FROM $lnkTableName l
+    JOIN @ServerTerms st ON st.Term = l.F1057
+    WHERE l.F1056 NOT IN (@NewStore, @HostStore);
+END
+
+INSERT INTO $lnkTableName (F1000, F1056, F1057)
+SELECT l.F1000, @NewStore, l.F1057
+FROM $lnkTableName l
+WHERE l.F1056 NOT IN (@NewStore, @HostStore)
+  AND TRY_CONVERT(int, LTRIM(RTRIM(l.F1057))) >= @ProtectedMin
+  AND NOT EXISTS (
+      SELECT 1
+      FROM $lnkTableName x
+      WHERE x.F1000 = l.F1000
+        AND x.F1056 = @NewStore
+        AND x.F1057 = l.F1057
+  );
+
+DELETE l
+FROM $lnkTableName l
+WHERE l.F1056 NOT IN (@NewStore, @HostStore)
+  AND TRY_CONVERT(int, LTRIM(RTRIM(l.F1057))) >= @ProtectedMin;
+
+DELETE FROM $lnkTableName
+WHERE F1056 NOT IN (@NewStore, @HostStore);
+
+IF NOT EXISTS (SELECT 1 FROM @Codes)
+BEGIN
+    INSERT INTO @Codes(F1000) VALUES (@Term);
+    IF NOT EXISTS (SELECT 1 FROM @Codes WHERE F1000='DSM') INSERT INTO @Codes(F1000) VALUES ('DSM');
+    IF NOT EXISTS (SELECT 1 FROM @Codes WHERE F1000='PAL') INSERT INTO @Codes(F1000) VALUES ('PAL');
+    IF NOT EXISTS (SELECT 1 FROM @Codes WHERE F1000='RAL') INSERT INTO @Codes(F1000) VALUES ('RAL');
+    IF NOT EXISTS (SELECT 1 FROM @Codes WHERE F1000='XAL') INSERT INTO @Codes(F1000) VALUES ('XAL');
+END
+
+INSERT INTO $lnkTableName (F1000, F1056, F1057)
+SELECT c.F1000, @NewStore, @Term
+FROM @Codes c
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM $lnkTableName x
+    WHERE x.F1000 = c.F1000
+      AND x.F1056 = @NewStore
+      AND x.F1057 = @Term
+);
 "@
 	
-	$dropViewCommandLnk = "DROP VIEW Lnk_Load;"
+	$cleanupLnk_ForLocalTerminalDB = @"
+DECLARE @NewStore varchar(10) = '$storeNumber';
+DECLARE @KeepTerm varchar(10) = '$newTerminal';
+DECLARE @ServerTerm varchar(10) = '$serverTerminal';
+DECLARE @ProtectedMin int = $protectedMinTerminal;
+
+DELETE l
+FROM $lnkTableName l
+WHERE l.F1056 = @NewStore
+  AND l.F1057 NOT IN (@KeepTerm, @ServerTerm)
+  AND (TRY_CONVERT(int, LTRIM(RTRIM(l.F1057))) IS NULL OR TRY_CONVERT(int, LTRIM(RTRIM(l.F1057))) < @ProtectedMin);
+"@
 	
-	# ---------------------------
-	# STD_TAB commands
-	# ---------------------------
+	$dropViewCommandLnk = @"
+IF OBJECT_ID('Lnk_Load', 'V') IS NOT NULL DROP VIEW Lnk_Load;
+"@
+	
+	# ===============================================================================================
+	# RUN_TAB (ONLY when NOT server)
+	# ===============================================================================================
+	
+	$createViewCommandRun = @"
+IF OBJECT_ID('Run_Load', 'V') IS NOT NULL DROP VIEW Run_Load;
+CREATE VIEW Run_Load AS
+SELECT F1102, F1000, F1104
+FROM $runTableName;
+"@
+	
+	$updateRunTab_SafeSwap_OldToNew = @"
+DECLARE @OldTerm varchar(10) = '$oldTerminal';
+DECLARE @NewTerm varchar(10) = '$newTerminal';
+DECLARE @Server  varchar(10) = '$serverTerminal';
+
+IF @OldTerm IS NOT NULL AND @OldTerm <> '' AND @OldTerm <> @NewTerm
+BEGIN
+    UPDATE $runTableName
+    SET F1000 = @NewTerm
+    WHERE F1000 = @OldTerm;
+
+    UPDATE $runTableName
+    SET F1104 = @NewTerm
+    WHERE F1104 = @OldTerm
+      AND F1104 <> @Server;
+END
+"@
+	
+	$dropViewCommandRun = @"
+IF OBJECT_ID('Run_Load', 'V') IS NOT NULL DROP VIEW Run_Load;
+"@
+	
+	# ===============================================================================================
+	# STD_TAB (store key + CompanyName suffix fix in F1531)
+	# ===============================================================================================
+	
 	$createViewCommandStd = @"
+IF OBJECT_ID('Std_Load', 'V') IS NOT NULL DROP VIEW Std_Load;
 CREATE VIEW Std_Load AS
-SELECT F1056
+SELECT F1056, F1531
 FROM $stdTableName;
 "@
 	
-	$updateStdTabCommand = @"
-UPDATE $stdTableName
-SET F1056 = '$storeNumber'
-WHERE F1056 NOT IN ('999','901');
+	$fixStdTabStoreKey_AndCompanySuffix = @"
+DECLARE @NewStore  varchar(10) = '$storeNumber';
+DECLARE @HostStore varchar(10) = '$hostStoreNumber';
+
+-- =========================================
+-- 1) Force store key: keep ONLY (@NewStore + @HostStore)
+--    - If @NewStore row exists: delete all other non-host rows
+--    - Else: convert ONE non-host row to @NewStore, then delete the rest
+-- =========================================
+IF EXISTS (SELECT 1 FROM $stdTableName WHERE F1056 = @NewStore)
+BEGIN
+    DELETE FROM $stdTableName
+    WHERE F1056 <> @NewStore
+      AND F1056 <> @HostStore;
+END
+ELSE
+BEGIN
+    DECLARE @PickOld varchar(10) = NULL;
+
+    SELECT TOP 1 @PickOld = F1056
+    FROM $stdTableName
+    WHERE F1056 <> @HostStore
+    ORDER BY F1056;
+
+    IF @PickOld IS NOT NULL
+    BEGIN
+        UPDATE $stdTableName
+        SET F1056 = @NewStore
+        WHERE F1056 = @PickOld;
+    END
+
+    DELETE FROM $stdTableName
+    WHERE F1056 <> @NewStore
+      AND F1056 <> @HostStore;
+END
+
+-- =========================================
+-- 2) Update F1531 ONLY IF a store number is already present at the end
+--    (space/#/- + 3 or 4 digits). If no suffix exists -> do nothing.
+--    Robust against NBSP/TAB/CR/LF at the end.
+-- =========================================
+;WITH X AS
+(
+    SELECT
+        s.F1056,
+        s.F1531,
+        Clean = RTRIM(
+                    REPLACE(REPLACE(REPLACE(REPLACE(
+                        LTRIM(RTRIM(s.F1531)),
+                        CHAR(160), ' '),
+                        CHAR(9),  ' '),
+                        CHAR(13), ' '),
+                        CHAR(10), ' ')
+                )
+    FROM STD_TAB s
+    WHERE s.F1056 = @NewStore
+      AND s.F1531 IS NOT NULL
+)
+UPDATE X
+SET F1531 =
+    CASE
+        WHEN Clean LIKE '%[ #\-][0-9][0-9][0-9][0-9]'
+             AND TRY_CONVERT(int, RIGHT(Clean, 4)) IS NOT NULL
+             AND RIGHT(Clean, 4) NOT IN ('0901','0999')
+        THEN LEFT(Clean, LEN(Clean) - 4) + @NewStore
+
+        WHEN Clean LIKE '%[ #\-][0-9][0-9][0-9]'
+             AND TRY_CONVERT(int, RIGHT(Clean, 3)) IS NOT NULL
+             AND RIGHT(Clean, 3) NOT IN ('901','999')
+        THEN LEFT(Clean, LEN(Clean) - 3) + @NewStore
+
+        WHEN Clean LIKE '%[ #\-][0-9][0-9]'
+             AND TRY_CONVERT(int, RIGHT(Clean, 2)) IS NOT NULL
+        THEN LEFT(Clean, LEN(Clean) - 2) + @NewStore
+
+        WHEN Clean LIKE '%[ #\-][0-9]'
+             AND TRY_CONVERT(int, RIGHT(Clean, 1)) IS NOT NULL
+        THEN LEFT(Clean, LEN(Clean) - 1) + @NewStore
+
+        ELSE F1531
+    END
+WHERE
+    Clean LIKE '%[ #\-][0-9]'
+    OR Clean LIKE '%[ #\-][0-9][0-9]'
+    OR Clean LIKE '%[ #\-][0-9][0-9][0-9]'
+    OR Clean LIKE '%[ #\-][0-9][0-9][0-9][0-9]';
 "@
 	
-	$dropViewCommandStd = "DROP VIEW Std_Load;"
+	$dropViewCommandStd = @"
+IF OBJECT_ID('Std_Load', 'V') IS NOT NULL DROP VIEW Std_Load;
+"@
 	
-	# Execute the SQL commands
+	# ===============================================================================================
+	# Execute SQL commands (ORDER MATTERS)
+	# ===============================================================================================
+	
 	$sqlCommands = @(
-		# TER_TAB commands
 		$createViewCommandTer,
-		$deleteOldRecordCommand,
-		$insertOrUpdateCommand,
+		$moveProtectedTer_ToNewStore
+	)
+	
+	if ($isServerMoniker)
+	{
+		$sqlCommands += $moveServerNodes902_920_ToNewStore_AndUpdate
+		$sqlCommands += $deleteOtherStoresTer
+		$sqlCommands += $deleteNonServerRowsForNewStore
+		$sqlCommands += $upsertServer901Ter_ForNewStoreOnly
+	}
+	else
+	{
+		$sqlCommands += $preserve901ForNonServerStoreChange
+		$sqlCommands += $deleteOtherStoresTer
+		$sqlCommands += $upsertLaneTer
+		
+		if ($isLocalTerminalDB)
+		{
+			$sqlCommands += $cleanupTer_ForLocalTerminalDB
+		}
+	}
+	
+	$sqlCommands += @(
 		$dropViewCommandTer,
 		
-		# RUN_TAB commands
-		$createViewCommandRun,
-		$updateRunTabCommand,
-		$dropViewCommandRun,
-		
-		# STO_TAB commands
+		# STO_TAB
 		$createViewCommandSto,
-		$insertOrUpdateStoCommand,
-		$deleteOldStoTabEntries,
+		$upsertStoServer901
+	)
+	
+	if ($isServerMoniker)
+	{
+		$sqlCommands += $cleanupSto_ForServer
+	}
+	else
+	{
+		$sqlCommands += $upsertStoTerminal
+		if ($isLocalTerminalDB)
+		{
+			$sqlCommands += $cleanupSto_ForLocalTerminalDB
+		}
+	}
+	
+	$sqlCommands += @(
 		$dropViewCommandSto,
 		
-		# LNK_TAB commands
+		# LNK_TAB
 		$createViewCommandLnk,
-		$insertOrUpdateLnkCommand,
-		$deleteOldLnkTabEntries,
+		$preserve901LnkForNewStore,
+		$rebuildLnkForTerminal
+	)
+	
+	if (-not $isServerMoniker -and $isLocalTerminalDB)
+	{
+		$sqlCommands += $cleanupLnk_ForLocalTerminalDB
+	}
+	
+	$sqlCommands += @(
 		$dropViewCommandLnk
-		
-		# STD_TAB
+	)
+	
+	if (-not $isServerMoniker)
+	{
+		$sqlCommands += @(
+			$createViewCommandRun,
+			$updateRunTab_SafeSwap_OldToNew,
+			$dropViewCommandRun
+		)
+	}
+	
+	$sqlCommands += @(
 		$createViewCommandStd,
-		$updateStdTabCommand,
+		$fixStdTabStoreKey_AndCompanySuffix,
 		$dropViewCommandStd
 	)
 	
@@ -2364,10 +3435,16 @@ WHERE F1056 NOT IN ('999','901');
 		}
 	}
 	
-	# Return the result
 	return @{
-		Success	       = $allSqlSuccessful
-		FailedCommands = $failedSqlCommands
+		Success		    = $allSqlSuccessful
+		FailedCommands  = $failedSqlCommands
+		IsServerMoniker = $isServerMoniker
+		RunTabUpdated   = (-not $isServerMoniker)
+		OldTerminalUsed = $oldTerminal
+		NewTerminalUsed = $newTerminal
+		DatabaseContext = $DatabaseContext
+		LocalTerminalDB = $isLocalTerminalDB
+		DBNAME		    = $dbNameDetected
 	}
 }
 
@@ -3329,13 +4406,16 @@ $mainLayout.Controls.Add($actionsGroup, 0, 2)
 # ===================================================================================================
 
 ############################################################################
-# 1) Change Machine Name Button (UPDATED: always runs Update_INIs in finally)
+# 1) Change Machine Name Button (UPDATED: SERVER name keeps terminal numbers)
 ############################################################################
 $changeMachineNameButton = New-Object System.Windows.Forms.Button
 $changeMachineNameButton.Text = "Change Machine Name"
 $changeMachineNameButton.Location = New-Object System.Drawing.Point(10, 120)
 $changeMachineNameButton.Size = New-Object System.Drawing.Size(150, 35)
 $changeMachineNameButton.Add_Click({
+		
+		# Local constant for server terminal id
+		$serverTerminal = "901"
 		
 		if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator))
 		{
@@ -3401,39 +4481,55 @@ $changeMachineNameButton.Add_Click({
 		if ($normalizedHost -match '\.') { $normalizedHost = ($normalizedHost -split '\.')[0] }
 		$normalizedHost = $normalizedHost.Trim().ToUpper()
 		
-		if ($normalizedHost -notmatch '(\d{1,3})$')
-		{
-			[System.Windows.Forms.MessageBox]::Show(
-				"Invalid terminal number in machine name '$newMachineNameInput'. Must end with 1-3 digits (ex: POS6, POS006, ...).",
-				"Error",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Error
-			)
-			if ($operationStatus -and $operationStatus.ContainsKey("MachineNameChange"))
-			{
-				$operationStatus["MachineNameChange"].Status = "Failed"
-				$operationStatus["MachineNameChange"].Message = "Invalid machine name."
-				$operationStatus["MachineNameChange"].Details = "Cannot extract machine number."
-			}
-			return
-		}
+		# SERVER moniker? -> do NOT derive terminal changes / do NOT force TER edits
+		$isServerMoniker = $false
+		if ($normalizedHost -match '(?i)SERVER') { $isServerMoniker = $true }
 		
-		$machineNumber = ([int]$Matches[1]).ToString("D3")
-		if ($machineNumber -eq "000")
+		# Terminal logic:
+		# - NON-SERVER: require trailing digits, set machineNumber to that terminal
+		# - SERVER: for SQL maintenance we ALWAYS operate on terminal 901, but we do NOT change TER= in INIs
+		$machineNumber = $null
+		if (-not $isServerMoniker)
 		{
-			[System.Windows.Forms.MessageBox]::Show(
-				"Invalid terminal number extracted from '$newMachineNameInput' (000 is not allowed).",
-				"Error",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Error
-			)
-			if ($operationStatus -and $operationStatus.ContainsKey("MachineNameChange"))
+			if ($normalizedHost -notmatch '(\d{1,3})$')
 			{
-				$operationStatus["MachineNameChange"].Status = "Failed"
-				$operationStatus["MachineNameChange"].Message = "Invalid machine name."
-				$operationStatus["MachineNameChange"].Details = "Extracted terminal number 000."
+				[System.Windows.Forms.MessageBox]::Show(
+					"Invalid terminal number in machine name '$newMachineNameInput'. Must end with 1-3 digits (ex: LANE006, SCO012, ...).",
+					"Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK,
+					[System.Windows.Forms.MessageBoxIcon]::Error
+				)
+				if ($operationStatus -and $operationStatus.ContainsKey("MachineNameChange"))
+				{
+					$operationStatus["MachineNameChange"].Status = "Failed"
+					$operationStatus["MachineNameChange"].Message = "Invalid machine name."
+					$operationStatus["MachineNameChange"].Details = "Cannot extract machine number."
+				}
+				return
 			}
-			return
+			
+			$machineNumber = ([int]$Matches[1]).ToString("D3")
+			if ($machineNumber -eq "000")
+			{
+				[System.Windows.Forms.MessageBox]::Show(
+					"Invalid terminal number extracted from '$newMachineNameInput' (000 is not allowed).",
+					"Error",
+					[System.Windows.Forms.MessageBoxButtons]::OK,
+					[System.Windows.Forms.MessageBoxIcon]::Error
+				)
+				if ($operationStatus -and $operationStatus.ContainsKey("MachineNameChange"))
+				{
+					$operationStatus["MachineNameChange"].Status = "Failed"
+					$operationStatus["MachineNameChange"].Message = "Invalid machine name."
+					$operationStatus["MachineNameChange"].Details = "Extracted terminal number 000."
+				}
+				return
+			}
+		}
+		else
+		{
+			# Key fix: ensure machineNumber is NEVER empty on server renames
+			$machineNumber = $serverTerminal
 		}
 		
 		$startupIniPath = "\\localhost\storeman\startup.ini"
@@ -3461,8 +4557,10 @@ $changeMachineNameButton.Add_Click({
 			& 'Remove_Old_XZ_Folders' -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
 			
 			# Update TER + DBSERVER in startup.ini
-			$terValue = "TER=$machineNumber"
+			# IMPORTANT: On SERVER moniker machines, DO NOT change TER= (leave as-is); only update DBSERVER host.
 			$dbServerValue = $null
+			$terValue = $null
+			if (-not $isServerMoniker -and $machineNumber) { $terValue = "TER=$machineNumber" }
 			
 			if (Test-Path $startupIniPath)
 			{
@@ -3503,7 +4601,7 @@ $changeMachineNameButton.Add_Click({
 				$updatedContent = @()
 				foreach ($line in $content)
 				{
-					if ($line -match '^\s*(?i:TER)\s*=')
+					if (-not $isServerMoniker -and $terValue -and ($line -match '^\s*(?i:TER)\s*='))
 					{
 						$updatedContent += $terValue
 					}
@@ -3523,11 +4621,23 @@ $changeMachineNameButton.Add_Click({
 				{
 					$operationStatus["StartupIniUpdate"].Status = "Successful"
 					$operationStatus["StartupIniUpdate"].Message = "startup.ini updated successfully."
-					$operationStatus["StartupIniUpdate"].Details = "Updated TER to '$terValue' and DBSERVER to '$dbServerValue'."
+					if ($isServerMoniker)
+					{
+						$operationStatus["StartupIniUpdate"].Details = "Updated DBSERVER to '$dbServerValue'. TER left unchanged due to SERVER moniker."
+					}
+					else
+					{
+						$operationStatus["StartupIniUpdate"].Details = "Updated TER to '$terValue' and DBSERVER to '$dbServerValue'."
+					}
 				}
 			}
 			
-			$sqlUpdateResult = Update_SQL_Tables_For_Machine_Name_Change -storeNumber $currentStoreNumber -machineName $script:newMachineName -machineNumber $machineNumber
+			# SQL update (always call; server uses 901, non-server uses extracted terminal)
+			$sqlUpdateResult = Update_SQL_Tables_For_Machine_Name_Change `
+																		 -storeNumber $currentStoreNumber `
+																		 -machineName $script:newMachineName `
+																		 -machineNumber $machineNumber `
+																		 -OldMachineName $oldMachineName
 			
 			if ($sqlUpdateResult -and $sqlUpdateResult.Success)
 			{
@@ -3535,7 +4645,7 @@ $changeMachineNameButton.Add_Click({
 				{
 					$operationStatus["SQLDatabaseUpdate"].Status = "Successful"
 					$operationStatus["SQLDatabaseUpdate"].Message = "SQL tables updated successfully after machine name change."
-					$operationStatus["SQLDatabaseUpdate"].Details = "STO_TAB, TER_TAB, LNK_TAB, and RUN_TAB updated."
+					$operationStatus["SQLDatabaseUpdate"].Details = "TER/STO/LNK updated; RUN updated only when non-server."
 				}
 			}
 			else
@@ -3565,7 +4675,7 @@ $changeMachineNameButton.Add_Click({
 				$operationStatus["MachineNameChange"].Details = "Error: $errorMessage"
 			}
 		}
-		finally
+		<#finally
 		{
 			# Always run Update_INIs at the end so INIs reflect the latest intended state
 			$effectiveMachineName = $env:COMPUTERNAME
@@ -3576,10 +4686,11 @@ $changeMachineNameButton.Add_Click({
 			
 			try
 			{
+				# IMPORTANT: On SERVER moniker, Update_INIs will update STORE/REDIR only and will NOT touch TER=
 				$null = Update_INIs -newStoreNumber $currentStoreNumber -MachineName $effectiveMachineName -OldStoreNumber $currentStoreNumber -OldMachineName $oldMachineName -CreateSmsHttpsIfMissing -StartupIniPath $startupIniPath
 			}
 			catch { }
-		}
+		}#>
 		
 		# Reboot prompt only if rename succeeded
 		if ($script:newMachineName -and -not [string]::IsNullOrWhiteSpace([string]$script:newMachineName))
