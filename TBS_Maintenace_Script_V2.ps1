@@ -7423,8 +7423,17 @@ function Insert_Test_Item
 	[CmdletBinding()]
 	param (
 		# If omitted, we use the ConnectionString assembled by Get_Store_And_Database_Info.
-		[string]$ConnectionString = $script:FunctionResults['ConnectionString']
+		[string]$ConnectionString = $script:FunctionResults['ConnectionString'],
+		[switch]$Silent
 	)
+
+	$writeLog = {
+		param (
+			[string]$Message,
+			[string]$Color = "white"
+		)
+		if (-not $Silent) { Write_Log $Message $Color }
+	}
 	
 	# ----------------------------------------------------------------------------------------------
 	# Guard: Need connection context from Get_Store_And_Database_Info
@@ -7433,11 +7442,11 @@ function Insert_Test_Item
 	if (-not $ConnectionString -and
 		(-not $script:FunctionResults['DBSERVER'] -or -not $script:FunctionResults['DBNAME']))
 	{
-		Write_Log "Insert_Test_Item: No ConnectionString nor DBSERVER/DBNAME available. Run Get_Store_And_Database_Info first." "red"
+		& $writeLog "Insert_Test_Item: No ConnectionString nor DBSERVER/DBNAME available. Run Get_Store_And_Database_Info first." "red"
 		return
 	}
 	
-	Write_Log "`r`n==================== Starting Insert_Test_Item ====================`r`n" "blue"
+	& $writeLog "`r`n==================== Starting Insert_Test_Item ====================`r`n" "blue"
 	
 	# ----------------------------------------------------------------------------------------------
 	# Ensure Invoke-Sqlcmd is available (prefer SqlServer, fallback to SQLPS)
@@ -7465,8 +7474,8 @@ function Insert_Test_Item
 	
 	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
 	{
-		Write_Log "Insert_Test_Item: Invoke-Sqlcmd not available (SqlServer/SQLPS modules not loaded/installed)." "red"
-		Write_Log "`r`n==================== Insert_Test_Item Aborted (No SQL Module) ====================`r`n" "blue"
+		& $writeLog "Insert_Test_Item: Invoke-Sqlcmd not available (SqlServer/SQLPS modules not loaded/installed)." "red"
+		& $writeLog "`r`n==================== Insert_Test_Item Aborted (No SQL Module) ====================`r`n" "blue"
 		return
 	}
 	
@@ -7494,11 +7503,11 @@ function Insert_Test_Item
 		{
 			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT 1" -QueryTimeout 5 -ErrorAction Stop | Out-Null
 			$useConnectionString = $true
-			Write_Log "SQL connectivity via -ConnectionString verified (SqlServer module)." "green"
+			& $writeLog "SQL connectivity via -ConnectionString verified (SqlServer module)." "green"
 		}
 		catch
 		{
-			Write_Log "Modern path (-ConnectionString) failed: $($_.Exception.Message)`r`nFalling back to -ServerInstance/-Database..." "yellow"
+			& $writeLog "Modern path (-ConnectionString) failed: $($_.Exception.Message)`r`nFalling back to -ServerInstance/-Database..." "yellow"
 			$useConnectionString = $false
 		}
 	}
@@ -7530,12 +7539,12 @@ function Insert_Test_Item
 			Invoke-Sqlcmd @fallbackParams -Query "SELECT 1" -QueryTimeout 5 -ErrorAction Stop | Out-Null
 			$dbTxt = if ($fallbackParams['Database']) { " (DB=$($fallbackParams['Database']))" }
 			else { "" }
-			Write_Log "SQL connectivity via fallback -ServerInstance verified: $($fallbackParams['ServerInstance'])$dbTxt" "green"
+			& $writeLog "SQL connectivity via fallback -ServerInstance verified: $($fallbackParams['ServerInstance'])$dbTxt" "green"
 		}
 		catch
 		{
-			Write_Log "Fallback (-ServerInstance/-Database) failed: $($_.Exception.Message)" "red"
-			Write_Log "`r`n==================== Insert_Test_Item Aborted (No Connectivity) ====================`r`n" "blue"
+			& $writeLog "Fallback (-ServerInstance/-Database) failed: $($_.Exception.Message)" "red"
+			& $writeLog "`r`n==================== Insert_Test_Item Aborted (No Connectivity) ====================`r`n" "blue"
 			return
 		}
 	}
@@ -7596,7 +7605,7 @@ function Insert_Test_Item
 		$PLU = $preferredPLU
 		$TestF267 = 777
 		$doInsert = $true
-		Write_Log "Using preferred PLU: $PLU with F267: $TestF267" "green"
+		& $writeLog "Using preferred PLU: $PLU with F267: $TestF267" "green"
 	}
 	
 	# ---- If not chosen yet, check alternative PLU (INLINE)
@@ -7621,7 +7630,7 @@ function Insert_Test_Item
 			$PLU = $alternativePLU
 			$TestF267 = 7777
 			$doInsert = $true
-			Write_Log "Using alternative PLU: $PLU with F267: $TestF267" "green"
+			& $writeLog "Using alternative PLU: $PLU with F267: $TestF267" "green"
 		}
 	}
 	
@@ -7647,13 +7656,13 @@ function Insert_Test_Item
 			$PLU = $fallbackPLU
 			$TestF267 = 77777
 			$doInsert = $true
-			Write_Log "Using fallback PLU: $PLU with F267: $TestF267" "green"
+			& $writeLog "Using fallback PLU: $PLU with F267: $TestF267" "green"
 		}
 	}
 	
 	if ($doInsert -and $PLU)
 	{
-		Write_Log "Deleting existing records for PLU: $PLU and F267: $TestF267" "yellow"
+		& $writeLog "Deleting existing records for PLU: $PLU and F267: $TestF267" "yellow"
 		
 		# --- Always delete old rows for the chosen PLU/F267 to keep inserts deterministic
 		$deleteQueries = @(
@@ -7666,11 +7675,11 @@ function Insert_Test_Item
 		foreach ($q in $deleteQueries)
 		{
 			try { & $RunSql $q | Out-Null }
-			catch { Write_Log "Error during deletion: $($_.Exception.Message)" "red" }
+			catch { & $writeLog "Error during deletion: $($_.Exception.Message)" "red" }
 		}
 		
 		# --- SCL_TAB
-		Write_Log "Inserting into SCL_TAB..." "yellow"
+		& $writeLog "Inserting into SCL_TAB..." "yellow"
 		try
 		{
 			& $RunSql @"
@@ -7678,12 +7687,12 @@ INSERT INTO SCL_TAB (F01, F1000, F902, F1001, F253, F258, F264, F267, F1952, F19
 VALUES
 ('$PLU', 'PAL', 'MANUAL', 1, '$nowFull', 10, 7, $TestF267, 'Test Descriptor 2', '001', 'Test Descriptor 3', 'Test Descriptor 4')
 "@ | Out-Null
-			Write_Log "SCL_TAB insertion successful" "green"
+			& $writeLog "SCL_TAB insertion successful" "green"
 		}
-		catch { Write_Log "Error inserting into SCL_TAB: $($_.Exception.Message)" "red" }
+		catch { & $writeLog "Error inserting into SCL_TAB: $($_.Exception.Message)" "red" }
 		
 		# --- OBJ_TAB
-		Write_Log "Inserting into OBJ_TAB..." "yellow"
+		& $writeLog "Inserting into OBJ_TAB..." "yellow"
 		try
 		{
 			$F29 = 'Tecnica Test Item'
@@ -7693,12 +7702,12 @@ INSERT INTO OBJ_TAB (F01, F902, F1001, F21, F29, F270, F1118, F1959)
 VALUES
 ('$PLU', '00001153', 0, 1, '$F29', 123.45, '001', '001')
 "@ | Out-Null
-			Write_Log "OBJ_TAB insertion successful" "green"
+			& $writeLog "OBJ_TAB insertion successful" "green"
 		}
-		catch { Write_Log "Error inserting into OBJ_TAB: $($_.Exception.Message)" "red" }
+		catch { & $writeLog "Error inserting into OBJ_TAB: $($_.Exception.Message)" "red" }
 		
 		# --- POS_TAB
-		Write_Log "Inserting into POS_TAB..." "yellow"
+		& $writeLog "Inserting into POS_TAB..." "yellow"
 		try
 		{
 			& $RunSql @"
@@ -7706,12 +7715,12 @@ INSERT INTO POS_TAB (F01, F1000, F902, F1001, F02, F09, F79, F80, F82, F104, F11
 VALUES
 ('$PLU', 'PAL', 'MANUAL', 0, 'Tecnica Test Item', '$nowDate', '1', '1', '1', '0', '0', '1', '1', 1.0, '001', '1')
 "@ | Out-Null
-			Write_Log "POS_TAB insertion successful" "green"
+			& $writeLog "POS_TAB insertion successful" "green"
 		}
-		catch { Write_Log "Error inserting into POS_TAB: $($_.Exception.Message)" "red" }
+		catch { & $writeLog "Error inserting into POS_TAB: $($_.Exception.Message)" "red" }
 		
 		# --- PRICE_TAB
-		Write_Log "Inserting into PRICE_TAB..." "yellow"
+		& $writeLog "Inserting into PRICE_TAB..." "yellow"
 		try
 		{
 			& $RunSql @"
@@ -7719,12 +7728,12 @@ INSERT INTO PRICE_TAB (F01, F1000, F126, F902, F1001, F21, F30, F31, F113, F1006
 VALUES
 ('$PLU', 'PAL', 1, 'MANUAL', 0, 1, 777.77, 1, 'REG', 1, 777.77, '$nowDate', '1858', 1.0)
 "@ | Out-Null
-			Write_Log "PRICE_TAB insertion successful" "green"
+			& $writeLog "PRICE_TAB insertion successful" "green"
 		}
-		catch { Write_Log "Error inserting into PRICE_TAB: $($_.Exception.Message)" "red" }
+		catch { & $writeLog "Error inserting into PRICE_TAB: $($_.Exception.Message)" "red" }
 		
 		# --- SCL_TXT_TAB
-		Write_Log "Inserting into SCL_TXT_TAB..." "yellow"
+		& $writeLog "Inserting into SCL_TXT_TAB..." "yellow"
 		try
 		{
 			& $RunSql @"
@@ -7732,15 +7741,15 @@ INSERT INTO SCL_TXT_TAB (F267, F1000, F253, F297, F902, F1001, F1836)
 VALUES
 ($TestF267, 'PAL', '$nowFull', 'Ingredients Test', 'MANUAL', 0, 'Tecnica Test Item')
 "@ | Out-Null
-			Write_Log "SCL_TXT_TAB insertion successful" "green"
+			& $writeLog "SCL_TXT_TAB insertion successful" "green"
 		}
-		catch { Write_Log "Error inserting into SCL_TXT_TAB: $($_.Exception.Message)" "red" }
+		catch { & $writeLog "Error inserting into SCL_TXT_TAB: $($_.Exception.Message)" "red" }
 		
-		Write_Log "`r`n==================== Insert_Test_Item Completed ====================`r`n" "blue"
+		& $writeLog "`r`n==================== Insert_Test_Item Completed ====================`r`n" "blue"
 	}
 	else
 	{
-		Write_Log "`r`n==================== Insert_Test_Item Completed (No Data) ====================`r`n" "blue"
+		& $writeLog "`r`n==================== Insert_Test_Item Completed (No Data) ====================`r`n" "blue"
 	}
 }
 
@@ -13547,10 +13556,19 @@ function Install_FUNCTIONS_Into_SMS
 		[string]$StoreNumber,
 		# kept for compatibility / future use
 		[Parameter(Mandatory = $false)]
-		[string]$OfficePath # if not provided, we try common script-scoped fallbacks
+		[string]$OfficePath, # if not provided, we try common script-scoped fallbacks
+		[switch]$Silent
 	)
+
+	$writeLog = {
+		param (
+			[string]$Message,
+			[string]$Color = "white"
+		)
+		if (-not $Silent) { Write_Log $Message $Color }
+	}
 	
-	Write_Log "`r`n==================== Starting Install_FUNCTIONS_Into_SMS ====================`r`n" "blue"
+	& $writeLog "`r`n==================== Starting Install_FUNCTIONS_Into_SMS ====================`r`n" "blue"
 	
 	# Registered macro marker (®) as a safe char literal; we always inject via $($reg) to avoid encoding surprises.
 	$reg = [char]0x00AE
@@ -13565,7 +13583,7 @@ function Install_FUNCTIONS_Into_SMS
 	}
 	if (-not $OfficePath -or -not (Test-Path -LiteralPath $OfficePath))
 	{
-		Write_Log "Office path not found or not provided: '$OfficePath'." "red"
+		& $writeLog "Office path not found or not provided: '$OfficePath'." "red"
 		return
 	}
 	
@@ -13747,11 +13765,11 @@ ORDER BY F1000,F1063;
 		$norm = [regex]::Replace($DeploySysContent, "(`r)?`n", "`r`n") # normalize to CRLF
 		[System.IO.File]::WriteAllText($DeploySysPath, $norm, $ansi) # write as ANSI, no BOM
 		Set-ItemProperty -LiteralPath $DeploySysPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Updated 'DEPLOY_SYS.sql' in '$OfficePath'." "green"
+		& $writeLog "Updated 'DEPLOY_SYS.sql' in '$OfficePath'." "green"
 	}
 	catch
 	{
-		Write_Log "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
+		& $writeLog "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
 	}
 	
 	# -- DEPLOY_MULTI_FCT.sqm --
@@ -13760,14 +13778,14 @@ ORDER BY F1000,F1063;
 		$norm = [regex]::Replace($DeployMultiFctContent, "(`r)?`n", "`r`n") # normalize to CRLF
 		[System.IO.File]::WriteAllText($DeployMultiFctPath, $norm, $ansi) # write as ANSI, no BOM
 		Set-ItemProperty -LiteralPath $DeployMultiFctPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Wrote 'DEPLOY_MULTI_FCT.sqm' (All + CSV + ranges) to '$OfficePath'." "green"
+		& $writeLog "Wrote 'DEPLOY_MULTI_FCT.sqm' (All + CSV + ranges) to '$OfficePath'." "green"
 	}
 	catch
 	{
-		Write_Log "Failed to write 'DEPLOY_FCT.sqm'. Error: $_" "red"
+		& $writeLog "Failed to write 'DEPLOY_FCT.sqm'. Error: $_" "red"
 	}
 	
-	Write_Log "`r`n==================== Install_FUNCTIONS_Into_SMS Completed ====================`r`n" "blue"
+	& $writeLog "`r`n==================== Install_FUNCTIONS_Into_SMS Completed ====================`r`n" "blue"
 }
 
 # ===================================================================================================
@@ -29133,6 +29151,7 @@ $result = [ordered]@{
 	DataText  = 'N/A'
 	LogText   = 'N/A'
 	Status    = 'Unavailable'
+	OpenPath  = $null
 	UpdatedAt = [DateTime]::Now
 }
 
@@ -29239,6 +29258,15 @@ if ($protocol -eq 'File')
 			else { $result.LogText = ('{0:N0} MB' -f $logMb) }
 		}
 
+		if ($dataFile)
+		{
+			try { $result.OpenPath = [string]$dataFile.DirectoryName } catch { }
+		}
+		elseif ($logFile)
+		{
+			try { $result.OpenPath = [string]$logFile.DirectoryName } catch { }
+		}
+
 		if ($dataFile -or $logFile) { $result.Status = 'FileReady' }
 		else { $result.Status = 'FileMissing' }
 	}
@@ -29314,32 +29342,82 @@ try
 	$cmd.CommandText = @"
 SET NOCOUNT ON;
 SELECT
-	CAST(SUM(CASE WHEN type_desc = 'ROWS' THEN size ELSE 0 END) * 8.0 / 1024.0 AS decimal(18,1)) AS DataSizeMB,
-	CAST(SUM(CASE WHEN type_desc = 'LOG' THEN size ELSE 0 END) * 8.0 / 1024.0 AS decimal(18,1)) AS LogSizeMB
+	type_desc,
+	size,
+	physical_name
 FROM sys.database_files;
 "@
 
 	$rdr = $cmd.ExecuteReader()
-	if ($rdr.Read())
+	$dataMb = 0.0
+	$logMb = 0.0
+	$dataPhysicalPath = $null
+	$logPhysicalPath = $null
+	while ($rdr.Read())
 	{
-		$dataMb = $null
-		$logMb = $null
+		$typeDesc = $null
+		$sizePages = $null
+		$physicalName = $null
+		if (-not $rdr.IsDBNull(0)) { $typeDesc = [string]$rdr.GetValue(0) }
+		if (-not $rdr.IsDBNull(1)) { $sizePages = [double]$rdr.GetValue(1) }
+		if (-not $rdr.IsDBNull(2)) { $physicalName = [string]$rdr.GetValue(2) }
 
-		if (-not $rdr.IsDBNull(0)) { $dataMb = [double]$rdr.GetValue(0) }
-		if (-not $rdr.IsDBNull(1)) { $logMb = [double]$rdr.GetValue(1) }
-
-		if ($null -ne $dataMb)
+		if ($typeDesc -eq 'ROWS')
 		{
-			if ($dataMb -ge 1024) { $result.DataText = ('{0:N2} GB' -f ($dataMb / 1024.0)) }
-			else { $result.DataText = ('{0:N0} MB' -f $dataMb) }
+			if ($null -ne $sizePages) { $dataMb += ($sizePages * 8.0 / 1024.0) }
+			if (-not $dataPhysicalPath -and -not [string]::IsNullOrWhiteSpace($physicalName)) { $dataPhysicalPath = $physicalName }
 		}
-
-		if ($null -ne $logMb)
+		elseif ($typeDesc -eq 'LOG')
 		{
-			if ($logMb -ge 1024) { $result.LogText = ('{0:N2} GB' -f ($logMb / 1024.0)) }
-			else { $result.LogText = ('{0:N0} MB' -f $logMb) }
+			if ($null -ne $sizePages) { $logMb += ($sizePages * 8.0 / 1024.0) }
+			if (-not $logPhysicalPath -and -not [string]::IsNullOrWhiteSpace($physicalName)) { $logPhysicalPath = $physicalName }
 		}
+	}
 
+	if ($dataMb -gt 0)
+	{
+		if ($dataMb -ge 1024) { $result.DataText = ('{0:N2} GB' -f ($dataMb / 1024.0)) }
+		else { $result.DataText = ('{0:N0} MB' -f $dataMb) }
+	}
+
+	if ($logMb -gt 0)
+	{
+		if ($logMb -ge 1024) { $result.LogText = ('{0:N2} GB' -f ($logMb / 1024.0)) }
+		else { $result.LogText = ('{0:N0} MB' -f $logMb) }
+	}
+
+	$rawOpenPath = $null
+	if (-not [string]::IsNullOrWhiteSpace($dataPhysicalPath))
+	{
+		try { $rawOpenPath = [System.IO.Path]::GetDirectoryName($dataPhysicalPath) } catch { $rawOpenPath = $null }
+	}
+	elseif (-not [string]::IsNullOrWhiteSpace($logPhysicalPath))
+	{
+		try { $rawOpenPath = [System.IO.Path]::GetDirectoryName($logPhysicalPath) } catch { $rawOpenPath = $null }
+	}
+
+	if (-not [string]::IsNullOrWhiteSpace($rawOpenPath))
+	{
+		$machineNameNorm = [string]$machineName
+		if ([string]::IsNullOrWhiteSpace($machineNameNorm) -or $machineNameNorm -match '^(?i)(localhost|\.|\(local\))$' -or $machineNameNorm -ieq $env:COMPUTERNAME)
+		{
+			$result.OpenPath = $rawOpenPath
+		}
+		elseif ($rawOpenPath -match '^(?<drive>[A-Za-z]):\\(?<rest>.*)$')
+		{
+			$driveShare = ($matches['drive'].ToLowerInvariant() + '$')
+			$pathRest = $matches['rest']
+			if ([string]::IsNullOrWhiteSpace($pathRest)) { $result.OpenPath = ('\\{0}\{1}' -f $machineNameNorm, $driveShare) }
+			else { $result.OpenPath = ('\\{0}\{1}\{2}' -f $machineNameNorm, $driveShare, $pathRest) }
+		}
+		else
+		{
+			$result.OpenPath = $rawOpenPath
+		}
+	}
+
+	if (($dataMb -gt 0) -or ($logMb -gt 0) -or (-not [string]::IsNullOrWhiteSpace([string]$result.OpenPath)))
+	{
 		$result.Status = 'Ready'
 	}
 	try { $rdr.Close() } catch { }
@@ -29438,6 +29516,19 @@ if (($result.Status -ne 'Ready') -and
 		$global:ProtocolGrid.AllowUserToResizeColumns = $false
 		$global:ProtocolGrid.SelectionMode = "FullRowSelect"
 		$global:ProtocolGrid.Font = New-Object System.Drawing.Font("Consolas", 10)
+		$global:ProtocolGrid.Add_CellDoubleClick({
+				param ($sender, $e)
+				if ($e.RowIndex -lt 0) { return }
+				try
+				{
+					$row = $sender.Rows[$e.RowIndex]
+					if (-not $row) { return }
+					$targetPath = [string]$row.Tag
+					if ([string]::IsNullOrWhiteSpace($targetPath)) { return }
+					Start-Process -FilePath 'explorer.exe' -ArgumentList @($targetPath) | Out-Null
+				}
+				catch { }
+			})
 		
 		# Modern-ish grid styling (safe/light)
 		try
@@ -29504,6 +29595,7 @@ if (($result.Status -ne 'Ready') -and
 									DataText   = [string]$result.DataText
 									LogText    = [string]$result.LogText
 									Status     = [string]$result.Status
+									OpenPath   = [string]$result.OpenPath
 									LastUpdate = Get-Date
 								}
 							}
@@ -29513,6 +29605,7 @@ if (($result.Status -ne 'Ready') -and
 									DataText   = 'N/A'
 									LogText    = 'N/A'
 									Status     = 'Error'
+									OpenPath   = $null
 									LastUpdate = Get-Date
 								}
 							}
@@ -29625,6 +29718,7 @@ if (($result.Status -ne 'Ready') -and
 									DataText   = 'N/A'
 									LogText    = 'N/A'
 									Status     = 'NoConn'
+									OpenPath   = $null
 									LastUpdate = $now
 								}
 							}
@@ -29634,6 +29728,7 @@ if (($result.Status -ne 'Ready') -and
 									DataText   = if ($workerProtocol -eq 'File') { 'Scan...' } else { '...' }
 									LogText    = if ($workerProtocol -eq 'File') { 'Scan...' } else { '...' }
 									Status     = 'Pending'
+									OpenPath   = $null
 									LastUpdate = $lastUpdate
 								}
 								
@@ -29671,6 +29766,7 @@ if (($result.Status -ne 'Ready') -and
 					$global:ProtocolGrid.Rows[$r].Cells[1].Value = $proto
 					$global:ProtocolGrid.Rows[$r].Cells[2].Value = $dataText
 					$global:ProtocolGrid.Rows[$r].Cells[3].Value = $logText
+					try { $global:ProtocolGrid.Rows[$r].Tag = [string]$sizeEntry.OpenPath } catch { }
 				}
 				else
 				{
@@ -29783,6 +29879,7 @@ if (($result.Status -ne 'Ready') -and
 											DataText   = 'N/A'
 											LogText    = 'N/A'
 											Status     = 'NoConn'
+											OpenPath   = $null
 											LastUpdate = $now
 										}
 									}
@@ -29792,6 +29889,7 @@ if (($result.Status -ne 'Ready') -and
 											DataText   = if ($proto -eq 'File') { 'Scan...' } else { '...' }
 											LogText    = if ($proto -eq 'File') { 'Scan...' } else { '...' }
 											Status     = 'Pending'
+											OpenPath   = $null
 											LastUpdate = $lastUpdate
 										}
 	
@@ -29829,6 +29927,7 @@ if (($result.Status -ne 'Ready') -and
 							$global:ProtocolGrid.Rows[$r].Cells[1].Value = $proto
 							$global:ProtocolGrid.Rows[$r].Cells[2].Value = $dataText
 							$global:ProtocolGrid.Rows[$r].Cells[3].Value = $logText
+							try { $global:ProtocolGrid.Rows[$r].Tag = [string]$sizeEntry.OpenPath } catch { }
 						}
 						
 						# Optional: rebuild $script:ProtocolResults so any other old code keeps working
@@ -31180,18 +31279,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	[void]$ContextMenuGeneral.Items.Add($rebootItem)
 	
 	############################################################################
-	# 3) Install Functions in SMS (One + Multi)  -- UPDATED
-	############################################################################
-	$Install_ONE_FUNCTION_Into_SMSItem = New-Object System.Windows.Forms.ToolStripMenuItem("Install 'DEPLOY_MULTI_FCT' in SMS")
-	$Install_ONE_FUNCTION_Into_SMSItem.ToolTipText = "Updates DEPLOY_SYS.sql and installs DEPLOY_MULTI_FCT.sqm into SMS."
-	$Install_ONE_FUNCTION_Into_SMSItem.Add_Click({
-			$script:LastActivity = Get-Date
-			Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath
-		})
-	[void]$ContextMenuGeneral.Items.Add($Install_ONE_FUNCTION_Into_SMSItem)
-	
-	############################################################################
-	# 4) Copy Files Between Nodes
+	# 3) Copy Files Between Nodes
 	############################################################################
 	$Copy_Files_Between_NodesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Copy Files Between Nodes")
 	$Copy_Files_Between_NodesItem.ToolTipText = "Copy (storeman) subfolders/files from Server or a Lane to selected lanes."
@@ -31202,7 +31290,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	[void]$ContextMenuGeneral.Items.Add($Copy_Files_Between_NodesItem)
 	
 	############################################################################
-	# 5) Edit INIs (Setup.ini and others)
+	# 4) Edit INIs (Setup.ini and others)
 	############################################################################
 	$INI_EditorItem = New-Object System.Windows.Forms.ToolStripMenuItem("INI_Editor")
 	$INI_EditorItem.ToolTipText = "Edit \storeman\<relative>\*.ini (default: office\Setup.ini) on Server or a Lane, then optionally copy to other lanes."
@@ -31213,7 +31301,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	[void]$ContextMenuGeneral.Items.Add($INI_EditorItem)
 	
 	############################################################################
-	# 6) Fix Journal
+	# 5) Fix Journal
 	############################################################################
 	$fixJournalItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Journal")
 	$fixJournalItem.ToolTipText = "Fix journal entries for the specified date."
@@ -31224,7 +31312,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	[void]$ContextMenuGeneral.Items.Add($fixJournalItem)
 	
 	############################################################################
-	# 7) Reboot selected Backoffices
+	# 6) Reboot selected Backoffices
 	############################################################################
 	$RebootBackofficesItem = New-Object System.Windows.Forms.ToolStripMenuItem("Reboot Backoffices")
 	$RebootBackofficesItem.ToolTipText = "Reboot the selected Backoffice/s."
@@ -31235,7 +31323,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	[void]$ContextMenuGeneral.Items.Add($RebootBackofficesItem)
 	
 	############################################################################
-	# 8) Remove Archive Bit
+	# 7) Remove Archive Bit
 	############################################################################
 	$RemoveArchiveBitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Remove Archive Bit")
 	$RemoveArchiveBitItem.ToolTipText = "Remove archived bit from all lanes and server. Option to schedule as a repeating task."
@@ -31246,7 +31334,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	[void]$ContextMenuGeneral.Items.Add($RemoveArchiveBitItem)
 	
 	############################################################################
-	# 9) Sync Hosts File for Selected Nodes
+	# 8) Sync Hosts File for Selected Nodes
 	############################################################################
 	$SyncHostsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Sync Host Files")
 	$SyncHostsItem.ToolTipText = "Update the host file with the nodes selected, then copy the local host file to the selected node."
@@ -31257,18 +31345,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	[void]$ContextMenuGeneral.Items.Add($SyncHostsItem)
 	
 	############################################################################
-	# 10) Insert Test Item
-	############################################################################
-	$InsertTestItem = New-Object System.Windows.Forms.ToolStripMenuItem("Insert Test Item")
-	$InsertTestItem.ToolTipText = "Inserts or updates a test item (PLU 0020077700000 or alternatives) in the database."
-	$InsertTestItem.Add_Click({
-			$script:LastActivity = Get-Date
-			Insert_Test_Item
-		})
-	[void]$ContextMenuGeneral.Items.Add($InsertTestItem)
-	
-	############################################################################
-	# 11) Fix Deploy CHG
+	# 9) Fix Deploy CHG
 	############################################################################
 	$FixDeployCHGItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Deploy_CHG")
 	$FixDeployCHGItem.ToolTipText = "Restores the deploy line to DEPLOY_CHG.sql for scale management."
@@ -31497,6 +31574,10 @@ $form.Add_Shown({
 				try { $script:AliasToTable = Get_Table_Aliases -RefreshCache }
 				catch { }
 				try { Generate_SQL_Scripts -StoreNumber $StoreNumber }
+				catch { }
+				try { Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath -Silent }
+				catch { }
+				try { Insert_Test_Item -Silent | Out-Null }
 				catch { }
 				try { Add_Scale_Credentials -ScaleCodeToIPInfo $script:FunctionResults['WindowsScales'] }
 				catch { }
