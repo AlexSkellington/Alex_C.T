@@ -19,7 +19,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.6.4"
+$VersionNumber = "2.6.5"
 $VersionDate = "2026-04-01"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -56,37 +56,37 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 }
 catch
 {
-	# If we can't determine, assume not admin so we don't fail silently
 	$IsAdmin = $false
 }
 
-# If already elevated, do nothing and continue the script
-if ($IsAdmin)
+$scriptPath = $PSCommandPath
+if ([string]::IsNullOrWhiteSpace($scriptPath))
 {
-	# Optional: uncomment if you want a banner
-	# Write-Host "Running elevated (Administrator)." -ForegroundColor Green
+	try { $scriptPath = $MyInvocation.MyCommand.Path }
+	catch { $scriptPath = $null }
 }
-else
+
+$isSavedPs1Launch = $false
+try
+{
+	if (-not [string]::IsNullOrWhiteSpace($scriptPath) -and
+		(Test-Path -LiteralPath $scriptPath) -and
+		([string]::Equals([System.IO.Path]::GetExtension($scriptPath), '.ps1', [System.StringComparison]::OrdinalIgnoreCase)))
+	{
+		$isSavedPs1Launch = $true
+	}
+}
+catch
+{
+	$isSavedPs1Launch = $false
+}
+
+# Only attempt self-relaunch when this is a real saved, interactive .ps1 launch.
+# If the script was started from some other host/launcher, or non-interactively, leave execution alone.
+if (-not $IsAdmin -and $isSavedPs1Launch -and [Environment]::UserInteractive)
 {
 	Write-Host "Not running as Administrator. Relaunching elevated..." -ForegroundColor Yellow
 	
-	# If running from a saved .ps1, $PSCommandPath is best.
-	# If launched in a different way, fall back to $MyInvocation.
-	$scriptPath = $PSCommandPath
-	if ([string]::IsNullOrWhiteSpace($scriptPath))
-	{
-		try { $scriptPath = $MyInvocation.MyCommand.Path }
-		catch { $scriptPath = $null }
-	}
-	
-	if ([string]::IsNullOrWhiteSpace($scriptPath) -or -not (Test-Path -LiteralPath $scriptPath))
-	{
-		Write-Host "Cannot relaunch elevated: script path not detected. Please run PowerShell as Administrator." -ForegroundColor Red
-		exit 1
-	}
-	
-	# Preserve original arguments EXACTLY (handles spaces)
-	# PowerShell passes $args already tokenized; re-quote each.
 	$argList = @(
 		"-NoProfile"
 		"-ExecutionPolicy", "Bypass"
@@ -103,7 +103,6 @@ else
 	
 	try
 	{
-		# Use the same bitness PowerShell that launched us (important on some systems)
 		$psExe = (Get-Process -Id $PID).Path
 		if ([string]::IsNullOrWhiteSpace($psExe) -or -not (Test-Path -LiteralPath $psExe))
 		{
@@ -111,15 +110,12 @@ else
 		}
 		
 		Start-Process -FilePath $psExe -ArgumentList $argList -Verb RunAs | Out-Null
+		exit 0
 	}
 	catch
 	{
-		Write-Host "Elevation canceled or failed. Exiting." -ForegroundColor Red
-		exit 1
+		Write-Host "Elevation canceled or failed. Continuing without relaunch." -ForegroundColor Yellow
 	}
-	
-	# IMPORTANT: stop the non-elevated instance so you don't run twice
-	exit 0
 }#>
 
 # ===================================================================================================
@@ -164,6 +160,9 @@ $script:LaneDbSizeRefreshSeconds = 20
 $script:ProtocolPopupMode = 'Lane'
 $script:StartupWarmupStarted = $false
 $script:StartupWarmupTimer = $null
+$script:PopupThemeTimer = $null
+$script:StyledPopupForms = @{ }
+$script:LaneSqlProtocolEnableTaskState = @{ }
 
 # ---------------------------------------------------------------------------------------------------
 # Count Tracking Variables
@@ -14062,7 +14061,7 @@ function INI_Editor
 	$iniFlow.WrapContents = $false
 	$iniFlow.Dock = 'Top'
 	$iniFlow.AutoSize = $false
-	$iniFlow.Height = 30
+	$iniFlow.Height = 38
 	$iniFlow.Margin = New-Object System.Windows.Forms.Padding(0, 4, 0, 0)
 	$root.Controls.Add($iniFlow, 0, 2)
 	
@@ -14541,6 +14540,7 @@ function INI_Editor
 			$dlg.Controls.AddRange(@($btnMerge, $btnCopyAll, $btnCancel))
 			$dlg.AcceptButton = $btnMerge
 			$dlg.CancelButton = $btnCancel
+			if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $dlg }
 			
 			$choice = $dlg.ShowDialog()
 			if ($choice -eq [System.Windows.Forms.DialogResult]::Cancel) { return }
@@ -14677,6 +14677,7 @@ function INI_Editor
 	# ==============================================================================================
 	& $doLoad
 	$iniFlow.PerformLayout() # ensure combo gets sized on first draw
+	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $frm }
 	[void]$frm.ShowDialog()
 	
 	Write_Log "`r`n==================== INI_Editor Completed ====================`r`n" "blue"
@@ -20278,6 +20279,24 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 					$sorted = $all | Sort-Object { ($_ -split ',')[0] -as [int] }
 					[System.IO.File]::WriteAllLines($protocolResultsFile, $sorted, [System.Text.Encoding]::UTF8)
 					
+					if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($res.Machine))
+					{
+						try
+						{
+							Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $laneStr -MachineName $res.Machine | Out-Null
+						}
+						catch { }
+					}
+					elseif ($script:LaneSqlProtocolEnableTaskState.ContainsKey($laneStr))
+					{
+						$script:LaneSqlProtocolEnableTaskState[$laneStr] = [pscustomobject]@{
+							TaskPresent   = $false
+							LastChecked   = Get-Date
+							ScheduledFor  = $null
+							MachineName   = $res.Machine
+						}
+					}
+					
 					if ($res.Restarted) { $restarted += $res.Lane }
 					
 					# Final per-lane summary line
@@ -20305,6 +20324,330 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 	}
 	
 	Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Completed ====================" "blue"
+}
+
+# ===================================================================================================
+#             FUNCTION: Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   For lanes currently stuck on File protocol, writes a one-shot PowerShell worker to the lane and
+#   schedules it for 4:15 AM. The worker enables SQL protocols locally, restarts SQL if needed,
+#   deletes its scheduled task, and then deletes itself.
+# ===================================================================================================
+
+function Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$LaneNumber,
+		[Parameter(Mandatory = $true)]
+		[string]$MachineName,
+		[string]$TcpPort = '1433',
+		[string]$StartTime = '04:15'
+	)
+	
+	if ([string]::IsNullOrWhiteSpace($LaneNumber) -or [string]::IsNullOrWhiteSpace($MachineName)) { return $false }
+	if (-not $script:LaneSqlProtocolEnableTaskState) { $script:LaneSqlProtocolEnableTaskState = @{ } }
+	
+	$laneKey = $LaneNumber.ToString().PadLeft(3, '0')
+	$taskName = "Enable_SQL_Protocols_Lane_$laneKey"
+	$scriptName = "${taskName}.ps1"
+	$remoteScriptSharePath = $null
+	$localScriptPath = $null
+	$remoteTempCandidates = @(
+		[pscustomobject]@{ Share = "\\$MachineName\Storeman\Temp"; Local = "C:\Storeman\Temp" },
+		[pscustomobject]@{ Share = "\\$MachineName\c$\Storeman\Temp"; Local = "C:\Storeman\Temp" },
+		[pscustomobject]@{ Share = "\\$MachineName\d$\Storeman\Temp"; Local = "D:\Storeman\Temp" },
+		[pscustomobject]@{ Share = "\\$MachineName\e$\Storeman\Temp"; Local = "E:\Storeman\Temp" }
+	)
+	
+	$scheduledDate = Get-Date
+	try
+	{
+		$today415 = Get-Date -Hour 4 -Minute 15 -Second 0
+		$scheduledDate = if ((Get-Date) -lt $today415) { $today415 } else { $today415.AddDays(1) }
+	}
+	catch
+	{
+		$scheduledDate = (Get-Date).AddDays(1).Date.AddHours(4).AddMinutes(15)
+	}
+	$scheduledDateText = $scheduledDate.ToString('MM/dd/yyyy')
+	
+	$workerScript = @'
+param(
+    [string]$TaskName,
+    [string]$TcpPort = '1433'
+)
+
+$ErrorActionPreference = 'Continue'
+
+try { Add-Type -AssemblyName System.Core | Out-Null } catch { }
+
+$instanceRoots = @(
+    'SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL',
+    'SOFTWARE\Wow6432Node\Microsoft\Microsoft SQL Server\Instance Names\SQL'
+)
+
+$instanceMap = @{}
+foreach ($root in $instanceRoots)
+{
+    try
+    {
+        $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($root)
+        if ($k)
+        {
+            foreach ($name in $k.GetValueNames())
+            {
+                $id = $k.GetValue($name)
+                if ($id -and -not $instanceMap.ContainsKey($name)) { $instanceMap[$name] = $id }
+            }
+            $k.Close()
+        }
+    }
+    catch { }
+}
+
+$servicesToRestart = New-Object System.Collections.Generic.List[string]
+
+foreach ($instanceName in $instanceMap.Keys)
+{
+    $instanceId = $instanceMap[$instanceName]
+    $needsRestart = $false
+
+    foreach ($authPath in @(
+        "SOFTWARE\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer",
+        "SOFTWARE\Wow6432Node\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer"
+    ))
+    {
+        try
+        {
+            $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($authPath, $true)
+            if ($k)
+            {
+                if ($k.GetValue('LoginMode', 1) -ne 2)
+                {
+                    $k.SetValue('LoginMode', 2, [Microsoft.Win32.RegistryValueKind]::DWord)
+                    $needsRestart = $true
+                }
+                $k.Close()
+                break
+            }
+        }
+        catch { }
+    }
+
+    foreach ($tcpPath in @(
+        "SOFTWARE\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer\SuperSocketNetLib\Tcp",
+        "SOFTWARE\Wow6432Node\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer\SuperSocketNetLib\Tcp"
+    ))
+    {
+        try
+        {
+            $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($tcpPath, $true)
+            if ($k)
+            {
+                if ($k.GetValue('Enabled', 0) -ne 1)
+                {
+                    $k.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+                    $needsRestart = $true
+                }
+                $k.Close()
+                break
+            }
+        }
+        catch { }
+    }
+
+    foreach ($ipAllPath in @(
+        "SOFTWARE\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer\SuperSocketNetLib\Tcp\IPAll",
+        "SOFTWARE\Wow6432Node\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer\SuperSocketNetLib\Tcp\IPAll"
+    ))
+    {
+        try
+        {
+            $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($ipAllPath, $true)
+            if ($k)
+            {
+                $curPort = [string]$k.GetValue('TcpPort', '')
+                $curDyn = [string]$k.GetValue('TcpDynamicPorts', '')
+                if ($curPort -ne $TcpPort -or $curDyn -ne '')
+                {
+                    $k.SetValue('TcpPort', $TcpPort, [Microsoft.Win32.RegistryValueKind]::String)
+                    $k.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
+                    $needsRestart = $true
+                }
+                $k.Close()
+                break
+            }
+        }
+        catch { }
+    }
+
+    foreach ($npPath in @(
+        "SOFTWARE\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer\SuperSocketNetLib\Np",
+        "SOFTWARE\Wow6432Node\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer\SuperSocketNetLib\Np"
+    ))
+    {
+        try
+        {
+            $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($npPath, $true)
+            if ($k)
+            {
+                if ($k.GetValue('Enabled', 0) -ne 1)
+                {
+                    $k.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+                    $needsRestart = $true
+                }
+                $k.Close()
+                break
+            }
+        }
+        catch { }
+    }
+
+    foreach ($smPath in @(
+        "SOFTWARE\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer\SuperSocketNetLib\Sm",
+        "SOFTWARE\Wow6432Node\Microsoft\Microsoft SQL Server\$instanceId\MSSQLServer\SuperSocketNetLib\Sm"
+    ))
+    {
+        try
+        {
+            $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($smPath, $true)
+            if ($k)
+            {
+                if ($k.GetValue('Enabled', 0) -ne 1)
+                {
+                    $k.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+                    $needsRestart = $true
+                }
+                $k.Close()
+                break
+            }
+        }
+        catch { }
+    }
+
+    if ($needsRestart)
+    {
+        $svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' } else { "MSSQL`$$instanceName" }
+        if (-not $servicesToRestart.Contains($svcName)) { [void]$servicesToRestart.Add($svcName) }
+    }
+}
+
+foreach ($svcName in $servicesToRestart)
+{
+    try
+    {
+        Restart-Service -Name $svcName -Force -ErrorAction Stop
+    }
+    catch
+    {
+        try { sc.exe stop $svcName | Out-Null } catch { }
+        Start-Sleep -Seconds 8
+        try { sc.exe start $svcName | Out-Null } catch { }
+        Start-Sleep -Seconds 5
+    }
+}
+
+try { schtasks.exe /Delete /TN $TaskName /F | Out-Null } catch { }
+try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3 >nul & del /f /q `"$PSCommandPath`"" -WindowStyle Hidden } catch { }
+'@
+	
+	try
+	{
+		foreach ($candidate in $remoteTempCandidates)
+		{
+			try
+			{
+				if (-not (Test-Path -LiteralPath $candidate.Share))
+				{
+					New-Item -Path $candidate.Share -ItemType Directory -Force -ErrorAction Stop | Out-Null
+				}
+				$probeFile = Join-Path $candidate.Share ("_tbs_probe_{0}.tmp" -f $laneKey)
+				Set-Content -LiteralPath $probeFile -Value "probe" -Encoding ASCII -Force -ErrorAction Stop
+				Remove-Item -LiteralPath $probeFile -Force -ErrorAction SilentlyContinue
+				$remoteScriptSharePath = Join-Path $candidate.Share $scriptName
+				$localScriptPath = [System.IO.Path]::Combine($candidate.Local, $scriptName)
+				break
+			}
+			catch { }
+		}
+	}
+	catch
+	{
+	}
+	
+	if ([string]::IsNullOrWhiteSpace($remoteScriptSharePath) -or [string]::IsNullOrWhiteSpace($localScriptPath))
+	{
+		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+			TaskPresent   = $false
+			LastChecked   = Get-Date
+			ScheduledFor  = $scheduledDate
+			MachineName   = $MachineName
+		}
+		return $false
+	}
+	
+	$existingState = $script:LaneSqlProtocolEnableTaskState[$laneKey]
+	
+	$null = & schtasks.exe /Query /S $MachineName /TN $taskName 2>$null
+	$taskExists = ($LASTEXITCODE -eq 0)
+	$scriptExists = $false
+	try { $scriptExists = Test-Path -LiteralPath $remoteScriptSharePath }
+	catch { $scriptExists = $false }
+	if ($taskExists -and $scriptExists)
+	{
+		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+			TaskPresent   = $true
+			LastChecked   = Get-Date
+			ScheduledFor  = $scheduledDate
+			MachineName   = $MachineName
+		}
+		return $true
+	}
+	elseif ($taskExists -and -not $scriptExists)
+	{
+		try { & schtasks.exe /Delete /S $MachineName /TN $taskName /F 2>$null | Out-Null }
+		catch { }
+	}
+	
+	try
+	{
+		Set-Content -LiteralPath $remoteScriptSharePath -Value $workerScript -Encoding UTF8 -Force -ErrorAction Stop
+	}
+	catch
+	{
+		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+			TaskPresent   = $false
+			LastChecked   = Get-Date
+			ScheduledFor  = $scheduledDate
+			MachineName   = $MachineName
+		}
+		return $false
+	}
+	
+	$taskAction = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$localScriptPath`" -TaskName `"$taskName`" -TcpPort `"$TcpPort`""
+	$createOutput = & schtasks.exe /Create /S $MachineName /RU SYSTEM /RL HIGHEST /SC ONCE /TN $taskName /TR $taskAction /ST $StartTime /SD $scheduledDateText /F 2>&1
+	if ($LASTEXITCODE -eq 0)
+	{
+		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+			TaskPresent   = $true
+			LastChecked   = Get-Date
+			ScheduledFor  = $scheduledDate
+			MachineName   = $MachineName
+		}
+		return $true
+	}
+	
+	try { Remove-Item -LiteralPath $remoteScriptSharePath -Force -ErrorAction SilentlyContinue }
+	catch { }
+	$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+		TaskPresent   = $false
+		LastChecked   = Get-Date
+		ScheduledFor  = $scheduledDate
+		MachineName   = $MachineName
+	}
+	return $false
 }
 
 # ===================================================================================================
@@ -25913,6 +26256,7 @@ function Show_Node_Selection_Form
 	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
+	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $form }
 	
 	# ----- Show form & collect selections -----
 	$dialogResult = $form.ShowDialog()
@@ -26057,6 +26401,7 @@ function Show_Table_Selection_Form
 	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
+	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $form }
 	
 	$setBtnColor = {
 		param ($btn,
@@ -26245,6 +26590,7 @@ function Show_Section_Selection_Form
 	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
+	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $form }
 	
 	$setBtnColor = {
 		param ($btn,
@@ -26549,6 +26895,24 @@ if ($protocol -eq 'File') {
 						
 						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
 						$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = $proto }
+						
+						if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($mn))
+						{
+							try
+							{
+								Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $laneNum -MachineName $mn | Out-Null
+							}
+							catch { }
+						}
+						elseif ($script:LaneSqlProtocolEnableTaskState -and $script:LaneSqlProtocolEnableTaskState.ContainsKey($laneNum))
+						{
+							$script:LaneSqlProtocolEnableTaskState[$laneNum] = [pscustomobject]@{
+								TaskPresent  = $false
+								LastChecked  = Get-Date
+								ScheduledFor = $null
+								MachineName  = $mn
+							}
+						}
 						
 						$changed = $true
 					}
@@ -29557,6 +29921,8 @@ if (($result.Status -ne 'Ready') -and
 			catch { }
 			try { if ($script:StartupWarmupTimer) { $script:StartupWarmupTimer.Stop(); $script:StartupWarmupTimer.Dispose(); $script:StartupWarmupTimer = $null } }
 			catch { }
+			try { if ($script:PopupThemeTimer) { $script:PopupThemeTimer.Stop(); $script:PopupThemeTimer.Dispose(); $script:PopupThemeTimer = $null } }
+			catch { }
 			
 			try
 			{
@@ -29911,6 +30277,204 @@ if (($result.Status -ne 'Ready') -and
 			$Menu.Padding = New-Object System.Windows.Forms.Padding(2)
 		}
 		catch { }
+	}
+	
+	# ----------------------------------------------------------------------------
+	# Apply modern styling to popup forms so older dialogs match the main app.
+	# ----------------------------------------------------------------------------
+	$Apply_Modern_Popup_Style = {
+		param ([System.Windows.Forms.Form]$PopupForm)
+		
+		if (-not $PopupForm -or $PopupForm.IsDisposed) { return }
+		
+		$stylePopupControls = $null
+		$stylePopupControls = {
+			param ($Control)
+			
+			if (-not $Control) { return }
+			
+			try
+			{
+				if ($Control -is [System.Windows.Forms.Button])
+				{
+					$measured = [System.Windows.Forms.TextRenderer]::MeasureText($Control.Text, (New-Object System.Drawing.Font("Segoe UI Semibold", 9.5, [System.Drawing.FontStyle]::Regular)))
+					$minWidth = [Math]::Max([int]$Control.Width, [int]($measured.Width + 22))
+					$minHeight = [Math]::Max([int]$Control.Height, [int]($measured.Height + 12), 32)
+					$preserveAccentBack = ($Control.BackColor -eq [System.Drawing.Color]::Yellow -or $Control.BackColor -eq [System.Drawing.Color]::LightGreen)
+					
+					$Control.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+					$Control.UseVisualStyleBackColor = $false
+					if (-not $preserveAccentBack)
+					{
+						$Control.BackColor = $script:UiCardBg
+					}
+					$Control.ForeColor = $script:UiTextDark
+					$Control.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5, [System.Drawing.FontStyle]::Regular)
+					$Control.Cursor = [System.Windows.Forms.Cursors]::Hand
+					$Control.FlatAppearance.BorderSize = 1
+					$Control.FlatAppearance.BorderColor = $script:UiCardBorder
+					$Control.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(245, 248, 252)
+					$Control.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(235, 242, 252)
+					if ($Control.Width -lt $minWidth) { $Control.Width = $minWidth }
+					if ($Control.Height -lt $minHeight) { $Control.Height = $minHeight }
+				}
+				elseif ($Control -is [System.Windows.Forms.Label] -or
+					$Control -is [System.Windows.Forms.CheckBox] -or
+					$Control -is [System.Windows.Forms.RadioButton])
+				{
+					$Control.ForeColor = $script:UiTextDark
+					$Control.BackColor = [System.Drawing.Color]::Transparent
+					$Control.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+				}
+				elseif ($Control -is [System.Windows.Forms.TextBox] -or
+					$Control -is [System.Windows.Forms.RichTextBox] -or
+					$Control -is [System.Windows.Forms.MaskedTextBox])
+				{
+					$Control.BackColor = [System.Drawing.Color]::White
+					$Control.ForeColor = $script:UiTextDark
+					$Control.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+					try { $Control.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle }
+					catch { }
+				}
+				elseif ($Control -is [System.Windows.Forms.ComboBox])
+				{
+					$Control.BackColor = [System.Drawing.Color]::White
+					$Control.ForeColor = $script:UiTextDark
+					$Control.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+					try { $Control.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat }
+					catch { }
+				}
+				elseif ($Control -is [System.Windows.Forms.NumericUpDown] -or
+					$Control -is [System.Windows.Forms.DateTimePicker])
+				{
+					$Control.BackColor = [System.Drawing.Color]::White
+					$Control.ForeColor = $script:UiTextDark
+					$Control.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+				}
+				elseif ($Control -is [System.Windows.Forms.ListBox] -or
+					$Control -is [System.Windows.Forms.ListView] -or
+					$Control -is [System.Windows.Forms.CheckedListBox])
+				{
+					$Control.BackColor = [System.Drawing.Color]::White
+					$Control.ForeColor = $script:UiTextDark
+					$Control.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+				}
+				elseif ($Control -is [System.Windows.Forms.GroupBox])
+				{
+					$Control.ForeColor = $script:UiTextDark
+					$Control.BackColor = $script:UiCardBg
+					$Control.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5)
+				}
+				elseif ($Control -is [System.Windows.Forms.Panel] -or
+					$Control -is [System.Windows.Forms.TabPage] -or
+					$Control -is [System.Windows.Forms.FlowLayoutPanel] -or
+					$Control -is [System.Windows.Forms.TableLayoutPanel])
+				{
+					if ($Control.BackColor -eq [System.Drawing.Color]::Empty -or $Control.BackColor.A -eq 0)
+					{
+						$Control.BackColor = [System.Drawing.Color]::Transparent
+					}
+					elseif ($Control.BackColor -ne $script:UiCardBg)
+					{
+						$Control.BackColor = $script:UiCardBg
+					}
+				}
+				elseif ($Control -is [System.Windows.Forms.TabControl])
+				{
+					$Control.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+				}
+				elseif ($Control -is [System.Windows.Forms.DataGridView])
+				{
+					$Control.BackgroundColor = $script:UiCardBg
+					$Control.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+					$Control.GridColor = $script:UiCardBorder
+					$Control.EnableHeadersVisualStyles = $false
+					$Control.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
+					$Control.ColumnHeadersDefaultCellStyle.ForeColor = $script:UiTextDark
+					$Control.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5)
+					$Control.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
+					$Control.DefaultCellStyle.ForeColor = $script:UiTextDark
+					$Control.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(221, 235, 255)
+					$Control.DefaultCellStyle.SelectionForeColor = $script:UiTextDark
+					$Control.AlternatingRowsDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(250, 251, 253)
+				}
+				
+				if ($Control.ContextMenuStrip)
+				{
+					& $Apply_Modern_Menu_Style $Control.ContextMenuStrip
+				}
+			}
+			catch { }
+			
+			try
+			{
+				foreach ($child in @($Control.Controls))
+				{
+					& $stylePopupControls $child
+				}
+			}
+			catch { }
+		}
+		
+		try
+		{
+			$PopupForm.BackColor = $uiBg
+			$PopupForm.ForeColor = $script:UiTextDark
+			$PopupForm.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+			$PopupForm.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
+			try
+			{
+				$prop = $PopupForm.GetType().GetProperty("DoubleBuffered", [System.Reflection.BindingFlags] "Instance,NonPublic")
+				if ($prop) { $prop.SetValue($PopupForm, $true, $null) }
+			}
+			catch { }
+			
+			if ($PopupForm.MainMenuStrip)
+			{
+				$PopupForm.MainMenuStrip.BackColor = $script:UiCardBg
+				$PopupForm.MainMenuStrip.ForeColor = $script:UiTextDark
+				$PopupForm.MainMenuStrip.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+			}
+			
+			& $stylePopupControls $PopupForm
+		}
+		catch { }
+	}
+	
+	if (-not $script:PopupThemeTimer)
+	{
+		$script:PopupThemeTimer = New-Object System.Windows.Forms.Timer
+		$script:PopupThemeTimer.Interval = 60
+		$script:PopupThemeTimer.Add_Tick({
+				try
+				{
+					$activeHashes = @{}
+					foreach ($openForm in [System.Windows.Forms.Application]::OpenForms)
+					{
+						if (-not $openForm -or $openForm.IsDisposed) { continue }
+						if ($form -and [object]::ReferenceEquals($openForm, $form)) { continue }
+						
+						$formHash = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($openForm)
+						$activeHashes[$formHash] = $true
+						
+						if (-not $script:StyledPopupForms.ContainsKey($formHash))
+						{
+							& $Apply_Modern_Popup_Style $openForm
+							$script:StyledPopupForms[$formHash] = $true
+						}
+					}
+					
+					foreach ($staleHash in @($script:StyledPopupForms.Keys))
+					{
+						if (-not $activeHashes.ContainsKey($staleHash))
+						{
+							[void]$script:StyledPopupForms.Remove($staleHash)
+						}
+					}
+				}
+				catch { }
+			})
+		$script:PopupThemeTimer.Start()
 	}
 	
 	######################################################################################################################
