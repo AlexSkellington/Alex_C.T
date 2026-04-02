@@ -9,6 +9,102 @@
 #                                                                                                     #
 #######################################################################################################
 
+$script:ShowConsole = $false
+$script:ConsoleHidden = $false
+$script:RestoreConsoleOnExit = $false
+
+try
+{
+	$__scriptPath = $PSCommandPath
+	if ([string]::IsNullOrWhiteSpace($__scriptPath))
+	{
+		try { $__scriptPath = $MyInvocation.MyCommand.Path }
+		catch { $__scriptPath = $null }
+	}
+}
+catch
+{
+	$__scriptPath = $null
+}
+
+$__entryPath = $null
+$__launchArgs = @()
+$__isSavedPs1Launch = $false
+$__isExeLaunch = $false
+$__isInlineLikeLaunch = $false
+
+try
+{
+	$__cmdLineArgs = [Environment]::GetCommandLineArgs()
+	if ($__cmdLineArgs -and $__cmdLineArgs.Count -gt 0)
+	{
+		$__entryPath = $__cmdLineArgs[0]
+		if ($__cmdLineArgs.Count -gt 1)
+		{
+			$__launchArgs = @($__cmdLineArgs[1..($__cmdLineArgs.Count - 1)])
+		}
+	}
+}
+catch
+{
+	$__entryPath = $null
+	$__launchArgs = @()
+}
+
+try
+{
+	if (-not [string]::IsNullOrWhiteSpace($__scriptPath) -and
+		(Test-Path -LiteralPath $__scriptPath) -and
+		([string]::Equals([System.IO.Path]::GetExtension($__scriptPath), '.ps1', [System.StringComparison]::OrdinalIgnoreCase)))
+	{
+		$__isSavedPs1Launch = $true
+	}
+}
+catch
+{
+	$__isSavedPs1Launch = $false
+}
+
+if (-not $__isSavedPs1Launch)
+{
+	try
+	{
+		if (-not [string]::IsNullOrWhiteSpace($__entryPath) -and
+			(Test-Path -LiteralPath $__entryPath) -and
+			([string]::Equals([System.IO.Path]::GetExtension($__entryPath), '.exe', [System.StringComparison]::OrdinalIgnoreCase)))
+		{
+			$__entryName = [System.IO.Path]::GetFileNameWithoutExtension($__entryPath)
+			if ($__entryName -notmatch '^(powershell|pwsh|powershell_ise|powershellstudio)$')
+			{
+				$__isExeLaunch = $true
+			}
+		}
+	}
+	catch
+	{
+		$__isExeLaunch = $false
+	}
+}
+
+$__isInlineLikeLaunch = (-not $__isSavedPs1Launch -and -not $__isExeLaunch)
+$script:ShowConsole = [bool](@($__launchArgs | Where-Object { $_ -in @('-ShowConsole', '/ShowConsole', '-KeepConsole', '/KeepConsole') }).Count -gt 0)
+
+if (-not ([System.Management.Automation.PSTypeName]'ConsoleWindowHelper').Type)
+{
+	Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class ConsoleWindowHelper {
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+}
+
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # ===================================================================================================
@@ -19,8 +115,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.6.5"
-$VersionDate = "2026-04-01"
+$VersionNumber = "2.6.6"
+$VersionDate = "2026-04-02"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -31,9 +127,12 @@ $revision = $PSVersionTable.PSVersion.Revision
 # Idle timeout for the whole script
 $script:IdleMinutesAllowed = 15 # <<< adjust as needed
 $script:SuppressClosePrompt = $true
-$script:LaunchSourceType = 'Unknown'
-$script:LaunchEntryPath = $null
-$script:IsInlineLaunch = $false
+if (-not $script:LaunchSourceType) { $script:LaunchSourceType = 'Unknown' }
+if ($null -eq $script:LaunchEntryPath) { $script:LaunchEntryPath = $null }
+if ($null -eq $script:IsInlineLaunch) { $script:IsInlineLaunch = $false }
+if ($null -eq $script:ShowConsole) { $script:ShowConsole = $false }
+if ($null -eq $script:ConsoleHidden) { $script:ConsoleHidden = $false }
+if ($null -eq $script:RestoreConsoleOnExit) { $script:RestoreConsoleOnExit = $false }
 
 # Combine them into a single version string
 $PowerShellVersion = "$major.$minor.$build.$revision"
@@ -149,7 +248,7 @@ if (-not $isSavedPs1Launch -and -not $isExeLaunch)
 # If the script was started from irm|iex or some other host/launcher, leave execution alone.
 if (-not $IsAdmin -and [Environment]::UserInteractive -and ($isSavedPs1Launch -or $isExeLaunch))
 {
-	Write-Host "Requesting elevated launch..." -ForegroundColor DarkYellow
+	if ($script:ShowConsole) { Write-Host "Requesting elevated launch..." -ForegroundColor DarkYellow }
 	try
 	{
 		if ($isSavedPs1Launch)
@@ -195,7 +294,7 @@ if (-not $IsAdmin -and [Environment]::UserInteractive -and ($isSavedPs1Launch -o
 	}
 	catch
 	{
-		Write-Host "Elevation canceled or unavailable. Continuing." -ForegroundColor DarkYellow
+		if ($script:ShowConsole) { Write-Host "Elevation canceled or unavailable. Continuing." -ForegroundColor DarkYellow }
 	}
 }
 
@@ -241,6 +340,9 @@ $script:LaneDbSizeRefreshSeconds = 20
 $script:ProtocolPopupMode = 'Lane'
 $script:StartupWarmupStarted = $false
 $script:StartupWarmupTimer = $null
+$script:StartupWarmupSteps = @()
+$script:StartupWarmupIndex = 0
+$script:StartupWarmupStatus = $null
 $script:PopupThemeTimer = $null
 $script:StyledPopupForms = @{ }
 $script:LaneSqlProtocolEnableTaskState = @{ }
@@ -7339,7 +7441,7 @@ function Get_All_VNC_Passwords
 			foreach ($j in $done) { Remove-Job $j -Force }
 			$jobs = $jobs | Where-Object { $_.State -eq "Running" }
 		}
-		$jobs += Start-Job -ArgumentList $machineName, $uvncFolders -ScriptBlock {
+		$jobs += Start-Job -Name ("GetAllVNCPasswords_{0}" -f $machineName) -ArgumentList $machineName, $uvncFolders -ScriptBlock {
 			param ($machineName,
 				$uvncFolders)
 			$password = $null
@@ -8035,7 +8137,7 @@ function Get_Remote_Machine_Info
 			$getRemoteMachineInfoDefinition = ${function:Get_Remote_Machine_Info}.ToString()
 			$writeLogDefinition = 'param([string]$Message, $Color, [switch]$IncludeTimestamp)'
 			
-			$job = Start-Job -ScriptBlock {
+			$job = Start-Job -Name 'RemoteMachineInfoJob' -ScriptBlock {
 				param (
 					[string]$GetRemoteMachineInfoDefinition,
 					[string]$WriteLogDefinition,
@@ -8262,7 +8364,7 @@ function Get_Remote_Machine_Info
 			else { $iniPath = $null }
 			
 			# -------- Per-node job (throttled outside) --------
-			$job = Start-Job -ArgumentList $NodeName, $NodeNumber, $iniPath, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $usePSRemotingFallback `
+			$job = Start-Job -Name ("RemoteMachineInfo_Node_{0}" -f $NodeName) -ArgumentList $NodeName, $NodeNumber, $iniPath, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $usePSRemotingFallback `
 							 -ScriptBlock {
 				param (
 					$NodeName,
@@ -8306,7 +8408,7 @@ function Get_Remote_Machine_Info
 				}
 				else
 				{
-					$wmiJob = Start-Job -ScriptBlock {
+					$wmiJob = Start-Job -Name ("RemoteMachineInfo_WMI_{0}" -f $NodeName) -ScriptBlock {
 						param ($NodeName)
 						try
 						{
@@ -8390,7 +8492,7 @@ function Get_Remote_Machine_Info
 				# --- 2) CIM (if WMI failed) ---
 				if (-not $info.Success)
 				{
-					$cimJob = Start-Job -ScriptBlock {
+					$cimJob = Start-Job -Name ("RemoteMachineInfo_CIM_{0}" -f $NodeName) -ScriptBlock {
 						param ($NodeName)
 						try
 						{
@@ -9376,7 +9478,7 @@ function Delete_Files
 			}
 		}
 		
-		return Start-Job -ScriptBlock $scriptBlock -ArgumentList $Path, $SpecifiedFiles, $Exclusions
+		return Start-Job -Name ("DeleteFilesJob_{0}" -f ((($Path -replace '[^A-Za-z0-9_-]', '_').Trim('_')))) -ScriptBlock $scriptBlock -ArgumentList $Path, $SpecifiedFiles, $Exclusions
 	}
 	
 	# -------- Synchronous path --------
@@ -21550,7 +21652,7 @@ while ($true)
 				try { "" | Set-Content -LiteralPath $singleLog -Encoding UTF8 -Force }
 				catch { }
 				
-				$monitorJob = Start-Job -ScriptBlock {
+				$monitorJob = Start-Job -Name 'DuplicateFileMonitorJob' -ScriptBlock {
 					param ($scriptPath,
 						$interval,
 						$logFile)
@@ -22553,7 +22655,7 @@ function Export_VNC_Files_For_All_Nodes
 			$getAllVncPasswordsDefinition = ${function:Get_All_VNC_Passwords}.ToString()
 			$exportVncDefinition = ${function:Export_VNC_Files_For_All_Nodes}.ToString()
 			
-			$job = Start-Job -ScriptBlock {
+			$job = Start-Job -Name 'VNCExportJob' -ScriptBlock {
 				param (
 					[string]$WriteLogDefinition,
 					[string]$GetAllVncPasswordsDefinition,
@@ -26947,7 +27049,7 @@ if ($protocol -eq 'File') {
 	
 	# ---------- timer (UI thread, safe) ----------
 	$script:protocolTimer = New-Object System.Windows.Forms.Timer
-	$script:protocolTimer.Interval = 200
+	$script:protocolTimer.Interval = 1000
 	
 	$script:protocolTimer.add_Tick({
 			
@@ -28292,16 +28394,19 @@ if (-not $form)
 	$uiHeaderText = [System.Drawing.Color]::White
 	
 	# ------------------------------------------------------------------------------------------------
-	# Create a timer to refresh the GUI every second (kept from your original)
+	# Legacy full-form refresh timer is left disabled by default because it can
+	# cause noticeable UI stalls on slower machines.
 	# ------------------------------------------------------------------------------------------------
 	$refreshTimer = New-Object System.Windows.Forms.Timer
-	$refreshTimer.Interval = 1000 # 1 second
+	$refreshTimer.Interval = 5000
 	$refreshTimer.add_Tick({
-			# Refresh the form to update all controls
-			try { if ($form -and -not $form.IsDisposed) { $form.Refresh() } }
+			try
+			{
+				if (-not $form -or $form.IsDisposed -or -not $form.Visible) { return }
+				if ($statusStrip -and -not $statusStrip.IsDisposed) { $statusStrip.Refresh() }
+			}
 			catch { }
 		})
-	$refreshTimer.Start()
 	
 	# ------------------------------------------------------------------------------------------------
 	# ToolTip (kept, slightly refined)
@@ -28967,7 +29072,7 @@ public static class NativeWin {
 	#   (kept logic; additionally updates status strip for a modern "app" feel)
 	# ------------------------------------------------------------------------------------------------
 	$BusyTimer = New-Object System.Windows.Forms.Timer
-	$BusyTimer.Interval = 800
+	$BusyTimer.Interval = 1500
 	$BusyTimer.add_Tick({
 			# Reset busy flags each tick
 			$script:IsBusy = $false
@@ -29033,7 +29138,42 @@ public static class NativeWin {
 				catch { }
 			}
 			
-			# 4) Any other background jobs (EXCEPT ignored names/patterns)
+			# 4) Known launch background jobs?
+			if (-not $script:IsBusy)
+			{
+				try
+				{
+					if (
+						$script:VncExportTask -and
+						$script:VncExportTask.Job -and
+						$script:VncExportTask.Job.State -in @('Running', 'NotStarted')
+					)
+					{
+						$script:IsBusy = $true
+						$script:BusyReason = "Exporting VNC files"
+					}
+				}
+				catch { }
+			}
+			
+			if (-not $script:IsBusy)
+			{
+				try
+				{
+					if (
+						$script:RemoteMachineInfoTask -and
+						$script:RemoteMachineInfoTask.Job -and
+						$script:RemoteMachineInfoTask.Job.State -in @('Running', 'NotStarted')
+					)
+					{
+						$script:IsBusy = $true
+						$script:BusyReason = "Collecting remote machine info"
+					}
+				}
+				catch { }
+			}
+			
+			# 5) Any other background jobs (EXCEPT ignored names/patterns)
 			if (-not $script:IsBusy)
 			{
 				try
@@ -29060,7 +29200,11 @@ public static class NativeWin {
 			# ---- Status strip update (modern) ----
 			try
 			{
-				if ($script:IsBusy)
+				if (-not [string]::IsNullOrWhiteSpace($script:StartupWarmupStatus))
+				{
+					$stBusy.Text = [string]$script:StartupWarmupStatus
+				}
+				elseif ($script:IsBusy)
 				{
 					$stBusy.Text = "Busy: $($script:BusyReason)"
 				}
@@ -30070,28 +30214,10 @@ if (($result.Status -ne 'Ready') -and
 	}
 	
 	# ------------------------------------------------------------------------------------------------
-	# Form Closing (X)  (FIXED): confirm first, then cleanup (prevents "dead UI" if user cancels)
+	# Form Closing (X): close directly, then cleanup
 	# ------------------------------------------------------------------------------------------------
 	$form.add_FormClosing({
-			# Skip confirm if we're closing due to idle timeout
-			if ($script:SuppressClosePrompt)
-			{
-				$script:SuppressClosePrompt = $false
-			}
-			else
-			{
-				$confirmResult = [System.Windows.Forms.MessageBox]::Show(
-					"Are you sure you want to exit?",
-					"Confirm Exit",
-					[System.Windows.Forms.MessageBoxButtons]::YesNo,
-					[System.Windows.Forms.MessageBoxIcon]::Question
-				)
-				if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes)
-				{
-					$_.Cancel = $true
-					return
-				}
-			}
+			$script:SuppressClosePrompt = $false
 			
 			# ---- Timers ----
 			try { if ($script:IdleTimer) { $script:IdleTimer.Stop(); $script:IdleTimer.Dispose(); $script:IdleTimer = $null } }
@@ -30629,10 +30755,12 @@ if (($result.Status -ne 'Ready') -and
 	if (-not $script:PopupThemeTimer)
 	{
 		$script:PopupThemeTimer = New-Object System.Windows.Forms.Timer
-		$script:PopupThemeTimer.Interval = 60
+		$script:PopupThemeTimer.Interval = 300
 		$script:PopupThemeTimer.Add_Tick({
 				try
 				{
+					if ([System.Windows.Forms.Application]::OpenForms.Count -le 1 -and $script:StyledPopupForms.Count -eq 0) { return }
+					
 					$activeHashes = @{}
 					foreach ($openForm in [System.Windows.Forms.Application]::OpenForms)
 					{
@@ -31641,73 +31769,119 @@ Start_Lane_Protocol_Jobs -LaneNumToMachineName $LaneNumToMachineName -SqlModuleN
 $form.Add_Shown({
 		if ($script:StartupWarmupStarted) { return }
 		$script:StartupWarmupStarted = $true
+		$script:StartupWarmupIndex = 0
+		$script:StartupWarmupSteps = @(
+			[pscustomobject]@{
+				Label  = 'Loading lane DB cache...'
+				Action = { try { Get_All_Lanes_Database_Info -RefreshCache | Out-Null } catch { } }
+			},
+			[pscustomobject]@{
+				Label  = 'Loading table aliases...'
+				Action = { try { $script:AliasToTable = Get_Table_Aliases -RefreshCache } catch { } }
+			},
+			[pscustomobject]@{
+				Label  = 'Generating SQL scripts...'
+				Action = { try { Generate_SQL_Scripts -StoreNumber $StoreNumber } catch { } }
+			},
+			[pscustomobject]@{
+				Label  = 'Installing SMS functions...'
+				Action = { try { Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath -Silent } catch { } }
+			},
+			[pscustomobject]@{
+				Label  = 'Loading test item...'
+				Action = { try { Insert_Test_Item -Silent | Out-Null } catch { } }
+			},
+			[pscustomobject]@{
+				Label  = 'Adding scale credentials...'
+				Action = { try { Add_Scale_Credentials -ScaleCodeToIPInfo $script:FunctionResults['WindowsScales'] } catch { } }
+			},
+			[pscustomobject]@{
+				Label  = 'Cleaning XE folder...'
+				Action = { try { $script:ClearXEJob = Clear_XE_Folder } catch { } }
+			},
+			[pscustomobject]@{
+				Label  = 'Preparing VNC exports...'
+				Action = {
+					if ($script:AutoExportVncOnLaunch)
+					{
+						try
+						{
+							Export_VNC_Files_For_All_Nodes `
+														   -LaneNumToMachineName $script:FunctionResults['LaneNumToMachineName'] `
+														   -ScaleCodeToIPInfo $script:FunctionResults['ScaleCodeToIPInfo'] `
+														   -BackofficeNumToMachineName $script:FunctionResults['BackofficeNumToMachineName'] `
+														   -AllVNCPasswords $script:FunctionResults['AllVNCPasswords'] `
+														   -RunInBackground `
+														   -SilentBackground
+						}
+						catch { }
+					}
+				}
+			},
+			[pscustomobject]@{
+				Label  = 'Preparing hardware exports...'
+				Action = {
+					if ($script:AutoExportRemoteMachineInfoOnLaunch)
+					{
+						try
+						{
+							Get_Remote_Machine_Info `
+													-RunInBackground `
+													-SilentBackground `
+													-UseAllAvailableNodes | Out-Null
+						}
+						catch { }
+					}
+				}
+			},
+			[pscustomobject]@{
+				Label  = 'Checking quarterly maintenance...'
+				Action = {
+					if ($script:AutoQuarterlySystemHealthMaintenanceOnLaunch)
+					{
+						try
+						{
+							Start_Quarterly_System_Health_Maintenance `
+																	  -IntervalMonths $script:SystemHealthMaintenanceIntervalMonths `
+																	  -RetentionCount $script:SystemHealthMaintenanceRetentionCount `
+																	  -SummaryRetentionLines $script:SystemHealthMaintenanceSummaryRetentionLines | Out-Null
+						}
+						catch { }
+					}
+				}
+			}
+		)
 		$script:StartupWarmupTimer = New-Object System.Windows.Forms.Timer
-		$script:StartupWarmupTimer.Interval = 250
+		$script:StartupWarmupTimer.Interval = 450
 		$script:StartupWarmupTimer.Add_Tick({
-				try
+				if (-not $script:StartupWarmupSteps -or $script:StartupWarmupIndex -ge $script:StartupWarmupSteps.Count)
 				{
-					if ($script:StartupWarmupTimer)
-					{
-						$script:StartupWarmupTimer.Stop()
-						$script:StartupWarmupTimer.Dispose()
-						$script:StartupWarmupTimer = $null
-					}
-				}
-				catch { }
-				
-				try { Get_All_Lanes_Database_Info -RefreshCache | Out-Null }
-				catch { }
-				try { $script:AliasToTable = Get_Table_Aliases -RefreshCache }
-				catch { }
-				try { Generate_SQL_Scripts -StoreNumber $StoreNumber }
-				catch { }
-				try { Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath -Silent }
-				catch { }
-				try { Insert_Test_Item -Silent | Out-Null }
-				catch { }
-				try { Add_Scale_Credentials -ScaleCodeToIPInfo $script:FunctionResults['WindowsScales'] }
-				catch { }
-				try { $script:ClearXEJob = Clear_XE_Folder }
-				catch { }
-				
-				if ($script:AutoExportVncOnLaunch)
-				{
+					$script:StartupWarmupStatus = $null
+					
 					try
 					{
-						Export_VNC_Files_For_All_Nodes `
-													   -LaneNumToMachineName $script:FunctionResults['LaneNumToMachineName'] `
-													   -ScaleCodeToIPInfo $script:FunctionResults['ScaleCodeToIPInfo'] `
-													   -BackofficeNumToMachineName $script:FunctionResults['BackofficeNumToMachineName'] `
-													   -AllVNCPasswords $script:FunctionResults['AllVNCPasswords'] `
-													   -RunInBackground `
-													   -SilentBackground
+						if ($script:StartupWarmupTimer)
+						{
+							$script:StartupWarmupTimer.Stop()
+							$script:StartupWarmupTimer.Dispose()
+							$script:StartupWarmupTimer = $null
+						}
 					}
 					catch { }
+					
+					$script:StartupWarmupSteps = @()
+					$script:StartupWarmupIndex = 0
+					return
 				}
 				
-				if ($script:AutoExportRemoteMachineInfoOnLaunch)
-				{
-					try
-					{
-						Get_Remote_Machine_Info `
-												-RunInBackground `
-												-SilentBackground `
-												-UseAllAvailableNodes | Out-Null
-					}
-					catch { }
-				}
+				$step = $script:StartupWarmupSteps[$script:StartupWarmupIndex]
+				$script:StartupWarmupIndex++
 				
-				if ($script:AutoQuarterlySystemHealthMaintenanceOnLaunch)
-				{
-					try
-					{
-						Start_Quarterly_System_Health_Maintenance `
-																  -IntervalMonths $script:SystemHealthMaintenanceIntervalMonths `
-																  -RetentionCount $script:SystemHealthMaintenanceRetentionCount `
-																  -SummaryRetentionLines $script:SystemHealthMaintenanceSummaryRetentionLines | Out-Null
-					}
-					catch { }
-				}
+				try { $script:StartupWarmupStatus = if ($step -and $step.Label) { [string]$step.Label } else { $null } }
+				catch { $script:StartupWarmupStatus = $null }
+				
+				try { if ($step -and $step.Action) { & $step.Action } }
+				catch { }
 			})
 		$script:StartupWarmupTimer.Start()
 	})
@@ -31719,6 +31893,21 @@ $form.Add_Shown({
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
 
+if (-not $script:ShowConsole -and [Environment]::UserInteractive -and ($__isSavedPs1Launch -or $__isInlineLikeLaunch))
+{
+	try
+	{
+		$__consoleHandle = [ConsoleWindowHelper]::GetConsoleWindow()
+		if ($__consoleHandle -ne [IntPtr]::Zero)
+		{
+			[void][ConsoleWindowHelper]::ShowWindow($__consoleHandle, 0)
+			$script:ConsoleHidden = $true
+			$script:RestoreConsoleOnExit = $false
+		}
+	}
+	catch { }
+}
+
 # ===================================================================================================
 #                                       SECTION: Show the GUI
 # ---------------------------------------------------------------------------------------------------
@@ -31729,7 +31918,20 @@ Write-Host "Script started" -ForegroundColor Green
 [void]$form.ShowDialog()
 
 # Indicate the script is closing
-Write-Host "Script closing..." -ForegroundColor Yellow
+if ($script:RestoreConsoleOnExit -and $script:ShowConsole)
+{
+	try
+	{
+		$__consoleHandle = [ConsoleWindowHelper]::GetConsoleWindow()
+		if ($__consoleHandle -ne [IntPtr]::Zero)
+		{
+			[void][ConsoleWindowHelper]::ShowWindow($__consoleHandle, 5)
+		}
+	}
+	catch { }
+}
+
+if ($script:ShowConsole) { Write-Host "Script closing..." -ForegroundColor Yellow }
 
 # Close the console to avoid duplicate logging to the richbox
 exit
