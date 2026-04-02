@@ -31,6 +31,9 @@ $revision = $PSVersionTable.PSVersion.Revision
 # Idle timeout for the whole script
 $script:IdleMinutesAllowed = 15 # <<< adjust as needed
 $script:SuppressClosePrompt = $true
+$script:LaunchSourceType = 'Unknown'
+$script:LaunchEntryPath = $null
+$script:IsInlineLaunch = $false
 
 # Combine them into a single version string
 $PowerShellVersion = "$major.$minor.$build.$revision"
@@ -48,7 +51,7 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 #   Safe for PowerShell 5.1 and Scheduled Tasks.
 # ===================================================================================================
 
-<#try
+try
 {
 	$IsAdmin = ([Security.Principal.WindowsPrincipal] `
 		[Security.Principal.WindowsIdentity]::GetCurrent()
@@ -59,14 +62,44 @@ catch
 	$IsAdmin = $false
 }
 
-$scriptPath = $PSCommandPath
-if ([string]::IsNullOrWhiteSpace($scriptPath))
+$scriptPath = $null
+$entryPath = $null
+$launchArgs = @()
+$isSavedPs1Launch = $false
+$isExeLaunch = $false
+
+try
 {
-	try { $scriptPath = $MyInvocation.MyCommand.Path }
-	catch { $scriptPath = $null }
+	$scriptPath = $PSCommandPath
+	if ([string]::IsNullOrWhiteSpace($scriptPath))
+	{
+		try { $scriptPath = $MyInvocation.MyCommand.Path }
+		catch { $scriptPath = $null }
+	}
+}
+catch
+{
+	$scriptPath = $null
 }
 
-$isSavedPs1Launch = $false
+try
+{
+	$cmdLineArgs = [Environment]::GetCommandLineArgs()
+	if ($cmdLineArgs -and $cmdLineArgs.Count -gt 0)
+	{
+		$entryPath = $cmdLineArgs[0]
+		if ($cmdLineArgs.Count -gt 1)
+		{
+			$launchArgs = @($cmdLineArgs[1..($cmdLineArgs.Count - 1)])
+		}
+	}
+}
+catch
+{
+	$entryPath = $null
+	$launchArgs = @()
+}
+
 try
 {
 	if (-not [string]::IsNullOrWhiteSpace($scriptPath) -and
@@ -74,6 +107,8 @@ try
 		([string]::Equals([System.IO.Path]::GetExtension($scriptPath), '.ps1', [System.StringComparison]::OrdinalIgnoreCase)))
 	{
 		$isSavedPs1Launch = $true
+		$script:LaunchSourceType = 'Ps1'
+		$script:LaunchEntryPath = $scriptPath
 	}
 }
 catch
@@ -81,42 +116,88 @@ catch
 	$isSavedPs1Launch = $false
 }
 
-# Only attempt self-relaunch when this is a real saved, interactive .ps1 launch.
-# If the script was started from some other host/launcher, or non-interactively, leave execution alone.
-if (-not $IsAdmin -and $isSavedPs1Launch -and [Environment]::UserInteractive)
+if (-not $isSavedPs1Launch)
 {
-	Write-Host "Not running as Administrator. Relaunching elevated..." -ForegroundColor Yellow
-	
-	$argList = @(
-		"-NoProfile"
-		"-ExecutionPolicy", "Bypass"
-		"-File", $scriptPath
-	)
-	
-	if ($args -and $args.Count -gt 0)
-	{
-		foreach ($a in $args)
-		{
-			$argList += "$a"
-		}
-	}
-	
 	try
 	{
-		$psExe = (Get-Process -Id $PID).Path
-		if ([string]::IsNullOrWhiteSpace($psExe) -or -not (Test-Path -LiteralPath $psExe))
+		if (-not [string]::IsNullOrWhiteSpace($entryPath) -and
+			(Test-Path -LiteralPath $entryPath) -and
+			([string]::Equals([System.IO.Path]::GetExtension($entryPath), '.exe', [System.StringComparison]::OrdinalIgnoreCase)))
 		{
-			$psExe = "powershell.exe"
+			$entryName = [System.IO.Path]::GetFileNameWithoutExtension($entryPath)
+			if ($entryName -notmatch '^(powershell|pwsh|powershell_ise|powershellstudio)$')
+			{
+				$isExeLaunch = $true
+				$script:LaunchSourceType = 'Exe'
+				$script:LaunchEntryPath = $entryPath
+			}
 		}
-		
-		Start-Process -FilePath $psExe -ArgumentList $argList -Verb RunAs | Out-Null
-		exit 0
 	}
 	catch
 	{
-		Write-Host "Elevation canceled or failed. Continuing without relaunch." -ForegroundColor Yellow
+		$isExeLaunch = $false
 	}
-}#>
+}
+
+if (-not $isSavedPs1Launch -and -not $isExeLaunch)
+{
+	$script:LaunchSourceType = 'Inline'
+	$script:IsInlineLaunch = $true
+}
+
+# Only attempt self-relaunch when this is a real saved, interactive .ps1 or packaged .exe launch.
+# If the script was started from irm|iex or some other host/launcher, leave execution alone.
+if (-not $IsAdmin -and [Environment]::UserInteractive -and ($isSavedPs1Launch -or $isExeLaunch))
+{
+	Write-Host "Requesting elevated launch..." -ForegroundColor DarkYellow
+	try
+	{
+		if ($isSavedPs1Launch)
+		{
+			$argList = @(
+				"-NoProfile"
+				"-ExecutionPolicy", "Bypass"
+				"-File", $scriptPath
+			)
+			
+			if ($args -and $args.Count -gt 0)
+			{
+				foreach ($a in $args)
+				{
+					$argList += "$a"
+				}
+			}
+			
+			$psExe = $null
+			try { $psExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source }
+			catch { }
+			if ([string]::IsNullOrWhiteSpace($psExe))
+			{
+				try { $psExe = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source }
+				catch { }
+			}
+			if ([string]::IsNullOrWhiteSpace($psExe) -or -not (Test-Path -LiteralPath $psExe))
+			{
+				$psExe = "powershell.exe"
+			}
+			
+			Start-Process -FilePath $psExe -ArgumentList $argList -Verb RunAs | Out-Null
+			exit 0
+		}
+		
+		if ($isExeLaunch)
+		{
+			$exeArgList = @()
+			if ($launchArgs -and $launchArgs.Count -gt 0) { $exeArgList = @($launchArgs) }
+			Start-Process -FilePath $entryPath -ArgumentList $exeArgList -Verb RunAs | Out-Null
+			exit 0
+		}
+	}
+	catch
+	{
+		Write-Host "Elevation canceled or unavailable. Continuing." -ForegroundColor DarkYellow
+	}
+}
 
 # ===================================================================================================
 #                                SECTION: Import Necessary Assemblies
@@ -5375,7 +5456,7 @@ WHERE Active = 'Y'
 #
 # Fallback:
 #   - If protocol is File OR SQL fails => writes:
-#       XF<Store><Lane>\trs_clt_reprocess_auto.sqi
+#       XF<Store><Lane>\trs_clt_reprocess.sqi
 #     in the exact format requested.
 # ===================================================================================================
 
@@ -5423,7 +5504,9 @@ function Retrive_Transactions
 	
 	# -----------------------------
 	# Ensure Invoke-Sqlcmd exists
+	#   If unavailable, continue in SQI-only mode
 	# -----------------------------
+	$canUseSql = $true
 	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
 	{
 		$modName = $null
@@ -5439,8 +5522,8 @@ function Retrive_Transactions
 	}
 	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
 	{
-		& $log "Invoke-Sqlcmd not available. Install/Import the SqlServer module first." "red"
-		return
+		$canUseSql = $false
+		& $log "Invoke-Sqlcmd not available. SQI mode will be used for all selected lanes." "yellow"
 	}
 	
 	if (-not (Get-Command Get_All_Lanes_Database_Info -ErrorAction SilentlyContinue))
@@ -5635,7 +5718,7 @@ function Retrive_Transactions
 		$protoNorm = if ($preferredProtocolRaw) { $preferredProtocolRaw.Trim().ToLower() }
 		else { $null }
 		
-		$useSql = $true
+		$useSql = $canUseSql
 		if ($ForceSQI) { $useSql = $false }
 		elseif ($protoNorm -eq 'file') { $useSql = $false }
 		elseif ([string]::IsNullOrWhiteSpace($dbName)) { $useSql = $false }
@@ -5775,14 +5858,15 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 				catch { }
 			}
 			
-			$sqiPath = Join-Path $xfDir "trs_clt_reprocess_auto.sqi"
+			$sqiPath = Join-Path $xfDir "trs_clt_reprocess.sqi"
 			
 			$startFmt = $startDate.ToString("MM/dd/yyyy")
 			$stopFmt = $stopDate.ToString("MM/dd/yyyy")
 			
 			$sqi = New-Object System.Text.StringBuilder
-			[void]$sqi.AppendLine("@WIZSET(START=$startFmt);")
-			[void]$sqi.AppendLine("@WIZSET(STOP=$stopFmt);")
+			[void]$sqi.AppendLine("@WIZSET(DETAIL=D);")
+			[void]$sqi.AppendLine("@WIZINIT;")
+			[void]$sqi.AppendLine("@WIZDATES(START=$startFmt,STOP=$stopFmt);")
 			[void]$sqi.AppendLine("@WIZSET(FIL1=$fil1);")
 			[void]$sqi.AppendLine("@WIZSET(FIL2=$fil2);")
 			[void]$sqi.AppendLine("")
@@ -5799,6 +5883,8 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 			try
 			{
 				$sqi.ToString() | Out-File -FilePath $sqiPath -Encoding ASCII -Force
+				try { [System.IO.File]::SetAttributes($sqiPath, [System.IO.FileAttributes]::Normal) }
+				catch { }
 				$usedProtoDisplay = "File"
 				# We can't know the rowcount from SQI here
 				$deleted = "N/A"
