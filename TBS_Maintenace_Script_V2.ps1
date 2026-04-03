@@ -5,7 +5,7 @@
 #                                        Author: Alex_C.T                                             #
 #                                                                                                     #
 #  > Edit only in consultation with Alex_C.T                                                          #
-#  > This script performs advanced maintenance and diagnostics on TBS systems                         
+#  > This script performs advanced maintenance and diagnostics on TBS systems                         #
 #                                                                                                     #
 #######################################################################################################
 
