@@ -27871,8 +27871,6 @@ function Start_Lane_Protocol_Jobs
 	# ---------- prevent double start ----------
 	if ($script:protocolTimer)
 	{
-		try { Write_Log "Lane protocol updater already running." "yellow" }
-		catch { }
 		return
 	}
 	
