@@ -116,7 +116,7 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # Script build version (cunsult with Alex_C.T before changing this)
 $VersionNumber = "2.6.6"
-$VersionDate = "2026-04-02"
+$VersionDate = "2026-04-03"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -581,11 +581,6 @@ $script:LocalHost = $env:COMPUTERNAME
 #   Detect -ConnectionString support ONCE (run at top of script, before any SQL commands)
 # ===================================================================================================
 $script:SqlcmdSupportsConnectionString = $null
-try
-{
-	$script:SqlcmdSupportsConnectionString = (Get-Command Invoke-Sqlcmd -ErrorAction Stop).Parameters.Keys -contains "ConnectionString"
-}
-catch { $script:SqlcmdSupportsConnectionString = $false }
 
 # ---------------------------------------------------------------------------------------------------
 # Add C# MailSlotSender Type for Direct Windows Mailslot Messaging (if not already loaded)
@@ -1794,12 +1789,19 @@ function Get_Store_And_Database_Info
 	# CHANGE: Wrap the whole function in try/finally so GUI labels update even if we "return" on cache hit
 	try
 	{
-		# Always (fast) detect SQL module so it stays correct even when using cache
 		$availableSqlModule = $null
-		if (Get-Module -ListAvailable -Name SqlServer) { $availableSqlModule = "SqlServer" }
-		elseif (Get-Module -ListAvailable -Name SQLPS) { $availableSqlModule = "SQLPS" }
-		else { $availableSqlModule = "None" }
-		$script:FunctionResults['SqlModuleName'] = $availableSqlModule
+		try
+		{
+			if (
+				$script:FunctionResults.ContainsKey('SqlModuleName') -and
+				-not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['SqlModuleName']) -and
+				([string]$script:FunctionResults['SqlModuleName'] -ne 'N/A')
+			)
+			{
+				$availableSqlModule = [string]$script:FunctionResults['SqlModuleName']
+			}
+		}
+		catch { $availableSqlModule = $null }
 		
 		if (-not $RefreshCache)
 		{
@@ -1837,9 +1839,6 @@ function Get_Store_And_Database_Info
 							{
 								$script:FunctionResults[$p.Name] = $p.Value
 							}
-							
-							# keep current module detection (cheap + accurate)
-							$script:FunctionResults['SqlModuleName'] = $availableSqlModule
 							return
 						}
 					}
@@ -1847,6 +1846,30 @@ function Get_Store_And_Database_Info
 				catch { }
 			}
 		}
+		
+		if ([string]::IsNullOrWhiteSpace($availableSqlModule) -or $availableSqlModule -eq 'N/A')
+		{
+			try
+			{
+				$loadedSqlModule = Get-Module SqlServer, SQLPS | Select-Object -First 1
+				if ($loadedSqlModule) { $availableSqlModule = [string]$loadedSqlModule.Name }
+			}
+			catch { }
+		}
+		if ([string]::IsNullOrWhiteSpace($availableSqlModule) -or $availableSqlModule -eq 'N/A')
+		{
+			try
+			{
+				if (Get-Module -ListAvailable -Name SqlServer | Select-Object -First 1) { $availableSqlModule = "SqlServer" }
+				elseif (Get-Module -ListAvailable -Name SQLPS | Select-Object -First 1) { $availableSqlModule = "SQLPS" }
+				else { $availableSqlModule = "None" }
+			}
+			catch
+			{
+				$availableSqlModule = if ($availableSqlModule) { $availableSqlModule } else { "None" }
+			}
+		}
+		$script:FunctionResults['SqlModuleName'] = $availableSqlModule
 		
 		# ------------------------------------------------------------------------------------------------
 		# Initialize results with N/A for every expected property (+ resolved WIN.INI path)
@@ -2135,7 +2158,7 @@ function Get_Store_And_Database_Info
 			$script:FunctionResults['DBSERVER'] = $dbServer
 			$script:FunctionResults['DBNAME'] = $dbName
 			$script:FunctionResults['ConnectionString'] =
-			"Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
+			"Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True;Connect Timeout=5;Application Name=TBS_Maintenance_Script"
 		}
 		
 		# ------------------------------------------------------------------------------------------------
@@ -4236,17 +4259,49 @@ function Retrieve_Nodes
 				}
 			}
 			
-			foreach ($foundIni in (Get-ChildItem -LiteralPath $rootPath -Filter 'XchNodes.ini' -File -Recurse -ErrorAction SilentlyContinue))
+			# Avoid a full recursive crawl during startup. Some stores have very large/problematic
+			# XchScale trees, and a bounded search is enough for the normal XchNodes.ini layouts.
+			$childDirs = @()
+			try { $childDirs = @(Get-ChildItem -LiteralPath $rootPath -Directory -ErrorAction SilentlyContinue) }
+			catch { $childDirs = @() }
+			
+			foreach ($childDir in $childDirs)
 			{
-				if (-not $foundIni) { continue }
-				$iniFull = [string]$foundIni.FullName
-				if ([string]::IsNullOrWhiteSpace($iniFull)) { continue }
+				if (-not $childDir) { continue }
+				$iniFull = [System.IO.Path]::Combine([string]$childDir.FullName, 'XchNodes.ini')
+				if (-not [System.IO.File]::Exists($iniFull)) { continue }
 				
 				$iniKey = $iniFull.Trim().ToLowerInvariant()
 				if (-not $seenIniPaths.ContainsKey($iniKey))
 				{
 					$seenIniPaths[$iniKey] = $true
 					$XchNodesIniCandidates += $iniFull
+				}
+			}
+			
+			if ($XchNodesIniCandidates.Count -eq 0 -and $childDirs.Count -gt 0)
+			{
+				foreach ($childDir in $childDirs)
+				{
+					if (-not $childDir) { continue }
+					
+					$grandChildDirs = @()
+					try { $grandChildDirs = @(Get-ChildItem -LiteralPath $childDir.FullName -Directory -ErrorAction SilentlyContinue) }
+					catch { $grandChildDirs = @() }
+					
+					foreach ($grandChildDir in $grandChildDirs)
+					{
+						if (-not $grandChildDir) { continue }
+						$iniFull = [System.IO.Path]::Combine([string]$grandChildDir.FullName, 'XchNodes.ini')
+						if (-not [System.IO.File]::Exists($iniFull)) { continue }
+						
+						$iniKey = $iniFull.Trim().ToLowerInvariant()
+						if (-not $seenIniPaths.ContainsKey($iniKey))
+						{
+							$seenIniPaths[$iniKey] = $true
+							$XchNodesIniCandidates += $iniFull
+						}
+					}
 				}
 			}
 		}
@@ -4282,8 +4337,30 @@ function Retrieve_Nodes
 	{
 		$invokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModule -ErrorAction SilentlyContinue
 		$supportsConnStr = $false
+		$supportsConnTimeout = $false
+		$startupQueryTimeoutSeconds = 10
+		$startupConnectionTimeoutSeconds = 5
+		$startupConnectionString = $ConnectionString
 		if ($invokeSqlCmd) { $supportsConnStr = $invokeSqlCmd.Parameters.ContainsKey('ConnectionString') }
+		if ($invokeSqlCmd) { $supportsConnTimeout = $invokeSqlCmd.Parameters.ContainsKey('ConnectionTimeout') }
 		else { Write_Log "Invoke-Sqlcmd command not found in module $SqlModule." "yellow" }
+		
+		if ($supportsConnStr -and -not [string]::IsNullOrWhiteSpace($startupConnectionString))
+		{
+			try
+			{
+				$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder $startupConnectionString
+				$csb.ConnectTimeout = $startupConnectionTimeoutSeconds
+				$startupConnectionString = $csb.ConnectionString
+			}
+			catch
+			{
+				if ($startupConnectionString -notmatch '(?i)\bConnect\s*Timeout\s*=')
+				{
+					$startupConnectionString = $startupConnectionString.Trim().TrimEnd(';') + ";Connect Timeout=$startupConnectionTimeoutSeconds"
+				}
+			}
+		}
 		
 		$NodesFromDatabase = $true
 		try
@@ -4295,11 +4372,18 @@ WHERE F1056 = '$StoreNumber'
 "@
 			if ($supportsConnStr)
 			{
-				$terTabResult = & $invokeSqlCmd -ConnectionString $ConnectionString -Query $queryTerTab -ErrorAction Stop
+				$terTabResult = & $invokeSqlCmd -ConnectionString $startupConnectionString -Query $queryTerTab -QueryTimeout $startupQueryTimeoutSeconds -ErrorAction Stop
 			}
 			else
 			{
-				$terTabResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTerTab -ErrorAction Stop
+				if ($supportsConnTimeout)
+				{
+					$terTabResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTerTab -QueryTimeout $startupQueryTimeoutSeconds -ConnectionTimeout $startupConnectionTimeoutSeconds -ErrorAction Stop
+				}
+				else
+				{
+					$terTabResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTerTab -QueryTimeout $startupQueryTimeoutSeconds -ErrorAction Stop
+				}
 			}
 			
 			foreach ($row in $terTabResult)
@@ -4395,11 +4479,18 @@ WHERE Active = 'Y'
 			{
 				if ($supportsConnStr)
 				{
-					$tbsSclScalesResult = & $invokeSqlCmd -ConnectionString $ConnectionString -Query $queryTbsSclScales -ErrorAction Stop
+					$tbsSclScalesResult = & $invokeSqlCmd -ConnectionString $startupConnectionString -Query $queryTbsSclScales -QueryTimeout $startupQueryTimeoutSeconds -ErrorAction Stop
 				}
 				else
 				{
-					$tbsSclScalesResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTbsSclScales -ErrorAction Stop
+					if ($supportsConnTimeout)
+					{
+						$tbsSclScalesResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTbsSclScales -QueryTimeout $startupQueryTimeoutSeconds -ConnectionTimeout $startupConnectionTimeoutSeconds -ErrorAction Stop
+					}
+					else
+					{
+						$tbsSclScalesResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTbsSclScales -QueryTimeout $startupQueryTimeoutSeconds -ErrorAction Stop
+					}
 				}
 			}
 			catch
@@ -7612,7 +7703,9 @@ function Insert_Test_Item
 	param (
 		# If omitted, we use the ConnectionString assembled by Get_Store_And_Database_Info.
 		[string]$ConnectionString = $script:FunctionResults['ConnectionString'],
-		[switch]$Silent
+		[switch]$Silent,
+		[int]$QueryTimeoutSeconds = 15,
+		[int]$ConnectionTimeoutSeconds = 5
 	)
 
 	$writeLog = {
@@ -7621,6 +7714,23 @@ function Insert_Test_Item
 			[string]$Color = "white"
 		)
 		if (-not $Silent) { Write_Log $Message $Color }
+	}
+	
+	if ($ConnectionString)
+	{
+		try
+		{
+			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder $ConnectionString
+			$csb.ConnectTimeout = $ConnectionTimeoutSeconds
+			$ConnectionString = $csb.ConnectionString
+		}
+		catch
+		{
+			if ($ConnectionString -notmatch '(?i)\bConnect\s*Timeout\s*=')
+			{
+				$ConnectionString = $ConnectionString.Trim().TrimEnd(';') + ";Connect Timeout=$ConnectionTimeoutSeconds"
+			}
+		}
 	}
 	
 	# ----------------------------------------------------------------------------------------------
@@ -7667,6 +7777,18 @@ function Insert_Test_Item
 		return
 	}
 	
+	$invokeSqlcmdCommand = $null
+	$supportsConnTimeout = $false
+	try
+	{
+		$invokeSqlcmdCommand = Get-Command Invoke-Sqlcmd -ErrorAction Stop
+		if ($invokeSqlcmdCommand -and $invokeSqlcmdCommand.Parameters)
+		{
+			$supportsConnTimeout = $invokeSqlcmdCommand.Parameters.ContainsKey('ConnectionTimeout')
+		}
+	}
+	catch { }
+	
 	# ----------------------------------------------------------------------------------------------
 	# Decide primary vs. fallback path:
 	#   - If SqlServer module is detected, we ATTEMPT -ConnectionString (modern path).
@@ -7689,7 +7811,7 @@ function Insert_Test_Item
 	{
 		try
 		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT 1" -QueryTimeout 5 -ErrorAction Stop | Out-Null
+			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query "SELECT 1" -QueryTimeout $QueryTimeoutSeconds -ErrorAction Stop | Out-Null
 			$useConnectionString = $true
 			& $writeLog "SQL connectivity via -ConnectionString verified (SqlServer module)." "green"
 		}
@@ -7724,7 +7846,12 @@ function Insert_Test_Item
 		
 		try
 		{
-			Invoke-Sqlcmd @fallbackParams -Query "SELECT 1" -QueryTimeout 5 -ErrorAction Stop | Out-Null
+			$fallbackProbeParams = $fallbackParams.Clone()
+			$fallbackProbeParams['Query'] = 'SELECT 1'
+			$fallbackProbeParams['QueryTimeout'] = $QueryTimeoutSeconds
+			$fallbackProbeParams['ErrorAction'] = 'Stop'
+			if ($supportsConnTimeout) { $fallbackProbeParams['ConnectionTimeout'] = $ConnectionTimeoutSeconds }
+			Invoke-Sqlcmd @fallbackProbeParams | Out-Null
 			$dbTxt = if ($fallbackParams['Database']) { " (DB=$($fallbackParams['Database']))" }
 			else { "" }
 			& $writeLog "SQL connectivity via fallback -ServerInstance verified: $($fallbackParams['ServerInstance'])$dbTxt" "green"
@@ -7746,13 +7873,15 @@ function Insert_Test_Item
 			[string]$Query)
 		if ($useConnectionString)
 		{
-			return Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $Query -ErrorAction Stop
+			return Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $Query -QueryTimeout $QueryTimeoutSeconds -ErrorAction Stop
 		}
 		else
 		{
 			$p = $fallbackParams.Clone()
 			$p['Query'] = $Query
+			$p['QueryTimeout'] = $QueryTimeoutSeconds
 			$p['ErrorAction'] = 'Stop'
+			if ($supportsConnTimeout) { $p['ConnectionTimeout'] = $ConnectionTimeoutSeconds }
 			return Invoke-Sqlcmd @p
 		}
 	}
@@ -27731,6 +27860,7 @@ function Start_Lane_Protocol_Jobs
 	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{ } }
 	if (-not $script:ProtocolResults) { $script:ProtocolResults = @() }
 	if (-not $script:LaneProtocolJobs) { $script:LaneProtocolJobs = @{ } }
+	if (-not $script:LaneProtocolJobTimeoutSeconds) { $script:LaneProtocolJobTimeoutSeconds = 8 }
 	
 	# store lane map for repeated runs
 	$script:LaneProtocolLaneMap = $LaneNumToMachineName
@@ -27747,6 +27877,7 @@ function Start_Lane_Protocol_Jobs
 	}
 	
 	# ---------- warm from file (best effort) ----------
+	$loadedProtocolCount = 0
 	try
 	{
 		$existing = Get-Content -LiteralPath $script:ProtocolResultsFile -ErrorAction SilentlyContinue
@@ -27763,6 +27894,7 @@ function Start_Lane_Protocol_Jobs
 					
 					$script:LaneProtocols[$laneNum] = $proto
 					$script:LaneProtocols[$laneRaw] = $proto
+					$loadedProtocolCount++
 					
 					$mn = $LaneNumToMachineName[$laneNum]
 					if ($mn)
@@ -27783,7 +27915,7 @@ function Start_Lane_Protocol_Jobs
 	if (-not $script:LaneProtocolPool)
 	{
 		$minThreads = 1
-		$maxThreads = [Math]::Max(8, [Environment]::ProcessorCount * 2)
+		$maxThreads = [Math]::Min([Math]::Max(2, [Environment]::ProcessorCount), 4)
 		$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
 		$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($minThreads, $maxThreads, $iss, $Host)
 		try { $pool.ApartmentState = 'MTA' }
@@ -27824,7 +27956,17 @@ if ($protocol -eq 'File') {
 '@
 	
 	# ---------- cadence ----------
-	if (-not $script:LaneProtocolLastRun) { $script:LaneProtocolLastRun = (Get-Date).AddYears(-10) }
+	if (-not $script:LaneProtocolLastRun)
+	{
+		if ($loadedProtocolCount -gt 0)
+		{
+			$script:LaneProtocolLastRun = Get-Date
+		}
+		else
+		{
+			$script:LaneProtocolLastRun = (Get-Date).AddYears(-10)
+		}
+	}
 	
 	# ---------- timer (UI thread, safe) ----------
 	$script:protocolTimer = New-Object System.Windows.Forms.Timer
@@ -27842,6 +27984,40 @@ if ($protocol -eq 'File') {
 				{
 					$st = $script:LaneProtocolJobs[$laneKey]
 					if (-not $st) { continue }
+					
+					$started = $st.Started
+					if ($started -and (((Get-Date) - $started).TotalSeconds -ge $script:LaneProtocolJobTimeoutSeconds))
+					{
+						$laneNum = (($laneKey -replace '[^\d]', '')).PadLeft(3, '0')
+						if ([string]::IsNullOrWhiteSpace($laneNum)) { $laneNum = $laneKey }
+						
+						$laneMap = $script:LaneProtocolLaneMap
+						$mn = $null
+						if ($laneMap) { $mn = $laneMap[$laneNum] }
+						
+						$script:LaneProtocols[$laneNum] = 'File'
+						$script:LaneProtocols[$laneKey] = 'File'
+						if ($mn)
+						{
+							$script:LaneProtocols[$mn] = 'File'
+							$script:LaneProtocols[$mn.ToLower()] = 'File'
+						}
+						
+						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
+						$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = 'File' }
+						
+						if (-not [string]::IsNullOrWhiteSpace($mn))
+						{
+							try
+							{
+								Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $laneNum -MachineName $mn | Out-Null
+							}
+							catch { }
+						}
+						
+						$changed = $true
+						continue
+					}
 					
 					$handle = $st.Handle
 					if ($handle -and $handle.IsCompleted)
@@ -27904,6 +28080,58 @@ if ($protocol -eq 'File') {
 				}
 			}
 			
+			# 1b) if any protocol jobs went stale, rebuild the pool so stuck probes do not wedge the app
+			$staleLaneKeys = @()
+			try
+			{
+				foreach ($laneKey in @($script:LaneProtocolJobs.Keys))
+				{
+					$st = $script:LaneProtocolJobs[$laneKey]
+					if (-not $st) { continue }
+					if ($st.Handle -and $st.Handle.IsCompleted) { continue }
+					
+					$started = $st.Started
+					if ($started -and (((Get-Date) - $started).TotalSeconds -ge $script:LaneProtocolJobTimeoutSeconds))
+					{
+						$staleLaneKeys += $laneKey
+					}
+				}
+			}
+			catch { }
+			
+			if ($staleLaneKeys.Count -gt 0)
+			{
+				foreach ($st in @($script:LaneProtocolJobs.Values))
+				{
+					try { if ($st -and $st.PS) { $st.PS.Dispose() } }
+					catch { }
+				}
+				
+				$script:LaneProtocolJobs = @{ }
+				
+				try
+				{
+					if ($script:LaneProtocolPool)
+					{
+						$script:LaneProtocolPool.Close()
+						$script:LaneProtocolPool.Dispose()
+					}
+				}
+				catch { }
+				
+				$script:LaneProtocolPool = $null
+				
+				$minThreads = 1
+				$maxThreads = [Math]::Min([Math]::Max(2, [Environment]::ProcessorCount), 4)
+				$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+				$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($minThreads, $maxThreads, $iss, $Host)
+				try { $pool.ApartmentState = 'MTA' }
+				catch { }
+				$pool.Open()
+				$script:LaneProtocolPool = $pool
+				$script:LaneProtocolLastRun = Get-Date
+			}
+			
 			# 2) write file when something changed
 			if ($changed)
 			{
@@ -27941,7 +28169,11 @@ if ($protocol -eq 'File') {
 							$null = $ps.AddScript($script:LaneProtocolWorker).AddArgument([string]$machine).AddArgument([string]$laneNum)
 							$handle = $ps.BeginInvoke()
 							
-							$script:LaneProtocolJobs[$laneNum] = @{ PS = $ps; Handle = $handle }
+							$script:LaneProtocolJobs[$laneNum] = @{
+								PS      = $ps
+								Handle  = $handle
+								Started = Get-Date
+							}
 						}
 					}
 				}
@@ -29947,6 +30179,20 @@ public static class NativeWin {
 					{
 						$script:IsBusy = $true
 						$script:BusyReason = "Collecting remote machine info"
+					}
+				}
+				catch { }
+			}
+			
+			if (-not $script:IsBusy)
+			{
+				try
+				{
+					$insertTestJob = Get-Job -Name 'InsertTestItemJob' -State Running -ErrorAction SilentlyContinue | Select-Object -First 1
+					if ($insertTestJob)
+					{
+						$script:IsBusy = $true
+						$script:BusyReason = "Loading test item"
 					}
 				}
 				catch { }
@@ -32539,28 +32785,83 @@ $InstallCheckLOCOptionsItem.Add_Click({
 Download_NSSM -Background | Out-Null
 
 # Refresh launch-owned cache files once, then reuse them for the rest of the session.
+$script:UseCachedCoreStartup = $__isInlineLikeLaunch
 
 # Get SQL Connection String
-Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath -RefreshCache
-$StoreNumber = $script:FunctionResults['StoreNumber']
-$StoreName = $script:FunctionResults['StoreName']
-$SqlModuleName = $script:FunctionResults['SqlModuleName']
+if ($script:UseCachedCoreStartup)
+{
+	Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
+}
+else
+{
+	Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath -RefreshCache
+}
+$script:StoreNumber = $script:FunctionResults['StoreNumber']
+$script:StoreName = $script:FunctionResults['StoreName']
+$script:SqlModuleName = $script:FunctionResults['SqlModuleName']
+$StoreNumber = $script:StoreNumber
+$StoreName = $script:StoreName
+$SqlModuleName = $script:SqlModuleName
 
 # Count Nodes based on mode
-$Nodes = Retrieve_Nodes -StoreNumber $StoreNumber -RefreshCache
-$Nodes = $script:FunctionResults['Nodes']
+if ($script:UseCachedCoreStartup)
+{
+	$Nodes = Retrieve_Nodes -StoreNumber $StoreNumber
+}
+else
+{
+	$Nodes = Retrieve_Nodes -StoreNumber $StoreNumber -RefreshCache
+}
+$script:Nodes = $script:FunctionResults['Nodes']
+$Nodes = $script:Nodes
 
 # Retrieve the list of machine names from the FunctionResults dictionary
-$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+$script:LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+$LaneNumToMachineName = $script:LaneNumToMachineName
 
 # Get the Lanes protocol info if it doesnt exist
 Start_Lane_Protocol_Jobs -LaneNumToMachineName $LaneNumToMachineName -SqlModuleName $SqlModuleName
 
 $form.Add_Shown({
 		if ($script:StartupWarmupStarted) { return }
-		$script:StartupWarmupStarted = $true
-		$script:StartupWarmupIndex = 0
-		$script:StartupWarmupSteps = @(
+	$script:StartupWarmupStarted = $true
+	$script:StartupWarmupIndex = 0
+	$script:StartupWarmupSteps = @()
+	if ($script:UseCachedCoreStartup)
+	{
+		$script:StartupWarmupSteps += [pscustomobject]@{
+			Label  = 'Refreshing store info...'
+			Action = {
+				try
+				{
+					Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath -RefreshCache
+					$script:StoreNumber = $script:FunctionResults['StoreNumber']
+					$script:StoreName = $script:FunctionResults['StoreName']
+					$script:SqlModuleName = $script:FunctionResults['SqlModuleName']
+					$StoreNumber = $script:StoreNumber
+					$StoreName = $script:StoreName
+					$SqlModuleName = $script:SqlModuleName
+				}
+				catch { }
+			}
+		}
+		$script:StartupWarmupSteps += [pscustomobject]@{
+			Label  = 'Refreshing node discovery...'
+			Action = {
+				try
+				{
+					Retrieve_Nodes -StoreNumber $script:StoreNumber -RefreshCache | Out-Null
+					$script:Nodes = $script:FunctionResults['Nodes']
+					$script:LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+					$Nodes = $script:Nodes
+					$LaneNumToMachineName = $script:LaneNumToMachineName
+					Start_Lane_Protocol_Jobs -LaneNumToMachineName $script:LaneNumToMachineName -SqlModuleName $script:SqlModuleName
+				}
+				catch { }
+			}
+		}
+	}
+	$script:StartupWarmupSteps += @(
 			[pscustomobject]@{
 				Label  = 'Loading lane DB cache...'
 				Action = { try { Get_All_Lanes_Database_Info -RefreshCache | Out-Null } catch { } }
@@ -32578,8 +32879,46 @@ $form.Add_Shown({
 				Action = { try { Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath -Silent } catch { } }
 			},
 			[pscustomobject]@{
-				Label  = 'Loading test item...'
-				Action = { try { Insert_Test_Item -Silent | Out-Null } catch { } }
+				Label  = 'Starting test item job...'
+				Action = {
+					try
+					{
+						Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue |
+							Where-Object { $_.State -in @('Completed', 'Failed', 'Stopped') } |
+							Remove-Job -Force -ErrorAction SilentlyContinue
+						
+						$runningInsertJob = Get-Job -Name 'InsertTestItemJob' -State Running -ErrorAction SilentlyContinue | Select-Object -First 1
+						if (-not $runningInsertJob)
+						{
+							$fnBody = ${function:Insert_Test_Item}.ToString()
+							$cs = $script:FunctionResults['ConnectionString']
+							$dbs = $script:FunctionResults['DBSERVER']
+							$dbn = $script:FunctionResults['DBNAME']
+							$sqlModule = $script:FunctionResults['SqlModuleName']
+							
+							Start-Job -Name 'InsertTestItemJob' -ArgumentList $fnBody, $cs, $dbs, $dbn, $sqlModule -ScriptBlock {
+								param (
+									[string]$InsertTestItemBody,
+									[string]$ConnectionString,
+									[string]$DbServer,
+									[string]$DbName,
+									[string]$SqlModule
+								)
+								
+								$script:FunctionResults = @{
+									ConnectionString = $ConnectionString
+									DBSERVER         = $DbServer
+									DBNAME           = $DbName
+									SqlModuleName    = $SqlModule
+								}
+								
+								Set-Item -Path Function:\Insert_Test_Item -Value ([scriptblock]::Create($InsertTestItemBody))
+								Insert_Test_Item -ConnectionString $ConnectionString -Silent | Out-Null
+							} | Out-Null
+						}
+					}
+					catch { }
+				}
 			},
 			[pscustomobject]@{
 				Label  = 'Adding scale credentials...'
