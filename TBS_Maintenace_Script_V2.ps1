@@ -343,6 +343,8 @@ $script:StartupWarmupTimer = $null
 $script:StartupWarmupSteps = @()
 $script:StartupWarmupIndex = 0
 $script:StartupWarmupStatus = $null
+$script:StartupScaleCredStarted = $false
+$script:StartupScaleCredTimer = $null
 $script:PopupThemeTimer = $null
 $script:StyledPopupForms = @{ }
 $script:LaneSqlProtocolEnableTaskState = @{ }
@@ -7642,8 +7644,9 @@ function Get_All_VNC_Passwords
 		{
 			foreach ($pw in $passwords)
 			{
-				# Remove any previous credential
-				cmdkey /delete:$scaleHost | Out-Null
+				# Clear any lingering share session, but keep the persisted credential manager entry.
+				try { $null = & net.exe use "\\$scaleHost\c$" '/delete' '/y' 2>$null }
+				catch { }
 				cmdkey /add:$scaleHost /user:$username /pass:$pw | Out-Null
 				$shareIniPath = "\\$scaleHost\c$\$uvncIniRel"
 				if (Test-Path $shareIniPath -ErrorAction SilentlyContinue)
@@ -7663,8 +7666,9 @@ function Get_All_VNC_Passwords
 					}
 					catch { }
 				}
-				# Remove credential after attempt
-				cmdkey /delete:$scaleHost | Out-Null
+				# Drop any temporary SMB session, but do not delete the saved credential.
+				try { $null = & net.exe use "\\$scaleHost\c$" '/delete' '/y' 2>$null }
+				catch { }
 				if ($password) { break }
 			}
 			if ($password) { break }
@@ -33154,6 +33158,48 @@ $form.Add_Shown({
 	$script:StartupWarmupStarted = $true
 	$script:StartupWarmupIndex = 0
 	$script:StartupWarmupSteps = @()
+	$script:StartupScaleCredStarted = $false
+	
+	try
+	{
+		if ($script:StartupScaleCredTimer)
+		{
+			$script:StartupScaleCredTimer.Stop()
+			$script:StartupScaleCredTimer.Dispose()
+			$script:StartupScaleCredTimer = $null
+		}
+	}
+	catch { }
+	
+	$script:StartupScaleCredTimer = New-Object System.Windows.Forms.Timer
+	$script:StartupScaleCredTimer.Interval = 250
+	$script:StartupScaleCredTimer.Add_Tick({
+			try
+			{
+				if ($script:StartupScaleCredTimer)
+				{
+					$script:StartupScaleCredTimer.Stop()
+					$script:StartupScaleCredTimer.Dispose()
+					$script:StartupScaleCredTimer = $null
+				}
+			}
+			catch { }
+			
+			if ($script:StartupScaleCredStarted) { return }
+			
+			try
+			{
+				$windowsScales = $script:FunctionResults['WindowsScales']
+				if ($windowsScales -and $windowsScales.Count -gt 0)
+				{
+					Add_Scale_Credentials -ScaleCodeToIPInfo $windowsScales
+				}
+				$script:StartupScaleCredStarted = $true
+			}
+			catch { }
+		})
+	try { $script:StartupScaleCredTimer.Start() }
+	catch { }
 	
 	if ($script:UseCachedCoreStartup)
 	{
@@ -33250,7 +33296,17 @@ $form.Add_Shown({
 			},
 			[pscustomobject]@{
 				Label  = 'Adding scale credentials...'
-				Action = { try { Add_Scale_Credentials -ScaleCodeToIPInfo $script:FunctionResults['WindowsScales'] } catch { } }
+				Action = {
+					try
+					{
+						if (-not $script:StartupScaleCredStarted)
+						{
+							Add_Scale_Credentials -ScaleCodeToIPInfo $script:FunctionResults['WindowsScales']
+							$script:StartupScaleCredStarted = $true
+						}
+					}
+					catch { }
+				}
 			},
 			[pscustomobject]@{
 				Label  = 'Cleaning XE folder...'
