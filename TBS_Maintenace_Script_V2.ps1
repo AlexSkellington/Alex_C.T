@@ -336,7 +336,7 @@ $script:RemoteMachineInfoTask = $null
 $script:RemoteMachineInfoReaper = $null
 $script:LaneDbSizeMap = @{ }
 $script:LaneDbSizeJobs = @{ }
-$script:LaneDbSizeRefreshSeconds = 20
+$script:LaneDbSizeRefreshSeconds = 5
 $script:ProtocolPopupMode = 'Lane'
 $script:StartupWarmupStarted = $false
 $script:StartupWarmupTimer = $null
@@ -346,6 +346,7 @@ $script:StartupWarmupStatus = $null
 $script:PopupThemeTimer = $null
 $script:StyledPopupForms = @{ }
 $script:LaneSqlProtocolEnableTaskState = @{ }
+$script:LaneSqlProtocolEnableJobs = @{ }
 
 # ---------------------------------------------------------------------------------------------------
 # Count Tracking Variables
@@ -9525,6 +9526,45 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					VncStatus  = 'Not Found'
 				}
 				
+				$reachable = $false
+				try
+				{
+					$ping = New-Object System.Net.NetworkInformation.Ping
+					$reply = $ping.Send($Machine, 700)
+					if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
+				}
+				catch { }
+				
+				if (-not $reachable)
+				{
+					$tcp = $null
+					$async = $null
+					try
+					{
+						$tcp = New-Object System.Net.Sockets.TcpClient
+						$async = $tcp.BeginConnect($Machine, 445, $null, $null)
+						if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
+						{
+							try { $tcp.EndConnect($async) } catch { }
+							$reachable = $true
+						}
+					}
+					catch { }
+					finally
+					{
+						try { if ($async) { $async.AsyncWaitHandle.Close() } } catch { }
+						try { if ($tcp) { $tcp.Close() } } catch { }
+					}
+				}
+				
+				if (-not $reachable)
+				{
+					$result.SqlStatus = 'Offline'
+					$result.VncStatus = 'Offline'
+					$result.VncService = 'Offline'
+					return [pscustomobject]$result
+				}
+				
 				$services = $null
 				$serviceFetchError = $null
 				try
@@ -9686,6 +9726,45 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				SqlStatus  = 'Not Found'
 				VncService = 'Not Found'
 				VncStatus  = 'Not Found'
+			}
+			
+			$reachable = $false
+			try
+			{
+				$ping = New-Object System.Net.NetworkInformation.Ping
+				$reply = $ping.Send($Machine, 700)
+				if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
+			}
+			catch { }
+			
+			if (-not $reachable)
+			{
+				$tcp = $null
+				$async = $null
+				try
+				{
+					$tcp = New-Object System.Net.Sockets.TcpClient
+					$async = $tcp.BeginConnect($Machine, 445, $null, $null)
+					if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
+					{
+						try { $tcp.EndConnect($async) } catch { }
+						$reachable = $true
+					}
+				}
+				catch { }
+				finally
+				{
+					try { if ($async) { $async.AsyncWaitHandle.Close() } } catch { }
+					try { if ($tcp) { $tcp.Close() } } catch { }
+				}
+			}
+			
+			if (-not $reachable)
+			{
+				$result.SqlStatus = 'Offline'
+				$result.VncStatus = 'Offline'
+				$result.VncService = 'Offline'
+				return [pscustomobject]$result
 			}
 			
 			$services = $null
@@ -10692,6 +10771,12 @@ function Process_Lanes
 			
 			Write_Log "Lane $laneNum uses protocol: $displayProtocol" "gray"
 			Write_Log "Lane $laneNum connection string: $displayConnStr" "gray"
+			
+			if ($protocolType -eq 'Offline')
+			{
+				Write_Log "Lane $laneNum ($machineName) is offline. Skipping." "yellow"
+				continue
+			}
 			
 			# If protocol not ready / invalid conn string, fallback to file
 			if (-not $protocolType -or $protocolType -eq "File" -or -not $workingConnStrIsValid)
@@ -12545,6 +12630,11 @@ function Close_Open_Transactions
 										$laneKey = $LaneNumber.PadLeft(3, '0')
 										$protocolType = if ($script:LaneProtocols.ContainsKey($laneKey)) { $script:LaneProtocols[$laneKey] }
 										else { "File" }
+										if ($protocolType -eq 'Offline')
+										{
+											Write_Log "Lane $LaneNumber is offline. Skipping transaction close." "yellow"
+											continue
+										}
 										
 										# Get full DB connection info for this lane
 										$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
@@ -12676,6 +12766,11 @@ function Close_Open_Transactions
 				$laneKey = $LaneNumber
 				$protocolType = if ($script:LaneProtocols.ContainsKey($laneKey)) { $script:LaneProtocols[$laneKey] }
 				else { "File" }
+				if ($protocolType -eq 'Offline')
+				{
+					Write_Log "Lane $LaneNumber is offline. Skipping." "yellow"
+					continue
+				}
 				$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
 				$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
 				$tcpConnStr = $laneInfo['TcpConnStr']
@@ -13118,7 +13213,15 @@ function Send_SMS_Key_to_Lanes
 				$t = $protocolPref.Trim()
 				if ($t -match '(?i)^tcp$') { $protocolPrefNorm = "TCP" }
 				elseif ($t -match '(?i)pipe') { $protocolPrefNorm = "Named Pipes" }
+				elseif ($t -match '(?i)^offline$') { $protocolPrefNorm = "Offline" }
 				else { $protocolPrefNorm = "File" }
+			}
+			
+			if ($protocolPrefNorm -eq "Offline")
+			{
+				Write_Log "Lane $LaneNumber ($machineName) is offline. Skipping." "yellow"
+				$FailedLanes.Add($LaneNumber) | Out-Null
+				continue
 			}
 			
 			$sqlWorked = $false
@@ -24533,7 +24636,7 @@ function Schedule_LaneDB_Backup
 	foreach ($lane in $selection.Lanes)
 	{
 		$protocol = $script:LaneProtocols[$lane]
-		if ($protocol -and $protocol -ne "File") { $goodLanes += $lane }
+		if ($protocol -and $protocol -in @("TCP", "Named Pipes")) { $goodLanes += $lane }
 		else { Write_Log "Lane $lane not available in ProtocolResults or protocol not valid. Skipping." "yellow" }
 	}
 	if (-not $goodLanes -or $goodLanes.Count -eq 0)
@@ -27861,6 +27964,8 @@ function Start_Lane_Protocol_Jobs
 	if (-not $script:ProtocolResults) { $script:ProtocolResults = @() }
 	if (-not $script:LaneProtocolJobs) { $script:LaneProtocolJobs = @{ } }
 	if (-not $script:LaneProtocolJobTimeoutSeconds) { $script:LaneProtocolJobTimeoutSeconds = 8 }
+	if (-not $script:LaneSqlProtocolEnableTaskState) { $script:LaneSqlProtocolEnableTaskState = @{ } }
+	if (-not $script:LaneSqlProtocolEnableJobs) { $script:LaneSqlProtocolEnableJobs = @{ } }
 	
 	# store lane map for repeated runs
 	$script:LaneProtocolLaneMap = $LaneNumToMachineName
@@ -27923,12 +28028,59 @@ function Start_Lane_Protocol_Jobs
 	}
 	
 	# ---------- worker script (NO nested functions) ----------
-	$script:LaneProtocolWorker = @'
+$script:LaneProtocolWorker = @'
 param([string]$machine,[string]$lane)
 
 Add-Type -AssemblyName System.Data 2>$null
+Add-Type -AssemblyName System 2>$null
 
 $protocol = 'File'
+$reachable = $true
+
+if (-not [string]::IsNullOrWhiteSpace($machine))
+{
+  $machineNorm = [string]$machine
+  $isLocalMachine = $false
+  try {
+    if ($machineNorm -match '^(?i)(localhost|\.|\(local\))$' -or $machineNorm -ieq $env:COMPUTERNAME) { $isLocalMachine = $true }
+  } catch { }
+
+  if (-not $isLocalMachine)
+  {
+    $reachable = $false
+
+    try {
+      $ping = New-Object System.Net.NetworkInformation.Ping
+      $reply = $ping.Send($machineNorm, 700)
+      if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
+    } catch { }
+
+    if (-not $reachable)
+    {
+      $tcp = $null
+      $async = $null
+      try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $async = $tcp.BeginConnect($machineNorm, 445, $null, $null)
+        if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
+        {
+          try { $tcp.EndConnect($async) } catch { }
+          $reachable = $true
+        }
+      } catch { }
+      finally {
+        try { if ($async) { $async.AsyncWaitHandle.Close() } } catch { }
+        try { if ($tcp) { $tcp.Close() } } catch { }
+      }
+    }
+  }
+}
+
+if (-not $reachable)
+{
+  [PSCustomObject]@{ Lane = $lane; Protocol = 'Offline' }
+  return
+}
 
 $cn = $null
 try {
@@ -27966,6 +28118,129 @@ if ($protocol -eq 'File') {
 		}
 	}
 	
+	$getNextLaneSqlEnableRunDate = {
+		$scheduledDate = Get-Date
+		try
+		{
+			$today415 = Get-Date -Hour 4 -Minute 15 -Second 0
+			$scheduledDate = if ((Get-Date) -lt $today415) { $today415 } else { $today415.AddDays(1) }
+		}
+		catch
+		{
+			$scheduledDate = (Get-Date).AddDays(1).Date.AddHours(4).AddMinutes(15)
+		}
+		return $scheduledDate
+	}
+	
+	$queueLaneSqlEnableTask = {
+		param(
+			[string]$LaneNumber,
+			[string]$MachineName
+		)
+		
+		if ([string]::IsNullOrWhiteSpace($LaneNumber) -or [string]::IsNullOrWhiteSpace($MachineName)) { return }
+		
+		$laneKey = $LaneNumber.ToString().PadLeft(3, '0')
+		$existingJobState = $script:LaneSqlProtocolEnableJobs[$laneKey]
+		if ($existingJobState -and $existingJobState.Job -and $existingJobState.Job.State -in @('Running', 'NotStarted')) { return }
+		
+		$existingState = $script:LaneSqlProtocolEnableTaskState[$laneKey]
+		$lastChecked = $null
+		$taskPresent = $false
+		try { $lastChecked = $existingState.LastChecked } catch { $lastChecked = $null }
+		try { $taskPresent = [bool]$existingState.TaskPresent } catch { $taskPresent = $false }
+		
+		if ($lastChecked -is [datetime])
+		{
+			$ageSeconds = ((Get-Date) - $lastChecked).TotalSeconds
+			if ($taskPresent -and $ageSeconds -lt 21600) { return }
+			if ((-not $taskPresent) -and $ageSeconds -lt 600) { return }
+		}
+		
+		$scheduledDate = & $getNextLaneSqlEnableRunDate
+		$fnBody = ${function:Ensure_SQL_Enable_Scheduled_Task_For_File_Lane}.ToString()
+		$job = Start-Job -Name ("LaneSqlEnableTask_{0}" -f $laneKey) -ArgumentList $fnBody, $laneKey, $MachineName -ScriptBlock {
+			param(
+				[string]$EnsureBody,
+				[string]$LaneNumber,
+				[string]$MachineName
+			)
+			
+			$ok = $false
+			try
+			{
+				Set-Item -Path Function:\Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -Value ([scriptblock]::Create($EnsureBody))
+				$ok = [bool](Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $LaneNumber -MachineName $MachineName)
+			}
+			catch
+			{
+				$ok = $false
+			}
+			
+			[pscustomobject]@{
+				LaneNumber  = $LaneNumber
+				MachineName = $MachineName
+				Success     = $ok
+			}
+		}
+		
+		$script:LaneSqlProtocolEnableJobs[$laneKey] = [pscustomobject]@{
+			Job         = $job
+			MachineName = $MachineName
+			ScheduledFor = $scheduledDate
+		}
+		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+			TaskPresent  = $false
+			LastChecked  = Get-Date
+			ScheduledFor = $scheduledDate
+			MachineName  = $MachineName
+			Pending      = $true
+		}
+	}
+	
+	$harvestLaneSqlEnableJobs = {
+		if (-not $script:LaneSqlProtocolEnableJobs -or $script:LaneSqlProtocolEnableJobs.Count -eq 0) { return }
+		
+		foreach ($laneKey in @($script:LaneSqlProtocolEnableJobs.Keys))
+		{
+			$st = $script:LaneSqlProtocolEnableJobs[$laneKey]
+			if (-not $st) { continue }
+			
+			$job = $st.Job
+			if (-not $job) { [void]$script:LaneSqlProtocolEnableJobs.Remove($laneKey); continue }
+			if ($job.State -in @('Running', 'NotStarted')) { continue }
+			
+			$result = $null
+			try { $result = Receive-Job -Job $job -Keep -ErrorAction SilentlyContinue | Select-Object -Last 1 }
+			catch { $result = $null }
+			try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+			catch { }
+			[void]$script:LaneSqlProtocolEnableJobs.Remove($laneKey)
+			
+			$machineName = $null
+			$success = $false
+			$scheduledFor = $null
+			try { $machineName = [string]$st.MachineName } catch { $machineName = $null }
+			try { $scheduledFor = $st.ScheduledFor } catch { $scheduledFor = $null }
+			try
+			{
+				if ($result)
+				{
+					if (-not [string]::IsNullOrWhiteSpace([string]$result.MachineName)) { $machineName = [string]$result.MachineName }
+					$success = [bool]$result.Success
+				}
+			}
+			catch { $success = $false }
+			
+			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+				TaskPresent  = $success
+				LastChecked  = Get-Date
+				ScheduledFor = $scheduledFor
+				MachineName  = $machineName
+			}
+		}
+	}
+	
 	# ---------- timer (UI thread, safe) ----------
 	$script:protocolTimer = New-Object System.Windows.Forms.Timer
 	$script:protocolTimer.Interval = 1000
@@ -27973,6 +28248,10 @@ if ($protocol -eq 'File') {
 	$script:protocolTimer.add_Tick({
 			
 			if ($script:LaneProtocolStop) { return }
+			
+			# 0) harvest background SQL-enable scheduling jobs
+			try { & $harvestLaneSqlEnableJobs }
+			catch { }
 			
 			# 1) harvest completed jobs
 			$changed = $false
@@ -27993,25 +28272,16 @@ if ($protocol -eq 'File') {
 						$mn = $null
 						if ($laneMap) { $mn = $laneMap[$laneNum] }
 						
-						$script:LaneProtocols[$laneNum] = 'File'
-						$script:LaneProtocols[$laneKey] = 'File'
+						$script:LaneProtocols[$laneNum] = 'Offline'
+						$script:LaneProtocols[$laneKey] = 'Offline'
 						if ($mn)
 						{
-							$script:LaneProtocols[$mn] = 'File'
-							$script:LaneProtocols[$mn.ToLower()] = 'File'
+							$script:LaneProtocols[$mn] = 'Offline'
+							$script:LaneProtocols[$mn.ToLower()] = 'Offline'
 						}
 						
 						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
-						$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = 'File' }
-						
-						if (-not [string]::IsNullOrWhiteSpace($mn))
-						{
-							try
-							{
-								Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $laneNum -MachineName $mn | Out-Null
-							}
-							catch { }
-						}
+						$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = 'Offline' }
 						
 						$changed = $true
 						continue
@@ -28031,7 +28301,7 @@ if ($protocol -eq 'File') {
 						
 						$result = $null
 						if ($resultList -and $resultList.Count -ge 1) { $result = $resultList[0] }
-						if (-not $result) { $result = [pscustomobject]@{ Lane = $laneKey; Protocol = 'File' } }
+						if (-not $result) { $result = [pscustomobject]@{ Lane = $laneKey; Protocol = 'Offline' } }
 						
 						$rawLane = [string]$result.Lane
 						$laneNum = (($rawLane -replace '[^\d]', '')).PadLeft(3, '0')
@@ -28057,10 +28327,7 @@ if ($protocol -eq 'File') {
 						
 						if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($mn))
 						{
-							try
-							{
-								Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $laneNum -MachineName $mn | Out-Null
-							}
+							try { & $queueLaneSqlEnableTask $laneNum $mn }
 							catch { }
 						}
 						elseif ($script:LaneSqlProtocolEnableTaskState -and $script:LaneSqlProtocolEnableTaskState.ContainsKey($laneNum))
@@ -30196,6 +30463,22 @@ public static class NativeWin {
 				catch { }
 			}
 			
+			if (-not $script:IsBusy)
+			{
+				try
+				{
+					$laneSqlEnableJob = Get-Job -Name 'LaneSqlEnableTask_*' -State Running -ErrorAction SilentlyContinue | Select-Object -First 1
+					if ($laneSqlEnableJob)
+					{
+						$script:IsBusy = $true
+						$laneBusyText = $laneSqlEnableJob.Name
+						if ($laneBusyText -match '_(\d{3})$') { $laneBusyText = $matches[1] }
+						$script:BusyReason = "Scheduling SQL enable ($laneBusyText)"
+					}
+				}
+				catch { }
+			}
+			
 			# 5) Any other background jobs (EXCEPT ignored names/patterns)
 			if (-not $script:IsBusy)
 			{
@@ -30384,10 +30667,10 @@ public static class NativeWin {
 
 	if (-not $script:LaneDbSizeMap) { $script:LaneDbSizeMap = @{ } }
 	if (-not $script:LaneDbSizeJobs) { $script:LaneDbSizeJobs = @{ } }
-	if (-not $script:LaneDbSizeRefreshSeconds -or $script:LaneDbSizeRefreshSeconds -lt 5) { $script:LaneDbSizeRefreshSeconds = 20 }
+if (-not $script:LaneDbSizeRefreshSeconds -or $script:LaneDbSizeRefreshSeconds -lt 5) { $script:LaneDbSizeRefreshSeconds = 5 }
 	if (-not $script:LaneDbSizeWorker)
 	{
-		$script:LaneDbSizeWorker = @'
+$script:LaneDbSizeWorker = @'
 param(
 	[string]$lane,
 	[string]$protocol,
@@ -30398,6 +30681,7 @@ param(
 )
 
 Add-Type -AssemblyName System.Data 2>$null
+Add-Type -AssemblyName System 2>$null
 
 $result = [ordered]@{
 	Lane      = $lane
@@ -30406,6 +30690,60 @@ $result = [ordered]@{
 	Status    = 'Unavailable'
 	OpenPath  = $null
 	UpdatedAt = [DateTime]::Now
+}
+
+$machineNameNorm = [string]$machineName
+$isLocalMachine = $false
+try
+{
+	if ([string]::IsNullOrWhiteSpace($machineNameNorm) -or $machineNameNorm -match '^(?i)(localhost|\.|\(local\))$' -or $machineNameNorm -ieq $env:COMPUTERNAME)
+	{
+		$isLocalMachine = $true
+	}
+}
+catch { }
+
+if (-not $isLocalMachine)
+{
+	$reachable = $false
+	try
+	{
+		$ping = New-Object System.Net.NetworkInformation.Ping
+		$reply = $ping.Send($machineNameNorm, 700)
+		if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
+	}
+	catch { }
+
+	if (-not $reachable)
+	{
+		$tcp = $null
+		$async = $null
+		try
+		{
+			$tcp = New-Object System.Net.Sockets.TcpClient
+			$async = $tcp.BeginConnect($machineNameNorm, 445, $null, $null)
+			if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
+			{
+				try { $tcp.EndConnect($async) } catch { }
+				$reachable = $true
+			}
+		}
+		catch { }
+		finally
+		{
+			try { if ($async) { $async.AsyncWaitHandle.Close() } } catch { }
+			try { if ($tcp) { $tcp.Close() } } catch { }
+		}
+	}
+
+	if (-not $reachable)
+	{
+		$result.DataText = 'Offline'
+		$result.LogText = 'Offline'
+		$result.Status = 'Offline'
+		[pscustomobject]$result
+		return
+	}
 }
 
 if ($protocol -eq 'File')
@@ -31114,7 +31452,17 @@ if (($result.Status -ne 'Ready') -and
 								elseif (-not ($lastUpdate -is [datetime])) { $needsRefresh = $true }
 								elseif ((($now) - $lastUpdate).TotalSeconds -ge $script:LaneDbSizeRefreshSeconds) { $needsRefresh = $true }
 	
-								if ($needsRefresh -and $script:LaneProtocolPool)
+								if ($proto -eq 'Offline')
+								{
+									$script:LaneDbSizeMap[$ln] = [pscustomobject]@{
+										DataText   = 'Offline'
+										LogText    = 'Offline'
+										Status     = 'Offline'
+										OpenPath   = $null
+										LastUpdate = $now
+									}
+								}
+								elseif ($needsRefresh -and $script:LaneProtocolPool)
 								{
 									$canRunWorker = $false
 									if ($proto -eq 'File')
