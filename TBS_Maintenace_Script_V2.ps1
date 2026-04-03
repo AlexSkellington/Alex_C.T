@@ -28054,25 +28054,6 @@ if (-not [string]::IsNullOrWhiteSpace($machine))
       $reply = $ping.Send($machineNorm, 700)
       if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
     } catch { }
-
-    if (-not $reachable)
-    {
-      $tcp = $null
-      $async = $null
-      try {
-        $tcp = New-Object System.Net.Sockets.TcpClient
-        $async = $tcp.BeginConnect($machineNorm, 445, $null, $null)
-        if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
-        {
-          try { $tcp.EndConnect($async) } catch { }
-          $reachable = $true
-        }
-      } catch { }
-      finally {
-        try { if ($async) { $async.AsyncWaitHandle.Close() } } catch { }
-        try { if ($tcp) { $tcp.Close() } } catch { }
-      }
-    }
   }
 }
 
@@ -33173,6 +33154,7 @@ $form.Add_Shown({
 	$script:StartupWarmupStarted = $true
 	$script:StartupWarmupIndex = 0
 	$script:StartupWarmupSteps = @()
+	
 	if ($script:UseCachedCoreStartup)
 	{
 		$script:StartupWarmupSteps += [pscustomobject]@{
