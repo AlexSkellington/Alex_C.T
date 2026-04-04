@@ -41,7 +41,7 @@ try
 		$__entryPath = $__cmdLineArgs[0]
 		if ($__cmdLineArgs.Count -gt 1)
 		{
-			$__launchArgs = @($__cmdLineArgs[1..($__cmdLineArgs.Count - 1)])
+			$__launchArgs = @($__cmdLineArgs[1 .. ($__cmdLineArgs.Count - 1)])
 		}
 	}
 }
@@ -189,7 +189,7 @@ try
 		$entryPath = $cmdLineArgs[0]
 		if ($cmdLineArgs.Count -gt 1)
 		{
-			$launchArgs = @($cmdLineArgs[1..($cmdLineArgs.Count - 1)])
+			$launchArgs = @($cmdLineArgs[1 .. ($cmdLineArgs.Count - 1)])
 		}
 	}
 }
@@ -336,6 +336,7 @@ $script:RemoteMachineInfoTask = $null
 $script:RemoteMachineInfoReaper = $null
 $script:LaneDbSizeMap = @{ }
 $script:LaneDbSizeJobs = @{ }
+$script:LaneDbSizePool = $null
 $script:LaneDbSizeRefreshSeconds = 5
 $script:ProtocolPopupMode = 'Lane'
 $script:StartupWarmupStarted = $false
@@ -1451,17 +1452,17 @@ finally
 		try
 		{
 			$runningState = [pscustomobject]@{
-				Status						 = 'Running'
-				Pid							 = $existingWorkerPid
-				LastRunId					 = if ($state -and $state.LastRunId) { [string]$state.LastRunId } else { $null }
-				LastStartedTimeUtc			 = if ($state -and $state.LastStartedTimeUtc) { [string]$state.LastStartedTimeUtc } else { $nowUtc.ToString('o') }
-				LastCompletedTimeUtc		 = if ($state -and $state.LastCompletedTimeUtc) { [string]$state.LastCompletedTimeUtc } else { $null }
-				LastOutcome					 = if ($state -and $state.LastOutcome) { [string]$state.LastOutcome } else { $null }
-				LastSummary					 = if ($state -and $state.LastSummary) { [string]$state.LastSummary } else { $null }
-				RestoreHealthExitCode		 = if ($state -and $null -ne $state.RestoreHealthExitCode) { [int]$state.RestoreHealthExitCode } else { $null }
+				Status    = 'Running'
+				Pid	      = $existingWorkerPid
+				LastRunId = if ($state -and $state.LastRunId) { [string]$state.LastRunId } else { $null }
+				LastStartedTimeUtc = if ($state -and $state.LastStartedTimeUtc) { [string]$state.LastStartedTimeUtc } else { $nowUtc.ToString('o') }
+				LastCompletedTimeUtc = if ($state -and $state.LastCompletedTimeUtc) { [string]$state.LastCompletedTimeUtc } else { $null }
+				LastOutcome = if ($state -and $state.LastOutcome) { [string]$state.LastOutcome } else { $null }
+				LastSummary = if ($state -and $state.LastSummary) { [string]$state.LastSummary } else { $null }
+				RestoreHealthExitCode = if ($state -and $null -ne $state.RestoreHealthExitCode) { [int]$state.RestoreHealthExitCode } else { $null }
 				StartComponentCleanupExitCode = if ($state -and $null -ne $state.StartComponentCleanupExitCode) { [int]$state.StartComponentCleanupExitCode } else { $null }
-				SfcExitCode					 = if ($state -and $null -ne $state.SfcExitCode) { [int]$state.SfcExitCode } else { $null }
-				RunLogPath					 = if ($state -and $state.RunLogPath) { [string]$state.RunLogPath } else { $null }
+				SfcExitCode = if ($state -and $null -ne $state.SfcExitCode) { [int]$state.SfcExitCode } else { $null }
+				RunLogPath = if ($state -and $state.RunLogPath) { [string]$state.RunLogPath } else { $null }
 			}
 			($runningState | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $statePath -Encoding UTF8 -Force
 		}
@@ -1519,17 +1520,17 @@ finally
 		$proc = Start-Process -FilePath $psExe -ArgumentList $argList -WindowStyle Hidden -PassThru -ErrorAction Stop
 		
 		$runningState = [pscustomobject]@{
-			Status						 = 'Running'
-			Pid							 = $proc.Id
-			LastRunId					 = $runId
-			LastStartedTimeUtc			 = $nowUtc.ToString('o')
-			LastCompletedTimeUtc		 = if ($lastCompletedUtc) { $lastCompletedUtc.ToString('o') } else { $null }
-			LastOutcome					 = if ($state -and $state.LastOutcome) { [string]$state.LastOutcome } else { $null }
-			LastSummary					 = if ($state -and $state.LastSummary) { [string]$state.LastSummary } else { $null }
-			RestoreHealthExitCode		 = if ($state -and $null -ne $state.RestoreHealthExitCode) { [int]$state.RestoreHealthExitCode } else { $null }
+			Status			     = 'Running'
+			Pid				     = $proc.Id
+			LastRunId		     = $runId
+			LastStartedTimeUtc   = $nowUtc.ToString('o')
+			LastCompletedTimeUtc = if ($lastCompletedUtc) { $lastCompletedUtc.ToString('o') } else { $null }
+			LastOutcome		     = if ($state -and $state.LastOutcome) { [string]$state.LastOutcome } else { $null }
+			LastSummary		     = if ($state -and $state.LastSummary) { [string]$state.LastSummary } else { $null }
+			RestoreHealthExitCode = if ($state -and $null -ne $state.RestoreHealthExitCode) { [int]$state.RestoreHealthExitCode } else { $null }
 			StartComponentCleanupExitCode = if ($state -and $null -ne $state.StartComponentCleanupExitCode) { [int]$state.StartComponentCleanupExitCode } else { $null }
-			SfcExitCode					 = if ($state -and $null -ne $state.SfcExitCode) { [int]$state.SfcExitCode } else { $null }
-			RunLogPath					 = $runLogPath
+			SfcExitCode		     = if ($state -and $null -ne $state.SfcExitCode) { [int]$state.SfcExitCode } else { $null }
+			RunLogPath		     = $runLogPath
 		}
 		($runningState | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $statePath -Encoding UTF8 -Force
 		return @{ Started = $true; Running = $true; Due = $true; Pid = $proc.Id; RunLogPath = $runLogPath }
@@ -1869,7 +1870,8 @@ function Get_Store_And_Database_Info
 			}
 			catch
 			{
-				$availableSqlModule = if ($availableSqlModule) { $availableSqlModule } else { "None" }
+				$availableSqlModule = if ($availableSqlModule) { $availableSqlModule }
+				else { "None" }
 			}
 		}
 		$script:FunctionResults['SqlModuleName'] = $availableSqlModule
@@ -7380,11 +7382,11 @@ function Get_Table_Aliases
 	{
 		try
 		{
-				$cacheOut = [pscustomobject]@{
-					LastUpdated = (Get-Date).ToString('o')
-					SMSVersion  = $SMSVersion
-					Mode	    = 'Dynamic'
-					LoadSignature = $loadSignature
+			$cacheOut = [pscustomobject]@{
+				LastUpdated = (Get-Date).ToString('o')
+				SMSVersion  = $SMSVersion
+				Mode	    = 'Dynamic'
+				LoadSignature = $loadSignature
 				Results	    = [pscustomobject]@{
 					AliasHash = [pscustomobject]$AliasToTableLive
 					TableHash = [pscustomobject]$TableToAliasLive
@@ -7712,7 +7714,7 @@ function Insert_Test_Item
 		[int]$QueryTimeoutSeconds = 15,
 		[int]$ConnectionTimeoutSeconds = 5
 	)
-
+	
 	$writeLog = {
 		param (
 			[string]$Message,
@@ -8293,7 +8295,7 @@ function Get_Remote_Machine_Info
 					LaneNumToMachineName	   = $LaneMap
 					ScaleCodeToIPInfo		   = $ScaleMap
 					BackofficeNumToMachineName = $BackofficeMap
-					StoreNumber				   = $StoreNumber
+					StoreNumber			       = $StoreNumber
 				}
 				$script:DbsPath = $DbsPath
 				
@@ -8307,21 +8309,21 @@ function Get_Remote_Machine_Info
 											-SilentBackground:$SilentBackgroundMode | Out-Null
 					
 					[pscustomobject]@{
-						Success				 = $true
-						LaneHardwareInfo	 = $script:LaneHardwareInfo
-						ScaleHardwareInfo	 = $script:ScaleHardwareInfo
+						Success			       = $true
+						LaneHardwareInfo	   = $script:LaneHardwareInfo
+						ScaleHardwareInfo	   = $script:ScaleHardwareInfo
 						BackofficeHardwareInfo = $script:BackofficeHardwareInfo
-						Error				 = $null
+						Error				   = $null
 					}
 				}
 				catch
 				{
 					[pscustomobject]@{
-						Success				 = $false
-						LaneHardwareInfo	 = $null
-						ScaleHardwareInfo	 = $null
+						Success			       = $false
+						LaneHardwareInfo	   = $null
+						ScaleHardwareInfo	   = $null
 						BackofficeHardwareInfo = $null
-						Error				 = $_.Exception.Message
+						Error				   = $_.Exception.Message
 					}
 				}
 			} -ArgumentList @(
@@ -8339,9 +8341,9 @@ function Get_Remote_Machine_Info
 			)
 			
 			$script:RemoteMachineInfoTask = @{
-				Job		 = $job
-				Started	 = Get-Date
-				Silent	 = [bool]$SilentBackground
+				Job	    = $job
+				Started = Get-Date
+				Silent  = [bool]$SilentBackground
 			}
 			
 			if (-not $script:RemoteMachineInfoReaper)
@@ -8391,7 +8393,8 @@ function Get_Remote_Machine_Info
 						}
 						elseif (-not $taskState.Silent)
 						{
-							$errText = if ($resultObj -and $resultObj.Error) { $resultObj.Error } else { "Unknown error." }
+							$errText = if ($resultObj -and $resultObj.Error) { $resultObj.Error }
+							else { "Unknown error." }
 							Write_Log "Remote machine info export failed in background: $errText" "red"
 						}
 						
@@ -9243,7 +9246,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	$lblSvcStatus.Anchor = 'Left'
 	$lblSvcStatus.Margin = New-Object System.Windows.Forms.Padding(0, 8, 12, 0)
 	$pnlSvcBottom.Controls.Add($lblSvcStatus, 0, 0)
-
+	
 	$pnlSvcActions = New-Object System.Windows.Forms.FlowLayoutPanel
 	$pnlSvcActions.AutoSize = $true
 	$pnlSvcActions.WrapContents = $false
@@ -9252,7 +9255,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	$pnlSvcActions.Dock = 'Fill'
 	$pnlSvcActions.Margin = New-Object System.Windows.Forms.Padding(0, 4, 0, 0)
 	$pnlSvcBottom.Controls.Add($pnlSvcActions, 0, 1)
-
+	
 	$btnSvcRefresh = New-Object System.Windows.Forms.Button
 	$btnSvcRefresh.Text = "Refresh All"
 	$btnSvcRefresh.Size = New-Object System.Drawing.Size(110, 32)
@@ -9272,7 +9275,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	$svcActionJobs = @{ }
 	$rowMap = @{ }
 	$totalRows = $selectedLanes.Count
-
+	
 	$startActionJobForSelectedRow = {
 		param (
 			[string]$ServiceKind,
@@ -9296,8 +9299,10 @@ function Show_Lane_SQL_VNC_Service_Statuses
 		$laneKey = [string]$row.Cells["Lane"].Value
 		$machineName = [string]$row.Cells["Machine"].Value
 		$expectedSqlService = [string]$row.Cells["SqlService"].Value
-		$serviceName = if ($ServiceKind -eq 'SQL') { [string]$row.Cells["SqlService"].Value } else { [string]$row.Cells["VncService"].Value }
-		$statusColumn = if ($ServiceKind -eq 'SQL') { 'SqlStatus' } else { 'VncStatus' }
+		$serviceName = if ($ServiceKind -eq 'SQL') { [string]$row.Cells["SqlService"].Value }
+		else { [string]$row.Cells["VncService"].Value }
+		$statusColumn = if ($ServiceKind -eq 'SQL') { 'SqlStatus' }
+		else { 'VncStatus' }
 		
 		if ([string]::IsNullOrWhiteSpace($laneKey) -or [string]::IsNullOrWhiteSpace($machineName)) { return }
 		if ($svcActionJobs.ContainsKey($laneKey))
@@ -9367,7 +9372,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				{
 					try
 					{
-						$services = Get-CimInstance -ClassName Win32_Service -ComputerName $SnapshotMachine -ErrorAction Stop | Select-Object Name, DisplayName, @{Name = 'Status'; Expression = { $_.State } }
+						$services = Get-CimInstance -ClassName Win32_Service -ComputerName $SnapshotMachine -ErrorAction Stop | Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
 						$serviceFetchError = $null
 					}
 					catch
@@ -9378,8 +9383,10 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				
 				if (-not $services)
 				{
-					$result.SqlStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' } else { "Error: $serviceFetchError" }
-					$result.VncStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' } else { "Error: $serviceFetchError" }
+					$result.SqlStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
+					else { "Error: $serviceFetchError" }
+					$result.VncStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
+					else { "Error: $serviceFetchError" }
 					$result.VncService = 'Unavailable'
 					return [pscustomobject]$result
 				}
@@ -9441,12 +9448,14 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				}
 			}
 			
-			$targetStatus = if ($RequestedAction -eq 'Stop') { 'Stopped' } else { 'Running' }
+			$targetStatus = if ($RequestedAction -eq 'Stop') { 'Stopped' }
+			else { 'Running' }
 			for ($i = 0; $i -lt 18; $i++)
 			{
 				Start-Sleep -Milliseconds 750
 				$snapshot = & $getServiceSnapshot $Lane $Machine $ExpectedSqlService
-				$currentStatus = if ($ServiceKind -eq 'SQL') { [string]$snapshot.SqlStatus } else { [string]$snapshot.VncStatus }
+				$currentStatus = if ($ServiceKind -eq 'SQL') { [string]$snapshot.SqlStatus }
+				else { [string]$snapshot.VncStatus }
 				if ($currentStatus -eq $targetStatus -or $currentStatus -like 'Error:*' -or $currentStatus -eq 'Not Found')
 				{
 					$snapshot.ActionSummary = $actionSummary
@@ -9459,14 +9468,14 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			return $snapshot
 		}
 		
-	$svcActionJobs[$laneKey] = @{
-			Job = $job
-			Row = $row.Index
-			Action = $RequestedAction
+		$svcActionJobs[$laneKey] = @{
+			Job		    = $job
+			Row		    = $row.Index
+			Action	    = $RequestedAction
 			ServiceKind = $ServiceKind
 		}
 	}
-
+	
 	$refreshSvcLanes = {
 		param (
 			[string[]]$LaneKeysToRefresh
@@ -9549,15 +9558,18 @@ function Show_Lane_SQL_VNC_Service_Statuses
 						$async = $tcp.BeginConnect($Machine, 445, $null, $null)
 						if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
 						{
-							try { $tcp.EndConnect($async) } catch { }
+							try { $tcp.EndConnect($async) }
+							catch { }
 							$reachable = $true
 						}
 					}
 					catch { }
 					finally
 					{
-						try { if ($async) { $async.AsyncWaitHandle.Close() } } catch { }
-						try { if ($tcp) { $tcp.Close() } } catch { }
+						try { if ($async) { $async.AsyncWaitHandle.Close() } }
+						catch { }
+						try { if ($tcp) { $tcp.Close() } }
+						catch { }
 					}
 				}
 				
@@ -9584,7 +9596,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				{
 					try
 					{
-						$services = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, @{Name = 'Status'; Expression = { $_.State } }
+						$services = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
 						$serviceFetchError = $null
 					}
 					catch
@@ -9595,8 +9607,10 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				
 				if (-not $services)
 				{
-					$result.SqlStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' } else { "Error: $serviceFetchError" }
-					$result.VncStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' } else { "Error: $serviceFetchError" }
+					$result.SqlStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
+					else { "Error: $serviceFetchError" }
+					$result.VncStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
+					else { "Error: $serviceFetchError" }
 					$result.VncService = 'Unavailable'
 					return [pscustomobject]$result
 				}
@@ -9628,13 +9642,13 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			}
 			
 			$svcJobs[$laneKey] = @{
-				Job = $job
-				Row = $rowIndex
+				Job	    = $job
+				Row	    = $rowIndex
 				Machine = $machineName
 			}
 		}
 	}
-
+	
 	$svcRowMenu = New-Object System.Windows.Forms.ContextMenuStrip
 	if ($Apply_Modern_Menu_Style) { & $Apply_Modern_Menu_Style $svcRowMenu }
 	$miSvcRefreshLane = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh This Lane")
@@ -9673,7 +9687,8 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	[void]$svcRowMenu.Items.Add($miSvcRestartVnc)
 	$gridSvc.ContextMenuStrip = $svcRowMenu
 	$gridSvc.Add_MouseDown({
-			param ($sender, $e)
+			param ($sender,
+				$e)
 			if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Right) { return }
 			$hit = $gridSvc.HitTest($e.X, $e.Y)
 			if ($hit.RowIndex -lt 0) { return }
@@ -9751,15 +9766,18 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					$async = $tcp.BeginConnect($Machine, 445, $null, $null)
 					if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
 					{
-						try { $tcp.EndConnect($async) } catch { }
+						try { $tcp.EndConnect($async) }
+						catch { }
 						$reachable = $true
 					}
 				}
 				catch { }
 				finally
 				{
-					try { if ($async) { $async.AsyncWaitHandle.Close() } } catch { }
-					try { if ($tcp) { $tcp.Close() } } catch { }
+					try { if ($async) { $async.AsyncWaitHandle.Close() } }
+					catch { }
+					try { if ($tcp) { $tcp.Close() } }
+					catch { }
 				}
 			}
 			
@@ -9787,7 +9805,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			{
 				try
 				{
-					$services = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, @{Name = 'Status'; Expression = { $_.State } }
+					$services = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
 					$serviceFetchError = $null
 				}
 				catch
@@ -9800,7 +9818,8 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			{
 				$result.SqlStatus = 'Error'
 				$result.VncStatus = 'Error'
-				$result.SqlService = if ($ExpectedSqlService) { $ExpectedSqlService } else { 'Unavailable' }
+				$result.SqlService = if ($ExpectedSqlService) { $ExpectedSqlService }
+				else { 'Unavailable' }
 				$result.VncService = 'Unavailable'
 				if (-not [string]::IsNullOrWhiteSpace($serviceFetchError))
 				{
@@ -9840,12 +9859,12 @@ function Show_Lane_SQL_VNC_Service_Statuses
 		}
 		
 		$svcJobs[$laneKey] = @{
-			Job	  = $job
-			Row	  = $rowIndex
+			Job	    = $job
+			Row	    = $rowIndex
 			Machine = $machineName
 		}
 	}
-
+	
 	$btnSvcRefresh.Add_Click({
 			$script:LastActivity = Get-Date
 			& $refreshSvcLanes @($selectedLanes | ForEach-Object { [string]$_ })
@@ -11694,7 +11713,8 @@ function Pump_Tables
 			foreach ($tableName in ($aliasHash.Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique))
 			{
 				$matchingAliases = @($aliasHash.GetEnumerator() | Where-Object { $_.Value -eq $tableName } | Select-Object -ExpandProperty Key)
-				$aliasLabel = if ($matchingAliases.Count -gt 0) { ($matchingAliases | Sort-Object)[0] } else { $null }
+				$aliasLabel = if ($matchingAliases.Count -gt 0) { ($matchingAliases | Sort-Object)[0] }
+				else { $null }
 				$null = $aliasResults.Add([pscustomobject]@{
 						Table = [string]$tableName
 						Alias = [string]$aliasLabel
@@ -14759,10 +14779,11 @@ function Install_FUNCTIONS_Into_SMS
 		[string]$StoreNumber,
 		# kept for compatibility / future use
 		[Parameter(Mandatory = $false)]
-		[string]$OfficePath, # if not provided, we try common script-scoped fallbacks
+		[string]$OfficePath,
+		# if not provided, we try common script-scoped fallbacks
 		[switch]$Silent
 	)
-
+	
 	$writeLog = {
 		param (
 			[string]$Message,
@@ -21511,10 +21532,10 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 					elseif ($script:LaneSqlProtocolEnableTaskState.ContainsKey($laneStr))
 					{
 						$script:LaneSqlProtocolEnableTaskState[$laneStr] = [pscustomobject]@{
-							TaskPresent   = $false
-							LastChecked   = Get-Date
-							ScheduledFor  = $null
-							MachineName   = $res.Machine
+							TaskPresent  = $false
+							LastChecked  = Get-Date
+							ScheduledFor = $null
+							MachineName  = $res.Machine
 						}
 					}
 					
@@ -21586,7 +21607,8 @@ function Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
 	try
 	{
 		$today415 = Get-Date -Hour 4 -Minute 15 -Second 0
-		$scheduledDate = if ((Get-Date) -lt $today415) { $today415 } else { $today415.AddDays(1) }
+		$scheduledDate = if ((Get-Date) -lt $today415) { $today415 }
+		else { $today415.AddDays(1) }
 	}
 	catch
 	{
@@ -21801,10 +21823,10 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 	if ([string]::IsNullOrWhiteSpace($remoteScriptSharePath) -or [string]::IsNullOrWhiteSpace($localScriptPath))
 	{
 		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-			TaskPresent   = $false
-			LastChecked   = Get-Date
-			ScheduledFor  = $scheduledDate
-			MachineName   = $MachineName
+			TaskPresent  = $false
+			LastChecked  = Get-Date
+			ScheduledFor = $scheduledDate
+			MachineName  = $MachineName
 		}
 		return $false
 	}
@@ -21819,10 +21841,10 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 	if ($taskExists -and $scriptExists)
 	{
 		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-			TaskPresent   = $true
-			LastChecked   = Get-Date
-			ScheduledFor  = $scheduledDate
-			MachineName   = $MachineName
+			TaskPresent  = $true
+			LastChecked  = Get-Date
+			ScheduledFor = $scheduledDate
+			MachineName  = $MachineName
 		}
 		return $true
 	}
@@ -21839,10 +21861,10 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 	catch
 	{
 		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-			TaskPresent   = $false
-			LastChecked   = Get-Date
-			ScheduledFor  = $scheduledDate
-			MachineName   = $MachineName
+			TaskPresent  = $false
+			LastChecked  = Get-Date
+			ScheduledFor = $scheduledDate
+			MachineName  = $MachineName
 		}
 		return $false
 	}
@@ -21852,10 +21874,10 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 	if ($LASTEXITCODE -eq 0)
 	{
 		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-			TaskPresent   = $true
-			LastChecked   = Get-Date
-			ScheduledFor  = $scheduledDate
-			MachineName   = $MachineName
+			TaskPresent  = $true
+			LastChecked  = Get-Date
+			ScheduledFor = $scheduledDate
+			MachineName  = $MachineName
 		}
 		return $true
 	}
@@ -21863,10 +21885,10 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 	try { Remove-Item -LiteralPath $remoteScriptSharePath -Force -ErrorAction SilentlyContinue }
 	catch { }
 	$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-		TaskPresent   = $false
-		LastChecked   = Get-Date
-		ScheduledFor  = $scheduledDate
-		MachineName   = $MachineName
+		TaskPresent  = $false
+		LastChecked  = Get-Date
+		ScheduledFor = $scheduledDate
+		MachineName  = $MachineName
 	}
 	return $false
 }
@@ -22305,8 +22327,8 @@ function Add_Scale_Credentials
 			
 			# Stash to prevent GC and allow cleanup/busy tracking.
 			$script:ScaleCredTasks[$ip] = @{
-				PS = $ps
-				Handle = $handle
+				PS	    = $ps
+				Handle  = $handle
 				Started = Get-Date
 			}
 		}
@@ -23711,17 +23733,17 @@ function Export_VNC_Files_For_All_Nodes
 					}
 					
 					[pscustomobject]@{
-						Success		   = $true
+						Success		    = $true
 						AllVNCPasswords = $passwordCache
-						Error		   = $null
+						Error		    = $null
 					}
 				}
 				catch
 				{
 					[pscustomobject]@{
-						Success		   = $false
+						Success		    = $false
 						AllVNCPasswords = $null
-						Error		   = $_.Exception.Message
+						Error		    = $_.Exception.Message
 					}
 				}
 			} -ArgumentList @(
@@ -24018,7 +24040,7 @@ PreemptiveUpdates=0
 			
 			[void]$laneExports.Add([pscustomobject]@{
 					FilePath = [System.IO.Path]::Combine($lanesDir, $fileName)
-					Host = $machineName
+					Host	 = $machineName
 					Password = (& $resolveVncPassword $machineName)
 					AllowUntrustedServers = $false
 				})
@@ -24070,7 +24092,7 @@ PreemptiveUpdates=0
 			
 			[void]$scaleExports.Add([pscustomobject]@{
 					FilePath = [System.IO.Path]::Combine($scalesDir, $fileName)
-					Host = $ip
+					Host	 = $ip
 					Password = (& $resolveVncPassword $ip)
 					AllowUntrustedServers = ($brand -like '*Ishida*')
 				})
@@ -24096,7 +24118,7 @@ PreemptiveUpdates=0
 			
 			[void]$boExports.Add([pscustomobject]@{
 					FilePath = [System.IO.Path]::Combine($backofficesDir, $fileName)
-					Host = $boName
+					Host	 = $boName
 					Password = (& $resolveVncPassword $boName)
 					AllowUntrustedServers = $false
 				})
@@ -27967,7 +27989,7 @@ function Start_Lane_Protocol_Jobs
 	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{ } }
 	if (-not $script:ProtocolResults) { $script:ProtocolResults = @() }
 	if (-not $script:LaneProtocolJobs) { $script:LaneProtocolJobs = @{ } }
-	if (-not $script:LaneProtocolJobTimeoutSeconds) { $script:LaneProtocolJobTimeoutSeconds = 8 }
+	if (-not $script:LaneProtocolJobTimeoutSeconds -or $script:LaneProtocolJobTimeoutSeconds -lt 20) { $script:LaneProtocolJobTimeoutSeconds = 20 }
 	if (-not $script:LaneSqlProtocolEnableTaskState) { $script:LaneSqlProtocolEnableTaskState = @{ } }
 	if (-not $script:LaneSqlProtocolEnableJobs) { $script:LaneSqlProtocolEnableJobs = @{ } }
 	
@@ -28022,7 +28044,7 @@ function Start_Lane_Protocol_Jobs
 	if (-not $script:LaneProtocolPool)
 	{
 		$minThreads = 1
-		$maxThreads = [Math]::Min([Math]::Max(2, [Environment]::ProcessorCount), 4)
+		$maxThreads = [Math]::Max(8, [Environment]::ProcessorCount * 2)
 		$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
 		$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($minThreads, $maxThreads, $iss, $Host)
 		try { $pool.ApartmentState = 'MTA' }
@@ -28032,7 +28054,7 @@ function Start_Lane_Protocol_Jobs
 	}
 	
 	# ---------- worker script (NO nested functions) ----------
-$script:LaneProtocolWorker = @'
+	$script:LaneProtocolWorker = @'
 param([string]$machine,[string]$lane)
 
 Add-Type -AssemblyName System.Data 2>$null
@@ -28091,24 +28113,15 @@ if ($protocol -eq 'File') {
 '@
 	
 	# ---------- cadence ----------
-	if (-not $script:LaneProtocolLastRun)
-	{
-		if ($loadedProtocolCount -gt 0)
-		{
-			$script:LaneProtocolLastRun = Get-Date
-		}
-		else
-		{
-			$script:LaneProtocolLastRun = (Get-Date).AddYears(-10)
-		}
-	}
+	if (-not $script:LaneProtocolLastRun) { $script:LaneProtocolLastRun = (Get-Date).AddYears(-10) }
 	
 	$getNextLaneSqlEnableRunDate = {
 		$scheduledDate = Get-Date
 		try
 		{
 			$today415 = Get-Date -Hour 4 -Minute 15 -Second 0
-			$scheduledDate = if ((Get-Date) -lt $today415) { $today415 } else { $today415.AddDays(1) }
+			$scheduledDate = if ((Get-Date) -lt $today415) { $today415 }
+			else { $today415.AddDays(1) }
 		}
 		catch
 		{
@@ -28118,7 +28131,7 @@ if ($protocol -eq 'File') {
 	}
 	
 	$queueLaneSqlEnableTask = {
-		param(
+		param (
 			[string]$LaneNumber,
 			[string]$MachineName
 		)
@@ -28132,8 +28145,10 @@ if ($protocol -eq 'File') {
 		$existingState = $script:LaneSqlProtocolEnableTaskState[$laneKey]
 		$lastChecked = $null
 		$taskPresent = $false
-		try { $lastChecked = $existingState.LastChecked } catch { $lastChecked = $null }
-		try { $taskPresent = [bool]$existingState.TaskPresent } catch { $taskPresent = $false }
+		try { $lastChecked = $existingState.LastChecked }
+		catch { $lastChecked = $null }
+		try { $taskPresent = [bool]$existingState.TaskPresent }
+		catch { $taskPresent = $false }
 		
 		if ($lastChecked -is [datetime])
 		{
@@ -28145,7 +28160,7 @@ if ($protocol -eq 'File') {
 		$scheduledDate = & $getNextLaneSqlEnableRunDate
 		$fnBody = ${function:Ensure_SQL_Enable_Scheduled_Task_For_File_Lane}.ToString()
 		$job = Start-Job -Name ("LaneSqlEnableTask_{0}" -f $laneKey) -ArgumentList $fnBody, $laneKey, $MachineName -ScriptBlock {
-			param(
+			param (
 				[string]$EnsureBody,
 				[string]$LaneNumber,
 				[string]$MachineName
@@ -28165,13 +28180,13 @@ if ($protocol -eq 'File') {
 			[pscustomobject]@{
 				LaneNumber  = $LaneNumber
 				MachineName = $MachineName
-				Success     = $ok
+				Success	    = $ok
 			}
 		}
 		
 		$script:LaneSqlProtocolEnableJobs[$laneKey] = [pscustomobject]@{
-			Job         = $job
-			MachineName = $MachineName
+			Job		     = $job
+			MachineName  = $MachineName
 			ScheduledFor = $scheduledDate
 		}
 		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
@@ -28179,7 +28194,7 @@ if ($protocol -eq 'File') {
 			LastChecked  = Get-Date
 			ScheduledFor = $scheduledDate
 			MachineName  = $MachineName
-			Pending      = $true
+			Pending	     = $true
 		}
 	}
 	
@@ -28205,8 +28220,10 @@ if ($protocol -eq 'File') {
 			$machineName = $null
 			$success = $false
 			$scheduledFor = $null
-			try { $machineName = [string]$st.MachineName } catch { $machineName = $null }
-			try { $scheduledFor = $st.ScheduledFor } catch { $scheduledFor = $null }
+			try { $machineName = [string]$st.MachineName }
+			catch { $machineName = $null }
+			try { $scheduledFor = $st.ScheduledFor }
+			catch { $scheduledFor = $null }
 			try
 			{
 				if ($result)
@@ -28372,7 +28389,7 @@ if ($protocol -eq 'File') {
 				$script:LaneProtocolPool = $null
 				
 				$minThreads = 1
-				$maxThreads = [Math]::Min([Math]::Max(2, [Environment]::ProcessorCount), 4)
+				$maxThreads = [Math]::Max(8, [Environment]::ProcessorCount * 2)
 				$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
 				$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($minThreads, $maxThreads, $iss, $Host)
 				try { $pool.ApartmentState = 'MTA' }
@@ -28420,7 +28437,7 @@ if ($protocol -eq 'File') {
 							$handle = $ps.BeginInvoke()
 							
 							$script:LaneProtocolJobs[$laneNum] = @{
-								PS      = $ps
+								PS	    = $ps
 								Handle  = $handle
 								Started = Get-Date
 							}
@@ -30649,13 +30666,24 @@ public static class NativeWin {
 	$rowHeight = 19
 	$rowCount = 25
 	$gridHeight = ($rowCount * $rowHeight) + 28
-
+	
 	if (-not $script:LaneDbSizeMap) { $script:LaneDbSizeMap = @{ } }
 	if (-not $script:LaneDbSizeJobs) { $script:LaneDbSizeJobs = @{ } }
-if (-not $script:LaneDbSizeRefreshSeconds -or $script:LaneDbSizeRefreshSeconds -lt 5) { $script:LaneDbSizeRefreshSeconds = 5 }
+	if (-not $script:LaneDbSizeRefreshSeconds -or $script:LaneDbSizeRefreshSeconds -lt 5) { $script:LaneDbSizeRefreshSeconds = 5 }
+	if (-not $script:LaneDbSizePool)
+	{
+		$minThreads = 1
+		$maxThreads = [Math]::Max(8, [Environment]::ProcessorCount * 2)
+		$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+		$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($minThreads, $maxThreads, $iss, $Host)
+		try { $pool.ApartmentState = 'MTA' }
+		catch { }
+		$pool.Open()
+		$script:LaneDbSizePool = $pool
+	}
 	if (-not $script:LaneDbSizeWorker)
 	{
-$script:LaneDbSizeWorker = @'
+		$script:LaneDbSizeWorker = @'
 param(
 	[string]$lane,
 	[string]$protocol,
@@ -31057,7 +31085,7 @@ if (($result.Status -ne 'Ready') -and
 [pscustomobject]$result
 '@
 	}
-
+	
 	if (-not $global:ProtocolForm)
 	{
 		$global:ProtocolForm = New-Object System.Windows.Forms.Form
@@ -31093,7 +31121,8 @@ if (($result.Status -ne 'Ready') -and
 		$global:ProtocolGrid.SelectionMode = "FullRowSelect"
 		$global:ProtocolGrid.Font = New-Object System.Drawing.Font("Consolas", 10)
 		$global:ProtocolGrid.Add_CellDoubleClick({
-				param ($sender, $e)
+				param ($sender,
+					$e)
 				if ($e.RowIndex -lt 0) { return }
 				try
 				{
@@ -31149,7 +31178,7 @@ if (($result.Status -ne 'Ready') -and
 					{
 						$st = $script:LaneDbSizeJobs[$laneKey]
 						if (-not $st) { continue }
-
+						
 						$handle = $st.Handle
 						if ($handle -and $handle.IsCompleted)
 						{
@@ -31159,19 +31188,19 @@ if (($result.Status -ne 'Ready') -and
 							catch { $resultList = $null }
 							try { if ($ps) { $ps.Dispose() } }
 							catch { }
-
+							
 							[void]$script:LaneDbSizeJobs.Remove($laneKey)
-
+							
 							$result = $null
 							if ($resultList -and $resultList.Count -ge 1) { $result = $resultList[0] }
-
+							
 							if ($result)
 							{
 								$script:LaneDbSizeMap[$laneKey] = [pscustomobject]@{
-									DataText   = [string]$result.DataText
-									LogText    = [string]$result.LogText
-									Status     = [string]$result.Status
-									OpenPath   = [string]$result.OpenPath
+									DataText = [string]$result.DataText
+									LogText  = [string]$result.LogText
+									Status   = [string]$result.Status
+									OpenPath = [string]$result.OpenPath
 									LastUpdate = Get-Date
 								}
 							}
@@ -31180,7 +31209,7 @@ if (($result.Status -ne 'Ready') -and
 								$script:LaneDbSizeMap[$laneKey] = [pscustomobject]@{
 									DataText   = 'N/A'
 									LogText    = 'N/A'
-									Status     = 'Error'
+									Status	   = 'Error'
 									OpenPath   = $null
 									LastUpdate = Get-Date
 								}
@@ -31188,9 +31217,9 @@ if (($result.Status -ne 'Ready') -and
 						}
 					}
 				}
-
+				
 				if (-not $global:ProtocolForm.Visible) { return }
-
+				
 				# Save scroll & selection BEFORE clearing rows
 				$prevRowCount = $global:ProtocolGrid.Rows.Count
 				$scrollIndex = 0
@@ -31225,7 +31254,7 @@ if (($result.Status -ne 'Ready') -and
 					try { $dbsRootForPopup = [System.IO.Path]::Combine($OfficePath, 'Dbs') }
 					catch { $dbsRootForPopup = $null }
 				}
-
+				
 				$popupMode = [string]$script:ProtocolPopupMode
 				if ([string]::IsNullOrWhiteSpace($popupMode)) { $popupMode = 'Lane' }
 				
@@ -31275,9 +31304,10 @@ if (($result.Status -ne 'Ready') -and
 						elseif (-not ($lastUpdate -is [datetime])) { $needsRefresh = $true }
 						elseif ((($now) - $lastUpdate).TotalSeconds -ge $script:LaneDbSizeRefreshSeconds) { $needsRefresh = $true }
 						
-						if ($needsRefresh -and $script:LaneProtocolPool)
+						if ($needsRefresh -and $script:LaneDbSizePool)
 						{
-							$workerProtocol = if ([string]::IsNullOrWhiteSpace($connStr)) { 'File' } else { 'SQL' }
+							$workerProtocol = if ([string]::IsNullOrWhiteSpace($connStr)) { 'File' }
+							else { 'SQL' }
 							$canRunWorker = $false
 							if ($workerProtocol -eq 'File')
 							{
@@ -31293,7 +31323,7 @@ if (($result.Status -ne 'Ready') -and
 								$script:LaneDbSizeMap[$serverKey] = [pscustomobject]@{
 									DataText   = 'N/A'
 									LogText    = 'N/A'
-									Status     = 'NoConn'
+									Status	   = 'NoConn'
 									OpenPath   = $null
 									LastUpdate = $now
 								}
@@ -31301,22 +31331,22 @@ if (($result.Status -ne 'Ready') -and
 							else
 							{
 								$script:LaneDbSizeMap[$serverKey] = [pscustomobject]@{
-									DataText   = if ($workerProtocol -eq 'File') { 'Scan...' } else { '...' }
-									LogText    = if ($workerProtocol -eq 'File') { 'Scan...' } else { '...' }
-									Status     = 'Pending'
-									OpenPath   = $null
+									DataText = if ($workerProtocol -eq 'File') { 'Scan...' } else { '...' }
+									LogText  = if ($workerProtocol -eq 'File') { 'Scan...' } else { '...' }
+									Status   = 'Pending'
+									OpenPath = $null
 									LastUpdate = $lastUpdate
 								}
 								
 								$ps = [System.Management.Automation.PowerShell]::Create()
-								$ps.RunspacePool = $script:LaneProtocolPool
+								$ps.RunspacePool = $script:LaneDbSizePool
 								$null = $ps.AddScript($script:LaneDbSizeWorker).
-									AddArgument([string]$serverKey).
-									AddArgument([string]$workerProtocol).
-									AddArgument([string]$connStr).
-									AddArgument([string]$env:COMPUTERNAME).
-									AddArgument([string]$dbName).
-									AddArgument([string]$smsStartFallbackPath)
+								AddArgument([string]$serverKey).
+								AddArgument([string]$workerProtocol).
+								AddArgument([string]$connStr).
+								AddArgument([string]$env:COMPUTERNAME).
+								AddArgument([string]$dbName).
+								AddArgument([string]$smsStartFallbackPath)
 								$handle = $ps.BeginInvoke()
 								
 								$script:LaneDbSizeJobs[$serverKey] = @{ PS = $ps; Handle = $handle }
@@ -31342,7 +31372,8 @@ if (($result.Status -ne 'Ready') -and
 					$global:ProtocolGrid.Rows[$r].Cells[1].Value = $proto
 					$global:ProtocolGrid.Rows[$r].Cells[2].Value = $dataText
 					$global:ProtocolGrid.Rows[$r].Cells[3].Value = $logText
-					try { $global:ProtocolGrid.Rows[$r].Tag = [string]$sizeEntry.OpenPath } catch { }
+					try { $global:ProtocolGrid.Rows[$r].Tag = [string]$sizeEntry.OpenPath }
+					catch { }
 				}
 				else
 				{
@@ -31357,7 +31388,7 @@ if (($result.Status -ne 'Ready') -and
 					{
 						# Only numeric 3-digit lanes (LaneProtocols can also contain machine-name keys)
 						$laneKeys = @($map.Keys | Where-Object { "$_" -match '^\d{3}$' } | Sort-Object { [int]$_ })
-	
+						
 						$laneDbInfoMap = $script:FunctionResults['LaneDatabaseInfo']
 						$now = Get-Date
 						
@@ -31376,7 +31407,7 @@ if (($result.Status -ne 'Ready') -and
 								}
 								catch { }
 							}
-	
+							
 							$dbInfo = $null
 							try
 							{
@@ -31386,13 +31417,13 @@ if (($result.Status -ne 'Ready') -and
 								}
 							}
 							catch { }
-	
+							
 							if (-not $dbInfo)
 							{
 								try { $dbInfo = Get_All_Lanes_Database_Info -LaneNumber $ln }
 								catch { $dbInfo = $null }
 							}
-	
+							
 							$dbName = $null
 							$connStr = $null
 							$smsStartFallbackPath = $null
@@ -31424,30 +31455,30 @@ if (($result.Status -ne 'Ready') -and
 								try { $smsStartFallbackPath = ("\\{0}\storeman\office\dbs\INFO_{1}{2}_SMSStart.ini" -f $machineName, $storeNumberForPopup, $ln) }
 								catch { $smsStartFallbackPath = $null }
 							}
-	
+							
 							if (-not ($script:LaneDbSizeJobs.ContainsKey($ln)))
 							{
 								$sizeEntry = $script:LaneDbSizeMap[$ln]
 								$lastUpdate = $null
 								try { $lastUpdate = $sizeEntry.LastUpdate }
 								catch { $lastUpdate = $null }
-	
+								
 								$needsRefresh = $false
 								if (-not $sizeEntry) { $needsRefresh = $true }
 								elseif (-not ($lastUpdate -is [datetime])) { $needsRefresh = $true }
 								elseif ((($now) - $lastUpdate).TotalSeconds -ge $script:LaneDbSizeRefreshSeconds) { $needsRefresh = $true }
-	
+								
 								if ($proto -eq 'Offline')
 								{
 									$script:LaneDbSizeMap[$ln] = [pscustomobject]@{
 										DataText   = 'Offline'
 										LogText    = 'Offline'
-										Status     = 'Offline'
+										Status	   = 'Offline'
 										OpenPath   = $null
 										LastUpdate = $now
 									}
 								}
-								elseif ($needsRefresh -and $script:LaneProtocolPool)
+								elseif ($needsRefresh -and $script:LaneDbSizePool)
 								{
 									$canRunWorker = $false
 									if ($proto -eq 'File')
@@ -31458,13 +31489,13 @@ if (($result.Status -ne 'Ready') -and
 									{
 										$canRunWorker = -not [string]::IsNullOrWhiteSpace($connStr)
 									}
-	
+									
 									if (-not $canRunWorker)
 									{
 										$script:LaneDbSizeMap[$ln] = [pscustomobject]@{
 											DataText   = 'N/A'
 											LogText    = 'N/A'
-											Status     = 'NoConn'
+											Status	   = 'NoConn'
 											OpenPath   = $null
 											LastUpdate = $now
 										}
@@ -31472,29 +31503,29 @@ if (($result.Status -ne 'Ready') -and
 									else
 									{
 										$script:LaneDbSizeMap[$ln] = [pscustomobject]@{
-											DataText   = if ($proto -eq 'File') { 'Scan...' } else { '...' }
-											LogText    = if ($proto -eq 'File') { 'Scan...' } else { '...' }
-											Status     = 'Pending'
-											OpenPath   = $null
+											DataText = if ($proto -eq 'File') { 'Scan...' } else { '...' }
+											LogText  = if ($proto -eq 'File') { 'Scan...' } else { '...' }
+											Status   = 'Pending'
+											OpenPath = $null
 											LastUpdate = $lastUpdate
 										}
-	
+										
 										$ps = [System.Management.Automation.PowerShell]::Create()
-										$ps.RunspacePool = $script:LaneProtocolPool
+										$ps.RunspacePool = $script:LaneDbSizePool
 										$null = $ps.AddScript($script:LaneDbSizeWorker).
-											AddArgument([string]$ln).
-											AddArgument([string]$proto).
-											AddArgument([string]$connStr).
-											AddArgument([string]$machineName).
-											AddArgument([string]$dbName).
-											AddArgument([string]$smsStartFallbackPath)
+										AddArgument([string]$ln).
+										AddArgument([string]$proto).
+										AddArgument([string]$connStr).
+										AddArgument([string]$machineName).
+										AddArgument([string]$dbName).
+										AddArgument([string]$smsStartFallbackPath)
 										$handle = $ps.BeginInvoke()
-	
+										
 										$script:LaneDbSizeJobs[$ln] = @{ PS = $ps; Handle = $handle }
 									}
 								}
 							}
-	
+							
 							$sizeEntry = $script:LaneDbSizeMap[$ln]
 							$dataText = '...'
 							$logText = '...'
@@ -31513,7 +31544,8 @@ if (($result.Status -ne 'Ready') -and
 							$global:ProtocolGrid.Rows[$r].Cells[1].Value = $proto
 							$global:ProtocolGrid.Rows[$r].Cells[2].Value = $dataText
 							$global:ProtocolGrid.Rows[$r].Cells[3].Value = $logText
-							try { $global:ProtocolGrid.Rows[$r].Tag = [string]$sizeEntry.OpenPath } catch { }
+							try { $global:ProtocolGrid.Rows[$r].Tag = [string]$sizeEntry.OpenPath }
+							catch { }
 						}
 						
 						# Optional: rebuild $script:ProtocolResults so any other old code keeps working
@@ -31527,7 +31559,8 @@ if (($result.Status -ne 'Ready') -and
 				}
 				
 				# Column widths (Lane/Protocol fixed, DB/Log fill; account for scrollbar)
-				$col0Width = if ($popupMode -eq 'Server') { 180 } else { 130 }
+				$col0Width = if ($popupMode -eq 'Server') { 180 }
+				else { 130 }
 				$col1Width = 90
 				$global:ProtocolGrid.Columns[0].Width = $col0Width
 				$global:ProtocolGrid.Columns[1].Width = $col1Width
@@ -31545,7 +31578,7 @@ if (($result.Status -ne 'Ready') -and
 				if ($logWidth -lt 90) { $logWidth = 90 }
 				$global:ProtocolGrid.Columns[2].Width = $dbWidth
 				$global:ProtocolGrid.Columns[3].Width = $logWidth
-
+				
 				if ($global:ProtocolGrid.Columns[2].Width + $global:ProtocolGrid.Columns[3].Width -gt $remainingWidth)
 				{
 					$global:ProtocolGrid.Columns[3].Width = [math]::Max(90, $remainingWidth - $global:ProtocolGrid.Columns[2].Width)
@@ -31629,11 +31662,11 @@ if (($result.Status -ne 'Ready') -and
 			try
 			{
 				Get-ChildItem -LiteralPath $TempDir -File -ErrorAction SilentlyContinue |
-					Where-Object { $_.Name -like '*.sqi' -or $_.Name -like '*.sql' } |
-					ForEach-Object {
-						try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
-						catch { }
-					}
+				Where-Object { $_.Name -like '*.sqi' -or $_.Name -like '*.sql' } |
+				ForEach-Object {
+					try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+					catch { }
+				}
 			}
 			catch { }
 			return
@@ -31708,7 +31741,7 @@ if (($result.Status -ne 'Ready') -and
 				}
 			}
 			catch { }
-
+			
 			try
 			{
 				if ($script:LaneProtocolPool)
@@ -31718,6 +31751,19 @@ if (($result.Status -ne 'Ready') -and
 					try { $script:LaneProtocolPool.Dispose() }
 					catch { }
 					$script:LaneProtocolPool = $null
+				}
+			}
+			catch { }
+
+			try
+			{
+				if ($script:LaneDbSizePool)
+				{
+					try { $script:LaneDbSizePool.Close() }
+					catch { }
+					try { $script:LaneDbSizePool.Dispose() }
+					catch { }
+					$script:LaneDbSizePool = $null
 				}
 			}
 			catch { }
@@ -32117,7 +32163,7 @@ if (($result.Status -ne 'Ready') -and
 				{
 					if ([System.Windows.Forms.Application]::OpenForms.Count -le 1 -and $script:StyledPopupForms.Count -eq 0) { return }
 					
-					$activeHashes = @{}
+					$activeHashes = @{ }
 					foreach ($openForm in [System.Windows.Forms.Application]::OpenForms)
 					{
 						if (-not $openForm -or $openForm.IsDisposed) { continue }
@@ -33155,102 +33201,106 @@ Start_Lane_Protocol_Jobs -LaneNumToMachineName $LaneNumToMachineName -SqlModuleN
 
 $form.Add_Shown({
 		if ($script:StartupWarmupStarted) { return }
-	$script:StartupWarmupStarted = $true
-	$script:StartupWarmupIndex = 0
-	$script:StartupWarmupSteps = @()
-	$script:StartupScaleCredStarted = $false
-	
-	try
-	{
-		if ($script:StartupScaleCredTimer)
+		$script:StartupWarmupStarted = $true
+		$script:StartupWarmupIndex = 0
+		$script:StartupWarmupSteps = @()
+		$script:StartupScaleCredStarted = $false
+		
+		try
 		{
-			$script:StartupScaleCredTimer.Stop()
-			$script:StartupScaleCredTimer.Dispose()
-			$script:StartupScaleCredTimer = $null
+			if ($script:StartupScaleCredTimer)
+			{
+				$script:StartupScaleCredTimer.Stop()
+				$script:StartupScaleCredTimer.Dispose()
+				$script:StartupScaleCredTimer = $null
+			}
 		}
-	}
-	catch { }
-	
-	$script:StartupScaleCredTimer = New-Object System.Windows.Forms.Timer
-	$script:StartupScaleCredTimer.Interval = 250
-	$script:StartupScaleCredTimer.Add_Tick({
-			try
-			{
-				if ($script:StartupScaleCredTimer)
-				{
-					$script:StartupScaleCredTimer.Stop()
-					$script:StartupScaleCredTimer.Dispose()
-					$script:StartupScaleCredTimer = $null
-				}
-			}
-			catch { }
-			
-			if ($script:StartupScaleCredStarted) { return }
-			
-			try
-			{
-				$windowsScales = $script:FunctionResults['WindowsScales']
-				if ($windowsScales -and $windowsScales.Count -gt 0)
-				{
-					Add_Scale_Credentials -ScaleCodeToIPInfo $windowsScales
-				}
-				$script:StartupScaleCredStarted = $true
-			}
-			catch { }
-		})
-	try { $script:StartupScaleCredTimer.Start() }
-	catch { }
-	
-	if ($script:UseCachedCoreStartup)
-	{
-		$script:StartupWarmupSteps += [pscustomobject]@{
-			Label  = 'Refreshing store info...'
-			Action = {
+		catch { }
+		
+		$script:StartupScaleCredTimer = New-Object System.Windows.Forms.Timer
+		$script:StartupScaleCredTimer.Interval = 250
+		$script:StartupScaleCredTimer.Add_Tick({
 				try
 				{
-					Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath -RefreshCache
-					$script:StoreNumber = $script:FunctionResults['StoreNumber']
-					$script:StoreName = $script:FunctionResults['StoreName']
-					$script:SqlModuleName = $script:FunctionResults['SqlModuleName']
-					$StoreNumber = $script:StoreNumber
-					$StoreName = $script:StoreName
-					$SqlModuleName = $script:SqlModuleName
+					if ($script:StartupScaleCredTimer)
+					{
+						$script:StartupScaleCredTimer.Stop()
+						$script:StartupScaleCredTimer.Dispose()
+						$script:StartupScaleCredTimer = $null
+					}
 				}
 				catch { }
-			}
-		}
-		$script:StartupWarmupSteps += [pscustomobject]@{
-			Label  = 'Refreshing node discovery...'
-			Action = {
+				
+				if ($script:StartupScaleCredStarted) { return }
+				
 				try
 				{
-					Retrieve_Nodes -StoreNumber $script:StoreNumber -RefreshCache | Out-Null
-					$script:Nodes = $script:FunctionResults['Nodes']
-					$script:LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-					$Nodes = $script:Nodes
-					$LaneNumToMachineName = $script:LaneNumToMachineName
-					Start_Lane_Protocol_Jobs -LaneNumToMachineName $script:LaneNumToMachineName -SqlModuleName $script:SqlModuleName
+					$windowsScales = $script:FunctionResults['WindowsScales']
+					if ($windowsScales -and $windowsScales.Count -gt 0)
+					{
+						Add_Scale_Credentials -ScaleCodeToIPInfo $windowsScales
+					}
+					$script:StartupScaleCredStarted = $true
 				}
 				catch { }
+			})
+		try { $script:StartupScaleCredTimer.Start() }
+		catch { }
+		
+		if ($script:UseCachedCoreStartup)
+		{
+			$script:StartupWarmupSteps += [pscustomobject]@{
+				Label  = 'Refreshing store info...'
+				Action = {
+					try
+					{
+						Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath -RefreshCache
+						$script:StoreNumber = $script:FunctionResults['StoreNumber']
+						$script:StoreName = $script:FunctionResults['StoreName']
+						$script:SqlModuleName = $script:FunctionResults['SqlModuleName']
+						$StoreNumber = $script:StoreNumber
+						$StoreName = $script:StoreName
+						$SqlModuleName = $script:SqlModuleName
+					}
+					catch { }
+				}
+			}
+			$script:StartupWarmupSteps += [pscustomobject]@{
+				Label  = 'Refreshing node discovery...'
+				Action = {
+					try
+					{
+						Retrieve_Nodes -StoreNumber $script:StoreNumber -RefreshCache | Out-Null
+						$script:Nodes = $script:FunctionResults['Nodes']
+						$script:LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+						$Nodes = $script:Nodes
+						$LaneNumToMachineName = $script:LaneNumToMachineName
+						Start_Lane_Protocol_Jobs -LaneNumToMachineName $script:LaneNumToMachineName -SqlModuleName $script:SqlModuleName
+					}
+					catch { }
+				}
 			}
 		}
-	}
-	$script:StartupWarmupSteps += @(
+		$script:StartupWarmupSteps += @(
 			[pscustomobject]@{
 				Label  = 'Loading lane DB cache...'
-				Action = { try { Get_All_Lanes_Database_Info -RefreshCache | Out-Null } catch { } }
+				Action = { try { Get_All_Lanes_Database_Info -RefreshCache | Out-Null }
+					catch { } }
 			},
 			[pscustomobject]@{
 				Label  = 'Loading table aliases...'
-				Action = { try { $script:AliasToTable = Get_Table_Aliases -RefreshCache } catch { } }
+				Action = { try { $script:AliasToTable = Get_Table_Aliases -RefreshCache }
+					catch { } }
 			},
 			[pscustomobject]@{
 				Label  = 'Generating SQL scripts...'
-				Action = { try { Generate_SQL_Scripts -StoreNumber $StoreNumber } catch { } }
+				Action = { try { Generate_SQL_Scripts -StoreNumber $StoreNumber }
+					catch { } }
 			},
 			[pscustomobject]@{
 				Label  = 'Installing SMS functions...'
-				Action = { try { Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath -Silent } catch { } }
+				Action = { try { Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath -Silent }
+					catch { } }
 			},
 			[pscustomobject]@{
 				Label  = 'Starting test item job...'
@@ -33258,8 +33308,8 @@ $form.Add_Shown({
 					try
 					{
 						Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue |
-							Where-Object { $_.State -in @('Completed', 'Failed', 'Stopped') } |
-							Remove-Job -Force -ErrorAction SilentlyContinue
+						Where-Object { $_.State -in @('Completed', 'Failed', 'Stopped') } |
+						Remove-Job -Force -ErrorAction SilentlyContinue
 						
 						$runningInsertJob = Get-Job -Name 'InsertTestItemJob' -State Running -ErrorAction SilentlyContinue | Select-Object -First 1
 						if (-not $runningInsertJob)
@@ -33281,8 +33331,8 @@ $form.Add_Shown({
 								
 								$script:FunctionResults = @{
 									ConnectionString = $ConnectionString
-									DBSERVER         = $DbServer
-									DBNAME           = $DbName
+									DBSERVER		 = $DbServer
+									DBNAME		     = $DbName
 									SqlModuleName    = $SqlModule
 								}
 								
@@ -33310,7 +33360,8 @@ $form.Add_Shown({
 			},
 			[pscustomobject]@{
 				Label  = 'Cleaning XE folder...'
-				Action = { try { $script:ClearXEJob = Clear_XE_Folder } catch { } }
+				Action = { try { $script:ClearXEJob = Clear_XE_Folder }
+					catch { } }
 			},
 			[pscustomobject]@{
 				Label  = 'Preparing VNC exports...'
@@ -33390,7 +33441,8 @@ $form.Add_Shown({
 				$step = $script:StartupWarmupSteps[$script:StartupWarmupIndex]
 				$script:StartupWarmupIndex++
 				
-				try { $script:StartupWarmupStatus = if ($step -and $step.Label) { [string]$step.Label } else { $null } }
+				try { $script:StartupWarmupStatus = if ($step -and $step.Label) { [string]$step.Label }
+					else { $null } }
 				catch { $script:StartupWarmupStatus = $null }
 				
 				try { if ($step -and $step.Action) { & $step.Action } }
