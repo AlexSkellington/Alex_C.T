@@ -115,8 +115,8 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.6.6"
-$VersionDate = "2026-04-03"
+$VersionNumber = "2.6.7"
+$VersionDate = "2026-04-15"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -585,6 +585,82 @@ $script:LocalHost = $env:COMPUTERNAME
 #   Detect -ConnectionString support ONCE (run at top of script, before any SQL commands)
 # ===================================================================================================
 $script:SqlcmdSupportsConnectionString = $null
+
+function Normalize_Sql_ConnectionString
+{
+	param (
+		[Parameter(Mandatory = $false)]
+		$RawConnectionString,
+		[string]$Server,
+		[string]$Database,
+		[string]$SqlUser,
+		[string]$SqlPwd
+	)
+
+	$connStr = $null
+	try
+	{
+		if ($RawConnectionString -is [hashtable] -and $RawConnectionString.ContainsKey('ConnectionString'))
+		{
+			$connStr = [string]$RawConnectionString['ConnectionString']
+		}
+		elseif ($null -ne $RawConnectionString -and $RawConnectionString.PSObject -and $RawConnectionString.PSObject.Properties['ConnectionString'])
+		{
+			$connStr = [string]$RawConnectionString.ConnectionString
+		}
+		else
+		{
+			$connStr = [string]$RawConnectionString
+		}
+	}
+	catch
+	{
+		try { $connStr = [string]$RawConnectionString } catch { $connStr = $null }
+	}
+
+	if (-not [string]::IsNullOrWhiteSpace($connStr))
+	{
+		$connStr = $connStr.Trim().Trim('"')
+		if ($connStr -match '^\s*ConnectionString\s*=\s*(.+?)\s*$')
+		{
+			$connStr = $matches[1].Trim()
+		}
+	}
+
+	if ([string]::IsNullOrWhiteSpace($connStr) -or $connStr -eq 'N/A' -or $connStr -eq 'System.Collections.Hashtable')
+	{
+		$connStr = $null
+	}
+
+	if (-not $connStr -and -not [string]::IsNullOrWhiteSpace($Server) -and -not [string]::IsNullOrWhiteSpace($Database))
+	{
+		if (-not [string]::IsNullOrWhiteSpace($SqlUser) -and -not [string]::IsNullOrWhiteSpace($SqlPwd))
+		{
+			$connStr = "Server=$Server;Database=$Database;User ID=$SqlUser;Password=$SqlPwd;TrustServerCertificate=True;"
+		}
+		else
+		{
+			$connStr = "Server=$Server;Database=$Database;Integrated Security=SSPI;TrustServerCertificate=True;"
+		}
+	}
+
+	if (-not [string]::IsNullOrWhiteSpace($connStr))
+	{
+		try
+		{
+			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+			$csb.ConnectionString = $connStr
+			if (-not $csb.ContainsKey('TrustServerCertificate'))
+			{
+				$csb['TrustServerCertificate'] = 'True'
+			}
+			$connStr = $csb.ConnectionString
+		}
+		catch { }
+	}
+
+	return $connStr
+}
 
 # ---------------------------------------------------------------------------------------------------
 # Add C# MailSlotSender Type for Direct Windows Mailslot Messaging (if not already loaded)
@@ -4320,19 +4396,18 @@ function Retrieve_Nodes
 		catch { }
 	}
 	
-	$ConnectionString = $script:FunctionResults['ConnectionString']
-	$NodesFromDatabase = $false
-	$SqlModule = $script:FunctionResults['SqlModuleName']
 	$server = $script:FunctionResults['DBSERVER']
 	$database = $script:FunctionResults['DBNAME']
+	$ConnectionString = Normalize_Sql_ConnectionString -RawConnectionString $script:FunctionResults['ConnectionString'] -Server $server -Database $database -SqlUser $script:FunctionResults['SQL_UserID'] -SqlPwd $script:FunctionResults['SQL_UserPwd']
+	$NodesFromDatabase = $false
+	$SqlModule = $script:FunctionResults['SqlModuleName']
 	
 	# ====================================================================================
 	# DETECT SQL MODULE
 	# ====================================================================================
 	if (-not $SqlModule -or $SqlModule -eq 'None')
 	{
-		Write_Log "No SQL PowerShell module found! Cannot query database for node info." "red"
-		$ConnectionString = $null
+		Write_Log "No SQL PowerShell module found. Using .NET SqlClient fallback for node info." "yellow"
 	}
 	
 	# ====================================================================================
@@ -4340,7 +4415,12 @@ function Retrieve_Nodes
 	# ====================================================================================
 	if ($ConnectionString)
 	{
-		$invokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModule -ErrorAction SilentlyContinue
+		try
+		{
+			if ($SqlModule -and $SqlModule -ne 'None') { Import-Module $SqlModule -ErrorAction SilentlyContinue | Out-Null }
+		}
+		catch { }
+		$invokeSqlCmd = Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue
 		$supportsConnStr = $false
 		$supportsConnTimeout = $false
 		$startupQueryTimeoutSeconds = 10
@@ -4348,8 +4428,46 @@ function Retrieve_Nodes
 		$startupConnectionString = $ConnectionString
 		if ($invokeSqlCmd) { $supportsConnStr = $invokeSqlCmd.Parameters.ContainsKey('ConnectionString') }
 		if ($invokeSqlCmd) { $supportsConnTimeout = $invokeSqlCmd.Parameters.ContainsKey('ConnectionTimeout') }
-		else { Write_Log "Invoke-Sqlcmd command not found in module $SqlModule." "yellow" }
+		else { Write_Log "Invoke-Sqlcmd command not found in module $SqlModule. Using .NET SqlClient fallback." "yellow" }
 		
+		$invokeStartupQuery = {
+			param(
+				[string]$Query,
+				[int]$QueryTimeout = 10
+			)
+
+			if ($invokeSqlCmd)
+			{
+				if ($supportsConnStr)
+				{
+					return (& $invokeSqlCmd -ConnectionString $startupConnectionString -Query $Query -QueryTimeout $QueryTimeout -ErrorAction Stop)
+				}
+				if ($supportsConnTimeout)
+				{
+					return (& $invokeSqlCmd -ServerInstance $server -Database $database -Query $Query -QueryTimeout $QueryTimeout -ConnectionTimeout $startupConnectionTimeoutSeconds -ErrorAction Stop)
+				}
+				return (& $invokeSqlCmd -ServerInstance $server -Database $database -Query $Query -QueryTimeout $QueryTimeout -ErrorAction Stop)
+			}
+
+			$dt = New-Object System.Data.DataTable
+			$cn = New-Object System.Data.SqlClient.SqlConnection $startupConnectionString
+			try
+			{
+				$cn.Open()
+				$cmd = $cn.CreateCommand()
+				$cmd.CommandText = $Query
+				$cmd.CommandTimeout = $QueryTimeout
+				$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
+				[void]$da.Fill($dt)
+			}
+			finally
+			{
+				try { if ($cn) { $cn.Close() } } catch { }
+				try { if ($cn) { $cn.Dispose() } } catch { }
+			}
+			return $dt
+		}
+
 		if ($supportsConnStr -and -not [string]::IsNullOrWhiteSpace($startupConnectionString))
 		{
 			try
@@ -4375,21 +4493,7 @@ SELECT F1057, F1058, F1125, F1169
 FROM TER_TAB
 WHERE F1056 = '$StoreNumber'
 "@
-			if ($supportsConnStr)
-			{
-				$terTabResult = & $invokeSqlCmd -ConnectionString $startupConnectionString -Query $queryTerTab -QueryTimeout $startupQueryTimeoutSeconds -ErrorAction Stop
-			}
-			else
-			{
-				if ($supportsConnTimeout)
-				{
-					$terTabResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTerTab -QueryTimeout $startupQueryTimeoutSeconds -ConnectionTimeout $startupConnectionTimeoutSeconds -ErrorAction Stop
-				}
-				else
-				{
-					$terTabResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTerTab -QueryTimeout $startupQueryTimeoutSeconds -ErrorAction Stop
-				}
-			}
+			$terTabResult = & $invokeStartupQuery $queryTerTab $startupQueryTimeoutSeconds
 			
 			foreach ($row in $terTabResult)
 			{
@@ -4482,21 +4586,7 @@ WHERE Active = 'Y'
 "@
 			try
 			{
-				if ($supportsConnStr)
-				{
-					$tbsSclScalesResult = & $invokeSqlCmd -ConnectionString $startupConnectionString -Query $queryTbsSclScales -QueryTimeout $startupQueryTimeoutSeconds -ErrorAction Stop
-				}
-				else
-				{
-					if ($supportsConnTimeout)
-					{
-						$tbsSclScalesResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTbsSclScales -QueryTimeout $startupQueryTimeoutSeconds -ConnectionTimeout $startupConnectionTimeoutSeconds -ErrorAction Stop
-					}
-					else
-					{
-						$tbsSclScalesResult = & $invokeSqlCmd -ServerInstance $server -Database $database -Query $queryTbsSclScales -QueryTimeout $startupQueryTimeoutSeconds -ErrorAction Stop
-					}
-				}
+				$tbsSclScalesResult = & $invokeStartupQuery $queryTbsSclScales $startupQueryTimeoutSeconds
 			}
 			catch
 			{
@@ -17023,8 +17113,8 @@ function Edit_TBS_SCL_ver520_Table
 	# ----------------------------------------------------------------------------------------------
 	$server = $script:FunctionResults['DBSERVER']
 	$database = $script:FunctionResults['DBNAME']
-	$connectionString = $script:FunctionResults['ConnectionString']
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
+	$connectionString = Normalize_Sql_ConnectionString -RawConnectionString $script:FunctionResults['ConnectionString'] -Server $server -Database $database -SqlUser $script:FunctionResults['SQL_UserID'] -SqlPwd $script:FunctionResults['SQL_UserPwd']
 	
 	if (-not $server -or -not $database)
 	{
@@ -17034,22 +17124,10 @@ function Edit_TBS_SCL_ver520_Table
 	
 	if (-not $connectionString)
 	{
-		$sqlUser = $script:FunctionResults['SQL_UserID']
-		$sqlPwd = $script:FunctionResults['SQL_UserPwd']
-		if ($sqlUser -and $sqlPwd)
-		{
-			# CHANGE: Build SQL Auth connection string inline (no helper).
-			$connectionString = "Server=$server;Database=$database;User ID=$sqlUser;Password=$sqlPwd;TrustServerCertificate=True;"
-			Write_Log "Built SQL Authentication connection string from cached credentials." "cyan"
-		}
-		else
-		{
-			# CHANGE: Build Integrated Security connection string inline (no helper).
-			$connectionString = "Server=$server;Database=$database;Integrated Security=SSPI;TrustServerCertificate=True;"
-			Write_Log "Built Integrated Security connection string (no SQL creds found)." "cyan"
-		}
-		$script:FunctionResults['ConnectionString'] = $connectionString
+		Write_Log "Unable to build a valid SQL connection string from cached values." "red"
+		return
 	}
+	$script:FunctionResults['ConnectionString'] = $connectionString
 	
 	# ----------------------------------------------------------------------------------------------
 	# 2) Pick SQL runner (Invoke-Sqlcmd if available, else .NET SqlClient)
