@@ -28257,6 +28257,50 @@ if ($protocol -eq 'File') {
 	
 	# ---------- cadence ----------
 	if (-not $script:LaneProtocolLastRun) { $script:LaneProtocolLastRun = (Get-Date).AddYears(-10) }
+
+	$normalizeLaneProtocolTimestamp = {
+		param($Value)
+
+		if ($null -eq $Value) { return $null }
+
+		try
+		{
+			if ($Value -is [datetime]) { return [datetime]$Value }
+		}
+		catch { }
+
+		try
+		{
+			if ($Value -is [datetimeoffset]) { return ([datetimeoffset]$Value).LocalDateTime }
+		}
+		catch { }
+
+		try
+		{
+			if ($Value -is [string])
+			{
+				$text = [string]$Value
+				if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+
+				$parsed = [datetime]::MinValue
+				if ([datetime]::TryParse($text, [ref]$parsed))
+				{
+					return $parsed
+				}
+
+				return $null
+			}
+		}
+		catch { }
+
+		try
+		{
+			return [datetime]$Value
+		}
+		catch { }
+
+		return $null
+	}.GetNewClosure()
 	
 	$getNextLaneSqlEnableRunDate = {
 		$scheduledDate = Get-Date
@@ -28483,8 +28527,20 @@ if (`$ok) { exit 0 } else { exit 1 }
 					$st = $script:LaneProtocolJobs[$laneKey]
 					if (-not $st) { continue }
 					
-					$started = $st.Started
-					if ($started -and (((Get-Date) - $started).TotalSeconds -ge $script:LaneProtocolJobTimeoutSeconds))
+					$startedRaw = $st.Started
+					$started = & $normalizeLaneProtocolTimestamp $startedRaw
+					$jobTimedOut = $false
+					if ($started)
+					{
+						try { $jobTimedOut = (((Get-Date) - $started).TotalSeconds -ge $script:LaneProtocolJobTimeoutSeconds) }
+						catch { $jobTimedOut = $true }
+					}
+					elseif ($null -ne $startedRaw)
+					{
+						$jobTimedOut = $true
+					}
+
+					if ($jobTimedOut)
 					{
 						$laneNum = (($laneKey -replace '[^\d]', '')).PadLeft(3, '0')
 						if ([string]::IsNullOrWhiteSpace($laneNum)) { $laneNum = $laneKey }
@@ -28575,8 +28631,20 @@ if (`$ok) { exit 0 } else { exit 1 }
 					if (-not $st) { continue }
 					if ($st.Handle -and $st.Handle.IsCompleted) { continue }
 					
-					$started = $st.Started
-					if ($started -and (((Get-Date) - $started).TotalSeconds -ge $script:LaneProtocolJobTimeoutSeconds))
+					$startedRaw = $st.Started
+					$started = & $normalizeLaneProtocolTimestamp $startedRaw
+					$jobTimedOut = $false
+					if ($started)
+					{
+						try { $jobTimedOut = (((Get-Date) - $started).TotalSeconds -ge $script:LaneProtocolJobTimeoutSeconds) }
+						catch { $jobTimedOut = $true }
+					}
+					elseif ($null -ne $startedRaw)
+					{
+						$jobTimedOut = $true
+					}
+
+					if ($jobTimedOut)
 					{
 						$staleLaneKeys += $laneKey
 					}
@@ -28632,8 +28700,26 @@ if (`$ok) { exit 0 } else { exit 1 }
 			# 3) start a new scan every 60s ONLY if no jobs running
 			if ($script:LaneProtocolJobs.Count -eq 0)
 			{
-				$age = (Get-Date) - $script:LaneProtocolLastRun
-				if ($age.TotalSeconds -ge 60)
+				$lastRun = & $normalizeLaneProtocolTimestamp $script:LaneProtocolLastRun
+				if (-not $lastRun)
+				{
+					$lastRun = (Get-Date).AddYears(-10)
+					$script:LaneProtocolLastRun = $lastRun
+				}
+				elseif (-not ($script:LaneProtocolLastRun -is [datetime]))
+				{
+					$script:LaneProtocolLastRun = $lastRun
+				}
+
+				$ageSeconds = [double]::PositiveInfinity
+				try { $ageSeconds = ((Get-Date) - $lastRun).TotalSeconds }
+				catch
+				{
+					$script:LaneProtocolLastRun = (Get-Date).AddYears(-10)
+					$ageSeconds = [double]::PositiveInfinity
+				}
+
+				if ($ageSeconds -ge 60)
 				{
 					$script:LaneProtocolLastRun = Get-Date
 					
