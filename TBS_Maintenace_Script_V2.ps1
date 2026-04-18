@@ -88,6 +88,63 @@ if (-not $__isSavedPs1Launch)
 
 $__isInlineLikeLaunch = (-not $__isSavedPs1Launch -and -not $__isExeLaunch)
 $script:ShowConsole = [bool](@($__launchArgs | Where-Object { $_ -in @('-ShowConsole', '/ShowConsole', '-KeepConsole', '/KeepConsole') }).Count -gt 0)
+$script:LaneSqlEnableWorkerMode = $false
+$script:LaneSqlEnableWorkerLane = $null
+$script:LaneSqlEnableWorkerMachine = $null
+$script:LaneSqlEnableWorkerTcpPort = '1433'
+$script:LaneSqlEnableWorkerStartTime = '04:15'
+
+if ($__launchArgs -and $__launchArgs.Count -gt 0)
+{
+	for ($__argIndex = 0; $__argIndex -lt $__launchArgs.Count; $__argIndex++)
+	{
+		$__argValue = [string]$__launchArgs[$__argIndex]
+		switch -Regex ($__argValue)
+		{
+			'^-LaneSqlEnableWorker$'
+			{
+				$script:LaneSqlEnableWorkerMode = $true
+				continue
+			}
+			'^-LaneSqlEnableWorkerLane$'
+			{
+				if (($__argIndex + 1) -lt $__launchArgs.Count)
+				{
+					$script:LaneSqlEnableWorkerLane = [string]$__launchArgs[$__argIndex + 1]
+					$__argIndex++
+				}
+				continue
+			}
+			'^-LaneSqlEnableWorkerMachine$'
+			{
+				if (($__argIndex + 1) -lt $__launchArgs.Count)
+				{
+					$script:LaneSqlEnableWorkerMachine = [string]$__launchArgs[$__argIndex + 1]
+					$__argIndex++
+				}
+				continue
+			}
+			'^-LaneSqlEnableWorkerTcpPort$'
+			{
+				if (($__argIndex + 1) -lt $__launchArgs.Count)
+				{
+					$script:LaneSqlEnableWorkerTcpPort = [string]$__launchArgs[$__argIndex + 1]
+					$__argIndex++
+				}
+				continue
+			}
+			'^-LaneSqlEnableWorkerStartTime$'
+			{
+				if (($__argIndex + 1) -lt $__launchArgs.Count)
+				{
+					$script:LaneSqlEnableWorkerStartTime = [string]$__launchArgs[$__argIndex + 1]
+					$__argIndex++
+				}
+				continue
+			}
+		}
+	}
+}
 
 if (-not ([System.Management.Automation.PSTypeName]'ConsoleWindowHelper').Type)
 {
@@ -246,7 +303,7 @@ if (-not $isSavedPs1Launch -and -not $isExeLaunch)
 
 # Only attempt self-relaunch when this is a real saved, interactive .ps1 or packaged .exe launch.
 # If the script was started from irm|iex or some other host/launcher, leave execution alone.
-if (-not $IsAdmin -and [Environment]::UserInteractive -and ($isSavedPs1Launch -or $isExeLaunch))
+if (-not $IsAdmin -and -not $script:LaneSqlEnableWorkerMode -and [Environment]::UserInteractive -and ($isSavedPs1Launch -or $isExeLaunch))
 {
 	if ($script:ShowConsole) { Write-Host "Requesting elevated launch..." -ForegroundColor DarkYellow }
 	try
@@ -1832,6 +1889,7 @@ function Write_Log
 		# last-resort: silent failure
 	}
 }
+
 
 # ===================================================================================================
 #                               FUNCTION: Get_Store_And_Database_Info
@@ -20223,7 +20281,7 @@ function Remove_Archive_Bit
 	# ---------------------------
 	# NO-PROMPT "always sensing" poll interval (seconds)
 	# ---------------------------
-	$AutoPollSeconds = 5
+	$AutoPollSeconds = 3
 	
 	# ------------------------------------------------------------------------------------------------
 	# Validate required context
@@ -20616,7 +20674,7 @@ catch { exit 3 }
 `$TerFile         = [string]`$cfg.TerFileLocal
 `$LogsDir         = [string]`$cfg.LogsDir
 `$AutoPollSeconds = [int]`$cfg.AutoPollSeconds
-if (`$AutoPollSeconds -lt 1) { `$AutoPollSeconds = 5 }
+if (`$AutoPollSeconds -lt 1) { `$AutoPollSeconds = 3 }
 
 # --- Resolve OfficePath locally again (defensive) ---
 try {
@@ -20664,31 +20722,17 @@ try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Ter_Load local: {1}" -f 
 `$terWatcher = `$null
 `$needRebuild = `$true
 
-`$onFsEvent = {
-	try {
-		`$p = `$Event.SourceEventArgs.FullPath
-		if ([string]::IsNullOrWhiteSpace(`$p)) { return }
-		`$p2 = `$p.Trim().Trim('"')
-
-		if (Test-Path -LiteralPath `$p2 -PathType Container) {
-			`$cmd = 'attrib -a -r "{0}\*" /S /D' -f `$p2
-		} else {
-			`$cmd = 'attrib -a -r "{0}"' -f `$p2
-		}
-
-		& `$env:ComSpec /c `$cmd 2>`$null | Out-Null
-	} catch { }
-}
-
-`$onTerEvent = {
-	try {
-		`$needRebuild = `$true
-		try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Ter_Load.sql changed -> rebuild requested" -f (Get-Date)) -Encoding UTF8 } catch { }
-	} catch { }
-}
-
 while (`$true)
 {
+	try {
+		`$queuedEvents = @(Get-Event -ErrorAction SilentlyContinue | Where-Object { [string]`$_.SourceIdentifier -like 'RAB_*' })
+		foreach (`$evt in `$queuedEvents)
+		{
+			`$needRebuild = `$true
+			try { Remove-Event -EventIdentifier `$evt.EventIdentifier -ErrorAction SilentlyContinue } catch { }
+		}
+	} catch { }
+
 	if (`$needRebuild)
 	{
 		`$needRebuild = `$false
@@ -20698,7 +20742,7 @@ while (`$true)
 			foreach (`$w in @(`$watchers)) {
 				try { `$w.EnableRaisingEvents = `$false } catch { }
 				try {
-					`$id = `$w.GetHashCode().ToString()
+					`$id = 'RAB_FSW_' + `$w.GetHashCode().ToString()
 					Unregister-Event -SourceIdentifier `$id -ErrorAction SilentlyContinue
 					Unregister-Event -SourceIdentifier (`$id + '_c') -ErrorAction SilentlyContinue
 					Unregister-Event -SourceIdentifier (`$id + '_r') -ErrorAction SilentlyContinue
@@ -20714,9 +20758,9 @@ while (`$true)
 			if (`$terWatcher) {
 				try { `$terWatcher.EnableRaisingEvents = `$false } catch { }
 				try {
-					Unregister-Event -SourceIdentifier 'TER_WATCH' -ErrorAction SilentlyContinue
-					Unregister-Event -SourceIdentifier 'TER_WATCH_C' -ErrorAction SilentlyContinue
-					Unregister-Event -SourceIdentifier 'TER_WATCH_R' -ErrorAction SilentlyContinue
+					Unregister-Event -SourceIdentifier 'RAB_TER_WATCH' -ErrorAction SilentlyContinue
+					Unregister-Event -SourceIdentifier 'RAB_TER_WATCH_C' -ErrorAction SilentlyContinue
+					Unregister-Event -SourceIdentifier 'RAB_TER_WATCH_R' -ErrorAction SilentlyContinue
 				} catch { }
 				try { `$terWatcher.Dispose() } catch { }
 			}
@@ -20809,11 +20853,11 @@ while (`$true)
 				`$fsw.IncludeSubdirectories = `$true
 				`$fsw.NotifyFilter = [System.IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Attributes'
 
-				`$id = `$fsw.GetHashCode().ToString()
-				Register-ObjectEvent -InputObject `$fsw -EventName Created -SourceIdentifier `$id -Action `$onFsEvent | Out-Null
-				Register-ObjectEvent -InputObject `$fsw -EventName Changed -SourceIdentifier (`$id + '_c') -Action `$onFsEvent | Out-Null
-				Register-ObjectEvent -InputObject `$fsw -EventName Renamed -SourceIdentifier (`$id + '_r') -Action `$onFsEvent | Out-Null
-				Register-ObjectEvent -InputObject `$fsw -EventName Deleted -SourceIdentifier (`$id + '_d') -Action `$onFsEvent | Out-Null
+				`$id = 'RAB_FSW_' + `$fsw.GetHashCode().ToString()
+				Register-ObjectEvent -InputObject `$fsw -EventName Created -SourceIdentifier `$id | Out-Null
+				Register-ObjectEvent -InputObject `$fsw -EventName Changed -SourceIdentifier (`$id + '_c') | Out-Null
+				Register-ObjectEvent -InputObject `$fsw -EventName Renamed -SourceIdentifier (`$id + '_r') | Out-Null
+				Register-ObjectEvent -InputObject `$fsw -EventName Deleted -SourceIdentifier (`$id + '_d') | Out-Null
 
 				`$fsw.EnableRaisingEvents = `$true
 				[void]`$watchers.Add(`$fsw)
@@ -20831,9 +20875,9 @@ while (`$true)
 				`$terWatcher.IncludeSubdirectories = `$false
 				`$terWatcher.NotifyFilter = [System.IO.NotifyFilters]'FileName, LastWrite, Size'
 
-				Register-ObjectEvent -InputObject `$terWatcher -EventName Changed -SourceIdentifier 'TER_WATCH' -Action `$onTerEvent | Out-Null
-				Register-ObjectEvent -InputObject `$terWatcher -EventName Created -SourceIdentifier 'TER_WATCH_C' -Action `$onTerEvent | Out-Null
-				Register-ObjectEvent -InputObject `$terWatcher -EventName Renamed -SourceIdentifier 'TER_WATCH_R' -Action `$onTerEvent | Out-Null
+				Register-ObjectEvent -InputObject `$terWatcher -EventName Changed -SourceIdentifier 'RAB_TER_WATCH' | Out-Null
+				Register-ObjectEvent -InputObject `$terWatcher -EventName Created -SourceIdentifier 'RAB_TER_WATCH_C' | Out-Null
+				Register-ObjectEvent -InputObject `$terWatcher -EventName Renamed -SourceIdentifier 'RAB_TER_WATCH_R' | Out-Null
 
 				`$terWatcher.EnableRaisingEvents = `$true
 			}
@@ -21891,7 +21935,9 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 				$localScriptPath = [System.IO.Path]::Combine($candidate.Local, $scriptName)
 				break
 			}
-			catch { }
+			catch
+			{
+			}
 		}
 	}
 	catch
@@ -21962,6 +22008,8 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 	
 	try { Remove-Item -LiteralPath $remoteScriptSharePath -Force -ErrorAction SilentlyContinue }
 	catch { }
+	$createOutputText = [string]($createOutput | Out-String)
+	$createOutputText = $createOutputText.Trim()
 	$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
 		TaskPresent  = $false
 		LastChecked  = Get-Date
@@ -21969,6 +22017,24 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 		MachineName  = $MachineName
 	}
 	return $false
+}
+
+if ($script:LaneSqlEnableWorkerMode)
+{
+	$__laneEnableWorkerOk = $false
+	try
+	{
+		$__laneEnableWorkerOk = [bool](Ensure_SQL_Enable_Scheduled_Task_For_File_Lane `
+			-LaneNumber $script:LaneSqlEnableWorkerLane `
+			-MachineName $script:LaneSqlEnableWorkerMachine `
+			-TcpPort $script:LaneSqlEnableWorkerTcpPort `
+			-StartTime $script:LaneSqlEnableWorkerStartTime)
+	}
+	catch
+	{
+		$__laneEnableWorkerOk = $false
+	}
+	if ($__laneEnableWorkerOk) { exit 0 } else { exit 1 }
 }
 
 # ===================================================================================================
@@ -28070,7 +28136,6 @@ function Start_Lane_Protocol_Jobs
 	if (-not $script:LaneProtocolJobTimeoutSeconds -or $script:LaneProtocolJobTimeoutSeconds -lt 20) { $script:LaneProtocolJobTimeoutSeconds = 20 }
 	if (-not $script:LaneSqlProtocolEnableTaskState) { $script:LaneSqlProtocolEnableTaskState = @{ } }
 	if (-not $script:LaneSqlProtocolEnableJobs) { $script:LaneSqlProtocolEnableJobs = @{ } }
-	
 	# store lane map for repeated runs
 	$script:LaneProtocolLaneMap = $LaneNumToMachineName
 	
@@ -28206,64 +28271,142 @@ if ($protocol -eq 'File') {
 			$scheduledDate = (Get-Date).AddDays(1).Date.AddHours(4).AddMinutes(15)
 		}
 		return $scheduledDate
-	}
+	}.GetNewClosure()
 	
-	$queueLaneSqlEnableTask = {
+	$startLaneSqlEnableBackgroundJob = {
 		param (
 			[string]$LaneNumber,
 			[string]$MachineName
 		)
 		
-		if ([string]::IsNullOrWhiteSpace($LaneNumber) -or [string]::IsNullOrWhiteSpace($MachineName)) { return }
+		if ([string]::IsNullOrWhiteSpace($LaneNumber) -or [string]::IsNullOrWhiteSpace($MachineName))
+		{
+			return
+		}
 		
 		$laneKey = $LaneNumber.ToString().PadLeft(3, '0')
 		$existingJobState = $script:LaneSqlProtocolEnableJobs[$laneKey]
-		if ($existingJobState -and $existingJobState.Job -and $existingJobState.Job.State -in @('Running', 'NotStarted')) { return }
-		
-		$existingState = $script:LaneSqlProtocolEnableTaskState[$laneKey]
-		$lastChecked = $null
-		$taskPresent = $false
-		try { $lastChecked = $existingState.LastChecked }
-		catch { $lastChecked = $null }
-		try { $taskPresent = [bool]$existingState.TaskPresent }
-		catch { $taskPresent = $false }
-		
-		if ($lastChecked -is [datetime])
+		if ($existingJobState -and $existingJobState.Process -and -not $existingJobState.Process.HasExited)
 		{
-			$ageSeconds = ((Get-Date) - $lastChecked).TotalSeconds
-			if ($taskPresent -and $ageSeconds -lt 21600) { return }
-			if ((-not $taskPresent) -and $ageSeconds -lt 600) { return }
+			return
 		}
 		
 		$scheduledDate = & $getNextLaneSqlEnableRunDate
-		$fnBody = ${function:Ensure_SQL_Enable_Scheduled_Task_For_File_Lane}.ToString()
-		$job = Start-Job -Name ("LaneSqlEnableTask_{0}" -f $laneKey) -ArgumentList $fnBody, $laneKey, $MachineName -ScriptBlock {
-			param (
-				[string]$EnsureBody,
-				[string]$LaneNumber,
-				[string]$MachineName
-			)
-			
-			$ok = $false
-			try
+		$sourceScriptPath = $null
+		try
+		{
+			if ($script:LaunchEntryPath -and (Test-Path -LiteralPath $script:LaunchEntryPath))
 			{
-				Set-Item -Path Function:\Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -Value ([scriptblock]::Create($EnsureBody))
-				$ok = [bool](Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $LaneNumber -MachineName $MachineName)
+				$sourceScriptPath = $script:LaunchEntryPath
 			}
-			catch
+			elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath))
 			{
-				$ok = $false
-			}
-			
-			[pscustomobject]@{
-				LaneNumber  = $LaneNumber
-				MachineName = $MachineName
-				Success	    = $ok
+				$sourceScriptPath = $PSCommandPath
 			}
 		}
+		catch
+		{
+			$sourceScriptPath = $null
+		}
 		
+		if ([string]::IsNullOrWhiteSpace($sourceScriptPath))
+		{
+			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+				TaskPresent  = $false
+				LastChecked  = Get-Date
+				ScheduledFor = $scheduledDate
+				MachineName  = $MachineName
+			}
+			return
+		}
+		
+		$fnDefinition = $null
+		try
+		{
+			$tokens = $null
+			$parseErrors = $null
+			$ast = [System.Management.Automation.Language.Parser]::ParseFile($sourceScriptPath, [ref]$tokens, [ref]$parseErrors)
+			$fnAst = $ast.Find({
+					param($node)
+					$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+					$node.Name -eq 'Ensure_SQL_Enable_Scheduled_Task_For_File_Lane'
+				}, $true)
+			if ($fnAst)
+			{
+				$fnDefinition = $fnAst.Extent.Text
+			}
+		}
+		catch
+		{
+			$fnDefinition = $null
+		}
+		
+		if ([string]::IsNullOrWhiteSpace($fnDefinition))
+		{
+			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+				TaskPresent  = $false
+				LastChecked  = Get-Date
+				ScheduledFor = $scheduledDate
+				MachineName  = $MachineName
+			}
+			return
+		}
+
+		$launcherScriptPath = Join-Path $script:SetupFiles ("LaneSqlEnableLauncher_{0}.ps1" -f $laneKey)
+		$launcherScript = @"
+param(
+	[string]`$LaneNumber,
+	[string]`$MachineName,
+	[string]`$TcpPort = '1433',
+	[string]`$StartTime = '04:15'
+)
+
+$fnDefinition
+
+`$ok = `$false
+try
+{
+	`$ok = [bool](Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber `$LaneNumber -MachineName `$MachineName -TcpPort `$TcpPort -StartTime `$StartTime)
+}
+catch
+{
+	`$ok = `$false
+}
+
+if (`$ok) { exit 0 } else { exit 1 }
+"@
+
+		try
+		{
+			Set-Content -LiteralPath $launcherScriptPath -Value $launcherScript -Encoding UTF8 -Force
+			$argList = @(
+				'-NoProfile',
+				'-ExecutionPolicy', 'Bypass',
+				'-File', ('"{0}"' -f $launcherScriptPath),
+				'-LaneNumber', $laneKey,
+				'-MachineName', $MachineName,
+				'-TcpPort', '1433',
+				'-StartTime', '04:15'
+			)
+			$proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru
+		}
+		catch
+		{
+			try { Remove-Item -LiteralPath $launcherScriptPath -Force -ErrorAction SilentlyContinue }
+			catch { }
+			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+				TaskPresent  = $false
+				LastChecked  = Get-Date
+				ScheduledFor = $scheduledDate
+				MachineName  = $MachineName
+			}
+			return
+		}
+
 		$script:LaneSqlProtocolEnableJobs[$laneKey] = [pscustomobject]@{
-			Job		     = $job
+			Process      = $proc
+			ScriptPath   = $launcherScriptPath
+			Started      = Get-Date
 			MachineName  = $MachineName
 			ScheduledFor = $scheduledDate
 		}
@@ -28274,7 +28417,7 @@ if ($protocol -eq 'File') {
 			MachineName  = $MachineName
 			Pending	     = $true
 		}
-	}
+	}.GetNewClosure()
 	
 	$harvestLaneSqlEnableJobs = {
 		if (-not $script:LaneSqlProtocolEnableJobs -or $script:LaneSqlProtocolEnableJobs.Count -eq 0) { return }
@@ -28284,33 +28427,31 @@ if ($protocol -eq 'File') {
 			$st = $script:LaneSqlProtocolEnableJobs[$laneKey]
 			if (-not $st) { continue }
 			
-			$job = $st.Job
-			if (-not $job) { [void]$script:LaneSqlProtocolEnableJobs.Remove($laneKey); continue }
-			if ($job.State -in @('Running', 'NotStarted')) { continue }
+			$proc = $st.Process
+			$launcherScriptPath = $st.ScriptPath
+			if (-not $proc)
+			{
+				try { if ($launcherScriptPath) { Remove-Item -LiteralPath $launcherScriptPath -Force -ErrorAction SilentlyContinue } }
+				catch { }
+				[void]$script:LaneSqlProtocolEnableJobs.Remove($laneKey)
+				continue
+			}
+			try { if (-not $proc.HasExited) { continue } }
+			catch { continue }
 			
-			$result = $null
-			try { $result = Receive-Job -Job $job -Keep -ErrorAction SilentlyContinue | Select-Object -Last 1 }
-			catch { $result = $null }
-			try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+			$success = $false
+			try { $success = ($proc.ExitCode -eq 0) }
+			catch { $success = $false }
+			try { if ($launcherScriptPath) { Remove-Item -LiteralPath $launcherScriptPath -Force -ErrorAction SilentlyContinue } }
 			catch { }
 			[void]$script:LaneSqlProtocolEnableJobs.Remove($laneKey)
 			
 			$machineName = $null
-			$success = $false
 			$scheduledFor = $null
 			try { $machineName = [string]$st.MachineName }
 			catch { $machineName = $null }
 			try { $scheduledFor = $st.ScheduledFor }
 			catch { $scheduledFor = $null }
-			try
-			{
-				if ($result)
-				{
-					if (-not [string]::IsNullOrWhiteSpace([string]$result.MachineName)) { $machineName = [string]$result.MachineName }
-					$success = [bool]$result.Success
-				}
-			}
-			catch { $success = $false }
 			
 			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
 				TaskPresent  = $success
@@ -28319,7 +28460,7 @@ if ($protocol -eq 'File') {
 				MachineName  = $machineName
 			}
 		}
-	}
+	}.GetNewClosure()
 	
 	# ---------- timer (UI thread, safe) ----------
 	$script:protocolTimer = New-Object System.Windows.Forms.Timer
@@ -28404,10 +28545,9 @@ if ($protocol -eq 'File') {
 						
 						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
 						$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = $proto }
-						
 						if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($mn))
 						{
-							try { & $queueLaneSqlEnableTask $laneNum $mn }
+							try { & $startLaneSqlEnableBackgroundJob $laneNum $mn }
 							catch { }
 						}
 						elseif ($script:LaneSqlProtocolEnableTaskState -and $script:LaneSqlProtocolEnableTaskState.ContainsKey($laneNum))
@@ -28523,7 +28663,7 @@ if ($protocol -eq 'File') {
 					}
 				}
 			}
-		})
+		}.GetNewClosure())
 	
 	$script:protocolTimer.Start()
 }
@@ -30547,12 +30687,17 @@ public static class NativeWin {
 			{
 				try
 				{
-					$laneSqlEnableJob = Get-Job -Name 'LaneSqlEnableTask_*' -State Running -ErrorAction SilentlyContinue | Select-Object -First 1
+					$laneSqlEnableJob = $null
+					if ($script:LaneSqlProtocolEnableJobs)
+					{
+						$laneSqlEnableJob = @($script:LaneSqlProtocolEnableJobs.GetEnumerator() | Where-Object {
+							$_.Value -and $_.Value.Process -and (-not $_.Value.Process.HasExited)
+						} | Select-Object -First 1)
+					}
 					if ($laneSqlEnableJob)
 					{
 						$script:IsBusy = $true
-						$laneBusyText = $laneSqlEnableJob.Name
-						if ($laneBusyText -match '_(\d{3})$') { $laneBusyText = $matches[1] }
+						$laneBusyText = [string]$laneSqlEnableJob.Key
 						$script:BusyReason = "Scheduling SQL enable ($laneBusyText)"
 					}
 				}
@@ -33536,16 +33681,54 @@ $form.Add_Shown({
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
 
-if (-not $script:ShowConsole -and [Environment]::UserInteractive -and ($__isSavedPs1Launch -or $__isInlineLikeLaunch))
+if (-not $script:ShowConsole -and [Environment]::UserInteractive)
 {
 	try
 	{
-		$__consoleHandle = [ConsoleWindowHelper]::GetConsoleWindow()
-		if ($__consoleHandle -ne [IntPtr]::Zero)
+		if (-not $script:PostOpenConsoleHideTimer)
 		{
-			[void][ConsoleWindowHelper]::ShowWindow($__consoleHandle, 0)
-			$script:ConsoleHidden = $true
-			$script:RestoreConsoleOnExit = $false
+			$script:PostOpenConsoleHideTimer = New-Object System.Windows.Forms.Timer
+			$script:PostOpenConsoleHideTimer.Interval = 400
+			$script:PostOpenConsoleHideTimer.Add_Tick({
+				try
+				{
+					if ($script:PostOpenConsoleHideTimer)
+					{
+						$script:PostOpenConsoleHideTimer.Stop()
+					}
+				}
+				catch { }
+				try
+				{
+					$__consoleHandle = [ConsoleWindowHelper]::GetConsoleWindow()
+					if ($__consoleHandle -ne [IntPtr]::Zero)
+					{
+						[void][ConsoleWindowHelper]::ShowWindow($__consoleHandle, 0)
+						$script:ConsoleHidden = $true
+						$script:RestoreConsoleOnExit = $false
+					}
+				}
+				catch { }
+				try
+				{
+					if ($script:PostOpenConsoleHideTimer)
+					{
+						$script:PostOpenConsoleHideTimer.Dispose()
+						$script:PostOpenConsoleHideTimer = $null
+					}
+				}
+				catch { }
+			})
+			$form.Add_Shown({
+				try
+				{
+					if ($script:PostOpenConsoleHideTimer)
+					{
+						$script:PostOpenConsoleHideTimer.Start()
+					}
+				}
+				catch { }
+			})
 		}
 	}
 	catch { }
