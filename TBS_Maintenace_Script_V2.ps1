@@ -19,7 +19,7 @@
 #   Works out HOW the script was started, before anything else runs:
 #     Ps1    - a saved .ps1 file (powershell -File ..., "Run with PowerShell")
 #     Exe    - the PowerShell Studio package (TBS_Maintenance_Script_V*.exe)
-#     Inline - irm https://bit.ly/TBSMaintenanceScript | iex, a paste, or an ISE selection
+#     Inline - irm https://bit.ly/TBS_Maintenance_Script | iex, a paste, or an ISE selection
 #   and reads the optional command-line switches:
 #     -ShowConsole / -KeepConsole      keep the console window visible (troubleshooting)
 #     -LaneSqlEnableWorker             headless worker mode, with -LaneSqlEnableWorkerLane,

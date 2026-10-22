@@ -3,7 +3,7 @@
 	# Build manifest for the TBS Maintenance Script.
 	#
 	# Build.ps1 concatenates every file matched below, in this order, into ONE script:
-	# the file that 'irm https://bit.ly/TBSMaintenanceScript | iex' downloads and that
+	# the file that 'irm https://bit.ly/TBS_Maintenance_Script | iex' downloads and that
 	# PowerShell Studio packages into the .exe.
 	#
 	#   - Paths are relative to the TBS_Maintenance folder.

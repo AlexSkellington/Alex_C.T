@@ -4,7 +4,7 @@ PowerShell tools for TBS / SMS store systems (Windows PowerShell 5.1).
 
 | Tool | What it is | Run it |
 |---|---|---|
-| **TBS Maintenance Script** | WinForms app for the store server: server DB maintenance and backups, lane tools (SQL protocols, transactions, table pumps, time sync, DB repair), scale tools (Bizerba / Ishida, BMS, ScaleCommApp), node tools (ping, reboot, hosts, file copy) and general utilities. | `irm https://bit.ly/TBSMaintenanceScript \| iex` (elevated PowerShell), or the packaged `TBS_Maintenance_Script_V<version>.exe` |
+| **TBS Maintenance Script** | WinForms app for the store server: server DB maintenance and backups, lane tools (SQL protocols, transactions, table pumps, time sync, DB repair), scale tools (Bizerba / Ishida, BMS, ScaleCommApp), node tools (ping, reboot, hosts, file copy) and general utilities. | `irm https://bit.ly/TBS_Maintenance_Script \| iex` (elevated PowerShell), or the packaged `TBS_Maintenance_Script_V<version>.exe` |
 | **MiniGhost** | Separate single-file tool (`MiniGhost_V38.ps1`). | Run the file |
 
 ## Repository layout

@@ -8,7 +8,7 @@ Two PowerShell tools live here:
 | `TBS_Maintenace_Script_V2.ps1` | **Built** single-file script - generated, never edit by hand |
 | `MiniGhost_V38.ps1` | MiniGhost (separate single-file tool, not part of the build) |
 
-The built file is what ships: `irm https://bit.ly/TBSMaintenanceScript | iex` downloads it
+The built file is what ships: `irm https://bit.ly/TBS_Maintenance_Script | iex` downloads it
 from `main`, and PowerShell Studio packages it into `TBS_Maintenance_Script_V<version>.exe`.
 Its path and its historical `Maintenace` spelling must not change.
 

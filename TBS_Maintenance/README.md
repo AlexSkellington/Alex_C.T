@@ -3,7 +3,7 @@
 The script ships as ONE file, `..\TBS_Maintenace_Script_V2.ps1`, so that
 
 ```powershell
-irm https://bit.ly/TBSMaintenanceScript | iex
+irm https://bit.ly/TBS_Maintenance_Script | iex
 ```
 
 and the PowerShell Studio `.exe` keep working. This folder holds the same code split into

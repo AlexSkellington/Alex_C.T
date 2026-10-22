@@ -12,7 +12,7 @@
 	The output is written as ASCII with LF line endings (as all earlier versions were).
 
 	The output is what ships:
-	  - 'irm https://bit.ly/TBSMaintenanceScript | iex' downloads it from GitHub
+	  - 'irm https://bit.ly/TBS_Maintenance_Script | iex' downloads it from GitHub
 	  - PowerShell Studio packages it into TBS_Maintenance_Script_V<version>.exe
 
 .PARAMETER OutFile
