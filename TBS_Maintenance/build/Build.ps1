@@ -9,7 +9,7 @@
 	  - parses cleanly under the running PowerShell (use Windows PowerShell 5.1)
 	  - pure ASCII (PowerShell 5.1 reads BOM-less files as Windows-1252)
 	  - no function defined twice, no source file left out of (or listed twice in) the manifest
-	The output is written as ASCII with CRLF line endings.
+	The output is written as ASCII with LF line endings (as all earlier versions were).
 
 	The output is what ships:
 	  - 'irm https://bit.ly/TBSMaintenanceScript | iex' downloads it from GitHub
@@ -142,7 +142,9 @@ if ($manifest.Changelog)
 	foreach ($cl in (Read-SourceLines $clPath)) { $out.Add($cl) }
 }
 
-$text = ($out -join "`r`n") + "`r`n"
+# LF line endings, like every earlier version: here-string contents (SQL, generated scripts)
+# depend on it, and raw.githubusercontent.com serves LF to irm | iex anyway.
+$text = ($out -join "`n") + "`n"
 
 # ---------------------------------------------------------------------------------------------
 # 3) Validate

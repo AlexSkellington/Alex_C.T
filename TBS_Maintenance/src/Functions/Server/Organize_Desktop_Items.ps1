@@ -3,8 +3,9 @@
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Moves non-system, non-excluded items from the current user's Desktop into a single
-#   "Unorganized Items" folder and makes sure the excluded folders still exist. Skips common
-#   system shortcuts and script launchers, and does not restart Explorer.
+#   "Unorganized Items" folder. Keeps common system shortcuts, the TBS / MiniGhost launchers
+#   (any version) and the Lanes / Scales / BackOffices folders; never overwrites an item that
+#   is already in the target folder (the moved one gets a ' (2)' style suffix).
 #
 # Parameters:
 #   - UnorganizedFolderName [string]: target folder on the Desktop (default "Unorganized Items")
@@ -34,16 +35,10 @@ function Organize_Desktop_Items
 		# -- Compute the destination folder path
 		$UnorganizedFolder = Join-Path -Path $DesktopPath -ChildPath $UnorganizedFolderName
 
-		# -- Best-effort current script/launcher name (used for exclusions)
-		#    $scriptName could be defined elsewhere; fall back to the current command name if available
-		$scriptName = if ($MyInvocation -and $MyInvocation.MyCommand -and $MyInvocation.MyCommand.Name)
-		{
-			$MyInvocation.MyCommand.Name
-		}
-		else
-		{
-			"TBS_Maintenance_Script.exe"
-		}
+		# -- The running tool itself (.ps1 / .exe), when it lives on the Desktop
+		$scriptName = if ($script:LaunchEntryPath) { [System.IO.Path]::GetFileName([string]$script:LaunchEntryPath) } else { "TBS_Maintenance_Script.exe" }
+		# Launchers of any version (TBS_Maintenance_Script_V2.6.9.exe, MiniGhost_V38.ps1, ...)
+		$keepPatterns = @('TBS_Maintenance_Script*', 'TBS_Maintenace_Script*', 'Execute(TBS*', 'MiniGhost*', 'Execute(MiniGhost*')
 
 		# -- Known system/launcher items to preserve on Desktop (case-insensitive match by name)
 		$systemIcons = @(
@@ -79,20 +74,30 @@ function Organize_Desktop_Items
 
 		# -- Enumerate Desktop items; keep both files and folders.
 		#    Move everything except explicit exclusions and Windows system-managed filesystem items.
-		$desktopItems = Get-ChildItem -LiteralPath $DesktopPath -Force |
-		Where-Object {
-			# Skip items explicitly excluded by name
-			-not $excludedSet.Contains($_.Name) -and
-			# Skip filesystem items marked as System (for example desktop.ini)
-			(-not (($_.Attributes -band [System.IO.FileAttributes]::System) -eq [System.IO.FileAttributes]::System))
-		}
+		$desktopItems = @(Get-ChildItem -LiteralPath $DesktopPath -Force |
+			Where-Object {
+				$name = $_.Name
+				# explicitly excluded names, launcher patterns, and System items (desktop.ini)
+				-not $excludedSet.Contains($name) -and
+				-not @($keepPatterns | Where-Object { $name -like $_ }).Count -and
+				-not ($_.Attributes -band [System.IO.FileAttributes]::System)
+			})
 
-		# -- Move everything else into the Unorganized folder
+		# -- Move everything else into the Unorganized folder (never overwrite: "name (2).ext")
 		foreach ($item in $desktopItems)
 		{
 			try
 			{
-				Move-Item -LiteralPath $item.FullName -Destination $UnorganizedFolder -Force
+				$target = Join-Path $UnorganizedFolder $item.Name
+				$n = 2
+				while (Test-Path -LiteralPath $target)
+				{
+					$base = if ($item.PSIsContainer) { $item.Name } else { [System.IO.Path]::GetFileNameWithoutExtension($item.Name) }
+					$ext = if ($item.PSIsContainer) { '' } else { $item.Extension }
+					$target = Join-Path $UnorganizedFolder ("{0} ({1}){2}" -f $base, $n, $ext)
+					$n++
+				}
+				Move-Item -LiteralPath $item.FullName -Destination $target -ErrorAction Stop
 				Write_Log "Moved item: $($item.Name)" "green"
 			}
 			catch

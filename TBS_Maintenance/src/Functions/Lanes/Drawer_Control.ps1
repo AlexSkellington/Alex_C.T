@@ -157,7 +157,7 @@ DROP TABLE Fct_Load;
 "@
 
 		# Ensure the SQI content uses CRLF line endings (ANSI PC format)
-		$SQIContent = $SQIContent -replace "`n", "`r`n"
+		$SQIContent = $SQIContent -replace "`r?`n", "`r`n"
 
 		# Define the full path to the SQI file (named "DrawerControl.sqi")
 		$SQIFilePath = Join-Path -Path $LaneDirectory -ChildPath "DrawerControl.sqi"

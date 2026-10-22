@@ -179,19 +179,7 @@ if (-not (Test-Path `$backupRoot)) {
 `$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 `$backupZipPath = Join-Path `$backupRoot ("Storeman_Backup_`$timestamp.zip")
 
-# Delete oldest backups if needed
-`$oldZips = Get-ChildItem -Path `$backupRoot -Filter "Storeman_Backup_*.zip" | Sort-Object LastWriteTime -Descending
-if (`$oldZips.Count -ge $keepInput) {
-    `$oldZips | Select-Object -Skip ($keepInput - 1) | ForEach-Object {
-        try {
-            Remove-Item `$_.FullName -Force
-        } catch {
-            Write-Host "Failed to delete old backup: `$_.FullName" -ForegroundColor Yellow
-        }
-    }
-}
-
-# Run the backup
+# Run the backup (old ZIPs are only rotated out AFTER a successful one)
 try {
     `$zip = [System.IO.Compression.ZipFile]::Open(`$backupZipPath, 1)  # 1 = Create
 
@@ -243,6 +231,12 @@ try {
     `$zip.Dispose()
     "`$([DateTime]::Now) Backup complete: `$backupZipPath (`$countAdded files)" | Out-File -FilePath (Join-Path `$backupRoot "backup.log") -Append -Encoding utf8
     Write-Host "Backup complete: `$backupZipPath (`$countAdded files)" -ForegroundColor Green
+
+    # Keep only the newest $keepInput ZIPs
+    Get-ChildItem -Path `$backupRoot -Filter "Storeman_Backup_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip $keepInput | ForEach-Object {
+        try { Remove-Item -LiteralPath `$_.FullName -Force }
+        catch { Write-Host "Failed to delete old backup: `$(`$_.FullName)" -ForegroundColor Yellow }
+    }
 }
 catch {
     if (`$zip) { `$zip.Dispose() }

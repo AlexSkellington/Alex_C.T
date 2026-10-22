@@ -170,7 +170,8 @@ function Repair_Windows
 		try
 		{
 			Write_Log "Running System File Checker (SFC)..." "blue"
-			$sfcOutput = SFC /scannow 2>&1
+			# SFC writes UTF-16 to a redirected stdout; drop the NULs so the text is readable
+			$sfcOutput = ((SFC /scannow 2>&1) -join ' ') -replace "`0", ''
 			Write_Log "System File Checker output: $sfcOutput" "cyan"
 			Write_Log "System File Checker completed." "green"
 		}

@@ -98,7 +98,8 @@ try
 	& $appendLog ''
 
 	& $appendLog '>>> SFC /SCANNOW'
-	& sfc.exe /SCANNOW *>&1 | Tee-Object -FilePath $RunLogPath -Append | Out-Null
+	# SFC writes UTF-16 to a redirected stdout: drop the NULs so the run log is readable
+	& sfc.exe /SCANNOW *>&1 | ForEach-Object { ([string]$_) -replace "`0", '' } | Where-Object { $_.Trim() } | Add-Content -LiteralPath $RunLogPath -Encoding UTF8
 	$sfcExit = $LASTEXITCODE
 	& $appendLog ('SFC exit code: {0}' -f $sfcExit)
 	& $appendLog ''

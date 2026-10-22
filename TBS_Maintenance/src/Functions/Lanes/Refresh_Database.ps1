@@ -62,7 +62,7 @@ function Refresh_Database
 @EXEC(SQM=exe_activate_accept_sys);
 "@
 	# Ensure the SQI content uses CRLF line endings (ANSI PC format)
-	$SQIContent = $SQIContent -replace "`n", "`r`n"
+	$SQIContent = $SQIContent -replace "`r?`n", "`r`n"
 
 	# --------------------------------------------------
 	# STEP 3: For each selected register, deploy the SQI file

@@ -7835,7 +7835,8 @@ try
 	& $appendLog ''
 
 	& $appendLog '>>> SFC /SCANNOW'
-	& sfc.exe /SCANNOW *>&1 | Tee-Object -FilePath $RunLogPath -Append | Out-Null
+	# SFC writes UTF-16 to a redirected stdout: drop the NULs so the run log is readable
+	& sfc.exe /SCANNOW *>&1 | ForEach-Object { ([string]$_) -replace "`0", '' } | Where-Object { $_.Trim() } | Add-Content -LiteralPath $RunLogPath -Encoding UTF8
 	$sfcExit = $LASTEXITCODE
 	& $appendLog ('SFC exit code: {0}' -f $sfcExit)
 	& $appendLog ''
@@ -8807,67 +8808,38 @@ function Configure_System_Settings
 
 	try
 	{
-		# ==========================================================================================
-		# [CHANGE] Removed: Desktop organizing block
-		#          Moved into new function: Organize_Desktop_Items
-		# ==========================================================================================
-
 		# ===========================================
-		# 1. Configure Power Settings
+		# 1. Power settings
 		# ===========================================
 		Write_Log "`r`nConfiguring power plan and performance settings..." "blue"
 
-		# High Performance plan GUID
+		# powercfg is an external program: failures show up in the exit code, never as an
+		# exception (before v2.7.0 every step here logged success regardless)
+		$powercfg = {
+			param ([string]$What, [string[]]$PcArgs)
+			$out = & powercfg.exe @PcArgs 2>&1
+			if ($LASTEXITCODE -eq 0) { Write_Log $What "green"; return $true }
+			Write_Log ("Failed: {0} (powercfg {1}: {2})" -f $What, ($PcArgs -join ' '), (($out | Out-String).Trim())) "red"
+			return $false
+		}
+
+		# High Performance plan; on systems where it is hidden, restore it from its template first
 		$highPerfGUID = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+		$null = & powercfg.exe /query $highPerfGUID 2>&1
+		if ($LASTEXITCODE -ne 0) { $null = & powercfg.exe -duplicatescheme $highPerfGUID $highPerfGUID 2>&1 }
+		$null = & $powercfg "Power plan set to High Performance." @('/s', $highPerfGUID)
 
-		try
-		{
-			powercfg /s $highPerfGUID
-			Write_Log "Power plan set to High Performance." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to set power plan to High Performance. Error: $_" "red"
-		}
+		$null = & $powercfg "System sleep disabled (AC)." @('/change', 'standby-timeout-ac', '0')
+		$null = & $powercfg "System sleep disabled (DC)." @('/change', 'standby-timeout-dc', '0')
 
-		# Disable sleep (AC/DC)
-		try
-		{
-			powercfg /change standby-timeout-ac 0
-			powercfg /change standby-timeout-dc 0
-			Write_Log "System sleep disabled for AC/DC." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to disable system sleep. Error: $_" "red"
-		}
+		# Minimum processor state 100% (SUB_PROCESSOR / PROCTHROTTLEMIN) on the High Performance plan
+		$subProcessor = "54533251-82be-4824-96c1-47b60b740d00"
+		$procThrottleMin = "893dee8e-2bef-41e0-89c6-b55d0929964c"
+		$null = & $powercfg "Minimum processor performance 100% (AC)." @('/setacvalueindex', $highPerfGUID, $subProcessor, $procThrottleMin, '100')
+		$null = & $powercfg "Minimum processor performance 100% (DC)." @('/setdcvalueindex', $highPerfGUID, $subProcessor, $procThrottleMin, '100')
+		$null = & $powercfg "High Performance plan re-activated." @('/setactive', $highPerfGUID)
 
-		# Minimum processor performance to 100% (AC/DC)
-		try
-		{
-			# SUB_PROCESSOR         = 54533251-82be-4824-96c1-47b60b740d00
-			# PROCTHROTTLEMIN       = 893dee8e-2bef-41e0-89c6-b55d0929964c
-			powercfg /setacvalueindex $highPerfGUID "54533251-82be-4824-96c1-47b60b740d00" "893dee8e-2bef-41e0-89c6-b55d0929964c" 100
-			powercfg /setdcvalueindex $highPerfGUID "54533251-82be-4824-96c1-47b60b740d00" "893dee8e-2bef-41e0-89c6-b55d0929964c" 100
-			powercfg /setactive $highPerfGUID
-			Write_Log "Minimum processor performance set to 100% (AC/DC)." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to set processor performance. Error: $_" "red"
-		}
-
-		# Turn off screen after 15 minutes (AC)
-		try
-		{
-			powercfg /change monitor-timeout-ac 15
-			Write_Log "Monitor timeout (AC) set to 15 minutes." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to set monitor timeout. Error: $_" "red"
-		}
-
+		$null = & $powercfg "Monitor timeout (AC) set to 15 minutes." @('/change', 'monitor-timeout-ac', '15')
 		Write_Log "Power and performance settings complete." "green"
 
 		# ===========================================
@@ -8956,18 +8928,21 @@ function Configure_System_Settings
 #                              FUNCTION: Manage_Sa_Account
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Form with Enable/Disable buttons for the 'sa' login on the local SQL Server. Enable sets
-#   the sa password to 'TB$upp0rT'; button states reflect the current sa state (queried from
-#   sys.sql_logins). Closes after a successful action.
+#   Form with Enable/Disable buttons for the 'sa' login on the store SQL Server. Enable also
+#   sets the sa password to the standard support password ($script:BackupSqlPass). The button
+#   for the current state is greyed out (read from sys.sql_logins); the form closes after a
+#   successful change.
 #
 # Parameters:
 #   (none)
 #
 # Variables:
-#   - $script:FunctionResults: SqlModuleName, ConnectionString, DBSERVER (from SQL detection)
+#   - $script:FunctionResults: SqlModuleName, ConnectionString, DBSERVER
+#   - $script:BackupSqlPass: the password set when enabling sa
 #
 # Notes:
-#   - Assumes the default SQL instance and sysadmin privileges.
+#   - Needs sysadmin rights on the instance. Uses Invoke-Sqlcmd when a SQL module is
+#     available, else the built-in SqlClient.
 # ===================================================================================================
 
 function Manage_Sa_Account
@@ -8980,24 +8955,52 @@ function Manage_Sa_Account
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 
-	# Use already detected SQL module and connection info
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$serverInstance = $script:FunctionResults['DBSERVER']
-	$database = "master"
-
-	if (-not $SqlModuleName -or $SqlModuleName -eq "None")
+	if ((-not $ConnectionString -or $ConnectionString -eq 'N/A') -and (-not $serverInstance -or $serverInstance -eq 'N/A'))
 	{
-		Write_Log "No valid SQL module detected for SQL operations!" "red"
+		Write_Log "No SQL server / connection string known for this store - cannot manage 'sa'." "red"
 		return
 	}
-	Import-Module $SqlModuleName -ErrorAction Stop
-	$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
 
-	$supportsConnectionString = $false
-	if ($InvokeSqlCmd)
+	$InvokeSqlCmd = $null
+	if ($SqlModuleName -and $SqlModuleName -ne "None")
 	{
-		$supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString'
+		try
+		{
+			Import-Module $SqlModuleName -ErrorAction Stop
+			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+		}
+		catch { $InvokeSqlCmd = $null }
+	}
+	$supportsConnectionString = ($InvokeSqlCmd -and $InvokeSqlCmd.Parameters.ContainsKey('ConnectionString'))
+
+	# Run one statement against the instance; returns rows (Invoke-Sqlcmd or SqlClient)
+	$runSql = {
+		param ([string]$Query)
+		if ($InvokeSqlCmd)
+		{
+			if ($supportsConnectionString) { return & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $Query -ErrorAction Stop }
+			return & $InvokeSqlCmd -ServerInstance $serverInstance -Database master -Query $Query -ErrorAction Stop
+		}
+		$cs = if ($ConnectionString -and $ConnectionString -ne 'N/A') { $ConnectionString } else { "Server=$serverInstance;Database=master;Integrated Security=True;TrustServerCertificate=True;" }
+		$cn = New-Object System.Data.SqlClient.SqlConnection $cs
+		try
+		{
+			$cn.Open()
+			$cmd = $cn.CreateCommand()
+			$cmd.CommandText = $Query
+			$dt = New-Object System.Data.DataTable
+			[void](New-Object System.Data.SqlClient.SqlDataAdapter $cmd).Fill($dt)
+			return , $dt
+		}
+		finally { $cn.Dispose() }
+	}
+	$getSaEnabled = {
+		$rows = @(& $runSql "SELECT is_disabled FROM sys.sql_logins WHERE name = 'sa'" | ForEach-Object { $_ })
+		if ($rows.Count -eq 0) { return $null }
+		return ([int]$rows[0].is_disabled -eq 0)
 	}
 
 	$form = New-Object System.Windows.Forms.Form
@@ -9020,127 +9023,47 @@ function Manage_Sa_Account
 	$btnDisable.Size = New-Object System.Drawing.Size(200, 30)
 	$form.Controls.Add($btnDisable)
 
-	# --- Initial state update ---
+	# --- Current state ---
+	$isEnabled = $false
 	try
 	{
-		$query = "SELECT is_disabled FROM sys.sql_logins WHERE name = 'sa'"
-		if ($supportsConnectionString)
-		{
-			$result = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query -ErrorAction Stop
-		}
-		else
-		{
-			$result = Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $query -ErrorAction Stop
-		}
-		if ($result)
-		{
-			$isEnabled = ($result.is_disabled -eq 0)
-		}
-		else
-		{
-			Write_Log "'sa' account not found." "red"
-			$isEnabled = $false
-		}
+		$state = & $getSaEnabled
+		if ($null -eq $state) { Write_Log "'sa' account not found." "red" }
+		else { $isEnabled = $state }
 	}
-	catch
-	{
-		Write_Log "Error checking 'sa' status: $_" "red"
-		$isEnabled = $false
-	}
+	catch { Write_Log "Error checking 'sa' status: $_" "red" }
 	$btnEnable.Enabled = -not $isEnabled
 	$btnDisable.Enabled = $isEnabled
-	if ($isEnabled)
-	{
-		Write_Log "'sa' is currently enabled. Enable button greyed out." "yellow"
-	}
-	else
-	{
-		Write_Log "'sa' is currently disabled. Disable button greyed out." "yellow"
-	}
+	if ($isEnabled) { Write_Log "'sa' is currently enabled. Enable button greyed out." "yellow" }
+	else { Write_Log "'sa' is currently disabled. Disable button greyed out." "yellow" }
 
-	# --- Enable 'sa' button click event ---
-	$btnEnable.Add_Click({
-			Write_Log "Enable button clicked. Attempting to enable 'sa'..." "blue"
-			try
+	# --- Enable / Disable ---
+	$apply = {
+		param ([bool]$Enable)
+		$verb = if ($Enable) { 'enable' } else { 'disable' }
+		Write_Log "$((Get-Culture).TextInfo.ToTitleCase($verb)) button clicked. Attempting to $verb 'sa'..." "blue"
+		try
+		{
+			if ($Enable)
 			{
-				$enableQuery = "ALTER LOGIN sa ENABLE; ALTER LOGIN sa WITH PASSWORD = 'TB`$upp0rT';"
-				if ($supportsConnectionString)
-				{
-					Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $enableQuery -ErrorAction Stop
-				}
-				else
-				{
-					Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $enableQuery -ErrorAction Stop
-				}
+				$saPassword = ([string]$script:BackupSqlPass).Replace("'", "''")
+				$null = & $runSql "ALTER LOGIN sa ENABLE; ALTER LOGIN sa WITH PASSWORD = '$saPassword';"
 				Write_Log "'sa' account enabled and password set successfully." "green"
-				# Refresh state and close
-				try
-				{
-					$query = "SELECT is_disabled FROM sys.sql_logins WHERE name = 'sa'"
-					if ($supportsConnectionString)
-					{
-						$result = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query -ErrorAction Stop
-					}
-					else
-					{
-						$result = Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $query -ErrorAction Stop
-					}
-					if ($result) { $isEnabled = ($result.is_disabled -eq 0) }
-					else { $isEnabled = $false }
-				}
-				catch { $isEnabled = $false }
-				$btnEnable.Enabled = -not $isEnabled
-				$btnDisable.Enabled = $isEnabled
-				$form.Close()
 			}
-			catch
+			else
 			{
-				Write_Log "Error enabling 'sa' account: $_" "red"
-			}
-		})
-
-	# --- Disable 'sa' button click event ---
-	$btnDisable.Add_Click({
-			Write_Log "Disable button clicked. Attempting to disable 'sa'..." "blue"
-			try
-			{
-				$disableQuery = "ALTER LOGIN sa DISABLE;"
-				if ($supportsConnectionString)
-				{
-					Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $disableQuery -ErrorAction Stop
-				}
-				else
-				{
-					Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $disableQuery -ErrorAction Stop
-				}
+				$null = & $runSql "ALTER LOGIN sa DISABLE;"
 				Write_Log "'sa' account disabled successfully." "green"
-				# Refresh state and close
-				try
-				{
-					$query = "SELECT is_disabled FROM sys.sql_logins WHERE name = 'sa'"
-					if ($supportsConnectionString)
-					{
-						$result = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query -ErrorAction Stop
-					}
-					else
-					{
-						$result = Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $query -ErrorAction Stop
-					}
-					if ($result) { $isEnabled = ($result.is_disabled -eq 0) }
-					else { $isEnabled = $false }
-				}
-				catch { $isEnabled = $false }
-				$btnEnable.Enabled = -not $isEnabled
-				$btnDisable.Enabled = $isEnabled
-				$form.Close()
 			}
-			catch
-			{
-				Write_Log "Error disabling 'sa' account: $_" "red"
-			}
-		})
+			$form.Close()
+		}
+		catch { Write_Log "Error trying to $verb 'sa' account: $_" "red" }
+	}
+	$btnEnable.Add_Click({ & $apply $true })
+	$btnDisable.Add_Click({ & $apply $false })
 
-	$form.ShowDialog() | Out-Null
+	[void]$form.ShowDialog()
+	$form.Dispose()
 	Write_Log "`r`n==================== Manage_Sa_Account Function Completed ====================" "blue"
 }
 
@@ -9149,8 +9072,9 @@ function Manage_Sa_Account
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Moves non-system, non-excluded items from the current user's Desktop into a single
-#   "Unorganized Items" folder and makes sure the excluded folders still exist. Skips common
-#   system shortcuts and script launchers, and does not restart Explorer.
+#   "Unorganized Items" folder. Keeps common system shortcuts, the TBS / MiniGhost launchers
+#   (any version) and the Lanes / Scales / BackOffices folders; never overwrites an item that
+#   is already in the target folder (the moved one gets a ' (2)' style suffix).
 #
 # Parameters:
 #   - UnorganizedFolderName [string]: target folder on the Desktop (default "Unorganized Items")
@@ -9180,16 +9104,10 @@ function Organize_Desktop_Items
 		# -- Compute the destination folder path
 		$UnorganizedFolder = Join-Path -Path $DesktopPath -ChildPath $UnorganizedFolderName
 
-		# -- Best-effort current script/launcher name (used for exclusions)
-		#    $scriptName could be defined elsewhere; fall back to the current command name if available
-		$scriptName = if ($MyInvocation -and $MyInvocation.MyCommand -and $MyInvocation.MyCommand.Name)
-		{
-			$MyInvocation.MyCommand.Name
-		}
-		else
-		{
-			"TBS_Maintenance_Script.exe"
-		}
+		# -- The running tool itself (.ps1 / .exe), when it lives on the Desktop
+		$scriptName = if ($script:LaunchEntryPath) { [System.IO.Path]::GetFileName([string]$script:LaunchEntryPath) } else { "TBS_Maintenance_Script.exe" }
+		# Launchers of any version (TBS_Maintenance_Script_V2.6.9.exe, MiniGhost_V38.ps1, ...)
+		$keepPatterns = @('TBS_Maintenance_Script*', 'TBS_Maintenace_Script*', 'Execute(TBS*', 'MiniGhost*', 'Execute(MiniGhost*')
 
 		# -- Known system/launcher items to preserve on Desktop (case-insensitive match by name)
 		$systemIcons = @(
@@ -9225,20 +9143,30 @@ function Organize_Desktop_Items
 
 		# -- Enumerate Desktop items; keep both files and folders.
 		#    Move everything except explicit exclusions and Windows system-managed filesystem items.
-		$desktopItems = Get-ChildItem -LiteralPath $DesktopPath -Force |
-		Where-Object {
-			# Skip items explicitly excluded by name
-			-not $excludedSet.Contains($_.Name) -and
-			# Skip filesystem items marked as System (for example desktop.ini)
-			(-not (($_.Attributes -band [System.IO.FileAttributes]::System) -eq [System.IO.FileAttributes]::System))
-		}
+		$desktopItems = @(Get-ChildItem -LiteralPath $DesktopPath -Force |
+			Where-Object {
+				$name = $_.Name
+				# explicitly excluded names, launcher patterns, and System items (desktop.ini)
+				-not $excludedSet.Contains($name) -and
+				-not @($keepPatterns | Where-Object { $name -like $_ }).Count -and
+				-not ($_.Attributes -band [System.IO.FileAttributes]::System)
+			})
 
-		# -- Move everything else into the Unorganized folder
+		# -- Move everything else into the Unorganized folder (never overwrite: "name (2).ext")
 		foreach ($item in $desktopItems)
 		{
 			try
 			{
-				Move-Item -LiteralPath $item.FullName -Destination $UnorganizedFolder -Force
+				$target = Join-Path $UnorganizedFolder $item.Name
+				$n = 2
+				while (Test-Path -LiteralPath $target)
+				{
+					$base = if ($item.PSIsContainer) { $item.Name } else { [System.IO.Path]::GetFileNameWithoutExtension($item.Name) }
+					$ext = if ($item.PSIsContainer) { '' } else { $item.Extension }
+					$target = Join-Path $UnorganizedFolder ("{0} ({1}){2}" -f $base, $n, $ext)
+					$n++
+				}
+				Move-Item -LiteralPath $item.FullName -Destination $target -ErrorAction Stop
 				Write_Log "Moved item: $($item.Name)" "green"
 			}
 			catch
@@ -9260,9 +9188,10 @@ function Organize_Desktop_Items
 #                              FUNCTION: Process_Server
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Runs the full server (store) SQL maintenance: takes the SQL script from the
-#   $script:ServerSQLScript variable or a file, optionally prompts for section selection,
-#   executes each section with retries and logs a per-section summary at the end.
+#   Runs the server (store) SQL maintenance: takes the script from $script:ServerSQLScript
+#   (generated on demand) or a file, optionally lets the user pick sections, runs each section
+#   once - Invoke-Sqlcmd when a SQL module is available, else SqlClient split on GO lines - and
+#   logs which sections failed.
 #
 # Parameters:
 #   - StoresqlFilePath  [string]: SQL file to run instead of the script variable
@@ -9287,12 +9216,6 @@ function Process_Server
 	# Banner: Start
 	# ------------------------------------------------------------------------------------------------
 	Write_Log "`r`n==================== Starting Server Database Maintenance ====================`r`n" "blue"
-
-	if ($PromptForSections)
-	{
-		[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
-		[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
-	}
 
 	# ------------------------------------------------------------------------------------------------
 	# Variables and settings
@@ -9343,72 +9266,90 @@ function Process_Server
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# Parse SQL sections (comment blocks) to execute
+	# Parse SQL sections: each "/* Name */" comment starts a section
 	# ------------------------------------------------------------------------------------------------
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-	$matches = [regex]::Matches($sqlScript, $sectionPattern)
-
-	if ($matches.Count -eq 0)
+	$sectionMatches = [regex]::Matches($sqlScript, $sectionPattern)
+	if ($sectionMatches.Count -eq 0)
 	{
 		Write_Log "No SQL sections found to execute." "red"
 		return
 	}
 
-	# ------------------------------------------------------------------------------------------------
-	# Prompt for section selection if requested
-	# ------------------------------------------------------------------------------------------------
 	$SectionsToRun = $null
 	if ($PromptForSections)
 	{
-		$allSectionNames = $matches | ForEach-Object {
-			$_.Groups['SectionName'].Value.Trim()
-		}
+		$allSectionNames = @($sectionMatches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() })
 		$SectionsToRun = Show_Section_Selection_Form -SectionNames $allSectionNames
-		if (-not $SectionsToRun -or $SectionsToRun.Count -eq 0)
+		if (-not $SectionsToRun -or @($SectionsToRun).Count -eq 0)
 		{
 			Write_Log "No sections selected or form was canceled. Aborting execution." "yellow"
 			return
 		}
 	}
-	$useSpecificSections = $SectionsToRun -and $SectionsToRun.Count -gt 0
+	$useSpecificSections = $SectionsToRun -and @($SectionsToRun).Count -gt 0
 
 	# ------------------------------------------------------------------------------------------------
-	# Get connection string and import detected SQL module
+	# How to run SQL: Invoke-Sqlcmd from the detected module, else the built-in SqlClient
+	# (which does not understand GO - the sections are split into batches on GO lines)
 	# ------------------------------------------------------------------------------------------------
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-
 	if (-not $ConnectionString -or -not $server -or -not $dbName)
 	{
 		Write_Log "DB server, DB name, or connection string not found. Cannot execute SQL script." "red"
 		return
 	}
 
+	$InvokeSqlCmd = $null
 	if ($SqlModuleName -and $SqlModuleName -ne "None")
 	{
-		Import-Module $SqlModuleName -ErrorAction Stop
-		$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+		try
+		{
+			Import-Module $SqlModuleName -ErrorAction Stop
+			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+		}
+		catch
+		{
+			Write_Log "SQL module '$SqlModuleName' could not be loaded ($($_.Exception.Message)) - using the built-in SQL client." "yellow"
+			$InvokeSqlCmd = $null
+		}
 	}
 	else
 	{
-		Write_Log "No valid SQL module available for SQL operations!" "red"
-		return
+		Write_Log "No SQL PowerShell module - using the built-in SQL client." "yellow"
+	}
+	$supportsConnectionString = ($InvokeSqlCmd -and $InvokeSqlCmd.Parameters.ContainsKey('ConnectionString'))
+
+	$runSection = {
+		param ([string]$Sql)
+		if ($InvokeSqlCmd)
+		{
+			if ($supportsConnectionString) { $null = & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $Sql -ErrorAction Stop -QueryTimeout 0 }
+			else { $null = & $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $Sql -ErrorAction Stop -QueryTimeout 0 }
+			return
+		}
+		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
+		try
+		{
+			$cn.Open()
+			foreach ($batch in ([regex]::Split($Sql, '(?im)^\s*GO\s*$')))
+			{
+				if ([string]::IsNullOrWhiteSpace($batch)) { continue }
+				$cmd = $cn.CreateCommand()
+				$cmd.CommandText = $batch
+				$cmd.CommandTimeout = 0
+				$null = $cmd.ExecuteNonQuery()
+			}
+		}
+		finally { $cn.Dispose() }
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# Check if Invoke-Sqlcmd supports ConnectionString parameter
-	# ------------------------------------------------------------------------------------------------
-	$supportsConnectionString = $false
-	if ($InvokeSqlCmd)
-	{
-		$supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString'
-	}
-
-	# ------------------------------------------------------------------------------------------------
-	# Execute each SQL section, one by one (NO RETRIES, NO FILE COPY)
+	# Execute each section once, in order
 	# ------------------------------------------------------------------------------------------------
 	$failedSections = @()
-	foreach ($match in $matches)
+	foreach ($match in $sectionMatches)
 	{
 		$sectionName = $match.Groups['SectionName'].Value.Trim()
 		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
@@ -9427,14 +9368,7 @@ function Process_Server
 
 		try
 		{
-			if ($supportsConnectionString)
-			{
-				& $InvokeSqlCmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
-			}
-			else
-			{
-				& $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
-			}
+			& $runSection $sqlCommands
 			Write_Log "Section '$sectionName' executed successfully." "green"
 		}
 		catch
@@ -9443,7 +9377,6 @@ function Process_Server
 			$failedSections += $sectionName
 		}
 	}
-
 	# ------------------------------------------------------------------------------------------------
 	# Completion summary
 	# ------------------------------------------------------------------------------------------------
@@ -9631,7 +9564,8 @@ function Repair_Windows
 		try
 		{
 			Write_Log "Running System File Checker (SFC)..." "blue"
-			$sfcOutput = SFC /scannow 2>&1
+			# SFC writes UTF-16 to a redirected stdout; drop the NULs so the text is readable
+			$sfcOutput = ((SFC /scannow 2>&1) -join ' ') -replace "`0", ''
 			Write_Log "System File Checker output: $sfcOutput" "cyan"
 			Write_Log "System File Checker completed." "green"
 		}
@@ -9861,21 +9795,16 @@ if (-not (Test-Path `$BackupRoot)) {
     New-Item -Path `$BackupRoot -ItemType Directory -Force | Out-Null
 }
 
-# Delete oldest backups if needed
-`$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-while (`$bakFiles.Count -ge `$MaxBackups) {
-    Remove-Item -Path `$bakFiles[0].FullName -Force
-    `$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-}
-
-# Run the backup
+# Run the backup (old backups are only rotated out AFTER a successful one)
 `$tsql = "BACKUP DATABASE [`$Database] TO DISK = N'`$backupFile' WITH NOFORMAT, NOINIT, NAME = N'`$Database-FullBackup-`$timestamp', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
 `$sqlOut = & sqlcmd -S `"$dbServer`" -Q `$tsql -b 2>&1
 `$exitCode = `$LASTEXITCODE
 
 if (`$exitCode -eq 0) {
-    # Success log
+    # Success log, then keep only the newest MaxBackups
     "[`$(Get-Date)] Backup complete: `$backupFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+    @(Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime -Descending | Select-Object -Skip `$MaxBackups) |
+        ForEach-Object { Remove-Item -LiteralPath `$_.FullName -Force -ErrorAction SilentlyContinue }
 }
 else {
     # Failure log - capture the real sqlcmd error so it is diagnosable on the store
@@ -9973,6 +9902,12 @@ function Schedule_Server_DB_Maintenance
 	)
 	Write_Log "`r`n==================== Starting Schedule_Server_DB_Maintenance ====================`r`n" "blue"
 
+	# Normally generated by the startup warmup; generate it now if the menu was used before that
+	if (-not $script:ScheduleServerScript)
+	{
+		try { Generate_SQL_Scripts -StoreNumber $StoreNumber | Out-Null }
+		catch { }
+	}
 	if (-not $script:ScheduleServerScript)
 	{
 		Write_Log "Server SQL script content variable (`\$script:ScheduleServerScript`) is empty or not defined." "red"
@@ -10069,7 +10004,7 @@ function Schedule_Server_DB_Maintenance
 
  /* Activate the new task right away */
  @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
-"@ -replace "`n", "`r`n"
+"@ -replace "`r?`n", "`r`n"
 
 	# Write the server repair script
 	try
@@ -10299,19 +10234,7 @@ if (-not (Test-Path `$backupRoot)) {
 `$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 `$backupZipPath = Join-Path `$backupRoot ("Storeman_Backup_`$timestamp.zip")
 
-# Delete oldest backups if needed
-`$oldZips = Get-ChildItem -Path `$backupRoot -Filter "Storeman_Backup_*.zip" | Sort-Object LastWriteTime -Descending
-if (`$oldZips.Count -ge $keepInput) {
-    `$oldZips | Select-Object -Skip ($keepInput - 1) | ForEach-Object {
-        try {
-            Remove-Item `$_.FullName -Force
-        } catch {
-            Write-Host "Failed to delete old backup: `$_.FullName" -ForegroundColor Yellow
-        }
-    }
-}
-
-# Run the backup
+# Run the backup (old ZIPs are only rotated out AFTER a successful one)
 try {
     `$zip = [System.IO.Compression.ZipFile]::Open(`$backupZipPath, 1)  # 1 = Create
 
@@ -10363,6 +10286,12 @@ try {
     `$zip.Dispose()
     "`$([DateTime]::Now) Backup complete: `$backupZipPath (`$countAdded files)" | Out-File -FilePath (Join-Path `$backupRoot "backup.log") -Append -Encoding utf8
     Write-Host "Backup complete: `$backupZipPath (`$countAdded files)" -ForegroundColor Green
+
+    # Keep only the newest $keepInput ZIPs
+    Get-ChildItem -Path `$backupRoot -Filter "Storeman_Backup_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -Skip $keepInput | ForEach-Object {
+        try { Remove-Item -LiteralPath `$_.FullName -Force }
+        catch { Write-Host "Failed to delete old backup: `$(`$_.FullName)" -ForegroundColor Yellow }
+    }
 }
 catch {
     if (`$zip) { `$zip.Dispose() }
@@ -11106,7 +11035,7 @@ DROP TABLE Fct_Load;
 "@
 
 		# Ensure the SQI content uses CRLF line endings (ANSI PC format)
-		$SQIContent = $SQIContent -replace "`n", "`r`n"
+		$SQIContent = $SQIContent -replace "`r?`n", "`r`n"
 
 		# Define the full path to the SQI file (named "DrawerControl.sqi")
 		$SQIFilePath = Join-Path -Path $LaneDirectory -ChildPath "DrawerControl.sqi"
@@ -13570,7 +13499,7 @@ function Refresh_Database
 @EXEC(SQM=exe_activate_accept_sys);
 "@
 	# Ensure the SQI content uses CRLF line endings (ANSI PC format)
-	$SQIContent = $SQIContent -replace "`n", "`r`n"
+	$SQIContent = $SQIContent -replace "`r?`n", "`r`n"
 
 	# --------------------------------------------------
 	# STEP 3: For each selected register, deploy the SQI file
@@ -15585,7 +15514,7 @@ function Schedule_Lane_DB_Maintenance
 		}
 	}
 	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
-	$LaneSQLScriptContent = $LaneSQLScript -replace "`n", "`r`n"
+	$LaneSQLScriptContent = $LaneSQLScript -replace "`r?`n", "`r`n"
 
 	# Prompt user for the repeat interval in days
 	Add-Type -AssemblyName System.Windows.Forms
@@ -15678,7 +15607,7 @@ function Schedule_Lane_DB_Maintenance
 
  /* Activate the new task right away */
  @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
-"@ -replace "`n", "`r`n"
+"@ -replace "`r?`n", "`r`n"
 
 		try
 		{
@@ -17167,7 +17096,7 @@ function Send_SMS_Key_to_Lanes
 
 			try
 			{
-				Set-Content -Path $taskScriptPath -Value ($sb.ToString() -replace "`n", "`r`n") -Encoding UTF8
+				Set-Content -Path $taskScriptPath -Value ($sb.ToString() -replace "`r?`n", "`r`n") -Encoding UTF8
 				Write_Log "Task script written/updated (single file): $taskScriptPath" "green"
 				Write_Log "Latest results log (overwrites each run): $latestLogPath" "cyan"
 			}

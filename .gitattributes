@@ -1,7 +1,9 @@
-# TBS Maintenance Script: Windows line endings in the working copy (PowerShell 5.1 /
-# PowerShell Studio friendly), LF in the repository. Scoped on purpose so the other
-# scripts in this repo keep their current storage.
-TBS_Maintenace_Script_V2.ps1    text eol=crlf
+# TBS Maintenance Script
+#  - sources: Windows line endings in the working copy (PowerShell Studio friendly)
+#  - the BUILT script: LF everywhere, as in every earlier version - its here-strings (SQL,
+#    generated worker scripts) are written to disk and their code expects LF line breaks
+# Scoped on purpose so the other scripts in this repo keep their current storage.
+TBS_Maintenace_Script_V2.ps1    text eol=lf
 TBS_Maintenance/**              text eol=crlf
 TBS_Maintenance/**/*.png        binary
 TBS_Maintenance/**/*.ico        binary

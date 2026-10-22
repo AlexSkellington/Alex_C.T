@@ -2,9 +2,10 @@
 #                              FUNCTION: Process_Server
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Runs the full server (store) SQL maintenance: takes the SQL script from the
-#   $script:ServerSQLScript variable or a file, optionally prompts for section selection,
-#   executes each section with retries and logs a per-section summary at the end.
+#   Runs the server (store) SQL maintenance: takes the script from $script:ServerSQLScript
+#   (generated on demand) or a file, optionally lets the user pick sections, runs each section
+#   once - Invoke-Sqlcmd when a SQL module is available, else SqlClient split on GO lines - and
+#   logs which sections failed.
 #
 # Parameters:
 #   - StoresqlFilePath  [string]: SQL file to run instead of the script variable
@@ -29,12 +30,6 @@ function Process_Server
 	# Banner: Start
 	# ------------------------------------------------------------------------------------------------
 	Write_Log "`r`n==================== Starting Server Database Maintenance ====================`r`n" "blue"
-
-	if ($PromptForSections)
-	{
-		[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
-		[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
-	}
 
 	# ------------------------------------------------------------------------------------------------
 	# Variables and settings
@@ -85,72 +80,90 @@ function Process_Server
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# Parse SQL sections (comment blocks) to execute
+	# Parse SQL sections: each "/* Name */" comment starts a section
 	# ------------------------------------------------------------------------------------------------
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-	$matches = [regex]::Matches($sqlScript, $sectionPattern)
-
-	if ($matches.Count -eq 0)
+	$sectionMatches = [regex]::Matches($sqlScript, $sectionPattern)
+	if ($sectionMatches.Count -eq 0)
 	{
 		Write_Log "No SQL sections found to execute." "red"
 		return
 	}
 
-	# ------------------------------------------------------------------------------------------------
-	# Prompt for section selection if requested
-	# ------------------------------------------------------------------------------------------------
 	$SectionsToRun = $null
 	if ($PromptForSections)
 	{
-		$allSectionNames = $matches | ForEach-Object {
-			$_.Groups['SectionName'].Value.Trim()
-		}
+		$allSectionNames = @($sectionMatches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() })
 		$SectionsToRun = Show_Section_Selection_Form -SectionNames $allSectionNames
-		if (-not $SectionsToRun -or $SectionsToRun.Count -eq 0)
+		if (-not $SectionsToRun -or @($SectionsToRun).Count -eq 0)
 		{
 			Write_Log "No sections selected or form was canceled. Aborting execution." "yellow"
 			return
 		}
 	}
-	$useSpecificSections = $SectionsToRun -and $SectionsToRun.Count -gt 0
+	$useSpecificSections = $SectionsToRun -and @($SectionsToRun).Count -gt 0
 
 	# ------------------------------------------------------------------------------------------------
-	# Get connection string and import detected SQL module
+	# How to run SQL: Invoke-Sqlcmd from the detected module, else the built-in SqlClient
+	# (which does not understand GO - the sections are split into batches on GO lines)
 	# ------------------------------------------------------------------------------------------------
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-
 	if (-not $ConnectionString -or -not $server -or -not $dbName)
 	{
 		Write_Log "DB server, DB name, or connection string not found. Cannot execute SQL script." "red"
 		return
 	}
 
+	$InvokeSqlCmd = $null
 	if ($SqlModuleName -and $SqlModuleName -ne "None")
 	{
-		Import-Module $SqlModuleName -ErrorAction Stop
-		$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+		try
+		{
+			Import-Module $SqlModuleName -ErrorAction Stop
+			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+		}
+		catch
+		{
+			Write_Log "SQL module '$SqlModuleName' could not be loaded ($($_.Exception.Message)) - using the built-in SQL client." "yellow"
+			$InvokeSqlCmd = $null
+		}
 	}
 	else
 	{
-		Write_Log "No valid SQL module available for SQL operations!" "red"
-		return
+		Write_Log "No SQL PowerShell module - using the built-in SQL client." "yellow"
+	}
+	$supportsConnectionString = ($InvokeSqlCmd -and $InvokeSqlCmd.Parameters.ContainsKey('ConnectionString'))
+
+	$runSection = {
+		param ([string]$Sql)
+		if ($InvokeSqlCmd)
+		{
+			if ($supportsConnectionString) { $null = & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $Sql -ErrorAction Stop -QueryTimeout 0 }
+			else { $null = & $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $Sql -ErrorAction Stop -QueryTimeout 0 }
+			return
+		}
+		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
+		try
+		{
+			$cn.Open()
+			foreach ($batch in ([regex]::Split($Sql, '(?im)^\s*GO\s*$')))
+			{
+				if ([string]::IsNullOrWhiteSpace($batch)) { continue }
+				$cmd = $cn.CreateCommand()
+				$cmd.CommandText = $batch
+				$cmd.CommandTimeout = 0
+				$null = $cmd.ExecuteNonQuery()
+			}
+		}
+		finally { $cn.Dispose() }
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# Check if Invoke-Sqlcmd supports ConnectionString parameter
-	# ------------------------------------------------------------------------------------------------
-	$supportsConnectionString = $false
-	if ($InvokeSqlCmd)
-	{
-		$supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString'
-	}
-
-	# ------------------------------------------------------------------------------------------------
-	# Execute each SQL section, one by one (NO RETRIES, NO FILE COPY)
+	# Execute each section once, in order
 	# ------------------------------------------------------------------------------------------------
 	$failedSections = @()
-	foreach ($match in $matches)
+	foreach ($match in $sectionMatches)
 	{
 		$sectionName = $match.Groups['SectionName'].Value.Trim()
 		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
@@ -169,14 +182,7 @@ function Process_Server
 
 		try
 		{
-			if ($supportsConnectionString)
-			{
-				& $InvokeSqlCmd -ConnectionString $ConnectionString -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
-			}
-			else
-			{
-				& $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $sqlCommands -ErrorAction Stop -QueryTimeout 0
-			}
+			& $runSection $sqlCommands
 			Write_Log "Section '$sectionName' executed successfully." "green"
 		}
 		catch
@@ -185,7 +191,6 @@ function Process_Server
 			$failedSections += $sectionName
 		}
 	}
-
 	# ------------------------------------------------------------------------------------------------
 	# Completion summary
 	# ------------------------------------------------------------------------------------------------

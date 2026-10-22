@@ -836,7 +836,7 @@ function Send_SMS_Key_to_Lanes
 
 			try
 			{
-				Set-Content -Path $taskScriptPath -Value ($sb.ToString() -replace "`n", "`r`n") -Encoding UTF8
+				Set-Content -Path $taskScriptPath -Value ($sb.ToString() -replace "`r?`n", "`r`n") -Encoding UTF8
 				Write_Log "Task script written/updated (single file): $taskScriptPath" "green"
 				Write_Log "Latest results log (overwrites each run): $latestLogPath" "cyan"
 			}

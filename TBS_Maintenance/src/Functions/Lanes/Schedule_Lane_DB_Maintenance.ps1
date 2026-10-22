@@ -51,7 +51,7 @@ function Schedule_Lane_DB_Maintenance
 		}
 	}
 	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
-	$LaneSQLScriptContent = $LaneSQLScript -replace "`n", "`r`n"
+	$LaneSQLScriptContent = $LaneSQLScript -replace "`r?`n", "`r`n"
 
 	# Prompt user for the repeat interval in days
 	Add-Type -AssemblyName System.Windows.Forms
@@ -144,7 +144,7 @@ function Schedule_Lane_DB_Maintenance
 
  /* Activate the new task right away */
  @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
-"@ -replace "`n", "`r`n"
+"@ -replace "`r?`n", "`r`n"
 
 		try
 		{

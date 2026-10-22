@@ -176,21 +176,16 @@ if (-not (Test-Path `$BackupRoot)) {
     New-Item -Path `$BackupRoot -ItemType Directory -Force | Out-Null
 }
 
-# Delete oldest backups if needed
-`$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-while (`$bakFiles.Count -ge `$MaxBackups) {
-    Remove-Item -Path `$bakFiles[0].FullName -Force
-    `$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-}
-
-# Run the backup
+# Run the backup (old backups are only rotated out AFTER a successful one)
 `$tsql = "BACKUP DATABASE [`$Database] TO DISK = N'`$backupFile' WITH NOFORMAT, NOINIT, NAME = N'`$Database-FullBackup-`$timestamp', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
 `$sqlOut = & sqlcmd -S `"$dbServer`" -Q `$tsql -b 2>&1
 `$exitCode = `$LASTEXITCODE
 
 if (`$exitCode -eq 0) {
-    # Success log
+    # Success log, then keep only the newest MaxBackups
     "[`$(Get-Date)] Backup complete: `$backupFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+    @(Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime -Descending | Select-Object -Skip `$MaxBackups) |
+        ForEach-Object { Remove-Item -LiteralPath `$_.FullName -Force -ErrorAction SilentlyContinue }
 }
 else {
     # Failure log - capture the real sqlcmd error so it is diagnosable on the store

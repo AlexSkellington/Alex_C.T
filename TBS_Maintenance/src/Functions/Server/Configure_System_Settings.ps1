@@ -23,67 +23,38 @@ function Configure_System_Settings
 
 	try
 	{
-		# ==========================================================================================
-		# [CHANGE] Removed: Desktop organizing block
-		#          Moved into new function: Organize_Desktop_Items
-		# ==========================================================================================
-
 		# ===========================================
-		# 1. Configure Power Settings
+		# 1. Power settings
 		# ===========================================
 		Write_Log "`r`nConfiguring power plan and performance settings..." "blue"
 
-		# High Performance plan GUID
+		# powercfg is an external program: failures show up in the exit code, never as an
+		# exception (before v2.7.0 every step here logged success regardless)
+		$powercfg = {
+			param ([string]$What, [string[]]$PcArgs)
+			$out = & powercfg.exe @PcArgs 2>&1
+			if ($LASTEXITCODE -eq 0) { Write_Log $What "green"; return $true }
+			Write_Log ("Failed: {0} (powercfg {1}: {2})" -f $What, ($PcArgs -join ' '), (($out | Out-String).Trim())) "red"
+			return $false
+		}
+
+		# High Performance plan; on systems where it is hidden, restore it from its template first
 		$highPerfGUID = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+		$null = & powercfg.exe /query $highPerfGUID 2>&1
+		if ($LASTEXITCODE -ne 0) { $null = & powercfg.exe -duplicatescheme $highPerfGUID $highPerfGUID 2>&1 }
+		$null = & $powercfg "Power plan set to High Performance." @('/s', $highPerfGUID)
 
-		try
-		{
-			powercfg /s $highPerfGUID
-			Write_Log "Power plan set to High Performance." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to set power plan to High Performance. Error: $_" "red"
-		}
+		$null = & $powercfg "System sleep disabled (AC)." @('/change', 'standby-timeout-ac', '0')
+		$null = & $powercfg "System sleep disabled (DC)." @('/change', 'standby-timeout-dc', '0')
 
-		# Disable sleep (AC/DC)
-		try
-		{
-			powercfg /change standby-timeout-ac 0
-			powercfg /change standby-timeout-dc 0
-			Write_Log "System sleep disabled for AC/DC." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to disable system sleep. Error: $_" "red"
-		}
+		# Minimum processor state 100% (SUB_PROCESSOR / PROCTHROTTLEMIN) on the High Performance plan
+		$subProcessor = "54533251-82be-4824-96c1-47b60b740d00"
+		$procThrottleMin = "893dee8e-2bef-41e0-89c6-b55d0929964c"
+		$null = & $powercfg "Minimum processor performance 100% (AC)." @('/setacvalueindex', $highPerfGUID, $subProcessor, $procThrottleMin, '100')
+		$null = & $powercfg "Minimum processor performance 100% (DC)." @('/setdcvalueindex', $highPerfGUID, $subProcessor, $procThrottleMin, '100')
+		$null = & $powercfg "High Performance plan re-activated." @('/setactive', $highPerfGUID)
 
-		# Minimum processor performance to 100% (AC/DC)
-		try
-		{
-			# SUB_PROCESSOR         = 54533251-82be-4824-96c1-47b60b740d00
-			# PROCTHROTTLEMIN       = 893dee8e-2bef-41e0-89c6-b55d0929964c
-			powercfg /setacvalueindex $highPerfGUID "54533251-82be-4824-96c1-47b60b740d00" "893dee8e-2bef-41e0-89c6-b55d0929964c" 100
-			powercfg /setdcvalueindex $highPerfGUID "54533251-82be-4824-96c1-47b60b740d00" "893dee8e-2bef-41e0-89c6-b55d0929964c" 100
-			powercfg /setactive $highPerfGUID
-			Write_Log "Minimum processor performance set to 100% (AC/DC)." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to set processor performance. Error: $_" "red"
-		}
-
-		# Turn off screen after 15 minutes (AC)
-		try
-		{
-			powercfg /change monitor-timeout-ac 15
-			Write_Log "Monitor timeout (AC) set to 15 minutes." "green"
-		}
-		catch
-		{
-			Write_Log "Failed to set monitor timeout. Error: $_" "red"
-		}
-
+		$null = & $powercfg "Monitor timeout (AC) set to 15 minutes." @('/change', 'monitor-timeout-ac', '15')
 		Write_Log "Power and performance settings complete." "green"
 
 		# ===========================================

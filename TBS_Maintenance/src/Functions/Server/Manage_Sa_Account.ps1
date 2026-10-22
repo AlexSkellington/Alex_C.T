@@ -2,18 +2,21 @@
 #                              FUNCTION: Manage_Sa_Account
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Form with Enable/Disable buttons for the 'sa' login on the local SQL Server. Enable sets
-#   the sa password to 'TB$upp0rT'; button states reflect the current sa state (queried from
-#   sys.sql_logins). Closes after a successful action.
+#   Form with Enable/Disable buttons for the 'sa' login on the store SQL Server. Enable also
+#   sets the sa password to the standard support password ($script:BackupSqlPass). The button
+#   for the current state is greyed out (read from sys.sql_logins); the form closes after a
+#   successful change.
 #
 # Parameters:
 #   (none)
 #
 # Variables:
-#   - $script:FunctionResults: SqlModuleName, ConnectionString, DBSERVER (from SQL detection)
+#   - $script:FunctionResults: SqlModuleName, ConnectionString, DBSERVER
+#   - $script:BackupSqlPass: the password set when enabling sa
 #
 # Notes:
-#   - Assumes the default SQL instance and sysadmin privileges.
+#   - Needs sysadmin rights on the instance. Uses Invoke-Sqlcmd when a SQL module is
+#     available, else the built-in SqlClient.
 # ===================================================================================================
 
 function Manage_Sa_Account
@@ -26,24 +29,52 @@ function Manage_Sa_Account
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 
-	# Use already detected SQL module and connection info
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$serverInstance = $script:FunctionResults['DBSERVER']
-	$database = "master"
-
-	if (-not $SqlModuleName -or $SqlModuleName -eq "None")
+	if ((-not $ConnectionString -or $ConnectionString -eq 'N/A') -and (-not $serverInstance -or $serverInstance -eq 'N/A'))
 	{
-		Write_Log "No valid SQL module detected for SQL operations!" "red"
+		Write_Log "No SQL server / connection string known for this store - cannot manage 'sa'." "red"
 		return
 	}
-	Import-Module $SqlModuleName -ErrorAction Stop
-	$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
 
-	$supportsConnectionString = $false
-	if ($InvokeSqlCmd)
+	$InvokeSqlCmd = $null
+	if ($SqlModuleName -and $SqlModuleName -ne "None")
 	{
-		$supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString'
+		try
+		{
+			Import-Module $SqlModuleName -ErrorAction Stop
+			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+		}
+		catch { $InvokeSqlCmd = $null }
+	}
+	$supportsConnectionString = ($InvokeSqlCmd -and $InvokeSqlCmd.Parameters.ContainsKey('ConnectionString'))
+
+	# Run one statement against the instance; returns rows (Invoke-Sqlcmd or SqlClient)
+	$runSql = {
+		param ([string]$Query)
+		if ($InvokeSqlCmd)
+		{
+			if ($supportsConnectionString) { return & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $Query -ErrorAction Stop }
+			return & $InvokeSqlCmd -ServerInstance $serverInstance -Database master -Query $Query -ErrorAction Stop
+		}
+		$cs = if ($ConnectionString -and $ConnectionString -ne 'N/A') { $ConnectionString } else { "Server=$serverInstance;Database=master;Integrated Security=True;TrustServerCertificate=True;" }
+		$cn = New-Object System.Data.SqlClient.SqlConnection $cs
+		try
+		{
+			$cn.Open()
+			$cmd = $cn.CreateCommand()
+			$cmd.CommandText = $Query
+			$dt = New-Object System.Data.DataTable
+			[void](New-Object System.Data.SqlClient.SqlDataAdapter $cmd).Fill($dt)
+			return , $dt
+		}
+		finally { $cn.Dispose() }
+	}
+	$getSaEnabled = {
+		$rows = @(& $runSql "SELECT is_disabled FROM sys.sql_logins WHERE name = 'sa'" | ForEach-Object { $_ })
+		if ($rows.Count -eq 0) { return $null }
+		return ([int]$rows[0].is_disabled -eq 0)
 	}
 
 	$form = New-Object System.Windows.Forms.Form
@@ -66,126 +97,46 @@ function Manage_Sa_Account
 	$btnDisable.Size = New-Object System.Drawing.Size(200, 30)
 	$form.Controls.Add($btnDisable)
 
-	# --- Initial state update ---
+	# --- Current state ---
+	$isEnabled = $false
 	try
 	{
-		$query = "SELECT is_disabled FROM sys.sql_logins WHERE name = 'sa'"
-		if ($supportsConnectionString)
-		{
-			$result = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query -ErrorAction Stop
-		}
-		else
-		{
-			$result = Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $query -ErrorAction Stop
-		}
-		if ($result)
-		{
-			$isEnabled = ($result.is_disabled -eq 0)
-		}
-		else
-		{
-			Write_Log "'sa' account not found." "red"
-			$isEnabled = $false
-		}
+		$state = & $getSaEnabled
+		if ($null -eq $state) { Write_Log "'sa' account not found." "red" }
+		else { $isEnabled = $state }
 	}
-	catch
-	{
-		Write_Log "Error checking 'sa' status: $_" "red"
-		$isEnabled = $false
-	}
+	catch { Write_Log "Error checking 'sa' status: $_" "red" }
 	$btnEnable.Enabled = -not $isEnabled
 	$btnDisable.Enabled = $isEnabled
-	if ($isEnabled)
-	{
-		Write_Log "'sa' is currently enabled. Enable button greyed out." "yellow"
-	}
-	else
-	{
-		Write_Log "'sa' is currently disabled. Disable button greyed out." "yellow"
-	}
+	if ($isEnabled) { Write_Log "'sa' is currently enabled. Enable button greyed out." "yellow" }
+	else { Write_Log "'sa' is currently disabled. Disable button greyed out." "yellow" }
 
-	# --- Enable 'sa' button click event ---
-	$btnEnable.Add_Click({
-			Write_Log "Enable button clicked. Attempting to enable 'sa'..." "blue"
-			try
+	# --- Enable / Disable ---
+	$apply = {
+		param ([bool]$Enable)
+		$verb = if ($Enable) { 'enable' } else { 'disable' }
+		Write_Log "$((Get-Culture).TextInfo.ToTitleCase($verb)) button clicked. Attempting to $verb 'sa'..." "blue"
+		try
+		{
+			if ($Enable)
 			{
-				$enableQuery = "ALTER LOGIN sa ENABLE; ALTER LOGIN sa WITH PASSWORD = 'TB`$upp0rT';"
-				if ($supportsConnectionString)
-				{
-					Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $enableQuery -ErrorAction Stop
-				}
-				else
-				{
-					Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $enableQuery -ErrorAction Stop
-				}
+				$saPassword = ([string]$script:BackupSqlPass).Replace("'", "''")
+				$null = & $runSql "ALTER LOGIN sa ENABLE; ALTER LOGIN sa WITH PASSWORD = '$saPassword';"
 				Write_Log "'sa' account enabled and password set successfully." "green"
-				# Refresh state and close
-				try
-				{
-					$query = "SELECT is_disabled FROM sys.sql_logins WHERE name = 'sa'"
-					if ($supportsConnectionString)
-					{
-						$result = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query -ErrorAction Stop
-					}
-					else
-					{
-						$result = Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $query -ErrorAction Stop
-					}
-					if ($result) { $isEnabled = ($result.is_disabled -eq 0) }
-					else { $isEnabled = $false }
-				}
-				catch { $isEnabled = $false }
-				$btnEnable.Enabled = -not $isEnabled
-				$btnDisable.Enabled = $isEnabled
-				$form.Close()
 			}
-			catch
+			else
 			{
-				Write_Log "Error enabling 'sa' account: $_" "red"
-			}
-		})
-
-	# --- Disable 'sa' button click event ---
-	$btnDisable.Add_Click({
-			Write_Log "Disable button clicked. Attempting to disable 'sa'..." "blue"
-			try
-			{
-				$disableQuery = "ALTER LOGIN sa DISABLE;"
-				if ($supportsConnectionString)
-				{
-					Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $disableQuery -ErrorAction Stop
-				}
-				else
-				{
-					Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $disableQuery -ErrorAction Stop
-				}
+				$null = & $runSql "ALTER LOGIN sa DISABLE;"
 				Write_Log "'sa' account disabled successfully." "green"
-				# Refresh state and close
-				try
-				{
-					$query = "SELECT is_disabled FROM sys.sql_logins WHERE name = 'sa'"
-					if ($supportsConnectionString)
-					{
-						$result = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $query -ErrorAction Stop
-					}
-					else
-					{
-						$result = Invoke-Sqlcmd -ServerInstance $serverInstance -Database $database -Query $query -ErrorAction Stop
-					}
-					if ($result) { $isEnabled = ($result.is_disabled -eq 0) }
-					else { $isEnabled = $false }
-				}
-				catch { $isEnabled = $false }
-				$btnEnable.Enabled = -not $isEnabled
-				$btnDisable.Enabled = $isEnabled
-				$form.Close()
 			}
-			catch
-			{
-				Write_Log "Error disabling 'sa' account: $_" "red"
-			}
-		})
+			$form.Close()
+		}
+		catch { Write_Log "Error trying to $verb 'sa' account: $_" "red" }
+	}
+	$btnEnable.Add_Click({ & $apply $true })
+	$btnDisable.Add_Click({ & $apply $false })
 
-	$form.ShowDialog() | Out-Null
+	[void]$form.ShowDialog()
+	$form.Dispose()
 	Write_Log "`r`n==================== Manage_Sa_Account Function Completed ====================" "blue"
 }
