@@ -807,9 +807,80 @@ ORDER BY e.F01;
 	$summaryDeleteStage = New-Object System.Collections.Generic.List[string]
 	$summaryDeployStage = New-Object System.Collections.Generic.List[string]
 
-	# ------------------------- Stage runner (inline pattern) -------------------------
-	# We keep this as repeated inline logic (no nested helper functions) so it remains drop-in compatible.
+	# ------------------------- Stage runner -------------------------
+	# Runs BMS.exe once and summarizes Response.log per selected scale. Only lines BMS appended
+	# during THIS run count: the log keeps history, and "latest line per IP" used to report an
+	# older run's result when this run wrote nothing for a scale.
+	$runBmsStage = {
+		param ([string]$StageName, [string]$TriggerLike, $Summary)
 
+		$linesBefore = 0
+		if (Test-Path -LiteralPath $responseLogPath) { $linesBefore = @(Get-Content -LiteralPath $responseLogPath -ErrorAction SilentlyContinue).Count }
+
+		Write_Log "Running BMS.exe ($StageName stage)..." "blue"
+		$exitCode = $null
+		try
+		{
+			Push-Location $BmsRootNorm
+			& $BmsExePath -config $relConfig -dynamic $relDynamic
+			$exitCode = $LASTEXITCODE
+		}
+		catch { Write_Log "ERROR: Failed to run BMS.exe ($StageName stage): $_" "red" }
+		finally { Pop-Location }
+
+		if ($null -ne $exitCode) { Write_Log "BMS.exe exit code ($StageName stage): $exitCode" "green" }
+		else { Write_Log "WARNING: BMS.exe exit code unknown ($StageName stage)." "yellow" }
+
+		if (-not (Test-Path -LiteralPath $responseLogPath))
+		{
+			foreach ($m in $selectedScaleMeta) { [void]$Summary.Add(("{0} ({1}): Response.log not found" -f $m.ScaleName, $m.IPAddress)) }
+			return
+		}
+
+		$allLines = @(Get-Content -LiteralPath $responseLogPath -ErrorAction SilentlyContinue)
+		# A shorter log means BMS rotated it: then every line is from this run
+		$newLines = if ($allLines.Count -ge $linesBefore) { @($allLines | Select-Object -Skip $linesBefore) } else { $allLines }
+
+		# Response.log: ts|name|ip|rc|?|trigger|items|errors|type
+		$latestByIP = @{ }
+		foreach ($l in $newLines)
+		{
+			if ([string]::IsNullOrWhiteSpace($l)) { continue }
+			$parts = $l -split '\|', -1
+			if ($parts.Count -lt 9) { continue }
+			$ip = $parts[2].Trim()
+			$trigger = $parts[5].Trim()
+			if ($trigger -notlike $TriggerLike -or [string]::IsNullOrWhiteSpace($ip)) { continue }
+
+			$tsNum = 0L; [void][int64]::TryParse(($parts[0].Trim() -replace '_', ''), [ref]$tsNum)
+			$rec = [pscustomobject]@{
+				TimestampText = $parts[0].Trim()
+				TimestampNum  = $tsNum
+				Trigger	      = $trigger
+				RC		      = $parts[3].Trim()
+				Items		  = $parts[6].Trim()
+				Errors	      = $parts[7].Trim()
+				Type		  = $parts[8].Trim()
+				ScaleNameLog  = $parts[1].Trim()
+			}
+			if (-not $latestByIP.ContainsKey($ip) -or $rec.TimestampNum -ge $latestByIP[$ip].TimestampNum) { $latestByIP[$ip] = $rec }
+		}
+
+		foreach ($m in $selectedScaleMeta)
+		{
+			$ipKey = $m.IPAddress.Trim()
+			if (-not $latestByIP.ContainsKey($ipKey))
+			{
+				[void]$Summary.Add(("{0} ({1}): no {2} response line detected" -f $m.ScaleName, $m.IPAddress, $StageName))
+				continue
+			}
+			$r = $latestByIP[$ipKey]
+			$orUnknown = { param ($v) if ([string]::IsNullOrWhiteSpace($v)) { '?' } else { $v } }
+			$typeText = if ($r.Type) { ", type=$($r.Type)" } else { "" }
+			[void]$Summary.Add(("{0} ({1}): rc={2}, trigger={3}, items={4}, errs={5}{6}, ts={7}, logName={8}" -f
+					$m.ScaleName, $m.IPAddress, (& $orUnknown $r.RC), $r.Trigger, (& $orUnknown $r.Items), (& $orUnknown $r.Errors), $typeText, $r.TimestampText, $r.ScaleNameLog))
+		}
+	}
 	# ========== STAGE 1: DELETE (if deleteOnly OR deleteFirstThenDeploy) ==========
 	if ($deleteOnly -or $deleteFirstThenDeploy)
 	{
@@ -839,119 +910,7 @@ ORDER BY e.F01;
 			return
 		}
 
-		Write_Log "Running BMS.exe (DELETE stage)..." "blue"
-
-		$exitCode = $null
-		try
-		{
-			Push-Location $BmsRootNorm
-			& $BmsExePath -config $relConfig -dynamic $relDynamic
-			$exitCode = $LASTEXITCODE
-		}
-		catch
-		{
-			Write_Log "ERROR: Failed to run BMS.exe (DELETE stage): $_" "red"
-		}
-		finally
-		{
-			Pop-Location
-		}
-
-		if ($exitCode -ne $null) { Write_Log "BMS.exe exit code (DELETE stage): $exitCode" "green" }
-		else { Write_Log "WARNING: BMS.exe exit code unknown (DELETE stage)." "yellow" }
-
-		# Parse Response.log for DELETE stage (prefer lines whose trigger starts with DBatch)
-		if (-not (Test-Path -LiteralPath $responseLogPath))
-		{
-			foreach ($m in $selectedScaleMeta)
-			{
-				[void]$summaryDeleteStage.Add(("{0} ({1}): Response.log not found" -f $m.ScaleName, $m.IPAddress))
-			}
-		}
-		else
-		{
-			$allLines = @()
-			try { $allLines = Get-Content -LiteralPath $responseLogPath -ErrorAction Stop }
-			catch { $allLines = @() }
-
-			$latestByIP = @{ }
-			foreach ($l in $allLines)
-			{
-				if ([string]::IsNullOrWhiteSpace($l)) { continue }
-
-				$parts = $l -split '\|', -1
-				if ($parts.Count -lt 9) { continue }
-
-				$tsText = ($parts[0]).Trim()
-				$ip = ($parts[2]).Trim()
-				$trigger = ($parts[5]).Trim()
-
-				# Only keep DELETE stage triggers
-				if (-not ($trigger -like "DBatch*")) { continue }
-				if ([string]::IsNullOrWhiteSpace($ip)) { continue }
-
-				$tsNum = 0L
-				try { $tsNum = [int64]($tsText -replace '_', '') }
-				catch { $tsNum = 0L }
-
-				$rc = $null; try { $rc = [int](($parts[3]).Trim()) }
-				catch { $rc = $null }
-				$items = $null; try { $items = [int](($parts[6]).Trim()) }
-				catch { $items = $null }
-				$errs = $null; try { $errs = [int](($parts[7]).Trim()) }
-				catch { $errs = $null }
-				$type = ($parts[8]).Trim()
-				$nameInLog = ($parts[1]).Trim()
-
-				$rec = [PSCustomObject]@{
-					TimestampText = $tsText
-					TimestampNum  = $tsNum
-					IPAddress	  = $ip
-					Trigger	      = $trigger
-					RC		      = $rc
-					Items		  = $items
-					Errors	      = $errs
-					Type		  = $type
-					ScaleNameLog  = $nameInLog
-				}
-
-				if (-not $latestByIP.ContainsKey($ip)) { $latestByIP[$ip] = $rec }
-				else
-				{
-					if ($rec.TimestampNum -gt $latestByIP[$ip].TimestampNum) { $latestByIP[$ip] = $rec }
-				}
-			}
-
-			foreach ($m in $selectedScaleMeta)
-			{
-				$ipKey = ($m.IPAddress).Trim()
-				if (-not $latestByIP.ContainsKey($ipKey))
-				{
-					[void]$summaryDeleteStage.Add(("{0} ({1}): no DELETE response line detected" -f $m.ScaleName, $m.IPAddress))
-					continue
-				}
-
-				$r = $latestByIP[$ipKey]
-				$rcOut = if ($r.RC -ne $null) { $r.RC }
-				else { "?" }
-				$itemsOut = if ($r.Items -ne $null) { $r.Items }
-				else { "?" }
-				$errsOut = if ($r.Errors -ne $null) { $r.Errors }
-				else { "?" }
-				$typOut = if ($r.Type) { $r.Type }
-				else { "" }
-
-				[void]$summaryDeleteStage.Add(
-					("{0} ({1}): rc={2}, trigger={3}, items={4}, errs={5}{6}, ts={7}, logName={8}" -f
-						$m.ScaleName, $m.IPAddress, $rcOut, $r.Trigger, $itemsOut, $errsOut,
-						$(if ($typOut) { ", type=$typOut" }
-							else { "" }),
-						$r.TimestampText, $r.ScaleNameLog
-					)
-				)
-			}
-		}
-
+		& $runBmsStage 'DELETE' 'DBatch*' $summaryDeleteStage
 		# If DELETE ONLY, we stop here (no deploy stage)
 		if ($deleteOnly)
 		{
@@ -1032,120 +991,8 @@ ORDER BY e.F01;
 			return
 		}
 
-		Write_Log "Running BMS.exe (DEPLOY stage)..." "blue"
-
-		$exitCode2 = $null
-		try
-		{
-			Push-Location $BmsRootNorm
-			& $BmsExePath -config $relConfig -dynamic $relDynamic
-			$exitCode2 = $LASTEXITCODE
-		}
-		catch
-		{
-			Write_Log "ERROR: Failed to run BMS.exe (DEPLOY stage): $_" "red"
-		}
-		finally
-		{
-			Pop-Location
-		}
-
-		if ($exitCode2 -ne $null) { Write_Log "BMS.exe exit code (DEPLOY stage): $exitCode2" "green" }
-		else { Write_Log "WARNING: BMS.exe exit code unknown (DEPLOY stage)." "yellow" }
-
-		# Parse Response.log for DEPLOY stage (prefer lines whose trigger starts with Batch*)
-		if (-not (Test-Path -LiteralPath $responseLogPath))
-		{
-			foreach ($m in $selectedScaleMeta)
-			{
-				[void]$summaryDeployStage.Add(("{0} ({1}): Response.log not found" -f $m.ScaleName, $m.IPAddress))
-			}
-		}
-		else
-		{
-			$allLines2 = @()
-			try { $allLines2 = Get-Content -LiteralPath $responseLogPath -ErrorAction Stop }
-			catch { $allLines2 = @() }
-
-			$latestByIP2 = @{ }
-			foreach ($l in $allLines2)
-			{
-				if ([string]::IsNullOrWhiteSpace($l)) { continue }
-
-				$parts = $l -split '\|', -1
-				if ($parts.Count -lt 9) { continue }
-
-				$tsText = ($parts[0]).Trim()
-				$ip = ($parts[2]).Trim()
-				$trigger = ($parts[5]).Trim()
-
-				# Only keep deploy stage triggers
-				if (-not ($trigger -like "Batch*")) { continue }
-				if ([string]::IsNullOrWhiteSpace($ip)) { continue }
-
-				$tsNum = 0L
-				try { $tsNum = [int64]($tsText -replace '_', '') }
-				catch { $tsNum = 0L }
-
-				$rc = $null; try { $rc = [int](($parts[3]).Trim()) }
-				catch { $rc = $null }
-				$items = $null; try { $items = [int](($parts[6]).Trim()) }
-				catch { $items = $null }
-				$errs = $null; try { $errs = [int](($parts[7]).Trim()) }
-				catch { $errs = $null }
-				$type = ($parts[8]).Trim()
-				$nameInLog = ($parts[1]).Trim()
-
-				$rec = [PSCustomObject]@{
-					TimestampText = $tsText
-					TimestampNum  = $tsNum
-					IPAddress	  = $ip
-					Trigger	      = $trigger
-					RC		      = $rc
-					Items		  = $items
-					Errors	      = $errs
-					Type		  = $type
-					ScaleNameLog  = $nameInLog
-				}
-
-				if (-not $latestByIP2.ContainsKey($ip)) { $latestByIP2[$ip] = $rec }
-				else
-				{
-					if ($rec.TimestampNum -gt $latestByIP2[$ip].TimestampNum) { $latestByIP2[$ip] = $rec }
-				}
-			}
-
-			foreach ($m in $selectedScaleMeta)
-			{
-				$ipKey = ($m.IPAddress).Trim()
-				if (-not $latestByIP2.ContainsKey($ipKey))
-				{
-					[void]$summaryDeployStage.Add(("{0} ({1}): no DEPLOY response line detected" -f $m.ScaleName, $m.IPAddress))
-					continue
-				}
-
-				$r = $latestByIP2[$ipKey]
-				$rcOut = if ($r.RC -ne $null) { $r.RC }
-				else { "?" }
-				$itemsOut = if ($r.Items -ne $null) { $r.Items }
-				else { "?" }
-				$errsOut = if ($r.Errors -ne $null) { $r.Errors }
-				else { "?" }
-				$typOut = if ($r.Type) { $r.Type }
-				else { "" }
-
-				[void]$summaryDeployStage.Add(
-					("{0} ({1}): rc={2}, trigger={3}, items={4}, errs={5}{6}, ts={7}, logName={8}" -f
-						$m.ScaleName, $m.IPAddress, $rcOut, $r.Trigger, $itemsOut, $errsOut,
-						$(if ($typOut) { ", type=$typOut" }
-							else { "" }),
-						$r.TimestampText, $r.ScaleNameLog
-					)
-				)
-			}
-		}
+		& $runBmsStage 'DEPLOY' 'Batch*' $summaryDeployStage
 	}
-
 	# ------------------------------------------------------------------------------------------------
 	# 9) Completion Summary (shows delete stage separately when used)
 	# ------------------------------------------------------------------------------------------------

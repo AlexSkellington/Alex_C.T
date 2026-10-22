@@ -665,9 +665,9 @@ function Copy_Files_Between_Nodes
 				try { if (-not (Test-Path -LiteralPath $dstFull)) { New-Item -ItemType Directory -Path $dstFull -Force | Out-Null } }
 				catch { Write_Log "[Create Failed] $dstFull : $($_.Exception.Message)" "red"; $failList.Add("$dest :: $dstFull (create failed)"); continue }
 
-				$args = @($srcFull, $dstFull, '/E', '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
-				if ($doMirror) { $args += '/MIR' }
-				$null = & robocopy @args
+				$roboArgs = @($srcFull, $dstFull, '/E', '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
+				if ($doMirror) { $roboArgs += '/MIR' }
+				$null = & robocopy @roboArgs
 				$exit = $LASTEXITCODE
 				$failed = ($exit -ge 8)
 				$status = if ($failed) { "FAIL ($exit)" }

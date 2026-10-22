@@ -872,8 +872,8 @@ function INI_Editor
 					catch { Write_Log "[Create Failed] $dstDir : $($_.Exception.Message)" "red"; $fail++; continue }
 
 					Write_Log "Replacing INI on $m ($dstDir\$srcFile)" "gray"
-					$args = @($srcDir, $dstDir, $srcFile, '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
-					$null = & robocopy @args
+					$roboArgs = @($srcDir, $dstDir, $srcFile, '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
+					$null = & robocopy @roboArgs
 					$code = $LASTEXITCODE
 					if ($code -ge 8) { Write_Log "Copy to $m FAILED (robocopy $code)" "red"; $fail++ }
 					else { Write_Log "Copy to $m OK (robocopy $code)" "green"; $ok++ }

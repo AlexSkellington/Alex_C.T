@@ -145,54 +145,8 @@ function Update_Scales_Specials_Interactive
 	if (-not $deployLineCorrect) { $btnRestoreDeployLine.Enabled = $true }
 
 	$btnRestoreDeployLine.Add_Click({
-			# --- Restore DEPLOY_CHG.sql ---
-			if (Test-Path $deployChgFile)
-			{
-				try
-				{
-					$content = Get-Content $deployChgFile -Raw
-					$newContent = [System.Collections.Generic.List[string]]@(
-						($content -split "`r?`n") | Where-Object {
-							$_ -notmatch '^\s*/\* Deploy price changes to the scales \*/' -and
-							$_ -notmatch $deployExecRegex
-						}
-					)
-					while ($newContent.Count -gt 0 -and ($newContent[-1] -match '^\s*$'))
-					{
-						$null = $newContent.RemoveAt($newContent.Count - 1)
-					}
-					$newContent += ""
-					$newContent += $correctExeLine
-					$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default
-					Write_Log "Restored line to DEPLOY_CHG.sql: $correctExeLine" "green"
-					$btnRestoreDeployLine.Enabled = $false
-				}
-				catch
-				{
-					Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
-				}
-			}
-			else
-			{
-				Write_Log "DEPLOY_CHG.sql not found for restore." "yellow"
-			}
-
-			# --- Delete the minutes task if it exists ---
-			$minutesTaskName = "Update_Scales_Specials_Task_Minutes"
-			$taskExists = schtasks /Query /TN "$minutesTaskName" 2>&1 | Select-String -Quiet -Pattern "$minutesTaskName"
-			if ($taskExists)
-			{
-				$deleteOut = schtasks /Delete /TN "$minutesTaskName" /F 2>&1
-				if ($LASTEXITCODE -eq 0)
-				{
-					Write_Log "Deleted scheduled task '$minutesTaskName' after DEPLOY_CHG.sql restore." "yellow"
-				}
-				else
-				{
-					Write_Log "Attempted to delete '$minutesTaskName' after restore but schtasks said: $deleteOut" "yellow"
-				}
-			}
-
+			# Same restore as the General menu's Fix Deploy_CHG (line + minutes task removal)
+			if (Fix_Deploy_CHG -OfficePath $OfficePath -Quiet) { $btnRestoreDeployLine.Enabled = $false }
 			Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
 			$DeployRestored.Value = $true
 			$form.Close()
@@ -206,8 +160,9 @@ function Update_Scales_Specials_Interactive
 			}
 		})
 
-	$selectedAction = $null
-	$minutesValue = $null
+	# Script scope so the button handlers can set them; reset so a previous run's choice never carries over
+	$script:selectedAction = $null
+	$script:minutesValue = $null
 
 	$btnSchedule.Add_Click({
 			$script:selectedAction = "schedule"
@@ -278,6 +233,15 @@ function Update_Scales_Specials_Interactive
 
 	if (-not (Test-Path $scriptFolder -ErrorAction SilentlyContinue)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
 
+	# Common schtasks arguments. Runs as the local Administrator, interactive only (/IT): the
+	# batch starts ScaleManagementApp, which needs the desktop session, and /RU without /RP or
+	# /IT made schtasks stop and ask for the password on the console (the GUI then hung).
+	# Direct call instead of Invoke-Expression; \" keeps a path with spaces as one command.
+	$newTaskArgs = {
+		param ([string]$Name, [string]$BatchPath)
+		@('/create', '/tn', $Name, '/tr', "\`"$BatchPath\`"", '/rl', 'HIGHEST', '/f', '/ru', "$env:COMPUTERNAME\Administrator", '/it')
+	}
+
 	# --- Batch for daily (UpdateSpecials) ---
 	if ($script:selectedAction -eq "schedule")
 	{
@@ -295,9 +259,7 @@ exit
 		Set-Content -Path $batchPath_Daily -Value $batchContent -Encoding ASCII
 
 		$taskName = "Update_Scales_Specials_Task"
-		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath_Daily`" /sc DAILY /st 05:00 /rl HIGHEST /f /ru $env:COMPUTERNAME\Administrator"
-
-		Invoke-Expression $schtasks
+		$schtasksOut = & schtasks.exe @(& $newTaskArgs $taskName $batchPath_Daily) /sc DAILY /st 05:00 2>&1
 
 		if ($LASTEXITCODE -eq 0)
 		{
@@ -305,7 +267,7 @@ exit
 		}
 		else
 		{
-			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task." "red"
+			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task: $(($schtasksOut | Out-String).Trim())" "red"
 		}
 		Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
 		return
@@ -373,9 +335,7 @@ exit
 
 		$taskName = "Update_Scales_Specials_Task_Minutes"
 		$interval = [int]$script:minutesValue
-		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath_Minutes`" /sc MINUTE /mo $interval /rl HIGHEST /f /ru $env:COMPUTERNAME\Administrator"
-
-		Invoke-Expression $schtasks
+		$schtasksOut = & schtasks.exe @(& $newTaskArgs $taskName $batchPath_Minutes) /sc MINUTE /mo $interval 2>&1
 
 		if ($LASTEXITCODE -eq 0)
 		{
@@ -383,7 +343,7 @@ exit
 		}
 		else
 		{
-			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task_Minutes." "red"
+			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task_Minutes: $(($schtasksOut | Out-String).Trim())" "red"
 		}
 		Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
 		return

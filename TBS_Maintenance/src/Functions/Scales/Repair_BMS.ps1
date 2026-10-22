@@ -157,7 +157,7 @@ function Repair_BMS
 			}
 			catch
 			{
-				Write_Log "Failed clearing $[toBizerbaPath]: $_" "yellow"
+				Write_Log "Failed clearing ${toBizerbaPath}: $_" "yellow"
 			}
 		}
 		else
@@ -181,7 +181,7 @@ function Repair_BMS
 			}
 			catch
 			{
-				Write_Log "Failed removing $[terminalsPath]: $_" "yellow"
+				Write_Log "Failed removing ${terminalsPath}: $_" "yellow"
 			}
 		}
 		else

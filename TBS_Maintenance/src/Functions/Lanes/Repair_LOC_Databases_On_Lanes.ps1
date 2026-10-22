@@ -74,7 +74,7 @@ function Repair_LOC_Databases_On_Lanes
 		}
 		finally { $cn.Dispose() }
 
-		# DataTable is not enumerable, so it comes back whole
+		# PowerShell unrolls a returned DataTable: callers get DataRow(s) or $null and handle both
 		return $dt
 	}
 

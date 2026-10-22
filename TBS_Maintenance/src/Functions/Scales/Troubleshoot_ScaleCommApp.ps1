@@ -5,7 +5,8 @@
 #   Audits and optionally repairs the ScaleCommApp *.exe.config files: sets StoreName (read
 #   from system.ini NAME= when not passed), FistScaleIP (first active scale full IP),
 #   SQL_InstanceName, SQL_databaseName and Recs_BatchSendFull; restores the deploy line in
-#   Office\DEPLOY_CHG.sql and removes the "Update_Scales_Specials_Task_Minutes" task if present.
+#   Office\DEPLOY_CHG.sql and removes the "Update_Scales_Specials_Task_Minutes" task if present
+#   (both through Fix_Deploy_CHG).
 #
 # Parameters:
 #   - ConfigPath          [string]: specific config file to target
@@ -213,7 +214,7 @@ function Troubleshoot_ScaleCommApp
 		$serverIPv4s = @()
 		try
 		{
-			[System.Net.Dns]::GetHostAddresses($server) | ForEach-Object {
+			[System.Net.Dns]::GetHostAddresses((($server -replace '^(?i)tcp:', '') -split '[\\,]')[0]) | ForEach-Object {
 				if ($_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $serverIPv4s += $_.ToString() }
 			}
 		}
@@ -695,7 +696,8 @@ ORDER BY
 			{
 				$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 				$sw = New-Object System.IO.StreamWriter($path, $false, $utf8NoBom)
-				$xml.Save($sw); $sw.Close()
+				try { $xml.Save($sw) }
+				finally { $sw.Close() }
 				$updated++; $savedFiles.Add((Split-Path -Leaf $path)) | Out-Null
 			}
 			catch { $skipped++ }
@@ -705,142 +707,15 @@ ORDER BY
 	# ==================================================================================================
 	# NEW: Restore DEPLOY_CHG.sql deploy line (integrated Fix_Deploy_CHG)
 	# ==================================================================================================
-	# Resolve Office path to find DEPLOY_CHG.sql
 	if (-not $OfficePath -and $script:OfficePath) { $OfficePath = $script:OfficePath }
-	if ($OfficePath)
-	{
-		$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
-
-		if (Test-Path -LiteralPath $deployChgFile)
-		{
-			# Choose executable from the configured ScaleComm roots (prefer FastDEPLOY).
-			$exeCandidate = $null
-			$fastDeployCandidates = @($ScaleCommRoots | ForEach-Object { [System.IO.Path]::Combine($_, $script:ScaleManagementAppFastDeployExeName) })
-			$regularDeployCandidates = @($ScaleCommRoots | ForEach-Object { [System.IO.Path]::Combine($_, $script:ScaleManagementAppExeName) })
-			$fastDeployCandidate = $fastDeployCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
-			$regularDeployCandidate = $regularDeployCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
-			if (-not $fastDeployCandidate) { $fastDeployCandidate = $script:ScaleManagementAppFastDeployPath }
-			if (-not $regularDeployCandidate) { $regularDeployCandidate = $script:ScaleManagementAppExePath }
-			if (Test-Path -LiteralPath $fastDeployCandidate) { $exeCandidate = $fastDeployCandidate }
-			elseif (Test-Path -LiteralPath $regularDeployCandidate) { $exeCandidate = $regularDeployCandidate }
-
-			if ($exeCandidate)
-			{
-				# Build the two-line payload (comment + @EXEC)
-				$exeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='$exeCandidate');"
-				$deployExecPatterns = @()
-				foreach ($root in @($ScaleCommRoots))
-				{
-					if ([string]::IsNullOrWhiteSpace($root)) { continue }
-					$deployExecPatterns += [regex]::Escape([System.IO.Path]::Combine($root, $script:ScaleManagementAppExeName))
-					$deployExecPatterns += [regex]::Escape([System.IO.Path]::Combine($root, $script:ScaleManagementAppFastDeployExeName))
-				}
-				$deployExecPatterns = @($deployExecPatterns | Select-Object -Unique)
-				if ($deployExecPatterns.Count -eq 0)
-				{
-					$deployExecRegex = "(?i)@EXEC\(RUN='[A-Z]:\\ScaleCommApp\\ScaleManagementApp(_FastDEPLOY)?\.exe'\);"
-				}
-				else
-				{
-					$deployExecRegex = "(?i)@EXEC\(RUN='(?:" + ($deployExecPatterns -join '|') + ")'\);"
-				}
-
-				try
-				{
-					if ($PSCmdlet.ShouldProcess($deployChgFile, "Restore DEPLOY_CHG @EXEC line -> $exeCandidate"))
-					{
-
-						# Read entire file and split into lines
-						$content = Get-Content -LiteralPath $deployChgFile -Raw
-						$lines = $content -split "`r?`n"
-
-						# CHANGE: Build a mutable list so we can RemoveAt safely (arrays are fixed-size)
-						$filtered = New-Object System.Collections.Generic.List[string]
-
-						# Filter OUT previous lines: our comment and any matching @EXEC to ScaleManagementApp(_FastDEPLOY).exe
-						foreach ($ln in $lines)
-						{
-							if ($ln -match '^\s*/\* Deploy price changes to the scales \*/') { continue }
-							if ($ln -match $deployExecRegex) { continue }
-							[void]$filtered.Add($ln)
-						}
-
-						# CHANGE: Trim trailing blank lines safely using List.RemoveAt
-						while ($filtered.Count -gt 0 -and [string]::IsNullOrWhiteSpace($filtered[$filtered.Count - 1]))
-						{
-							$filtered.RemoveAt($filtered.Count - 1)
-						}
-
-						# CHANGE: Append payload as two distinct lines (avoid embedded CRLFs inside a single element)
-						[void]$filtered.Add("") # ensure one blank line before our payload
-						[void]$filtered.Add("/* Deploy price changes to the scales */")
-						[void]$filtered.Add("@EXEC(RUN='$exeCandidate');")
-
-						# If file is read-only, clear attribute only when -Force is given
-						$fileOk = $true
-						try
-						{
-							$fi = Get-Item -LiteralPath $deployChgFile -ErrorAction Stop
-							if ($fi.Attributes -band [IO.FileAttributes]::ReadOnly)
-							{
-								if ($Force) { $fi.Attributes = ($fi.Attributes -bxor [IO.FileAttributes]::ReadOnly) }
-								else { $fileOk = $false }
-							}
-						}
-						catch { $fileOk = $false }
-
-						if ($fileOk)
-						{
-							# Keep your original encoding choice for DEPLOY_CHG.sql
-							($filtered -join "`r`n") | Set-Content -Path $deployChgFile -Encoding Default
-							Write_Log "Restored lines to DEPLOY_CHG.sql: @EXEC(RUN='$exeCandidate');" "green"
-						}
-						else
-						{
-							Write_Log "DEPLOY_CHG.sql is read-only and -Force not specified; skipped restore." "yellow"
-						}
-					}
-				}
-				catch
-				{
-					Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
-				}
-
-				# Delete the minutes scheduled task if it exists
-				try
-				{
-					$minutesTaskName = "Update_Scales_Specials_Task_Minutes"
-					$taskExists = schtasks /Query /TN "$minutesTaskName" 2>&1 | Select-String -Quiet -Pattern "$minutesTaskName"
-					if ($taskExists)
-					{
-						if ($PSCmdlet.ShouldProcess($minutesTaskName, "Delete scheduled task"))
-						{
-							$deleteOut = schtasks /Delete /TN "$minutesTaskName" /F 2>&1
-							if ($LASTEXITCODE -eq 0) { Write_Log "Deleted scheduled task '$minutesTaskName' after DEPLOY_CHG.sql restore." "yellow" }
-							else { Write_Log "Attempted to delete '$minutesTaskName' but schtasks said: $deleteOut" "yellow" }
-						}
-					}
-				}
-				catch
-				{
-					Write_Log "Error while checking/deleting '$minutesTaskName': $_" "yellow"
-				}
-			}
-			else
-			{
-				Write_Log "Neither FastDEPLOY nor regular ScaleManagementApp.exe found in configured ScaleComm roots: $($ScaleCommRoots -join ', ')." "red"
-			}
-		}
-		else
-		{
-			Write_Log "DEPLOY_CHG.sql not found at $deployChgFile" "red"
-		}
-	}
-	else
+	if (-not $OfficePath)
 	{
 		Write_Log "Office path not provided and \$script:OfficePath not available; skipping DEPLOY_CHG.sql restore." "yellow"
 	}
-
+	elseif ($PSCmdlet.ShouldProcess((Join-Path $OfficePath 'DEPLOY_CHG.sql'), 'Restore DEPLOY_CHG @EXEC line'))
+	{
+		[void](Fix_Deploy_CHG -OfficePath $OfficePath -Quiet)
+	}
 	# ------------------------------------------------------------------------------------------------
 	# Final summary
 	# ------------------------------------------------------------------------------------------------

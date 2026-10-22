@@ -54,14 +54,14 @@ function Remove_Archive_Bit
 		$op = [string]$OfficePath
 		if ($op -match '^(?i)\\\\([^\\]+)\\([^\\]+)(\\.*)?$')
 		{
-			$host = [string]$matches[1]
+			$uncHost = [string]$matches[1]
 			$share = [string]$matches[2]
 			$rest = [string]$matches[3]
 
 			$isLocalHost = $false
-			if ($host -match '^(?i)localhost$') { $isLocalHost = $true }
-			elseif ($host -eq $env:COMPUTERNAME) { $isLocalHost = $true }
-			elseif ($host -eq "$($env:COMPUTERNAME).$($env:USERDNSDOMAIN)") { $isLocalHost = $true }
+			if ($uncHost -match '^(?i)localhost$') { $isLocalHost = $true }
+			elseif ($uncHost -eq $env:COMPUTERNAME) { $isLocalHost = $true }
+			elseif ($uncHost -eq "$($env:COMPUTERNAME).$($env:USERDNSDOMAIN)") { $isLocalHost = $true }
 
 			if ($isLocalHost)
 			{
@@ -427,14 +427,14 @@ try {
 	`$op = [string]`$OfficePath
 	if ([string]::IsNullOrWhiteSpace(`$op)) { `$op = [string]`$OfficePathRaw }
 	if (`$op -match '^(?i)\\\\([^\\]+)\\([^\\]+)(\\.*)?$') {
-		`$host = [string]`$matches[1]
+		`$uncHost = [string]`$matches[1]
 		`$share = [string]`$matches[2]
 		`$rest = [string]`$matches[3]
 
 		`$isLocalHost = `$false
-		if (`$host -match '^(?i)localhost$') { `$isLocalHost = `$true }
-		elseif (`$host -eq `$env:COMPUTERNAME) { `$isLocalHost = `$true }
-		elseif (`$host -eq ("{0}.{1}" -f `$env:COMPUTERNAME, `$env:USERDNSDOMAIN)) { `$isLocalHost = `$true }
+		if (`$uncHost -match '^(?i)localhost$') { `$isLocalHost = `$true }
+		elseif (`$uncHost -eq `$env:COMPUTERNAME) { `$isLocalHost = `$true }
+		elseif (`$uncHost -eq ("{0}.{1}" -f `$env:COMPUTERNAME, `$env:USERDNSDOMAIN)) { `$isLocalHost = `$true }
 
 		if (`$isLocalHost) {
 			`$rest2 = ""

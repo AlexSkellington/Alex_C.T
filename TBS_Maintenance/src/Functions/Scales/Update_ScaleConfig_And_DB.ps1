@@ -5,15 +5,15 @@
 #   Weighted-item marking wizard: choose SCL mode or Default/POS mode, updates the
 #   ProdType_F272 setting in all ScaleCommApp XML config files (insert or update), then runs
 #   the SQL update/merge over SCL_TAB and POS_TAB keyed on the item key (default F01).
-#   Reverting to POS clears F272 only (NULL if nullable, blank string otherwise); NOT NULL
-#   fields are never touched.
+#   Reverting to POS clears F272 only, and only when the column allows NULL (a NOT NULL F272
+#   is left alone). The SQL connection is checked before any config file is changed.
 #
 # Parameters:
 #   (none - defaults set inline at the top of the function)
 #
 # Variables:
 #   - $script:ScaleCommRoots / $script:PrimaryScaleCommRoot: config XML location
-#   - $script:FunctionResults: SQL module and connection info
+#   - $script:FunctionResults: ConnectionString / DBSERVER / DBNAME (SQL goes through SqlClient)
 #
 # Notes:
 #   - Range/field defaults (MinItem, MaxItem, POS_Field/Value, SCL_Field/Value, ItemKey) are inline.
@@ -83,6 +83,27 @@ function Update_ScaleConfig_And_DB
 	else { "POS" }
 
 	# ---------------------------------------------------------------------------
+	# SQL connection first: configs and DB must change together, so nothing is
+	# written when the DB cannot be reached
+	# ---------------------------------------------------------------------------
+	$ConnectionString = Normalize_Sql_ConnectionString -RawConnectionString $script:FunctionResults['ConnectionString'] -Server $script:FunctionResults['DBSERVER'] -Database $script:FunctionResults['DBNAME']
+	if (-not $ConnectionString)
+	{
+		Write_Log "DB server, DB name, or connection string not found. Nothing was changed." "red"
+		Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
+		return
+	}
+	$sqlConn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
+	try { $sqlConn.Open() }
+	catch
+	{
+		$sqlConn.Dispose()
+		Write_Log "Cannot connect to the store database: $($_.Exception.Message). Nothing was changed." "red"
+		Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
+		return
+	}
+
+	# ---------------------------------------------------------------------------
 	# XML Config Update (robust, always update or insert key)
 	# ---------------------------------------------------------------------------
 	$Files = @(
@@ -135,35 +156,6 @@ function Update_ScaleConfig_And_DB
 		}
 	}
 
-	# ---------------------------------------------------------------------------
-	# SQL Logic: run the appropriate update/merge (ONLY F272 IS CLEARED)
-	# ---------------------------------------------------------------------------
-	$dbName = $script:FunctionResults['DBNAME']
-	$server = $script:FunctionResults['DBSERVER']
-	$ConnectionString = $script:FunctionResults['ConnectionString']
-	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-	if (-not $ConnectionString -or -not $server -or -not $dbName)
-	{
-		Write_Log "DB server, DB name, or connection string not found. Cannot execute SQL update." "red"
-		Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
-		return
-	}
-	if ($SqlModuleName -and $SqlModuleName -ne "None")
-	{
-		Import-Module $SqlModuleName -ErrorAction Stop
-		$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
-	}
-	else
-	{
-		Write_Log "No valid SQL module available for SQL operations!" "red"
-		Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
-		return
-	}
-	$supportsConnectionString = $false
-	if ($InvokeSqlCmd)
-	{
-		$supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString'
-	}
 	if ($Mode -eq "SCL")
 	{
 		$SqlQuery = @"
@@ -196,31 +188,33 @@ SELECT @@ROWCOUNT AS RowsAffected;
 	}
 	else
 	{
+		# -1 = column is NOT NULL: leave it alone
 		$SqlQuery = @"
-UPDATE SCL_TAB
-SET $SCL_Field = NULL
-WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
-AND F272 IS NOT NULL;
-SELECT @@ROWCOUNT AS RowsAffected;
+IF COLUMNPROPERTY(OBJECT_ID('dbo.SCL_TAB'), '$SCL_Field', 'AllowsNull') = 1
+BEGIN
+    UPDATE SCL_TAB
+    SET $SCL_Field = NULL
+    WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
+    AND $SCL_Field IS NOT NULL;
+    SELECT @@ROWCOUNT AS RowsAffected;
+END
+ELSE
+    SELECT -1 AS RowsAffected;
 "@
 	}
 	try
 	{
-		if ($supportsConnectionString)
-		{
-			$result = & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $SqlQuery -ErrorAction Stop -QueryTimeout 0
-		}
-		else
-		{
-			$result = & $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $SqlQuery -ErrorAction Stop -QueryTimeout 0
-		}
-		$rowsAffected = if ($result -and $result.RowsAffected) { $result.RowsAffected }
-		else { 0 }
-		Write_Log "Database updated for $Mode mode. ($rowsAffected) items changed." "green"
+		$cmd = $sqlConn.CreateCommand()
+		$cmd.CommandText = $SqlQuery
+		$cmd.CommandTimeout = 0
+		$rowsAffected = [int]$cmd.ExecuteScalar()
+		if ($rowsAffected -lt 0) { Write_Log "SCL_TAB.$SCL_Field does not allow NULL - left unchanged." "yellow" }
+		else { Write_Log "Database updated for $Mode mode. ($rowsAffected) items changed." "green" }
 	}
 	catch
 	{
 		Write_Log "Error executing SQL update for $Mode mode: $_" "red"
 	}
+	finally { $sqlConn.Dispose() }
 	Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
 }

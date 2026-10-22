@@ -166,68 +166,58 @@ while ($true)
 		}
 
 		# --------------------------
-		# 2) Remove by line containment
+		# 2) Remove by line containment: a file whose non-empty lines all appear in another file
+		#    (with at least as many lines) goes. Each file is read ONCE per pass (it was re-read
+		#    for every pair and the scan restarted after each delete).
 		# --------------------------
-		$files = Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue
-
-		for ($i = 0; $i -lt $files.Count; $i++)
+		$files = @(Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue)
+		$lineSets = @{ }
+		$lineCounts = @{ }
+		foreach ($fi in $files)
 		{
-			$fileA = $files[$i]
-
-			$linesA = Get-Content -LiteralPath $fileA.FullName -ErrorAction SilentlyContinue |
-				Where-Object { $_ -and $_.Trim() -ne "" }
-
-			if (-not $linesA -or $linesA.Count -eq 0) { continue }
-
-			for ($j = 0; $j -lt $files.Count; $j++)
-			{
-				if ($i -eq $j) { continue }
-				$fileB = $files[$j]
-
-				$linesB = Get-Content -LiteralPath $fileB.FullName -ErrorAction SilentlyContinue |
-					Where-Object { $_ -and $_.Trim() -ne "" }
-
-				if (-not $linesB) { continue }
-				if ($linesB.Count -lt $linesA.Count) { continue }
-
-				$setB = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-				foreach ($lb in $linesB) { [void]$setB.Add($lb.Trim()) }
-
-				$allFound = $true
-				foreach ($la in $linesA)
-				{
-					if (-not $setB.Contains($la.Trim())) { $allFound = $false; break }
-				}
-
-				if ($allFound)
-				{
-					$canDelete = $true
-					try
-					{
-						$s = [System.IO.File]::Open($fileA.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-						$s.Close()
-					}
-					catch { $canDelete = $false }
-
-					if ($canDelete)
-					{
-						try
-						{
-							Remove-Item -LiteralPath $fileA.FullName -Force -ErrorAction Stop
-							$removedLine++
-							if ($removedSamples.Count -lt 5) { [void]$removedSamples.Add(("LINES:{0}" -f $fileA.Name)) }
-
-							# Refresh and restart to keep indexing safe
-							$files = Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue
-							$i = -1
-							break
-						}
-						catch { }
-					}
-				}
-			}
+			$lines = @(Get-Content -LiteralPath $fi.FullName -ErrorAction SilentlyContinue | Where-Object { $_ -and $_.Trim() -ne "" })
+			if ($lines.Count -eq 0) { continue }
+			$set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+			foreach ($ln in $lines) { [void]$set.Add($ln.Trim()) }
+			$lineSets[$fi.FullName] = $set
+			$lineCounts[$fi.FullName] = $lines.Count
 		}
 
+		$deleted = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+		foreach ($fileA in $files)
+		{
+			$a = $fileA.FullName
+			if (-not $lineSets.ContainsKey($a)) { continue }
+			foreach ($fileB in $files)
+			{
+				$b = $fileB.FullName
+				if ($a -eq $b -or $deleted.Contains($b) -or -not $lineSets.ContainsKey($b)) { continue }
+				if ($lineCounts[$b] -lt $lineCounts[$a]) { continue }
+				if (-not $lineSets[$a].IsSubsetOf($lineSets[$b])) { continue }
+
+				# Only delete when nobody has the file open (BMS may still be writing it)
+				$canDelete = $true
+				try
+				{
+					$s = [System.IO.File]::Open($a, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+					$s.Close()
+				}
+				catch { $canDelete = $false }
+
+				if ($canDelete)
+				{
+					try
+					{
+						Remove-Item -LiteralPath $a -Force -ErrorAction Stop
+						[void]$deleted.Add($a)
+						$removedLine++
+						if ($removedSamples.Count -lt 5) { [void]$removedSamples.Add(("LINES:{0}" -f $fileA.Name)) }
+					}
+					catch { }
+				}
+				break
+			}
+		}
 		# Concise: only log when something was removed
 		if (($removedHash + $removedLine) -gt 0)
 		{
@@ -326,12 +316,12 @@ while ($true)
 	$form.Controls.Add($btnCancel)
 
 	$state = @{ Action = $null; Interval = 5 }
-	$monitorJob = $null
+	$state.Job = $null # handlers assign through $state: a plain $monitorJob = ... inside a handler is a new local
 
 	$form.Add_FormClosing({
-			if ($monitorJob -and $monitorJob.State -eq 'Running')
+			if ($state.Job -and $state.Job.State -eq 'Running')
 			{
-				try { Stop-Job -Job $monitorJob -Force; Remove-Job -Job $monitorJob -Force; Write_Log "Monitor job stopped on form close." "yellow" }
+				try { Stop-Job -Job $state.Job; Remove-Job -Job $state.Job -Force; Write_Log "Monitor job stopped on form close." "yellow" }
 				catch { }
 			}
 
@@ -350,25 +340,25 @@ while ($true)
 				try { "" | Set-Content -LiteralPath $singleLog -Encoding UTF8 -Force }
 				catch { }
 
-				$monitorJob = Start-Job -Name 'DuplicateFileMonitorJob' -ScriptBlock {
+				$state.Job = Start-Job -Name 'DuplicateFileMonitorJob' -ScriptBlock {
 					param ($scriptPath,
 						$interval,
 						$logFile)
 					& "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $scriptPath -IntervalSeconds $interval *>> $logFile
 				} -ArgumentList $psScriptPath, $state.Interval, $singleLog
 
-				Write_Log "Started monitor job (ID: $($monitorJob.Id)). Log: $singleLog" "green"
+				Write_Log "Started monitor job (ID: $($state.Job.Id)). Log: $singleLog" "green"
 
 				$btnRunNow.Text = "Stop Monitor"
 				$btnService.Enabled = $false
 				$btnDeleteService.Enabled = $false
-				$btnCancel.Text = "Close (Monitor Running)"
+				$btnCancel.Text = "Close (stops the monitor)"
 			}
 			else
 			{
-				if ($monitorJob -and $monitorJob.State -eq 'Running')
+				if ($state.Job -and $state.Job.State -eq 'Running')
 				{
-					try { Stop-Job -Job $monitorJob -Force; Remove-Job -Job $monitorJob -Force; Write_Log "Monitor job stopped by user." "yellow" }
+					try { Stop-Job -Job $state.Job; Remove-Job -Job $state.Job -Force; Write_Log "Monitor job stopped by user." "yellow" }
 					catch { }
 				}
 

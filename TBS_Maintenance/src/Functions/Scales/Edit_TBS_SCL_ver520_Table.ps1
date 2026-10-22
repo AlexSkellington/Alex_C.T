@@ -8,10 +8,14 @@
 #   grid; Refresh reloads from the DB. IPNetwork must end with a trailing period.
 #
 # Variables:
-#   - $script:FunctionResults: DBSERVER, DBNAME, ConnectionString, SQL_UserID/SQL_UserPwd, SqlModuleName
+#   - $script:FunctionResults: DBSERVER, DBNAME, ConnectionString, SQL_UserID/SQL_UserPwd
 #
 # Writes:
 #   - store database table TBS_SCL_ver520
+#
+# Notes:
+#   - SQL goes through System.Data.SqlClient (no SQL module needed).
+#   - Rows are matched on their ORIGINAL brand / model / IPNetwork / IPDevice (NULLs match '').
 # ===================================================================================================
 
 function Edit_TBS_SCL_ver520_Table
@@ -26,7 +30,6 @@ function Edit_TBS_SCL_ver520_Table
 	# ----------------------------------------------------------------------------------------------
 	$server = $script:FunctionResults['DBSERVER']
 	$database = $script:FunctionResults['DBNAME']
-	$SqlModuleName = $script:FunctionResults['SqlModuleName']
 	$connectionString = Normalize_Sql_ConnectionString -RawConnectionString $script:FunctionResults['ConnectionString'] -Server $server -Database $database -SqlUser $script:FunctionResults['SQL_UserID'] -SqlPwd $script:FunctionResults['SQL_UserPwd']
 
 	if (-not $server -or -not $database)
@@ -43,26 +46,34 @@ function Edit_TBS_SCL_ver520_Table
 	$script:FunctionResults['ConnectionString'] = $connectionString
 
 	# ----------------------------------------------------------------------------------------------
-	# 2) Pick SQL runner (Invoke-Sqlcmd if available, else .NET SqlClient)
+	# 2) SQL helpers (one connection per call)
 	# ----------------------------------------------------------------------------------------------
-	$InvokeSqlCmd = $null
-	if ($SqlModuleName -and $SqlModuleName -ne "None")
-	{
+	# Rows of a query (PowerShell unrolls the DataTable: DataRow(s) or nothing)
+	$runQuery = {
+		param ([string]$Sql)
+		$conn = New-Object System.Data.SqlClient.SqlConnection $connectionString
 		try
 		{
-			Import-Module $SqlModuleName -ErrorAction Stop
-			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+			$conn.Open()
+			$cmd = $conn.CreateCommand(); $cmd.CommandText = $Sql; $cmd.CommandTimeout = 0
+			$td = New-Object System.Data.DataTable
+			[void](New-Object System.Data.SqlClient.SqlDataAdapter $cmd).Fill($td)
+			$td
 		}
-		catch
+		finally { $conn.Dispose() }
+	}
+
+	$runScalar = {
+		param ([string]$Sql)
+		$conn = New-Object System.Data.SqlClient.SqlConnection $connectionString
+		try
 		{
-			Write_Log "SQL module '$SqlModuleName' not loaded. Using .NET SqlClient fallback." "yellow"
+			$conn.Open()
+			$cmd = $conn.CreateCommand(); $cmd.CommandText = $Sql; $cmd.CommandTimeout = 0
+			$cmd.ExecuteScalar()
 		}
+		finally { $conn.Dispose() }
 	}
-	else
-	{
-		Write_Log "No SQL module name provided. Using .NET SqlClient fallback." "yellow"
-	}
-	$supportsConnectionString = $InvokeSqlCmd -and ($InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString')
 
 	# ----------------------------------------------------------------------------------------------
 	# 3) Discover the /24 prefix in use; prefer NIC that can reach the SQL server; else NIC w/ gateway; else first RFC1918
@@ -75,7 +86,7 @@ function Edit_TBS_SCL_ver520_Table
 		$serverIPv4s = @()
 		try
 		{
-			$serverIPs = [System.Net.Dns]::GetHostAddresses($server)
+			$serverIPs = [System.Net.Dns]::GetHostAddresses((($server -replace '^(?i)tcp:', '') -split '[\\,]')[0])
 			foreach ($ip in $serverIPs)
 			{
 				if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork)
@@ -197,49 +208,11 @@ function Edit_TBS_SCL_ver520_Table
 	# 4) Load table -> DataTable (include Orig* columns to anchor updates)
 	# ----------------------------------------------------------------------------------------------
 	$selectQuery = @"
-SELECT 
+SELECT
     ScaleCode, ScaleName, ScaleBrand, ScaleModel, IPNetwork, IPDevice, BufferTime, Active
 FROM [TBS_SCL_ver520]
 ORDER BY ScaleCode ASC;
 "@
-
-	Write_Log "Loading table for edit..." "blue"
-
-	# CHANGE: Inline query execution (no $runQuery helper). Return rows.
-	$rows = $null
-	try
-	{
-		if ($InvokeSqlCmd)
-		{
-			if ($supportsConnectionString)
-			{
-				$rows = & $InvokeSqlCmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
-			}
-			else
-			{
-				$rows = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
-			}
-		}
-		else
-		{
-			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-			$csb.PSBase.ConnectionString = $connectionString
-			$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
-			$conn.Open()
-			$cmd = $conn.CreateCommand(); $cmd.CommandText = $selectQuery; $cmd.CommandTimeout = 0
-			$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
-			$td = New-Object System.Data.DataTable
-			[void]$da.Fill($td)
-			$conn.Close()
-			$rows = $td
-		}
-	}
-	catch
-	{
-		Write_Log "SQL error: $($_.Exception.Message)" "red"
-		return
-	}
-	if (-not $rows) { return }
 
 	$dt = New-Object System.Data.DataTable
 	foreach ($c in 'ScaleCode', 'ScaleName', 'ScaleBrand', 'ScaleModel', 'IPNetwork', 'IPDevice', 'BufferTime', 'Active',
@@ -248,23 +221,45 @@ ORDER BY ScaleCode ASC;
 		[void]$dt.Columns.Add($c)
 	}
 
-	foreach ($r in $rows)
+	# DB rows -> grid rows, with the original key columns snapshotted for the UPDATE match
+	$fillGrid = {
+		param ($Rows)
+		$dt.Rows.Clear()
+		foreach ($r in @($Rows))
+		{
+			if (-not $r) { continue }
+			$nr = $dt.NewRow()
+			foreach ($col in 'ScaleCode', 'ScaleName', 'ScaleBrand', 'ScaleModel', 'IPNetwork', 'IPDevice', 'BufferTime', 'Active') { $nr[$col] = [string]$r.$col }
+			$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
+			$nr['OrigScaleModel'] = [string]$r.ScaleModel
+			$nr['OrigIPNetwork'] = [string]$r.IPNetwork
+			$nr['OrigIPDevice'] = [string]$r.IPDevice
+			[void]$dt.Rows.Add($nr)
+		}
+	}
+
+	# Reload the grid from the DB; $true when it worked
+	$reloadFromDb = {
+		param ([string]$What = 'refresh')
+		try
+		{
+			& $fillGrid (& $runQuery $selectQuery)
+			if ($grid) { $grid.Refresh() }
+			return $true
+		}
+		catch
+		{
+			Write_Log "SQL error ($What): $($_.Exception.Message)" "red"
+			return $false
+		}
+	}
+
+	Write_Log "Loading table for edit..." "blue"
+	if (-not (& $reloadFromDb 'load')) { return }
+	if ($dt.Rows.Count -eq 0)
 	{
-		$nr = $dt.NewRow()
-		$nr['ScaleCode'] = [string]$r.ScaleCode
-		$nr['ScaleName'] = [string]$r.ScaleName
-		$nr['ScaleBrand'] = [string]$r.ScaleBrand
-		$nr['ScaleModel'] = [string]$r.ScaleModel
-		$nr['IPNetwork'] = [string]$r.IPNetwork
-		$nr['IPDevice'] = [string]$r.IPDevice
-		$nr['BufferTime'] = [string]$r.BufferTime
-		$nr['Active'] = [string]$r.Active
-		# ORIGINAL KEYS SNAPSHOT
-		$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
-		$nr['OrigScaleModel'] = [string]$r.ScaleModel
-		$nr['OrigIPNetwork'] = [string]$r.IPNetwork
-		$nr['OrigIPDevice'] = [string]$r.IPDevice
-		[void]$dt.Rows.Add($nr)
+		Write_Log "TBS_SCL_ver520 has no rows - nothing to edit." "yellow"
+		return
 	}
 
 	# ----------------------------------------------------------------------------------------------
@@ -399,7 +394,7 @@ ORDER BY ScaleCode ASC;
 	if ($allowedPrefix)
 	{
 		# CHANGE: Reflect the enforced trailing period examples only.
-		$lbl.Text = "Edit directly [?][?][?] Auto-Sort renumbers & saves [?][?][?] Active: Y/N [?][?][?] IPNetwork [?][?][?] '$allowedPrefix.' (accepts $allowedPrefix, $allowedPrefix.0/*/x/.)"
+		$lbl.Text = "Edit cells directly  |  Auto Sort renumbers and saves  |  Active: Y/N  |  IPNetwork: '$allowedPrefix.' (accepts $allowedPrefix, $allowedPrefix.0, $allowedPrefix.*, $allowedPrefix.x)"
 	}
 	else
 	{
@@ -450,9 +445,12 @@ ORDER BY ScaleCode ASC;
 		})
 
 	# ----------------------------------------------------------------------------------------------
-	# Helper-less inline SAVE logic (duplicated in Save and Auto Sort to keep "all inline" constraint)
+	# Save: validate + write exactly what is in the grid (shared by Save and Auto Sort)
 	# ----------------------------------------------------------------------------------------------
+	# ISNULL on the target keys: a scale with a NULL brand / model / IP part was never matched
+	# (and silently not saved); the row count tells when a row still did not match.
 	$sqlSaveTemplate = @'
+DECLARE @Updated int = 0;
 BEGIN TRY
   BEGIN TRAN;
 
@@ -490,10 +488,11 @@ BEGIN TRY
          tgt.Active     = src.NewActive
   FROM [TBS_SCL_ver520] AS tgt
   JOIN @Placings AS src
-    ON  tgt.ScaleBrand = src.OrigScaleBrand
-    AND tgt.ScaleModel = src.OrigScaleModel
-    AND tgt.IPNetwork  = src.OrigIPNetwork
-    AND tgt.IPDevice   = src.OrigIPDevice;
+    ON  ISNULL(CAST(tgt.ScaleBrand AS nvarchar(100)), N'') = src.OrigScaleBrand
+    AND ISNULL(CAST(tgt.ScaleModel AS nvarchar(100)), N'') = src.OrigScaleModel
+    AND ISNULL(CAST(tgt.IPNetwork AS nvarchar(100)), N'')  = src.OrigIPNetwork
+    AND ISNULL(CAST(tgt.IPDevice AS nvarchar(100)), N'')   = src.OrigIPDevice;
+  SET @Updated = @@ROWCOUNT;
 
   COMMIT TRAN;
 END TRY
@@ -502,213 +501,117 @@ BEGIN CATCH
   DECLARE @msg nvarchar(4000) = ERROR_MESSAGE();
   RAISERROR(@msg, 16, 1);
 END CATCH;
+SELECT @Updated;
 '@
+
+	$ipnPattern = '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$'
+
+	# Validate every grid row (shows the first problem); normalizes Active and IPNetwork in place
+	$validateGrid = {
+		$seenCodes = @{ }
+		$rowIdx = 0
+		foreach ($row in $dt.Rows)
+		{
+			$rowIdx++
+			$raw = $row['ScaleCode']
+			$val = $null
+			if (-not [int]::TryParse([string]$raw, [ref]$val))
+			{
+				[void][System.Windows.Forms.MessageBox]::Show("Invalid ScaleCode at row #${rowIdx}: '$raw' is not a number.", "Invalid Code", 'OK', 'Error')
+				return $false
+			}
+			if ($seenCodes.ContainsKey($val))
+			{
+				[void][System.Windows.Forms.MessageBox]::Show("Duplicate ScaleCode '$val' detected (row #$rowIdx).", "Duplicate Code", 'OK', 'Error')
+				return $false
+			}
+			$seenCodes[$val] = $true
+
+			$actRaw = [string]$row['Active']
+			$actUp = $actRaw.Trim().ToUpper()
+			if ($actUp -ne 'Y' -and $actUp -ne 'N')
+			{
+				[void][System.Windows.Forms.MessageBox]::Show("Invalid Active value at row #${rowIdx}: '$actRaw'. Use Y or N.", "Invalid Active", 'OK', 'Error')
+				return $false
+			}
+			$row['Active'] = $actUp
+
+			# IPNetwork: A.B.C(.anything) normalized to "A.B.C." (always a trailing period);
+			# with a detected NIC prefix it must be that /24
+			$ipnRaw = ([string]$row['IPNetwork']).Trim()
+			$m = [regex]::Match($ipnRaw, $ipnPattern)
+			if (-not $m.Success)
+			{
+				$expect = if ($allowedPrefix) { "something within '$allowedPrefix.*'" } else { "a pattern like A.B.C or A.B.C.X" }
+				[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #${rowIdx}: '$ipnRaw'. Expected $expect.", "Invalid IPNetwork", 'OK', 'Error')
+				return $false
+			}
+			$prefix = "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)"
+			if ($allowedPrefix -and $prefix -ne $allowedPrefix)
+			{
+				[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$rowIdx must be within '$allowedPrefix.*'. Got '$ipnRaw'.", "IPNetwork Out of Range", 'OK', 'Error')
+				return $false
+			}
+			$row['IPNetwork'] = "$prefix."
+		}
+		return $true
+	}
+
+	# Validate, save, reload; $true when saved. $What names the action in the log.
+	$saveGrid = {
+		param ([string]$What)
+
+		# Commit any in-progress grid edit
+		if ($grid.IsCurrentCellInEditMode) { [void]$grid.EndEdit() }
+		else { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) }
+
+		if (-not (& $validateGrid)) { return $false }
+
+		$sqlText = { param ($v) (([string]$v) -replace "[`r`n]", '') -replace "'", "''" }
+		$values = New-Object System.Collections.Generic.List[string]
+		foreach ($row in $dt.Rows)
+		{
+			$parts = @(
+				'OrigScaleBrand', 'OrigScaleModel', 'OrigIPNetwork', 'OrigIPDevice', 'ScaleBrand', 'ScaleModel', 'IPNetwork', 'IPDevice' |
+				ForEach-Object { "'" + (& $sqlText $row[$_]) + "'" }
+			)
+			$parts += [string][int]$row['ScaleCode']
+			$parts += @('BufferTime', 'ScaleName', 'Active' | ForEach-Object { "'" + (& $sqlText $row[$_]) + "'" })
+			$values.Add('(' + ($parts -join ',') + ')')
+		}
+		if ($values.Count -eq 0)
+		{
+			Write_Log "Nothing to save ($What)." "yellow"
+			return $false
+		}
+
+		Write_Log "Saving to database ($What)..." "blue"
+		try
+		{
+			$updated = [int](& $runScalar ($sqlSaveTemplate.Replace('$(VALUES_BLOCK)', [string]::Join(",`r`n  ", $values))))
+		}
+		catch
+		{
+			Write_Log "Save ($What) failed: $($_.Exception.Message)" "red"
+			[void][System.Windows.Forms.MessageBox]::Show("Save failed. Check logs.", "Error", 'OK', 'Error')
+			return $false
+		}
+		if ($updated -ne $values.Count) { Write_Log "Saved $updated of $($values.Count) row(s) - the others no longer match the table (changed elsewhere?). Refreshing." "yellow" }
+
+		Write_Log "Refreshing view..." "blue"
+		[void](& $reloadFromDb "refresh after $What")
+		return $true
+	}
 
 	# ----------------------------------------------------------------------------------------------
 	# 6) Button: Save (validate + write exactly what's in grid; no renumber)
 	# ----------------------------------------------------------------------------------------------
 	$btnSave.add_Click({
-			# Commit any in-progress grid edits (inline, no helper)
-			if ($grid -and $grid.IsCurrentCellInEditMode) { [void]$grid.EndEdit() }
-			else { if ($grid) { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) } }
-
-			# Validate ScaleCode unique & numeric; Active Y/N; IPNetwork matches allowed /24 if available
-			$seenCodes = @{ }
-			$rowIdx = 0
-			foreach ($row in $dt.Rows)
+			if (& $saveGrid 'Save')
 			{
-				$raw = $row['ScaleCode']
-				$val = $null
-				if (-not [int]::TryParse([string]$raw, [ref]$val))
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Invalid ScaleCode at row #$($rowIdx + 1): '$raw' is not a number.", "Invalid Code", 'OK', 'Error')
-					return
-				}
-				if ($seenCodes.ContainsKey($val))
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Duplicate ScaleCode '$val' detected (row #$($rowIdx + 1)).", "Duplicate Code", 'OK', 'Error')
-					return
-				}
-				$seenCodes[$val] = $true
-
-				$actRaw = [string]$row['Active']; if ($null -eq $actRaw) { $actRaw = '' }
-				$actUp = $actRaw.Trim().ToUpper()
-				if ($actUp -ne 'Y' -and $actUp -ne 'N')
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Invalid Active value at row #$($rowIdx + 1): '$actRaw'. Use Y or N.", "Invalid Active", 'OK', 'Error')
-					return
-				}
-				$row['Active'] = $actUp
-
-				# --- IPNetwork normalization/enforcement (ALWAYS ends with a period) -----------------
-				$ipnRaw = [string]$row['IPNetwork']; if ($null -eq $ipnRaw) { $ipnRaw = '' }
-				$ipnRaw = $ipnRaw.Trim()
-
-				if ($allowedPrefix)
-				{
-					# Validate input looks like allowedPrefix.(something optional), then normalize strictly to "$allowedPrefix."
-					$m = [regex]::Match($ipnRaw, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
-					if (-not $m.Success)
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx + 1): '$ipnRaw'. Expected something within '$allowedPrefix.*'.", "Invalid IPNetwork", 'OK', 'Error')
-						return
-					}
-					$prefix = "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)"
-					if ($prefix -ne $allowedPrefix)
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$($rowIdx + 1) must be within '$allowedPrefix.*'. Got '$ipnRaw'.", "IPNetwork Out of Range", 'OK', 'Error')
-						return
-					}
-
-					# CHANGE: enforce trailing period
-					$row['IPNetwork'] = "$allowedPrefix." # <-- always ends with a '.'
-				}
-				else
-				{
-					# NEW: Even without allowedPrefix, if parsable A.B.C(.anything), normalize to A.B.C.
-					$mGen = [regex]::Match($ipnRaw, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
-					if ($mGen.Success)
-					{
-						$prefixGen = "$($mGen.Groups[1].Value).$($mGen.Groups[2].Value).$($mGen.Groups[3].Value)"
-						$row['IPNetwork'] = "$prefixGen." # <-- enforce trailing '.'
-					}
-					else
-					{
-						# If totally unparsable, keep original but warn & block save
-						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx + 1): '$ipnRaw'. Expected a pattern like A.B.C or A.B.C.X", "Invalid IPNetwork", 'OK', 'Error')
-						return
-					}
-				}
-				# --------------------------------------------------------------------------------------
-
-				$rowIdx = $rowIdx + 1
+				[void][System.Windows.Forms.MessageBox]::Show("Saved and refreshed.", "Success", 'OK', 'Information')
+				Write_Log "Saved and refreshed." "green"
 			}
-
-			# Build VALUES block with proper SQL escaping
-			$values = New-Object System.Collections.Generic.List[string]
-			foreach ($row in $dt.Rows)
-			{
-				$nBrand = ([string]$row['ScaleBrand']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nModel = ([string]$row['ScaleModel']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nIPNet = ([string]$row['IPNetwork']).Replace("`r", "").Replace("`n", "") -replace "'", "''" # already ends with '.'
-				$nIPDev = ([string]$row['IPDevice']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nCode = [int]$row['ScaleCode']
-				$nBuf = ([string]$row['BufferTime']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nName = ([string]$row['ScaleName']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nAct = ([string]$row['Active']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-
-				$oBrand = (([string]$row['OrigScaleBrand'])) -replace "'", "''"
-				$oModel = (([string]$row['OrigScaleModel'])) -replace "'", "''"
-				$oIPNet = (([string]$row['OrigIPNetwork'])) -replace "'", "''"
-				$oIPDev = (([string]$row['OrigIPDevice'])) -replace "'", "''"
-
-				$values.Add("('$oBrand','$oModel','$oIPNet','$oIPDev','$nBrand','$nModel','$nIPNet','$nIPDev',$nCode,'$nBuf','$nName','$nAct')")
-			}
-			if ($values.Count -eq 0)
-			{
-				Write_Log "Nothing to save." "yellow"
-				return
-			}
-
-			$sqlSave = $sqlSaveTemplate.Replace('$(VALUES_BLOCK)', ([string]::Join(",`r`n  ", $values)))
-
-			Write_Log "Saving to database..." "blue"
-
-			# Execute non-query inline
-			$ok = $true
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnectionString)
-					{
-						& $InvokeSqlCmd -ConnectionString $connectionString -Query $sqlSave -ErrorAction Stop | Out-Null
-					}
-					else
-					{
-						& $InvokeSqlCmd -ServerInstance $server -Database $database -Query $sqlSave -ErrorAction Stop | Out-Null
-					}
-				}
-				else
-				{
-					$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb.PSBase.ConnectionString = $connectionString
-					$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
-					$conn.Open()
-					$cmd = $conn.CreateCommand(); $cmd.CommandText = $sqlSave; $cmd.CommandTimeout = 0
-					[void]$cmd.ExecuteNonQuery()
-					$conn.Close()
-				}
-			}
-			catch
-			{
-				$ok = $false
-				Write_Log "Save failed: $($_.Exception.Message)" "red"
-				[void][System.Windows.Forms.MessageBox]::Show("Save failed. Check logs.", "Error", 'OK', 'Error')
-			}
-			if (-not $ok) { return }
-
-			# Refresh view from DB
-			Write_Log "Refreshing view..." "blue"
-			$fresh = $null
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnectionString)
-					{
-						$fresh = & $InvokeSqlCmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
-					}
-					else
-					{
-						$fresh = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
-					}
-				}
-				else
-				{
-					$csb2 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb2.PSBase.ConnectionString = $connectionString
-					$conn2 = New-Object System.Data.SqlClient.SqlConnection $csb2.ConnectionString
-					$conn2.Open()
-					$cmd2 = $conn2.CreateCommand(); $cmd2.CommandText = $selectQuery; $cmd2.CommandTimeout = 0
-					$da2 = New-Object System.Data.SqlClient.SqlDataAdapter $cmd2
-					$td2 = New-Object System.Data.DataTable
-					[void]$da2.Fill($td2)
-					$conn2.Close()
-					$fresh = $td2
-				}
-			}
-			catch
-			{
-				Write_Log "SQL error (refresh): $($_.Exception.Message)" "red"
-				return
-			}
-
-			if ($fresh)
-			{
-				$dt.Rows.Clear() | Out-Null
-				foreach ($r in $fresh)
-				{
-					$nr = $dt.NewRow()
-					$nr['ScaleCode'] = [string]$r.ScaleCode
-					$nr['ScaleName'] = [string]$r.ScaleName
-					$nr['ScaleBrand'] = [string]$r.ScaleBrand
-					$nr['ScaleModel'] = [string]$r.ScaleModel
-					$nr['IPNetwork'] = [string]$r.IPNetwork
-					$nr['IPDevice'] = [string]$r.IPDevice
-					$nr['BufferTime'] = [string]$r.BufferTime
-					$nr['Active'] = [string]$r.Active
-					$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
-					$nr['OrigScaleModel'] = [string]$r.ScaleModel
-					$nr['OrigIPNetwork'] = [string]$r.IPNetwork
-					$nr['OrigIPDevice'] = [string]$r.IPDevice
-					[void]$dt.Rows.Add($nr)
-				}
-				$grid.Refresh()
-			}
-
-			[void][System.Windows.Forms.MessageBox]::Show("Saved and refreshed.", "Success", 'OK', 'Information')
-			Write_Log "Saved and refreshed." "green"
 		})
 
 	# ----------------------------------------------------------------------------------------------
@@ -720,37 +623,25 @@ END CATCH;
 			$snapI = @()
 			foreach ($row in $dt.Rows)
 			{
-				$o = [ordered]@{
-					ScaleCode	   = $row['ScaleCode']; ScaleName = $row['ScaleName']; ScaleBrand = $row['ScaleBrand']; ScaleModel = $row['ScaleModel']
-					IPNetwork	   = $row['IPNetwork']; IPDevice = $row['IPDevice']; BufferTime = $row['BufferTime']; Active = $row['Active']
-					OrigScaleBrand = $row['OrigScaleBrand']; OrigScaleModel = $row['OrigScaleModel']; OrigIPNetwork = $row['OrigIPNetwork']; OrigIPDevice = $row['OrigIPDevice']
-				}
+				$o = [ordered]@{ }
+				foreach ($col in $dt.Columns) { $o[$col.ColumnName] = $row[$col.ColumnName] }
 				if ($o.ScaleBrand -eq 'BIZERBA') { $snapB += $o }
 				elseif ($o.ScaleBrand -eq 'ISHIDA') { $snapI += $o }
 			}
 
 			# Sort by numeric IPDevice (non-numeric last), then by raw IPDevice
-			$snapB = $snapB | Sort-Object @{
-				Expression = {
-					$n = $null; if ([int]::TryParse([string]$_.IPDevice, [ref]$n)) { $n }
-					else { [int]::MaxValue }
-				}
-			},
-										  @{ Expression = { $_.IPDevice } }
-			$snapI = $snapI | Sort-Object @{
-				Expression = {
-					$n = $null; if ([int]::TryParse([string]$_.IPDevice, [ref]$n)) { $n }
-					else { [int]::MaxValue }
-				}
-			},
-										  @{ Expression = { $_.IPDevice } }
+			$byDevice = @(
+				@{ Expression = { $n = $null; if ([int]::TryParse([string]$_.IPDevice, [ref]$n)) { $n } else { [int]::MaxValue } } },
+				@{ Expression = { $_.IPDevice } }
+			)
+			$snapB = @($snapB | Sort-Object $byDevice)
+			$snapI = @($snapI | Sort-Object $byDevice)
 
 			$dt.BeginLoadData()
 			try
 			{
 				$dt.Rows.Clear()
-				foreach ($s in $snapB) { $nr = $dt.NewRow(); foreach ($k in $s.Keys) { $nr[$k] = [string]$s[$k] }; [void]$dt.Rows.Add($nr) }
-				foreach ($s in $snapI) { $nr = $dt.NewRow(); foreach ($k in $s.Keys) { $nr[$k] = [string]$s[$k] }; [void]$dt.Rows.Add($nr) }
+				foreach ($s in @($snapB) + @($snapI)) { $nr = $dt.NewRow(); foreach ($k in $s.Keys) { $nr[$k] = [string]$s[$k] }; [void]$dt.Rows.Add($nr) }
 			}
 			finally { $dt.EndLoadData() }
 
@@ -765,8 +656,7 @@ END CATCH;
 					else { $r['BufferTime'] = '5' }
 				}
 			}
-			$ishWmai = @()
-			foreach ($r in $dt.Rows) { if ($r['ScaleBrand'] -eq 'ISHIDA' -and $r['ScaleModel'] -eq 'WMAI') { $ishWmai += $r } }
+			$ishWmai = @($dt.Rows | Where-Object { $_['ScaleBrand'] -eq 'ISHIDA' -and $_['ScaleModel'] -eq 'WMAI' })
 			if ($ishWmai.Count -gt 1) { foreach ($r in $ishWmai) { $r['ScaleName'] = "Ishida Wrapper $($r['IPDevice'])" } }
 			elseif ($ishWmai.Count -eq 1) { $ishWmai[0]['ScaleName'] = 'Ishida Wrapper' }
 
@@ -781,264 +671,19 @@ END CATCH;
 			$grid.Refresh()
 
 			# Immediately SAVE (same validation rules as Save button)
-			if ($grid -and $grid.IsCurrentCellInEditMode) { [void]$grid.EndEdit() }
-			else { if ($grid) { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) } }
-
-			$seenCodes2 = @{ }
-			$rowIdx2 = 0
-			foreach ($row2 in $dt.Rows)
+			if (& $saveGrid 'Auto Sort')
 			{
-				$raw2 = $row2['ScaleCode']
-				$val2 = $null
-				if (-not [int]::TryParse([string]$raw2, [ref]$val2))
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Invalid ScaleCode at row #$($rowIdx2 + 1): '$raw2' is not a number.", "Invalid Code", 'OK', 'Error')
-					return
-				}
-				if ($seenCodes2.ContainsKey($val2))
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Duplicate ScaleCode '$val2' detected (row #$($rowIdx2 + 1)).", "Duplicate Code", 'OK', 'Error')
-					return
-				}
-				$seenCodes2[$val2] = $true
-
-				$actRaw2 = [string]$row2['Active']; if ($null -eq $actRaw2) { $actRaw2 = '' }
-				$actUp2 = $actRaw2.Trim().ToUpper()
-				if ($actUp2 -ne 'Y' -and $actUp2 -ne 'N')
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Invalid Active value at row #$($rowIdx2 + 1): '$actRaw2'. Use Y or N.", "Invalid Active", 'OK', 'Error')
-					return
-				}
-				$row2['Active'] = $actUp2
-
-				# --- IPNetwork normalization/enforcement (ALWAYS ends with a period) -----------------
-				$ipnRaw2 = [string]$row2['IPNetwork']; if ($null -eq $ipnRaw2) { $ipnRaw2 = '' }
-				$ipnRaw2 = $ipnRaw2.Trim()
-
-				if ($allowedPrefix)
-				{
-					$m2 = [regex]::Match($ipnRaw2, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
-					if (-not $m2.Success)
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx2 + 1): '$ipnRaw2'. Expected something within '$allowedPrefix.*'.", "Invalid IPNetwork", 'OK', 'Error')
-						return
-					}
-					$prefix2 = "$($m2.Groups[1].Value).$($m2.Groups[2].Value).$($m2.Groups[3].Value)"
-					if ($prefix2 -ne $allowedPrefix)
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$($rowIdx2 + 1) must be within '$allowedPrefix.*'. Got '$ipnRaw2'.", "IPNetwork Out of Range", 'OK', 'Error')
-						return
-					}
-
-					# CHANGE: enforce trailing period
-					$row2['IPNetwork'] = "$allowedPrefix." # <-- always ends with '.'
-				}
-				else
-				{
-					# NEW: Even without allowedPrefix, normalize any parsable A.B.C(.anything) to A.B.C.
-					$mGen2 = [regex]::Match($ipnRaw2, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
-					if ($mGen2.Success)
-					{
-						$prefixGen2 = "$($mGen2.Groups[1].Value).$($mGen2.Groups[2].Value).$($mGen2.Groups[3].Value)"
-						$row2['IPNetwork'] = "$prefixGen2." # <-- enforce trailing '.'
-					}
-					else
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx2 + 1): '$ipnRaw2'. Expected a pattern like A.B.C or A.B.C.X", "Invalid IPNetwork", 'OK', 'Error')
-						return
-					}
-				}
-				# --------------------------------------------------------------------------------------
-
-				$rowIdx2 = $rowIdx2 + 1
+				[void][System.Windows.Forms.MessageBox]::Show("Auto Sort applied, saved, and refreshed.", "Success", 'OK', 'Information')
+				Write_Log "Auto Sort applied, saved, and refreshed." "green"
 			}
-
-			$values2 = New-Object System.Collections.Generic.List[string]
-			foreach ($row3 in $dt.Rows)
-			{
-				$nBrand2 = ([string]$row3['ScaleBrand']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nModel2 = ([string]$row3['ScaleModel']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nIPNet2 = ([string]$row3['IPNetwork']).Replace("`r", "").Replace("`n", "") -replace "'", "''" # already ends with '.'
-				$nIPDev2 = ([string]$row3['IPDevice']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nCode2 = [int]$row3['ScaleCode']
-				$nBuf2 = ([string]$row3['BufferTime']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nName2 = ([string]$row3['ScaleName']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nAct2 = ([string]$row3['Active']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-
-				$oBrand2 = (([string]$row3['OrigScaleBrand'])) -replace "'", "''"
-				$oModel2 = (([string]$row3['OrigScaleModel'])) -replace "'", "''"
-				$oIPNet2 = (([string]$row3['OrigIPNetwork'])) -replace "'", "''"
-				$oIPDev2 = (([string]$row3['OrigIPDevice'])) -replace "'", "''"
-
-				$values2.Add("('$oBrand2','$oModel2','$oIPNet2','$oIPDev2','$nBrand2','$nModel2','$nIPNet2','$nIPDev2',$nCode2,'$nBuf2','$nName2','$nAct2')")
-			}
-			if ($values2.Count -eq 0)
-			{
-				Write_Log "Nothing to save after Auto Sort." "yellow"
-				return
-			}
-
-			$sqlSave2 = $sqlSaveTemplate.Replace('$(VALUES_BLOCK)', ([string]::Join(",`r`n  ", $values2)))
-
-			Write_Log "Saving to database after Auto Sort..." "blue"
-
-			$ok2 = $true
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnectionString)
-					{
-						& $InvokeSqlCmd -ConnectionString $connectionString -Query $sqlSave2 -ErrorAction Stop | Out-Null
-					}
-					else
-					{
-						& $InvokeSqlCmd -ServerInstance $server -Database $database -Query $sqlSave2 -ErrorAction Stop | Out-Null
-					}
-				}
-				else
-				{
-					$csb3 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb3.PSBase.ConnectionString = $connectionString
-					$conn3 = New-Object System.Data.SqlClient.SqlConnection $csb3.ConnectionString
-					$conn3.Open()
-					$cmd3 = $conn3.CreateCommand(); $cmd3.CommandText = $sqlSave2; $cmd3.CommandTimeout = 0
-					[void]$cmd3.ExecuteNonQuery()
-					$conn3.Close()
-				}
-			}
-			catch
-			{
-				$ok2 = $false
-				Write_Log "Save (Auto Sort) failed: $($_.Exception.Message)" "red"
-				[void][System.Windows.Forms.MessageBox]::Show("Save after Auto Sort failed. Check logs.", "Error", 'OK', 'Error')
-			}
-			if (-not $ok2) { return }
-
-			# Refresh view from DB
-			Write_Log "Refreshing view after Auto Sort..." "blue"
-			$fresh2 = $null
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnectionString)
-					{
-						$fresh2 = & $InvokeSqlCmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
-					}
-					else
-					{
-						$fresh2 = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
-					}
-				}
-				else
-				{
-					$csb4 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb4.PSBase.ConnectionString = $connectionString
-					$conn4 = New-Object System.Data.SqlClient.SqlConnection $csb4.ConnectionString
-					$conn4.Open()
-					$cmd4 = $conn4.CreateCommand(); $cmd4.CommandText = $selectQuery; $cmd4.CommandTimeout = 0
-					$da4 = New-Object System.Data.SqlClient.SqlDataAdapter $cmd4
-					$td4 = New-Object System.Data.DataTable
-					[void]$da4.Fill($td4)
-					$conn4.Close()
-					$fresh2 = $td4
-				}
-			}
-			catch
-			{
-				Write_Log "SQL error (refresh after Auto Sort): $($_.Exception.Message)" "red"
-				return
-			}
-
-			if ($fresh2)
-			{
-				$dt.Rows.Clear() | Out-Null
-				foreach ($r in $fresh2)
-				{
-					$nr = $dt.NewRow()
-					$nr['ScaleCode'] = [string]$r.ScaleCode
-					$nr['ScaleName'] = [string]$r.ScaleName
-					$nr['ScaleBrand'] = [string]$r.ScaleBrand
-					$nr['ScaleModel'] = [string]$r.ScaleModel
-					$nr['IPNetwork'] = [string]$r.IPNetwork
-					$nr['IPDevice'] = [string]$r.IPDevice
-					$nr['BufferTime'] = [string]$r.BufferTime
-					$nr['Active'] = [string]$r.Active
-					$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
-					$nr['OrigScaleModel'] = [string]$r.ScaleModel
-					$nr['OrigIPNetwork'] = [string]$r.IPNetwork
-					$nr['OrigIPDevice'] = [string]$r.IPDevice
-					[void]$dt.Rows.Add($nr)
-				}
-				$grid.Refresh()
-			}
-
-			[void][System.Windows.Forms.MessageBox]::Show("Auto Sort applied, saved, and refreshed.", "Success", 'OK', 'Information')
-			Write_Log "Auto Sort applied, saved, and refreshed." "green"
 		})
 
 	# ----------------------------------------------------------------------------------------------
-	# 8) Refresh / Close / Cancel wiring (inline)
+	# 8) Refresh / Close / Cancel wiring
 	# ----------------------------------------------------------------------------------------------
 	$btnRefresh.add_Click({
 			Write_Log "Refreshing view from database..." "blue"
-			$fresh = $null
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnectionString)
-					{
-						$fresh = & $InvokeSqlCmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
-					}
-					else
-					{
-						$fresh = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
-					}
-				}
-				else
-				{
-					$csb5 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb5.PSBase.ConnectionString = $connectionString
-					$conn5 = New-Object System.Data.SqlClient.SqlConnection $csb5.ConnectionString
-					$conn5.Open()
-					$cmd5 = $conn5.CreateCommand(); $cmd5.CommandText = $selectQuery; $cmd5.CommandTimeout = 0
-					$da5 = New-Object System.Data.SqlClient.SqlDataAdapter $cmd5
-					$td5 = New-Object System.Data.DataTable
-					[void]$da5.Fill($td5)
-					$conn5.Close()
-					$fresh = $td5
-				}
-			}
-			catch
-			{
-				Write_Log "SQL error (refresh): $($_.Exception.Message)" "red"
-				return
-			}
-
-			if ($fresh)
-			{
-				$dt.Rows.Clear() | Out-Null
-				foreach ($r in $fresh)
-				{
-					$nr = $dt.NewRow()
-					$nr['ScaleCode'] = [string]$r.ScaleCode
-					$nr['ScaleName'] = [string]$r.ScaleName
-					$nr['ScaleBrand'] = [string]$r.ScaleBrand
-					$nr['ScaleModel'] = [string]$r.ScaleModel
-					$nr['IPNetwork'] = [string]$r.IPNetwork
-					$nr['IPDevice'] = [string]$r.IPDevice
-					$nr['BufferTime'] = [string]$r.BufferTime
-					$nr['Active'] = [string]$r.Active
-					$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
-					$nr['OrigScaleModel'] = [string]$r.ScaleModel
-					$nr['OrigIPNetwork'] = [string]$r.IPNetwork
-					$nr['OrigIPDevice'] = [string]$r.IPDevice
-					[void]$dt.Rows.Add($nr)
-				}
-				$grid.Refresh()
-			}
+			[void](& $reloadFromDb 'refresh')
 		})
 
 	$btnClose.add_Click({ $form.Close() })

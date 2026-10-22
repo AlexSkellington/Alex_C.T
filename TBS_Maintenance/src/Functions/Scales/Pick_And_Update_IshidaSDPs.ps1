@@ -176,7 +176,11 @@ ORDER BY CAST([F04] AS int);
 		return
 	}
 
-	if (-not $rows -or $rows.Rows.Count -eq 0)
+	# Invoke-Sqlcmd returns DataRow(s), the SqlClient path a DataTable: make both a row array
+	# (checking .Rows.Count alone reported "0 rows" every time a SQL module was installed)
+	if ($rows -is [System.Data.DataTable]) { $rows = @($rows.Rows) }
+	else { $rows = @($rows | Where-Object { $_ }) }
+	if ($rows.Count -eq 0)
 	{
 		& $logWarn "SDP_TAB returned 0 rows."
 		& $logBlue "`r`n==================== Pick_And_Update_IshidaSDPs Completed ====================`r`n"
@@ -413,7 +417,8 @@ ORDER BY CAST([F04] AS int);
 
 			$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 			$sw = New-Object System.IO.StreamWriter($path, $false, $utf8NoBom)
-			$xml.Save($sw); $sw.Close()
+			try { $xml.Save($sw) }
+			finally { $sw.Close() }
 			& $logOk "Saved config: $path"
 		}
 		catch

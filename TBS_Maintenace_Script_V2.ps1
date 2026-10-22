@@ -13573,7 +13573,7 @@ function Repair_LOC_Databases_On_Lanes
 		}
 		finally { $cn.Dispose() }
 
-		# DataTable is not enumerable, so it comes back whole
+		# PowerShell unrolls a returned DataTable: callers get DataRow(s) or $null and handle both
 		return $dt
 	}
 
@@ -17707,7 +17707,11 @@ function Add_Scale_Credentials
 		$ScaleCodeToIPInfo.Values | ForEach-Object {
 			$candidate = $null
 			if ($_.FullIP) { $candidate = [string]$_.FullIP }
-			elseif ($_.IPNetwork -and $_.IPDevice) { $candidate = "{0}{1}" -f $_.IPNetwork, $_.IPDevice }
+			elseif ($_.IPNetwork -and $_.IPDevice)
+			{
+				# "192.168.1" + "50" must not become "192.168.150" (TryParse reads that as 192.168.0.150)
+				$candidate = ([string]$_.IPNetwork).Trim().TrimEnd('.') + '.' + ([string]$_.IPDevice).Trim()
+			}
 
 			if (-not [string]::IsNullOrWhiteSpace($candidate))
 			{
@@ -17961,7 +17965,7 @@ function Add_Scale_Credentials
 #   - ConfigFolder    [string]: ScaleComm config folder (default $script:PrimaryScaleCommRoot)
 #
 # Notes:
-#   - Schema-aware, transactional SQL; PS 5.1 safe (no ternary, no nested functions).
+#   - Schema-aware, transactional SQL through SqlClient (no SQL module needed); PS 5.1 safe.
 #   - Start and completion banners are written at all exits.
 # ===================================================================================================
 
@@ -17974,8 +17978,7 @@ function Configure_Scale_Sub-Departments
 		[string]$ConfigFolder = $script:PrimaryScaleCommRoot
 	)
 
-	# ---- REQUIRED START BANNER (keep exactly as requested earlier) ----
-	Write_Log "`r`n==================== Starting Update_ScaleConfig_And_DB Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Configure_Scale_Sub-Departments ====================`r`n" "blue"
 
 	# -------------------- Resolve Server/DB (params > cache > defaults) --------------------
 	try
@@ -18011,37 +18014,48 @@ function Configure_Scale_Sub-Departments
 		return
 	}
 
-	# -------------------- Ensure Invoke-Sqlcmd is available --------------------
-	try
-	{
-		$moduleLoaded = $false
-		if (Get-Module -ListAvailable -Name SqlServer | Select-Object -First 1)
+	# -------------------- SQL through SqlClient (no SQL module needed) --------------------
+	# Windows auth, like the Invoke-Sqlcmd -ServerInstance calls this replaces
+	$sqlConnStr = Normalize_Sql_ConnectionString -Server $ServerInstance -Database $Database
+
+	# First row as an object; DBNull -> $null (a DBNull is truthy and [int64]DBNull throws,
+	# so a missing table used to look present and then crash the row count)
+	$runSqlRow = {
+		param ([string]$Query)
+		$cn = New-Object System.Data.SqlClient.SqlConnection $sqlConnStr
+		try
 		{
-			Import-Module SqlServer -ErrorAction Stop
-			$moduleLoaded = $true
+			$cn.Open()
+			$cmd = $cn.CreateCommand()
+			$cmd.CommandText = $Query
+			$cmd.CommandTimeout = 60
+			$rdr = $cmd.ExecuteReader()
+			$row = $null
+			if ($rdr.Read())
+			{
+				$row = [ordered]@{ }
+				for ($i = 0; $i -lt $rdr.FieldCount; $i++) { $row[$rdr.GetName($i)] = if ($rdr.IsDBNull($i)) { $null } else { $rdr.GetValue($i) } }
+				$row = [pscustomobject]$row
+			}
+			$rdr.Close()
+			$row
 		}
-		elseif (Get-Module -ListAvailable -Name SQLPS | Select-Object -First 1)
-		{
-			Import-Module SQLPS -DisableNameChecking -ErrorAction Stop
-			$moduleLoaded = $true
-		}
-		else
-		{
-			Import-Module SqlServer -ErrorAction SilentlyContinue | Out-Null
-			Import-Module SQLPS -DisableNameChecking -ErrorAction SilentlyContinue | Out-Null
-		}
-		if (-not $moduleLoaded)
-		{
-			Write_Log "Warning: SqlServer/SQLPS module not found; Invoke-Sqlcmd may be unavailable." "yellow"
-		}
-	}
-	catch
-	{
-		Write_Log ("Module import error: " + $_.Exception.Message) "red"
-		Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
-		return
+		finally { $cn.Dispose() }
 	}
 
+	$runSqlNonQuery = {
+		param ([string]$Query, [int]$Timeout = 120)
+		$cn = New-Object System.Data.SqlClient.SqlConnection $sqlConnStr
+		try
+		{
+			$cn.Open()
+			$cmd = $cn.CreateCommand()
+			$cmd.CommandText = $Query
+			$cmd.CommandTimeout = $Timeout
+			[void]$cmd.ExecuteNonQuery()
+		}
+		finally { $cn.Dispose() }
+	}
 	# ==============================
 	# SQL templates (literal strings)
 	# ==============================
@@ -18526,9 +18540,9 @@ END CATCH;
 	$famInfo = $null; $rpcInfo = $null; $catInfo = $null
 	try
 	{
-		$famInfo = Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query ($Tsql_Check_For.Replace('%TABLE%', 'FAM_TAB')) -ErrorAction Stop | Select-Object -First 1
-		$rpcInfo = Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query ($Tsql_Check_For.Replace('%TABLE%', 'RPC_TAB')) -ErrorAction Stop | Select-Object -First 1
-		$catInfo = Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query ($Tsql_Check_For.Replace('%TABLE%', 'CAT_TAB')) -ErrorAction Stop | Select-Object -First 1
+		$famInfo = & $runSqlRow ($Tsql_Check_For.Replace('%TABLE%', 'FAM_TAB'))
+		$rpcInfo = & $runSqlRow ($Tsql_Check_For.Replace('%TABLE%', 'RPC_TAB'))
+		$catInfo = & $runSqlRow ($Tsql_Check_For.Replace('%TABLE%', 'CAT_TAB'))
 	}
 	catch
 	{
@@ -18536,9 +18550,9 @@ END CATCH;
 		Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
 		return
 	}
-	$famCount = 0; if ($famInfo -and $famInfo.RowCnt -ne $null) { $famCount = [int64]$famInfo.RowCnt }
-	$rpcCount = 0; if ($rpcInfo -and $rpcInfo.RowCnt -ne $null) { $rpcCount = [int64]$rpcInfo.RowCnt }
-	$catCount = 0; if ($catInfo -and $catInfo.RowCnt -ne $null) { $catCount = [int64]$catInfo.RowCnt }
+	$famCount = 0; if ($famInfo -and $null -ne $famInfo.RowCnt) { $famCount = [int64]$famInfo.RowCnt }
+	$rpcCount = 0; if ($rpcInfo -and $null -ne $rpcInfo.RowCnt) { $rpcCount = [int64]$rpcInfo.RowCnt }
+	$catCount = 0; if ($catInfo -and $null -ne $catInfo.RowCnt) { $catCount = [int64]$catInfo.RowCnt }
 
 	# =========================
 	# Execute selected action (parse-safe .Replace and clean Query build)
@@ -18550,27 +18564,35 @@ END CATCH;
 
 	if ($script:_Sdp_Action -eq 'AUTO')
 	{
+		$q = $null
 		if ($famInfo -and $famInfo.SchemaName -and $famCount -eq 0)
 		{
 			$chosenShort = 'FAM_TAB'; $chosenSchema = $famInfo.SchemaName; $sdpValue = 'OBJ.F16'
-			$q = $Tsql_Merge_FAM_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']') # no space before .Replace
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
+			$q = $Tsql_Merge_FAM_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']')
 		}
 		elseif ($rpcInfo -and $rpcInfo.SchemaName -and $rpcCount -eq 0)
 		{
 			$chosenShort = 'RPC_TAB'; $chosenSchema = $rpcInfo.SchemaName; $sdpValue = 'OBJ.F18'
 			$q = $Tsql_Merge_RPC_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']')
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
 		}
 		elseif ($catInfo -and $catInfo.SchemaName -and $catCount -eq 0)
 		{
 			$chosenShort = 'CAT_TAB'; $chosenSchema = $catInfo.SchemaName; $sdpValue = 'OBJ.F17'
 			$q = $Tsql_Merge_CAT_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']')
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
+		}
+		if ($q)
+		{
+			try { & $runSqlNonQuery $q 120 }
+			catch
+			{
+				Write_Log ("$chosenShort SQL error: " + $_.Exception.Message) "red"
+				Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
+				return
+			}
 		}
 		else
 		{
-			$why = "No empty candidate found. FAM rows=" + ($famInfo.RowCnt) + ", RPC rows=" + ($rpcInfo.RowCnt) + ", CAT rows=" + ($catInfo.RowCnt) + "."
+			$why = "No empty candidate found. FAM rows=" + $famCount + ", RPC rows=" + $rpcCount + ", CAT rows=" + $catCount + " (missing tables count as 0 but cannot be used)."
 			[void][System.Windows.Forms.MessageBox]::Show($why, "Auto: No Empty Table",
 				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
 			Write_Log ("Auto aborted: " + $why) "yellow"
@@ -18609,7 +18631,7 @@ END CATCH;
 		{
 			if ($overwrite) { $q = $Tsql_Merge_FAM_Overwrite.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
 			else { $q = $Tsql_Merge_FAM_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
+			& $runSqlNonQuery $q 120
 			Write_Log ("FAM_TAB configured. Overwrite=" + $overwrite) "green"
 		}
 		catch
@@ -18647,7 +18669,7 @@ END CATCH;
 		{
 			if ($overwrite) { $q = $Tsql_Merge_RPC_Overwrite.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
 			else { $q = $Tsql_Merge_RPC_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
+			& $runSqlNonQuery $q 120
 			Write_Log ("RPC_TAB configured. Overwrite=" + $overwrite) "green"
 		}
 		catch
@@ -18685,7 +18707,7 @@ END CATCH;
 		{
 			if ($overwrite) { $q = $Tsql_Merge_CAT_Overwrite.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
 			else { $q = $Tsql_Merge_CAT_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
+			& $runSqlNonQuery $q 120
 			Write_Log ("CAT_TAB configured. Overwrite=" + $overwrite) "green"
 		}
 		catch
@@ -18733,7 +18755,6 @@ END CATCH;
 		Write_Log ("SdpDefault successfully set to '" + $sdpValue + "'.") "green"
 	}
 
-	# ---- REQUESTED COMPLETION BANNER (exact string) ----
 	Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
 }
 
@@ -18816,7 +18837,7 @@ function Deploy_Scale_Currency_Files
 
 	# ---- Preview Label ----
 	$previewLabel = New-Object Windows.Forms.Label
-	$previewLabel.Text = "Preview: $1.99"
+	$previewLabel.Text = 'Preview: $1.99' # single quotes: "$1" is a variable and showed "Preview: .99"
 	$previewLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]12, [System.Drawing.FontStyle]::Italic)
 	$previewLabel.Width = $form.ClientSize.Width - 40
 	$previewLabel.Height = 30
@@ -19056,10 +19077,14 @@ function Deploy_Scale_Currency_Files
 #   grid; Refresh reloads from the DB. IPNetwork must end with a trailing period.
 #
 # Variables:
-#   - $script:FunctionResults: DBSERVER, DBNAME, ConnectionString, SQL_UserID/SQL_UserPwd, SqlModuleName
+#   - $script:FunctionResults: DBSERVER, DBNAME, ConnectionString, SQL_UserID/SQL_UserPwd
 #
 # Writes:
 #   - store database table TBS_SCL_ver520
+#
+# Notes:
+#   - SQL goes through System.Data.SqlClient (no SQL module needed).
+#   - Rows are matched on their ORIGINAL brand / model / IPNetwork / IPDevice (NULLs match '').
 # ===================================================================================================
 
 function Edit_TBS_SCL_ver520_Table
@@ -19074,7 +19099,6 @@ function Edit_TBS_SCL_ver520_Table
 	# ----------------------------------------------------------------------------------------------
 	$server = $script:FunctionResults['DBSERVER']
 	$database = $script:FunctionResults['DBNAME']
-	$SqlModuleName = $script:FunctionResults['SqlModuleName']
 	$connectionString = Normalize_Sql_ConnectionString -RawConnectionString $script:FunctionResults['ConnectionString'] -Server $server -Database $database -SqlUser $script:FunctionResults['SQL_UserID'] -SqlPwd $script:FunctionResults['SQL_UserPwd']
 
 	if (-not $server -or -not $database)
@@ -19091,26 +19115,34 @@ function Edit_TBS_SCL_ver520_Table
 	$script:FunctionResults['ConnectionString'] = $connectionString
 
 	# ----------------------------------------------------------------------------------------------
-	# 2) Pick SQL runner (Invoke-Sqlcmd if available, else .NET SqlClient)
+	# 2) SQL helpers (one connection per call)
 	# ----------------------------------------------------------------------------------------------
-	$InvokeSqlCmd = $null
-	if ($SqlModuleName -and $SqlModuleName -ne "None")
-	{
+	# Rows of a query (PowerShell unrolls the DataTable: DataRow(s) or nothing)
+	$runQuery = {
+		param ([string]$Sql)
+		$conn = New-Object System.Data.SqlClient.SqlConnection $connectionString
 		try
 		{
-			Import-Module $SqlModuleName -ErrorAction Stop
-			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
+			$conn.Open()
+			$cmd = $conn.CreateCommand(); $cmd.CommandText = $Sql; $cmd.CommandTimeout = 0
+			$td = New-Object System.Data.DataTable
+			[void](New-Object System.Data.SqlClient.SqlDataAdapter $cmd).Fill($td)
+			$td
 		}
-		catch
+		finally { $conn.Dispose() }
+	}
+
+	$runScalar = {
+		param ([string]$Sql)
+		$conn = New-Object System.Data.SqlClient.SqlConnection $connectionString
+		try
 		{
-			Write_Log "SQL module '$SqlModuleName' not loaded. Using .NET SqlClient fallback." "yellow"
+			$conn.Open()
+			$cmd = $conn.CreateCommand(); $cmd.CommandText = $Sql; $cmd.CommandTimeout = 0
+			$cmd.ExecuteScalar()
 		}
+		finally { $conn.Dispose() }
 	}
-	else
-	{
-		Write_Log "No SQL module name provided. Using .NET SqlClient fallback." "yellow"
-	}
-	$supportsConnectionString = $InvokeSqlCmd -and ($InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString')
 
 	# ----------------------------------------------------------------------------------------------
 	# 3) Discover the /24 prefix in use; prefer NIC that can reach the SQL server; else NIC w/ gateway; else first RFC1918
@@ -19123,7 +19155,7 @@ function Edit_TBS_SCL_ver520_Table
 		$serverIPv4s = @()
 		try
 		{
-			$serverIPs = [System.Net.Dns]::GetHostAddresses($server)
+			$serverIPs = [System.Net.Dns]::GetHostAddresses((($server -replace '^(?i)tcp:', '') -split '[\\,]')[0])
 			foreach ($ip in $serverIPs)
 			{
 				if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork)
@@ -19245,49 +19277,11 @@ function Edit_TBS_SCL_ver520_Table
 	# 4) Load table -> DataTable (include Orig* columns to anchor updates)
 	# ----------------------------------------------------------------------------------------------
 	$selectQuery = @"
-SELECT 
+SELECT
     ScaleCode, ScaleName, ScaleBrand, ScaleModel, IPNetwork, IPDevice, BufferTime, Active
 FROM [TBS_SCL_ver520]
 ORDER BY ScaleCode ASC;
 "@
-
-	Write_Log "Loading table for edit..." "blue"
-
-	# CHANGE: Inline query execution (no $runQuery helper). Return rows.
-	$rows = $null
-	try
-	{
-		if ($InvokeSqlCmd)
-		{
-			if ($supportsConnectionString)
-			{
-				$rows = & $InvokeSqlCmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
-			}
-			else
-			{
-				$rows = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
-			}
-		}
-		else
-		{
-			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-			$csb.PSBase.ConnectionString = $connectionString
-			$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
-			$conn.Open()
-			$cmd = $conn.CreateCommand(); $cmd.CommandText = $selectQuery; $cmd.CommandTimeout = 0
-			$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
-			$td = New-Object System.Data.DataTable
-			[void]$da.Fill($td)
-			$conn.Close()
-			$rows = $td
-		}
-	}
-	catch
-	{
-		Write_Log "SQL error: $($_.Exception.Message)" "red"
-		return
-	}
-	if (-not $rows) { return }
 
 	$dt = New-Object System.Data.DataTable
 	foreach ($c in 'ScaleCode', 'ScaleName', 'ScaleBrand', 'ScaleModel', 'IPNetwork', 'IPDevice', 'BufferTime', 'Active',
@@ -19296,23 +19290,45 @@ ORDER BY ScaleCode ASC;
 		[void]$dt.Columns.Add($c)
 	}
 
-	foreach ($r in $rows)
+	# DB rows -> grid rows, with the original key columns snapshotted for the UPDATE match
+	$fillGrid = {
+		param ($Rows)
+		$dt.Rows.Clear()
+		foreach ($r in @($Rows))
+		{
+			if (-not $r) { continue }
+			$nr = $dt.NewRow()
+			foreach ($col in 'ScaleCode', 'ScaleName', 'ScaleBrand', 'ScaleModel', 'IPNetwork', 'IPDevice', 'BufferTime', 'Active') { $nr[$col] = [string]$r.$col }
+			$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
+			$nr['OrigScaleModel'] = [string]$r.ScaleModel
+			$nr['OrigIPNetwork'] = [string]$r.IPNetwork
+			$nr['OrigIPDevice'] = [string]$r.IPDevice
+			[void]$dt.Rows.Add($nr)
+		}
+	}
+
+	# Reload the grid from the DB; $true when it worked
+	$reloadFromDb = {
+		param ([string]$What = 'refresh')
+		try
+		{
+			& $fillGrid (& $runQuery $selectQuery)
+			if ($grid) { $grid.Refresh() }
+			return $true
+		}
+		catch
+		{
+			Write_Log "SQL error ($What): $($_.Exception.Message)" "red"
+			return $false
+		}
+	}
+
+	Write_Log "Loading table for edit..." "blue"
+	if (-not (& $reloadFromDb 'load')) { return }
+	if ($dt.Rows.Count -eq 0)
 	{
-		$nr = $dt.NewRow()
-		$nr['ScaleCode'] = [string]$r.ScaleCode
-		$nr['ScaleName'] = [string]$r.ScaleName
-		$nr['ScaleBrand'] = [string]$r.ScaleBrand
-		$nr['ScaleModel'] = [string]$r.ScaleModel
-		$nr['IPNetwork'] = [string]$r.IPNetwork
-		$nr['IPDevice'] = [string]$r.IPDevice
-		$nr['BufferTime'] = [string]$r.BufferTime
-		$nr['Active'] = [string]$r.Active
-		# ORIGINAL KEYS SNAPSHOT
-		$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
-		$nr['OrigScaleModel'] = [string]$r.ScaleModel
-		$nr['OrigIPNetwork'] = [string]$r.IPNetwork
-		$nr['OrigIPDevice'] = [string]$r.IPDevice
-		[void]$dt.Rows.Add($nr)
+		Write_Log "TBS_SCL_ver520 has no rows - nothing to edit." "yellow"
+		return
 	}
 
 	# ----------------------------------------------------------------------------------------------
@@ -19447,7 +19463,7 @@ ORDER BY ScaleCode ASC;
 	if ($allowedPrefix)
 	{
 		# CHANGE: Reflect the enforced trailing period examples only.
-		$lbl.Text = "Edit directly [?][?][?] Auto-Sort renumbers & saves [?][?][?] Active: Y/N [?][?][?] IPNetwork [?][?][?] '$allowedPrefix.' (accepts $allowedPrefix, $allowedPrefix.0/*/x/.)"
+		$lbl.Text = "Edit cells directly  |  Auto Sort renumbers and saves  |  Active: Y/N  |  IPNetwork: '$allowedPrefix.' (accepts $allowedPrefix, $allowedPrefix.0, $allowedPrefix.*, $allowedPrefix.x)"
 	}
 	else
 	{
@@ -19498,9 +19514,12 @@ ORDER BY ScaleCode ASC;
 		})
 
 	# ----------------------------------------------------------------------------------------------
-	# Helper-less inline SAVE logic (duplicated in Save and Auto Sort to keep "all inline" constraint)
+	# Save: validate + write exactly what is in the grid (shared by Save and Auto Sort)
 	# ----------------------------------------------------------------------------------------------
+	# ISNULL on the target keys: a scale with a NULL brand / model / IP part was never matched
+	# (and silently not saved); the row count tells when a row still did not match.
 	$sqlSaveTemplate = @'
+DECLARE @Updated int = 0;
 BEGIN TRY
   BEGIN TRAN;
 
@@ -19538,10 +19557,11 @@ BEGIN TRY
          tgt.Active     = src.NewActive
   FROM [TBS_SCL_ver520] AS tgt
   JOIN @Placings AS src
-    ON  tgt.ScaleBrand = src.OrigScaleBrand
-    AND tgt.ScaleModel = src.OrigScaleModel
-    AND tgt.IPNetwork  = src.OrigIPNetwork
-    AND tgt.IPDevice   = src.OrigIPDevice;
+    ON  ISNULL(CAST(tgt.ScaleBrand AS nvarchar(100)), N'') = src.OrigScaleBrand
+    AND ISNULL(CAST(tgt.ScaleModel AS nvarchar(100)), N'') = src.OrigScaleModel
+    AND ISNULL(CAST(tgt.IPNetwork AS nvarchar(100)), N'')  = src.OrigIPNetwork
+    AND ISNULL(CAST(tgt.IPDevice AS nvarchar(100)), N'')   = src.OrigIPDevice;
+  SET @Updated = @@ROWCOUNT;
 
   COMMIT TRAN;
 END TRY
@@ -19550,213 +19570,117 @@ BEGIN CATCH
   DECLARE @msg nvarchar(4000) = ERROR_MESSAGE();
   RAISERROR(@msg, 16, 1);
 END CATCH;
+SELECT @Updated;
 '@
+
+	$ipnPattern = '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$'
+
+	# Validate every grid row (shows the first problem); normalizes Active and IPNetwork in place
+	$validateGrid = {
+		$seenCodes = @{ }
+		$rowIdx = 0
+		foreach ($row in $dt.Rows)
+		{
+			$rowIdx++
+			$raw = $row['ScaleCode']
+			$val = $null
+			if (-not [int]::TryParse([string]$raw, [ref]$val))
+			{
+				[void][System.Windows.Forms.MessageBox]::Show("Invalid ScaleCode at row #${rowIdx}: '$raw' is not a number.", "Invalid Code", 'OK', 'Error')
+				return $false
+			}
+			if ($seenCodes.ContainsKey($val))
+			{
+				[void][System.Windows.Forms.MessageBox]::Show("Duplicate ScaleCode '$val' detected (row #$rowIdx).", "Duplicate Code", 'OK', 'Error')
+				return $false
+			}
+			$seenCodes[$val] = $true
+
+			$actRaw = [string]$row['Active']
+			$actUp = $actRaw.Trim().ToUpper()
+			if ($actUp -ne 'Y' -and $actUp -ne 'N')
+			{
+				[void][System.Windows.Forms.MessageBox]::Show("Invalid Active value at row #${rowIdx}: '$actRaw'. Use Y or N.", "Invalid Active", 'OK', 'Error')
+				return $false
+			}
+			$row['Active'] = $actUp
+
+			# IPNetwork: A.B.C(.anything) normalized to "A.B.C." (always a trailing period);
+			# with a detected NIC prefix it must be that /24
+			$ipnRaw = ([string]$row['IPNetwork']).Trim()
+			$m = [regex]::Match($ipnRaw, $ipnPattern)
+			if (-not $m.Success)
+			{
+				$expect = if ($allowedPrefix) { "something within '$allowedPrefix.*'" } else { "a pattern like A.B.C or A.B.C.X" }
+				[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #${rowIdx}: '$ipnRaw'. Expected $expect.", "Invalid IPNetwork", 'OK', 'Error')
+				return $false
+			}
+			$prefix = "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)"
+			if ($allowedPrefix -and $prefix -ne $allowedPrefix)
+			{
+				[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$rowIdx must be within '$allowedPrefix.*'. Got '$ipnRaw'.", "IPNetwork Out of Range", 'OK', 'Error')
+				return $false
+			}
+			$row['IPNetwork'] = "$prefix."
+		}
+		return $true
+	}
+
+	# Validate, save, reload; $true when saved. $What names the action in the log.
+	$saveGrid = {
+		param ([string]$What)
+
+		# Commit any in-progress grid edit
+		if ($grid.IsCurrentCellInEditMode) { [void]$grid.EndEdit() }
+		else { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) }
+
+		if (-not (& $validateGrid)) { return $false }
+
+		$sqlText = { param ($v) (([string]$v) -replace "[`r`n]", '') -replace "'", "''" }
+		$values = New-Object System.Collections.Generic.List[string]
+		foreach ($row in $dt.Rows)
+		{
+			$parts = @(
+				'OrigScaleBrand', 'OrigScaleModel', 'OrigIPNetwork', 'OrigIPDevice', 'ScaleBrand', 'ScaleModel', 'IPNetwork', 'IPDevice' |
+				ForEach-Object { "'" + (& $sqlText $row[$_]) + "'" }
+			)
+			$parts += [string][int]$row['ScaleCode']
+			$parts += @('BufferTime', 'ScaleName', 'Active' | ForEach-Object { "'" + (& $sqlText $row[$_]) + "'" })
+			$values.Add('(' + ($parts -join ',') + ')')
+		}
+		if ($values.Count -eq 0)
+		{
+			Write_Log "Nothing to save ($What)." "yellow"
+			return $false
+		}
+
+		Write_Log "Saving to database ($What)..." "blue"
+		try
+		{
+			$updated = [int](& $runScalar ($sqlSaveTemplate.Replace('$(VALUES_BLOCK)', [string]::Join(",`r`n  ", $values))))
+		}
+		catch
+		{
+			Write_Log "Save ($What) failed: $($_.Exception.Message)" "red"
+			[void][System.Windows.Forms.MessageBox]::Show("Save failed. Check logs.", "Error", 'OK', 'Error')
+			return $false
+		}
+		if ($updated -ne $values.Count) { Write_Log "Saved $updated of $($values.Count) row(s) - the others no longer match the table (changed elsewhere?). Refreshing." "yellow" }
+
+		Write_Log "Refreshing view..." "blue"
+		[void](& $reloadFromDb "refresh after $What")
+		return $true
+	}
 
 	# ----------------------------------------------------------------------------------------------
 	# 6) Button: Save (validate + write exactly what's in grid; no renumber)
 	# ----------------------------------------------------------------------------------------------
 	$btnSave.add_Click({
-			# Commit any in-progress grid edits (inline, no helper)
-			if ($grid -and $grid.IsCurrentCellInEditMode) { [void]$grid.EndEdit() }
-			else { if ($grid) { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) } }
-
-			# Validate ScaleCode unique & numeric; Active Y/N; IPNetwork matches allowed /24 if available
-			$seenCodes = @{ }
-			$rowIdx = 0
-			foreach ($row in $dt.Rows)
+			if (& $saveGrid 'Save')
 			{
-				$raw = $row['ScaleCode']
-				$val = $null
-				if (-not [int]::TryParse([string]$raw, [ref]$val))
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Invalid ScaleCode at row #$($rowIdx + 1): '$raw' is not a number.", "Invalid Code", 'OK', 'Error')
-					return
-				}
-				if ($seenCodes.ContainsKey($val))
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Duplicate ScaleCode '$val' detected (row #$($rowIdx + 1)).", "Duplicate Code", 'OK', 'Error')
-					return
-				}
-				$seenCodes[$val] = $true
-
-				$actRaw = [string]$row['Active']; if ($null -eq $actRaw) { $actRaw = '' }
-				$actUp = $actRaw.Trim().ToUpper()
-				if ($actUp -ne 'Y' -and $actUp -ne 'N')
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Invalid Active value at row #$($rowIdx + 1): '$actRaw'. Use Y or N.", "Invalid Active", 'OK', 'Error')
-					return
-				}
-				$row['Active'] = $actUp
-
-				# --- IPNetwork normalization/enforcement (ALWAYS ends with a period) -----------------
-				$ipnRaw = [string]$row['IPNetwork']; if ($null -eq $ipnRaw) { $ipnRaw = '' }
-				$ipnRaw = $ipnRaw.Trim()
-
-				if ($allowedPrefix)
-				{
-					# Validate input looks like allowedPrefix.(something optional), then normalize strictly to "$allowedPrefix."
-					$m = [regex]::Match($ipnRaw, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
-					if (-not $m.Success)
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx + 1): '$ipnRaw'. Expected something within '$allowedPrefix.*'.", "Invalid IPNetwork", 'OK', 'Error')
-						return
-					}
-					$prefix = "$($m.Groups[1].Value).$($m.Groups[2].Value).$($m.Groups[3].Value)"
-					if ($prefix -ne $allowedPrefix)
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$($rowIdx + 1) must be within '$allowedPrefix.*'. Got '$ipnRaw'.", "IPNetwork Out of Range", 'OK', 'Error')
-						return
-					}
-
-					# CHANGE: enforce trailing period
-					$row['IPNetwork'] = "$allowedPrefix." # <-- always ends with a '.'
-				}
-				else
-				{
-					# NEW: Even without allowedPrefix, if parsable A.B.C(.anything), normalize to A.B.C.
-					$mGen = [regex]::Match($ipnRaw, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
-					if ($mGen.Success)
-					{
-						$prefixGen = "$($mGen.Groups[1].Value).$($mGen.Groups[2].Value).$($mGen.Groups[3].Value)"
-						$row['IPNetwork'] = "$prefixGen." # <-- enforce trailing '.'
-					}
-					else
-					{
-						# If totally unparsable, keep original but warn & block save
-						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx + 1): '$ipnRaw'. Expected a pattern like A.B.C or A.B.C.X", "Invalid IPNetwork", 'OK', 'Error')
-						return
-					}
-				}
-				# --------------------------------------------------------------------------------------
-
-				$rowIdx = $rowIdx + 1
+				[void][System.Windows.Forms.MessageBox]::Show("Saved and refreshed.", "Success", 'OK', 'Information')
+				Write_Log "Saved and refreshed." "green"
 			}
-
-			# Build VALUES block with proper SQL escaping
-			$values = New-Object System.Collections.Generic.List[string]
-			foreach ($row in $dt.Rows)
-			{
-				$nBrand = ([string]$row['ScaleBrand']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nModel = ([string]$row['ScaleModel']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nIPNet = ([string]$row['IPNetwork']).Replace("`r", "").Replace("`n", "") -replace "'", "''" # already ends with '.'
-				$nIPDev = ([string]$row['IPDevice']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nCode = [int]$row['ScaleCode']
-				$nBuf = ([string]$row['BufferTime']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nName = ([string]$row['ScaleName']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nAct = ([string]$row['Active']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-
-				$oBrand = (([string]$row['OrigScaleBrand'])) -replace "'", "''"
-				$oModel = (([string]$row['OrigScaleModel'])) -replace "'", "''"
-				$oIPNet = (([string]$row['OrigIPNetwork'])) -replace "'", "''"
-				$oIPDev = (([string]$row['OrigIPDevice'])) -replace "'", "''"
-
-				$values.Add("('$oBrand','$oModel','$oIPNet','$oIPDev','$nBrand','$nModel','$nIPNet','$nIPDev',$nCode,'$nBuf','$nName','$nAct')")
-			}
-			if ($values.Count -eq 0)
-			{
-				Write_Log "Nothing to save." "yellow"
-				return
-			}
-
-			$sqlSave = $sqlSaveTemplate.Replace('$(VALUES_BLOCK)', ([string]::Join(",`r`n  ", $values)))
-
-			Write_Log "Saving to database..." "blue"
-
-			# Execute non-query inline
-			$ok = $true
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnectionString)
-					{
-						& $InvokeSqlCmd -ConnectionString $connectionString -Query $sqlSave -ErrorAction Stop | Out-Null
-					}
-					else
-					{
-						& $InvokeSqlCmd -ServerInstance $server -Database $database -Query $sqlSave -ErrorAction Stop | Out-Null
-					}
-				}
-				else
-				{
-					$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb.PSBase.ConnectionString = $connectionString
-					$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
-					$conn.Open()
-					$cmd = $conn.CreateCommand(); $cmd.CommandText = $sqlSave; $cmd.CommandTimeout = 0
-					[void]$cmd.ExecuteNonQuery()
-					$conn.Close()
-				}
-			}
-			catch
-			{
-				$ok = $false
-				Write_Log "Save failed: $($_.Exception.Message)" "red"
-				[void][System.Windows.Forms.MessageBox]::Show("Save failed. Check logs.", "Error", 'OK', 'Error')
-			}
-			if (-not $ok) { return }
-
-			# Refresh view from DB
-			Write_Log "Refreshing view..." "blue"
-			$fresh = $null
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnectionString)
-					{
-						$fresh = & $InvokeSqlCmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
-					}
-					else
-					{
-						$fresh = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
-					}
-				}
-				else
-				{
-					$csb2 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb2.PSBase.ConnectionString = $connectionString
-					$conn2 = New-Object System.Data.SqlClient.SqlConnection $csb2.ConnectionString
-					$conn2.Open()
-					$cmd2 = $conn2.CreateCommand(); $cmd2.CommandText = $selectQuery; $cmd2.CommandTimeout = 0
-					$da2 = New-Object System.Data.SqlClient.SqlDataAdapter $cmd2
-					$td2 = New-Object System.Data.DataTable
-					[void]$da2.Fill($td2)
-					$conn2.Close()
-					$fresh = $td2
-				}
-			}
-			catch
-			{
-				Write_Log "SQL error (refresh): $($_.Exception.Message)" "red"
-				return
-			}
-
-			if ($fresh)
-			{
-				$dt.Rows.Clear() | Out-Null
-				foreach ($r in $fresh)
-				{
-					$nr = $dt.NewRow()
-					$nr['ScaleCode'] = [string]$r.ScaleCode
-					$nr['ScaleName'] = [string]$r.ScaleName
-					$nr['ScaleBrand'] = [string]$r.ScaleBrand
-					$nr['ScaleModel'] = [string]$r.ScaleModel
-					$nr['IPNetwork'] = [string]$r.IPNetwork
-					$nr['IPDevice'] = [string]$r.IPDevice
-					$nr['BufferTime'] = [string]$r.BufferTime
-					$nr['Active'] = [string]$r.Active
-					$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
-					$nr['OrigScaleModel'] = [string]$r.ScaleModel
-					$nr['OrigIPNetwork'] = [string]$r.IPNetwork
-					$nr['OrigIPDevice'] = [string]$r.IPDevice
-					[void]$dt.Rows.Add($nr)
-				}
-				$grid.Refresh()
-			}
-
-			[void][System.Windows.Forms.MessageBox]::Show("Saved and refreshed.", "Success", 'OK', 'Information')
-			Write_Log "Saved and refreshed." "green"
 		})
 
 	# ----------------------------------------------------------------------------------------------
@@ -19768,37 +19692,25 @@ END CATCH;
 			$snapI = @()
 			foreach ($row in $dt.Rows)
 			{
-				$o = [ordered]@{
-					ScaleCode	   = $row['ScaleCode']; ScaleName = $row['ScaleName']; ScaleBrand = $row['ScaleBrand']; ScaleModel = $row['ScaleModel']
-					IPNetwork	   = $row['IPNetwork']; IPDevice = $row['IPDevice']; BufferTime = $row['BufferTime']; Active = $row['Active']
-					OrigScaleBrand = $row['OrigScaleBrand']; OrigScaleModel = $row['OrigScaleModel']; OrigIPNetwork = $row['OrigIPNetwork']; OrigIPDevice = $row['OrigIPDevice']
-				}
+				$o = [ordered]@{ }
+				foreach ($col in $dt.Columns) { $o[$col.ColumnName] = $row[$col.ColumnName] }
 				if ($o.ScaleBrand -eq 'BIZERBA') { $snapB += $o }
 				elseif ($o.ScaleBrand -eq 'ISHIDA') { $snapI += $o }
 			}
 
 			# Sort by numeric IPDevice (non-numeric last), then by raw IPDevice
-			$snapB = $snapB | Sort-Object @{
-				Expression = {
-					$n = $null; if ([int]::TryParse([string]$_.IPDevice, [ref]$n)) { $n }
-					else { [int]::MaxValue }
-				}
-			},
-										  @{ Expression = { $_.IPDevice } }
-			$snapI = $snapI | Sort-Object @{
-				Expression = {
-					$n = $null; if ([int]::TryParse([string]$_.IPDevice, [ref]$n)) { $n }
-					else { [int]::MaxValue }
-				}
-			},
-										  @{ Expression = { $_.IPDevice } }
+			$byDevice = @(
+				@{ Expression = { $n = $null; if ([int]::TryParse([string]$_.IPDevice, [ref]$n)) { $n } else { [int]::MaxValue } } },
+				@{ Expression = { $_.IPDevice } }
+			)
+			$snapB = @($snapB | Sort-Object $byDevice)
+			$snapI = @($snapI | Sort-Object $byDevice)
 
 			$dt.BeginLoadData()
 			try
 			{
 				$dt.Rows.Clear()
-				foreach ($s in $snapB) { $nr = $dt.NewRow(); foreach ($k in $s.Keys) { $nr[$k] = [string]$s[$k] }; [void]$dt.Rows.Add($nr) }
-				foreach ($s in $snapI) { $nr = $dt.NewRow(); foreach ($k in $s.Keys) { $nr[$k] = [string]$s[$k] }; [void]$dt.Rows.Add($nr) }
+				foreach ($s in @($snapB) + @($snapI)) { $nr = $dt.NewRow(); foreach ($k in $s.Keys) { $nr[$k] = [string]$s[$k] }; [void]$dt.Rows.Add($nr) }
 			}
 			finally { $dt.EndLoadData() }
 
@@ -19813,8 +19725,7 @@ END CATCH;
 					else { $r['BufferTime'] = '5' }
 				}
 			}
-			$ishWmai = @()
-			foreach ($r in $dt.Rows) { if ($r['ScaleBrand'] -eq 'ISHIDA' -and $r['ScaleModel'] -eq 'WMAI') { $ishWmai += $r } }
+			$ishWmai = @($dt.Rows | Where-Object { $_['ScaleBrand'] -eq 'ISHIDA' -and $_['ScaleModel'] -eq 'WMAI' })
 			if ($ishWmai.Count -gt 1) { foreach ($r in $ishWmai) { $r['ScaleName'] = "Ishida Wrapper $($r['IPDevice'])" } }
 			elseif ($ishWmai.Count -eq 1) { $ishWmai[0]['ScaleName'] = 'Ishida Wrapper' }
 
@@ -19829,264 +19740,19 @@ END CATCH;
 			$grid.Refresh()
 
 			# Immediately SAVE (same validation rules as Save button)
-			if ($grid -and $grid.IsCurrentCellInEditMode) { [void]$grid.EndEdit() }
-			else { if ($grid) { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) } }
-
-			$seenCodes2 = @{ }
-			$rowIdx2 = 0
-			foreach ($row2 in $dt.Rows)
+			if (& $saveGrid 'Auto Sort')
 			{
-				$raw2 = $row2['ScaleCode']
-				$val2 = $null
-				if (-not [int]::TryParse([string]$raw2, [ref]$val2))
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Invalid ScaleCode at row #$($rowIdx2 + 1): '$raw2' is not a number.", "Invalid Code", 'OK', 'Error')
-					return
-				}
-				if ($seenCodes2.ContainsKey($val2))
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Duplicate ScaleCode '$val2' detected (row #$($rowIdx2 + 1)).", "Duplicate Code", 'OK', 'Error')
-					return
-				}
-				$seenCodes2[$val2] = $true
-
-				$actRaw2 = [string]$row2['Active']; if ($null -eq $actRaw2) { $actRaw2 = '' }
-				$actUp2 = $actRaw2.Trim().ToUpper()
-				if ($actUp2 -ne 'Y' -and $actUp2 -ne 'N')
-				{
-					[void][System.Windows.Forms.MessageBox]::Show("Invalid Active value at row #$($rowIdx2 + 1): '$actRaw2'. Use Y or N.", "Invalid Active", 'OK', 'Error')
-					return
-				}
-				$row2['Active'] = $actUp2
-
-				# --- IPNetwork normalization/enforcement (ALWAYS ends with a period) -----------------
-				$ipnRaw2 = [string]$row2['IPNetwork']; if ($null -eq $ipnRaw2) { $ipnRaw2 = '' }
-				$ipnRaw2 = $ipnRaw2.Trim()
-
-				if ($allowedPrefix)
-				{
-					$m2 = [regex]::Match($ipnRaw2, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
-					if (-not $m2.Success)
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx2 + 1): '$ipnRaw2'. Expected something within '$allowedPrefix.*'.", "Invalid IPNetwork", 'OK', 'Error')
-						return
-					}
-					$prefix2 = "$($m2.Groups[1].Value).$($m2.Groups[2].Value).$($m2.Groups[3].Value)"
-					if ($prefix2 -ne $allowedPrefix)
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$($rowIdx2 + 1) must be within '$allowedPrefix.*'. Got '$ipnRaw2'.", "IPNetwork Out of Range", 'OK', 'Error')
-						return
-					}
-
-					# CHANGE: enforce trailing period
-					$row2['IPNetwork'] = "$allowedPrefix." # <-- always ends with '.'
-				}
-				else
-				{
-					# NEW: Even without allowedPrefix, normalize any parsable A.B.C(.anything) to A.B.C.
-					$mGen2 = [regex]::Match($ipnRaw2, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
-					if ($mGen2.Success)
-					{
-						$prefixGen2 = "$($mGen2.Groups[1].Value).$($mGen2.Groups[2].Value).$($mGen2.Groups[3].Value)"
-						$row2['IPNetwork'] = "$prefixGen2." # <-- enforce trailing '.'
-					}
-					else
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("Invalid IPNetwork at row #$($rowIdx2 + 1): '$ipnRaw2'. Expected a pattern like A.B.C or A.B.C.X", "Invalid IPNetwork", 'OK', 'Error')
-						return
-					}
-				}
-				# --------------------------------------------------------------------------------------
-
-				$rowIdx2 = $rowIdx2 + 1
+				[void][System.Windows.Forms.MessageBox]::Show("Auto Sort applied, saved, and refreshed.", "Success", 'OK', 'Information')
+				Write_Log "Auto Sort applied, saved, and refreshed." "green"
 			}
-
-			$values2 = New-Object System.Collections.Generic.List[string]
-			foreach ($row3 in $dt.Rows)
-			{
-				$nBrand2 = ([string]$row3['ScaleBrand']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nModel2 = ([string]$row3['ScaleModel']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nIPNet2 = ([string]$row3['IPNetwork']).Replace("`r", "").Replace("`n", "") -replace "'", "''" # already ends with '.'
-				$nIPDev2 = ([string]$row3['IPDevice']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nCode2 = [int]$row3['ScaleCode']
-				$nBuf2 = ([string]$row3['BufferTime']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nName2 = ([string]$row3['ScaleName']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				$nAct2 = ([string]$row3['Active']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-
-				$oBrand2 = (([string]$row3['OrigScaleBrand'])) -replace "'", "''"
-				$oModel2 = (([string]$row3['OrigScaleModel'])) -replace "'", "''"
-				$oIPNet2 = (([string]$row3['OrigIPNetwork'])) -replace "'", "''"
-				$oIPDev2 = (([string]$row3['OrigIPDevice'])) -replace "'", "''"
-
-				$values2.Add("('$oBrand2','$oModel2','$oIPNet2','$oIPDev2','$nBrand2','$nModel2','$nIPNet2','$nIPDev2',$nCode2,'$nBuf2','$nName2','$nAct2')")
-			}
-			if ($values2.Count -eq 0)
-			{
-				Write_Log "Nothing to save after Auto Sort." "yellow"
-				return
-			}
-
-			$sqlSave2 = $sqlSaveTemplate.Replace('$(VALUES_BLOCK)', ([string]::Join(",`r`n  ", $values2)))
-
-			Write_Log "Saving to database after Auto Sort..." "blue"
-
-			$ok2 = $true
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnectionString)
-					{
-						& $InvokeSqlCmd -ConnectionString $connectionString -Query $sqlSave2 -ErrorAction Stop | Out-Null
-					}
-					else
-					{
-						& $InvokeSqlCmd -ServerInstance $server -Database $database -Query $sqlSave2 -ErrorAction Stop | Out-Null
-					}
-				}
-				else
-				{
-					$csb3 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb3.PSBase.ConnectionString = $connectionString
-					$conn3 = New-Object System.Data.SqlClient.SqlConnection $csb3.ConnectionString
-					$conn3.Open()
-					$cmd3 = $conn3.CreateCommand(); $cmd3.CommandText = $sqlSave2; $cmd3.CommandTimeout = 0
-					[void]$cmd3.ExecuteNonQuery()
-					$conn3.Close()
-				}
-			}
-			catch
-			{
-				$ok2 = $false
-				Write_Log "Save (Auto Sort) failed: $($_.Exception.Message)" "red"
-				[void][System.Windows.Forms.MessageBox]::Show("Save after Auto Sort failed. Check logs.", "Error", 'OK', 'Error')
-			}
-			if (-not $ok2) { return }
-
-			# Refresh view from DB
-			Write_Log "Refreshing view after Auto Sort..." "blue"
-			$fresh2 = $null
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnectionString)
-					{
-						$fresh2 = & $InvokeSqlCmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
-					}
-					else
-					{
-						$fresh2 = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
-					}
-				}
-				else
-				{
-					$csb4 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb4.PSBase.ConnectionString = $connectionString
-					$conn4 = New-Object System.Data.SqlClient.SqlConnection $csb4.ConnectionString
-					$conn4.Open()
-					$cmd4 = $conn4.CreateCommand(); $cmd4.CommandText = $selectQuery; $cmd4.CommandTimeout = 0
-					$da4 = New-Object System.Data.SqlClient.SqlDataAdapter $cmd4
-					$td4 = New-Object System.Data.DataTable
-					[void]$da4.Fill($td4)
-					$conn4.Close()
-					$fresh2 = $td4
-				}
-			}
-			catch
-			{
-				Write_Log "SQL error (refresh after Auto Sort): $($_.Exception.Message)" "red"
-				return
-			}
-
-			if ($fresh2)
-			{
-				$dt.Rows.Clear() | Out-Null
-				foreach ($r in $fresh2)
-				{
-					$nr = $dt.NewRow()
-					$nr['ScaleCode'] = [string]$r.ScaleCode
-					$nr['ScaleName'] = [string]$r.ScaleName
-					$nr['ScaleBrand'] = [string]$r.ScaleBrand
-					$nr['ScaleModel'] = [string]$r.ScaleModel
-					$nr['IPNetwork'] = [string]$r.IPNetwork
-					$nr['IPDevice'] = [string]$r.IPDevice
-					$nr['BufferTime'] = [string]$r.BufferTime
-					$nr['Active'] = [string]$r.Active
-					$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
-					$nr['OrigScaleModel'] = [string]$r.ScaleModel
-					$nr['OrigIPNetwork'] = [string]$r.IPNetwork
-					$nr['OrigIPDevice'] = [string]$r.IPDevice
-					[void]$dt.Rows.Add($nr)
-				}
-				$grid.Refresh()
-			}
-
-			[void][System.Windows.Forms.MessageBox]::Show("Auto Sort applied, saved, and refreshed.", "Success", 'OK', 'Information')
-			Write_Log "Auto Sort applied, saved, and refreshed." "green"
 		})
 
 	# ----------------------------------------------------------------------------------------------
-	# 8) Refresh / Close / Cancel wiring (inline)
+	# 8) Refresh / Close / Cancel wiring
 	# ----------------------------------------------------------------------------------------------
 	$btnRefresh.add_Click({
 			Write_Log "Refreshing view from database..." "blue"
-			$fresh = $null
-			try
-			{
-				if ($InvokeSqlCmd)
-				{
-					if ($supportsConnectionString)
-					{
-						$fresh = & $InvokeSqlCmd -ConnectionString $connectionString -Query $selectQuery -ErrorAction Stop
-					}
-					else
-					{
-						$fresh = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $selectQuery -ErrorAction Stop
-					}
-				}
-				else
-				{
-					$csb5 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb5.PSBase.ConnectionString = $connectionString
-					$conn5 = New-Object System.Data.SqlClient.SqlConnection $csb5.ConnectionString
-					$conn5.Open()
-					$cmd5 = $conn5.CreateCommand(); $cmd5.CommandText = $selectQuery; $cmd5.CommandTimeout = 0
-					$da5 = New-Object System.Data.SqlClient.SqlDataAdapter $cmd5
-					$td5 = New-Object System.Data.DataTable
-					[void]$da5.Fill($td5)
-					$conn5.Close()
-					$fresh = $td5
-				}
-			}
-			catch
-			{
-				Write_Log "SQL error (refresh): $($_.Exception.Message)" "red"
-				return
-			}
-
-			if ($fresh)
-			{
-				$dt.Rows.Clear() | Out-Null
-				foreach ($r in $fresh)
-				{
-					$nr = $dt.NewRow()
-					$nr['ScaleCode'] = [string]$r.ScaleCode
-					$nr['ScaleName'] = [string]$r.ScaleName
-					$nr['ScaleBrand'] = [string]$r.ScaleBrand
-					$nr['ScaleModel'] = [string]$r.ScaleModel
-					$nr['IPNetwork'] = [string]$r.IPNetwork
-					$nr['IPDevice'] = [string]$r.IPDevice
-					$nr['BufferTime'] = [string]$r.BufferTime
-					$nr['Active'] = [string]$r.Active
-					$nr['OrigScaleBrand'] = [string]$r.ScaleBrand
-					$nr['OrigScaleModel'] = [string]$r.ScaleModel
-					$nr['OrigIPNetwork'] = [string]$r.IPNetwork
-					$nr['OrigIPDevice'] = [string]$r.IPDevice
-					[void]$dt.Rows.Add($nr)
-				}
-				$grid.Refresh()
-			}
+			[void](& $reloadFromDb 'refresh')
 		})
 
 	$btnClose.add_Click({ $form.Close() })
@@ -20911,9 +20577,80 @@ ORDER BY e.F01;
 	$summaryDeleteStage = New-Object System.Collections.Generic.List[string]
 	$summaryDeployStage = New-Object System.Collections.Generic.List[string]
 
-	# ------------------------- Stage runner (inline pattern) -------------------------
-	# We keep this as repeated inline logic (no nested helper functions) so it remains drop-in compatible.
+	# ------------------------- Stage runner -------------------------
+	# Runs BMS.exe once and summarizes Response.log per selected scale. Only lines BMS appended
+	# during THIS run count: the log keeps history, and "latest line per IP" used to report an
+	# older run's result when this run wrote nothing for a scale.
+	$runBmsStage = {
+		param ([string]$StageName, [string]$TriggerLike, $Summary)
 
+		$linesBefore = 0
+		if (Test-Path -LiteralPath $responseLogPath) { $linesBefore = @(Get-Content -LiteralPath $responseLogPath -ErrorAction SilentlyContinue).Count }
+
+		Write_Log "Running BMS.exe ($StageName stage)..." "blue"
+		$exitCode = $null
+		try
+		{
+			Push-Location $BmsRootNorm
+			& $BmsExePath -config $relConfig -dynamic $relDynamic
+			$exitCode = $LASTEXITCODE
+		}
+		catch { Write_Log "ERROR: Failed to run BMS.exe ($StageName stage): $_" "red" }
+		finally { Pop-Location }
+
+		if ($null -ne $exitCode) { Write_Log "BMS.exe exit code ($StageName stage): $exitCode" "green" }
+		else { Write_Log "WARNING: BMS.exe exit code unknown ($StageName stage)." "yellow" }
+
+		if (-not (Test-Path -LiteralPath $responseLogPath))
+		{
+			foreach ($m in $selectedScaleMeta) { [void]$Summary.Add(("{0} ({1}): Response.log not found" -f $m.ScaleName, $m.IPAddress)) }
+			return
+		}
+
+		$allLines = @(Get-Content -LiteralPath $responseLogPath -ErrorAction SilentlyContinue)
+		# A shorter log means BMS rotated it: then every line is from this run
+		$newLines = if ($allLines.Count -ge $linesBefore) { @($allLines | Select-Object -Skip $linesBefore) } else { $allLines }
+
+		# Response.log: ts|name|ip|rc|?|trigger|items|errors|type
+		$latestByIP = @{ }
+		foreach ($l in $newLines)
+		{
+			if ([string]::IsNullOrWhiteSpace($l)) { continue }
+			$parts = $l -split '\|', -1
+			if ($parts.Count -lt 9) { continue }
+			$ip = $parts[2].Trim()
+			$trigger = $parts[5].Trim()
+			if ($trigger -notlike $TriggerLike -or [string]::IsNullOrWhiteSpace($ip)) { continue }
+
+			$tsNum = 0L; [void][int64]::TryParse(($parts[0].Trim() -replace '_', ''), [ref]$tsNum)
+			$rec = [pscustomobject]@{
+				TimestampText = $parts[0].Trim()
+				TimestampNum  = $tsNum
+				Trigger	      = $trigger
+				RC		      = $parts[3].Trim()
+				Items		  = $parts[6].Trim()
+				Errors	      = $parts[7].Trim()
+				Type		  = $parts[8].Trim()
+				ScaleNameLog  = $parts[1].Trim()
+			}
+			if (-not $latestByIP.ContainsKey($ip) -or $rec.TimestampNum -ge $latestByIP[$ip].TimestampNum) { $latestByIP[$ip] = $rec }
+		}
+
+		foreach ($m in $selectedScaleMeta)
+		{
+			$ipKey = $m.IPAddress.Trim()
+			if (-not $latestByIP.ContainsKey($ipKey))
+			{
+				[void]$Summary.Add(("{0} ({1}): no {2} response line detected" -f $m.ScaleName, $m.IPAddress, $StageName))
+				continue
+			}
+			$r = $latestByIP[$ipKey]
+			$orUnknown = { param ($v) if ([string]::IsNullOrWhiteSpace($v)) { '?' } else { $v } }
+			$typeText = if ($r.Type) { ", type=$($r.Type)" } else { "" }
+			[void]$Summary.Add(("{0} ({1}): rc={2}, trigger={3}, items={4}, errs={5}{6}, ts={7}, logName={8}" -f
+					$m.ScaleName, $m.IPAddress, (& $orUnknown $r.RC), $r.Trigger, (& $orUnknown $r.Items), (& $orUnknown $r.Errors), $typeText, $r.TimestampText, $r.ScaleNameLog))
+		}
+	}
 	# ========== STAGE 1: DELETE (if deleteOnly OR deleteFirstThenDeploy) ==========
 	if ($deleteOnly -or $deleteFirstThenDeploy)
 	{
@@ -20943,119 +20680,7 @@ ORDER BY e.F01;
 			return
 		}
 
-		Write_Log "Running BMS.exe (DELETE stage)..." "blue"
-
-		$exitCode = $null
-		try
-		{
-			Push-Location $BmsRootNorm
-			& $BmsExePath -config $relConfig -dynamic $relDynamic
-			$exitCode = $LASTEXITCODE
-		}
-		catch
-		{
-			Write_Log "ERROR: Failed to run BMS.exe (DELETE stage): $_" "red"
-		}
-		finally
-		{
-			Pop-Location
-		}
-
-		if ($exitCode -ne $null) { Write_Log "BMS.exe exit code (DELETE stage): $exitCode" "green" }
-		else { Write_Log "WARNING: BMS.exe exit code unknown (DELETE stage)." "yellow" }
-
-		# Parse Response.log for DELETE stage (prefer lines whose trigger starts with DBatch)
-		if (-not (Test-Path -LiteralPath $responseLogPath))
-		{
-			foreach ($m in $selectedScaleMeta)
-			{
-				[void]$summaryDeleteStage.Add(("{0} ({1}): Response.log not found" -f $m.ScaleName, $m.IPAddress))
-			}
-		}
-		else
-		{
-			$allLines = @()
-			try { $allLines = Get-Content -LiteralPath $responseLogPath -ErrorAction Stop }
-			catch { $allLines = @() }
-
-			$latestByIP = @{ }
-			foreach ($l in $allLines)
-			{
-				if ([string]::IsNullOrWhiteSpace($l)) { continue }
-
-				$parts = $l -split '\|', -1
-				if ($parts.Count -lt 9) { continue }
-
-				$tsText = ($parts[0]).Trim()
-				$ip = ($parts[2]).Trim()
-				$trigger = ($parts[5]).Trim()
-
-				# Only keep DELETE stage triggers
-				if (-not ($trigger -like "DBatch*")) { continue }
-				if ([string]::IsNullOrWhiteSpace($ip)) { continue }
-
-				$tsNum = 0L
-				try { $tsNum = [int64]($tsText -replace '_', '') }
-				catch { $tsNum = 0L }
-
-				$rc = $null; try { $rc = [int](($parts[3]).Trim()) }
-				catch { $rc = $null }
-				$items = $null; try { $items = [int](($parts[6]).Trim()) }
-				catch { $items = $null }
-				$errs = $null; try { $errs = [int](($parts[7]).Trim()) }
-				catch { $errs = $null }
-				$type = ($parts[8]).Trim()
-				$nameInLog = ($parts[1]).Trim()
-
-				$rec = [PSCustomObject]@{
-					TimestampText = $tsText
-					TimestampNum  = $tsNum
-					IPAddress	  = $ip
-					Trigger	      = $trigger
-					RC		      = $rc
-					Items		  = $items
-					Errors	      = $errs
-					Type		  = $type
-					ScaleNameLog  = $nameInLog
-				}
-
-				if (-not $latestByIP.ContainsKey($ip)) { $latestByIP[$ip] = $rec }
-				else
-				{
-					if ($rec.TimestampNum -gt $latestByIP[$ip].TimestampNum) { $latestByIP[$ip] = $rec }
-				}
-			}
-
-			foreach ($m in $selectedScaleMeta)
-			{
-				$ipKey = ($m.IPAddress).Trim()
-				if (-not $latestByIP.ContainsKey($ipKey))
-				{
-					[void]$summaryDeleteStage.Add(("{0} ({1}): no DELETE response line detected" -f $m.ScaleName, $m.IPAddress))
-					continue
-				}
-
-				$r = $latestByIP[$ipKey]
-				$rcOut = if ($r.RC -ne $null) { $r.RC }
-				else { "?" }
-				$itemsOut = if ($r.Items -ne $null) { $r.Items }
-				else { "?" }
-				$errsOut = if ($r.Errors -ne $null) { $r.Errors }
-				else { "?" }
-				$typOut = if ($r.Type) { $r.Type }
-				else { "" }
-
-				[void]$summaryDeleteStage.Add(
-					("{0} ({1}): rc={2}, trigger={3}, items={4}, errs={5}{6}, ts={7}, logName={8}" -f
-						$m.ScaleName, $m.IPAddress, $rcOut, $r.Trigger, $itemsOut, $errsOut,
-						$(if ($typOut) { ", type=$typOut" }
-							else { "" }),
-						$r.TimestampText, $r.ScaleNameLog
-					)
-				)
-			}
-		}
-
+		& $runBmsStage 'DELETE' 'DBatch*' $summaryDeleteStage
 		# If DELETE ONLY, we stop here (no deploy stage)
 		if ($deleteOnly)
 		{
@@ -21136,120 +20761,8 @@ ORDER BY e.F01;
 			return
 		}
 
-		Write_Log "Running BMS.exe (DEPLOY stage)..." "blue"
-
-		$exitCode2 = $null
-		try
-		{
-			Push-Location $BmsRootNorm
-			& $BmsExePath -config $relConfig -dynamic $relDynamic
-			$exitCode2 = $LASTEXITCODE
-		}
-		catch
-		{
-			Write_Log "ERROR: Failed to run BMS.exe (DEPLOY stage): $_" "red"
-		}
-		finally
-		{
-			Pop-Location
-		}
-
-		if ($exitCode2 -ne $null) { Write_Log "BMS.exe exit code (DEPLOY stage): $exitCode2" "green" }
-		else { Write_Log "WARNING: BMS.exe exit code unknown (DEPLOY stage)." "yellow" }
-
-		# Parse Response.log for DEPLOY stage (prefer lines whose trigger starts with Batch*)
-		if (-not (Test-Path -LiteralPath $responseLogPath))
-		{
-			foreach ($m in $selectedScaleMeta)
-			{
-				[void]$summaryDeployStage.Add(("{0} ({1}): Response.log not found" -f $m.ScaleName, $m.IPAddress))
-			}
-		}
-		else
-		{
-			$allLines2 = @()
-			try { $allLines2 = Get-Content -LiteralPath $responseLogPath -ErrorAction Stop }
-			catch { $allLines2 = @() }
-
-			$latestByIP2 = @{ }
-			foreach ($l in $allLines2)
-			{
-				if ([string]::IsNullOrWhiteSpace($l)) { continue }
-
-				$parts = $l -split '\|', -1
-				if ($parts.Count -lt 9) { continue }
-
-				$tsText = ($parts[0]).Trim()
-				$ip = ($parts[2]).Trim()
-				$trigger = ($parts[5]).Trim()
-
-				# Only keep deploy stage triggers
-				if (-not ($trigger -like "Batch*")) { continue }
-				if ([string]::IsNullOrWhiteSpace($ip)) { continue }
-
-				$tsNum = 0L
-				try { $tsNum = [int64]($tsText -replace '_', '') }
-				catch { $tsNum = 0L }
-
-				$rc = $null; try { $rc = [int](($parts[3]).Trim()) }
-				catch { $rc = $null }
-				$items = $null; try { $items = [int](($parts[6]).Trim()) }
-				catch { $items = $null }
-				$errs = $null; try { $errs = [int](($parts[7]).Trim()) }
-				catch { $errs = $null }
-				$type = ($parts[8]).Trim()
-				$nameInLog = ($parts[1]).Trim()
-
-				$rec = [PSCustomObject]@{
-					TimestampText = $tsText
-					TimestampNum  = $tsNum
-					IPAddress	  = $ip
-					Trigger	      = $trigger
-					RC		      = $rc
-					Items		  = $items
-					Errors	      = $errs
-					Type		  = $type
-					ScaleNameLog  = $nameInLog
-				}
-
-				if (-not $latestByIP2.ContainsKey($ip)) { $latestByIP2[$ip] = $rec }
-				else
-				{
-					if ($rec.TimestampNum -gt $latestByIP2[$ip].TimestampNum) { $latestByIP2[$ip] = $rec }
-				}
-			}
-
-			foreach ($m in $selectedScaleMeta)
-			{
-				$ipKey = ($m.IPAddress).Trim()
-				if (-not $latestByIP2.ContainsKey($ipKey))
-				{
-					[void]$summaryDeployStage.Add(("{0} ({1}): no DEPLOY response line detected" -f $m.ScaleName, $m.IPAddress))
-					continue
-				}
-
-				$r = $latestByIP2[$ipKey]
-				$rcOut = if ($r.RC -ne $null) { $r.RC }
-				else { "?" }
-				$itemsOut = if ($r.Items -ne $null) { $r.Items }
-				else { "?" }
-				$errsOut = if ($r.Errors -ne $null) { $r.Errors }
-				else { "?" }
-				$typOut = if ($r.Type) { $r.Type }
-				else { "" }
-
-				[void]$summaryDeployStage.Add(
-					("{0} ({1}): rc={2}, trigger={3}, items={4}, errs={5}{6}, ts={7}, logName={8}" -f
-						$m.ScaleName, $m.IPAddress, $rcOut, $r.Trigger, $itemsOut, $errsOut,
-						$(if ($typOut) { ", type=$typOut" }
-							else { "" }),
-						$r.TimestampText, $r.ScaleNameLog
-					)
-				)
-			}
-		}
+		& $runBmsStage 'DEPLOY' 'Batch*' $summaryDeployStage
 	}
-
 	# ------------------------------------------------------------------------------------------------
 	# 9) Completion Summary (shows delete stage separately when used)
 	# ------------------------------------------------------------------------------------------------
@@ -21453,7 +20966,11 @@ ORDER BY CAST([F04] AS int);
 		return
 	}
 
-	if (-not $rows -or $rows.Rows.Count -eq 0)
+	# Invoke-Sqlcmd returns DataRow(s), the SqlClient path a DataTable: make both a row array
+	# (checking .Rows.Count alone reported "0 rows" every time a SQL module was installed)
+	if ($rows -is [System.Data.DataTable]) { $rows = @($rows.Rows) }
+	else { $rows = @($rows | Where-Object { $_ }) }
+	if ($rows.Count -eq 0)
 	{
 		& $logWarn "SDP_TAB returned 0 rows."
 		& $logBlue "`r`n==================== Pick_And_Update_IshidaSDPs Completed ====================`r`n"
@@ -21690,7 +21207,8 @@ ORDER BY CAST([F04] AS int);
 
 			$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 			$sw = New-Object System.IO.StreamWriter($path, $false, $utf8NoBom)
-			$xml.Save($sw); $sw.Close()
+			try { $xml.Save($sw) }
+			finally { $sw.Close() }
 			& $logOk "Saved config: $path"
 		}
 		catch
@@ -21870,68 +21388,58 @@ while ($true)
 		}
 
 		# --------------------------
-		# 2) Remove by line containment
+		# 2) Remove by line containment: a file whose non-empty lines all appear in another file
+		#    (with at least as many lines) goes. Each file is read ONCE per pass (it was re-read
+		#    for every pair and the scan restarted after each delete).
 		# --------------------------
-		$files = Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue
-
-		for ($i = 0; $i -lt $files.Count; $i++)
+		$files = @(Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue)
+		$lineSets = @{ }
+		$lineCounts = @{ }
+		foreach ($fi in $files)
 		{
-			$fileA = $files[$i]
-
-			$linesA = Get-Content -LiteralPath $fileA.FullName -ErrorAction SilentlyContinue |
-				Where-Object { $_ -and $_.Trim() -ne "" }
-
-			if (-not $linesA -or $linesA.Count -eq 0) { continue }
-
-			for ($j = 0; $j -lt $files.Count; $j++)
-			{
-				if ($i -eq $j) { continue }
-				$fileB = $files[$j]
-
-				$linesB = Get-Content -LiteralPath $fileB.FullName -ErrorAction SilentlyContinue |
-					Where-Object { $_ -and $_.Trim() -ne "" }
-
-				if (-not $linesB) { continue }
-				if ($linesB.Count -lt $linesA.Count) { continue }
-
-				$setB = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-				foreach ($lb in $linesB) { [void]$setB.Add($lb.Trim()) }
-
-				$allFound = $true
-				foreach ($la in $linesA)
-				{
-					if (-not $setB.Contains($la.Trim())) { $allFound = $false; break }
-				}
-
-				if ($allFound)
-				{
-					$canDelete = $true
-					try
-					{
-						$s = [System.IO.File]::Open($fileA.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-						$s.Close()
-					}
-					catch { $canDelete = $false }
-
-					if ($canDelete)
-					{
-						try
-						{
-							Remove-Item -LiteralPath $fileA.FullName -Force -ErrorAction Stop
-							$removedLine++
-							if ($removedSamples.Count -lt 5) { [void]$removedSamples.Add(("LINES:{0}" -f $fileA.Name)) }
-
-							# Refresh and restart to keep indexing safe
-							$files = Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue
-							$i = -1
-							break
-						}
-						catch { }
-					}
-				}
-			}
+			$lines = @(Get-Content -LiteralPath $fi.FullName -ErrorAction SilentlyContinue | Where-Object { $_ -and $_.Trim() -ne "" })
+			if ($lines.Count -eq 0) { continue }
+			$set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+			foreach ($ln in $lines) { [void]$set.Add($ln.Trim()) }
+			$lineSets[$fi.FullName] = $set
+			$lineCounts[$fi.FullName] = $lines.Count
 		}
 
+		$deleted = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+		foreach ($fileA in $files)
+		{
+			$a = $fileA.FullName
+			if (-not $lineSets.ContainsKey($a)) { continue }
+			foreach ($fileB in $files)
+			{
+				$b = $fileB.FullName
+				if ($a -eq $b -or $deleted.Contains($b) -or -not $lineSets.ContainsKey($b)) { continue }
+				if ($lineCounts[$b] -lt $lineCounts[$a]) { continue }
+				if (-not $lineSets[$a].IsSubsetOf($lineSets[$b])) { continue }
+
+				# Only delete when nobody has the file open (BMS may still be writing it)
+				$canDelete = $true
+				try
+				{
+					$s = [System.IO.File]::Open($a, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+					$s.Close()
+				}
+				catch { $canDelete = $false }
+
+				if ($canDelete)
+				{
+					try
+					{
+						Remove-Item -LiteralPath $a -Force -ErrorAction Stop
+						[void]$deleted.Add($a)
+						$removedLine++
+						if ($removedSamples.Count -lt 5) { [void]$removedSamples.Add(("LINES:{0}" -f $fileA.Name)) }
+					}
+					catch { }
+				}
+				break
+			}
+		}
 		# Concise: only log when something was removed
 		if (($removedHash + $removedLine) -gt 0)
 		{
@@ -22030,12 +21538,12 @@ while ($true)
 	$form.Controls.Add($btnCancel)
 
 	$state = @{ Action = $null; Interval = 5 }
-	$monitorJob = $null
+	$state.Job = $null # handlers assign through $state: a plain $monitorJob = ... inside a handler is a new local
 
 	$form.Add_FormClosing({
-			if ($monitorJob -and $monitorJob.State -eq 'Running')
+			if ($state.Job -and $state.Job.State -eq 'Running')
 			{
-				try { Stop-Job -Job $monitorJob -Force; Remove-Job -Job $monitorJob -Force; Write_Log "Monitor job stopped on form close." "yellow" }
+				try { Stop-Job -Job $state.Job; Remove-Job -Job $state.Job -Force; Write_Log "Monitor job stopped on form close." "yellow" }
 				catch { }
 			}
 
@@ -22054,25 +21562,25 @@ while ($true)
 				try { "" | Set-Content -LiteralPath $singleLog -Encoding UTF8 -Force }
 				catch { }
 
-				$monitorJob = Start-Job -Name 'DuplicateFileMonitorJob' -ScriptBlock {
+				$state.Job = Start-Job -Name 'DuplicateFileMonitorJob' -ScriptBlock {
 					param ($scriptPath,
 						$interval,
 						$logFile)
 					& "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $scriptPath -IntervalSeconds $interval *>> $logFile
 				} -ArgumentList $psScriptPath, $state.Interval, $singleLog
 
-				Write_Log "Started monitor job (ID: $($monitorJob.Id)). Log: $singleLog" "green"
+				Write_Log "Started monitor job (ID: $($state.Job.Id)). Log: $singleLog" "green"
 
 				$btnRunNow.Text = "Stop Monitor"
 				$btnService.Enabled = $false
 				$btnDeleteService.Enabled = $false
-				$btnCancel.Text = "Close (Monitor Running)"
+				$btnCancel.Text = "Close (stops the monitor)"
 			}
 			else
 			{
-				if ($monitorJob -and $monitorJob.State -eq 'Running')
+				if ($state.Job -and $state.Job.State -eq 'Running')
 				{
-					try { Stop-Job -Job $monitorJob -Force; Remove-Job -Job $monitorJob -Force; Write_Log "Monitor job stopped by user." "yellow" }
+					try { Stop-Job -Job $state.Job; Remove-Job -Job $state.Job -Force; Write_Log "Monitor job stopped by user." "yellow" }
 					catch { }
 				}
 
@@ -22398,7 +21906,7 @@ function Repair_BMS
 			}
 			catch
 			{
-				Write_Log "Failed clearing $[toBizerbaPath]: $_" "yellow"
+				Write_Log "Failed clearing ${toBizerbaPath}: $_" "yellow"
 			}
 		}
 		else
@@ -22422,7 +21930,7 @@ function Repair_BMS
 			}
 			catch
 			{
-				Write_Log "Failed removing $[terminalsPath]: $_" "yellow"
+				Write_Log "Failed removing ${terminalsPath}: $_" "yellow"
 			}
 		}
 		else
@@ -22557,7 +22065,8 @@ function Repair_BMS
 #   Audits and optionally repairs the ScaleCommApp *.exe.config files: sets StoreName (read
 #   from system.ini NAME= when not passed), FistScaleIP (first active scale full IP),
 #   SQL_InstanceName, SQL_databaseName and Recs_BatchSendFull; restores the deploy line in
-#   Office\DEPLOY_CHG.sql and removes the "Update_Scales_Specials_Task_Minutes" task if present.
+#   Office\DEPLOY_CHG.sql and removes the "Update_Scales_Specials_Task_Minutes" task if present
+#   (both through Fix_Deploy_CHG).
 #
 # Parameters:
 #   - ConfigPath          [string]: specific config file to target
@@ -22765,7 +22274,7 @@ function Troubleshoot_ScaleCommApp
 		$serverIPv4s = @()
 		try
 		{
-			[System.Net.Dns]::GetHostAddresses($server) | ForEach-Object {
+			[System.Net.Dns]::GetHostAddresses((($server -replace '^(?i)tcp:', '') -split '[\\,]')[0]) | ForEach-Object {
 				if ($_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $serverIPv4s += $_.ToString() }
 			}
 		}
@@ -23247,7 +22756,8 @@ ORDER BY
 			{
 				$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 				$sw = New-Object System.IO.StreamWriter($path, $false, $utf8NoBom)
-				$xml.Save($sw); $sw.Close()
+				try { $xml.Save($sw) }
+				finally { $sw.Close() }
 				$updated++; $savedFiles.Add((Split-Path -Leaf $path)) | Out-Null
 			}
 			catch { $skipped++ }
@@ -23257,142 +22767,15 @@ ORDER BY
 	# ==================================================================================================
 	# NEW: Restore DEPLOY_CHG.sql deploy line (integrated Fix_Deploy_CHG)
 	# ==================================================================================================
-	# Resolve Office path to find DEPLOY_CHG.sql
 	if (-not $OfficePath -and $script:OfficePath) { $OfficePath = $script:OfficePath }
-	if ($OfficePath)
-	{
-		$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
-
-		if (Test-Path -LiteralPath $deployChgFile)
-		{
-			# Choose executable from the configured ScaleComm roots (prefer FastDEPLOY).
-			$exeCandidate = $null
-			$fastDeployCandidates = @($ScaleCommRoots | ForEach-Object { [System.IO.Path]::Combine($_, $script:ScaleManagementAppFastDeployExeName) })
-			$regularDeployCandidates = @($ScaleCommRoots | ForEach-Object { [System.IO.Path]::Combine($_, $script:ScaleManagementAppExeName) })
-			$fastDeployCandidate = $fastDeployCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
-			$regularDeployCandidate = $regularDeployCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
-			if (-not $fastDeployCandidate) { $fastDeployCandidate = $script:ScaleManagementAppFastDeployPath }
-			if (-not $regularDeployCandidate) { $regularDeployCandidate = $script:ScaleManagementAppExePath }
-			if (Test-Path -LiteralPath $fastDeployCandidate) { $exeCandidate = $fastDeployCandidate }
-			elseif (Test-Path -LiteralPath $regularDeployCandidate) { $exeCandidate = $regularDeployCandidate }
-
-			if ($exeCandidate)
-			{
-				# Build the two-line payload (comment + @EXEC)
-				$exeLine = "/* Deploy price changes to the scales */`r`n@EXEC(RUN='$exeCandidate');"
-				$deployExecPatterns = @()
-				foreach ($root in @($ScaleCommRoots))
-				{
-					if ([string]::IsNullOrWhiteSpace($root)) { continue }
-					$deployExecPatterns += [regex]::Escape([System.IO.Path]::Combine($root, $script:ScaleManagementAppExeName))
-					$deployExecPatterns += [regex]::Escape([System.IO.Path]::Combine($root, $script:ScaleManagementAppFastDeployExeName))
-				}
-				$deployExecPatterns = @($deployExecPatterns | Select-Object -Unique)
-				if ($deployExecPatterns.Count -eq 0)
-				{
-					$deployExecRegex = "(?i)@EXEC\(RUN='[A-Z]:\\ScaleCommApp\\ScaleManagementApp(_FastDEPLOY)?\.exe'\);"
-				}
-				else
-				{
-					$deployExecRegex = "(?i)@EXEC\(RUN='(?:" + ($deployExecPatterns -join '|') + ")'\);"
-				}
-
-				try
-				{
-					if ($PSCmdlet.ShouldProcess($deployChgFile, "Restore DEPLOY_CHG @EXEC line -> $exeCandidate"))
-					{
-
-						# Read entire file and split into lines
-						$content = Get-Content -LiteralPath $deployChgFile -Raw
-						$lines = $content -split "`r?`n"
-
-						# CHANGE: Build a mutable list so we can RemoveAt safely (arrays are fixed-size)
-						$filtered = New-Object System.Collections.Generic.List[string]
-
-						# Filter OUT previous lines: our comment and any matching @EXEC to ScaleManagementApp(_FastDEPLOY).exe
-						foreach ($ln in $lines)
-						{
-							if ($ln -match '^\s*/\* Deploy price changes to the scales \*/') { continue }
-							if ($ln -match $deployExecRegex) { continue }
-							[void]$filtered.Add($ln)
-						}
-
-						# CHANGE: Trim trailing blank lines safely using List.RemoveAt
-						while ($filtered.Count -gt 0 -and [string]::IsNullOrWhiteSpace($filtered[$filtered.Count - 1]))
-						{
-							$filtered.RemoveAt($filtered.Count - 1)
-						}
-
-						# CHANGE: Append payload as two distinct lines (avoid embedded CRLFs inside a single element)
-						[void]$filtered.Add("") # ensure one blank line before our payload
-						[void]$filtered.Add("/* Deploy price changes to the scales */")
-						[void]$filtered.Add("@EXEC(RUN='$exeCandidate');")
-
-						# If file is read-only, clear attribute only when -Force is given
-						$fileOk = $true
-						try
-						{
-							$fi = Get-Item -LiteralPath $deployChgFile -ErrorAction Stop
-							if ($fi.Attributes -band [IO.FileAttributes]::ReadOnly)
-							{
-								if ($Force) { $fi.Attributes = ($fi.Attributes -bxor [IO.FileAttributes]::ReadOnly) }
-								else { $fileOk = $false }
-							}
-						}
-						catch { $fileOk = $false }
-
-						if ($fileOk)
-						{
-							# Keep your original encoding choice for DEPLOY_CHG.sql
-							($filtered -join "`r`n") | Set-Content -Path $deployChgFile -Encoding Default
-							Write_Log "Restored lines to DEPLOY_CHG.sql: @EXEC(RUN='$exeCandidate');" "green"
-						}
-						else
-						{
-							Write_Log "DEPLOY_CHG.sql is read-only and -Force not specified; skipped restore." "yellow"
-						}
-					}
-				}
-				catch
-				{
-					Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
-				}
-
-				# Delete the minutes scheduled task if it exists
-				try
-				{
-					$minutesTaskName = "Update_Scales_Specials_Task_Minutes"
-					$taskExists = schtasks /Query /TN "$minutesTaskName" 2>&1 | Select-String -Quiet -Pattern "$minutesTaskName"
-					if ($taskExists)
-					{
-						if ($PSCmdlet.ShouldProcess($minutesTaskName, "Delete scheduled task"))
-						{
-							$deleteOut = schtasks /Delete /TN "$minutesTaskName" /F 2>&1
-							if ($LASTEXITCODE -eq 0) { Write_Log "Deleted scheduled task '$minutesTaskName' after DEPLOY_CHG.sql restore." "yellow" }
-							else { Write_Log "Attempted to delete '$minutesTaskName' but schtasks said: $deleteOut" "yellow" }
-						}
-					}
-				}
-				catch
-				{
-					Write_Log "Error while checking/deleting '$minutesTaskName': $_" "yellow"
-				}
-			}
-			else
-			{
-				Write_Log "Neither FastDEPLOY nor regular ScaleManagementApp.exe found in configured ScaleComm roots: $($ScaleCommRoots -join ', ')." "red"
-			}
-		}
-		else
-		{
-			Write_Log "DEPLOY_CHG.sql not found at $deployChgFile" "red"
-		}
-	}
-	else
+	if (-not $OfficePath)
 	{
 		Write_Log "Office path not provided and \$script:OfficePath not available; skipping DEPLOY_CHG.sql restore." "yellow"
 	}
-
+	elseif ($PSCmdlet.ShouldProcess((Join-Path $OfficePath 'DEPLOY_CHG.sql'), 'Restore DEPLOY_CHG @EXEC line'))
+	{
+		[void](Fix_Deploy_CHG -OfficePath $OfficePath -Quiet)
+	}
 	# ------------------------------------------------------------------------------------------------
 	# Final summary
 	# ------------------------------------------------------------------------------------------------
@@ -23412,15 +22795,15 @@ ORDER BY
 #   Weighted-item marking wizard: choose SCL mode or Default/POS mode, updates the
 #   ProdType_F272 setting in all ScaleCommApp XML config files (insert or update), then runs
 #   the SQL update/merge over SCL_TAB and POS_TAB keyed on the item key (default F01).
-#   Reverting to POS clears F272 only (NULL if nullable, blank string otherwise); NOT NULL
-#   fields are never touched.
+#   Reverting to POS clears F272 only, and only when the column allows NULL (a NOT NULL F272
+#   is left alone). The SQL connection is checked before any config file is changed.
 #
 # Parameters:
 #   (none - defaults set inline at the top of the function)
 #
 # Variables:
 #   - $script:ScaleCommRoots / $script:PrimaryScaleCommRoot: config XML location
-#   - $script:FunctionResults: SQL module and connection info
+#   - $script:FunctionResults: ConnectionString / DBSERVER / DBNAME (SQL goes through SqlClient)
 #
 # Notes:
 #   - Range/field defaults (MinItem, MaxItem, POS_Field/Value, SCL_Field/Value, ItemKey) are inline.
@@ -23490,6 +22873,27 @@ function Update_ScaleConfig_And_DB
 	else { "POS" }
 
 	# ---------------------------------------------------------------------------
+	# SQL connection first: configs and DB must change together, so nothing is
+	# written when the DB cannot be reached
+	# ---------------------------------------------------------------------------
+	$ConnectionString = Normalize_Sql_ConnectionString -RawConnectionString $script:FunctionResults['ConnectionString'] -Server $script:FunctionResults['DBSERVER'] -Database $script:FunctionResults['DBNAME']
+	if (-not $ConnectionString)
+	{
+		Write_Log "DB server, DB name, or connection string not found. Nothing was changed." "red"
+		Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
+		return
+	}
+	$sqlConn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
+	try { $sqlConn.Open() }
+	catch
+	{
+		$sqlConn.Dispose()
+		Write_Log "Cannot connect to the store database: $($_.Exception.Message). Nothing was changed." "red"
+		Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
+		return
+	}
+
+	# ---------------------------------------------------------------------------
 	# XML Config Update (robust, always update or insert key)
 	# ---------------------------------------------------------------------------
 	$Files = @(
@@ -23542,35 +22946,6 @@ function Update_ScaleConfig_And_DB
 		}
 	}
 
-	# ---------------------------------------------------------------------------
-	# SQL Logic: run the appropriate update/merge (ONLY F272 IS CLEARED)
-	# ---------------------------------------------------------------------------
-	$dbName = $script:FunctionResults['DBNAME']
-	$server = $script:FunctionResults['DBSERVER']
-	$ConnectionString = $script:FunctionResults['ConnectionString']
-	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-	if (-not $ConnectionString -or -not $server -or -not $dbName)
-	{
-		Write_Log "DB server, DB name, or connection string not found. Cannot execute SQL update." "red"
-		Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
-		return
-	}
-	if ($SqlModuleName -and $SqlModuleName -ne "None")
-	{
-		Import-Module $SqlModuleName -ErrorAction Stop
-		$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
-	}
-	else
-	{
-		Write_Log "No valid SQL module available for SQL operations!" "red"
-		Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
-		return
-	}
-	$supportsConnectionString = $false
-	if ($InvokeSqlCmd)
-	{
-		$supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString'
-	}
 	if ($Mode -eq "SCL")
 	{
 		$SqlQuery = @"
@@ -23603,32 +22978,34 @@ SELECT @@ROWCOUNT AS RowsAffected;
 	}
 	else
 	{
+		# -1 = column is NOT NULL: leave it alone
 		$SqlQuery = @"
-UPDATE SCL_TAB
-SET $SCL_Field = NULL
-WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
-AND F272 IS NOT NULL;
-SELECT @@ROWCOUNT AS RowsAffected;
+IF COLUMNPROPERTY(OBJECT_ID('dbo.SCL_TAB'), '$SCL_Field', 'AllowsNull') = 1
+BEGIN
+    UPDATE SCL_TAB
+    SET $SCL_Field = NULL
+    WHERE $ItemKey BETWEEN '$MinItem' AND '$MaxItem'
+    AND $SCL_Field IS NOT NULL;
+    SELECT @@ROWCOUNT AS RowsAffected;
+END
+ELSE
+    SELECT -1 AS RowsAffected;
 "@
 	}
 	try
 	{
-		if ($supportsConnectionString)
-		{
-			$result = & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $SqlQuery -ErrorAction Stop -QueryTimeout 0
-		}
-		else
-		{
-			$result = & $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $SqlQuery -ErrorAction Stop -QueryTimeout 0
-		}
-		$rowsAffected = if ($result -and $result.RowsAffected) { $result.RowsAffected }
-		else { 0 }
-		Write_Log "Database updated for $Mode mode. ($rowsAffected) items changed." "green"
+		$cmd = $sqlConn.CreateCommand()
+		$cmd.CommandText = $SqlQuery
+		$cmd.CommandTimeout = 0
+		$rowsAffected = [int]$cmd.ExecuteScalar()
+		if ($rowsAffected -lt 0) { Write_Log "SCL_TAB.$SCL_Field does not allow NULL - left unchanged." "yellow" }
+		else { Write_Log "Database updated for $Mode mode. ($rowsAffected) items changed." "green" }
 	}
 	catch
 	{
 		Write_Log "Error executing SQL update for $Mode mode: $_" "red"
 	}
+	finally { $sqlConn.Dispose() }
 	Write_Log "`r`n==================== Update_ScaleConfig_And_DB Function Completed ====================" "blue"
 }
 
@@ -23779,54 +23156,8 @@ function Update_Scales_Specials_Interactive
 	if (-not $deployLineCorrect) { $btnRestoreDeployLine.Enabled = $true }
 
 	$btnRestoreDeployLine.Add_Click({
-			# --- Restore DEPLOY_CHG.sql ---
-			if (Test-Path $deployChgFile)
-			{
-				try
-				{
-					$content = Get-Content $deployChgFile -Raw
-					$newContent = [System.Collections.Generic.List[string]]@(
-						($content -split "`r?`n") | Where-Object {
-							$_ -notmatch '^\s*/\* Deploy price changes to the scales \*/' -and
-							$_ -notmatch $deployExecRegex
-						}
-					)
-					while ($newContent.Count -gt 0 -and ($newContent[-1] -match '^\s*$'))
-					{
-						$null = $newContent.RemoveAt($newContent.Count - 1)
-					}
-					$newContent += ""
-					$newContent += $correctExeLine
-					$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default
-					Write_Log "Restored line to DEPLOY_CHG.sql: $correctExeLine" "green"
-					$btnRestoreDeployLine.Enabled = $false
-				}
-				catch
-				{
-					Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
-				}
-			}
-			else
-			{
-				Write_Log "DEPLOY_CHG.sql not found for restore." "yellow"
-			}
-
-			# --- Delete the minutes task if it exists ---
-			$minutesTaskName = "Update_Scales_Specials_Task_Minutes"
-			$taskExists = schtasks /Query /TN "$minutesTaskName" 2>&1 | Select-String -Quiet -Pattern "$minutesTaskName"
-			if ($taskExists)
-			{
-				$deleteOut = schtasks /Delete /TN "$minutesTaskName" /F 2>&1
-				if ($LASTEXITCODE -eq 0)
-				{
-					Write_Log "Deleted scheduled task '$minutesTaskName' after DEPLOY_CHG.sql restore." "yellow"
-				}
-				else
-				{
-					Write_Log "Attempted to delete '$minutesTaskName' after restore but schtasks said: $deleteOut" "yellow"
-				}
-			}
-
+			# Same restore as the General menu's Fix Deploy_CHG (line + minutes task removal)
+			if (Fix_Deploy_CHG -OfficePath $OfficePath -Quiet) { $btnRestoreDeployLine.Enabled = $false }
 			Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
 			$DeployRestored.Value = $true
 			$form.Close()
@@ -23840,8 +23171,9 @@ function Update_Scales_Specials_Interactive
 			}
 		})
 
-	$selectedAction = $null
-	$minutesValue = $null
+	# Script scope so the button handlers can set them; reset so a previous run's choice never carries over
+	$script:selectedAction = $null
+	$script:minutesValue = $null
 
 	$btnSchedule.Add_Click({
 			$script:selectedAction = "schedule"
@@ -23912,6 +23244,15 @@ function Update_Scales_Specials_Interactive
 
 	if (-not (Test-Path $scriptFolder -ErrorAction SilentlyContinue)) { New-Item -Path $scriptFolder -ItemType Directory | Out-Null }
 
+	# Common schtasks arguments. Runs as the local Administrator, interactive only (/IT): the
+	# batch starts ScaleManagementApp, which needs the desktop session, and /RU without /RP or
+	# /IT made schtasks stop and ask for the password on the console (the GUI then hung).
+	# Direct call instead of Invoke-Expression; \" keeps a path with spaces as one command.
+	$newTaskArgs = {
+		param ([string]$Name, [string]$BatchPath)
+		@('/create', '/tn', $Name, '/tr', "\`"$BatchPath\`"", '/rl', 'HIGHEST', '/f', '/ru', "$env:COMPUTERNAME\Administrator", '/it')
+	}
+
 	# --- Batch for daily (UpdateSpecials) ---
 	if ($script:selectedAction -eq "schedule")
 	{
@@ -23929,9 +23270,7 @@ exit
 		Set-Content -Path $batchPath_Daily -Value $batchContent -Encoding ASCII
 
 		$taskName = "Update_Scales_Specials_Task"
-		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath_Daily`" /sc DAILY /st 05:00 /rl HIGHEST /f /ru $env:COMPUTERNAME\Administrator"
-
-		Invoke-Expression $schtasks
+		$schtasksOut = & schtasks.exe @(& $newTaskArgs $taskName $batchPath_Daily) /sc DAILY /st 05:00 2>&1
 
 		if ($LASTEXITCODE -eq 0)
 		{
@@ -23939,7 +23278,7 @@ exit
 		}
 		else
 		{
-			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task." "red"
+			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task: $(($schtasksOut | Out-String).Trim())" "red"
 		}
 		Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
 		return
@@ -24007,9 +23346,7 @@ exit
 
 		$taskName = "Update_Scales_Specials_Task_Minutes"
 		$interval = [int]$script:minutesValue
-		$schtasks = "schtasks /create /tn `"$taskName`" /tr `"$batchPath_Minutes`" /sc MINUTE /mo $interval /rl HIGHEST /f /ru $env:COMPUTERNAME\Administrator"
-
-		Invoke-Expression $schtasks
+		$schtasksOut = & schtasks.exe @(& $newTaskArgs $taskName $batchPath_Minutes) /sc MINUTE /mo $interval 2>&1
 
 		if ($LASTEXITCODE -eq 0)
 		{
@@ -24017,7 +23354,7 @@ exit
 		}
 		else
 		{
-			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task_Minutes." "red"
+			Write_Log "Failed to create scheduled task for Update_Scales_Specials_Task_Minutes: $(($schtasksOut | Out-String).Trim())" "red"
 		}
 		Write_Log "`r`n==================== Update_Scales_Specials_Interactive Function Completed ====================" "blue"
 		return
@@ -24691,9 +24028,9 @@ function Copy_Files_Between_Nodes
 				try { if (-not (Test-Path -LiteralPath $dstFull)) { New-Item -ItemType Directory -Path $dstFull -Force | Out-Null } }
 				catch { Write_Log "[Create Failed] $dstFull : $($_.Exception.Message)" "red"; $failList.Add("$dest :: $dstFull (create failed)"); continue }
 
-				$args = @($srcFull, $dstFull, '/E', '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
-				if ($doMirror) { $args += '/MIR' }
-				$null = & robocopy @args
+				$roboArgs = @($srcFull, $dstFull, '/E', '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
+				if ($doMirror) { $roboArgs += '/MIR' }
+				$null = & robocopy @roboArgs
 				$exit = $LASTEXITCODE
 				$failed = ($exit -ge 8)
 				$status = if ($failed) { "FAIL ($exit)" }
@@ -25610,6 +24947,14 @@ function Test-Hosts_Parallel
 #
 # Parameters:
 #   - OfficePath  [string]: folder holding DEPLOY_CHG.sql (default: $script:OfficePath)
+#   - Quiet       [switch]: no start/end banners (when called from another tool)
+#
+# Returns:
+#   $true when the line was restored, otherwise $false.
+#
+# Notes:
+#   - The one implementation: Update_Scales_Specials_Interactive (Restore button) and
+#     Troubleshoot_ScaleCommApp call this instead of carrying their own copies.
 #
 # Variables:
 #   - $script:ScaleManagementApp*PathCandidates: FastDEPLOY / regular exe lookup
@@ -25619,18 +24964,20 @@ function Test-Hosts_Parallel
 function Fix_Deploy_CHG
 {
 	param (
-		[string]$OfficePath = $script:OfficePath
+		[string]$OfficePath = $script:OfficePath,
+		[switch]$Quiet
 	)
 
-	Write_Log "`r`n==================== Starting Fix_Deploy_CHG Function ====================`r`n" "blue"
+	if (-not $Quiet) { Write_Log "`r`n==================== Starting Fix_Deploy_CHG Function ====================`r`n" "blue" }
+	$endBanner = { if (-not $Quiet) { Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue" } }
 
 	$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
 
 	if (-not (Test-Path $deployChgFile))
 	{
 		Write_Log "DEPLOY_CHG.sql not found at $deployChgFile" "red"
-		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
-		return
+		& $endBanner
+		return $false
 	}
 
 	$exeLine = ""
@@ -25649,8 +24996,8 @@ function Fix_Deploy_CHG
 	else
 	{
 		Write_Log "Neither FastDEPLOY nor regular ScaleManagementApp.exe found in configured ScaleComm roots." "red"
-		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
-		return
+		& $endBanner
+		return $false
 	}
 
 	# --- Restore DEPLOY_CHG.sql ---
@@ -25670,14 +25017,14 @@ function Fix_Deploy_CHG
 		}
 		$newContent += ""
 		$newContent += $exeLine
-		$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default
+		$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default -ErrorAction Stop
 		Write_Log "Restored line to DEPLOY_CHG.sql: $exeLine" "green"
 	}
 	catch
 	{
 		Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
-		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
-		return
+		& $endBanner
+		return $false
 	}
 
 	# --- Delete the minutes task if it exists ---
@@ -25696,7 +25043,8 @@ function Fix_Deploy_CHG
 		}
 	}
 
-	Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
+	& $endBanner
+	return $true
 }
 
 # ===================================================================================================
@@ -26793,8 +26141,8 @@ function INI_Editor
 					catch { Write_Log "[Create Failed] $dstDir : $($_.Exception.Message)" "red"; $fail++; continue }
 
 					Write_Log "Replacing INI on $m ($dstDir\$srcFile)" "gray"
-					$args = @($srcDir, $dstDir, $srcFile, '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
-					$null = & robocopy @args
+					$roboArgs = @($srcDir, $dstDir, $srcFile, '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
+					$null = & robocopy @roboArgs
 					$code = $LASTEXITCODE
 					if ($code -ge 8) { Write_Log "Copy to $m FAILED (robocopy $code)" "red"; $fail++ }
 					else { Write_Log "Copy to $m OK (robocopy $code)" "green"; $ok++ }
@@ -26983,14 +26331,14 @@ function Remove_Archive_Bit
 		$op = [string]$OfficePath
 		if ($op -match '^(?i)\\\\([^\\]+)\\([^\\]+)(\\.*)?$')
 		{
-			$host = [string]$matches[1]
+			$uncHost = [string]$matches[1]
 			$share = [string]$matches[2]
 			$rest = [string]$matches[3]
 
 			$isLocalHost = $false
-			if ($host -match '^(?i)localhost$') { $isLocalHost = $true }
-			elseif ($host -eq $env:COMPUTERNAME) { $isLocalHost = $true }
-			elseif ($host -eq "$($env:COMPUTERNAME).$($env:USERDNSDOMAIN)") { $isLocalHost = $true }
+			if ($uncHost -match '^(?i)localhost$') { $isLocalHost = $true }
+			elseif ($uncHost -eq $env:COMPUTERNAME) { $isLocalHost = $true }
+			elseif ($uncHost -eq "$($env:COMPUTERNAME).$($env:USERDNSDOMAIN)") { $isLocalHost = $true }
 
 			if ($isLocalHost)
 			{
@@ -27356,14 +26704,14 @@ try {
 	`$op = [string]`$OfficePath
 	if ([string]::IsNullOrWhiteSpace(`$op)) { `$op = [string]`$OfficePathRaw }
 	if (`$op -match '^(?i)\\\\([^\\]+)\\([^\\]+)(\\.*)?$') {
-		`$host = [string]`$matches[1]
+		`$uncHost = [string]`$matches[1]
 		`$share = [string]`$matches[2]
 		`$rest = [string]`$matches[3]
 
 		`$isLocalHost = `$false
-		if (`$host -match '^(?i)localhost$') { `$isLocalHost = `$true }
-		elseif (`$host -eq `$env:COMPUTERNAME) { `$isLocalHost = `$true }
-		elseif (`$host -eq ("{0}.{1}" -f `$env:COMPUTERNAME, `$env:USERDNSDOMAIN)) { `$isLocalHost = `$true }
+		if (`$uncHost -match '^(?i)localhost$') { `$isLocalHost = `$true }
+		elseif (`$uncHost -eq `$env:COMPUTERNAME) { `$isLocalHost = `$true }
+		elseif (`$uncHost -eq ("{0}.{1}" -f `$env:COMPUTERNAME, `$env:USERDNSDOMAIN)) { `$isLocalHost = `$true }
 
 		if (`$isLocalHost) {
 			`$rest2 = ""
@@ -31627,7 +30975,7 @@ $FixDeployCHGItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Deplo
 $FixDeployCHGItem.ToolTipText = "Restores the deploy line to DEPLOY_CHG.sql for scale management."
 $FixDeployCHGItem.Add_Click({
 		$script:LastActivity = Get-Date
-		Fix_Deploy_CHG
+		[void](Fix_Deploy_CHG)
 	})
 [void]$SubGenDiagnostics.DropDownItems.Add($FixDeployCHGItem)
 

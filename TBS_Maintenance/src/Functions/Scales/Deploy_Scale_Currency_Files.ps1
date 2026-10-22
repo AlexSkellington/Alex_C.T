@@ -77,7 +77,7 @@ function Deploy_Scale_Currency_Files
 
 	# ---- Preview Label ----
 	$previewLabel = New-Object Windows.Forms.Label
-	$previewLabel.Text = "Preview: $1.99"
+	$previewLabel.Text = 'Preview: $1.99' # single quotes: "$1" is a variable and showed "Preview: .99"
 	$previewLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]12, [System.Drawing.FontStyle]::Italic)
 	$previewLabel.Width = $form.ClientSize.Width - 40
 	$previewLabel.Height = 30

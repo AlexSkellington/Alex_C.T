@@ -13,7 +13,7 @@
 #   - ConfigFolder    [string]: ScaleComm config folder (default $script:PrimaryScaleCommRoot)
 #
 # Notes:
-#   - Schema-aware, transactional SQL; PS 5.1 safe (no ternary, no nested functions).
+#   - Schema-aware, transactional SQL through SqlClient (no SQL module needed); PS 5.1 safe.
 #   - Start and completion banners are written at all exits.
 # ===================================================================================================
 
@@ -26,8 +26,7 @@ function Configure_Scale_Sub-Departments
 		[string]$ConfigFolder = $script:PrimaryScaleCommRoot
 	)
 
-	# ---- REQUIRED START BANNER (keep exactly as requested earlier) ----
-	Write_Log "`r`n==================== Starting Update_ScaleConfig_And_DB Function ====================`r`n" "blue"
+	Write_Log "`r`n==================== Starting Configure_Scale_Sub-Departments ====================`r`n" "blue"
 
 	# -------------------- Resolve Server/DB (params > cache > defaults) --------------------
 	try
@@ -63,37 +62,48 @@ function Configure_Scale_Sub-Departments
 		return
 	}
 
-	# -------------------- Ensure Invoke-Sqlcmd is available --------------------
-	try
-	{
-		$moduleLoaded = $false
-		if (Get-Module -ListAvailable -Name SqlServer | Select-Object -First 1)
+	# -------------------- SQL through SqlClient (no SQL module needed) --------------------
+	# Windows auth, like the Invoke-Sqlcmd -ServerInstance calls this replaces
+	$sqlConnStr = Normalize_Sql_ConnectionString -Server $ServerInstance -Database $Database
+
+	# First row as an object; DBNull -> $null (a DBNull is truthy and [int64]DBNull throws,
+	# so a missing table used to look present and then crash the row count)
+	$runSqlRow = {
+		param ([string]$Query)
+		$cn = New-Object System.Data.SqlClient.SqlConnection $sqlConnStr
+		try
 		{
-			Import-Module SqlServer -ErrorAction Stop
-			$moduleLoaded = $true
+			$cn.Open()
+			$cmd = $cn.CreateCommand()
+			$cmd.CommandText = $Query
+			$cmd.CommandTimeout = 60
+			$rdr = $cmd.ExecuteReader()
+			$row = $null
+			if ($rdr.Read())
+			{
+				$row = [ordered]@{ }
+				for ($i = 0; $i -lt $rdr.FieldCount; $i++) { $row[$rdr.GetName($i)] = if ($rdr.IsDBNull($i)) { $null } else { $rdr.GetValue($i) } }
+				$row = [pscustomobject]$row
+			}
+			$rdr.Close()
+			$row
 		}
-		elseif (Get-Module -ListAvailable -Name SQLPS | Select-Object -First 1)
-		{
-			Import-Module SQLPS -DisableNameChecking -ErrorAction Stop
-			$moduleLoaded = $true
-		}
-		else
-		{
-			Import-Module SqlServer -ErrorAction SilentlyContinue | Out-Null
-			Import-Module SQLPS -DisableNameChecking -ErrorAction SilentlyContinue | Out-Null
-		}
-		if (-not $moduleLoaded)
-		{
-			Write_Log "Warning: SqlServer/SQLPS module not found; Invoke-Sqlcmd may be unavailable." "yellow"
-		}
-	}
-	catch
-	{
-		Write_Log ("Module import error: " + $_.Exception.Message) "red"
-		Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
-		return
+		finally { $cn.Dispose() }
 	}
 
+	$runSqlNonQuery = {
+		param ([string]$Query, [int]$Timeout = 120)
+		$cn = New-Object System.Data.SqlClient.SqlConnection $sqlConnStr
+		try
+		{
+			$cn.Open()
+			$cmd = $cn.CreateCommand()
+			$cmd.CommandText = $Query
+			$cmd.CommandTimeout = $Timeout
+			[void]$cmd.ExecuteNonQuery()
+		}
+		finally { $cn.Dispose() }
+	}
 	# ==============================
 	# SQL templates (literal strings)
 	# ==============================
@@ -578,9 +588,9 @@ END CATCH;
 	$famInfo = $null; $rpcInfo = $null; $catInfo = $null
 	try
 	{
-		$famInfo = Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query ($Tsql_Check_For.Replace('%TABLE%', 'FAM_TAB')) -ErrorAction Stop | Select-Object -First 1
-		$rpcInfo = Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query ($Tsql_Check_For.Replace('%TABLE%', 'RPC_TAB')) -ErrorAction Stop | Select-Object -First 1
-		$catInfo = Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query ($Tsql_Check_For.Replace('%TABLE%', 'CAT_TAB')) -ErrorAction Stop | Select-Object -First 1
+		$famInfo = & $runSqlRow ($Tsql_Check_For.Replace('%TABLE%', 'FAM_TAB'))
+		$rpcInfo = & $runSqlRow ($Tsql_Check_For.Replace('%TABLE%', 'RPC_TAB'))
+		$catInfo = & $runSqlRow ($Tsql_Check_For.Replace('%TABLE%', 'CAT_TAB'))
 	}
 	catch
 	{
@@ -588,9 +598,9 @@ END CATCH;
 		Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
 		return
 	}
-	$famCount = 0; if ($famInfo -and $famInfo.RowCnt -ne $null) { $famCount = [int64]$famInfo.RowCnt }
-	$rpcCount = 0; if ($rpcInfo -and $rpcInfo.RowCnt -ne $null) { $rpcCount = [int64]$rpcInfo.RowCnt }
-	$catCount = 0; if ($catInfo -and $catInfo.RowCnt -ne $null) { $catCount = [int64]$catInfo.RowCnt }
+	$famCount = 0; if ($famInfo -and $null -ne $famInfo.RowCnt) { $famCount = [int64]$famInfo.RowCnt }
+	$rpcCount = 0; if ($rpcInfo -and $null -ne $rpcInfo.RowCnt) { $rpcCount = [int64]$rpcInfo.RowCnt }
+	$catCount = 0; if ($catInfo -and $null -ne $catInfo.RowCnt) { $catCount = [int64]$catInfo.RowCnt }
 
 	# =========================
 	# Execute selected action (parse-safe .Replace and clean Query build)
@@ -602,27 +612,35 @@ END CATCH;
 
 	if ($script:_Sdp_Action -eq 'AUTO')
 	{
+		$q = $null
 		if ($famInfo -and $famInfo.SchemaName -and $famCount -eq 0)
 		{
 			$chosenShort = 'FAM_TAB'; $chosenSchema = $famInfo.SchemaName; $sdpValue = 'OBJ.F16'
-			$q = $Tsql_Merge_FAM_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']') # no space before .Replace
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
+			$q = $Tsql_Merge_FAM_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']')
 		}
 		elseif ($rpcInfo -and $rpcInfo.SchemaName -and $rpcCount -eq 0)
 		{
 			$chosenShort = 'RPC_TAB'; $chosenSchema = $rpcInfo.SchemaName; $sdpValue = 'OBJ.F18'
 			$q = $Tsql_Merge_RPC_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']')
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
 		}
 		elseif ($catInfo -and $catInfo.SchemaName -and $catCount -eq 0)
 		{
 			$chosenShort = 'CAT_TAB'; $chosenSchema = $catInfo.SchemaName; $sdpValue = 'OBJ.F17'
 			$q = $Tsql_Merge_CAT_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']')
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
+		}
+		if ($q)
+		{
+			try { & $runSqlNonQuery $q 120 }
+			catch
+			{
+				Write_Log ("$chosenShort SQL error: " + $_.Exception.Message) "red"
+				Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
+				return
+			}
 		}
 		else
 		{
-			$why = "No empty candidate found. FAM rows=" + ($famInfo.RowCnt) + ", RPC rows=" + ($rpcInfo.RowCnt) + ", CAT rows=" + ($catInfo.RowCnt) + "."
+			$why = "No empty candidate found. FAM rows=" + $famCount + ", RPC rows=" + $rpcCount + ", CAT rows=" + $catCount + " (missing tables count as 0 but cannot be used)."
 			[void][System.Windows.Forms.MessageBox]::Show($why, "Auto: No Empty Table",
 				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
 			Write_Log ("Auto aborted: " + $why) "yellow"
@@ -661,7 +679,7 @@ END CATCH;
 		{
 			if ($overwrite) { $q = $Tsql_Merge_FAM_Overwrite.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
 			else { $q = $Tsql_Merge_FAM_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
+			& $runSqlNonQuery $q 120
 			Write_Log ("FAM_TAB configured. Overwrite=" + $overwrite) "green"
 		}
 		catch
@@ -699,7 +717,7 @@ END CATCH;
 		{
 			if ($overwrite) { $q = $Tsql_Merge_RPC_Overwrite.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
 			else { $q = $Tsql_Merge_RPC_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
+			& $runSqlNonQuery $q 120
 			Write_Log ("RPC_TAB configured. Overwrite=" + $overwrite) "green"
 		}
 		catch
@@ -737,7 +755,7 @@ END CATCH;
 		{
 			if ($overwrite) { $q = $Tsql_Merge_CAT_Overwrite.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
 			else { $q = $Tsql_Merge_CAT_Keep.Replace('%SCHEMA%', '[' + $chosenSchema + ']') }
-			Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $q -QueryTimeout 120 -ErrorAction Stop | Out-Null
+			& $runSqlNonQuery $q 120
 			Write_Log ("CAT_TAB configured. Overwrite=" + $overwrite) "green"
 		}
 		catch
@@ -785,6 +803,5 @@ END CATCH;
 		Write_Log ("SdpDefault successfully set to '" + $sdpValue + "'.") "green"
 	}
 
-	# ---- REQUESTED COMPLETION BANNER (exact string) ----
 	Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
 }

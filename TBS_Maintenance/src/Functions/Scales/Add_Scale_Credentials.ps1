@@ -92,7 +92,11 @@ function Add_Scale_Credentials
 		$ScaleCodeToIPInfo.Values | ForEach-Object {
 			$candidate = $null
 			if ($_.FullIP) { $candidate = [string]$_.FullIP }
-			elseif ($_.IPNetwork -and $_.IPDevice) { $candidate = "{0}{1}" -f $_.IPNetwork, $_.IPDevice }
+			elseif ($_.IPNetwork -and $_.IPDevice)
+			{
+				# "192.168.1" + "50" must not become "192.168.150" (TryParse reads that as 192.168.0.150)
+				$candidate = ([string]$_.IPNetwork).Trim().TrimEnd('.') + '.' + ([string]$_.IPDevice).Trim()
+			}
 
 			if (-not [string]::IsNullOrWhiteSpace($candidate))
 			{

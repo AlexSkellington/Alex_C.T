@@ -172,7 +172,7 @@ $FixDeployCHGItem = New-Object System.Windows.Forms.ToolStripMenuItem("Fix Deplo
 $FixDeployCHGItem.ToolTipText = "Restores the deploy line to DEPLOY_CHG.sql for scale management."
 $FixDeployCHGItem.Add_Click({
 		$script:LastActivity = Get-Date
-		Fix_Deploy_CHG
+		[void](Fix_Deploy_CHG)
 	})
 [void]$SubGenDiagnostics.DropDownItems.Add($FixDeployCHGItem)
 

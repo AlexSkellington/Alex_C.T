@@ -9,6 +9,14 @@
 #
 # Parameters:
 #   - OfficePath  [string]: folder holding DEPLOY_CHG.sql (default: $script:OfficePath)
+#   - Quiet       [switch]: no start/end banners (when called from another tool)
+#
+# Returns:
+#   $true when the line was restored, otherwise $false.
+#
+# Notes:
+#   - The one implementation: Update_Scales_Specials_Interactive (Restore button) and
+#     Troubleshoot_ScaleCommApp call this instead of carrying their own copies.
 #
 # Variables:
 #   - $script:ScaleManagementApp*PathCandidates: FastDEPLOY / regular exe lookup
@@ -18,18 +26,20 @@
 function Fix_Deploy_CHG
 {
 	param (
-		[string]$OfficePath = $script:OfficePath
+		[string]$OfficePath = $script:OfficePath,
+		[switch]$Quiet
 	)
 
-	Write_Log "`r`n==================== Starting Fix_Deploy_CHG Function ====================`r`n" "blue"
+	if (-not $Quiet) { Write_Log "`r`n==================== Starting Fix_Deploy_CHG Function ====================`r`n" "blue" }
+	$endBanner = { if (-not $Quiet) { Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue" } }
 
 	$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
 
 	if (-not (Test-Path $deployChgFile))
 	{
 		Write_Log "DEPLOY_CHG.sql not found at $deployChgFile" "red"
-		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
-		return
+		& $endBanner
+		return $false
 	}
 
 	$exeLine = ""
@@ -48,8 +58,8 @@ function Fix_Deploy_CHG
 	else
 	{
 		Write_Log "Neither FastDEPLOY nor regular ScaleManagementApp.exe found in configured ScaleComm roots." "red"
-		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
-		return
+		& $endBanner
+		return $false
 	}
 
 	# --- Restore DEPLOY_CHG.sql ---
@@ -69,14 +79,14 @@ function Fix_Deploy_CHG
 		}
 		$newContent += ""
 		$newContent += $exeLine
-		$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default
+		$newContent -join "`r`n" | Set-Content -Path $deployChgFile -Encoding Default -ErrorAction Stop
 		Write_Log "Restored line to DEPLOY_CHG.sql: $exeLine" "green"
 	}
 	catch
 	{
 		Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
-		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
-		return
+		& $endBanner
+		return $false
 	}
 
 	# --- Delete the minutes task if it exists ---
@@ -95,5 +105,6 @@ function Fix_Deploy_CHG
 		}
 	}
 
-	Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
+	& $endBanner
+	return $true
 }
