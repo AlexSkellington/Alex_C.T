@@ -7,12 +7,38 @@
 #  > Edit only in consultation with Alex_C.T                                                          #
 #  > This script performs advanced maintenance and diagnostics on TBS systems                         #
 #                                                                                                     #
+#  > GENERATED FILE - edit the sources in TBS_Maintenance\src and run                                 #
+#    TBS_Maintenance\build\Build.ps1 (see TBS_Maintenance\README.md)                                  #
+#                                                                                                     #
 #######################################################################################################
 
-$script:ShowConsole = $false
-$script:ConsoleHidden = $false
-$script:RestoreConsoleOnExit = $false
+# ===================================================================================================
+#                                     SECTION: Launch Detection
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Works out HOW the script was started, before anything else runs:
+#     Ps1    - a saved .ps1 file (powershell -File ..., "Run with PowerShell")
+#     Exe    - the PowerShell Studio package (TBS_Maintenance_Script_V*.exe)
+#     Inline - irm https://bit.ly/TBSMaintenanceScript | iex, a paste, or an ISE selection
+#   and reads the optional command-line switches:
+#     -ShowConsole / -KeepConsole      keep the console window visible (troubleshooting)
+#     -LaneSqlEnableWorker             headless worker mode, with -LaneSqlEnableWorkerLane,
+#                                      -LaneSqlEnableWorkerMachine, -LaneSqlEnableWorkerTcpPort and
+#                                      -LaneSqlEnableWorkerStartTime (used by the scheduled task
+#                                      that Ensure_SQL_Enable_Scheduled_Task_For_File_Lane creates)
+#
+# Variables:
+#   - $script:LaunchSourceType       'Ps1' | 'Exe' | 'Inline'
+#   - $script:LaunchEntryPath        the .ps1 / .exe that was started ($null for Inline)
+#   - $script:IsInlineLaunch         $true for Inline launches
+#   - $script:ShowConsole            -ShowConsole / -KeepConsole was given
+#   - $script:LaneSqlEnableWorker*   worker-mode switch + its four values
+#   - $__scriptPath, $__entryPath, $__launchArgs, $__isSavedPs1Launch, $__isExeLaunch
+#                                    read by the elevation step (03_Elevation)
+# ===================================================================================================
 
+# Path of the running .ps1 (empty for Inline launches)
+$__scriptPath = $null
 try
 {
 	$__scriptPath = $PSCommandPath
@@ -22,27 +48,18 @@ try
 		catch { $__scriptPath = $null }
 	}
 }
-catch
-{
-	$__scriptPath = $null
-}
+catch { $__scriptPath = $null }
 
+# Process entry point (powershell.exe / the packaged .exe) and its arguments
 $__entryPath = $null
 $__launchArgs = @()
-$__isSavedPs1Launch = $false
-$__isExeLaunch = $false
-$__isInlineLikeLaunch = $false
-
 try
 {
 	$__cmdLineArgs = [Environment]::GetCommandLineArgs()
 	if ($__cmdLineArgs -and $__cmdLineArgs.Count -gt 0)
 	{
 		$__entryPath = $__cmdLineArgs[0]
-		if ($__cmdLineArgs.Count -gt 1)
-		{
-			$__launchArgs = @($__cmdLineArgs[1 .. ($__cmdLineArgs.Count - 1)])
-		}
+		if ($__cmdLineArgs.Count -gt 1) { $__launchArgs = @($__cmdLineArgs[1 .. ($__cmdLineArgs.Count - 1)]) }
 	}
 }
 catch
@@ -51,20 +68,18 @@ catch
 	$__launchArgs = @()
 }
 
+# Saved .ps1?
+$__isSavedPs1Launch = $false
 try
 {
-	if (-not [string]::IsNullOrWhiteSpace($__scriptPath) -and
+	$__isSavedPs1Launch = (-not [string]::IsNullOrWhiteSpace($__scriptPath) -and
 		(Test-Path -LiteralPath $__scriptPath) -and
 		([string]::Equals([System.IO.Path]::GetExtension($__scriptPath), '.ps1', [System.StringComparison]::OrdinalIgnoreCase)))
-	{
-		$__isSavedPs1Launch = $true
-	}
 }
-catch
-{
-	$__isSavedPs1Launch = $false
-}
+catch { $__isSavedPs1Launch = $false }
 
+# Packaged .exe? (a PowerShell host .exe running us inline does not count)
+$__isExeLaunch = $false
 if (-not $__isSavedPs1Launch)
 {
 	try
@@ -74,19 +89,32 @@ if (-not $__isSavedPs1Launch)
 			([string]::Equals([System.IO.Path]::GetExtension($__entryPath), '.exe', [System.StringComparison]::OrdinalIgnoreCase)))
 		{
 			$__entryName = [System.IO.Path]::GetFileNameWithoutExtension($__entryPath)
-			if ($__entryName -notmatch '^(powershell|pwsh|powershell_ise|powershellstudio)$')
-			{
-				$__isExeLaunch = $true
-			}
+			$__isExeLaunch = ($__entryName -notmatch '^(powershell|pwsh|powershell_ise|powershellstudio)$')
 		}
 	}
-	catch
-	{
-		$__isExeLaunch = $false
-	}
+	catch { $__isExeLaunch = $false }
 }
 
-$__isInlineLikeLaunch = (-not $__isSavedPs1Launch -and -not $__isExeLaunch)
+if ($__isSavedPs1Launch)
+{
+	$script:LaunchSourceType = 'Ps1'
+	$script:LaunchEntryPath = $__scriptPath
+}
+elseif ($__isExeLaunch)
+{
+	$script:LaunchSourceType = 'Exe'
+	$script:LaunchEntryPath = $__entryPath
+}
+else
+{
+	$script:LaunchSourceType = 'Inline'
+	$script:LaunchEntryPath = $null
+}
+$script:IsInlineLaunch = ($script:LaunchSourceType -eq 'Inline')
+
+# ---------------------------------------------------------------------------------------------------
+# Command-line switches
+# ---------------------------------------------------------------------------------------------------
 $script:ShowConsole = [bool](@($__launchArgs | Where-Object { $_ -in @('-ShowConsole', '/ShowConsole', '-KeepConsole', '/KeepConsole') }).Count -gt 0)
 $script:LaneSqlEnableWorkerMode = $false
 $script:LaneSqlEnableWorkerLane = $null
@@ -94,58 +122,23 @@ $script:LaneSqlEnableWorkerMachine = $null
 $script:LaneSqlEnableWorkerTcpPort = '1433'
 $script:LaneSqlEnableWorkerStartTime = '04:15'
 
-if ($__launchArgs -and $__launchArgs.Count -gt 0)
+for ($__argIndex = 0; $__argIndex -lt $__launchArgs.Count; $__argIndex++)
 {
-	for ($__argIndex = 0; $__argIndex -lt $__launchArgs.Count; $__argIndex++)
+	$__argValue = [string]$__launchArgs[$__argIndex]
+	$__hasValue = (($__argIndex + 1) -lt $__launchArgs.Count)
+	switch -Regex ($__argValue)
 	{
-		$__argValue = [string]$__launchArgs[$__argIndex]
-		switch -Regex ($__argValue)
-		{
-			'^-LaneSqlEnableWorker$'
-			{
-				$script:LaneSqlEnableWorkerMode = $true
-				continue
-			}
-			'^-LaneSqlEnableWorkerLane$'
-			{
-				if (($__argIndex + 1) -lt $__launchArgs.Count)
-				{
-					$script:LaneSqlEnableWorkerLane = [string]$__launchArgs[$__argIndex + 1]
-					$__argIndex++
-				}
-				continue
-			}
-			'^-LaneSqlEnableWorkerMachine$'
-			{
-				if (($__argIndex + 1) -lt $__launchArgs.Count)
-				{
-					$script:LaneSqlEnableWorkerMachine = [string]$__launchArgs[$__argIndex + 1]
-					$__argIndex++
-				}
-				continue
-			}
-			'^-LaneSqlEnableWorkerTcpPort$'
-			{
-				if (($__argIndex + 1) -lt $__launchArgs.Count)
-				{
-					$script:LaneSqlEnableWorkerTcpPort = [string]$__launchArgs[$__argIndex + 1]
-					$__argIndex++
-				}
-				continue
-			}
-			'^-LaneSqlEnableWorkerStartTime$'
-			{
-				if (($__argIndex + 1) -lt $__launchArgs.Count)
-				{
-					$script:LaneSqlEnableWorkerStartTime = [string]$__launchArgs[$__argIndex + 1]
-					$__argIndex++
-				}
-				continue
-			}
-		}
+		'^-LaneSqlEnableWorker$' { $script:LaneSqlEnableWorkerMode = $true }
+		'^-LaneSqlEnableWorkerLane$' { if ($__hasValue) { $__argIndex++; $script:LaneSqlEnableWorkerLane = [string]$__launchArgs[$__argIndex] } }
+		'^-LaneSqlEnableWorkerMachine$' { if ($__hasValue) { $__argIndex++; $script:LaneSqlEnableWorkerMachine = [string]$__launchArgs[$__argIndex] } }
+		'^-LaneSqlEnableWorkerTcpPort$' { if ($__hasValue) { $__argIndex++; $script:LaneSqlEnableWorkerTcpPort = [string]$__launchArgs[$__argIndex] } }
+		'^-LaneSqlEnableWorkerStartTime$' { if ($__hasValue) { $__argIndex++; $script:LaneSqlEnableWorkerStartTime = [string]$__launchArgs[$__argIndex] } }
 	}
 }
 
+# ---------------------------------------------------------------------------------------------------
+# Console window helper (the console is hidden once the main window is up - see Main\03_Show_Form)
+# ---------------------------------------------------------------------------------------------------
 if (-not ([System.Management.Automation.PSTypeName]'ConsoleWindowHelper').Type)
 {
 	Add-Type -TypeDefinition @"
@@ -165,191 +158,104 @@ public static class ConsoleWindowHelper {
 Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 
 # ===================================================================================================
-#                                       SECTION: Parameters
+#                                    SECTION: Version and Host
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Defines the script parameters, allowing users to run the script in silent mode.
+#   Script version (shown in the status bar and the file log), the startup clock, the
+#   PowerShell version string, the idle-close timeout and the process execution policy.
+#
+# Variables:
+#   - $VersionNumber / $VersionDate   build version (consult with Alex_C.T before changing)
+#   - $script:StartupT0               time zero for the "window shown in Xs" startup log lines
+#   - $PowerShellVersion              "major.minor.build.revision" of the running host
+#   - $script:IdleMinutesAllowed      idle minutes before the window closes itself (0 = never)
 # ===================================================================================================
 
-# Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.6.9"
-$VersionDate = "2026-09-01"
+# Script build version (consult with Alex_C.T before changing this)
+$VersionNumber = "2.7.0"
+$VersionDate = "2026-10-22"
 
-# Startup milestone logging (v2.6.9): time zero for the "window shown in Xs"
-# and warmup-step durations that go to the Tecnica_Systems log folder.
 $script:StartupT0 = Get-Date
 
-# Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
-$major = $PSVersionTable.PSVersion.Major
-$minor = $PSVersionTable.PSVersion.Minor
-$build = $PSVersionTable.PSVersion.Build
-$revision = $PSVersionTable.PSVersion.Revision
+$PowerShellVersion = "{0}.{1}.{2}.{3}" -f $PSVersionTable.PSVersion.Major, $PSVersionTable.PSVersion.Minor, $PSVersionTable.PSVersion.Build, $PSVersionTable.PSVersion.Revision
 
 # Idle timeout for the whole script
 $script:IdleMinutesAllowed = 15 # <<< adjust as needed
-$script:SuppressClosePrompt = $true
-if (-not $script:LaunchSourceType) { $script:LaunchSourceType = 'Unknown' }
-if ($null -eq $script:LaunchEntryPath) { $script:LaunchEntryPath = $null }
-if ($null -eq $script:IsInlineLaunch) { $script:IsInlineLaunch = $false }
-if ($null -eq $script:ShowConsole) { $script:ShowConsole = $false }
-if ($null -eq $script:ConsoleHidden) { $script:ConsoleHidden = $false }
-if ($null -eq $script:RestoreConsoleOnExit) { $script:RestoreConsoleOnExit = $false }
 
-# Combine them into a single version string
-$PowerShellVersion = "$major.$minor.$build.$revision"
-
-# Set Execution Policy to Bypass for the current process
-Set-ExecutionPolicy Bypass -Scope Process -Force
+# Bypass for this process only. A Group Policy that pins the policy makes this throw even
+# though the script already runs - nothing to do about it, so stay quiet.
+try { Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction Stop }
+catch { }
 
 # ===================================================================================================
-#                               SECTION: Ensure Admin Execution
+#                                  SECTION: Ensure Admin Execution
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Relaunches the script elevated ONLY if not already running as Administrator.
-#   If already admin -> continues normally (NO relaunch).
-#   Preserves script path and original arguments.
-#   Safe for PowerShell 5.1 and Scheduled Tasks.
+#   Relaunches the script elevated ONLY if it is not already running as Administrator.
+#     - Already admin            -> continues normally (no relaunch).
+#     - Saved .ps1 / packaged .exe, interactive session -> relaunches itself with RunAs and the
+#       same arguments, then exits this (non-elevated) instance.
+#     - Inline (irm | iex), worker mode, or a non-interactive session -> left alone.
+#   If the UAC prompt is cancelled the script continues without elevation.
+#
+# Variables:
+#   - $IsAdmin   [bool] running elevated (read later by the startup code)
+#   - Reads the launch facts from 01_Launch_Detection ($__isSavedPs1Launch, $__isExeLaunch, ...)
 # ===================================================================================================
 
+$IsAdmin = $false
 try
 {
-	$IsAdmin = ([Security.Principal.WindowsPrincipal] `
-		[Security.Principal.WindowsIdentity]::GetCurrent()
-	).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+	$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+		[Security.Principal.WindowsBuiltInRole]::Administrator)
 }
-catch
-{
-	$IsAdmin = $false
-}
+catch { $IsAdmin = $false }
 
-$scriptPath = $null
-$entryPath = $null
-$launchArgs = @()
-$isSavedPs1Launch = $false
-$isExeLaunch = $false
-
-try
-{
-	$scriptPath = $PSCommandPath
-	if ([string]::IsNullOrWhiteSpace($scriptPath))
-	{
-		try { $scriptPath = $MyInvocation.MyCommand.Path }
-		catch { $scriptPath = $null }
-	}
-}
-catch
-{
-	$scriptPath = $null
-}
-
-try
-{
-	$cmdLineArgs = [Environment]::GetCommandLineArgs()
-	if ($cmdLineArgs -and $cmdLineArgs.Count -gt 0)
-	{
-		$entryPath = $cmdLineArgs[0]
-		if ($cmdLineArgs.Count -gt 1)
-		{
-			$launchArgs = @($cmdLineArgs[1 .. ($cmdLineArgs.Count - 1)])
-		}
-	}
-}
-catch
-{
-	$entryPath = $null
-	$launchArgs = @()
-}
-
-try
-{
-	if (-not [string]::IsNullOrWhiteSpace($scriptPath) -and
-		(Test-Path -LiteralPath $scriptPath) -and
-		([string]::Equals([System.IO.Path]::GetExtension($scriptPath), '.ps1', [System.StringComparison]::OrdinalIgnoreCase)))
-	{
-		$isSavedPs1Launch = $true
-		$script:LaunchSourceType = 'Ps1'
-		$script:LaunchEntryPath = $scriptPath
-	}
-}
-catch
-{
-	$isSavedPs1Launch = $false
-}
-
-if (-not $isSavedPs1Launch)
-{
-	try
-	{
-		if (-not [string]::IsNullOrWhiteSpace($entryPath) -and
-			(Test-Path -LiteralPath $entryPath) -and
-			([string]::Equals([System.IO.Path]::GetExtension($entryPath), '.exe', [System.StringComparison]::OrdinalIgnoreCase)))
-		{
-			$entryName = [System.IO.Path]::GetFileNameWithoutExtension($entryPath)
-			if ($entryName -notmatch '^(powershell|pwsh|powershell_ise|powershellstudio)$')
-			{
-				$isExeLaunch = $true
-				$script:LaunchSourceType = 'Exe'
-				$script:LaunchEntryPath = $entryPath
-			}
-		}
-	}
-	catch
-	{
-		$isExeLaunch = $false
-	}
-}
-
-if (-not $isSavedPs1Launch -and -not $isExeLaunch)
-{
-	$script:LaunchSourceType = 'Inline'
-	$script:IsInlineLaunch = $true
-}
-
-# Only attempt self-relaunch when this is a real saved, interactive .ps1 or packaged .exe launch.
-# If the script was started from irm|iex or some other host/launcher, leave execution alone.
-if (-not $IsAdmin -and -not $script:LaneSqlEnableWorkerMode -and [Environment]::UserInteractive -and ($isSavedPs1Launch -or $isExeLaunch))
+if (-not $IsAdmin -and -not $script:LaneSqlEnableWorkerMode -and [Environment]::UserInteractive -and ($__isSavedPs1Launch -or $__isExeLaunch))
 {
 	if ($script:ShowConsole) { Write-Host "Requesting elevated launch..." -ForegroundColor DarkYellow }
+
+	# Start-Process joins -ArgumentList with spaces and does not quote, so quote anything with
+	# whitespace (script paths such as "...\TBS Scripts\..." would otherwise be split).
+	$__quoteArg = {
+		param ([string]$Value)
+		if ($Value -match '\s' -and $Value -notmatch '^".*"$') { return '"' + $Value + '"' }
+		return $Value
+	}
+
 	try
 	{
-		if ($isSavedPs1Launch)
+		if ($__isSavedPs1Launch)
 		{
-			$argList = @(
-				"-NoProfile"
-				"-ExecutionPolicy", "Bypass"
-				"-File", $scriptPath
-			)
+			$__elevArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (& $__quoteArg $__scriptPath))
+			foreach ($__a in @($args)) { $__elevArgs += (& $__quoteArg ([string]$__a)) }
 
-			if ($args -and $args.Count -gt 0)
-			{
-				foreach ($a in $args)
-				{
-					$argList += "$a"
-				}
-			}
-
-			$psExe = $null
-			try { $psExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source }
+			$__psExe = $null
+			try { $__psExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source }
 			catch { }
-			if ([string]::IsNullOrWhiteSpace($psExe))
+			if ([string]::IsNullOrWhiteSpace($__psExe))
 			{
-				try { $psExe = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source }
+				try { $__psExe = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source }
 				catch { }
 			}
-			if ([string]::IsNullOrWhiteSpace($psExe) -or -not (Test-Path -LiteralPath $psExe))
-			{
-				$psExe = "powershell.exe"
-			}
+			if ([string]::IsNullOrWhiteSpace($__psExe) -or -not (Test-Path -LiteralPath $__psExe)) { $__psExe = "powershell.exe" }
 
-			Start-Process -FilePath $psExe -ArgumentList $argList -Verb RunAs | Out-Null
+			$null = Start-Process -FilePath $__psExe -ArgumentList $__elevArgs -Verb RunAs -ErrorAction Stop
 			exit 0
 		}
 
-		if ($isExeLaunch)
+		if ($__isExeLaunch)
 		{
-			$exeArgList = @()
-			if ($launchArgs -and $launchArgs.Count -gt 0) { $exeArgList = @($launchArgs) }
-			Start-Process -FilePath $entryPath -ArgumentList $exeArgList -Verb RunAs | Out-Null
+			# -ArgumentList rejects an empty array, so only pass it when there are arguments
+			if (@($__launchArgs).Count -gt 0)
+			{
+				$__exeArgs = @($__launchArgs | ForEach-Object { & $__quoteArg ([string]$_) })
+				$null = Start-Process -FilePath $__entryPath -ArgumentList $__exeArgs -Verb RunAs -ErrorAction Stop
+			}
+			else
+			{
+				$null = Start-Process -FilePath $__entryPath -Verb RunAs -ErrorAction Stop
+			}
 			exit 0
 		}
 	}
@@ -360,37 +266,31 @@ if (-not $IsAdmin -and -not $script:LaneSqlEnableWorkerMode -and [Environment]::
 }
 
 # ===================================================================================================
-#                                SECTION: Import Necessary Assemblies
+#                                SECTION: Assemblies and Global State
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Imports required .NET assemblies for creating and managing Windows Forms and graphical components.
+#   Loads WinForms/Drawing and initialises every script-wide variable: result/state bags,
+#   launch-time feature switches, encodings, scale credentials and the central path layout
+#   (Tecnica_Systems folders, Storeman/ScaleCommApp/BMS roots). Creates the Tecnica_Systems
+#   working folders if they are missing.
+#
+# Notes:
+#   - Paths that other code derives from live here only; change a root once and everything
+#     that uses it follows.
+#   - tests\Smoke.ps1 patches the AlexRoot / AlexProgramDataRoot / StoremanRoots lines and the
+#     three Auto*OnLaunch switches by exact text - keep those lines as they are.
 # ===================================================================================================
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# ===================================================================================================
-#                                   SECTION: Initialize Variables
 # ---------------------------------------------------------------------------------------------------
-# Description:
-#   Initializes all necessary variables and paths required for the script's operation, including
-#   dynamic detection of the main Storeman folder, Office subpaths, INI files, encoding settings,
-#   counters, and interop types for MailSlot messaging.
-# ===================================================================================================
-
-# ---------------------------------------------------------------------------------------------------
-# Script-Scoped Result and Process Tracking Structures
+# Result bag + background-work state (filled by the functions and the GUI timers)
 # ---------------------------------------------------------------------------------------------------
 $script:FunctionResults = @{ }
 $script:ProcessedLanes = @()
-$script:ProcessedStores = @()
-$script:ProcessedServers = @()
-$script:ProcessedHosts = @()
 $script:LaneProtocols = @{ }
 $script:LaneProtocolJobs = @{ }
-$script:AutoExportVncOnLaunch = $true
-$script:AutoExportRemoteMachineInfoOnLaunch = $true
-$script:AutoQuarterlySystemHealthMaintenanceOnLaunch = $true
 $script:VncExportTask = $null
 $script:VncExportReaper = $null
 $script:RemoteMachineInfoTask = $null
@@ -412,48 +312,45 @@ $script:StyledPopupForms = @{ }
 $script:LaneSqlProtocolEnableTaskState = @{ }
 $script:LaneSqlProtocolEnableJobs = @{ }
 
-# ---------------------------------------------------------------------------------------------------
-# Count Tracking Variables
-# ---------------------------------------------------------------------------------------------------
+# Launch-time background tasks (each one is a warmup step in Main\02_Startup_Warmup)
+$script:AutoExportVncOnLaunch = $true
+$script:AutoExportRemoteMachineInfoOnLaunch = $true
+$script:AutoQuarterlySystemHealthMaintenanceOnLaunch = $true
+
+# Node counts (set by Retrieve_Nodes)
 $NumberOfLanes = 0
 $NumberOfServers = 0
 $NumberOfScales = 0
 $NumberOfBackoffices = 0
 
 # ---------------------------------------------------------------------------------------------------
-# Encoding Settings
+# Encodings
 # ---------------------------------------------------------------------------------------------------
-$script:ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252) # Windows-1252 legacy files
-$script:utf8NoBOM = New-Object System.Text.UTF8Encoding($false) # UTF-8 no BOM (for output)
-$script:utf8NoBOM = $utf8NoBOM
-$script:ansiPcEncoding = $ansiPcEncoding
+$script:ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)  # Windows-1252 legacy store files
+$script:utf8NoBOM = New-Object System.Text.UTF8Encoding($false)     # UTF-8 without BOM (generated files)
 
 # ---------------------------------------------------------------------------------------------------
-# Passwords for Bizerba Scales
+# Bizerba scale credentials (the two factory passwords; Add_Scale_Credentials tries both)
 # ---------------------------------------------------------------------------------------------------
-$bizuser = "bizuser"
-$passwordBizerba = ConvertTo-SecureString "bizerba" -AsPlainText -Force
-$passwordBiyerba = ConvertTo-SecureString "biyerba" -AsPlainText -Force
+$script:credBizerba = New-Object System.Management.Automation.PSCredential ('bizuser', (ConvertTo-SecureString 'bizerba' -AsPlainText -Force))
+$script:credBiyerba = New-Object System.Management.Automation.PSCredential ('bizuser', (ConvertTo-SecureString 'biyerba' -AsPlainText -Force))
 
-$script:credBizerba = New-Object System.Management.Automation.PSCredential ($bizuser, $passwordBizerba)
-$script:credBiyerba = New-Object System.Management.Automation.PSCredential ($bizuser, $passwordBiyerba)
-
-# === Central Path Configuration ===
+# ---------------------------------------------------------------------------------------------------
+# Tecnica_Systems working folders
+# ---------------------------------------------------------------------------------------------------
 $script:AlexRoot = "C:\Tecnica_Systems\Alex_C.T"
 $script:AlexProgramDataRoot = Join-Path $env:ProgramData "Tecnica_Systems\Alex_C.T"
-$script:StoremanRoots = @("C:\Storeman", "D:\Storeman")
-$script:StoremanShareRoot = "\\localhost\storeman"
-$script:PrimaryStoremanRoot = $script:StoremanRoots[0]
-$script:StoremanOfficeRoots = @($script:StoremanRoots | ForEach-Object { [System.IO.Path]::Combine($_, "Office") })
-$script:PrimaryStoremanOfficePath = $script:StoremanOfficeRoots[0]
-$script:StoremanOfficeDbsFallbacks = @($script:StoremanOfficeRoots | ForEach-Object { [System.IO.Path]::Combine($_, "Dbs") }) + @([System.IO.Path]::Combine($script:StoremanShareRoot, "office\dbs"))
-$script:LocalStoremanOfficePath = [System.IO.Path]::Combine($script:StoremanShareRoot, "office")
 
 $script:BackupRoot = ((Join-Path $script:AlexRoot "Backups").Trim().TrimEnd('\') + '\')
 $script:ScriptsFolder = ((Join-Path $script:AlexRoot "Scripts").Trim().TrimEnd('\') + '\')
 $script:ScriptsLog = ((Join-Path $script:AlexRoot "Log").Trim().TrimEnd('\') + '\')
 $script:SetupFiles = Join-Path $script:AlexRoot "Setup_Files"
 $script:ToolsDir = Join-Path $script:AlexRoot "Tools"
+$script:ProtocolResultsFile = Join-Path $script:SetupFiles "Protocol_Results.txt"
+$script:NssmDefaultPath = Join-Path $script:ToolsDir "NSSM\nssm.exe"
+$script:DuplicateFileMonitorServiceRoot = Join-Path $script:AlexProgramDataRoot "Duplicate_File_Monitor_Service"
+
+# Quarterly system health maintenance (Start_Quarterly_System_Health_Maintenance)
 $script:SystemHealthMaintenanceStatePath = Join-Path $script:SetupFiles "Quarterly_System_Health_Maintenance_State.json"
 $script:SystemHealthMaintenanceLockPath = Join-Path $script:SetupFiles "Quarterly_System_Health_Maintenance.lock"
 $script:SystemHealthMaintenanceWorkerPath = Join-Path $script:ScriptsFolder "Quarterly_System_Health_Maintenance_Worker.ps1"
@@ -463,9 +360,28 @@ $script:SystemHealthMaintenanceRunLogPattern = "Quarterly_System_Health_Maintena
 $script:SystemHealthMaintenanceIntervalMonths = 3
 $script:SystemHealthMaintenanceRetentionCount = 8
 $script:SystemHealthMaintenanceSummaryRetentionLines = 250
-$script:ProtocolResultsFile = Join-Path $script:SetupFiles "Protocol_Results.txt"
-$script:NssmDefaultPath = Join-Path $script:ToolsDir "NSSM\nssm.exe"
 
+foreach ($corePath in @($script:BackupRoot, $script:ScriptsFolder, $script:ScriptsLog, $script:SetupFiles, $script:ToolsDir))
+{
+	if (-not (Test-Path -LiteralPath $corePath))
+	{
+		$null = New-Item -Path $corePath -ItemType Directory -Force
+	}
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Storeman roots (the real one is resolved in 05_Storeman_Detection)
+# ---------------------------------------------------------------------------------------------------
+$script:StoremanRoots = @("C:\Storeman", "D:\Storeman")
+$script:PrimaryStoremanRoot = $script:StoremanRoots[0]
+$script:StoremanOfficeRoots = @($script:StoremanRoots | ForEach-Object { [System.IO.Path]::Combine($_, "Office") })
+$script:PrimaryStoremanOfficePath = $script:StoremanOfficeRoots[0]
+$script:LocalStoremanOfficePath = "\\localhost\storeman\office"
+$script:StoremanOfficeDbsFallbacks = @($script:StoremanOfficeRoots | ForEach-Object { [System.IO.Path]::Combine($_, "Dbs") }) + @("\\localhost\storeman\office\dbs")
+
+# ---------------------------------------------------------------------------------------------------
+# ScaleCommApp (Ishida / ScaleManagementApp)
+# ---------------------------------------------------------------------------------------------------
 $script:ScaleCommRoots = @("C:\ScaleCommApp", "D:\ScaleCommApp")
 $script:PrimaryScaleCommRoot = $script:ScaleCommRoots[0]
 $script:ScaleManagementAppExeName = "ScaleManagementApp.exe"
@@ -478,56 +394,57 @@ $script:ScaleManagementAppPathCandidates = @($script:ScaleCommRoots | ForEach-Ob
 $script:ScaleManagementAppFastDeployPathCandidates = @($script:ScaleCommRoots | ForEach-Object { [System.IO.Path]::Combine($_, $script:ScaleManagementAppFastDeployExeName) })
 $script:ScaleManagementAppUpdateSpecialsPathCandidates = @($script:ScaleCommRoots | ForEach-Object { [System.IO.Path]::Combine($_, $script:ScaleManagementAppUpdateSpecialsExeName) })
 
-$scaleCommDeployExecPatterns = @()
-foreach ($root in @($script:ScaleCommRoots))
-{
-	if ([string]::IsNullOrWhiteSpace($root)) { continue }
-	$scaleCommDeployExecPatterns += [regex]::Escape([System.IO.Path]::Combine($root, $script:ScaleManagementAppExeName))
-	$scaleCommDeployExecPatterns += [regex]::Escape([System.IO.Path]::Combine($root, $script:ScaleManagementAppFastDeployExeName))
-}
-$scaleCommDeployExecPatterns = @($scaleCommDeployExecPatterns | Select-Object -Unique)
-if ($scaleCommDeployExecPatterns.Count -eq 0)
-{
-	$script:ScaleCommDeployExecRegex = "(?i)@EXEC\(RUN='[A-Z]:\\ScaleCommApp\\ScaleManagementApp(_FastDEPLOY)?\.exe'\);"
-}
-else
-{
-	$script:ScaleCommDeployExecRegex = "(?i)@EXEC\(RUN='(?:" + ($scaleCommDeployExecPatterns -join '|') + ")'\);"
-}
+# Matches the deploy line in DEPLOY_CHG.sql, e.g. @EXEC(RUN='C:\ScaleCommApp\ScaleManagementApp.exe');
+$scaleCommDeployExecPatterns = @(foreach ($root in $script:ScaleCommRoots)
+	{
+		[regex]::Escape([System.IO.Path]::Combine($root, $script:ScaleManagementAppExeName))
+		[regex]::Escape([System.IO.Path]::Combine($root, $script:ScaleManagementAppFastDeployExeName))
+	}) | Select-Object -Unique
+$script:ScaleCommDeployExecRegex = "(?i)@EXEC\(RUN='(?:" + (@($scaleCommDeployExecPatterns) -join '|') + ")'\);"
 
+# ---------------------------------------------------------------------------------------------------
+# Bizerba BMS / RetailConnect, BizStoreCard, UltraVNC
+# ---------------------------------------------------------------------------------------------------
 $script:BmsRootPath = "C:\Bizerba\RetailConnect\BMS"
 $script:BmssrvExePath = Join-Path $script:BmsRootPath "BMSSrv.exe"
 $script:BmsExePath = Join-Path $script:BmsRootPath "BMS.exe"
 $script:BmsToBizerbaPath = Join-Path $script:BmsRootPath "toBizerba"
 $script:BmsTerminalsPath = Join-Path $script:BmsRootPath "terminals"
-$script:BmsScalesDeploymentRoot = Join-Path $script:BmsRootPath "Scales_Deployment"
-$script:BmsScalesDeploymentInputPath = Join-Path $script:BmsScalesDeploymentRoot "toBizerba"
-$script:DuplicateFileMonitorServiceRoot = Join-Path $script:AlexProgramDataRoot "Duplicate_File_Monitor_Service"
 $script:BizStoreCardGenericInputPath = "C:\bizstorecard\bizerba\_fileIO\generic_data\in"
 $script:UltraVncFolder = "C:\Users\Administrator\Documents\UltraVNC"
 
-foreach ($corePath in @($script:BackupRoot, $script:ScriptsFolder, $script:ScriptsLog, $script:SetupFiles, $script:ToolsDir))
-{
-	if (-not (Test-Path -LiteralPath $corePath))
-	{
-		New-Item -Path $corePath -ItemType Directory -Force | Out-Null
-	}
-}
-
-# === SQL Backup/Automation Credentials ===
+# ---------------------------------------------------------------------------------------------------
+# SQL login used by the scheduled backup / automation tasks
+# ---------------------------------------------------------------------------------------------------
 $script:BackupSqlUser = "Tecnica"
 $script:BackupSqlPass = "TB`$upp0rT"
 
+# ===================================================================================================
+#                                 SECTION: Storeman Folder Detection
 # ---------------------------------------------------------------------------------------------------
-# Locate Base Path: Storeman Folder Detection (case-insensitive)
-# ---------------------------------------------------------------------------------------------------
-# ---------------------------------------------------------------------------------------------------
-# Locate Base Path: FAST + STRICT (Share) + TEST fallback ($script:PrimaryStoremanRoot)
-#   - Prefer local SMB share named "storeman" IF it has INFO + KeyString + KeyValidDate within last 14 days
-#   - Else default to the configured Storeman roots for testing environments
-# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Resolves $BasePath, the storeman folder every store task works against, in three levels:
+#     1) the local SMB share "storeman", IF Office\Dbs\INFO_*901_WIN.INI has a KeyString and a
+#        KeyValidDate no older than 14 days                                  -> Production
+#     2) the first configured test root that exists (C:\Storeman, D:\Storeman) -> Test fallback
+#     3) a scan of every fixed drive's top level for a *storeman* folder with a Startup.ini,
+#        preferring one that is published as a share                        -> Drive-scan fallback
+#   A share whose key is older than 14 days is the dedicated KEY EXPIRED state: store data is
+#   usually still there, only a re-key is needed (the GUI says so instead of "test mode").
+#
+# Variables:
+#   - $BasePath                       the resolved storeman folder
+#   - $script:IsTestEnvironment       $true for every non-production result
+#   - $script:StoremanSource          'Production' | 'Test fallback' | 'Drive-scan fallback'
+#   - $script:StoremanSourceReason    plain-language reason (banner tooltip, log, status bar)
+#   - $script:StoremanKeyStale        KEY EXPIRED state
+#   - $script:StoremanKeyDate         the stale KeyValidDate (KEY EXPIRED only)
+#
+# Notes:
+#   - tests\TBS_Maintenance_SelfTest.ps1 runs this block verbatim, from the '$BasePath = $null'
+#     line to the 'Selected (storeman) folder' line - keep both marker lines.
+# ===================================================================================================
 $BasePath = $null
-$infoRel = 'Office\Dbs\INFO_*901_WIN.INI'
 $testPath = $script:StoremanRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if (-not $testPath) { $testPath = $script:PrimaryStoremanRoot }
 
@@ -712,43 +629,44 @@ if (-not $BasePath)
 
 Write-Host "Selected (storeman) folder: '$BasePath'" -ForegroundColor Magenta
 
+# ===================================================================================================
+#                                    SECTION: Store Paths
 # ---------------------------------------------------------------------------------------------------
-# Build All Core Paths and File Locations
-# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Derives the storeman sub-paths and INI file locations from the resolved $BasePath.
+#
+# Variables:
+#   - $script:BasePath / $script:OfficePath   (+ unscoped copies: older code reads both forms)
+#   - $LoadPath, $StartupIniPath, $SystemIniPath, $DbsPath, $TempDir
+#   - $WinIniPath       first Office\Dbs\INFO_*901_WIN.INI       ($null if none)
+#   - $SmsStartIniPath  first Office\Dbs\INFO_*901_SMSStart.ini  ($null if none)
+#   - $StoresqlFilePath %TEMP%\Server_Database_Maintenance.sqi (Process_Server / scheduling)
+#   - $script:LocalHost this machine's name
+# ===================================================================================================
+
 $script:BasePath = $BasePath
 $script:FunctionResults['StoremanPath'] = $BasePath
 $OfficePath = Join-Path $BasePath "Office"
 $script:OfficePath = $OfficePath
-$script:StoremanScriptsFolder = Join-Path $BasePath "Scripts_by_Alex_C.T"
 $LoadPath = Join-Path $OfficePath "Load"
 $StartupIniPath = Join-Path $BasePath "Startup.ini"
 $SystemIniPath = Join-Path $OfficePath "system.ini"
-$GasInboxPath = Join-Path $OfficePath "XchGAS\INBOX"
 $DbsPath = Join-Path $OfficePath "Dbs"
 $TempDir = [System.IO.Path]::GetTempPath()
 
-# Find first INFO_*901_WIN.INI and INFO_*901_SMSStart.ini in Office\Dbs
 $WinIniPath = $null
 $SmsStartIniPath = $null
+if (Test-Path -LiteralPath $DbsPath)
+{
+	$WinIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
+	if ($WinIniMatch) { $WinIniPath = $WinIniMatch.FullName }
+	$SmsStartIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_SMSStart.ini' -ErrorAction SilentlyContinue | Select-Object -First 1
+	if ($SmsStartIniMatch) { $SmsStartIniPath = $SmsStartIniMatch.FullName }
+}
 
-$WinIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($WinIniMatch) { $WinIniPath = $WinIniMatch.FullName }
-$SmsStartIniMatch = Get-ChildItem -Path $DbsPath -Filter 'INFO_*901_SMSStart.ini' -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($SmsStartIniMatch) { $SmsStartIniPath = $SmsStartIniMatch.FullName }
-
-# SQI temporary output file paths (used by maintenance routines)
-$LanesqlFilePath = Join-Path $TempDir "Lane_Database_Maintenance.sqi"
 $StoresqlFilePath = Join-Path $TempDir "Server_Database_Maintenance.sqi"
 
-# Local machine name
 $script:LocalHost = $env:COMPUTERNAME
-
-# ---------------------------------------------------------------------------------------------------
-# (Optional) Script Name Extraction
-# ---------------------------------------------------------------------------------------------------
-# $scriptName = Split-Path -Leaf $PSCommandPath
-
-$script:SqlcmdSupportsConnectionString = $null
 
 # ===================================================================================================
 #                              FUNCTION: Delete_Files
@@ -6511,33 +6429,45 @@ WHERE Active = 'Y'
 #                              FUNCTION: Start_Lane_Protocol_Jobs
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Starts the lane SQL protocol background loop: a timer rescans every lane's SQL protocol
-#   (TCP -> Named Pipes -> else File) every minute. Call once from the main script; it
-#   returns immediately, and a second call updates the lane map and keeps the existing loop.
+#   Starts the lane SQL protocol background loop: a UI-thread timer probes every lane's SQL
+#   protocol (TCP -> Named Pipes -> else File, Offline when unreachable) once a minute in a
+#   runspace pool, and keeps the results in $script:LaneProtocols + Protocol_Results.txt.
+#   Lanes that end up on File get a one-shot "enable SQL protocols" task scheduled on the lane
+#   (Ensure_SQL_Enable_Scheduled_Task_For_File_Lane, run in a hidden helper process).
+#   Call once after node discovery; it returns immediately. A second call only updates the
+#   lane map - the running loop picks it up on its next scan.
 #
 # Parameters:
-#   - LaneNumToMachineName  [hashtable] (required): LaneNumber => MachineName
-#   - SqlModuleName         [string] (required): detected SQL module (Invoke-Sqlcmd)
+#   - LaneNumToMachineName  [hashtable]: LaneNumber => MachineName
+#   - SqlModuleName         [string]: not used (kept so existing callers keep working)
 #
 # Variables:
-#   - $script:LaneProtocols: synchronized hashtable LaneNum => protocol (read by all consumers)
-#   - $script:SetupFiles: directory for Protocol_Results.txt (UTF8 no BOM)
-#   - $script:LaneProtocolJobs / $script:LaneSqlProtocolEnableJobs: per-lane job and task state
+#   - $script:LaneProtocols                  lane number / raw key / machine name => protocol
+#   - $script:ProtocolResults                @( [pscustomobject]@{ Lane; Protocol } ) sorted on write
+#   - $script:ProtocolResultsFile            Protocol_Results.txt (warm start + persistence)
+#   - $script:LaneProtocolJobs               lane => @{ PS; Handle; Started } in-flight probes
+#   - $script:LaneProtocolPool               runspace pool (rebuilt when a probe hangs)
+#   - $script:LaneProtocolLaneMap            the lane map the loop scans
+#   - $script:LaneProtocolStop               set by FormClosing to stop the loop
+#   - $script:LaneSqlProtocolEnableJobs      lane => helper process scheduling the SQL enable task
+#   - $script:LaneSqlProtocolEnableTaskState lane => last scheduling result
+#   - $script:LaneProtocolHelpers            the loop's helper scriptblocks (see Notes)
 #
 # Notes:
+#   - The timer handler and its helpers are plain scriptblocks kept in $script: variables.
+#     Do NOT use .GetNewClosure() here: a closure runs in its own module scope, so every
+#     $script: variable inside it is a different, empty variable (v2.6.7 - v2.6.9 lost all
+#     lane probing that way).
 #   - Double-start guarded via $script:protocolTimer.
 # ===================================================================================================
 
 function Start_Lane_Protocol_Jobs
 {
 	param (
-		[Parameter(Mandatory)]
 		[hashtable]$LaneNumToMachineName,
-		[Parameter(Mandatory)]
 		[string]$SqlModuleName
 	)
 
-	# ---------- assemblies ----------
 	try { Add-Type -AssemblyName System.Windows.Forms 2>$null }
 	catch { }
 	try { Add-Type -AssemblyName System.Data 2>$null }
@@ -6546,10 +6476,10 @@ function Start_Lane_Protocol_Jobs
 	# ---------- paths ----------
 	$script:ProtocolResultsFile = Join-Path $script:SetupFiles 'Protocol_Results.txt'
 	$resultsDir = [System.IO.Path]::GetDirectoryName($script:ProtocolResultsFile)
-	if (-not (Test-Path $resultsDir)) { New-Item -Path $resultsDir -ItemType Directory -Force | Out-Null }
-	if (-not (Test-Path $script:ProtocolResultsFile)) { New-Item -Path $script:ProtocolResultsFile -ItemType File -Force | Out-Null }
+	if (-not (Test-Path -LiteralPath $resultsDir)) { $null = New-Item -Path $resultsDir -ItemType Directory -Force }
+	if (-not (Test-Path -LiteralPath $script:ProtocolResultsFile)) { $null = New-Item -Path $script:ProtocolResultsFile -ItemType File -Force }
 
-	# ---------- globals ----------
+	# ---------- state ----------
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{ } }
 	if (-not $script:ProtocolResults) { $script:ProtocolResults = @() }
@@ -6557,69 +6487,221 @@ function Start_Lane_Protocol_Jobs
 	if (-not $script:LaneProtocolJobTimeoutSeconds -or $script:LaneProtocolJobTimeoutSeconds -lt 20) { $script:LaneProtocolJobTimeoutSeconds = 20 }
 	if (-not $script:LaneSqlProtocolEnableTaskState) { $script:LaneSqlProtocolEnableTaskState = @{ } }
 	if (-not $script:LaneSqlProtocolEnableJobs) { $script:LaneSqlProtocolEnableJobs = @{ } }
-	# store lane map for repeated runs
+	if (-not $LaneNumToMachineName) { $LaneNumToMachineName = @{ } }
 	$script:LaneProtocolLaneMap = $LaneNumToMachineName
-
-	# stop flag
 	$script:LaneProtocolStop = $false
 
-	# ---------- prevent double start ----------
-	if ($script:protocolTimer)
-	{
-		return
+	if ($script:protocolTimer) { return }
+
+	# ---------- helpers (plain scriptblocks in script scope - see Notes) ----------
+	$script:LaneProtocolHelpers = @{
+		# Any value -> [datetime] or $null
+		ToDate           = {
+			param ($Value)
+			if ($null -eq $Value) { return $null }
+			if ($Value -is [datetime]) { return [datetime]$Value }
+			if ($Value -is [datetimeoffset]) { return ([datetimeoffset]$Value).LocalDateTime }
+			if ($Value -is [string])
+			{
+				$parsed = [datetime]::MinValue
+				if (-not [string]::IsNullOrWhiteSpace($Value) -and [datetime]::TryParse($Value, [ref]$parsed)) { return $parsed }
+				return $null
+			}
+			try { return [datetime]$Value }
+			catch { return $null }
+		}
+
+		# Record one lane's protocol under every key consumers look it up by; returns the machine name
+		SetProtocol      = {
+			param ([string]$LaneNum, [string]$RawLane, [string]$Protocol)
+			$script:LaneProtocols[$LaneNum] = $Protocol
+			if ($RawLane) { $script:LaneProtocols[$RawLane] = $Protocol }
+			$mn = $null
+			if ($script:LaneProtocolLaneMap) { $mn = $script:LaneProtocolLaneMap[$LaneNum] }
+			if ($mn) { $script:LaneProtocols[[string]$mn] = $Protocol }
+			$script:ProtocolResults = @(@($script:ProtocolResults | Where-Object { $_.Lane -ne $LaneNum }) +
+				[pscustomobject]@{ Lane = $LaneNum; Protocol = $Protocol })
+			return $mn
+		}
+
+		NewPool          = {
+			$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+			$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, [Math]::Max(8, [Environment]::ProcessorCount * 2), $iss, $Host)
+			try { $pool.ApartmentState = 'MTA' }
+			catch { }
+			$pool.Open()
+			return $pool
+		}
+
+		# Next StartTime (default 04:15) occurrence
+		NextSqlEnableRun = {
+			$next = (Get-Date).Date.AddHours(4).AddMinutes(15)
+			if ((Get-Date) -ge $next) { $next = $next.AddDays(1) }
+			return $next
+		}
+
+		# File-protocol lane: schedule the SQL enable task on it from a hidden helper process
+		StartSqlEnable   = {
+			param ([string]$LaneNumber, [string]$MachineName)
+			if ([string]::IsNullOrWhiteSpace($LaneNumber) -or [string]::IsNullOrWhiteSpace($MachineName)) { return }
+
+			$laneKey = $LaneNumber.PadLeft(3, '0')
+			$running = $script:LaneSqlProtocolEnableJobs[$laneKey]
+			if ($running -and $running.Process -and -not $running.Process.HasExited) { return }
+
+			# The lane is rescanned every minute - re-check a lane at most every 15 minutes
+			$state = $script:LaneSqlProtocolEnableTaskState[$laneKey]
+			if ($state -and ($state.LastChecked -is [datetime]) -and ((Get-Date) - $state.LastChecked).TotalMinutes -lt 15) { return }
+
+			$scheduledDate = & $script:LaneProtocolHelpers.NextSqlEnableRun
+			$fnBody = ${function:Ensure_SQL_Enable_Scheduled_Task_For_File_Lane}
+			if (-not $fnBody)
+			{
+				$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{ TaskPresent = $false; LastChecked = Get-Date; ScheduledFor = $scheduledDate; MachineName = $MachineName; LastResult = 'NoFunction' }
+				return
+			}
+
+			# The helper process gets the function from memory (works for .ps1, .exe and irm|iex
+			# launches alike) plus a Write_Log shim that prints to stdout, so the reason for a
+			# failure comes back through the redirected output file.
+			$launcherScriptPath = Join-Path $script:SetupFiles ("LaneSqlEnableLauncher_{0}.ps1" -f $laneKey)
+			$launcherOutPath = Join-Path $script:SetupFiles ("LaneSqlEnableLauncher_{0}.out.txt" -f $laneKey)
+			$launcherScript = (@(
+					'param([string]$LaneNumber, [string]$MachineName, [string]$TcpPort = ''1433'', [string]$StartTime = ''04:15'')'
+					'function Write_Log { param([string]$Message, $Color = ''Black'') Write-Host $Message }'
+					'function Ensure_SQL_Enable_Scheduled_Task_For_File_Lane'
+					'{'
+					$fnBody.ToString()
+					'}'
+					'$ok = $false'
+					'try { $ok = [bool](Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $LaneNumber -MachineName $MachineName -TcpPort $TcpPort -StartTime $StartTime) }'
+					'catch { Write-Host ("ERROR: " + $_.Exception.Message) }'
+					'if ($ok) { exit 0 } else { exit 1 }'
+				) -join "`r`n")
+
+			try
+			{
+				Set-Content -LiteralPath $launcherScriptPath -Value $launcherScript -Encoding UTF8 -Force -ErrorAction Stop
+				$argList = @(
+					'-NoProfile', '-ExecutionPolicy', 'Bypass',
+					'-File', ('"{0}"' -f $launcherScriptPath),
+					'-LaneNumber', $laneKey,
+					'-MachineName', $MachineName,
+					'-TcpPort', '1433',
+					'-StartTime', '04:15'
+				)
+				$proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru `
+					-RedirectStandardOutput $launcherOutPath -ErrorAction Stop
+			}
+			catch
+			{
+				try { Remove-Item -LiteralPath $launcherScriptPath -Force -ErrorAction SilentlyContinue }
+				catch { }
+				$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{ TaskPresent = $false; LastChecked = Get-Date; ScheduledFor = $scheduledDate; MachineName = $MachineName; LastResult = 'LaunchFailed' }
+				return
+			}
+
+			$script:LaneSqlProtocolEnableJobs[$laneKey] = [pscustomobject]@{
+				Process      = $proc
+				ScriptPath   = $launcherScriptPath
+				OutputPath   = $launcherOutPath
+				Started      = Get-Date
+				MachineName  = $MachineName
+				ScheduledFor = $scheduledDate
+			}
+		}
+
+		# Collect finished helper processes; log only when a lane's result changes
+		HarvestSqlEnable = {
+			if (-not $script:LaneSqlProtocolEnableJobs -or $script:LaneSqlProtocolEnableJobs.Count -eq 0) { return }
+			foreach ($laneKey in @($script:LaneSqlProtocolEnableJobs.Keys))
+			{
+				$st = $script:LaneSqlProtocolEnableJobs[$laneKey]
+				if (-not $st) { continue }
+				$proc = $st.Process
+				if ($proc)
+				{
+					try { if (-not $proc.HasExited) { continue } }
+					catch { continue }
+				}
+
+				$success = $false
+				try { $success = ($proc -and $proc.ExitCode -eq 0) }
+				catch { $success = $false }
+				$reason = ''
+				try
+				{
+					if ($st.OutputPath -and (Test-Path -LiteralPath $st.OutputPath))
+					{
+						$reason = [string](@(Get-Content -LiteralPath $st.OutputPath -ErrorAction Stop | Where-Object { $_.Trim() }) | Select-Object -Last 1)
+					}
+				}
+				catch { }
+				foreach ($tmp in @($st.ScriptPath, $st.OutputPath))
+				{
+					try { if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }
+					catch { }
+				}
+				[void]$script:LaneSqlProtocolEnableJobs.Remove($laneKey)
+
+				$result = if ($success) { 'Scheduled' } else { 'Failed' }
+				$previous = $script:LaneSqlProtocolEnableTaskState[$laneKey]
+				$changedResult = (-not $previous) -or ([string]$previous.LastResult -ne $result)
+				$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
+					TaskPresent  = $success
+					LastChecked  = Get-Date
+					ScheduledFor = $st.ScheduledFor
+					MachineName  = [string]$st.MachineName
+					LastResult   = $result
+				}
+
+				if ($changedResult)
+				{
+					try
+					{
+						if ($success)
+						{
+							Write_Log ("Lane {0} ({1}) is on the SQL File protocol - SQL protocol enable scheduled for {2:MM/dd/yyyy HH:mm}." -f $laneKey, $st.MachineName, $st.ScheduledFor) 'green'
+						}
+						else
+						{
+							$why = if ($reason) { $reason } else { 'no details' }
+							Write_Log ("Lane {0} ({1}) is on the SQL File protocol - could not schedule the SQL protocol enable: {2}" -f $laneKey, $st.MachineName, $why) 'red'
+						}
+					}
+					catch { }
+				}
+			}
+		}
 	}
 
 	# ---------- warm from file (best effort) ----------
-	$loadedProtocolCount = 0
 	try
 	{
-		$existing = Get-Content -LiteralPath $script:ProtocolResultsFile -ErrorAction SilentlyContinue
-		if ($existing)
+		foreach ($line in @(Get-Content -LiteralPath $script:ProtocolResultsFile -ErrorAction SilentlyContinue))
 		{
-			foreach ($line in $existing)
+			if ($line -match '^\s*([^,]+),\s*([^,]+)\s*$')
 			{
-				if ($line -match '^\s*([^,]+),\s*([^,]+)\s*$')
-				{
-					$laneRaw = $matches[1].Trim()
-					$proto = $matches[2].Trim()
-					$laneNum = (($laneRaw -replace '[^\d]', '')).PadLeft(3, '0')
-					if ([string]::IsNullOrWhiteSpace($laneNum)) { continue }
-
-					$script:LaneProtocols[$laneNum] = $proto
-					$script:LaneProtocols[$laneRaw] = $proto
-					$loadedProtocolCount++
-
-					$mn = $LaneNumToMachineName[$laneNum]
-					if ($mn)
-					{
-						$script:LaneProtocols[$mn] = $proto
-						$script:LaneProtocols[$mn.ToLower()] = $proto
-					}
-
-					$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
-					$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = $proto }
-				}
+				$laneRaw = $matches[1].Trim()
+				$laneNum = ($laneRaw -replace '[^\d]', '').PadLeft(3, '0')
+				$null = & $script:LaneProtocolHelpers.SetProtocol $laneNum $laneRaw $matches[2].Trim()
 			}
 		}
 	}
 	catch { }
 
-	# ---------- runspace pool (kept alive) ----------
-	if (-not $script:LaneProtocolPool)
-	{
-		$minThreads = 1
-		$maxThreads = [Math]::Max(8, [Environment]::ProcessorCount * 2)
-		$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-		$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($minThreads, $maxThreads, $iss, $Host)
-		try { $pool.ApartmentState = 'MTA' }
-		catch { }
-		$pool.Open()
-		$script:LaneProtocolPool = $pool
-	}
+	if (-not $script:LaneProtocolPool) { $script:LaneProtocolPool = & $script:LaneProtocolHelpers.NewPool }
 
-	# ---------- worker script (NO nested functions) ----------
+	# Probe worker (runs in the pool; source: src\Resources\Workers\Lane_Protocol_Probe.ps1)
 	$script:LaneProtocolWorker = @'
-param([string]$machine,[string]$lane)
+# ---------------------------------------------------------------------------------------------------
+# Lane SQL protocol probe - runspace worker for Start_Lane_Protocol_Jobs.
+#   Embedded at build time into $script:LaneProtocolWorker; runs in the lane-protocol runspace pool
+#   (no access to the main script's variables or functions).
+#   Ping (700 ms) -> Offline when unreachable; then SQL login over tcp: -> 'TCP', over np: ->
+#   'Named Pipes', else 'File' (the lane only works through the SQI file drop).
+# ---------------------------------------------------------------------------------------------------
+param([string]$machine, [string]$lane)
 
 Add-Type -AssemblyName System.Data 2>$null
 Add-Type -AssemblyName System 2>$null
@@ -6629,460 +6711,136 @@ $reachable = $true
 
 if (-not [string]::IsNullOrWhiteSpace($machine))
 {
-  $machineNorm = [string]$machine
-  $isLocalMachine = $false
-  try {
-    if ($machineNorm -match '^(?i)(localhost|\.|\(local\))$' -or $machineNorm -ieq $env:COMPUTERNAME) { $isLocalMachine = $true }
-  } catch { }
+	$machineNorm = [string]$machine
+	$isLocalMachine = $false
+	try
+	{
+		if ($machineNorm -match '^(?i)(localhost|\.|\(local\))$' -or $machineNorm -ieq $env:COMPUTERNAME) { $isLocalMachine = $true }
+	}
+	catch { }
 
-  if (-not $isLocalMachine)
-  {
-    $reachable = $false
-
-    try {
-      $ping = New-Object System.Net.NetworkInformation.Ping
-      $reply = $ping.Send($machineNorm, 700)
-      if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
-    } catch { }
-  }
+	if (-not $isLocalMachine)
+	{
+		$reachable = $false
+		try
+		{
+			$ping = New-Object System.Net.NetworkInformation.Ping
+			$reply = $ping.Send($machineNorm, 700)
+			if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
+		}
+		catch { }
+	}
 }
 
 if (-not $reachable)
 {
-  [PSCustomObject]@{ Lane = $lane; Protocol = 'Offline' }
-  return
+	[PSCustomObject]@{ Lane = $lane; Protocol = 'Offline' }
+	return
 }
 
-$cn = $null
-try {
-  $cs = "Data Source=tcp:$machine;Initial Catalog=master;Integrated Security=True;Connect Timeout=1"
-  $cn = New-Object System.Data.SqlClient.SqlConnection $cs
-  $cn.Open()
-  $protocol = 'TCP'
-} catch { }
-finally { try { if ($cn) { $cn.Close() } } catch { }; try { if ($cn) { $cn.Dispose() } } catch { } }
-
-if ($protocol -eq 'File') {
-  $cn2 = $null
-  try {
-    $cs2 = "Data Source=np:$machine;Initial Catalog=master;Integrated Security=True;Connect Timeout=1"
-    $cn2 = New-Object System.Data.SqlClient.SqlConnection $cs2
-    $cn2.Open()
-    $protocol = 'Named Pipes'
-  } catch { }
-  finally { try { if ($cn2) { $cn2.Close() } } catch { }; try { if ($cn2) { $cn2.Dispose() } } catch { } }
+foreach ($probe in @(@{ Prefix = 'tcp'; Name = 'TCP' }, @{ Prefix = 'np'; Name = 'Named Pipes' }))
+{
+	$cn = $null
+	try
+	{
+		$cs = "Data Source=$($probe.Prefix):$machine;Initial Catalog=master;Integrated Security=True;Connect Timeout=1"
+		$cn = New-Object System.Data.SqlClient.SqlConnection $cs
+		$cn.Open()
+		$protocol = $probe.Name
+	}
+	catch { }
+	finally
+	{
+		try { if ($cn) { $cn.Close() } } catch { }
+		try { if ($cn) { $cn.Dispose() } } catch { }
+	}
+	if ($protocol -ne 'File') { break }
 }
 
 [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
 '@
 
-	# ---------- cadence ----------
 	if (-not $script:LaneProtocolLastRun) { $script:LaneProtocolLastRun = (Get-Date).AddYears(-10) }
 
-	$normalizeLaneProtocolTimestamp = {
-		param($Value)
-
-		if ($null -eq $Value) { return $null }
-
-		try
-		{
-			if ($Value -is [datetime]) { return [datetime]$Value }
-		}
-		catch { }
-
-		try
-		{
-			if ($Value -is [datetimeoffset]) { return ([datetimeoffset]$Value).LocalDateTime }
-		}
-		catch { }
-
-		try
-		{
-			if ($Value -is [string])
-			{
-				$text = [string]$Value
-				if ([string]::IsNullOrWhiteSpace($text)) { return $null }
-
-				$parsed = [datetime]::MinValue
-				if ([datetime]::TryParse($text, [ref]$parsed))
-				{
-					return $parsed
-				}
-
-				return $null
-			}
-		}
-		catch { }
-
-		try
-		{
-			return [datetime]$Value
-		}
-		catch { }
-
-		return $null
-	}.GetNewClosure()
-
-	$getNextLaneSqlEnableRunDate = {
-		$scheduledDate = Get-Date
-		try
-		{
-			$today415 = Get-Date -Hour 4 -Minute 15 -Second 0
-			$scheduledDate = if ((Get-Date) -lt $today415) { $today415 }
-			else { $today415.AddDays(1) }
-		}
-		catch
-		{
-			$scheduledDate = (Get-Date).AddDays(1).Date.AddHours(4).AddMinutes(15)
-		}
-		return $scheduledDate
-	}.GetNewClosure()
-
-	$startLaneSqlEnableBackgroundJob = {
-		param (
-			[string]$LaneNumber,
-			[string]$MachineName
-		)
-
-		if ([string]::IsNullOrWhiteSpace($LaneNumber) -or [string]::IsNullOrWhiteSpace($MachineName))
-		{
-			return
-		}
-
-		$laneKey = $LaneNumber.ToString().PadLeft(3, '0')
-		$existingJobState = $script:LaneSqlProtocolEnableJobs[$laneKey]
-		if ($existingJobState -and $existingJobState.Process -and -not $existingJobState.Process.HasExited)
-		{
-			return
-		}
-
-		$scheduledDate = & $getNextLaneSqlEnableRunDate
-		$sourceScriptPath = $null
-		try
-		{
-			if ($script:LaunchEntryPath -and (Test-Path -LiteralPath $script:LaunchEntryPath))
-			{
-				$sourceScriptPath = $script:LaunchEntryPath
-			}
-			elseif ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath))
-			{
-				$sourceScriptPath = $PSCommandPath
-			}
-		}
-		catch
-		{
-			$sourceScriptPath = $null
-		}
-
-		if ([string]::IsNullOrWhiteSpace($sourceScriptPath))
-		{
-			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-				TaskPresent  = $false
-				LastChecked  = Get-Date
-				ScheduledFor = $scheduledDate
-				MachineName  = $MachineName
-			}
-			return
-		}
-
-		$fnDefinition = $null
-		try
-		{
-			$tokens = $null
-			$parseErrors = $null
-			$ast = [System.Management.Automation.Language.Parser]::ParseFile($sourceScriptPath, [ref]$tokens, [ref]$parseErrors)
-			$fnAst = $ast.Find({
-					param($node)
-					$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-					$node.Name -eq 'Ensure_SQL_Enable_Scheduled_Task_For_File_Lane'
-				}, $true)
-			if ($fnAst)
-			{
-				$fnDefinition = $fnAst.Extent.Text
-			}
-		}
-		catch
-		{
-			$fnDefinition = $null
-		}
-
-		if ([string]::IsNullOrWhiteSpace($fnDefinition))
-		{
-			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-				TaskPresent  = $false
-				LastChecked  = Get-Date
-				ScheduledFor = $scheduledDate
-				MachineName  = $MachineName
-			}
-			return
-		}
-
-		$launcherScriptPath = Join-Path $script:SetupFiles ("LaneSqlEnableLauncher_{0}.ps1" -f $laneKey)
-		$launcherScript = @"
-param(
-	[string]`$LaneNumber,
-	[string]`$MachineName,
-	[string]`$TcpPort = '1433',
-	[string]`$StartTime = '04:15'
-)
-
-$fnDefinition
-
-`$ok = `$false
-try
-{
-	`$ok = [bool](Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber `$LaneNumber -MachineName `$MachineName -TcpPort `$TcpPort -StartTime `$StartTime)
-}
-catch
-{
-	`$ok = `$false
-}
-
-if (`$ok) { exit 0 } else { exit 1 }
-"@
-
-		try
-		{
-			Set-Content -LiteralPath $launcherScriptPath -Value $launcherScript -Encoding UTF8 -Force
-			$argList = @(
-				'-NoProfile',
-				'-ExecutionPolicy', 'Bypass',
-				'-File', ('"{0}"' -f $launcherScriptPath),
-				'-LaneNumber', $laneKey,
-				'-MachineName', $MachineName,
-				'-TcpPort', '1433',
-				'-StartTime', '04:15'
-			)
-			$proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru
-		}
-		catch
-		{
-			try { Remove-Item -LiteralPath $launcherScriptPath -Force -ErrorAction SilentlyContinue }
-			catch { }
-			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-				TaskPresent  = $false
-				LastChecked  = Get-Date
-				ScheduledFor = $scheduledDate
-				MachineName  = $MachineName
-			}
-			return
-		}
-
-		$script:LaneSqlProtocolEnableJobs[$laneKey] = [pscustomobject]@{
-			Process      = $proc
-			ScriptPath   = $launcherScriptPath
-			Started      = Get-Date
-			MachineName  = $MachineName
-			ScheduledFor = $scheduledDate
-		}
-		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-			TaskPresent  = $false
-			LastChecked  = Get-Date
-			ScheduledFor = $scheduledDate
-			MachineName  = $MachineName
-			Pending	     = $true
-		}
-	}.GetNewClosure()
-
-	$harvestLaneSqlEnableJobs = {
-		if (-not $script:LaneSqlProtocolEnableJobs -or $script:LaneSqlProtocolEnableJobs.Count -eq 0) { return }
-
-		foreach ($laneKey in @($script:LaneSqlProtocolEnableJobs.Keys))
-		{
-			$st = $script:LaneSqlProtocolEnableJobs[$laneKey]
-			if (-not $st) { continue }
-
-			$proc = $st.Process
-			$launcherScriptPath = $st.ScriptPath
-			if (-not $proc)
-			{
-				try { if ($launcherScriptPath) { Remove-Item -LiteralPath $launcherScriptPath -Force -ErrorAction SilentlyContinue } }
-				catch { }
-				[void]$script:LaneSqlProtocolEnableJobs.Remove($laneKey)
-				continue
-			}
-			try { if (-not $proc.HasExited) { continue } }
-			catch { continue }
-
-			$success = $false
-			try { $success = ($proc.ExitCode -eq 0) }
-			catch { $success = $false }
-			try { if ($launcherScriptPath) { Remove-Item -LiteralPath $launcherScriptPath -Force -ErrorAction SilentlyContinue } }
-			catch { }
-			[void]$script:LaneSqlProtocolEnableJobs.Remove($laneKey)
-
-			$machineName = $null
-			$scheduledFor = $null
-			try { $machineName = [string]$st.MachineName }
-			catch { $machineName = $null }
-			try { $scheduledFor = $st.ScheduledFor }
-			catch { $scheduledFor = $null }
-
-			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-				TaskPresent  = $success
-				LastChecked  = Get-Date
-				ScheduledFor = $scheduledFor
-				MachineName  = $machineName
-			}
-		}
-	}.GetNewClosure()
-
-	# ---------- timer (UI thread, safe) ----------
+	# ---------- timer (UI thread) ----------
 	$script:protocolTimer = New-Object System.Windows.Forms.Timer
 	$script:protocolTimer.Interval = 1000
-
 	$script:protocolTimer.add_Tick({
-
 			if ($script:LaneProtocolStop) { return }
+			$h = $script:LaneProtocolHelpers
 
-			# 0) harvest background SQL-enable scheduling jobs
-			try { & $harvestLaneSqlEnableJobs }
+			# 0) finished SQL-enable helper processes
+			try { & $h.HarvestSqlEnable }
 			catch { }
 
-			# 1) harvest completed jobs
+			# 1) finished / hung probes
 			$changed = $false
-			if ($script:LaneProtocolJobs -and $script:LaneProtocolJobs.Count -gt 0)
+			$stale = $false
+			foreach ($laneKey in @($script:LaneProtocolJobs.Keys))
 			{
-				foreach ($laneKey in @($script:LaneProtocolJobs.Keys))
+				$st = $script:LaneProtocolJobs[$laneKey]
+				if (-not $st) { continue }
+
+				$started = & $h.ToDate $st.Started
+				$timedOut = ($null -ne $st.Started)   # an unreadable start time counts as hung
+				if ($started)
 				{
-					$st = $script:LaneProtocolJobs[$laneKey]
-					if (-not $st) { continue }
+					try { $timedOut = (((Get-Date) - $started).TotalSeconds -ge $script:LaneProtocolJobTimeoutSeconds) }
+					catch { $timedOut = $true }
+				}
 
-					$startedRaw = $st.Started
-					$started = & $normalizeLaneProtocolTimestamp $startedRaw
-					$jobTimedOut = $false
-					if ($started)
+				if ($timedOut)
+				{
+					# A probe that hangs this long means the lane is unusable right now
+					$laneNum = ($laneKey -replace '[^\d]', '').PadLeft(3, '0')
+					$null = & $h.SetProtocol $laneNum $laneKey 'Offline'
+					$changed = $true
+					$stale = $true
+					continue
+				}
+
+				if ($st.Handle -and $st.Handle.IsCompleted)
+				{
+					$resultList = $null
+					try { $resultList = $st.PS.EndInvoke($st.Handle) }
+					catch { $resultList = $null }
+					try { if ($st.PS) { $st.PS.Dispose() } }
+					catch { }
+					[void]$script:LaneProtocolJobs.Remove($laneKey)
+
+					$result = $null
+					if ($resultList -and $resultList.Count -ge 1) { $result = $resultList[0] }
+					if (-not $result) { $result = [pscustomobject]@{ Lane = $laneKey; Protocol = 'Offline' } }
+
+					$rawLane = [string]$result.Lane
+					$laneNum = ($rawLane -replace '[^\d]', '').PadLeft(3, '0')
+					$proto = [string]$result.Protocol
+					if ([string]::IsNullOrWhiteSpace($proto)) { $proto = 'File' }
+
+					$mn = & $h.SetProtocol $laneNum $rawLane $proto
+					if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($mn))
 					{
-						try { $jobTimedOut = (((Get-Date) - $started).TotalSeconds -ge $script:LaneProtocolJobTimeoutSeconds) }
-						catch { $jobTimedOut = $true }
-					}
-					elseif ($null -ne $startedRaw)
-					{
-						$jobTimedOut = $true
-					}
-
-					if ($jobTimedOut)
-					{
-						$laneNum = (($laneKey -replace '[^\d]', '')).PadLeft(3, '0')
-						if ([string]::IsNullOrWhiteSpace($laneNum)) { $laneNum = $laneKey }
-
-						$laneMap = $script:LaneProtocolLaneMap
-						$mn = $null
-						if ($laneMap) { $mn = $laneMap[$laneNum] }
-
-						$script:LaneProtocols[$laneNum] = 'Offline'
-						$script:LaneProtocols[$laneKey] = 'Offline'
-						if ($mn)
-						{
-							$script:LaneProtocols[$mn] = 'Offline'
-							$script:LaneProtocols[$mn.ToLower()] = 'Offline'
-						}
-
-						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
-						$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = 'Offline' }
-
-						$changed = $true
-						continue
-					}
-
-					$handle = $st.Handle
-					if ($handle -and $handle.IsCompleted)
-					{
-						$ps = $st.PS
-						$resultList = $null
-						try { $resultList = $ps.EndInvoke($handle) }
-						catch { $resultList = $null }
-						try { if ($ps) { $ps.Dispose() } }
+						try { & $h.StartSqlEnable $laneNum ([string]$mn) }
 						catch { }
-
-						[void]$script:LaneProtocolJobs.Remove($laneKey)
-
-						$result = $null
-						if ($resultList -and $resultList.Count -ge 1) { $result = $resultList[0] }
-						if (-not $result) { $result = [pscustomobject]@{ Lane = $laneKey; Protocol = 'Offline' } }
-
-						$rawLane = [string]$result.Lane
-						$laneNum = (($rawLane -replace '[^\d]', '')).PadLeft(3, '0')
-						if ([string]::IsNullOrWhiteSpace($laneNum)) { $laneNum = $laneKey }
-
-						$proto = [string]$result.Protocol
-						if ([string]::IsNullOrWhiteSpace($proto)) { $proto = 'File' }
-
-						$laneMap = $script:LaneProtocolLaneMap
-						$mn = $null
-						if ($laneMap) { $mn = $laneMap[$laneNum] }
-
-						$script:LaneProtocols[$laneNum] = $proto
-						$script:LaneProtocols[$rawLane] = $proto
-						if ($mn)
-						{
-							$script:LaneProtocols[$mn] = $proto
-							$script:LaneProtocols[$mn.ToLower()] = $proto
-						}
-
-						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
-						$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = $proto }
-						if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($mn))
-						{
-							try { & $startLaneSqlEnableBackgroundJob $laneNum $mn }
-							catch { }
-						}
-						elseif ($script:LaneSqlProtocolEnableTaskState -and $script:LaneSqlProtocolEnableTaskState.ContainsKey($laneNum))
-						{
-							$script:LaneSqlProtocolEnableTaskState[$laneNum] = [pscustomobject]@{
-								TaskPresent  = $false
-								LastChecked  = Get-Date
-								ScheduledFor = $null
-								MachineName  = $mn
-							}
-						}
-
-						$changed = $true
 					}
+					elseif ($script:LaneSqlProtocolEnableTaskState.ContainsKey($laneNum))
+					{
+						# The lane answers on TCP / Named Pipes now - nothing to schedule any more
+						[void]$script:LaneSqlProtocolEnableTaskState.Remove($laneNum)
+					}
+					$changed = $true
 				}
 			}
 
-			# 1b) if any protocol jobs went stale, rebuild the pool so stuck probes do not wedge the app
-			$staleLaneKeys = @()
-			try
-			{
-				foreach ($laneKey in @($script:LaneProtocolJobs.Keys))
-				{
-					$st = $script:LaneProtocolJobs[$laneKey]
-					if (-not $st) { continue }
-					if ($st.Handle -and $st.Handle.IsCompleted) { continue }
-
-					$startedRaw = $st.Started
-					$started = & $normalizeLaneProtocolTimestamp $startedRaw
-					$jobTimedOut = $false
-					if ($started)
-					{
-						try { $jobTimedOut = (((Get-Date) - $started).TotalSeconds -ge $script:LaneProtocolJobTimeoutSeconds) }
-						catch { $jobTimedOut = $true }
-					}
-					elseif ($null -ne $startedRaw)
-					{
-						$jobTimedOut = $true
-					}
-
-					if ($jobTimedOut)
-					{
-						$staleLaneKeys += $laneKey
-					}
-				}
-			}
-			catch { }
-
-			if ($staleLaneKeys.Count -gt 0)
+			# 1b) a hung probe: drop every in-flight probe and rebuild the pool so it cannot wedge the loop
+			if ($stale)
 			{
 				foreach ($st in @($script:LaneProtocolJobs.Values))
 				{
 					try { if ($st -and $st.PS) { $st.PS.Dispose() } }
 					catch { }
 				}
-
 				$script:LaneProtocolJobs = @{ }
-
 				try
 				{
 					if ($script:LaneProtocolPool)
@@ -7092,85 +6850,43 @@ if (`$ok) { exit 0 } else { exit 1 }
 					}
 				}
 				catch { }
-
-				$script:LaneProtocolPool = $null
-
-				$minThreads = 1
-				$maxThreads = [Math]::Max(8, [Environment]::ProcessorCount * 2)
-				$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-				$pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($minThreads, $maxThreads, $iss, $Host)
-				try { $pool.ApartmentState = 'MTA' }
-				catch { }
-				$pool.Open()
-				$script:LaneProtocolPool = $pool
+				$script:LaneProtocolPool = & $h.NewPool
 				$script:LaneProtocolLastRun = Get-Date
 			}
 
-			# 2) write file when something changed
+			# 2) persist when something changed
 			if ($changed)
 			{
 				try
 				{
-					$sorted = $script:ProtocolResults | Sort-Object { ($_.Lane -replace '[^\d]', '') -as [int] }
-					$lines = foreach ($r in $sorted) { '{0},{1}' -f $r.Lane, $r.Protocol }
-					[System.IO.File]::WriteAllLines($script:ProtocolResultsFile, $lines, [System.Text.Encoding]::UTF8)
+					$lines = foreach ($r in ($script:ProtocolResults | Sort-Object { ($_.Lane -replace '[^\d]', '') -as [int] })) { '{0},{1}' -f $r.Lane, $r.Protocol }
+					[System.IO.File]::WriteAllLines($script:ProtocolResultsFile, [string[]]@($lines), [System.Text.Encoding]::UTF8)
 				}
 				catch { }
 			}
 
-			# 3) start a new scan every 60s ONLY if no jobs running
-			if ($script:LaneProtocolJobs.Count -eq 0)
+			# 3) new scan every 60 s, only when no probe is in flight
+			if ($script:LaneProtocolJobs.Count -gt 0) { return }
+			$lastRun = & $h.ToDate $script:LaneProtocolLastRun
+			if ($lastRun -and ((Get-Date) - $lastRun).TotalSeconds -lt 60) { return }
+			$script:LaneProtocolLastRun = Get-Date
+
+			$laneMap = $script:LaneProtocolLaneMap
+			if (-not $laneMap) { return }
+			foreach ($k in @($laneMap.Keys))
 			{
-				$lastRun = & $normalizeLaneProtocolTimestamp $script:LaneProtocolLastRun
-				if (-not $lastRun)
-				{
-					$lastRun = (Get-Date).AddYears(-10)
-					$script:LaneProtocolLastRun = $lastRun
-				}
-				elseif (-not ($script:LaneProtocolLastRun -is [datetime]))
-				{
-					$script:LaneProtocolLastRun = $lastRun
-				}
+				$numStr = ([string]$k -replace '[^\d]', '')
+				if (-not $numStr) { continue }
+				$machine = $laneMap[$k]
+				if ([string]::IsNullOrWhiteSpace($machine)) { continue }
+				$laneNum = $numStr.PadLeft(3, '0')
 
-				$ageSeconds = [double]::PositiveInfinity
-				try { $ageSeconds = ((Get-Date) - $lastRun).TotalSeconds }
-				catch
-				{
-					$script:LaneProtocolLastRun = (Get-Date).AddYears(-10)
-					$ageSeconds = [double]::PositiveInfinity
-				}
-
-				if ($ageSeconds -ge 60)
-				{
-					$script:LaneProtocolLastRun = Get-Date
-
-					$laneMap = $script:LaneProtocolLaneMap
-					if ($laneMap)
-					{
-						foreach ($k in $laneMap.Keys)
-						{
-							$numStr = ($k -replace '[^\d]', '')
-							if (-not $numStr) { continue }
-
-							$laneNum = $numStr.PadLeft(3, '0')
-							$machine = $laneMap[$k]
-							if ([string]::IsNullOrWhiteSpace($machine)) { continue }
-
-							$ps = [System.Management.Automation.PowerShell]::Create()
-							$ps.RunspacePool = $script:LaneProtocolPool
-							$null = $ps.AddScript($script:LaneProtocolWorker).AddArgument([string]$machine).AddArgument([string]$laneNum)
-							$handle = $ps.BeginInvoke()
-
-							$script:LaneProtocolJobs[$laneNum] = @{
-								PS	    = $ps
-								Handle  = $handle
-								Started = Get-Date
-							}
-						}
-					}
-				}
+				$ps = [System.Management.Automation.PowerShell]::Create()
+				$ps.RunspacePool = $script:LaneProtocolPool
+				$null = $ps.AddScript($script:LaneProtocolWorker).AddArgument([string]$machine).AddArgument([string]$laneNum)
+				$script:LaneProtocolJobs[$laneNum] = @{ PS = $ps; Handle = $ps.BeginInvoke(); Started = Get-Date }
 			}
-		}.GetNewClosure())
+		})
 
 	$script:protocolTimer.Start()
 }
@@ -30873,6 +30589,17 @@ while (`$true)
 	Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 }
 
+# ===================================================================================================
+#                                  SECTION: Runtime Initialization
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Runs once every function is defined, before the GUI is built:
+#     - loads the MailslotSender interop type (used by the lane/scale command functions)
+#     - headless worker mode: when started with -LaneSqlEnableWorker (by the scheduled task
+#       Ensure_SQL_Enable_Scheduled_Task_For_File_Lane registers), runs that one job and exits
+#       with 0 (success) / 1 (failure) - no window is created.
+# ===================================================================================================
+
 Ensure_MailslotSender_Type
 
 if ($script:LaneSqlEnableWorkerMode)
@@ -30894,52 +30621,36 @@ if ($script:LaneSqlEnableWorkerMode)
 }
 
 # ===================================================================================================
-#                                       SECTION: Initialize GUI  (Modernized)
+#                                  SECTION: GUI - Form and Theme
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Initializes and configures the graphical user interface components for the Store/Lane SQL Execution Tool.
-#   Host mode is removed; strictly Store/Server/Lane (Store Mode only).
+#   First of the GUI files (src\GUI\01..14 run in order and share script-scope variables):
+#   visual styles, layout constants, the colour palette, the shared tooltip, the main $form,
+#   the app logo/icon, and the idle/busy state the watchdog in 06 uses.
 #
-# Modern UI changes (behavior preserved):
-#   - Gradient header bar + centered clickable title (still text-only clickable, still opens Helpdesk)
-#   - Top "card" strip for the clickable labels (clean spacing, modern font)
-#   - Framed log area (card border + borderless RichTextBox)
-#   - Status bar for Busy + Idle countdown (new polish; does not affect logic)
-#   - FIX: consolidated FormClosing so we DO NOT dispose timers/jobs if user cancels exit
+# Variables (read by the later GUI files):
+#   - $form, $toolTip, $script:TbsAppIcon, $script:DrawTbsLogo
+#   - $padSide, $padTopStrip, $gapCards, $logInnerPad, $minLogH   layout constants
+#   - $ui*                                                         colour palette
+#   - $script:LastActivity / IsBusy / BusyReason / IdleIgnoreJobNames / IdleHardCloseAfterMinutes
+#
+# Notes:
+#   - The process is NOT DPI-aware (Windows scales the window on high-DPI screens). The layout
+#     code below uses fixed pixel sizes; making the process DPI-aware needs that reworked first.
 # ===================================================================================================
 
-# ------------------------------------------------------------------------------------------------
-# WinForms basics (High DPI + Visual styles)
-# ------------------------------------------------------------------------------------------------
 [System.Windows.Forms.Application]::EnableVisualStyles()
 [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
 
-# Make the process DPI-aware BEFORE any window is created so the UI renders
-# crisply on high-DPI displays (no-op on 100% scaling).
-try
-{
-	$tbsDpiCode = @'
-[DllImport("user32.dll")]
-public static extern bool SetProcessDPIAware();
-'@
-	if (-not ('TbsDpiHelper' -as [type]))
-	{
-		Add-Type -Namespace Tbs -Name DpiHelper -MemberDefinition $tbsDpiCode -ErrorAction SilentlyContinue
-	}
-	if ('TbsDpiHelper' -as [type]) { [void][Tbs.DpiHelper]::SetProcessDPIAware() }
-}
-catch { }
-
-# ---- UI constants (kept as simple variables so other layout blocks can reuse them) -------------
-# NOTE: Your other layout code (like $layoutBottom) often assumes $padSide exists.
-if (-not $padSide) { $padSide = 50 } # left/right margin (keeps your original feel)
+# ---- Layout constants (shared by the layout blocks in 04, 05 and 14) ---------------------------
+if (-not $padSide) { $padSide = 50 } # left/right margin
 $padTopStrip = 10 # spacing below header
-$cardPad = 12 # inner padding for "cards"
 $gapCards = 10 # vertical gap between cards
 $logInnerPad = 10 # padding inside the log frame
-$minLogH = 220 # minimum log height (used by other layout)
+$minLogH = 220 # minimum log height
+
 # ===================================================================================================
-# ENHANCED COLOR SCHEME (TBS Maintenance Script v2.6.7+ - Modern UI Theme)
+# Colour palette
 # ===================================================================================================
 $uiAccent = [System.Drawing.Color]::FromArgb(0, 122, 204)          # Windows 11 accent blue
 $uiAccentLight = [System.Drawing.Color]::FromArgb(230, 243, 255)   # Light blue hover
@@ -30966,22 +30677,7 @@ $uiCategoryScale = [System.Drawing.Color]::FromArgb(156, 39, 176)    # Purple
 $uiCategoryGeneral = [System.Drawing.Color]::FromArgb(255, 152, 0)   # Orange
 
 # ------------------------------------------------------------------------------------------------
-# Legacy full-form refresh timer is left disabled by default because it can
-# cause noticeable UI stalls on slower machines.
-# ------------------------------------------------------------------------------------------------
-$refreshTimer = New-Object System.Windows.Forms.Timer
-$refreshTimer.Interval = 5000
-$refreshTimer.add_Tick({
-		try
-		{
-			if (-not $form -or $form.IsDisposed -or -not $form.Visible) { return }
-			if ($statusStrip -and -not $statusStrip.IsDisposed) { $statusStrip.Refresh() }
-		}
-		catch { }
-	})
-
-# ------------------------------------------------------------------------------------------------
-# ToolTip (kept, slightly refined)
+# Shared ToolTip
 # ------------------------------------------------------------------------------------------------
 $toolTip = New-Object System.Windows.Forms.ToolTip
 $toolTip.AutoPopDelay = 10000
@@ -31011,40 +30707,55 @@ try
 catch { }
 
 # ----------------------------------------------------------------------------------------------
-# Runtime-generated app icon (blue disc + hex nut) for the title bar / taskbar
+# App logo (blue gradient disc + white hex nut): title bar / taskbar icon and the banner badge
 # ----------------------------------------------------------------------------------------------
+# Draws the logo into the square (X, Y, Size) of any Graphics. Uses ::new(...) on purpose:
+# in command mode 'New-Object PointF($a + $b, $c)' parses as $a + @($b, $c) and throws, which
+# is why neither the icon nor the banner badge was ever drawn before v2.7.0.
+$script:DrawTbsLogo = {
+	param ([System.Drawing.Graphics]$Graphics, [float]$X, [float]$Y, [float]$Size)
+
+	$Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+	$disc = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
+		[System.Drawing.RectangleF]::new($X, $Y, $Size, $Size),
+		[System.Drawing.Color]::FromArgb(0, 160, 235),
+		[System.Drawing.Color]::FromArgb(0, 105, 190),
+		[float]90)
+	$Graphics.FillEllipse($disc, $X, $Y, $Size, $Size)
+	$disc.Dispose()
+
+	# flat-top hexagon, then punch the center so it reads as a nut
+	$cx = $X + $Size / 2
+	$cy = $Y + $Size / 2
+	$r = $Size * 0.25
+	$k = 0.866
+	$hex = New-Object System.Drawing.Drawing2D.GraphicsPath
+	$hex.AddPolygon([System.Drawing.PointF[]]@(
+			[System.Drawing.PointF]::new($cx + $r, $cy),
+			[System.Drawing.PointF]::new($cx + $r / 2, $cy + $r * $k),
+			[System.Drawing.PointF]::new($cx - $r / 2, $cy + $r * $k),
+			[System.Drawing.PointF]::new($cx - $r, $cy),
+			[System.Drawing.PointF]::new($cx - $r / 2, $cy - $r * $k),
+			[System.Drawing.PointF]::new($cx + $r / 2, $cy - $r * $k)))
+	$white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+	$Graphics.FillPath($white, $hex)
+	$white.Dispose()
+	$hex.Dispose()
+
+	$hole = $Size * 0.21
+	$punch = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 122, 204))
+	$Graphics.FillEllipse($punch, $cx - $hole / 2, $cy - $hole / 2, $hole, $hole)
+	$punch.Dispose()
+}
+
 try
 {
 	$__iconBmp = New-Object System.Drawing.Bitmap(32, 32)
 	$__g = [System.Drawing.Graphics]::FromImage($__iconBmp)
-	$__g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-	$__disc = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
-		(New-Object System.Drawing.Rectangle(1, 1, 30, 30)),
-		[System.Drawing.Color]::FromArgb(0, 160, 235),
-		[System.Drawing.Color]::FromArgb(0, 105, 190), 0.0)
-	$__g.FillEllipse($__disc, 1, 1, 30, 30)
-	$__disc.Dispose()
-	$__cx = 16.0; $__cy = 16.0; $__r = 8.0
-	$__hex = New-Object System.Drawing.Drawing2D.GraphicsPath
-	$__hex.AddPolygon(@(
-		(New-Object System.Drawing.PointF($__cx + $__r, $__cy)),
-		(New-Object System.Drawing.PointF($__cx + $__r / 2, $__cy + ($__r * 0.866))),
-		(New-Object System.Drawing.PointF($__cx - $__r / 2, $__cy + ($__r * 0.866))),
-		(New-Object System.Drawing.PointF($__cx - $__r, $__cy)),
-		(New-Object System.Drawing.PointF($__cx - $__r / 2, $__cy - ($__r * 0.866))),
-		(New-Object System.Drawing.PointF($__cx + $__r / 2, $__cy - ($__r * 0.866)))
-	))
-	$__white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-	$__g.FillPath($__white, $__hex)
-	$__hex.Close()
-	$__hex.Dispose()
-	$__punch = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 122, 204))
-	$__g.FillEllipse($__punch, $__cx - 3.4, $__cy - 3.4, 6.8, 6.8)
-	$__white.Dispose()
-	$__punch.Dispose()
+	& $script:DrawTbsLogo $__g 1 1 30
 	$__g.Dispose()
 	$form.Icon = [System.Drawing.Icon]::FromHandle($__iconBmp.GetHicon())
-	$script:TbsAppIcon = [System.Drawing.Icon]::Clone($form.Icon)
+	$script:TbsAppIcon = $form.Icon
 	$__iconBmp.Dispose()
 }
 catch { }
@@ -31129,43 +30840,7 @@ $appIconPanel.Size = New-Object System.Drawing.Size(32, 32)
 $appIconPanel.BackColor = [System.Drawing.Color]::Transparent
 $appIconPanel.add_Paint({
 		param ($s, $e)
-		try
-		{
-			$e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-			$cx = $s.Width / 2.0
-			$cy = $s.Height / 2.0
-
-			# Blue disc (vertical gradient for a little depth)
-			$disc = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
-				(New-Object System.Drawing.Rectangle(1, 1, $s.Width - 2, $s.Height - 2)),
-				[System.Drawing.Color]::FromArgb(0, 160, 235),
-				[System.Drawing.Color]::FromArgb(0, 105, 190),
-				0.0)
-			$e.Graphics.FillEllipse($disc, 1, 1, $s.Width - 2, $s.Height - 2)
-			$disc.Dispose()
-
-			# White hex nut (flat-top hexagon)
-			$r = 7.5
-			$hex = New-Object System.Drawing.Drawing2D.GraphicsPath
-			$hex.AddPolygon(@(
-				(New-Object System.Drawing.PointF($cx + $r, $cy)),
-				(New-Object System.Drawing.PointF($cx + $r / 2, $cy + ($r * 0.866))),
-				(New-Object System.Drawing.PointF($cx - $r / 2, $cy + ($r * 0.866))),
-				(New-Object System.Drawing.PointF($cx - $r, $cy)),
-				(New-Object System.Drawing.PointF($cx - $r / 2, $cy - ($r * 0.866))),
-				(New-Object System.Drawing.PointF($cx + $r / 2, $cy - ($r * 0.866)))
-			))
-			$white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-			$e.Graphics.FillPath($white, $hex)
-			$hex.Close()
-			$hex.Dispose()
-
-			# Punch out the center so it reads as a nut
-			$punch = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 122, 204))
-			$e.Graphics.FillEllipse($punch, $cx - 3.2, $cy - 3.2, 6.4, 6.4)
-			$white.Dispose()
-			$punch.Dispose()
-		}
+		try { & $script:DrawTbsLogo $e.Graphics 1 1 ([float]([Math]::Min($s.Width, $s.Height) - 2)) }
 		catch { }
 	})
 $bannerPanel.Controls.Add($appIconPanel)
@@ -31968,43 +31643,14 @@ try
 }
 catch { }
 
-# Announce the storeman environment in the log.
-# Detection happens before the GUI, so the original message was console-only.
-# It must be written AFTER the form is shown: before that the RichTextBox has
-# no window handle and the colored append is silently dropped. Shown fires
-# exactly once, right when the handle exists.
+# Startup summary (v2.6.8+): one calm, scannable overview of the environment - which storeman
+# source is in use and what that means - written to the FILE LOG when the window first shows
+# (the log box opens clean; the banner badge and status bar show the mode on screen).
 $form.add_Shown({
 		try
 		{
-			# Startup summary block (v2.6.8): one calm, scannable overview of
-			# the environment, placed ABOVE the individual startup lines.
-			# Detection happens before the GUI, so this is where the user
-			# gets the plain-language explanation of what this machine has
-			# (and doesn't have) available.
 			$rule = '--------------------------------------------------'
 			$modeTag = if ($script:StoremanKeyStale) { '[ KEY  ]' } elseif ($script:IsTestEnvironment) { '[ TEST ]' } else { '[ LIVE ]' }
-
-			# Snapshot the lines already in the log (text + color) so the
-			# summary can be written on top of them, in order.
-			$oldLines = @()
-			try
-			{
-				$t = $logBox.Text
-				$i = 0
-				while ($i -lt $t.Length)
-				{
-					$nl = $t.IndexOf("`n", $i)
-					if ($nl -lt 0) { $nl = $t.Length }
-					$lineText = $t.Substring($i, $nl - $i)
-					$lineColor = [System.Drawing.Color]::Black
-					try { $lineColor = $logBox.GetCharColor($i) } catch { }
-					$oldLines += ,@($lineText, $lineColor)
-					$i = $nl + 1
-				}
-			}
-			catch { $oldLines = @() }
-
-			try { $logBox.Clear() } catch { }
 
 			$storeNum = ''
 			$storeName = ''
@@ -32062,29 +31708,6 @@ $form.add_Shown({
 			}
 
 			Write_Log $rule -FileOnly -IncludeTimestamp:$false -Raw
-
-			# Re-append the original startup lines with their colors
-			foreach ($old in $oldLines)
-			{
-				try
-				{
-					if ($old[0] -and $old[0].Trim())
-					{
-						$logBox.SelectionStart = $logBox.TextLength
-						$logBox.SelectionLength = 0
-						$logBox.SelectionColor = $old[1]
-						$logBox.AppendText($old[0] + "`r`n")
-						$logBox.SelectionColor = $logBox.ForeColor
-					}
-				}
-				catch { }
-			}
-			try
-			{
-				$logBox.SelectionStart = $logBox.TextLength
-				[void]$logBox.ScrollToCaret()
-			}
-			catch { }
 		}
 		catch { }
 	})
@@ -32251,7 +31874,8 @@ $BusyTimer.add_Tick({
 		{
 			try
 			{
-				$insertTestJob = Get-Job -Name 'InsertTestItemJob' -State Running -ErrorAction SilentlyContinue | Select-Object -First 1
+				# (-Name and -State cannot be combined on Get-Job - filter the state instead)
+				$insertTestJob = Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Running' } | Select-Object -First 1
 				if ($insertTestJob)
 				{
 					$script:IsBusy = $true
@@ -32371,7 +31995,6 @@ $script:IdleTimer.add_Tick({
 					}
 					catch { }
 
-					$script:SuppressClosePrompt = $true
 					if ($form -and -not $form.IsDisposed) { $form.Close() }
 				}
 				else
@@ -33428,28 +33051,31 @@ if (-not $global:ProtocolFormTimer)
 	$global:ProtocolFormTimer.Start()
 }
 
-# ------------------------------------------------------------------------------------------------
-# Form Closing (X): close directly, then cleanup
-# ------------------------------------------------------------------------------------------------
+# ===================================================================================================
+#                                  SECTION: GUI - Form Closing
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Closing the main window (X button or idle close) closes immediately: timers are stopped,
+#   the protocol popup is disposed, background loops are told to stop, and the temporary
+#   *.sqi / *.sql files in %TEMP% are deleted. Background runspaces, jobs and pools are NOT
+#   torn down one by one - the host process exits right after ShowDialog returns, which ends
+#   them anyway, and an orderly teardown only made the X button slow.
+#   Also runs the initial layout pass for the top strip and the log area.
+# ===================================================================================================
+
 $form.add_FormClosing({
-		$script:SuppressClosePrompt = $false
-
 		# ---- Timers ----
-		try { if ($script:IdleTimer) { $script:IdleTimer.Stop(); $script:IdleTimer.Dispose(); $script:IdleTimer = $null } }
+		foreach ($timerName in 'IdleTimer', 'VncExportReaper', 'RemoteMachineInfoReaper', 'StartupWarmupTimer', 'PopupThemeTimer', 'protocolTimer')
+		{
+			try
+			{
+				$t = Get-Variable -Name $timerName -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+				if ($t) { $t.Stop(); $t.Dispose(); Set-Variable -Name $timerName -Scope Script -Value $null }
+			}
+			catch { }
+		}
+		try { if ($BusyTimer) { $BusyTimer.Stop(); $BusyTimer.Dispose() } }
 		catch { }
-		try { if ($BusyTimer) { $BusyTimer.Stop(); $BusyTimer.Dispose(); $BusyTimer = $null } }
-		catch { }
-		try { if ($refreshTimer) { $refreshTimer.Stop(); $refreshTimer.Dispose(); $refreshTimer = $null } }
-		catch { }
-		try { if ($script:VncExportReaper) { $script:VncExportReaper.Stop(); $script:VncExportReaper.Dispose(); $script:VncExportReaper = $null } }
-		catch { }
-		try { if ($script:RemoteMachineInfoReaper) { $script:RemoteMachineInfoReaper.Stop(); $script:RemoteMachineInfoReaper.Dispose(); $script:RemoteMachineInfoReaper = $null } }
-		catch { }
-		try { if ($script:StartupWarmupTimer) { $script:StartupWarmupTimer.Stop(); $script:StartupWarmupTimer.Dispose(); $script:StartupWarmupTimer = $null } }
-		catch { }
-		try { if ($script:PopupThemeTimer) { $script:PopupThemeTimer.Stop(); $script:PopupThemeTimer.Dispose(); $script:PopupThemeTimer = $null } }
-		catch { }
-
 		try
 		{
 			if ($global:ProtocolFormTimer)
@@ -33461,7 +33087,7 @@ $form.add_FormClosing({
 		}
 		catch { }
 
-		# ---- Popup form (optional) ----
+		# ---- Protocol popup ----
 		try
 		{
 			if ($global:ProtocolForm)
@@ -33475,16 +33101,16 @@ $form.add_FormClosing({
 		}
 		catch { }
 
-		# Fast exit: the host process closes right after ShowDialog returns, so expensive
-		# background teardown here only slows the X button down.
-		try { $script:LaneProtocolStop = $true }
-		catch { }
-		try { $script:VncExportTask = $null; $script:RemoteMachineInfoTask = $null }
-		catch { }
-		try { $script:ScaleCredTasks = @{ } }
-		catch { }
+		# ---- Background loops: stop scheduling new work ----
+		$script:LaneProtocolStop = $true
+		$script:VncExportTask = $null
+		$script:RemoteMachineInfoTask = $null
+		$script:ScaleCredTasks = @{ }
+
 		try { Write_Log "Form is closing. Performing cleanup." "green" }
 		catch { }
+
+		# ---- Temporary SQL files written by the maintenance tasks ----
 		try
 		{
 			Get-ChildItem -LiteralPath $TempDir -File -ErrorAction SilentlyContinue |
@@ -33495,342 +33121,123 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		return
-
-		# Stop XE watcher jobs (kept from your earlier close handler)
-		try
-		{
-			$xeJobs = Get-Job -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'XEWatcherJob_*' }
-			foreach ($j in $xeJobs)
-			{
-				try { Stop-Job -Job $j -Force -ErrorAction SilentlyContinue | Out-Null }
-				catch { }
-				try { Remove-Job -Job $j -Force -ErrorAction SilentlyContinue | Out-Null }
-				catch { }
-			}
-		}
-		catch { }
-
-		# ---- Lane protocol updater cleanup (timer + pool) ----
-		try { $script:LaneProtocolStop = $true }
-		catch { }
-
-		try
-		{
-			if ($script:protocolTimer)
-			{
-				try { $script:protocolTimer.Stop() }
-				catch { }
-				try { $script:protocolTimer.Dispose() }
-				catch { }
-				$script:protocolTimer = $null
-			}
-		}
-		catch { }
-
-		try
-		{
-			if ($script:LaneProtocolJobs)
-			{
-				foreach ($kv in @($script:LaneProtocolJobs.GetEnumerator()))
-				{
-					$st = $kv.Value
-					if ($st)
-					{
-						try { if ($st.Handle -and (-not $st.Handle.IsCompleted) -and $st.PS) { $null = $st.PS.Stop() } }
-						catch { }
-						try { if ($st.PS) { $st.PS.Dispose() } }
-						catch { }
-					}
-					[void]$script:LaneProtocolJobs.Remove($kv.Key)
-				}
-			}
-		}
-		catch { }
-
-		try
-		{
-			if ($script:LaneDbSizeJobs)
-			{
-				foreach ($kv in @($script:LaneDbSizeJobs.GetEnumerator()))
-				{
-					$st = $kv.Value
-					if ($st)
-					{
-						try { if ($st.Handle -and (-not $st.Handle.IsCompleted) -and $st.PS) { $null = $st.PS.Stop() } }
-						catch { }
-						try { if ($st.PS) { $st.PS.Dispose() } }
-						catch { }
-					}
-					[void]$script:LaneDbSizeJobs.Remove($kv.Key)
-				}
-			}
-		}
-		catch { }
-
-		try
-		{
-			if ($script:LaneProtocolPool)
-			{
-				try { $script:LaneProtocolPool.Close() }
-				catch { }
-				try { $script:LaneProtocolPool.Dispose() }
-				catch { }
-				$script:LaneProtocolPool = $null
-			}
-		}
-		catch { }
-
-		try
-		{
-			if ($script:LaneDbSizePool)
-			{
-				try { $script:LaneDbSizePool.Close() }
-				catch { }
-				try { $script:LaneDbSizePool.Dispose() }
-				catch { }
-				$script:LaneDbSizePool = $null
-			}
-		}
-		catch { }
-
-		try
-		{
-			if ($script:VncExportTask)
-			{
-				$task = $script:VncExportTask
-				try
-				{
-					if ($task.Job -and $task.Job.State -in @('Running', 'NotStarted'))
-					{
-						Stop-Job -Job $task.Job -Force -ErrorAction SilentlyContinue | Out-Null
-					}
-					elseif ($task.Job)
-					{
-						Receive-Job -Job $task.Job -ErrorAction SilentlyContinue | Out-Null
-					}
-				}
-				catch { }
-				try { if ($task.Job) { Remove-Job -Job $task.Job -Force -ErrorAction SilentlyContinue | Out-Null } }
-				catch { }
-				$script:VncExportTask = $null
-			}
-		}
-		catch { }
-
-		try
-		{
-			if ($script:RemoteMachineInfoTask)
-			{
-				$task = $script:RemoteMachineInfoTask
-				try
-				{
-					if ($task.Job -and $task.Job.State -in @('Running', 'NotStarted'))
-					{
-						Stop-Job -Job $task.Job -Force -ErrorAction SilentlyContinue | Out-Null
-					}
-					elseif ($task.Job)
-					{
-						Receive-Job -Job $task.Job -ErrorAction SilentlyContinue | Out-Null
-					}
-				}
-				catch { }
-				try { if ($task.Job) { Remove-Job -Job $task.Job -Force -ErrorAction SilentlyContinue | Out-Null } }
-				catch { }
-				$script:RemoteMachineInfoTask = $null
-			}
-		}
-		catch { }
-
-		# ---- Scale credential runspaces (if you used the background cred helper) ----
-		try
-		{
-			if ($script:ScaleCredReaper)
-			{
-				try { $script:ScaleCredReaper.Stop() }
-				catch { }
-				try { $script:ScaleCredReaper.Dispose() }
-				catch { }
-				$script:ScaleCredReaper = $null
-			}
-		}
-		catch { }
-
-		try
-		{
-			if ($script:ScaleCredTasks)
-			{
-				foreach ($k in @($script:ScaleCredTasks.Keys))
-				{
-					$st = $script:ScaleCredTasks[$k]
-					if ($st)
-					{
-						try { if ($st.Handle -and $st.PS) { $st.PS.EndInvoke($st.Handle) } }
-						catch { }
-						try { if ($st.PS) { $st.PS.Dispose() } }
-						catch { }
-					}
-					[void]$script:ScaleCredTasks.Remove($k)
-				}
-			}
-		}
-		catch { }
-
-		try
-		{
-			if ($script:ScaleCredPool)
-			{
-				try { $script:ScaleCredPool.Close() }
-				catch { }
-				try { $script:ScaleCredPool.Dispose() }
-				catch { }
-				$script:ScaleCredPool = $null
-				$script:ScaleCredPoolMaxParallel = $null
-			}
-		}
-		catch { }
-
-		# --- Any lingering job from earlier versions (defensive) ---
-		try
-		{
-			Get-Job -Name 'ClearXEFolderJob' -ErrorAction SilentlyContinue | ForEach-Object {
-				try { Stop-Job $_ -Force -ErrorAction SilentlyContinue }
-				catch { }
-				try { Remove-Job $_ -Force -ErrorAction SilentlyContinue }
-				catch { }
-			}
-		}
-		catch { }
-
-		# Final housekeeping
-		try { Write_Log "Form is closing. Performing cleanup." "green" }
-		catch { }
-		try { Delete_Files -Path "$TempDir" -SpecifiedFiles "*.sqi", "*.sql" }
-		catch { }
 	})
 
-# NOTE: version info now lives in the dedicated $stVersion status-bar item, so the
-# busy scanner's status updates no longer wipe it out after the first tick.
-
-# Final layout pass so everything starts aligned
+# Initial layout pass so everything starts aligned (the bottom layout runs in 14)
 & $layoutTopStrip
 & $layoutLogArea
 
-######################################################################################################################
+# ===================================================================================================
+#                                 SECTION: GUI - Styling Helpers
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Shared look for menus and popup dialogs (scriptblocks, PS 5.1 friendly):
+#     $Apply_Modern_Menu_Style   style a ContextMenuStrip (the four tool menus, grid menus)
+#     $Style_SubMenu             style a submenu's dropdown the same way
+#     $Apply_Modern_Popup_Style  restyle a popup Form and all of its controls
+#   plus the popup theme timer, which applies $Apply_Modern_Popup_Style automatically to every
+#   new window the script opens (dialogs inside the functions need no styling code of their own).
 #
-# Modern UI Styling Helpers (NO functions - scriptblocks only)
-#
-# - Keeps code PS 5.1 friendly
-# - Applies consistent modern styling to Buttons + ContextMenus
-######################################################################################################################
+# Notes:
+#   - The menu renderer (src\Resources\CSharp\ModernToolStripRenderer.cs) is compiled once here.
+#     Before v2.7.0 it never compiled (an unused class raised a warning-as-error and the WinForms
+#     references were missing) and an invalid ItemMargin assignment aborted the styling first,
+#     so the menus always fell back to the default renderer.
+# ===================================================================================================
 
-# Safe fallback colors (in case these aren't defined elsewhere yet)
+# Fallback colours (the palette in 01 defines these; same variables, script scope)
 if (-not $script:UiAccent) { $script:UiAccent = [System.Drawing.Color]::DodgerBlue }
 if (-not $script:UiCardBorder) { $script:UiCardBorder = [System.Drawing.Color]::FromArgb(220, 225, 232) }
 if (-not $script:UiCardBg) { $script:UiCardBg = [System.Drawing.Color]::White }
 if (-not $script:UiTextDark) { $script:UiTextDark = [System.Drawing.Color]::FromArgb(28, 28, 30) }
 
 # ----------------------------------------------------------------------------
-# Apply modern button styling (flat, clean border, hover accent)
+# Menu renderer (compiled once per process)
 # ----------------------------------------------------------------------------
-$Apply_Modern_Button_Style = {
-	param ([System.Windows.Forms.Button]$Btn)
-
-	if (-not $Btn) { return }
-
+if (-not ('ModernToolStripRenderer' -as [type]))
+{
 	try
 	{
-		# Base look - modern flat design with subtle elevation
-		$Btn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-		$Btn.UseVisualStyleBackColor = $false
-		$Btn.BackColor = $script:UiCardBg
-		$Btn.ForeColor = $script:UiTextDark
-		$Btn.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-		$Btn.Cursor = [System.Windows.Forms.Cursors]::Hand
-		$Btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-		$Btn.Padding = New-Object System.Windows.Forms.Padding(10, 4, 10, 4)
+		Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -ErrorAction Stop -TypeDefinition @'
+// Menu renderer for the four tool menus and their submenus (GUI\09_Styling_Helpers).
+// Embedded at build time and compiled once with Add-Type (references System.Windows.Forms and
+// System.Drawing). Light-blue hover with a 1 px accent bar on the left, thin light separators,
+// light borders, no image margin.
+using System;
+using System.Drawing;
+using System.Windows.Forms;
 
-		# Border + hover states (elevated card feel)
-		$Btn.FlatAppearance.BorderSize = 0
-		$Btn.FlatAppearance.MouseOverBackColor = $script:UiAccentLight
-		$Btn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(220, 235, 250)
-
-		# Subtle shadow effect (bottom border)
-		$Btn.add_Paint({
-				param ($s, $e)
-				try
-				{
-					# Bottom shadow line
-					$pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(200, 200, 200))
-					$e.Graphics.DrawLine($pen, 2, $s.Height - 1, $s.Width - 2, $s.Height - 1)
-					$pen.Dispose()
-				}
-				catch { }
-			})
-
-		# Store original colors for restore
-		if (-not $Btn.Tag -or ($Btn.Tag -isnot [pscustomobject]))
-		{
-			$Btn.Tag = [pscustomobject]@{
-				OrigBack = $Btn.BackColor
-				OrigFore = $Btn.ForeColor
-			}
-		}
-
-		# Hover effects (lift + accent)
-		$Btn.add_MouseEnter({
-				param ($s, $e)
-				try
-				{
-					$s.ForeColor = $script:UiAccentDark
-					$s.BackColor = $script:UiAccentLight
-					# Subtle elevation effect
-					$s.Padding = New-Object System.Windows.Forms.Padding(10, 2, 10, 6)
-				}
-				catch { }
-			})
-		$Btn.add_MouseLeave({
-				param ($s, $e)
-				try
-				{
-					if ($s.Tag -and $s.Tag.OrigFore) { $s.ForeColor = $s.Tag.OrigFore }
-					if ($s.Tag -and $s.Tag.OrigBack) { $s.BackColor = $s.Tag.OrigBack }
-					# Restore padding
-					$s.Padding = New-Object System.Windows.Forms.Padding(10, 4, 10, 4)
-				}
-				catch { }
-			})
-		$Btn.add_MouseDown({
-				param ($s, $e)
-				try
-				{
-					$s.BackColor = [System.Drawing.Color]::FromArgb(230, 242, 255)
-				}
-				catch { }
-			})
-		$Btn.add_MouseUp({
-				param ($s, $e)
-				try
-				{
-					if ($s.Bounds.Contains($s.PointToClient([System.Windows.Forms.Cursor]::Position)))
-					{
-						$s.BackColor = $script:UiAccentLight
-					}
-				}
-				catch { }
-			})
-	}
-	catch { }
+public class ModernColorTable : ProfessionalColorTable
+{
+    public override Color MenuBorder { get { return Color.FromArgb(229, 229, 229); } }
+    public override Color MenuItemBorder { get { return Color.Transparent; } }
+    public override Color ToolStripBorder { get { return Color.FromArgb(229, 229, 229); } }
 }
 
-# ===================================================================================================
-# ENHANCED MODERN CONTEXT MENU STYLING - Clean, modern look with icons
-# ===================================================================================================
+public class ModernToolStripRenderer : ToolStripProfessionalRenderer
+{
+    public ModernToolStripRenderer() : base(new ModernColorTable()) { }
+
+    protected override void OnRenderItemBackground(ToolStripItemRenderEventArgs e)
+    {
+        if (e.Item.Selected)
+        {
+            using (var brush = new SolidBrush(Color.FromArgb(230, 243, 255)))
+            {
+                e.Graphics.FillRectangle(brush, new Rectangle(0, 0, e.Item.Width - 1, e.Item.Height - 1));
+            }
+        }
+        else
+        {
+            base.OnRenderItemBackground(e);
+        }
+    }
+
+    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+    {
+        if (e.Item.Selected && e.Item.Enabled)
+        {
+            using (var brush = new SolidBrush(Color.FromArgb(230, 243, 255)))
+            {
+                e.Graphics.FillRectangle(brush, new Rectangle(0, 0, e.Item.Width - 1, e.Item.Height - 1));
+            }
+            using (var pen = new Pen(Color.FromArgb(0, 122, 204), 1))
+            {
+                e.Graphics.DrawLine(pen, 0, 0, 0, e.Item.Height - 1);
+            }
+        }
+        else
+        {
+            base.OnRenderMenuItemBackground(e);
+        }
+    }
+
+    protected override void OnRenderImageMargin(ToolStripRenderEventArgs e) { }
+
+    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+    {
+        using (var pen = new Pen(Color.FromArgb(229, 229, 229)))
+        {
+            e.Graphics.DrawLine(pen, 0, e.Item.Height / 2, e.Item.Width, e.Item.Height / 2);
+        }
+    }
+}
+'@
+	}
+	catch
+	{
+		try { Write_Log ("Menu renderer could not be compiled - using the default menu look: " + $_.Exception.Message) 'gray' -FileOnly }
+		catch { }
+	}
+}
+
+# ----------------------------------------------------------------------------
+# Context menu styling
+# ----------------------------------------------------------------------------
 $Apply_Modern_Menu_Style = {
 	param ([System.Windows.Forms.ContextMenuStrip]$Menu)
 
 	if (-not $Menu) { return }
-
 	try
 	{
 		$Menu.ShowImageMargin = $false
@@ -33838,88 +33245,15 @@ $Apply_Modern_Menu_Style = {
 		$Menu.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Regular)
 		$Menu.BackColor = [System.Drawing.Color]::White
 		$Menu.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-		$Menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::Professional
 		$Menu.Padding = New-Object System.Windows.Forms.Padding(2)
 		$Menu.GripMargin = New-Object System.Windows.Forms.Padding(0)
-		$Menu.ItemMargin = New-Object System.Windows.Forms.Padding(2)
-
-		# Custom renderer for modern menu
-		# (NOTE: do NOT assign a ProfessionalColorTable to $Menu.Renderer here -
-		#  it throws and the custom renderer below would silently never be applied)
-		if (-not ('ModernToolStripRenderer' -as [type])) {
-		function global:CreateModernMenuRenderer {
-			Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-			$rendererCode = @'
-using System;
-using System.Windows.Forms;
-using System.Windows.Forms.VisualStyles;
-using System.Drawing;
-using System.Drawing.Drawing2D;
-
-public class ModernMenuRenderer : ProfessionalColorTable, IRenderer {
-    public Color MenuBorder { get { return Color.FromArgb(229, 229, 229); } }
-    public Color MenuItemBorder { get { return Color.Transparent; } }
-}
-
-public interface IRenderer { }
-
-public class ModernToolStripRenderer : ToolStripProfessionalRenderer {
-    public ModernToolStripRenderer() : base(new ModernColorTable()) { }
-    
-    protected override void OnRenderItemBackground(ToolStripItemRenderEventArgs e) {
-        if (e.Item.Selected) {
-            using (var brush = new SolidBrush(Color.FromArgb(230, 243, 255))) {
-                e.Graphics.FillRectangle(brush, new Rectangle(0, 0, e.Item.Width - 1, e.Item.Height - 1));
-            }
-        }
-        else {
-            base.OnRenderItemBackground(e);
-        }
-    }
-    
-    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e) {
-        if (e.Item.Selected) {
-            using (var brush = new SolidBrush(Color.FromArgb(230, 243, 255))) {
-                e.Graphics.FillRectangle(brush, new Rectangle(0, 0, e.Item.Width - 1, e.Item.Height - 1));
-            }
-            using (var pen = new Pen(Color.FromArgb(0, 122, 204), 1)) {
-                e.Graphics.DrawLine(pen, 0, 0, 0, e.Item.Height - 1);
-            }
-        }
-        else {
-            base.OnRenderMenuItemBackground(e);
-        }
-    }
-    
-    protected override void OnRenderImageMargin(ToolStripRenderEventArgs e) { }
-    
-    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e) {
-        using (var pen = new Pen(Color.FromArgb(229, 229, 229))) {
-            e.Graphics.DrawLine(pen, 0, e.Item.Height / 2, e.Item.Width, e.Item.Height / 2);
-        }
-    }
-}
-
-public class ModernColorTable : ProfessionalColorTable {
-    public override Color MenuBorder { get { return Color.FromArgb(229, 229, 229); } }
-    public override Color MenuItemBorder { get { return Color.Transparent; } }
-    public override Color ToolStripBorder { get { return Color.FromArgb(229, 229, 229); } }
-}
-'@
-			Add-Type -TypeDefinition $rendererCode -ErrorAction SilentlyContinue
-		}
-		CreateModernMenuRenderer
-		}
-		if ('ModernToolStripRenderer' -as [type]) {
-			$Menu.Renderer = [ModernToolStripRenderer]::new()
-		}
+		if ('ModernToolStripRenderer' -as [type]) { $Menu.Renderer = New-Object ModernToolStripRenderer }
+		else { $Menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::Professional }
 	}
 	catch { }
 }
 
-# ----------------------------------------------------------------------------
-# Style a submenu dropdown to match the modern menu theme (the function
-# above is typed for ContextMenuStrip, so submenus are styled separately)
+# Submenu dropdowns (a ToolStripMenuItem's DropDown, not a ContextMenuStrip)
 $Style_SubMenu = {
 	param ($Sub)
 	try
@@ -33931,12 +33265,13 @@ $Style_SubMenu = {
 		$dd.ShowImageMargin = $false
 		$dd.ShowCheckMargin = $false
 		$dd.GripMargin = New-Object System.Windows.Forms.Padding(0)
-		if ('ModernToolStripRenderer' -as [type]) { $dd.Renderer = [ModernToolStripRenderer]::new() }
+		if ('ModernToolStripRenderer' -as [type]) { $dd.Renderer = New-Object ModernToolStripRenderer }
 	}
 	catch { }
 }
 
-# Apply modern styling to popup forms so older dialogs match the main app.
+# ----------------------------------------------------------------------------
+# Popup forms: restyle the form and every control in it so older dialogs match the main app
 # ----------------------------------------------------------------------------
 $Apply_Modern_Popup_Style = {
 	param ([System.Windows.Forms.Form]$PopupForm)
@@ -34141,92 +33476,6 @@ if (-not $script:PopupThemeTimer)
 #
 ######################################################################################################################
 
-# ===================================================================================================
-# ENHANCED TOOL BUTTONS - Category-colored buttons with icons and better hover effects
-# ===================================================================================================
-
-# Helper function to create category-colored tool button
-$Create_CategoryButton = {
-	param(
-		[string]$ButtonText,
-		[string]$Icon,
-		[string]$CategoryColor,
-		[int]$X,
-		[int]$Y,
-		[System.Windows.Forms.ContextMenuStrip]$ContextMenu
-	)
-
-	$Btn = New-Object System.Windows.Forms.Button
-	$Btn.Text = "$Icon $ButtonText"
-	$Btn.Location = New-Object System.Drawing.Point($X, $Y)
-	$Btn.Size = New-Object System.Drawing.Size(200, 52)
-	$Btn.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-	$Btn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-	$Btn.UseVisualStyleBackColor = $false
-	$Btn.BackColor = [System.Drawing.Color]::White
-	$Btn.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-	$Btn.Cursor = [System.Windows.Forms.Cursors]::Hand
-	$Btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-	$Btn.Padding = New-Object System.Windows.Forms.Padding(12, 6, 12, 6)
-	$Btn.FlatAppearance.BorderSize = 0
-	$Btn.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(240, 245, 250)
-	$Btn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(225, 238, 250)
-
-	# Store category color for hover
-	$Btn.Tag = [pscustomobject]@{
-		CategoryColor = $CategoryColor
-		OrigFore = $Btn.ForeColor
-		OrigBack = $Btn.BackColor
-	}
-
-	# Bottom accent line
-	$Btn.add_Paint({
-			param ($s, $e)
-			try
-			{
-				# Bottom colored accent
-				$pen = New-Object System.Drawing.Pen($s.Tag.CategoryColor, 3)
-				$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
-				$pen.Dispose()
-
-				# Subtle bottom shadow
-				$pen2 = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(200, 200, 200))
-				$e.Graphics.DrawLine($pen2, 2, $s.Height - 1, $s.Width - 2, $s.Height - 1)
-				$pen2.Dispose()
-			}
-			catch { }
-		})
-
-	# Hover effect
-	$Btn.add_MouseEnter({
-			param ($s, $e)
-			try
-			{
-				$s.BackColor = [System.Drawing.Color]::FromArgb(245, 248, 252)
-				$s.ForeColor = $s.Tag.CategoryColor
-			}
-			catch { }
-		})
-	$Btn.add_MouseLeave({
-			param ($s, $e)
-			try
-			{
-				$s.BackColor = $s.Tag.OrigBack
-				$s.ForeColor = $s.Tag.OrigFore
-			}
-			catch { }
-		})
-
-	# Show context menu on click
-	$Btn.add_Click({
-			param ($s, $e)
-			$script:LastActivity = Get-Date
-			$ContextMenu.Show($s, 0, $s.Height)
-		})
-
-	return $Btn
-}
-
 ############################################################################
 # Server Tools Button (Green)
 ############################################################################
@@ -34242,7 +33491,6 @@ $SubServerSchedule.ToolTipText = "Scheduled maintenance and backup tasks"
 $SubServerSystem = New-Object System.Windows.Forms.ToolStripMenuItem("System Care")
 $SubServerSystem.ToolTipText = "Windows and system-level maintenance"
 
-& $script:Create_CategoryButton "Server Tools" "Server" $uiCategoryServer 0 0 $ContextMenuServer | Out-Null
 $ServerToolsButton = New-Object System.Windows.Forms.Button
 $ServerToolsButton.Name = "ServerToolsButton"
 $ServerToolsButton.Text = "Server Tools"
@@ -35405,26 +34653,26 @@ foreach ($__c in $__activityControls)
 }
 
 # ===================================================================================================
-#                                       SECTION: Main Script Execution
+#                                 SECTION: Main - Load Store Data
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Orchestrates the execution flow of the script, initializing variables, processing items, and handling user interactions.
+#   Pre-window data load. Everything here reads the local cache files in Setup_Files, so the
+#   window can appear fast; the network refreshes run after Show as warmup steps (02).
+#     - starts the NSSM download in the background (returns immediately)
+#     - store + database info (a first run with no cache does its full fetch here)
+#     - store number normalisation (1 -> 001; 4+ digits keep 4+)
+#     - node discovery (lanes, scales, backoffices) from cache
+#
+# Notes:
+#   - tests\TBS_Maintenance_SelfTest.ps1 runs the store-number block verbatim, from the
+#     '$script:StoreNumber = [string]...' line to the line before '$script:StoreName = ...'.
+#   - At script scope $StoreNumber and $script:StoreNumber are the same variable; the menus
+#     pass $StoreNumber to the functions.
 # ===================================================================================================
 
-# Check for the precense of PsExec for later use
-# $GetPsExec = Get_PsExec
-
-# Starts download in background (returns immediately)
 Download_NSSM -Background | Out-Null
 
-# Refresh launch-owned cache files once, then reuse them for the rest of the session.
-$script:UseCachedCoreStartup = $__isInlineLikeLaunch
-
-# Get SQL Connection String
-# v2.6.9: in EVERY launch mode this only reads the local cache before the
-# window is shown (fast). The -RefreshCache network round trip runs as the
-# first post-Show warmup step below, so the window always appears first.
-# (No cache at all? The function does its full fetch here, exactly as before.)
+Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
 Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
 $script:StoreNumber = [string]$script:FunctionResults['StoreNumber']
 if ($script:StoreNumber)
@@ -35438,23 +34686,13 @@ if ($script:StoreNumber)
 }
 $script:StoreName = $script:FunctionResults['StoreName']
 $script:SqlModuleName = $script:FunctionResults['SqlModuleName']
-$StoreNumber = $script:StoreNumber
-$StoreName = $script:StoreName
-$SqlModuleName = $script:SqlModuleName
 
-# Count Nodes (cache first in every launch mode - same reasoning as the store
-# info call above; the fresh refresh is the second warmup step)
-$Nodes = Retrieve_Nodes -StoreNumber $StoreNumber
+# Nodes from cache (the fresh discovery is the second warmup step, which also starts the
+# lane protocol loop against the fresh node list)
+$null = Retrieve_Nodes -StoreNumber $StoreNumber
 $script:Nodes = $script:FunctionResults['Nodes']
-$Nodes = $script:Nodes
-
-# Retrieve the list of machine names from the FunctionResults dictionary
 $script:LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-$LaneNumToMachineName = $script:LaneNumToMachineName
 
-# Lane protocol info: started by the 'Refreshing node discovery...' warmup
-# step (post-Show, every launch mode) so it always runs against the fresh
-# node list instead of blocking the first paint.
 try { Write_Log ("Startup: pre-window data ready in {0:N1}s - store '{1}', {2} node(s)" -f ((Get-Date) - $script:StartupT0).TotalSeconds, $StoreNumber, @($Nodes).Count) 'blue' -FileOnly } catch { }
 
 $form.Add_Shown({
@@ -35593,7 +34831,9 @@ $form.Add_Shown({
 						Where-Object { $_.State -in @('Completed', 'Failed', 'Stopped') } |
 						Remove-Job -Force -ErrorAction SilentlyContinue
 
-						$runningInsertJob = Get-Job -Name 'InsertTestItemJob' -State Running -ErrorAction SilentlyContinue | Select-Object -First 1
+						# (-Name and -State cannot be combined on Get-Job: that threw before v2.7.0,
+						#  so the test item job never started - filter the state instead)
+						$runningInsertJob = Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Running' } | Select-Object -First 1
 						if (-not $runningInsertJob)
 						{
 							$fnBody = ${function:Insert_Test_Item}.ToString()
@@ -35783,92 +35023,55 @@ $form.Add_Shown({
 		$script:StartupWarmupTimer.Start()
 	})
 
-# Clear %Temp% folder on start
-# $ClearTempAtLaunch = Delete_Files -Path "$TempDir" -Exclusions "Server_Database_Maintenance.sqi", "Lane_Database_Maintenance.sqi", "TBS_Maintenance_Script.ps1" -AsJob
-# $ClearWinTempAtLaunch = Delete_Files -Path "$env:SystemRoot\Temp" -AsJob
+# ===================================================================================================
+#                                   SECTION: Main - Show the Window
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Shows the main window (modal - the script waits here until it closes), then exits.
+#   Unless -ShowConsole was given, the console window is hidden 400 ms after the main window
+#   appears (so the "Script started" line is visible for a moment while it loads).
+#
+# Notes:
+#   - 'exit' also ends the PowerShell session for irm | iex launches - intentional, the console
+#     is hidden by then and would otherwise stay open invisibly.
+#   - tests\Smoke.ps1 replaces the LAST '[void]$form.ShowDialog()' in the built file - keep it.
+# ===================================================================================================
 
-# Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
 
 if (-not $script:ShowConsole -and [Environment]::UserInteractive)
 {
 	try
 	{
-		if (-not $script:PostOpenConsoleHideTimer)
-		{
-			$script:PostOpenConsoleHideTimer = New-Object System.Windows.Forms.Timer
-			$script:PostOpenConsoleHideTimer.Interval = 400
-			$script:PostOpenConsoleHideTimer.Add_Tick({
+		$script:PostOpenConsoleHideTimer = New-Object System.Windows.Forms.Timer
+		$script:PostOpenConsoleHideTimer.Interval = 400
+		$script:PostOpenConsoleHideTimer.Add_Tick({
 				try
 				{
-					if ($script:PostOpenConsoleHideTimer)
-					{
-						$script:PostOpenConsoleHideTimer.Stop()
-					}
+					$script:PostOpenConsoleHideTimer.Stop()
+					$script:PostOpenConsoleHideTimer.Dispose()
+					$script:PostOpenConsoleHideTimer = $null
 				}
 				catch { }
 				try
 				{
 					$__consoleHandle = [ConsoleWindowHelper]::GetConsoleWindow()
-					if ($__consoleHandle -ne [IntPtr]::Zero)
-					{
-						[void][ConsoleWindowHelper]::ShowWindow($__consoleHandle, 0)
-						$script:ConsoleHidden = $true
-						$script:RestoreConsoleOnExit = $false
-					}
-				}
-				catch { }
-				try
-				{
-					if ($script:PostOpenConsoleHideTimer)
-					{
-						$script:PostOpenConsoleHideTimer.Dispose()
-						$script:PostOpenConsoleHideTimer = $null
-					}
+					if ($__consoleHandle -ne [IntPtr]::Zero) { [void][ConsoleWindowHelper]::ShowWindow($__consoleHandle, 0) }
 				}
 				catch { }
 			})
-			$form.Add_Shown({
-				try
-				{
-					if ($script:PostOpenConsoleHideTimer)
-					{
-						$script:PostOpenConsoleHideTimer.Start()
-					}
-				}
+		$form.Add_Shown({
+				try { if ($script:PostOpenConsoleHideTimer) { $script:PostOpenConsoleHideTimer.Start() } }
 				catch { }
 			})
-		}
 	}
 	catch { }
 }
-
-# ===================================================================================================
-#                                       SECTION: Show the GUI
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Displays the main form to the user and manages the script's execution flow based on user interactions.
-# ===================================================================================================
 
 [void]$form.ShowDialog()
 
-# Indicate the script is closing
-if ($script:RestoreConsoleOnExit -and $script:ShowConsole)
-{
-	try
-	{
-		$__consoleHandle = [ConsoleWindowHelper]::GetConsoleWindow()
-		if ($__consoleHandle -ne [IntPtr]::Zero)
-		{
-			[void][ConsoleWindowHelper]::ShowWindow($__consoleHandle, 5)
-		}
-	}
-	catch { }
-}
-
 if ($script:ShowConsole) { Write-Host "Script closing..." -ForegroundColor Yellow }
 
-# Close the console to avoid duplicate logging to the richbox
 exit
 
 #######################################################################################################
@@ -35877,6 +35080,38 @@ exit
 #
 #######################################################################################################
 
+# ===================================================================================================
+#  v2.7.0  -  2026-10-22
+#  Modular source tree, build step, and a full review pass with bug fixes
+# ===================================================================================================
+#
+#  [REPO] The script now lives in TBS_Maintenance\src as one file per function (grouped by
+#         category), plus bootstrap, GUI and main-flow files. TBS_Maintenance\build\Build.ps1
+#         assembles them into the single TBS_Maintenace_Script_V2.ps1 (same path, so the short
+#         link, irm | iex and PowerShell Studio packaging work exactly as before).
+#  [REPO] Format-Sources.ps1 (whitespace normaliser), tests\Smoke.ps1 (sandboxed full-app run),
+#         the existing self-test moved to tests\.
+#
+#  [FIX]  Lane SQL protocol detection had stopped probing lanes since v2.6.7: the timer handler
+#         ran as a .GetNewClosure() closure, where every $script: variable is a separate, empty
+#         one - the loop never saw the lane map. Rewritten without closures; File-protocol
+#         lanes get their SQL-enable task scheduled again (now also from .exe / irm|iex
+#         launches, re-checked at most every 15 min, result logged once per change).
+#  [FIX]  Startup "test item" job never started since v2.6.6 (Get-Job -Name with -State is an
+#         invalid parameter combination and threw before Start-Job).
+#  [FIX]  Elevation: a packaged .exe started without arguments never elevated (empty
+#         -ArgumentList is rejected), and script paths with spaces were split. Both fixed.
+#  [FIX]  App icon + banner logo were never drawn (PointF/Rectangle arguments with arithmetic
+#         parsed as arrays). One shared logo painter now draws both.
+#  [FIX]  Menu renderer never compiled and an invalid ItemMargin assignment aborted menu
+#         styling - the intended modern menu look is now applied.
+#  [FIX]  Startup log box: lines lost their colour (RichTextBox.GetCharColor does not exist).
+#         The summary is file-only anyway, so the box is no longer cleared and rewritten.
+#
+#  [CLEAN] Launch detection runs once (was duplicated), dead variables and unreachable code
+#          removed (refresh timer, close-prompt flag, unused paths, FormClosing teardown after
+#          return, unused button helpers).
+#
 # ===================================================================================================
 #  v2.6.9  -  2026-09-01
 #  Drive-scan fallback, activation hardening, timeout + job hygiene

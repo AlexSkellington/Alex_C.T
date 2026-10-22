@@ -82,43 +82,14 @@ try
 }
 catch { }
 
-# Announce the storeman environment in the log.
-# Detection happens before the GUI, so the original message was console-only.
-# It must be written AFTER the form is shown: before that the RichTextBox has
-# no window handle and the colored append is silently dropped. Shown fires
-# exactly once, right when the handle exists.
+# Startup summary (v2.6.8+): one calm, scannable overview of the environment - which storeman
+# source is in use and what that means - written to the FILE LOG when the window first shows
+# (the log box opens clean; the banner badge and status bar show the mode on screen).
 $form.add_Shown({
 		try
 		{
-			# Startup summary block (v2.6.8): one calm, scannable overview of
-			# the environment, placed ABOVE the individual startup lines.
-			# Detection happens before the GUI, so this is where the user
-			# gets the plain-language explanation of what this machine has
-			# (and doesn't have) available.
 			$rule = '--------------------------------------------------'
 			$modeTag = if ($script:StoremanKeyStale) { '[ KEY  ]' } elseif ($script:IsTestEnvironment) { '[ TEST ]' } else { '[ LIVE ]' }
-
-			# Snapshot the lines already in the log (text + color) so the
-			# summary can be written on top of them, in order.
-			$oldLines = @()
-			try
-			{
-				$t = $logBox.Text
-				$i = 0
-				while ($i -lt $t.Length)
-				{
-					$nl = $t.IndexOf("`n", $i)
-					if ($nl -lt 0) { $nl = $t.Length }
-					$lineText = $t.Substring($i, $nl - $i)
-					$lineColor = [System.Drawing.Color]::Black
-					try { $lineColor = $logBox.GetCharColor($i) } catch { }
-					$oldLines += ,@($lineText, $lineColor)
-					$i = $nl + 1
-				}
-			}
-			catch { $oldLines = @() }
-
-			try { $logBox.Clear() } catch { }
 
 			$storeNum = ''
 			$storeName = ''
@@ -176,29 +147,6 @@ $form.add_Shown({
 			}
 
 			Write_Log $rule -FileOnly -IncludeTimestamp:$false -Raw
-
-			# Re-append the original startup lines with their colors
-			foreach ($old in $oldLines)
-			{
-				try
-				{
-					if ($old[0] -and $old[0].Trim())
-					{
-						$logBox.SelectionStart = $logBox.TextLength
-						$logBox.SelectionLength = 0
-						$logBox.SelectionColor = $old[1]
-						$logBox.AppendText($old[0] + "`r`n")
-						$logBox.SelectionColor = $logBox.ForeColor
-					}
-				}
-				catch { }
-			}
-			try
-			{
-				$logBox.SelectionStart = $logBox.TextLength
-				[void]$logBox.ScrollToCaret()
-			}
-			catch { }
 		}
 		catch { }
 	})

@@ -1,118 +1,52 @@
-######################################################################################################################
+# ===================================================================================================
+#                                 SECTION: GUI - Styling Helpers
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Shared look for menus and popup dialogs (scriptblocks, PS 5.1 friendly):
+#     $Apply_Modern_Menu_Style   style a ContextMenuStrip (the four tool menus, grid menus)
+#     $Style_SubMenu             style a submenu's dropdown the same way
+#     $Apply_Modern_Popup_Style  restyle a popup Form and all of its controls
+#   plus the popup theme timer, which applies $Apply_Modern_Popup_Style automatically to every
+#   new window the script opens (dialogs inside the functions need no styling code of their own).
 #
-# Modern UI Styling Helpers (NO functions - scriptblocks only)
-#
-# - Keeps code PS 5.1 friendly
-# - Applies consistent modern styling to Buttons + ContextMenus
-######################################################################################################################
+# Notes:
+#   - The menu renderer (src\Resources\CSharp\ModernToolStripRenderer.cs) is compiled once here.
+#     Before v2.7.0 it never compiled (an unused class raised a warning-as-error and the WinForms
+#     references were missing) and an invalid ItemMargin assignment aborted the styling first,
+#     so the menus always fell back to the default renderer.
+# ===================================================================================================
 
-# Safe fallback colors (in case these aren't defined elsewhere yet)
+# Fallback colours (the palette in 01 defines these; same variables, script scope)
 if (-not $script:UiAccent) { $script:UiAccent = [System.Drawing.Color]::DodgerBlue }
 if (-not $script:UiCardBorder) { $script:UiCardBorder = [System.Drawing.Color]::FromArgb(220, 225, 232) }
 if (-not $script:UiCardBg) { $script:UiCardBg = [System.Drawing.Color]::White }
 if (-not $script:UiTextDark) { $script:UiTextDark = [System.Drawing.Color]::FromArgb(28, 28, 30) }
 
 # ----------------------------------------------------------------------------
-# Apply modern button styling (flat, clean border, hover accent)
+# Menu renderer (compiled once per process)
 # ----------------------------------------------------------------------------
-$Apply_Modern_Button_Style = {
-	param ([System.Windows.Forms.Button]$Btn)
-
-	if (-not $Btn) { return }
-
+if (-not ('ModernToolStripRenderer' -as [type]))
+{
 	try
 	{
-		# Base look - modern flat design with subtle elevation
-		$Btn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-		$Btn.UseVisualStyleBackColor = $false
-		$Btn.BackColor = $script:UiCardBg
-		$Btn.ForeColor = $script:UiTextDark
-		$Btn.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-		$Btn.Cursor = [System.Windows.Forms.Cursors]::Hand
-		$Btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-		$Btn.Padding = New-Object System.Windows.Forms.Padding(10, 4, 10, 4)
-
-		# Border + hover states (elevated card feel)
-		$Btn.FlatAppearance.BorderSize = 0
-		$Btn.FlatAppearance.MouseOverBackColor = $script:UiAccentLight
-		$Btn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(220, 235, 250)
-
-		# Subtle shadow effect (bottom border)
-		$Btn.add_Paint({
-				param ($s, $e)
-				try
-				{
-					# Bottom shadow line
-					$pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(200, 200, 200))
-					$e.Graphics.DrawLine($pen, 2, $s.Height - 1, $s.Width - 2, $s.Height - 1)
-					$pen.Dispose()
-				}
-				catch { }
-			})
-
-		# Store original colors for restore
-		if (-not $Btn.Tag -or ($Btn.Tag -isnot [pscustomobject]))
-		{
-			$Btn.Tag = [pscustomobject]@{
-				OrigBack = $Btn.BackColor
-				OrigFore = $Btn.ForeColor
-			}
-		}
-
-		# Hover effects (lift + accent)
-		$Btn.add_MouseEnter({
-				param ($s, $e)
-				try
-				{
-					$s.ForeColor = $script:UiAccentDark
-					$s.BackColor = $script:UiAccentLight
-					# Subtle elevation effect
-					$s.Padding = New-Object System.Windows.Forms.Padding(10, 2, 10, 6)
-				}
-				catch { }
-			})
-		$Btn.add_MouseLeave({
-				param ($s, $e)
-				try
-				{
-					if ($s.Tag -and $s.Tag.OrigFore) { $s.ForeColor = $s.Tag.OrigFore }
-					if ($s.Tag -and $s.Tag.OrigBack) { $s.BackColor = $s.Tag.OrigBack }
-					# Restore padding
-					$s.Padding = New-Object System.Windows.Forms.Padding(10, 4, 10, 4)
-				}
-				catch { }
-			})
-		$Btn.add_MouseDown({
-				param ($s, $e)
-				try
-				{
-					$s.BackColor = [System.Drawing.Color]::FromArgb(230, 242, 255)
-				}
-				catch { }
-			})
-		$Btn.add_MouseUp({
-				param ($s, $e)
-				try
-				{
-					if ($s.Bounds.Contains($s.PointToClient([System.Windows.Forms.Cursor]::Position)))
-					{
-						$s.BackColor = $script:UiAccentLight
-					}
-				}
-				catch { }
-			})
+		Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -ErrorAction Stop -TypeDefinition @'
+#TBS:EMBED Resources/CSharp/ModernToolStripRenderer.cs
+'@
 	}
-	catch { }
+	catch
+	{
+		try { Write_Log ("Menu renderer could not be compiled - using the default menu look: " + $_.Exception.Message) 'gray' -FileOnly }
+		catch { }
+	}
 }
 
-# ===================================================================================================
-# ENHANCED MODERN CONTEXT MENU STYLING - Clean, modern look with icons
-# ===================================================================================================
+# ----------------------------------------------------------------------------
+# Context menu styling
+# ----------------------------------------------------------------------------
 $Apply_Modern_Menu_Style = {
 	param ([System.Windows.Forms.ContextMenuStrip]$Menu)
 
 	if (-not $Menu) { return }
-
 	try
 	{
 		$Menu.ShowImageMargin = $false
@@ -120,88 +54,15 @@ $Apply_Modern_Menu_Style = {
 		$Menu.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Regular)
 		$Menu.BackColor = [System.Drawing.Color]::White
 		$Menu.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-		$Menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::Professional
 		$Menu.Padding = New-Object System.Windows.Forms.Padding(2)
 		$Menu.GripMargin = New-Object System.Windows.Forms.Padding(0)
-		$Menu.ItemMargin = New-Object System.Windows.Forms.Padding(2)
-
-		# Custom renderer for modern menu
-		# (NOTE: do NOT assign a ProfessionalColorTable to $Menu.Renderer here -
-		#  it throws and the custom renderer below would silently never be applied)
-		if (-not ('ModernToolStripRenderer' -as [type])) {
-		function global:CreateModernMenuRenderer {
-			Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-			$rendererCode = @'
-using System;
-using System.Windows.Forms;
-using System.Windows.Forms.VisualStyles;
-using System.Drawing;
-using System.Drawing.Drawing2D;
-
-public class ModernMenuRenderer : ProfessionalColorTable, IRenderer {
-    public Color MenuBorder { get { return Color.FromArgb(229, 229, 229); } }
-    public Color MenuItemBorder { get { return Color.Transparent; } }
-}
-
-public interface IRenderer { }
-
-public class ModernToolStripRenderer : ToolStripProfessionalRenderer {
-    public ModernToolStripRenderer() : base(new ModernColorTable()) { }
-    
-    protected override void OnRenderItemBackground(ToolStripItemRenderEventArgs e) {
-        if (e.Item.Selected) {
-            using (var brush = new SolidBrush(Color.FromArgb(230, 243, 255))) {
-                e.Graphics.FillRectangle(brush, new Rectangle(0, 0, e.Item.Width - 1, e.Item.Height - 1));
-            }
-        }
-        else {
-            base.OnRenderItemBackground(e);
-        }
-    }
-    
-    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e) {
-        if (e.Item.Selected) {
-            using (var brush = new SolidBrush(Color.FromArgb(230, 243, 255))) {
-                e.Graphics.FillRectangle(brush, new Rectangle(0, 0, e.Item.Width - 1, e.Item.Height - 1));
-            }
-            using (var pen = new Pen(Color.FromArgb(0, 122, 204), 1)) {
-                e.Graphics.DrawLine(pen, 0, 0, 0, e.Item.Height - 1);
-            }
-        }
-        else {
-            base.OnRenderMenuItemBackground(e);
-        }
-    }
-    
-    protected override void OnRenderImageMargin(ToolStripRenderEventArgs e) { }
-    
-    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e) {
-        using (var pen = new Pen(Color.FromArgb(229, 229, 229))) {
-            e.Graphics.DrawLine(pen, 0, e.Item.Height / 2, e.Item.Width, e.Item.Height / 2);
-        }
-    }
-}
-
-public class ModernColorTable : ProfessionalColorTable {
-    public override Color MenuBorder { get { return Color.FromArgb(229, 229, 229); } }
-    public override Color MenuItemBorder { get { return Color.Transparent; } }
-    public override Color ToolStripBorder { get { return Color.FromArgb(229, 229, 229); } }
-}
-'@
-			Add-Type -TypeDefinition $rendererCode -ErrorAction SilentlyContinue
-		}
-		CreateModernMenuRenderer
-		}
-		if ('ModernToolStripRenderer' -as [type]) {
-			$Menu.Renderer = [ModernToolStripRenderer]::new()
-		}
+		if ('ModernToolStripRenderer' -as [type]) { $Menu.Renderer = New-Object ModernToolStripRenderer }
+		else { $Menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::Professional }
 	}
 	catch { }
 }
 
-# ----------------------------------------------------------------------------
-# Style a submenu dropdown to match the modern menu theme (the function
-# above is typed for ContextMenuStrip, so submenus are styled separately)
+# Submenu dropdowns (a ToolStripMenuItem's DropDown, not a ContextMenuStrip)
 $Style_SubMenu = {
 	param ($Sub)
 	try
@@ -213,12 +74,13 @@ $Style_SubMenu = {
 		$dd.ShowImageMargin = $false
 		$dd.ShowCheckMargin = $false
 		$dd.GripMargin = New-Object System.Windows.Forms.Padding(0)
-		if ('ModernToolStripRenderer' -as [type]) { $dd.Renderer = [ModernToolStripRenderer]::new() }
+		if ('ModernToolStripRenderer' -as [type]) { $dd.Renderer = New-Object ModernToolStripRenderer }
 	}
 	catch { }
 }
 
-# Apply modern styling to popup forms so older dialogs match the main app.
+# ----------------------------------------------------------------------------
+# Popup forms: restyle the form and every control in it so older dialogs match the main app
 # ----------------------------------------------------------------------------
 $Apply_Modern_Popup_Style = {
 	param ([System.Windows.Forms.Form]$PopupForm)

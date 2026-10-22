@@ -1,13 +1,29 @@
+# ===================================================================================================
+#                                 SECTION: Storeman Folder Detection
 # ---------------------------------------------------------------------------------------------------
-# Locate Base Path: Storeman Folder Detection (case-insensitive)
-# ---------------------------------------------------------------------------------------------------
-# ---------------------------------------------------------------------------------------------------
-# Locate Base Path: FAST + STRICT (Share) + TEST fallback ($script:PrimaryStoremanRoot)
-#   - Prefer local SMB share named "storeman" IF it has INFO + KeyString + KeyValidDate within last 14 days
-#   - Else default to the configured Storeman roots for testing environments
-# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Resolves $BasePath, the storeman folder every store task works against, in three levels:
+#     1) the local SMB share "storeman", IF Office\Dbs\INFO_*901_WIN.INI has a KeyString and a
+#        KeyValidDate no older than 14 days                                  -> Production
+#     2) the first configured test root that exists (C:\Storeman, D:\Storeman) -> Test fallback
+#     3) a scan of every fixed drive's top level for a *storeman* folder with a Startup.ini,
+#        preferring one that is published as a share                        -> Drive-scan fallback
+#   A share whose key is older than 14 days is the dedicated KEY EXPIRED state: store data is
+#   usually still there, only a re-key is needed (the GUI says so instead of "test mode").
+#
+# Variables:
+#   - $BasePath                       the resolved storeman folder
+#   - $script:IsTestEnvironment       $true for every non-production result
+#   - $script:StoremanSource          'Production' | 'Test fallback' | 'Drive-scan fallback'
+#   - $script:StoremanSourceReason    plain-language reason (banner tooltip, log, status bar)
+#   - $script:StoremanKeyStale        KEY EXPIRED state
+#   - $script:StoremanKeyDate         the stale KeyValidDate (KEY EXPIRED only)
+#
+# Notes:
+#   - tests\TBS_Maintenance_SelfTest.ps1 runs this block verbatim, from the '$BasePath = $null'
+#     line to the 'Selected (storeman) folder' line - keep both marker lines.
+# ===================================================================================================
 $BasePath = $null
-$infoRel = 'Office\Dbs\INFO_*901_WIN.INI'
 $testPath = $script:StoremanRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if (-not $testPath) { $testPath = $script:PrimaryStoremanRoot }
 

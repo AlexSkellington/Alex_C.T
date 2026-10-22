@@ -5,6 +5,38 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.0  -  2026-10-22
+#  Modular source tree, build step, and a full review pass with bug fixes
+# ===================================================================================================
+#
+#  [REPO] The script now lives in TBS_Maintenance\src as one file per function (grouped by
+#         category), plus bootstrap, GUI and main-flow files. TBS_Maintenance\build\Build.ps1
+#         assembles them into the single TBS_Maintenace_Script_V2.ps1 (same path, so the short
+#         link, irm | iex and PowerShell Studio packaging work exactly as before).
+#  [REPO] Format-Sources.ps1 (whitespace normaliser), tests\Smoke.ps1 (sandboxed full-app run),
+#         the existing self-test moved to tests\.
+#
+#  [FIX]  Lane SQL protocol detection had stopped probing lanes since v2.6.7: the timer handler
+#         ran as a .GetNewClosure() closure, where every $script: variable is a separate, empty
+#         one - the loop never saw the lane map. Rewritten without closures; File-protocol
+#         lanes get their SQL-enable task scheduled again (now also from .exe / irm|iex
+#         launches, re-checked at most every 15 min, result logged once per change).
+#  [FIX]  Startup "test item" job never started since v2.6.6 (Get-Job -Name with -State is an
+#         invalid parameter combination and threw before Start-Job).
+#  [FIX]  Elevation: a packaged .exe started without arguments never elevated (empty
+#         -ArgumentList is rejected), and script paths with spaces were split. Both fixed.
+#  [FIX]  App icon + banner logo were never drawn (PointF/Rectangle arguments with arithmetic
+#         parsed as arrays). One shared logo painter now draws both.
+#  [FIX]  Menu renderer never compiled and an invalid ItemMargin assignment aborted menu
+#         styling - the intended modern menu look is now applied.
+#  [FIX]  Startup log box: lines lost their colour (RichTextBox.GetCharColor does not exist).
+#         The summary is file-only anyway, so the box is no longer cleared and rewritten.
+#
+#  [CLEAN] Launch detection runs once (was duplicated), dead variables and unreachable code
+#          removed (refresh timer, close-prompt flag, unused paths, FormClosing teardown after
+#          return, unused button helpers).
+#
+# ===================================================================================================
 #  v2.6.9  -  2026-09-01
 #  Drive-scan fallback, activation hardening, timeout + job hygiene
 # ===================================================================================================

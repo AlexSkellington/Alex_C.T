@@ -1,50 +1,34 @@
 # ===================================================================================================
-#                                       SECTION: Initialize GUI  (Modernized)
+#                                  SECTION: GUI - Form and Theme
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Initializes and configures the graphical user interface components for the Store/Lane SQL Execution Tool.
-#   Host mode is removed; strictly Store/Server/Lane (Store Mode only).
+#   First of the GUI files (src\GUI\01..14 run in order and share script-scope variables):
+#   visual styles, layout constants, the colour palette, the shared tooltip, the main $form,
+#   the app logo/icon, and the idle/busy state the watchdog in 06 uses.
 #
-# Modern UI changes (behavior preserved):
-#   - Gradient header bar + centered clickable title (still text-only clickable, still opens Helpdesk)
-#   - Top "card" strip for the clickable labels (clean spacing, modern font)
-#   - Framed log area (card border + borderless RichTextBox)
-#   - Status bar for Busy + Idle countdown (new polish; does not affect logic)
-#   - FIX: consolidated FormClosing so we DO NOT dispose timers/jobs if user cancels exit
+# Variables (read by the later GUI files):
+#   - $form, $toolTip, $script:TbsAppIcon, $script:DrawTbsLogo
+#   - $padSide, $padTopStrip, $gapCards, $logInnerPad, $minLogH   layout constants
+#   - $ui*                                                         colour palette
+#   - $script:LastActivity / IsBusy / BusyReason / IdleIgnoreJobNames / IdleHardCloseAfterMinutes
+#
+# Notes:
+#   - The process is NOT DPI-aware (Windows scales the window on high-DPI screens). The layout
+#     code below uses fixed pixel sizes; making the process DPI-aware needs that reworked first.
 # ===================================================================================================
 
-# ------------------------------------------------------------------------------------------------
-# WinForms basics (High DPI + Visual styles)
-# ------------------------------------------------------------------------------------------------
 [System.Windows.Forms.Application]::EnableVisualStyles()
 [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
 
-# Make the process DPI-aware BEFORE any window is created so the UI renders
-# crisply on high-DPI displays (no-op on 100% scaling).
-try
-{
-	$tbsDpiCode = @'
-[DllImport("user32.dll")]
-public static extern bool SetProcessDPIAware();
-'@
-	if (-not ('TbsDpiHelper' -as [type]))
-	{
-		Add-Type -Namespace Tbs -Name DpiHelper -MemberDefinition $tbsDpiCode -ErrorAction SilentlyContinue
-	}
-	if ('TbsDpiHelper' -as [type]) { [void][Tbs.DpiHelper]::SetProcessDPIAware() }
-}
-catch { }
-
-# ---- UI constants (kept as simple variables so other layout blocks can reuse them) -------------
-# NOTE: Your other layout code (like $layoutBottom) often assumes $padSide exists.
-if (-not $padSide) { $padSide = 50 } # left/right margin (keeps your original feel)
+# ---- Layout constants (shared by the layout blocks in 04, 05 and 14) ---------------------------
+if (-not $padSide) { $padSide = 50 } # left/right margin
 $padTopStrip = 10 # spacing below header
-$cardPad = 12 # inner padding for "cards"
 $gapCards = 10 # vertical gap between cards
 $logInnerPad = 10 # padding inside the log frame
-$minLogH = 220 # minimum log height (used by other layout)
+$minLogH = 220 # minimum log height
+
 # ===================================================================================================
-# ENHANCED COLOR SCHEME (TBS Maintenance Script v2.6.7+ - Modern UI Theme)
+# Colour palette
 # ===================================================================================================
 $uiAccent = [System.Drawing.Color]::FromArgb(0, 122, 204)          # Windows 11 accent blue
 $uiAccentLight = [System.Drawing.Color]::FromArgb(230, 243, 255)   # Light blue hover
@@ -71,22 +55,7 @@ $uiCategoryScale = [System.Drawing.Color]::FromArgb(156, 39, 176)    # Purple
 $uiCategoryGeneral = [System.Drawing.Color]::FromArgb(255, 152, 0)   # Orange
 
 # ------------------------------------------------------------------------------------------------
-# Legacy full-form refresh timer is left disabled by default because it can
-# cause noticeable UI stalls on slower machines.
-# ------------------------------------------------------------------------------------------------
-$refreshTimer = New-Object System.Windows.Forms.Timer
-$refreshTimer.Interval = 5000
-$refreshTimer.add_Tick({
-		try
-		{
-			if (-not $form -or $form.IsDisposed -or -not $form.Visible) { return }
-			if ($statusStrip -and -not $statusStrip.IsDisposed) { $statusStrip.Refresh() }
-		}
-		catch { }
-	})
-
-# ------------------------------------------------------------------------------------------------
-# ToolTip (kept, slightly refined)
+# Shared ToolTip
 # ------------------------------------------------------------------------------------------------
 $toolTip = New-Object System.Windows.Forms.ToolTip
 $toolTip.AutoPopDelay = 10000
@@ -116,40 +85,55 @@ try
 catch { }
 
 # ----------------------------------------------------------------------------------------------
-# Runtime-generated app icon (blue disc + hex nut) for the title bar / taskbar
+# App logo (blue gradient disc + white hex nut): title bar / taskbar icon and the banner badge
 # ----------------------------------------------------------------------------------------------
+# Draws the logo into the square (X, Y, Size) of any Graphics. Uses ::new(...) on purpose:
+# in command mode 'New-Object PointF($a + $b, $c)' parses as $a + @($b, $c) and throws, which
+# is why neither the icon nor the banner badge was ever drawn before v2.7.0.
+$script:DrawTbsLogo = {
+	param ([System.Drawing.Graphics]$Graphics, [float]$X, [float]$Y, [float]$Size)
+
+	$Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+	$disc = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
+		[System.Drawing.RectangleF]::new($X, $Y, $Size, $Size),
+		[System.Drawing.Color]::FromArgb(0, 160, 235),
+		[System.Drawing.Color]::FromArgb(0, 105, 190),
+		[float]90)
+	$Graphics.FillEllipse($disc, $X, $Y, $Size, $Size)
+	$disc.Dispose()
+
+	# flat-top hexagon, then punch the center so it reads as a nut
+	$cx = $X + $Size / 2
+	$cy = $Y + $Size / 2
+	$r = $Size * 0.25
+	$k = 0.866
+	$hex = New-Object System.Drawing.Drawing2D.GraphicsPath
+	$hex.AddPolygon([System.Drawing.PointF[]]@(
+			[System.Drawing.PointF]::new($cx + $r, $cy),
+			[System.Drawing.PointF]::new($cx + $r / 2, $cy + $r * $k),
+			[System.Drawing.PointF]::new($cx - $r / 2, $cy + $r * $k),
+			[System.Drawing.PointF]::new($cx - $r, $cy),
+			[System.Drawing.PointF]::new($cx - $r / 2, $cy - $r * $k),
+			[System.Drawing.PointF]::new($cx + $r / 2, $cy - $r * $k)))
+	$white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+	$Graphics.FillPath($white, $hex)
+	$white.Dispose()
+	$hex.Dispose()
+
+	$hole = $Size * 0.21
+	$punch = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 122, 204))
+	$Graphics.FillEllipse($punch, $cx - $hole / 2, $cy - $hole / 2, $hole, $hole)
+	$punch.Dispose()
+}
+
 try
 {
 	$__iconBmp = New-Object System.Drawing.Bitmap(32, 32)
 	$__g = [System.Drawing.Graphics]::FromImage($__iconBmp)
-	$__g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-	$__disc = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
-		(New-Object System.Drawing.Rectangle(1, 1, 30, 30)),
-		[System.Drawing.Color]::FromArgb(0, 160, 235),
-		[System.Drawing.Color]::FromArgb(0, 105, 190), 0.0)
-	$__g.FillEllipse($__disc, 1, 1, 30, 30)
-	$__disc.Dispose()
-	$__cx = 16.0; $__cy = 16.0; $__r = 8.0
-	$__hex = New-Object System.Drawing.Drawing2D.GraphicsPath
-	$__hex.AddPolygon(@(
-		(New-Object System.Drawing.PointF($__cx + $__r, $__cy)),
-		(New-Object System.Drawing.PointF($__cx + $__r / 2, $__cy + ($__r * 0.866))),
-		(New-Object System.Drawing.PointF($__cx - $__r / 2, $__cy + ($__r * 0.866))),
-		(New-Object System.Drawing.PointF($__cx - $__r, $__cy)),
-		(New-Object System.Drawing.PointF($__cx - $__r / 2, $__cy - ($__r * 0.866))),
-		(New-Object System.Drawing.PointF($__cx + $__r / 2, $__cy - ($__r * 0.866)))
-	))
-	$__white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-	$__g.FillPath($__white, $__hex)
-	$__hex.Close()
-	$__hex.Dispose()
-	$__punch = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 122, 204))
-	$__g.FillEllipse($__punch, $__cx - 3.4, $__cy - 3.4, 6.8, 6.8)
-	$__white.Dispose()
-	$__punch.Dispose()
+	& $script:DrawTbsLogo $__g 1 1 30
 	$__g.Dispose()
 	$form.Icon = [System.Drawing.Icon]::FromHandle($__iconBmp.GetHicon())
-	$script:TbsAppIcon = [System.Drawing.Icon]::Clone($form.Icon)
+	$script:TbsAppIcon = $form.Icon
 	$__iconBmp.Dispose()
 }
 catch { }

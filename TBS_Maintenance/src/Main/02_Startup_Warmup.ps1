@@ -134,7 +134,9 @@ $form.Add_Shown({
 						Where-Object { $_.State -in @('Completed', 'Failed', 'Stopped') } |
 						Remove-Job -Force -ErrorAction SilentlyContinue
 
-						$runningInsertJob = Get-Job -Name 'InsertTestItemJob' -State Running -ErrorAction SilentlyContinue | Select-Object -First 1
+						# (-Name and -State cannot be combined on Get-Job: that threw before v2.7.0,
+						#  so the test item job never started - filter the state instead)
+						$runningInsertJob = Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Running' } | Select-Object -First 1
 						if (-not $runningInsertJob)
 						{
 							$fnBody = ${function:Insert_Test_Item}.ToString()

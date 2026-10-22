@@ -1,152 +1,72 @@
 # ===================================================================================================
-#                               SECTION: Ensure Admin Execution
+#                                  SECTION: Ensure Admin Execution
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Relaunches the script elevated ONLY if not already running as Administrator.
-#   If already admin -> continues normally (NO relaunch).
-#   Preserves script path and original arguments.
-#   Safe for PowerShell 5.1 and Scheduled Tasks.
+#   Relaunches the script elevated ONLY if it is not already running as Administrator.
+#     - Already admin            -> continues normally (no relaunch).
+#     - Saved .ps1 / packaged .exe, interactive session -> relaunches itself with RunAs and the
+#       same arguments, then exits this (non-elevated) instance.
+#     - Inline (irm | iex), worker mode, or a non-interactive session -> left alone.
+#   If the UAC prompt is cancelled the script continues without elevation.
+#
+# Variables:
+#   - $IsAdmin   [bool] running elevated (read later by the startup code)
+#   - Reads the launch facts from 01_Launch_Detection ($__isSavedPs1Launch, $__isExeLaunch, ...)
 # ===================================================================================================
 
+$IsAdmin = $false
 try
 {
-	$IsAdmin = ([Security.Principal.WindowsPrincipal] `
-		[Security.Principal.WindowsIdentity]::GetCurrent()
-	).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+	$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+		[Security.Principal.WindowsBuiltInRole]::Administrator)
 }
-catch
-{
-	$IsAdmin = $false
-}
+catch { $IsAdmin = $false }
 
-$scriptPath = $null
-$entryPath = $null
-$launchArgs = @()
-$isSavedPs1Launch = $false
-$isExeLaunch = $false
-
-try
-{
-	$scriptPath = $PSCommandPath
-	if ([string]::IsNullOrWhiteSpace($scriptPath))
-	{
-		try { $scriptPath = $MyInvocation.MyCommand.Path }
-		catch { $scriptPath = $null }
-	}
-}
-catch
-{
-	$scriptPath = $null
-}
-
-try
-{
-	$cmdLineArgs = [Environment]::GetCommandLineArgs()
-	if ($cmdLineArgs -and $cmdLineArgs.Count -gt 0)
-	{
-		$entryPath = $cmdLineArgs[0]
-		if ($cmdLineArgs.Count -gt 1)
-		{
-			$launchArgs = @($cmdLineArgs[1 .. ($cmdLineArgs.Count - 1)])
-		}
-	}
-}
-catch
-{
-	$entryPath = $null
-	$launchArgs = @()
-}
-
-try
-{
-	if (-not [string]::IsNullOrWhiteSpace($scriptPath) -and
-		(Test-Path -LiteralPath $scriptPath) -and
-		([string]::Equals([System.IO.Path]::GetExtension($scriptPath), '.ps1', [System.StringComparison]::OrdinalIgnoreCase)))
-	{
-		$isSavedPs1Launch = $true
-		$script:LaunchSourceType = 'Ps1'
-		$script:LaunchEntryPath = $scriptPath
-	}
-}
-catch
-{
-	$isSavedPs1Launch = $false
-}
-
-if (-not $isSavedPs1Launch)
-{
-	try
-	{
-		if (-not [string]::IsNullOrWhiteSpace($entryPath) -and
-			(Test-Path -LiteralPath $entryPath) -and
-			([string]::Equals([System.IO.Path]::GetExtension($entryPath), '.exe', [System.StringComparison]::OrdinalIgnoreCase)))
-		{
-			$entryName = [System.IO.Path]::GetFileNameWithoutExtension($entryPath)
-			if ($entryName -notmatch '^(powershell|pwsh|powershell_ise|powershellstudio)$')
-			{
-				$isExeLaunch = $true
-				$script:LaunchSourceType = 'Exe'
-				$script:LaunchEntryPath = $entryPath
-			}
-		}
-	}
-	catch
-	{
-		$isExeLaunch = $false
-	}
-}
-
-if (-not $isSavedPs1Launch -and -not $isExeLaunch)
-{
-	$script:LaunchSourceType = 'Inline'
-	$script:IsInlineLaunch = $true
-}
-
-# Only attempt self-relaunch when this is a real saved, interactive .ps1 or packaged .exe launch.
-# If the script was started from irm|iex or some other host/launcher, leave execution alone.
-if (-not $IsAdmin -and -not $script:LaneSqlEnableWorkerMode -and [Environment]::UserInteractive -and ($isSavedPs1Launch -or $isExeLaunch))
+if (-not $IsAdmin -and -not $script:LaneSqlEnableWorkerMode -and [Environment]::UserInteractive -and ($__isSavedPs1Launch -or $__isExeLaunch))
 {
 	if ($script:ShowConsole) { Write-Host "Requesting elevated launch..." -ForegroundColor DarkYellow }
+
+	# Start-Process joins -ArgumentList with spaces and does not quote, so quote anything with
+	# whitespace (script paths such as "...\TBS Scripts\..." would otherwise be split).
+	$__quoteArg = {
+		param ([string]$Value)
+		if ($Value -match '\s' -and $Value -notmatch '^".*"$') { return '"' + $Value + '"' }
+		return $Value
+	}
+
 	try
 	{
-		if ($isSavedPs1Launch)
+		if ($__isSavedPs1Launch)
 		{
-			$argList = @(
-				"-NoProfile"
-				"-ExecutionPolicy", "Bypass"
-				"-File", $scriptPath
-			)
+			$__elevArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (& $__quoteArg $__scriptPath))
+			foreach ($__a in @($args)) { $__elevArgs += (& $__quoteArg ([string]$__a)) }
 
-			if ($args -and $args.Count -gt 0)
-			{
-				foreach ($a in $args)
-				{
-					$argList += "$a"
-				}
-			}
-
-			$psExe = $null
-			try { $psExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source }
+			$__psExe = $null
+			try { $__psExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source }
 			catch { }
-			if ([string]::IsNullOrWhiteSpace($psExe))
+			if ([string]::IsNullOrWhiteSpace($__psExe))
 			{
-				try { $psExe = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source }
+				try { $__psExe = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source }
 				catch { }
 			}
-			if ([string]::IsNullOrWhiteSpace($psExe) -or -not (Test-Path -LiteralPath $psExe))
-			{
-				$psExe = "powershell.exe"
-			}
+			if ([string]::IsNullOrWhiteSpace($__psExe) -or -not (Test-Path -LiteralPath $__psExe)) { $__psExe = "powershell.exe" }
 
-			Start-Process -FilePath $psExe -ArgumentList $argList -Verb RunAs | Out-Null
+			$null = Start-Process -FilePath $__psExe -ArgumentList $__elevArgs -Verb RunAs -ErrorAction Stop
 			exit 0
 		}
 
-		if ($isExeLaunch)
+		if ($__isExeLaunch)
 		{
-			$exeArgList = @()
-			if ($launchArgs -and $launchArgs.Count -gt 0) { $exeArgList = @($launchArgs) }
-			Start-Process -FilePath $entryPath -ArgumentList $exeArgList -Verb RunAs | Out-Null
+			# -ArgumentList rejects an empty array, so only pass it when there are arguments
+			if (@($__launchArgs).Count -gt 0)
+			{
+				$__exeArgs = @($__launchArgs | ForEach-Object { & $__quoteArg ([string]$_) })
+				$null = Start-Process -FilePath $__entryPath -ArgumentList $__exeArgs -Verb RunAs -ErrorAction Stop
+			}
+			else
+			{
+				$null = Start-Process -FilePath $__entryPath -Verb RunAs -ErrorAction Stop
+			}
 			exit 0
 		}
 	}

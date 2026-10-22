@@ -4,92 +4,6 @@
 #
 ######################################################################################################################
 
-# ===================================================================================================
-# ENHANCED TOOL BUTTONS - Category-colored buttons with icons and better hover effects
-# ===================================================================================================
-
-# Helper function to create category-colored tool button
-$Create_CategoryButton = {
-	param(
-		[string]$ButtonText,
-		[string]$Icon,
-		[string]$CategoryColor,
-		[int]$X,
-		[int]$Y,
-		[System.Windows.Forms.ContextMenuStrip]$ContextMenu
-	)
-
-	$Btn = New-Object System.Windows.Forms.Button
-	$Btn.Text = "$Icon $ButtonText"
-	$Btn.Location = New-Object System.Drawing.Point($X, $Y)
-	$Btn.Size = New-Object System.Drawing.Size(200, 52)
-	$Btn.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-	$Btn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-	$Btn.UseVisualStyleBackColor = $false
-	$Btn.BackColor = [System.Drawing.Color]::White
-	$Btn.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-	$Btn.Cursor = [System.Windows.Forms.Cursors]::Hand
-	$Btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-	$Btn.Padding = New-Object System.Windows.Forms.Padding(12, 6, 12, 6)
-	$Btn.FlatAppearance.BorderSize = 0
-	$Btn.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(240, 245, 250)
-	$Btn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(225, 238, 250)
-
-	# Store category color for hover
-	$Btn.Tag = [pscustomobject]@{
-		CategoryColor = $CategoryColor
-		OrigFore = $Btn.ForeColor
-		OrigBack = $Btn.BackColor
-	}
-
-	# Bottom accent line
-	$Btn.add_Paint({
-			param ($s, $e)
-			try
-			{
-				# Bottom colored accent
-				$pen = New-Object System.Drawing.Pen($s.Tag.CategoryColor, 3)
-				$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
-				$pen.Dispose()
-
-				# Subtle bottom shadow
-				$pen2 = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(200, 200, 200))
-				$e.Graphics.DrawLine($pen2, 2, $s.Height - 1, $s.Width - 2, $s.Height - 1)
-				$pen2.Dispose()
-			}
-			catch { }
-		})
-
-	# Hover effect
-	$Btn.add_MouseEnter({
-			param ($s, $e)
-			try
-			{
-				$s.BackColor = [System.Drawing.Color]::FromArgb(245, 248, 252)
-				$s.ForeColor = $s.Tag.CategoryColor
-			}
-			catch { }
-		})
-	$Btn.add_MouseLeave({
-			param ($s, $e)
-			try
-			{
-				$s.BackColor = $s.Tag.OrigBack
-				$s.ForeColor = $s.Tag.OrigFore
-			}
-			catch { }
-		})
-
-	# Show context menu on click
-	$Btn.add_Click({
-			param ($s, $e)
-			$script:LastActivity = Get-Date
-			$ContextMenu.Show($s, 0, $s.Height)
-		})
-
-	return $Btn
-}
-
 ############################################################################
 # Server Tools Button (Green)
 ############################################################################
@@ -105,7 +19,6 @@ $SubServerSchedule.ToolTipText = "Scheduled maintenance and backup tasks"
 $SubServerSystem = New-Object System.Windows.Forms.ToolStripMenuItem("System Care")
 $SubServerSystem.ToolTipText = "Windows and system-level maintenance"
 
-& $script:Create_CategoryButton "Server Tools" "Server" $uiCategoryServer 0 0 $ContextMenuServer | Out-Null
 $ServerToolsButton = New-Object System.Windows.Forms.Button
 $ServerToolsButton.Name = "ServerToolsButton"
 $ServerToolsButton.Text = "Server Tools"

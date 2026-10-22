@@ -55,43 +55,7 @@ $appIconPanel.Size = New-Object System.Drawing.Size(32, 32)
 $appIconPanel.BackColor = [System.Drawing.Color]::Transparent
 $appIconPanel.add_Paint({
 		param ($s, $e)
-		try
-		{
-			$e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-			$cx = $s.Width / 2.0
-			$cy = $s.Height / 2.0
-
-			# Blue disc (vertical gradient for a little depth)
-			$disc = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
-				(New-Object System.Drawing.Rectangle(1, 1, $s.Width - 2, $s.Height - 2)),
-				[System.Drawing.Color]::FromArgb(0, 160, 235),
-				[System.Drawing.Color]::FromArgb(0, 105, 190),
-				0.0)
-			$e.Graphics.FillEllipse($disc, 1, 1, $s.Width - 2, $s.Height - 2)
-			$disc.Dispose()
-
-			# White hex nut (flat-top hexagon)
-			$r = 7.5
-			$hex = New-Object System.Drawing.Drawing2D.GraphicsPath
-			$hex.AddPolygon(@(
-				(New-Object System.Drawing.PointF($cx + $r, $cy)),
-				(New-Object System.Drawing.PointF($cx + $r / 2, $cy + ($r * 0.866))),
-				(New-Object System.Drawing.PointF($cx - $r / 2, $cy + ($r * 0.866))),
-				(New-Object System.Drawing.PointF($cx - $r, $cy)),
-				(New-Object System.Drawing.PointF($cx - $r / 2, $cy - ($r * 0.866))),
-				(New-Object System.Drawing.PointF($cx + $r / 2, $cy - ($r * 0.866)))
-			))
-			$white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-			$e.Graphics.FillPath($white, $hex)
-			$hex.Close()
-			$hex.Dispose()
-
-			# Punch out the center so it reads as a nut
-			$punch = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 122, 204))
-			$e.Graphics.FillEllipse($punch, $cx - 3.2, $cy - 3.2, 6.4, 6.4)
-			$white.Dispose()
-			$punch.Dispose()
-		}
+		try { & $script:DrawTbsLogo $e.Graphics 1 1 ([float]([Math]::Min($s.Width, $s.Height) - 2)) }
 		catch { }
 	})
 $bannerPanel.Controls.Add($appIconPanel)

@@ -13,7 +13,9 @@
 #    powershell -ExecutionPolicy Bypass -File TBS_Maintenance_SelfTest.ps1
 #    powershell -ExecutionPolicy Bypass -File TBS_Maintenance_SelfTest.ps1 -ScriptPath C:\path\to\script.ps1
 #
-#  If -ScriptPath is not given, it looks for TBS_Maintenance_Script_V*.ps1 in:
+#  If -ScriptPath is not given, it uses the built TBS_Maintenace_Script_V2.ps1 at the
+#  repository root (when run from TBS_Maintenance\tests), else it looks for
+#  TBS_Maintenance_Script_V*.ps1 in:
 #    1. the folder this file is in
 #    2. %TEMP%
 #    3. C:\Tecnica_Systems\Alex_C.T
@@ -64,6 +66,12 @@ function Skip
 # --------------------------------------------------------------------------
 # 1) Locate the script under test
 # --------------------------------------------------------------------------
+if (-not $ScriptPath -and $PSScriptRoot)
+{
+	# Repository layout: TBS_Maintenance\tests\ -> the built script at the repository root
+	$repoBuilt = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'TBS_Maintenace_Script_V2.ps1'
+	if (Test-Path -LiteralPath $repoBuilt) { $ScriptPath = $repoBuilt }
+}
 if (-not $ScriptPath)
 {
 	$searchDirs = @()
@@ -954,6 +962,96 @@ else
 	Skip 'K: shared reaper logging behavior' 'job engine functions not found in script under test'
 }
 
+# --------------------------------------------------------------------------
+# L) Lane SQL protocol loop (v2.7.0 fix): the real Start_Lane_Protocol_Jobs
+# --------------------------------------------------------------------------
+# v2.6.7 - v2.6.9 ran the protocol timer as a .GetNewClosure() closure, where
+# every $script: variable is a separate empty one, so no lane was ever probed.
+# Static: no closures anywhere. Functional: the real function in a child
+# process with a WinForms message pump and two RFC-2606 .invalid lanes (no
+# real machine is touched) must probe both, record them Offline under every
+# key, and persist Protocol_Results.txt.
+$codeLines = @($scriptLines | Where-Object { $_.Trim() -notmatch '^#' })
+Check 'L: no .GetNewClosure() in live code (closures break $script: state)' (-not (($codeLines -join "`n") -match '\.GetNewClosure\(\)')) ''
+
+$lpText = $null
+try
+{
+	$lpText = Get-FunctionBlock 'Start_Lane_Protocol_Jobs'
+	$lpTok = $null; $lpErr = $null
+	$null = [System.Management.Automation.Language.Parser]::ParseInput($lpText, [ref]$lpTok, [ref]$lpErr)
+	Check 'L: Start_Lane_Protocol_Jobs extracted cleanly' (@($lpErr).Count -eq 0) ''
+}
+catch
+{
+	Check 'L: Start_Lane_Protocol_Jobs extracted cleanly' $false $_.Exception.Message
+	$lpText = $null
+}
+
+if ($lpText)
+{
+	$lDir = Join-Path $testRoot 'L_SetupFiles'
+	New-Item -ItemType Directory -Path $lDir -Force | Out-Null
+	$lFile = Join-Path $testRoot 'tbs_selftest_l_protocol.ps1'
+	$lHead = @'
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+function Write_Log { [CmdletBinding()] param([string]$Message, [string]$Color = 'Black', [switch]$IncludeTimestamp, [switch]$Raw, [switch]$FileOnly) }
+'@
+	$lTail = @'
+
+$script:SetupFiles = $args[0]
+Start_Lane_Protocol_Jobs -LaneNumToMachineName @{ '001' = 'tbsst-l1.invalid'; '002' = 'tbsst-l2.invalid' } -SqlModuleName ''
+Write-Output ('RT_L_TIMER=' + [bool]$script:protocolTimer)
+$pumpForm = New-Object System.Windows.Forms.Form
+$pumpForm.ShowInTaskbar = $false
+$pumpForm.WindowState = 'Minimized'
+$pumpTimer = New-Object System.Windows.Forms.Timer
+$pumpTimer.Interval = 7000
+$pumpTimer.Add_Tick({ $pumpTimer.Stop(); $pumpForm.Close() })
+$pumpTimer.Start()
+[System.Windows.Forms.Application]::Run($pumpForm)
+Write-Output ('RT_L_001=' + [string]$script:LaneProtocols['001'])
+Write-Output ('RT_L_002=' + [string]$script:LaneProtocols['002'])
+Write-Output ('RT_L_BYNAME=' + [string]$script:LaneProtocols['tbsst-l1.invalid'])
+$pf = Join-Path $script:SetupFiles 'Protocol_Results.txt'
+Write-Output ('RT_L_FILE=' + ((@(Get-Content -LiteralPath $pf -ErrorAction SilentlyContinue) | Where-Object { $_.Trim() }) -join ';'))
+Write-Output 'RT_DONE'
+'@
+	[System.IO.File]::WriteAllText($lFile, ($lHead + "`n" + $lpText + "`n" + $lTail), [System.Text.Encoding]::ASCII)
+
+	$lOutFile = Join-Path $testRoot 'tbs_selftest_l_out.txt'
+	$lv = @{}
+	$lProc = $null
+	try
+	{
+		$psExe = (Get-Process -Id $PID).Path
+		$lProc = Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $lFile, $lDir) `
+			-RedirectStandardOutput $lOutFile -NoNewWindow -Wait -PassThru
+		foreach ($ln in @([System.IO.File]::ReadAllLines($lOutFile) | Where-Object { $_.StartsWith('RT_') }))
+		{
+			$ix = $ln.IndexOf('=')
+			if ($ix -lt 1) { $lv[$ln] = '1' } else { $lv[$ln.Substring(0, $ix)] = $ln.Substring($ix + 1) }
+		}
+	}
+	catch
+	{
+		Check 'L: protocol loop child process ran' $false $_.Exception.Message
+	}
+	Check 'L: round trip completed (RT_DONE)' ($lv.ContainsKey('RT_DONE')) ('child exit: ' + $(if ($lProc) { $lProc.ExitCode } else { 'n/a' }))
+	Check 'L: protocol timer started' ($lv['RT_L_TIMER'] -eq 'True') ''
+	Check 'L: lane 001 probed (Offline)' ($lv['RT_L_001'] -eq 'Offline') ('got: ' + $lv['RT_L_001'])
+	Check 'L: lane 002 probed (Offline)' ($lv['RT_L_002'] -eq 'Offline') ('got: ' + $lv['RT_L_002'])
+	Check 'L: result also stored by machine name' ($lv['RT_L_BYNAME'] -eq 'Offline') ('got: ' + $lv['RT_L_BYNAME'])
+	Check 'L: Protocol_Results.txt written' ($lv['RT_L_FILE'] -eq '001,Offline;002,Offline') ('got: ' + $lv['RT_L_FILE'])
+
+	try { Remove-Item -LiteralPath $lFile -Force -ErrorAction Stop } catch { }
+	try { if (Test-Path -LiteralPath $lOutFile) { Remove-Item -LiteralPath $lOutFile -Force -ErrorAction Stop } } catch { }
+}
+else
+{
+	Skip 'L: lane protocol loop' 'Start_Lane_Protocol_Jobs not found in script under test'
+}
 
 # --------------------------------------------------------------------------
 # 4) Summary

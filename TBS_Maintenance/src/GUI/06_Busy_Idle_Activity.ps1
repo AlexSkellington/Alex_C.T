@@ -108,7 +108,8 @@ $BusyTimer.add_Tick({
 		{
 			try
 			{
-				$insertTestJob = Get-Job -Name 'InsertTestItemJob' -State Running -ErrorAction SilentlyContinue | Select-Object -First 1
+				# (-Name and -State cannot be combined on Get-Job - filter the state instead)
+				$insertTestJob = Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Running' } | Select-Object -First 1
 				if ($insertTestJob)
 				{
 					$script:IsBusy = $true
@@ -228,7 +229,6 @@ $script:IdleTimer.add_Tick({
 					}
 					catch { }
 
-					$script:SuppressClosePrompt = $true
 					if ($form -and -not $form.IsDisposed) { $form.Close() }
 				}
 				else

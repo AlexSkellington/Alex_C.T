@@ -87,7 +87,12 @@ $form.Location = New-Object System.Drawing.Point(-4000, -4000)
 $form.ShowInTaskbar = $false
 $script:__smokeTimer = New-Object System.Windows.Forms.Timer
 $script:__smokeTimer.Interval = __SMOKE_MS__
-$script:__smokeTimer.Add_Tick({ $script:__smokeTimer.Stop(); $script:SuppressClosePrompt = $true; $form.Close() })
+$script:__smokeTimer.Add_Tick({
+		$script:__smokeTimer.Stop()
+		# state that FormClosing tears down - capture it while the window is still open
+		$script:__smokeProtocolTimer = [bool]$script:protocolTimer
+		$form.Close()
+	})
 $form.Add_Shown({ $script:__smokeTimer.Start() })
 $script:__smokeShowError = $null
 try { [void]$form.ShowDialog() } catch { $script:__smokeShowError = $_.Exception.Message }
@@ -102,6 +107,11 @@ foreach ($mn in 'ContextMenuServer', 'ContextMenuLane', 'ContextMenuScale', 'Con
 	$m = Get-Variable -Name $mn -ValueOnly -ErrorAction SilentlyContinue
 	if ($m) { Write-Output ('SMOKE|menu_' + $mn + '|' + (__SmokeCount $m.Items)) } else { Write-Output ('SMOKE|menu_' + $mn + '|MISSING') }
 }
+Write-Output ('SMOKE|menu_renderer|' + [bool]('ModernToolStripRenderer' -as [type]))
+Write-Output ('SMOKE|form_icon|' + [bool]$form.Icon)
+Write-Output ('SMOKE|protocol_timer|' + [bool]$script:__smokeProtocolTimer)
+Write-Output ('SMOKE|lane_map|' + $(if ($null -eq $script:LaneNumToMachineName) { 'null' } else { $script:LaneNumToMachineName.GetType().Name + ':' + @($script:LaneNumToMachineName.Keys).Count }))
+foreach ($jn in @(Get-Job -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name | Sort-Object -Unique)) { Write-Output ('SMOKE|job|' + $jn) }
 Write-Output ('SMOKE|warmup_started|' + [bool]$script:StartupWarmupStarted)
 Write-Output ('SMOKE|warmup_steps_left|' + @($script:StartupWarmupSteps).Count)
 Write-Output ('SMOKE|test_env|' + [bool]$script:IsTestEnvironment)

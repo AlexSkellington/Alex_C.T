@@ -44,5 +44,5 @@
 	)
 
 	# Appended after the final 'exit' as a comment block (never executed).
-	Changelog  = 'CHANGELOG.legacy.txt'
+	Changelog  = 'CHANGELOG.txt'
 }
