@@ -4,12 +4,13 @@
 # Description:
 #   Clears the file archive bit so the Storeman load process re-copies changed files. Run Now
 #   does a one-time recursive clear using the lane map (or Ter_Load.sql parsing, local paths
-#   only). Service mode installs an NSSM service with a FileSystemWatcher that does a full
-#   cleanup at startup and clears the bit on touched items in real time, rebuilding watchers
-#   when Ter_Load.sql changes. Includes an Uninstall Service button.
+#   only). Service mode installs an NSSM service with FileSystemWatchers that do a full
+#   cleanup at startup and then clear the bits on each touched item as it changes; a
+#   Ter_Load.sql change or a watcher overflow rebuilds the watchers with a full cleanup.
+#   Includes an Uninstall Service button.
 #
 # Variables:
-#   - $OfficePath / $StartupIniPath: local Office root and Startup.ini (input)
+#   - $OfficePath: local Office root (input)
 #   - $script:ScriptsFolder: folder for the generated service PS1
 #   - $script:FunctionResults['StoreNumber']: store number for the logs
 #
@@ -40,7 +41,6 @@ function Remove_Archive_Bit
 	}
 
 	# --- Main context variables
-	$iniFile = $StartupIniPath
 	$storeNumber = [string]$script:FunctionResults['StoreNumber']
 	$scriptFolder = $script:ScriptsFolder
 
@@ -470,11 +470,27 @@ try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Ter_Load local: {1}" -f 
 
 while (`$true)
 {
+	# Touched item -> clear just its bits. Only a Ter_Load.sql change or a watcher overflow
+	# (_e) rebuilds everything (every file event used to trigger a full attrib rescan).
 	try {
-		`$queuedEvents = @(Get-Event -ErrorAction SilentlyContinue | Where-Object { [string]`$_.SourceIdentifier -like 'RAB_*' })
-		foreach (`$evt in `$queuedEvents)
+		`$clearBits = [System.IO.FileAttributes]::Archive -bor [System.IO.FileAttributes]::ReadOnly
+		foreach (`$evt in @(Get-Event -ErrorAction SilentlyContinue | Where-Object { [string]`$_.SourceIdentifier -like 'RAB_*' }))
 		{
-			`$needRebuild = `$true
+			`$sid = [string]`$evt.SourceIdentifier
+			if (`$sid -like 'RAB_TER_WATCH*' -or `$sid -like '*_e') { `$needRebuild = `$true }
+			else {
+				try {
+					`$p = [string]`$evt.SourceEventArgs.FullPath
+					if (`$p -and (Test-Path -LiteralPath `$p)) {
+						`$it = Get-Item -LiteralPath `$p -Force -ErrorAction Stop
+						if (`$it.Attributes -band `$clearBits) {
+							`$newAttr = [int](`$it.Attributes) -band (-bnot [int]`$clearBits)
+							if (`$newAttr -eq 0) { `$newAttr = [int][System.IO.FileAttributes]::Normal }
+							`$it.Attributes = [System.IO.FileAttributes]`$newAttr
+						}
+					}
+				} catch { }
+			}
 			try { Remove-Event -EventIdentifier `$evt.EventIdentifier -ErrorAction SilentlyContinue } catch { }
 		}
 	} catch { }
@@ -493,6 +509,7 @@ while (`$true)
 					Unregister-Event -SourceIdentifier (`$id + '_c') -ErrorAction SilentlyContinue
 					Unregister-Event -SourceIdentifier (`$id + '_r') -ErrorAction SilentlyContinue
 					Unregister-Event -SourceIdentifier (`$id + '_d') -ErrorAction SilentlyContinue
+					Unregister-Event -SourceIdentifier (`$id + '_e') -ErrorAction SilentlyContinue
 				} catch { }
 				try { `$w.Dispose() } catch { }
 			}
@@ -598,12 +615,14 @@ while (`$true)
 				`$fsw.Filter = '*'
 				`$fsw.IncludeSubdirectories = `$true
 				`$fsw.NotifyFilter = [System.IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Attributes'
+				`$fsw.InternalBufferSize = 65536
 
 				`$id = 'RAB_FSW_' + `$fsw.GetHashCode().ToString()
 				Register-ObjectEvent -InputObject `$fsw -EventName Created -SourceIdentifier `$id | Out-Null
 				Register-ObjectEvent -InputObject `$fsw -EventName Changed -SourceIdentifier (`$id + '_c') | Out-Null
 				Register-ObjectEvent -InputObject `$fsw -EventName Renamed -SourceIdentifier (`$id + '_r') | Out-Null
 				Register-ObjectEvent -InputObject `$fsw -EventName Deleted -SourceIdentifier (`$id + '_d') | Out-Null
+				Register-ObjectEvent -InputObject `$fsw -EventName Error -SourceIdentifier (`$id + '_e') | Out-Null
 
 				`$fsw.EnableRaisingEvents = `$true
 				[void]`$watchers.Add(`$fsw)
@@ -632,7 +651,8 @@ while (`$true)
 		try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Watchers active: {1}" -f (Get-Date), `$watchers.Count) -Encoding UTF8 } catch { }
 	}
 
-	Start-Sleep -Seconds `$AutoPollSeconds
+	# Wake on the next event (or after the poll interval)
+	`$null = Wait-Event -Timeout `$AutoPollSeconds
 }
 "@
 
@@ -678,12 +698,6 @@ while (`$true)
 	# ------------------------------------------------------------------------------------------------
 	# RUN NOW (one-time)
 	# ------------------------------------------------------------------------------------------------
-	if (-not (Test-Path -LiteralPath $iniFile))
-	{
-		Write_Log "ERROR: INI file not found - $iniFile" "red"
-		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
-		return
-	}
 	if (-not $storeNumber)
 	{
 		Write_Log "ERROR: Store number not present in context." "red"

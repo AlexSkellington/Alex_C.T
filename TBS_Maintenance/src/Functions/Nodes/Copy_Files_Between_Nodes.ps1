@@ -242,46 +242,9 @@ function Copy_Files_Between_Nodes
 				param ($s,
 					$e)
 
-				# Resolve storeman root based on radio selection
-				$root = $null
-				if ($rbServer.Checked)
-				{
-					# Prefer any scoped $BasePath, then extras
-					$candidates = @($script:BasePath, $global:BasePath, $BasePath) + $ExtraServerRoots
-					foreach ($cand in ($candidates | Where-Object { $_ } | Select-Object -Unique))
-					{
-						if (Test-Path -LiteralPath $cand) { $root = $cand; break }
-					}
-					if (-not $root)
-					{
-						[System.Windows.Forms.MessageBox]::Show(
-							"Server storeman root not found using `$BasePath (or extras).",
-							"Source Unreachable", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error
-						) | Out-Null
-						Write_Log "[Source Unreachable] Server storeman root not found via `$BasePath or extras." "red"
-						return
-					}
-				}
-				else
-				{
-					if (-not $cboLane.SelectedItem)
-					{
-						[System.Windows.Forms.MessageBox]::Show("Pick a lane as source first.", "Missing Lane",
-							[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
-						return
-					}
-					$ln = [string]$cboLane.SelectedItem
-					$try1 = "\\$ln\Storeman"; if (Test-Path -LiteralPath $try1) { $root = $try1 }
-					if (-not $root) { $try2 = "\\$ln\c$\storeman"; if (Test-Path -LiteralPath $try2) { $root = $try2 } }
-					if (-not $root)
-					{
-						[System.Windows.Forms.MessageBox]::Show("\\$ln\Storeman and \\$ln\C$\storeman are not accessible.",
-							"Source Unreachable", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
-						Write_Log "[Source Unreachable] $ln has no \\Storeman or \\C$\storeman." "red"
-						return
-					}
-				}
-
+				# Storeman root of the selected source (shows its own message when unreachable)
+				$root = & $resolveInitialRoot
+				if (-not $root) { return }
 				# Build full path safely (trim any leading slash in Rel so Join-Path doesn't drop root)
 				$meta = $s.Tag
 				$rel = ([string]$meta.Rel).Trim().TrimStart('\', '/')
@@ -331,7 +294,8 @@ function Copy_Files_Between_Nodes
 	$miAddFiles.Text = "Add File(s)..."
 	[void]$cmsAdd.Items.Add($miAddFiles)
 
-	# Helper (inline): resolve initial root based on selected source
+	# Storeman root of the selected source (server: $BasePath / extras; lane: \\<lane>\Storeman,
+	# then \\<lane>\C$\storeman); shows a message and returns $null when unreachable
 	$resolveInitialRoot = {
 		$initialPath = $null
 		if ($rbServer.Checked)
@@ -504,30 +468,10 @@ function Copy_Files_Between_Nodes
 
 	# ===================== Destination selection =====================
 	$StoreNumber = $script:FunctionResults['StoreNumber']
-	$selection = $null; $triedExclude = $false
-	try
-	{
-		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Destination Lanes for Copy" -ExcludedNodes @($sourceMachine)
-		$triedExclude = $true
-	}
-	catch
-	{
-		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Destination Lanes for Copy"
-	}
-	if ($selection -eq $null) { Write_Log "Destination selection canceled by user." "yellow"; return }
-
-	$Lanes = @()
-	if ($selection.Lanes -and $selection.Lanes.Count -gt 0)
-	{
-		if ($selection.Lanes[0] -is [PSCustomObject] -and $selection.Lanes[0].PSObject.Properties.Name -contains 'LaneNumber')
-		{
-			$Lanes = $selection.Lanes | ForEach-Object { $_.LaneNumber }
-		}
-		else { $Lanes = $selection.Lanes }
-	}
-	elseif ($selection -is [System.Collections.IEnumerable] -and -not ($selection -is [string])) { $Lanes = @($selection) }
-	elseif ($selection -is [string]) { $Lanes = @($selection -split '[,\s]+' | Where-Object { $_ }) }
-	else { Write_Log "No destination lanes selected." "yellow"; return }
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Destination Lanes for Copy" -ExcludedNodes @($sourceMachine)
+	if ($null -eq $selection) { Write_Log "Destination selection canceled by user." "yellow"; return }
+	$Lanes = @($selection.Lanes)
+	if ($Lanes.Count -eq 0) { Write_Log "No destination lanes selected." "yellow"; return }
 
 	# Map lane numbers -> machine names
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
@@ -572,12 +516,10 @@ function Copy_Files_Between_Nodes
 		}
 		Write_Log "[Parse Warning] Could not interpret destination entry: '$s'." "yellow"
 	}
-	$destMachines = $destMachines | Where-Object { $_ -and ($_ -ne $sourceMachine) } | Select-Object -Unique
-	if (-not $destMachines -or $destMachines.Count -eq 0)
+	$destMachines = @($destMachines | Where-Object { $_ -and ($_ -ne $sourceMachine) } | Select-Object -Unique)
+	if ($destMachines.Count -eq 0)
 	{
-		$msg = if ($triedExclude) { "No non-source lanes selected. Pick at least one destination lane." }
-		else { "No non-source lanes selected (picker may not support -ExcludedNodes). Pick at least one lane." }
-		[System.Windows.Forms.MessageBox]::Show($msg, "No Destinations",
+		[System.Windows.Forms.MessageBox]::Show("No non-source lanes selected. Pick at least one destination lane.", "No Destinations",
 			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 		Write_Log "No destination lanes selected." "yellow"; return
 	}
@@ -597,8 +539,8 @@ function Copy_Files_Between_Nodes
 	if ($unreachable.Count -gt 0)
 	{
 		Write_Log "Unreachable lane roots (no \\Storeman or \\C$\storeman): $($unreachable -join ', ')" "red"
-		$destMachines = $destMachines | Where-Object { $destRootMap.ContainsKey($_) }
-		if (-not $destMachines -or $destMachines.Count -eq 0) { Write_Log "No reachable destinations remain. Aborting." "red"; return }
+		$destMachines = @($destMachines | Where-Object { $destRootMap.ContainsKey($_) })
+		if ($destMachines.Count -eq 0) { Write_Log "No reachable destinations remain. Aborting." "red"; return }
 	}
 
 	# ===================== Copy loop (folder OR single file) =====================

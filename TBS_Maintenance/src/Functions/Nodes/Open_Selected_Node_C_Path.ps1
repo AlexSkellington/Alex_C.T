@@ -91,35 +91,25 @@ function Open_Selected_Node_C_Path
 			if (-not $scaleHost) { Write_Log "Could not determine host for $($scale.ScaleCode)." "Red"; continue }
 
 			$sharePath = "\\$scaleHost\c$"
-			$opened = $false
 
-			# Try bizuser/bizerba, then bizuser/biyerba
-			cmdkey /add:$scaleHost /user:bizuser /pass:bizerba | Out-Null
-			Start-Process "explorer.exe" $sharePath
-			Start-Sleep -Seconds 2
-			if (Test-Path $sharePath)
+			# Already reachable (credentials seeded at startup)? Otherwise try bizuser/bizerba, then
+			# bizuser/biyerba. Explorer opens once, after a password worked (it used to open before
+			# the check, leaving an extra error window when the first password was wrong).
+			$opened = Test-Path -LiteralPath $sharePath
+			if ($opened) { Write_Log "Opened $sharePath." "Green" }
+			foreach ($pass in @('bizerba', 'biyerba'))
 			{
-				Write_Log "Opened $sharePath as bizuser using password 'bizerba'." "Green"
-				$opened = $true
-			}
-			else
-			{
-				cmdkey /delete:$scaleHost | Out-Null
-				cmdkey /add:$scaleHost /user:bizuser /pass:biyerba | Out-Null
-				Start-Process "explorer.exe" $sharePath
-				Start-Sleep -Seconds 2
-				if (Test-Path $sharePath)
+				if ($opened) { break }
+				$null = & cmdkey.exe "/add:$scaleHost" "/user:bizuser" "/pass:$pass" 2>&1
+				if (Test-Path -LiteralPath $sharePath)
 				{
-					Write_Log "Opened $sharePath as bizuser using password 'biyerba'." "Green"
+					Write_Log "Opened $sharePath as bizuser using password '$pass'." "Green"
 					$opened = $true
 				}
-				else
-				{
-					Write_Log "Could not open $sharePath as bizuser with either password." "Red"
-				}
+				else { $null = & cmdkey.exe "/delete:$scaleHost" 2>&1 }
 			}
-			# Clean up credentials (optional)
-			# cmdkey /delete:$scaleHost | Out-Null
+			if ($opened) { Start-Process "explorer.exe" $sharePath }
+			else { Write_Log "Could not open $sharePath as bizuser with either password." "Red" }
 		}
 	}
 	Write_Log "`r`n==================== Open_Selected_Node_C_Path Function Completed ====================" "blue"

@@ -3,15 +3,16 @@
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Repairs journal (EJ) files in the store ZX folder: prompts for a date in a dialog, finds
-#   the related EJ files for that date/store, corrects the affected lines, backs up each file
-#   and writes the fixed content back in ANSI encoding.
+#   the EJ files for that date/store and removes each block from a '<trs F10' line up to (not
+#   including) the next '<trs F1068' line. Each changed file is backed up first - outside the
+#   ZX folder, where SMS would read a backup as another journal - then rewritten in ANSI.
 #
 # Parameters:
 #   - OfficePath   [string]: Storeman Office base path (required)
 #   - StoreNumber  [string]: store number, e.g. 001 (required)
 #
 # Writes:
-#   - ZX folder EJ files (fixed lines) plus a backup file per edited file
+#   - ZX folder EJ files (fixed lines); originals in <BackupRoot>\Journal_Fix\<yyyyMMdd_HHmmss>
 # ===================================================================================================
 
 function Fix_Journal
@@ -125,7 +126,8 @@ function Fix_Journal
 		return
 	}
 
-	Write_Log -Message "Found $($matchingFiles.Count) file(s) to fix." "green"
+	Write_Log -Message "Found $(@($matchingFiles).Count) file(s) to check." "green"
+	$backupDir = $null
 
 	# ---------------------------------------------------------------------------------------------
 	# 8) For each matching EJ file, remove lines from <trs F10... up to <trs F1068...
@@ -183,37 +185,45 @@ function Fix_Journal
 			}
 		}
 
-		<# -----------------------------------------------------------------------------------------
-		# 10) Make a backup of the original file
-		# * Commented out for now
-		# -----------------------------------------------------------------------------------------
-		$backupPath = "$($file.FullName).bak"
-		try
+		if ($fixedLines.Count -eq @($originalLines).Count)
 		{
-			Copy-Item -Path $file.FullName -Destination $backupPath -Force -ErrorAction Stop
-			Write_Log -Message "Backup created: $backupPath" "green"
-		}
-		catch
-		{
-			Write_Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." "red"
+			Write_Log -Message "Nothing to fix in: $($file.Name)" "gray"
 			continue
 		}
-		#>
+
+		# -----------------------------------------------------------------------------------------
+		# 10) Back up the original OUTSIDE the ZX folder (a .bak inside ZX reads as a journal)
+		# -----------------------------------------------------------------------------------------
+		if (-not $backupDir)
+		{
+			$backupDir = Join-Path $script:BackupRoot ("Journal_Fix\" + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+			try { New-Item -Path $backupDir -ItemType Directory -Force -ErrorAction Stop | Out-Null }
+			catch
+			{
+				Write_Log -Message "Cannot create backup folder $backupDir - no journal was changed: $($_.Exception.Message)" "red"
+				return
+			}
+		}
+		$backupPath = Join-Path $backupDir $file.Name
+		try { Copy-Item -LiteralPath $file.FullName -Destination $backupPath -Force -ErrorAction Stop }
+		catch
+		{
+			Write_Log -Message "Failed to back up $($file.Name) - file left unchanged." "red"
+			continue
+		}
 
 		# -----------------------------------------------------------------------------------------
 		# 11) Overwrite the original file with the fixed lines in ANSI encoding
 		# -----------------------------------------------------------------------------------------
 		try
 		{
-			$fixedLines | Set-Content -Path $file.FullName -Encoding Default -ErrorAction Stop
-			#	Write_Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
-			Write_Log -Message "Successfully edited: $($file.FullName)" "green"
+			$fixedLines | Set-Content -LiteralPath $file.FullName -Encoding Default -ErrorAction Stop
+			Write_Log -Message "Fixed $($file.Name): removed $(@($originalLines).Count - $fixedLines.Count) line(s). Backup: $backupPath" "green"
 		}
 		catch
 		{
 			Write_Log -Message "Failed to write fixed content to: $($file.FullName)." "red"
 			continue
 		}
-	}
-	Write_Log "`r`n==================== Fix_Journal Function Completed ====================" "blue"
+	}	Write_Log "`r`n==================== Fix_Journal Function Completed ====================" "blue"
 }

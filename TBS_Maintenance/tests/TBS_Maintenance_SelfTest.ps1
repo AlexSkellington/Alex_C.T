@@ -368,8 +368,8 @@ foreach ($c in $cases)
 # --------------------------------------------------------------------------
 $funcBlock = Get-FunctionBlock 'Invoke_Secure_Script'
 $ixDisabled = $funcBlock.IndexOf('Security hardening')
-$ixGui = $funcBlock.IndexOf('Add-Type -AssemblyName System.Windows.Forms')
-Check 'D: disabled early-return precedes the old GUI code' (($ixDisabled -ge 0) -and ($ixGui -gt $ixDisabled)) ''
+# v2.7.0 removed the unreachable prompt/download code entirely
+Check 'D: disabled, with no prompt or download code left' (($ixDisabled -ge 0) -and ($funcBlock -notmatch 'ShowDialog|Invoke-RestMethod|Invoke-WebRequest|DownloadString|storedPassword')) ''
 
 $script:logLines = @()
 function Write_Log { [CmdletBinding()] param([Parameter(Mandatory)][string]$Message, $Color = 'Black', [switch]$IncludeTimestamp, [switch]$Raw) $script:logLines += $Message }

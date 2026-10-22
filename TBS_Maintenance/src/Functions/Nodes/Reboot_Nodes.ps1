@@ -48,57 +48,51 @@ function Reboot_Nodes
 		return
 	}
 
-	# ---- Lanes ----
+	# shutdown.exe, then Restart-Computer; $true when one of them took the request
+	$rebootRemote = {
+		param ([string]$Target, [string]$What)
+		$null = & shutdown.exe /r /m "\\$Target" /t 0 /f 2>&1
+		if ($LASTEXITCODE -eq 0)
+		{
+			Write_Log "shutdown.exe reboot sent to $What." "Green"
+			return $true
+		}
+		Write_Log "shutdown.exe exit code $LASTEXITCODE for $What. Trying Restart-Computer." "Yellow"
+		try
+		{
+			Restart-Computer -ComputerName $Target -Force -ErrorAction Stop
+			Write_Log "Restart-Computer sent to $What." "Green"
+			return $true
+		}
+		catch
+		{
+			Write_Log "All reboot methods failed for ${What}: $($_.Exception.Message)" "Red"
+			return $false
+		}
+	}
+
+	# ---- Lanes: SMSStart mailslot first ----
 	if ($NodeTypes -contains "Lane" -and $selection.Lanes -and $selection.Lanes.Count -gt 0)
 	{
-		foreach ($lane in $selection.Lanes)
+		foreach ($laneNum in $selection.Lanes)
 		{
-			$laneNum = $lane
-			if ($LaneNumToMachineName.ContainsKey($laneNum))
-			{
-				$machine = $LaneNumToMachineName[$laneNum]
-				Write_Log "Lane $laneNum on [$machine]: attempting mailslot reboot" "Yellow"
-				$msResult = $false
-				try
-				{
-					$mailslot = "\\$machine\mailslot\SMSStart_${StoreNumber}${laneNum}"
-					$msResult = [MailslotSender]::SendMailslotCommand($mailslot, '@exec(REBOOT=1).')
-				}
-				catch { $msResult = $false }
-				if ($msResult)
-				{
-					Write_Log "Mailslot reboot sent to $machine (Lane $laneNum)" "Green"
-					continue
-				}
-				Write_Log "Mailslot reboot failed for $machine. Falling back to shutdown.exe" "Yellow"
-				cmd.exe /c "shutdown /r /m \\$machine /t 0 /f" | Out-Null
-				if ($LASTEXITCODE -eq 0)
-				{
-					Write_Log "shutdown.exe reboot succeeded for $machine" "Green"
-					continue
-				}
-				Write_Log "shutdown.exe exit code $LASTEXITCODE. Now trying Restart-Computer" "Yellow"
-				try
-				{
-					Restart-Computer -ComputerName $machine -Force -ErrorAction SilentlyContinue
-					if ($?)
-					{
-						Write_Log "Restart-Computer succeeded for $machine" "Green"
-					}
-					else
-					{
-						Write_Log "All reboot methods failed for $machine (Lane $laneNum)" "Red"
-					}
-				}
-				catch
-				{
-					Write_Log "All reboot methods failed for $machine (Lane $laneNum)" "Red"
-				}
-			}
-			else
+			if (-not $LaneNumToMachineName -or -not $LaneNumToMachineName.ContainsKey($laneNum))
 			{
 				Write_Log "Lane mapping not found for $laneNum." "yellow"
+				continue
 			}
+			$machine = $LaneNumToMachineName[$laneNum]
+			Write_Log "Lane $laneNum on [$machine]: attempting mailslot reboot" "Yellow"
+			$msResult = $false
+			try { $msResult = [MailslotSender]::SendMailslotCommand("\\$machine\mailslot\SMSStart_${StoreNumber}${laneNum}", '@exec(REBOOT=1).') }
+			catch { $msResult = $false }
+			if ($msResult)
+			{
+				Write_Log "Mailslot reboot sent to $machine (Lane $laneNum)" "Green"
+				continue
+			}
+			Write_Log "Mailslot reboot failed for $machine. Falling back to shutdown.exe" "Yellow"
+			[void](& $rebootRemote $machine "$machine (Lane $laneNum)")
 		}
 	}
 
@@ -107,39 +101,16 @@ function Reboot_Nodes
 	{
 		foreach ($code in $selection.Scales)
 		{
-			if ($ScaleCodeToIPInfo.ContainsKey($code))
-			{
-				$scale = $ScaleCodeToIPInfo[$code]
-				$ip = $scale.FullIP
-				$name = $scale.ScaleName
-				$display = if ($name) { "$name [$ip]" }
-				else { "$code [$ip]" }
-				Write_Log "Attempting to reboot scale: $display at $ip" "Yellow"
-				try
-				{
-					$shutdownArgs = "/r /m \\$ip /t 0 /f"
-					$proc = Start-Process -FilePath "shutdown.exe" -ArgumentList $shutdownArgs -Wait -PassThru -ErrorAction Stop
-					if ($proc.ExitCode -ne 0) { throw "Shutdown command exited with code $($proc.ExitCode)" }
-					Write_Log "Shutdown command executed successfully for $ip." "Green"
-				}
-				catch
-				{
-					Write_Log "Shutdown command failed for $ip. Falling back to Restart-Computer." "Red"
-					try
-					{
-						Restart-Computer -ComputerName $ip -Force -ErrorAction Stop
-						Write_Log "Restart-Computer command executed successfully for $ip." "Green"
-					}
-					catch
-					{
-						Write_Log "Failed to reboot scale $ip using both methods: $_" "Red"
-					}
-				}
-			}
-			else
+			if (-not $ScaleCodeToIPInfo -or -not $ScaleCodeToIPInfo.ContainsKey($code))
 			{
 				Write_Log "Scale mapping not found for $code." "yellow"
+				continue
 			}
+			$scale = $ScaleCodeToIPInfo[$code]
+			$ip = $scale.FullIP
+			$display = if ($scale.ScaleName) { "$($scale.ScaleName) [$ip]" } else { "$code [$ip]" }
+			Write_Log "Attempting to reboot scale: $display" "Yellow"
+			[void](& $rebootRemote $ip "scale $display")
 		}
 	}
 
@@ -148,38 +119,16 @@ function Reboot_Nodes
 	{
 		foreach ($boNum in $selection.Backoffices)
 		{
-			if ($BackofficeNumToMachineName.ContainsKey($boNum))
-			{
-				$machine = $BackofficeNumToMachineName[$boNum]
-				Write_Log "Attempting to reboot backoffice $boNum [$machine]" "Yellow"
-				try
-				{
-					$shutdownArgs = "/r /m \\$machine /t 0 /f"
-					$proc = Start-Process -FilePath "shutdown.exe" -ArgumentList $shutdownArgs -Wait -PassThru -ErrorAction Stop
-					if ($proc.ExitCode -ne 0) { throw "Shutdown command exited with code $($proc.ExitCode)" }
-					Write_Log "Shutdown command executed successfully for $machine." "Green"
-				}
-				catch
-				{
-					Write_Log "Shutdown command failed for $machine. Falling back to Restart-Computer." "Red"
-					try
-					{
-						Restart-Computer -ComputerName $machine -Force -ErrorAction Stop
-						Write_Log "Restart-Computer command executed successfully for $machine." "Green"
-					}
-					catch
-					{
-						Write_Log "Failed to reboot backoffice $boNum ($machine) using both methods: $_" "Red"
-					}
-				}
-			}
-			else
+			if (-not $BackofficeNumToMachineName -or -not $BackofficeNumToMachineName.ContainsKey($boNum))
 			{
 				Write_Log "Backoffice mapping not found for $boNum." "yellow"
+				continue
 			}
+			$machine = $BackofficeNumToMachineName[$boNum]
+			Write_Log "Attempting to reboot backoffice $boNum [$machine]" "Yellow"
+			[void](& $rebootRemote $machine "backoffice $boNum ($machine)")
 		}
 	}
-
 	Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
 	[void][System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected nodes.", "Reboot",
 		[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)

@@ -23605,46 +23605,9 @@ function Copy_Files_Between_Nodes
 				param ($s,
 					$e)
 
-				# Resolve storeman root based on radio selection
-				$root = $null
-				if ($rbServer.Checked)
-				{
-					# Prefer any scoped $BasePath, then extras
-					$candidates = @($script:BasePath, $global:BasePath, $BasePath) + $ExtraServerRoots
-					foreach ($cand in ($candidates | Where-Object { $_ } | Select-Object -Unique))
-					{
-						if (Test-Path -LiteralPath $cand) { $root = $cand; break }
-					}
-					if (-not $root)
-					{
-						[System.Windows.Forms.MessageBox]::Show(
-							"Server storeman root not found using `$BasePath (or extras).",
-							"Source Unreachable", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error
-						) | Out-Null
-						Write_Log "[Source Unreachable] Server storeman root not found via `$BasePath or extras." "red"
-						return
-					}
-				}
-				else
-				{
-					if (-not $cboLane.SelectedItem)
-					{
-						[System.Windows.Forms.MessageBox]::Show("Pick a lane as source first.", "Missing Lane",
-							[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
-						return
-					}
-					$ln = [string]$cboLane.SelectedItem
-					$try1 = "\\$ln\Storeman"; if (Test-Path -LiteralPath $try1) { $root = $try1 }
-					if (-not $root) { $try2 = "\\$ln\c$\storeman"; if (Test-Path -LiteralPath $try2) { $root = $try2 } }
-					if (-not $root)
-					{
-						[System.Windows.Forms.MessageBox]::Show("\\$ln\Storeman and \\$ln\C$\storeman are not accessible.",
-							"Source Unreachable", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
-						Write_Log "[Source Unreachable] $ln has no \\Storeman or \\C$\storeman." "red"
-						return
-					}
-				}
-
+				# Storeman root of the selected source (shows its own message when unreachable)
+				$root = & $resolveInitialRoot
+				if (-not $root) { return }
 				# Build full path safely (trim any leading slash in Rel so Join-Path doesn't drop root)
 				$meta = $s.Tag
 				$rel = ([string]$meta.Rel).Trim().TrimStart('\', '/')
@@ -23694,7 +23657,8 @@ function Copy_Files_Between_Nodes
 	$miAddFiles.Text = "Add File(s)..."
 	[void]$cmsAdd.Items.Add($miAddFiles)
 
-	# Helper (inline): resolve initial root based on selected source
+	# Storeman root of the selected source (server: $BasePath / extras; lane: \\<lane>\Storeman,
+	# then \\<lane>\C$\storeman); shows a message and returns $null when unreachable
 	$resolveInitialRoot = {
 		$initialPath = $null
 		if ($rbServer.Checked)
@@ -23867,30 +23831,10 @@ function Copy_Files_Between_Nodes
 
 	# ===================== Destination selection =====================
 	$StoreNumber = $script:FunctionResults['StoreNumber']
-	$selection = $null; $triedExclude = $false
-	try
-	{
-		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Destination Lanes for Copy" -ExcludedNodes @($sourceMachine)
-		$triedExclude = $true
-	}
-	catch
-	{
-		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Destination Lanes for Copy"
-	}
-	if ($selection -eq $null) { Write_Log "Destination selection canceled by user." "yellow"; return }
-
-	$Lanes = @()
-	if ($selection.Lanes -and $selection.Lanes.Count -gt 0)
-	{
-		if ($selection.Lanes[0] -is [PSCustomObject] -and $selection.Lanes[0].PSObject.Properties.Name -contains 'LaneNumber')
-		{
-			$Lanes = $selection.Lanes | ForEach-Object { $_.LaneNumber }
-		}
-		else { $Lanes = $selection.Lanes }
-	}
-	elseif ($selection -is [System.Collections.IEnumerable] -and -not ($selection -is [string])) { $Lanes = @($selection) }
-	elseif ($selection -is [string]) { $Lanes = @($selection -split '[,\s]+' | Where-Object { $_ }) }
-	else { Write_Log "No destination lanes selected." "yellow"; return }
+	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Destination Lanes for Copy" -ExcludedNodes @($sourceMachine)
+	if ($null -eq $selection) { Write_Log "Destination selection canceled by user." "yellow"; return }
+	$Lanes = @($selection.Lanes)
+	if ($Lanes.Count -eq 0) { Write_Log "No destination lanes selected." "yellow"; return }
 
 	# Map lane numbers -> machine names
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
@@ -23935,12 +23879,10 @@ function Copy_Files_Between_Nodes
 		}
 		Write_Log "[Parse Warning] Could not interpret destination entry: '$s'." "yellow"
 	}
-	$destMachines = $destMachines | Where-Object { $_ -and ($_ -ne $sourceMachine) } | Select-Object -Unique
-	if (-not $destMachines -or $destMachines.Count -eq 0)
+	$destMachines = @($destMachines | Where-Object { $_ -and ($_ -ne $sourceMachine) } | Select-Object -Unique)
+	if ($destMachines.Count -eq 0)
 	{
-		$msg = if ($triedExclude) { "No non-source lanes selected. Pick at least one destination lane." }
-		else { "No non-source lanes selected (picker may not support -ExcludedNodes). Pick at least one lane." }
-		[System.Windows.Forms.MessageBox]::Show($msg, "No Destinations",
+		[System.Windows.Forms.MessageBox]::Show("No non-source lanes selected. Pick at least one destination lane.", "No Destinations",
 			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 		Write_Log "No destination lanes selected." "yellow"; return
 	}
@@ -23960,8 +23902,8 @@ function Copy_Files_Between_Nodes
 	if ($unreachable.Count -gt 0)
 	{
 		Write_Log "Unreachable lane roots (no \\Storeman or \\C$\storeman): $($unreachable -join ', ')" "red"
-		$destMachines = $destMachines | Where-Object { $destRootMap.ContainsKey($_) }
-		if (-not $destMachines -or $destMachines.Count -eq 0) { Write_Log "No reachable destinations remain. Aborting." "red"; return }
+		$destMachines = @($destMachines | Where-Object { $destRootMap.ContainsKey($_) })
+		if ($destMachines.Count -eq 0) { Write_Log "No reachable destinations remain. Aborting." "red"; return }
 	}
 
 	# ===================== Copy loop (folder OR single file) =====================
@@ -24154,35 +24096,25 @@ function Open_Selected_Node_C_Path
 			if (-not $scaleHost) { Write_Log "Could not determine host for $($scale.ScaleCode)." "Red"; continue }
 
 			$sharePath = "\\$scaleHost\c$"
-			$opened = $false
 
-			# Try bizuser/bizerba, then bizuser/biyerba
-			cmdkey /add:$scaleHost /user:bizuser /pass:bizerba | Out-Null
-			Start-Process "explorer.exe" $sharePath
-			Start-Sleep -Seconds 2
-			if (Test-Path $sharePath)
+			# Already reachable (credentials seeded at startup)? Otherwise try bizuser/bizerba, then
+			# bizuser/biyerba. Explorer opens once, after a password worked (it used to open before
+			# the check, leaving an extra error window when the first password was wrong).
+			$opened = Test-Path -LiteralPath $sharePath
+			if ($opened) { Write_Log "Opened $sharePath." "Green" }
+			foreach ($pass in @('bizerba', 'biyerba'))
 			{
-				Write_Log "Opened $sharePath as bizuser using password 'bizerba'." "Green"
-				$opened = $true
-			}
-			else
-			{
-				cmdkey /delete:$scaleHost | Out-Null
-				cmdkey /add:$scaleHost /user:bizuser /pass:biyerba | Out-Null
-				Start-Process "explorer.exe" $sharePath
-				Start-Sleep -Seconds 2
-				if (Test-Path $sharePath)
+				if ($opened) { break }
+				$null = & cmdkey.exe "/add:$scaleHost" "/user:bizuser" "/pass:$pass" 2>&1
+				if (Test-Path -LiteralPath $sharePath)
 				{
-					Write_Log "Opened $sharePath as bizuser using password 'biyerba'." "Green"
+					Write_Log "Opened $sharePath as bizuser using password '$pass'." "Green"
 					$opened = $true
 				}
-				else
-				{
-					Write_Log "Could not open $sharePath as bizuser with either password." "Red"
-				}
+				else { $null = & cmdkey.exe "/delete:$scaleHost" 2>&1 }
 			}
-			# Clean up credentials (optional)
-			# cmdkey /delete:$scaleHost | Out-Null
+			if ($opened) { Start-Process "explorer.exe" $sharePath }
+			else { Write_Log "Could not open $sharePath as bizuser with either password." "Red" }
 		}
 	}
 	Write_Log "`r`n==================== Open_Selected_Node_C_Path Function Completed ====================" "blue"
@@ -24456,57 +24388,51 @@ function Reboot_Nodes
 		return
 	}
 
-	# ---- Lanes ----
+	# shutdown.exe, then Restart-Computer; $true when one of them took the request
+	$rebootRemote = {
+		param ([string]$Target, [string]$What)
+		$null = & shutdown.exe /r /m "\\$Target" /t 0 /f 2>&1
+		if ($LASTEXITCODE -eq 0)
+		{
+			Write_Log "shutdown.exe reboot sent to $What." "Green"
+			return $true
+		}
+		Write_Log "shutdown.exe exit code $LASTEXITCODE for $What. Trying Restart-Computer." "Yellow"
+		try
+		{
+			Restart-Computer -ComputerName $Target -Force -ErrorAction Stop
+			Write_Log "Restart-Computer sent to $What." "Green"
+			return $true
+		}
+		catch
+		{
+			Write_Log "All reboot methods failed for ${What}: $($_.Exception.Message)" "Red"
+			return $false
+		}
+	}
+
+	# ---- Lanes: SMSStart mailslot first ----
 	if ($NodeTypes -contains "Lane" -and $selection.Lanes -and $selection.Lanes.Count -gt 0)
 	{
-		foreach ($lane in $selection.Lanes)
+		foreach ($laneNum in $selection.Lanes)
 		{
-			$laneNum = $lane
-			if ($LaneNumToMachineName.ContainsKey($laneNum))
-			{
-				$machine = $LaneNumToMachineName[$laneNum]
-				Write_Log "Lane $laneNum on [$machine]: attempting mailslot reboot" "Yellow"
-				$msResult = $false
-				try
-				{
-					$mailslot = "\\$machine\mailslot\SMSStart_${StoreNumber}${laneNum}"
-					$msResult = [MailslotSender]::SendMailslotCommand($mailslot, '@exec(REBOOT=1).')
-				}
-				catch { $msResult = $false }
-				if ($msResult)
-				{
-					Write_Log "Mailslot reboot sent to $machine (Lane $laneNum)" "Green"
-					continue
-				}
-				Write_Log "Mailslot reboot failed for $machine. Falling back to shutdown.exe" "Yellow"
-				cmd.exe /c "shutdown /r /m \\$machine /t 0 /f" | Out-Null
-				if ($LASTEXITCODE -eq 0)
-				{
-					Write_Log "shutdown.exe reboot succeeded for $machine" "Green"
-					continue
-				}
-				Write_Log "shutdown.exe exit code $LASTEXITCODE. Now trying Restart-Computer" "Yellow"
-				try
-				{
-					Restart-Computer -ComputerName $machine -Force -ErrorAction SilentlyContinue
-					if ($?)
-					{
-						Write_Log "Restart-Computer succeeded for $machine" "Green"
-					}
-					else
-					{
-						Write_Log "All reboot methods failed for $machine (Lane $laneNum)" "Red"
-					}
-				}
-				catch
-				{
-					Write_Log "All reboot methods failed for $machine (Lane $laneNum)" "Red"
-				}
-			}
-			else
+			if (-not $LaneNumToMachineName -or -not $LaneNumToMachineName.ContainsKey($laneNum))
 			{
 				Write_Log "Lane mapping not found for $laneNum." "yellow"
+				continue
 			}
+			$machine = $LaneNumToMachineName[$laneNum]
+			Write_Log "Lane $laneNum on [$machine]: attempting mailslot reboot" "Yellow"
+			$msResult = $false
+			try { $msResult = [MailslotSender]::SendMailslotCommand("\\$machine\mailslot\SMSStart_${StoreNumber}${laneNum}", '@exec(REBOOT=1).') }
+			catch { $msResult = $false }
+			if ($msResult)
+			{
+				Write_Log "Mailslot reboot sent to $machine (Lane $laneNum)" "Green"
+				continue
+			}
+			Write_Log "Mailslot reboot failed for $machine. Falling back to shutdown.exe" "Yellow"
+			[void](& $rebootRemote $machine "$machine (Lane $laneNum)")
 		}
 	}
 
@@ -24515,39 +24441,16 @@ function Reboot_Nodes
 	{
 		foreach ($code in $selection.Scales)
 		{
-			if ($ScaleCodeToIPInfo.ContainsKey($code))
-			{
-				$scale = $ScaleCodeToIPInfo[$code]
-				$ip = $scale.FullIP
-				$name = $scale.ScaleName
-				$display = if ($name) { "$name [$ip]" }
-				else { "$code [$ip]" }
-				Write_Log "Attempting to reboot scale: $display at $ip" "Yellow"
-				try
-				{
-					$shutdownArgs = "/r /m \\$ip /t 0 /f"
-					$proc = Start-Process -FilePath "shutdown.exe" -ArgumentList $shutdownArgs -Wait -PassThru -ErrorAction Stop
-					if ($proc.ExitCode -ne 0) { throw "Shutdown command exited with code $($proc.ExitCode)" }
-					Write_Log "Shutdown command executed successfully for $ip." "Green"
-				}
-				catch
-				{
-					Write_Log "Shutdown command failed for $ip. Falling back to Restart-Computer." "Red"
-					try
-					{
-						Restart-Computer -ComputerName $ip -Force -ErrorAction Stop
-						Write_Log "Restart-Computer command executed successfully for $ip." "Green"
-					}
-					catch
-					{
-						Write_Log "Failed to reboot scale $ip using both methods: $_" "Red"
-					}
-				}
-			}
-			else
+			if (-not $ScaleCodeToIPInfo -or -not $ScaleCodeToIPInfo.ContainsKey($code))
 			{
 				Write_Log "Scale mapping not found for $code." "yellow"
+				continue
 			}
+			$scale = $ScaleCodeToIPInfo[$code]
+			$ip = $scale.FullIP
+			$display = if ($scale.ScaleName) { "$($scale.ScaleName) [$ip]" } else { "$code [$ip]" }
+			Write_Log "Attempting to reboot scale: $display" "Yellow"
+			[void](& $rebootRemote $ip "scale $display")
 		}
 	}
 
@@ -24556,38 +24459,16 @@ function Reboot_Nodes
 	{
 		foreach ($boNum in $selection.Backoffices)
 		{
-			if ($BackofficeNumToMachineName.ContainsKey($boNum))
-			{
-				$machine = $BackofficeNumToMachineName[$boNum]
-				Write_Log "Attempting to reboot backoffice $boNum [$machine]" "Yellow"
-				try
-				{
-					$shutdownArgs = "/r /m \\$machine /t 0 /f"
-					$proc = Start-Process -FilePath "shutdown.exe" -ArgumentList $shutdownArgs -Wait -PassThru -ErrorAction Stop
-					if ($proc.ExitCode -ne 0) { throw "Shutdown command exited with code $($proc.ExitCode)" }
-					Write_Log "Shutdown command executed successfully for $machine." "Green"
-				}
-				catch
-				{
-					Write_Log "Shutdown command failed for $machine. Falling back to Restart-Computer." "Red"
-					try
-					{
-						Restart-Computer -ComputerName $machine -Force -ErrorAction Stop
-						Write_Log "Restart-Computer command executed successfully for $machine." "Green"
-					}
-					catch
-					{
-						Write_Log "Failed to reboot backoffice $boNum ($machine) using both methods: $_" "Red"
-					}
-				}
-			}
-			else
+			if (-not $BackofficeNumToMachineName -or -not $BackofficeNumToMachineName.ContainsKey($boNum))
 			{
 				Write_Log "Backoffice mapping not found for $boNum." "yellow"
+				continue
 			}
+			$machine = $BackofficeNumToMachineName[$boNum]
+			Write_Log "Attempting to reboot backoffice $boNum [$machine]" "Yellow"
+			[void](& $rebootRemote $machine "backoffice $boNum ($machine)")
 		}
 	}
-
 	Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
 	[void][System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected nodes.", "Reboot",
 		[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -24777,25 +24658,19 @@ function Sync_Selected_Node_Hosts
 		if ($line -match '^\s*([0-9\.]+)\s+(\S+)\s*$') { $oldMappings[$matches[2].ToLower()] = $matches[1] }
 	}
 
-	# Preserve all lines before the first bare "IP hostname" mapping
-	$defaultSection = @()
-	$customStart = $false
+	# Preserve all lines before the first bare "IP hostname" mapping, minus trailing blank lines.
+	# (A List: trimming an array with [0..($n-2)] looped forever on a one-line section, and a
+	# one-line section became a string that "+" then glued the mappings onto.)
+	$defaultSection = New-Object System.Collections.Generic.List[string]
 	foreach ($line in $oldLines -split "`r?`n")
 	{
-		if (-not $customStart -and $line -notmatch '^\s*[0-9\.]+\s+\S+\s*$')
-		{
-			$defaultSection += $line
-		}
-		elseif (-not $customStart -and $line -match '^\s*[0-9\.]+\s+\S+\s*$')
-		{
-			$customStart = $true
-		}
+		if ($line -match '^\s*[0-9\.]+\s+\S+\s*$') { break }
+		$defaultSection.Add($line)
 	}
-	while ($defaultSection.Count -gt 0 -and [string]::IsNullOrWhiteSpace($defaultSection[-1]))
-	{
-		$defaultSection = $defaultSection[0 .. ($defaultSection.Count - 2)]
-	}
-	$outputLines = @($defaultSection + '', '') # Always 1 blank line after defaults
+	while ($defaultSection.Count -gt 0 -and [string]::IsNullOrWhiteSpace($defaultSection[$defaultSection.Count - 1])) { $defaultSection.RemoveAt($defaultSection.Count - 1) }
+	$outputLines = New-Object System.Collections.Generic.List[string]
+	$outputLines.AddRange($defaultSection)
+	$outputLines.Add('') # one blank line after the defaults
 
 	# ---------------- Build custom mappings (local first, then others by IP) ----------------
 	$orderedMappings = @()
@@ -24814,12 +24689,19 @@ function Sync_Selected_Node_Hosts
 		$rowColor = if ($oldIp -and $oldIp -ne $ip) { "yellow" }
 		else { "green" }
 		$finalRows += @{ IP = $ip; Hostname = $hn; Color = $rowColor }
-		$outputLines += "$ip`t$hn"
+		$outputLines.Add("$ip`t$hn")
 		if ($rowColor -eq "yellow") { $changedMappings += "$hn ($oldIp => $ip)" }
 	}
 
 	# ---------------- Write hosts file (local) ----------------
-	Set-Content -Path $hostsPath -Value $outputLines -Encoding ascii
+	# Stop here when it cannot be written (not elevated): copying would push the OLD file out
+	try { Set-Content -Path $hostsPath -Value $outputLines.ToArray() -Encoding ascii -ErrorAction Stop }
+	catch
+	{
+		Write_Log "Could not write the local hosts file ($hostsPath): $($_.Exception.Message). Run as Administrator. Nothing was copied." "red"
+		Write_Log "`r`n==================== Sync_Selected_Node_Hosts Completed ====================" "blue"
+		return
+	}
 
 	# ---------------- Copy hosts file to selected nodes (skip local) ----------------
 	foreach ($entry in $orderedMappings)
@@ -24866,18 +24748,24 @@ function Sync_Selected_Node_Hosts
 #                              FUNCTION: Test-Hosts_Parallel
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Probes a list of hostnames/IPs in parallel with a per-probe timeout and a concurrency
-#   cap, and returns target -> 'OK' / 'FAIL' / 'ERROR'. Replaces serial Test-Connection
-#   loops that could freeze the UI for minutes when several hosts are down. Falls back to a
-#   serial Test-Connection loop if the parallel path is unavailable.
+#   Probes a list of hostnames/IPs in parallel with a per-probe timeout and returns
+#   target -> 'OK' / 'FAIL' / 'ERROR'. Names are resolved with async DNS, then every address
+#   is pinged with Ping.SendPingAsync, all in flight together (in batches), so a store full of
+#   dead hosts costs about one timeout instead of one timeout per host.
 #
 # Parameters:
 #   - Targets        [string[]]: hostnames or IPv4 addresses to probe (required, pipeline)
 #   - TimeoutMs      [int]: per-probe timeout in milliseconds (default 400)
-#   - MaxConcurrency [int]: max probes in flight (default 10)
+#   - MaxConcurrency [int]: max probes in flight per batch (default 64)
 #
 # Returns:
-#   Hashtable target -> 'OK' (reachable), 'FAIL' (no reply in time) or 'ERROR'.
+#   Hashtable target -> 'OK' (reachable), 'FAIL' (no reply in time) or 'ERROR' (name did
+#   not resolve / probe failed).
+#
+# Notes:
+#   - The previous Parallel.ForEach version ran a PowerShell scriptblock on thread-pool
+#     threads, which have no runspace: it always threw and fell back to a serial
+#     Test-Connection loop (8 dead hosts = 32 seconds).
 # ===================================================================================================
 
 function Test-Hosts_Parallel
@@ -24887,48 +24775,69 @@ function Test-Hosts_Parallel
 		[Parameter(Mandatory = $true, ValueFromPipeline = $true)]
 		[string[]]$Targets,
 		[int]$TimeoutMs = 400,
-		[int]$MaxConcurrency = 10
+		[int]$MaxConcurrency = 64
 	)
 
-	begin { $all = @() }
-	process { $all += @($Targets) }
+	begin { $all = New-Object System.Collections.Generic.List[string] }
+	process { foreach ($t in $Targets) { if (-not [string]::IsNullOrWhiteSpace($t) -and -not $all.Contains($t)) { $all.Add($t) } } }
 	end
 	{
-		$all = @($all | Where-Object { $_ })
-		$out = @{}
+		$out = @{ }
 		if ($all.Count -eq 0) { return $out }
 
-		$done = $false
-		try
-		{
-			$opts = New-Object System.Threading.Tasks.ParallelOptions
-			$opts.MaxDegreeOfParallelism = [Math]::Min([Math]::Max(1, $MaxConcurrency), $all.Count)
-			[void][System.Threading.Tasks.Parallel]::ForEach($all, $opts, [Action[string]] {
-				param($t)
-				$ping = New-Object System.Net.NetworkInformation.Ping
-				try
-				{
-					$r = $ping.Send($t, $TimeoutMs)
-					if ($r.Status -eq [System.Net.IPStatus]::Success) { $out[$t] = 'OK' } else { $out[$t] = 'FAIL' }
-				}
-				catch { $out[$t] = 'ERROR' }
-				finally { $ping.Dispose() }
-			})
-			$done = $true
+		# Wait for a set of tasks without throwing (WaitAll throws when any task faulted)
+		$waitTasks = {
+			param ($Tasks, [int]$Ms)
+			if (@($Tasks).Count -eq 0) { return }
+			try { [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($Tasks), $Ms) }
+			catch { }
 		}
-		catch { $done = $false }
 
-		if (-not $done)
+		$batchSize = [Math]::Max(1, $MaxConcurrency)
+		for ($start = 0; $start -lt $all.Count; $start += $batchSize)
 		{
-			# Serial fallback (previous behavior)
-			foreach ($t in $all)
+			$batch = $all.GetRange($start, [Math]::Min($batchSize, $all.Count - $start))
+
+			# 1) Resolve names (IPs are used as-is)
+			$address = @{ }
+			$dns = @{ }
+			foreach ($t in $batch)
 			{
-				try
+				$ip = $null
+				if ([System.Net.IPAddress]::TryParse($t, [ref]$ip)) { $address[$t] = $ip }
+				else
 				{
-					if (Test-Connection -ComputerName $t -Count 1 -Quiet -ErrorAction Stop) { $out[$t] = 'OK' }
-					else { $out[$t] = 'FAIL' }
+					try { $dns[$t] = [System.Net.Dns]::GetHostAddressesAsync($t) }
+					catch { $out[$t] = 'ERROR' }
 				}
-				catch { $out[$t] = 'ERROR' }
+			}
+			& $waitTasks $dns.Values ([Math]::Max(1500, $TimeoutMs * 3))
+			foreach ($t in $dns.Keys)
+			{
+				$task = $dns[$t]
+				$ipv4 = $null
+				if ($task.Status -eq 'RanToCompletion') { $ipv4 = $task.Result | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | Select-Object -First 1 }
+				if ($ipv4) { $address[$t] = $ipv4 }
+				else { $out[$t] = 'ERROR' }
+			}
+
+			# 2) Ping every resolved address at once (one Ping object per probe)
+			$pings = @{ }
+			foreach ($t in $address.Keys)
+			{
+				$p = New-Object System.Net.NetworkInformation.Ping
+				try { $pings[$t] = @{ Ping = $p; Task = $p.SendPingAsync($address[$t], $TimeoutMs) } }
+				catch { $p.Dispose(); $out[$t] = 'ERROR' }
+			}
+			& $waitTasks @($pings.Values | ForEach-Object { $_.Task }) ($TimeoutMs + 1000)
+			foreach ($t in $pings.Keys)
+			{
+				$task = $pings[$t].Task
+				if ($task.Status -eq 'RanToCompletion') { $out[$t] = if ($task.Result.Status -eq 'Success') { 'OK' } else { 'FAIL' } }
+				elseif ($task.Status -eq 'Faulted') { $out[$t] = 'ERROR' }
+				else { $out[$t] = 'FAIL' }
+				try { $pings[$t].Ping.Dispose() }
+				catch { }
 			}
 		}
 
@@ -25052,15 +24961,16 @@ function Fix_Deploy_CHG
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Repairs journal (EJ) files in the store ZX folder: prompts for a date in a dialog, finds
-#   the related EJ files for that date/store, corrects the affected lines, backs up each file
-#   and writes the fixed content back in ANSI encoding.
+#   the EJ files for that date/store and removes each block from a '<trs F10' line up to (not
+#   including) the next '<trs F1068' line. Each changed file is backed up first - outside the
+#   ZX folder, where SMS would read a backup as another journal - then rewritten in ANSI.
 #
 # Parameters:
 #   - OfficePath   [string]: Storeman Office base path (required)
 #   - StoreNumber  [string]: store number, e.g. 001 (required)
 #
 # Writes:
-#   - ZX folder EJ files (fixed lines) plus a backup file per edited file
+#   - ZX folder EJ files (fixed lines); originals in <BackupRoot>\Journal_Fix\<yyyyMMdd_HHmmss>
 # ===================================================================================================
 
 function Fix_Journal
@@ -25174,7 +25084,8 @@ function Fix_Journal
 		return
 	}
 
-	Write_Log -Message "Found $($matchingFiles.Count) file(s) to fix." "green"
+	Write_Log -Message "Found $(@($matchingFiles).Count) file(s) to check." "green"
+	$backupDir = $null
 
 	# ---------------------------------------------------------------------------------------------
 	# 8) For each matching EJ file, remove lines from <trs F10... up to <trs F1068...
@@ -25232,39 +25143,47 @@ function Fix_Journal
 			}
 		}
 
-		<# -----------------------------------------------------------------------------------------
-		# 10) Make a backup of the original file
-		# * Commented out for now
-		# -----------------------------------------------------------------------------------------
-		$backupPath = "$($file.FullName).bak"
-		try
+		if ($fixedLines.Count -eq @($originalLines).Count)
 		{
-			Copy-Item -Path $file.FullName -Destination $backupPath -Force -ErrorAction Stop
-			Write_Log -Message "Backup created: $backupPath" "green"
-		}
-		catch
-		{
-			Write_Log -Message "Failed to create backup for: $($file.FullName). Skipping file edit." "red"
+			Write_Log -Message "Nothing to fix in: $($file.Name)" "gray"
 			continue
 		}
-		#>
+
+		# -----------------------------------------------------------------------------------------
+		# 10) Back up the original OUTSIDE the ZX folder (a .bak inside ZX reads as a journal)
+		# -----------------------------------------------------------------------------------------
+		if (-not $backupDir)
+		{
+			$backupDir = Join-Path $script:BackupRoot ("Journal_Fix\" + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+			try { New-Item -Path $backupDir -ItemType Directory -Force -ErrorAction Stop | Out-Null }
+			catch
+			{
+				Write_Log -Message "Cannot create backup folder $backupDir - no journal was changed: $($_.Exception.Message)" "red"
+				return
+			}
+		}
+		$backupPath = Join-Path $backupDir $file.Name
+		try { Copy-Item -LiteralPath $file.FullName -Destination $backupPath -Force -ErrorAction Stop }
+		catch
+		{
+			Write_Log -Message "Failed to back up $($file.Name) - file left unchanged." "red"
+			continue
+		}
 
 		# -----------------------------------------------------------------------------------------
 		# 11) Overwrite the original file with the fixed lines in ANSI encoding
 		# -----------------------------------------------------------------------------------------
 		try
 		{
-			$fixedLines | Set-Content -Path $file.FullName -Encoding Default -ErrorAction Stop
-			#	Write_Log -Message "Successfully edited: $($file.FullName). Backup: $backupPath" "green"
-			Write_Log -Message "Successfully edited: $($file.FullName)" "green"
+			$fixedLines | Set-Content -LiteralPath $file.FullName -Encoding Default -ErrorAction Stop
+			Write_Log -Message "Fixed $($file.Name): removed $(@($originalLines).Count - $fixedLines.Count) line(s). Backup: $backupPath" "green"
 		}
 		catch
 		{
 			Write_Log -Message "Failed to write fixed content to: $($file.FullName)." "red"
 			continue
 		}
-	}
-	Write_Log "`r`n==================== Fix_Journal Function Completed ====================" "blue"
+	}	Write_Log "`r`n==================== Fix_Journal Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -25337,7 +25256,9 @@ function INI_Editor
 		param ([string]$Path)
 		if (-not (Test-Path -LiteralPath $Path)) { return $null }
 
-		$raw = Get-Content -LiteralPath $Path -Encoding ASCII
+		# ANSI (Windows-1252), as Storeman writes them: reading/writing ASCII turned every accented
+		# character (store names, receipt lines) into "?" on save and on every merged lane
+		$raw = @(Get-Content -LiteralPath $Path -Encoding Default)
 		$sections = New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Specialized.OrderedDictionary]'
 		$current = $null
 
@@ -25367,12 +25288,17 @@ function INI_Editor
 		return @{ RawLines = $raw; Sections = $sections }
 	}
 
-	# ---------- INI section writer (no extra blank line; preserves key order from OrderedDictionary) ----------
+	# ---------- INI section writer ----------
+	# Merge (default): update keys in place, append new ones, leave other keys alone (deploys).
+	# -ReplaceKeys: the section's keys become exactly $NewKeyValues, in that order (Save: keys
+	# deleted or reordered in the grid used to stay as they were in the file).
+	# Comment and blank lines stay where they are; no extra blank line is added.
 	$writeIniSection = {
 		param (
 			[string[]]$RawLines,
 			[string]$SectionName,
-			[System.Collections.Specialized.OrderedDictionary]$NewKeyValues
+			[System.Collections.Specialized.OrderedDictionary]$NewKeyValues,
+			[bool]$ReplaceKeys = $false
 		)
 		$lines = New-Object System.Collections.Generic.List[string]; $lines.AddRange($RawLines)
 		$start = -1; $end = $lines.Count
@@ -25393,6 +25319,30 @@ function INI_Editor
 		for ($i = $start + 1; $i -lt $lines.Count; $i++)
 		{
 			if ($lines[$i] -match '^\s*\[.+\]\s*$') { $end = $i; break }
+		}
+
+		if ($ReplaceKeys)
+		{
+			# drop every key line of the section, then write the new keys where the first one was
+			$firstKey = -1
+			for ($i = $end - 1; $i -gt $start; $i--)
+			{
+				$L = $lines[$i]
+				if ($L.Trim() -notmatch '^[;#]' -and $L -match '^[^=]+=')
+				{
+					$lines.RemoveAt($i)
+					$end--
+					$firstKey = $i
+				}
+			}
+			if ($firstKey -lt 0)
+			{
+				$firstKey = $start + 1
+				for ($i = $end - 1; $i -gt $start; $i--) { if ($lines[$i].Trim() -ne '') { $firstKey = $i + 1; break } }
+			}
+			$offset = 0
+			foreach ($k in $NewKeyValues.Keys) { $lines.Insert($firstKey + $offset, "$k=$($NewKeyValues[$k])"); $offset++ }
+			return, $lines.ToArray()
 		}
 
 		# find last nonblank/noncomment inside section
@@ -25834,6 +25784,7 @@ function INI_Editor
 	# ==============================================================================================
 
 	$state = @{
+		IsDirty	       = $false
 		SourceIsServer = $true
 		SourceLane	   = $null
 		FullPath	   = $null
@@ -25962,13 +25913,13 @@ function INI_Editor
 				foreach ($k in $kv.Keys) { $od.Add($k, $kv[$k]) }
 			}
 
-			$state.IniObj.RawLines = & $writeIniSection $state.IniObj.RawLines $secActual $kv
+			$state.IniObj.RawLines = & $writeIniSection $state.IniObj.RawLines $secActual $kv $true
 
 			try
 			{
 				$dir = Split-Path -Parent $state.FullPath
 				if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-				Set-Content -LiteralPath $state.FullPath -Value $state.IniObj.RawLines -Encoding ASCII -Force
+				Set-Content -LiteralPath $state.FullPath -Value $state.IniObj.RawLines -Encoding Default -Force
 
 				Write_Log "Saved [$secActual] to $($state.FullPath)" "green"
 				[System.Windows.Forms.MessageBox]::Show("Saved section [$secActual] to:`r`n$($state.FullPath)", "Saved",
@@ -26050,8 +26001,7 @@ function INI_Editor
 
 			$StoreNumber = $script:FunctionResults['StoreNumber']
 			$sel = $null
-			try { $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select destination lanes" -ExcludedNodes $excluded }
-			catch { $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select destination lanes" }
+			$sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select destination lanes" -ExcludedNodes $excluded
 			if (-not $sel) { Write_Log "Copy aborted: no lanes selected." "yellow"; return }
 
 			$laneNums = @()
@@ -26075,7 +26025,7 @@ function INI_Editor
 
 			$destMachines = & $lanesToMachines $laneNums
 			if (-not $state.SourceIsServer -and $state.SourceLane) { $destMachines = $destMachines | Where-Object { $_ -ne $state.SourceLane } }
-			$destMachines = $destMachines | Select-Object -Unique
+			$destMachines = @($destMachines | Select-Object -Unique)
 			if ($destMachines.Count -eq 0)
 			{
 				[System.Windows.Forms.MessageBox]::Show("No valid destination machines resolved.", "No destinations",
@@ -26120,7 +26070,7 @@ function INI_Editor
 					$destIni.RawLines = & $writeIniSection $destIni.RawLines $secActual $kv
 					try
 					{
-						Set-Content -LiteralPath $dstFull -Value $destIni.RawLines -Encoding ASCII -Force
+						Set-Content -LiteralPath $dstFull -Value $destIni.RawLines -Encoding Default -Force
 						Write_Log "Merged [$secActual] into $dstFull on $m" "green"; $ok++
 					}
 					catch
@@ -26153,7 +26103,7 @@ function INI_Editor
 				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 		})
 
-	# run no-op/activity log when the form actually closes (covers X, Alt+F4, Close button)	$btnClose.Add_Click({
+	# Activity line when the form closes (covers X, Alt+F4 and the Close button)
 	$frm.Add_FormClosed({
 			if (-not $state.DidSave -and -not $state.DidDeploy)
 			{
@@ -26190,9 +26140,6 @@ function INI_Editor
 #   script via Invoke-Expression (irm <url>). The remote execution and the password were
 #   removed for security; the function now logs the disabled state and returns. The
 #   "Activate Windows" menu item stays so the reason is visible in the log.
-#
-# Notes:
-#   - The old password prompt and URL download code below the disabled check is inert.
 # ===================================================================================================
 
 function Invoke_Secure_Script
@@ -26205,74 +26152,6 @@ function Invoke_Secure_Script
 	Write_Log "Invoke_Secure_Script is disabled: remote Invoke-Expression/irm execution was removed for security." "red"
 	Write_Log "If this workflow is required, replace it with a signed local script and hash verification." "yellow"
 	Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "blue"
-	return
-
-	# --- Password Prompt (GUI) ---
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
-	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Authentication Required"
-	$form.Size = New-Object System.Drawing.Size(350, 150)
-	$form.StartPosition = "CenterScreen"
-	$form.FormBorderStyle = 'FixedDialog'
-	$form.MaximizeBox = $false
-	$form.MinimizeBox = $false
-
-	$label = New-Object System.Windows.Forms.Label
-	$label.Text = "Please enter the password to proceed:"
-	$label.AutoSize = $true
-	$label.Location = New-Object System.Drawing.Point(10, 20)
-	$form.Controls.Add($label)
-
-	$textbox = New-Object System.Windows.Forms.TextBox
-	$textbox.Location = New-Object System.Drawing.Point(10, 50)
-	$textbox.Size = New-Object System.Drawing.Size(310, 20)
-	$textbox.UseSystemPasswordChar = $true
-	$form.Controls.Add($textbox)
-
-	$buttonOK = New-Object System.Windows.Forms.Button
-	$buttonOK.Text = "OK"
-	$buttonOK.Location = New-Object System.Drawing.Point(160, 80)
-	$buttonOK.Size = New-Object System.Drawing.Size(80, 30)
-	$buttonOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$form.AcceptButton = $buttonOK
-	$form.Controls.Add($buttonOK)
-
-	$buttonCancel = New-Object System.Windows.Forms.Button
-	$buttonCancel.Text = "Cancel"
-	$buttonCancel.Location = New-Object System.Drawing.Point(240, 80)
-	$buttonCancel.Size = New-Object System.Drawing.Size(80, 30)
-	$buttonCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$form.CancelButton = $buttonCancel
-	$form.Controls.Add($buttonCancel)
-
-	$dialogResult = $form.ShowDialog()
-	$password = if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) { $textbox.Text }
-	else { $null }
-
-	if (-not $password)
-	{
-		Write_Log "User canceled the authentication prompt." "yellow"
-		Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "blue"
-		return
-	}
-
-	# --- Verify Password ---
-	if ($password -ne $storedPassword)
-	{
-		Write_Log "Authentication failed. Incorrect password." "red"
-		Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "blue"
-		return
-	}
-
-	Write_Log "Authentication successful. Proceeding with script execution." "green"
-
-	# --- Execute Script from URL ---
-	# Remote execution intentionally removed. This block is inert.
-	Write_Log "Remote script execution remains disabled." "gray"
-
-	# --- Log End ---
-	Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
@@ -26281,12 +26160,13 @@ function Invoke_Secure_Script
 # Description:
 #   Clears the file archive bit so the Storeman load process re-copies changed files. Run Now
 #   does a one-time recursive clear using the lane map (or Ter_Load.sql parsing, local paths
-#   only). Service mode installs an NSSM service with a FileSystemWatcher that does a full
-#   cleanup at startup and clears the bit on touched items in real time, rebuilding watchers
-#   when Ter_Load.sql changes. Includes an Uninstall Service button.
+#   only). Service mode installs an NSSM service with FileSystemWatchers that do a full
+#   cleanup at startup and then clear the bits on each touched item as it changes; a
+#   Ter_Load.sql change or a watcher overflow rebuilds the watchers with a full cleanup.
+#   Includes an Uninstall Service button.
 #
 # Variables:
-#   - $OfficePath / $StartupIniPath: local Office root and Startup.ini (input)
+#   - $OfficePath: local Office root (input)
 #   - $script:ScriptsFolder: folder for the generated service PS1
 #   - $script:FunctionResults['StoreNumber']: store number for the logs
 #
@@ -26317,7 +26197,6 @@ function Remove_Archive_Bit
 	}
 
 	# --- Main context variables
-	$iniFile = $StartupIniPath
 	$storeNumber = [string]$script:FunctionResults['StoreNumber']
 	$scriptFolder = $script:ScriptsFolder
 
@@ -26747,11 +26626,27 @@ try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Ter_Load local: {1}" -f 
 
 while (`$true)
 {
+	# Touched item -> clear just its bits. Only a Ter_Load.sql change or a watcher overflow
+	# (_e) rebuilds everything (every file event used to trigger a full attrib rescan).
 	try {
-		`$queuedEvents = @(Get-Event -ErrorAction SilentlyContinue | Where-Object { [string]`$_.SourceIdentifier -like 'RAB_*' })
-		foreach (`$evt in `$queuedEvents)
+		`$clearBits = [System.IO.FileAttributes]::Archive -bor [System.IO.FileAttributes]::ReadOnly
+		foreach (`$evt in @(Get-Event -ErrorAction SilentlyContinue | Where-Object { [string]`$_.SourceIdentifier -like 'RAB_*' }))
 		{
-			`$needRebuild = `$true
+			`$sid = [string]`$evt.SourceIdentifier
+			if (`$sid -like 'RAB_TER_WATCH*' -or `$sid -like '*_e') { `$needRebuild = `$true }
+			else {
+				try {
+					`$p = [string]`$evt.SourceEventArgs.FullPath
+					if (`$p -and (Test-Path -LiteralPath `$p)) {
+						`$it = Get-Item -LiteralPath `$p -Force -ErrorAction Stop
+						if (`$it.Attributes -band `$clearBits) {
+							`$newAttr = [int](`$it.Attributes) -band (-bnot [int]`$clearBits)
+							if (`$newAttr -eq 0) { `$newAttr = [int][System.IO.FileAttributes]::Normal }
+							`$it.Attributes = [System.IO.FileAttributes]`$newAttr
+						}
+					}
+				} catch { }
+			}
 			try { Remove-Event -EventIdentifier `$evt.EventIdentifier -ErrorAction SilentlyContinue } catch { }
 		}
 	} catch { }
@@ -26770,6 +26665,7 @@ while (`$true)
 					Unregister-Event -SourceIdentifier (`$id + '_c') -ErrorAction SilentlyContinue
 					Unregister-Event -SourceIdentifier (`$id + '_r') -ErrorAction SilentlyContinue
 					Unregister-Event -SourceIdentifier (`$id + '_d') -ErrorAction SilentlyContinue
+					Unregister-Event -SourceIdentifier (`$id + '_e') -ErrorAction SilentlyContinue
 				} catch { }
 				try { `$w.Dispose() } catch { }
 			}
@@ -26875,12 +26771,14 @@ while (`$true)
 				`$fsw.Filter = '*'
 				`$fsw.IncludeSubdirectories = `$true
 				`$fsw.NotifyFilter = [System.IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Attributes'
+				`$fsw.InternalBufferSize = 65536
 
 				`$id = 'RAB_FSW_' + `$fsw.GetHashCode().ToString()
 				Register-ObjectEvent -InputObject `$fsw -EventName Created -SourceIdentifier `$id | Out-Null
 				Register-ObjectEvent -InputObject `$fsw -EventName Changed -SourceIdentifier (`$id + '_c') | Out-Null
 				Register-ObjectEvent -InputObject `$fsw -EventName Renamed -SourceIdentifier (`$id + '_r') | Out-Null
 				Register-ObjectEvent -InputObject `$fsw -EventName Deleted -SourceIdentifier (`$id + '_d') | Out-Null
+				Register-ObjectEvent -InputObject `$fsw -EventName Error -SourceIdentifier (`$id + '_e') | Out-Null
 
 				`$fsw.EnableRaisingEvents = `$true
 				[void]`$watchers.Add(`$fsw)
@@ -26909,7 +26807,8 @@ while (`$true)
 		try { Add-Content -LiteralPath `$LogFile -Value ("[{0}] Watchers active: {1}" -f (Get-Date), `$watchers.Count) -Encoding UTF8 } catch { }
 	}
 
-	Start-Sleep -Seconds `$AutoPollSeconds
+	# Wake on the next event (or after the poll interval)
+	`$null = Wait-Event -Timeout `$AutoPollSeconds
 }
 "@
 
@@ -26955,12 +26854,6 @@ while (`$true)
 	# ------------------------------------------------------------------------------------------------
 	# RUN NOW (one-time)
 	# ------------------------------------------------------------------------------------------------
-	if (-not (Test-Path -LiteralPath $iniFile))
-	{
-		Write_Log "ERROR: INI file not found - $iniFile" "red"
-		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
-		return
-	}
 	if (-not $storeNumber)
 	{
 		Write_Log "ERROR: Store number not present in context." "red"

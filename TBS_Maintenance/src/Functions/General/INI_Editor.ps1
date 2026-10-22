@@ -68,7 +68,9 @@ function INI_Editor
 		param ([string]$Path)
 		if (-not (Test-Path -LiteralPath $Path)) { return $null }
 
-		$raw = Get-Content -LiteralPath $Path -Encoding ASCII
+		# ANSI (Windows-1252), as Storeman writes them: reading/writing ASCII turned every accented
+		# character (store names, receipt lines) into "?" on save and on every merged lane
+		$raw = @(Get-Content -LiteralPath $Path -Encoding Default)
 		$sections = New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Specialized.OrderedDictionary]'
 		$current = $null
 
@@ -98,12 +100,17 @@ function INI_Editor
 		return @{ RawLines = $raw; Sections = $sections }
 	}
 
-	# ---------- INI section writer (no extra blank line; preserves key order from OrderedDictionary) ----------
+	# ---------- INI section writer ----------
+	# Merge (default): update keys in place, append new ones, leave other keys alone (deploys).
+	# -ReplaceKeys: the section's keys become exactly $NewKeyValues, in that order (Save: keys
+	# deleted or reordered in the grid used to stay as they were in the file).
+	# Comment and blank lines stay where they are; no extra blank line is added.
 	$writeIniSection = {
 		param (
 			[string[]]$RawLines,
 			[string]$SectionName,
-			[System.Collections.Specialized.OrderedDictionary]$NewKeyValues
+			[System.Collections.Specialized.OrderedDictionary]$NewKeyValues,
+			[bool]$ReplaceKeys = $false
 		)
 		$lines = New-Object System.Collections.Generic.List[string]; $lines.AddRange($RawLines)
 		$start = -1; $end = $lines.Count
@@ -124,6 +131,30 @@ function INI_Editor
 		for ($i = $start + 1; $i -lt $lines.Count; $i++)
 		{
 			if ($lines[$i] -match '^\s*\[.+\]\s*$') { $end = $i; break }
+		}
+
+		if ($ReplaceKeys)
+		{
+			# drop every key line of the section, then write the new keys where the first one was
+			$firstKey = -1
+			for ($i = $end - 1; $i -gt $start; $i--)
+			{
+				$L = $lines[$i]
+				if ($L.Trim() -notmatch '^[;#]' -and $L -match '^[^=]+=')
+				{
+					$lines.RemoveAt($i)
+					$end--
+					$firstKey = $i
+				}
+			}
+			if ($firstKey -lt 0)
+			{
+				$firstKey = $start + 1
+				for ($i = $end - 1; $i -gt $start; $i--) { if ($lines[$i].Trim() -ne '') { $firstKey = $i + 1; break } }
+			}
+			$offset = 0
+			foreach ($k in $NewKeyValues.Keys) { $lines.Insert($firstKey + $offset, "$k=$($NewKeyValues[$k])"); $offset++ }
+			return, $lines.ToArray()
 		}
 
 		# find last nonblank/noncomment inside section
@@ -565,6 +596,7 @@ function INI_Editor
 	# ==============================================================================================
 
 	$state = @{
+		IsDirty	       = $false
 		SourceIsServer = $true
 		SourceLane	   = $null
 		FullPath	   = $null
@@ -693,13 +725,13 @@ function INI_Editor
 				foreach ($k in $kv.Keys) { $od.Add($k, $kv[$k]) }
 			}
 
-			$state.IniObj.RawLines = & $writeIniSection $state.IniObj.RawLines $secActual $kv
+			$state.IniObj.RawLines = & $writeIniSection $state.IniObj.RawLines $secActual $kv $true
 
 			try
 			{
 				$dir = Split-Path -Parent $state.FullPath
 				if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-				Set-Content -LiteralPath $state.FullPath -Value $state.IniObj.RawLines -Encoding ASCII -Force
+				Set-Content -LiteralPath $state.FullPath -Value $state.IniObj.RawLines -Encoding Default -Force
 
 				Write_Log "Saved [$secActual] to $($state.FullPath)" "green"
 				[System.Windows.Forms.MessageBox]::Show("Saved section [$secActual] to:`r`n$($state.FullPath)", "Saved",
@@ -781,8 +813,7 @@ function INI_Editor
 
 			$StoreNumber = $script:FunctionResults['StoreNumber']
 			$sel = $null
-			try { $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select destination lanes" -ExcludedNodes $excluded }
-			catch { $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select destination lanes" }
+			$sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select destination lanes" -ExcludedNodes $excluded
 			if (-not $sel) { Write_Log "Copy aborted: no lanes selected." "yellow"; return }
 
 			$laneNums = @()
@@ -806,7 +837,7 @@ function INI_Editor
 
 			$destMachines = & $lanesToMachines $laneNums
 			if (-not $state.SourceIsServer -and $state.SourceLane) { $destMachines = $destMachines | Where-Object { $_ -ne $state.SourceLane } }
-			$destMachines = $destMachines | Select-Object -Unique
+			$destMachines = @($destMachines | Select-Object -Unique)
 			if ($destMachines.Count -eq 0)
 			{
 				[System.Windows.Forms.MessageBox]::Show("No valid destination machines resolved.", "No destinations",
@@ -851,7 +882,7 @@ function INI_Editor
 					$destIni.RawLines = & $writeIniSection $destIni.RawLines $secActual $kv
 					try
 					{
-						Set-Content -LiteralPath $dstFull -Value $destIni.RawLines -Encoding ASCII -Force
+						Set-Content -LiteralPath $dstFull -Value $destIni.RawLines -Encoding Default -Force
 						Write_Log "Merged [$secActual] into $dstFull on $m" "green"; $ok++
 					}
 					catch
@@ -884,7 +915,7 @@ function INI_Editor
 				[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 		})
 
-	# run no-op/activity log when the form actually closes (covers X, Alt+F4, Close button)	$btnClose.Add_Click({
+	# Activity line when the form closes (covers X, Alt+F4 and the Close button)
 	$frm.Add_FormClosed({
 			if (-not $state.DidSave -and -not $state.DidDeploy)
 			{

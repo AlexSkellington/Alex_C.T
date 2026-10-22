@@ -182,25 +182,19 @@ function Sync_Selected_Node_Hosts
 		if ($line -match '^\s*([0-9\.]+)\s+(\S+)\s*$') { $oldMappings[$matches[2].ToLower()] = $matches[1] }
 	}
 
-	# Preserve all lines before the first bare "IP hostname" mapping
-	$defaultSection = @()
-	$customStart = $false
+	# Preserve all lines before the first bare "IP hostname" mapping, minus trailing blank lines.
+	# (A List: trimming an array with [0..($n-2)] looped forever on a one-line section, and a
+	# one-line section became a string that "+" then glued the mappings onto.)
+	$defaultSection = New-Object System.Collections.Generic.List[string]
 	foreach ($line in $oldLines -split "`r?`n")
 	{
-		if (-not $customStart -and $line -notmatch '^\s*[0-9\.]+\s+\S+\s*$')
-		{
-			$defaultSection += $line
-		}
-		elseif (-not $customStart -and $line -match '^\s*[0-9\.]+\s+\S+\s*$')
-		{
-			$customStart = $true
-		}
+		if ($line -match '^\s*[0-9\.]+\s+\S+\s*$') { break }
+		$defaultSection.Add($line)
 	}
-	while ($defaultSection.Count -gt 0 -and [string]::IsNullOrWhiteSpace($defaultSection[-1]))
-	{
-		$defaultSection = $defaultSection[0 .. ($defaultSection.Count - 2)]
-	}
-	$outputLines = @($defaultSection + '', '') # Always 1 blank line after defaults
+	while ($defaultSection.Count -gt 0 -and [string]::IsNullOrWhiteSpace($defaultSection[$defaultSection.Count - 1])) { $defaultSection.RemoveAt($defaultSection.Count - 1) }
+	$outputLines = New-Object System.Collections.Generic.List[string]
+	$outputLines.AddRange($defaultSection)
+	$outputLines.Add('') # one blank line after the defaults
 
 	# ---------------- Build custom mappings (local first, then others by IP) ----------------
 	$orderedMappings = @()
@@ -219,12 +213,19 @@ function Sync_Selected_Node_Hosts
 		$rowColor = if ($oldIp -and $oldIp -ne $ip) { "yellow" }
 		else { "green" }
 		$finalRows += @{ IP = $ip; Hostname = $hn; Color = $rowColor }
-		$outputLines += "$ip`t$hn"
+		$outputLines.Add("$ip`t$hn")
 		if ($rowColor -eq "yellow") { $changedMappings += "$hn ($oldIp => $ip)" }
 	}
 
 	# ---------------- Write hosts file (local) ----------------
-	Set-Content -Path $hostsPath -Value $outputLines -Encoding ascii
+	# Stop here when it cannot be written (not elevated): copying would push the OLD file out
+	try { Set-Content -Path $hostsPath -Value $outputLines.ToArray() -Encoding ascii -ErrorAction Stop }
+	catch
+	{
+		Write_Log "Could not write the local hosts file ($hostsPath): $($_.Exception.Message). Run as Administrator. Nothing was copied." "red"
+		Write_Log "`r`n==================== Sync_Selected_Node_Hosts Completed ====================" "blue"
+		return
+	}
 
 	# ---------------- Copy hosts file to selected nodes (skip local) ----------------
 	foreach ($entry in $orderedMappings)
