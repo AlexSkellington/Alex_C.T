@@ -229,7 +229,7 @@ $script:IdleTimer.add_Tick({
 					}
 					catch { }
 
-					if ($form -and -not $form.IsDisposed) { $form.Close() }
+					if ($script:MainForm -and -not $script:MainForm.IsDisposed) { $script:MainForm.Close() }
 				}
 				else
 				{

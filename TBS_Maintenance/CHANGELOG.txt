@@ -5,6 +5,21 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.1  -  2026-10-22
+#  Main window lost its banner text after any action that opened a dialog
+# ===================================================================================================
+#
+#  [FIX]  After an action with a dialog (Server DB Maintenance, lane / node pickers, ...) the
+#         banner title, store label, clock and KEY EXPIRED badge disappeared. The popup theme
+#         timer recognised the main window as "$form" - but a timer tick runs inside the
+#         active dialog function, where $form is that dialog's own window, so the MAIN window
+#         was restyled as a popup (dark text on the dark banner). The main window is now
+#         $script:MainForm, which no dialog shadows; the idle-close timer (it could have closed
+#         the dialog instead of the app) and the layout helpers use it too.
+#  [REPO] The built script is published as a GitHub Release asset; the root
+#         TBS_Maintenace_Script_V2.ps1 (bit.ly/TBS_Maintenance_Script) is a small launcher for
+#         the latest release. MiniGhost moved to MiniGhost\MiniGhost.ps1 with its own launcher.
+## ===================================================================================================
 #  v2.7.0  -  2026-10-22
 #  Modular source tree, build step, and a full review of every function
 # ===================================================================================================

@@ -68,6 +68,10 @@ $toolTip.BackColor = [System.Drawing.Color]::White
 # Main Form (modern palette + DPI scaling)
 # ------------------------------------------------------------------------------------------------
 $form = New-Object System.Windows.Forms.Form
+# Timers and handlers can fire while a dialog function is running, and many dialogs name their
+# own window $form - inside such a tick "$form" is the DIALOG. Code that may run then uses
+# $script:MainForm, which no dialog shadows.
+$script:MainForm = $form
 $form.Text = "TBS Maintenance Script" # Modern: keep title clean; details remain visible in header/subtext
 $form.Size = New-Object System.Drawing.Size(1006, 570)
 $form.MinimumSize = New-Object System.Drawing.Size(800, 520)

@@ -216,6 +216,7 @@ $bannerPanel.Controls.Add($bannerStatusPanel)
 #   banner's center line so they all sit on the same plane. Runs again on every resize.
 # ===================================================================================================
 $layoutBanner = {
+	$form = $script:MainForm # called from Get_Store_And_Database_Info, possibly during a dialog
 	if (-not $form -or $form.IsDisposed) { return }
 	if (-not $bannerPanel -or $bannerPanel.IsDisposed) { return }
 	try

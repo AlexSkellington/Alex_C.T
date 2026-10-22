@@ -84,6 +84,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\Smok
 - **`Get-Job -Name <missing>`** records an error even with SilentlyContinue - filter with
   `Get-Job | Where-Object { $_.Name -eq ... }`.
 - The built file is **LF**; newline conversions in sources use `-replace "`r?`n", "`r`n"`.
+- **`$form` inside timers and event handlers**: a handler runs in the scope that is active when
+  it fires - during a dialog that is the dialog function, whose local `$form` is the dialog.
+  Code that can run then (timer ticks, layout helpers, refreshes) uses `$script:MainForm`.
 - GUI files (`src/GUI/01..14`) run top to bottom in script scope and share variables
   (`$form`, `$toolTip`, `$logBox`, `$ui*` colours, `$layout*` blocks). Handlers resolve those
   names when they fire, not when they are created.

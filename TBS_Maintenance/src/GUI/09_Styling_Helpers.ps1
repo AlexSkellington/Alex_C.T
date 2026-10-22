@@ -254,7 +254,10 @@ if (-not $script:PopupThemeTimer)
 				foreach ($openForm in [System.Windows.Forms.Application]::OpenForms)
 				{
 					if (-not $openForm -or $openForm.IsDisposed) { continue }
-					if ($form -and [object]::ReferenceEquals($openForm, $form)) { continue }
+					# $script:MainForm, not $form: during a dialog $form is that dialog, and the main
+					# window then got restyled (dark text on the dark banner - the title, store label,
+					# clock and badge "disappeared" after any action with a dialog)
+					if ([object]::ReferenceEquals($openForm, $script:MainForm)) { continue }
 
 					$formHash = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($openForm)
 					$activeHashes[$formHash] = $true

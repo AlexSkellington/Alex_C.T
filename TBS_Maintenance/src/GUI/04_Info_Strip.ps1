@@ -388,6 +388,7 @@ $NodesBackoffices.Add_Click({
 # Top-strip layout scriptblock (kept name for compatibility; now it sizes cards cleanly)
 # ------------------------------------------------------------------------------------------------
 $layoutTopStrip = {
+	$form = $script:MainForm # may run from a timer tick during a dialog
 	if (-not $form -or $form.IsDisposed) { return }
 
 	try

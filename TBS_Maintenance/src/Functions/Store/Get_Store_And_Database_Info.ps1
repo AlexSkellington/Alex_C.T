@@ -511,7 +511,7 @@ function Get_Store_And_Database_Info
 
 			if ($anyLabelChanged)
 			{
-				if ($null -ne $form) { $form.Refresh() }
+				if ($null -ne $script:MainForm) { $script:MainForm.Refresh() }
 				try { [System.Windows.Forms.Application]::DoEvents() }
 				catch { }
 			}

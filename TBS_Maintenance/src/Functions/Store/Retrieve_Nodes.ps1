@@ -79,7 +79,7 @@ function Retrieve_Nodes
 		if ($null -ne $NodesBackoffices) { $NodesBackoffices.Text = "Number of Backoffices: $Backoffices" }
 		if ($null -ne $NodesStore) { $NodesStore.Text = "Number of Lanes: $Lanes" }
 		if ($null -ne $scalesLabel) { $scalesLabel.Text = "Number of Scales: $Scales" }
-		if ($null -ne $form) { $form.Refresh() }
+		if ($null -ne $script:MainForm) { $script:MainForm.Refresh() }
 	}
 
 	# Builds $Nodes from the local variables and publishes everything (dot-sourced: runs in

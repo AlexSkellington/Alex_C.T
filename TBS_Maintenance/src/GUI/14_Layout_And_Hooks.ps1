@@ -29,6 +29,7 @@ if ($logFrame) { $logFrame.Anchor = 'Top,Left,Right,Bottom' }
 if ($logBox) { $logBox.Anchor = 'Top,Left,Right,Bottom' }
 
 $layoutBottom = {
+	$form = $script:MainForm # may run from a timer tick during a dialog
 	if (-not $form -or $form.IsDisposed) { return }
 
 	# --- Compute shared row width (log + button row align) ---------------------
