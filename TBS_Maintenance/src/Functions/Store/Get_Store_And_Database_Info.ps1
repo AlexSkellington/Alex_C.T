@@ -21,7 +21,10 @@
 #   - Setup_Files\Get_Store_And_Database_Info.txt (JSON cache)
 #
 # Notes:
-#   - Always re-detects the SQL module; updates GUI labels even on a cache hit (finally block).
+#   - The SQL module is detected only when the store data is (re)parsed - a cache hit keeps the
+#     cached SqlModuleName (Get-Module -ListAvailable is slow).
+#   - Updates the GUI labels even on a cache hit (finally block).
+#   - StoreNumber / Terminal are 3-digit padded when numeric (1 -> 001).
 # ===================================================================================================
 
 function Get_Store_And_Database_Info
@@ -46,7 +49,7 @@ function Get_Store_And_Database_Info
 
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 
-	# CHANGE: Wrap the whole function in try/finally so GUI labels update even if we "return" on cache hit
+	# try/finally: the GUI labels update even when a cache hit returns early
 	try
 	{
 		$availableSqlModule = $null
@@ -155,11 +158,11 @@ function Get_Store_And_Database_Info
 
 					if ($t -match '^\s*STORE\s*=\s*(\d+)\s*$')
 					{
-						$startupStore = ($Matches[1] -as [int]).ToString('000')
+						$startupStore = ([int]$Matches[1]).ToString('000')
 					}
 					elseif ($t -match '^\s*TER\s*=\s*(\d+)\s*$')
 					{
-						$startupTer = ($Matches[1] -as [int]).ToString('000')
+						$startupTer = ([int]$Matches[1]).ToString('000')
 					}
 				}
 
@@ -322,8 +325,8 @@ function Get_Store_And_Database_Info
 					}
 					"SYSTEM" {
 						if ($key -ieq "CompanyName") { $script:FunctionResults['CompanyName'] = $value }
-						if ($key -ieq "Store") { $script:FunctionResults['StoreNumber'] = ($value -as [int]).ToString('000') }
-						if ($key -ieq "Terminal") { $script:FunctionResults['Terminal'] = ($value -as [int]).ToString('000') }
+						if ($key -ieq "Store") { $script:FunctionResults['StoreNumber'] = if ($value -match '^\d+$') { ([int]$value).ToString('000') } else { $value } }
+						if ($key -ieq "Terminal") { $script:FunctionResults['Terminal'] = if ($value -match '^\d+$') { ([int]$value).ToString('000') } else { $value } }
 					}
 					"STOREDETAIL" {
 						if ($key -ieq "Name") { $script:FunctionResults['StoreName'] = $value }
@@ -460,23 +463,22 @@ function Get_Store_And_Database_Info
 		# ------------------------------------------------------------------------------------------------
 		# GUI label updates (optional)
 		# ------------------------------------------------------------------------------------------------
-		# CHANGE: This runs even when we returned early due to a cache hit (fixes "labels not updating").
-		# CHANGE: Safer Refresh/DoEvents calls (won't throw if $form isn't set or WinForms isn't loaded).
+		# Runs even after an early return on a cache hit; safe without a form (background jobs).
 		try
 		{
 			$anyLabelChanged = $false
 
-			if ($storeNumberLabel -ne $null)
+			if ($null -ne $storeNumberLabel)
 			{
 				$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
 				$anyLabelChanged = $true
 			}
-			if ($storeNameLabel -ne $null)
+			if ($null -ne $storeNameLabel)
 			{
 				$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
 				$anyLabelChanged = $true
 			}
-			if ($bannerDateLabel -ne $null)
+			if ($null -ne $bannerDateLabel)
 			{
 				try
 				{
@@ -501,7 +503,7 @@ function Get_Store_And_Database_Info
 				}
 				catch { }
 			}
-			if ($smsVersionLabel -ne $null)
+			if ($null -ne $smsVersionLabel)
 			{
 				$smsVersionLabel.Text = "SMS Version: $($script:FunctionResults['SMSVersionFull'])"
 				$anyLabelChanged = $true
@@ -509,7 +511,7 @@ function Get_Store_And_Database_Info
 
 			if ($anyLabelChanged)
 			{
-				if ($form -ne $null) { $form.Refresh() }
+				if ($null -ne $form) { $form.Refresh() }
 				try { [System.Windows.Forms.Application]::DoEvents() }
 				catch { }
 			}

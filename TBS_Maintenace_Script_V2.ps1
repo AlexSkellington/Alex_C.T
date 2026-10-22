@@ -2772,7 +2772,10 @@ function Get_All_Lanes_Database_Info
 #   - Setup_Files\Get_Store_And_Database_Info.txt (JSON cache)
 #
 # Notes:
-#   - Always re-detects the SQL module; updates GUI labels even on a cache hit (finally block).
+#   - The SQL module is detected only when the store data is (re)parsed - a cache hit keeps the
+#     cached SqlModuleName (Get-Module -ListAvailable is slow).
+#   - Updates the GUI labels even on a cache hit (finally block).
+#   - StoreNumber / Terminal are 3-digit padded when numeric (1 -> 001).
 # ===================================================================================================
 
 function Get_Store_And_Database_Info
@@ -2797,7 +2800,7 @@ function Get_Store_And_Database_Info
 
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 
-	# CHANGE: Wrap the whole function in try/finally so GUI labels update even if we "return" on cache hit
+	# try/finally: the GUI labels update even when a cache hit returns early
 	try
 	{
 		$availableSqlModule = $null
@@ -2906,11 +2909,11 @@ function Get_Store_And_Database_Info
 
 					if ($t -match '^\s*STORE\s*=\s*(\d+)\s*$')
 					{
-						$startupStore = ($Matches[1] -as [int]).ToString('000')
+						$startupStore = ([int]$Matches[1]).ToString('000')
 					}
 					elseif ($t -match '^\s*TER\s*=\s*(\d+)\s*$')
 					{
-						$startupTer = ($Matches[1] -as [int]).ToString('000')
+						$startupTer = ([int]$Matches[1]).ToString('000')
 					}
 				}
 
@@ -3073,8 +3076,8 @@ function Get_Store_And_Database_Info
 					}
 					"SYSTEM" {
 						if ($key -ieq "CompanyName") { $script:FunctionResults['CompanyName'] = $value }
-						if ($key -ieq "Store") { $script:FunctionResults['StoreNumber'] = ($value -as [int]).ToString('000') }
-						if ($key -ieq "Terminal") { $script:FunctionResults['Terminal'] = ($value -as [int]).ToString('000') }
+						if ($key -ieq "Store") { $script:FunctionResults['StoreNumber'] = if ($value -match '^\d+$') { ([int]$value).ToString('000') } else { $value } }
+						if ($key -ieq "Terminal") { $script:FunctionResults['Terminal'] = if ($value -match '^\d+$') { ([int]$value).ToString('000') } else { $value } }
 					}
 					"STOREDETAIL" {
 						if ($key -ieq "Name") { $script:FunctionResults['StoreName'] = $value }
@@ -3211,23 +3214,22 @@ function Get_Store_And_Database_Info
 		# ------------------------------------------------------------------------------------------------
 		# GUI label updates (optional)
 		# ------------------------------------------------------------------------------------------------
-		# CHANGE: This runs even when we returned early due to a cache hit (fixes "labels not updating").
-		# CHANGE: Safer Refresh/DoEvents calls (won't throw if $form isn't set or WinForms isn't loaded).
+		# Runs even after an early return on a cache hit; safe without a form (background jobs).
 		try
 		{
 			$anyLabelChanged = $false
 
-			if ($storeNumberLabel -ne $null)
+			if ($null -ne $storeNumberLabel)
 			{
 				$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
 				$anyLabelChanged = $true
 			}
-			if ($storeNameLabel -ne $null)
+			if ($null -ne $storeNameLabel)
 			{
 				$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
 				$anyLabelChanged = $true
 			}
-			if ($bannerDateLabel -ne $null)
+			if ($null -ne $bannerDateLabel)
 			{
 				try
 				{
@@ -3252,7 +3254,7 @@ function Get_Store_And_Database_Info
 				}
 				catch { }
 			}
-			if ($smsVersionLabel -ne $null)
+			if ($null -ne $smsVersionLabel)
 			{
 				$smsVersionLabel.Text = "SMS Version: $($script:FunctionResults['SMSVersionFull'])"
 				$anyLabelChanged = $true
@@ -3260,7 +3262,7 @@ function Get_Store_And_Database_Info
 
 			if ($anyLabelChanged)
 			{
-				if ($form -ne $null) { $form.Refresh() }
+				if ($null -ne $form) { $form.Refresh() }
 				try { [System.Windows.Forms.Application]::DoEvents() }
 				catch { }
 			}
@@ -4290,24 +4292,35 @@ ORDER BY F1000,F1063;
 #                              FUNCTION: Retrieve_Nodes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Counts the store's hosts, lanes, backoffices, servers and scales and builds the
-#   lane-number-to-machine-name map. Prefers database queries (TER_TAB, TBS_SCL_ver520,
-#   server check) with a file-system fallback, caches the result per store, updates the
-#   GUI count labels and returns the full nodes object.
+#   Finds the store's lanes, scales, server and backoffices and builds every lookup map the
+#   rest of the script uses (lane number -> machine, scale code -> IP info, ...). Sources, in
+#   order: the store database (TER_TAB + TBS_SCL_ver520), else Office\Load\Ter_Load.sql; TER
+#   scales are enriched from XchScale\XchNodes.ini. Results are cached per store, the GUI
+#   count labels are updated, and the nodes object is returned.
 #
 # Parameters:
 #   - StoreNumber  [string]: store to count (required)
-#   - RefreshCache [switch]: ignore in-memory/file cache and re-query
+#   - RefreshCache [switch]: ignore the in-memory / file cache and rediscover
 #
 # Variables:
-#   - $script:FunctionResults: receives Nodes, LaneNumToMachineName, ScaleCodeToIPInfo and
-#     the NumberOfLanes/Servers/Backoffices/Scales counts
+#   - $script:FunctionResults: receives Nodes, every map listed in $resultNames below and the
+#     NumberOfLanes/Servers/Backoffices/Scales counts
+#   - Reads $OfficePath, $LoadPath, $script:BasePath, FunctionResults DBSERVER / DBNAME /
+#     ConnectionString / SqlModuleName / StoremanPath
 #
 # Writes:
-#   - Setup_Files\Retrieve_Nodes.txt (JSON cache with schema version)
+#   - Setup_Files\Retrieve_Nodes.txt (JSON cache; CacheSchemaVersion must match to be used)
 #
 # Returns:
-#   PSCustomObject with all counts and the lane/scale maps.
+#   PSCustomObject with all counts and the lane/scale/backoffice maps.
+#
+# Notes:
+#   - Node rules (TER_TAB / Ter_Load rows): 0xx (or a \\machine\ path) = lane, 8xx with an
+#     XchScale.exe path = TER scale, 901 '@machine' = server, 902-998 '@machine' = backoffice.
+#   - TBS scales keep their original ScaleCode; a TER scale with the same IP as a TBS scale
+#     is dropped (the TBS row wins and inherits the TER path/port details).
+#   - Run as a background job at startup (warmup): keep it free of GUI-only dependencies
+#     (the label updates are skipped when the labels do not exist).
 # ===================================================================================================
 
 function Retrieve_Nodes
@@ -4318,449 +4331,282 @@ function Retrieve_Nodes
 		[switch]$RefreshCache
 	)
 
-	# ------------------------------------------------------------------------------------------------
-	# Per-function cache (small + fast)
-	# ------------------------------------------------------------------------------------------------
-	$CacheSchemaVersion = 10 # CHANGE: bumped because TBS scales now always keep their original ScaleCode and are never normalized to 80X.
+	# Bump when the shape of the cached results changes (10: TBS scales keep their original
+	# ScaleCode and are never normalised to 80X)
+	$CacheSchemaVersion = 10
 	$CachePath = Join-Path $script:SetupFiles 'Retrieve_Nodes.txt'
 
-	# Normalize store number for cache match only
-	$StoreNumberNorm = $StoreNumber
-	try
-	{
-		$sn = ($StoreNumber -replace '[^\d]', '')
-		if ($sn.Length -gt 0)
-		{
-			if ($sn.Length -le 3) { $StoreNumberNorm = ([int]$sn).ToString('000') }
-			else { $StoreNumberNorm = ([int]$sn).ToString('0000') }
-		}
-	}
-	catch { $StoreNumberNorm = $StoreNumber }
+	# ------------------------------------------------------------------------------------------------
+	# What this function publishes. FunctionResults keys = local variable names.
+	# ------------------------------------------------------------------------------------------------
+	# Nodes object properties, in order
+	$nodeNames = @(
+		'NumberOfLanes', 'NumberOfServers', 'NumberOfBackoffices', 'NumberOfScales',
+		'LaneMachineNames', 'LaneNumToMachineName', 'LaneMachineLabels', 'LaneMachinePath', 'LaneMachineToServerPath',
+		'ScaleCodes', 'ScaleLabels', 'ScaleExePaths', 'ScaleCodeToIPInfo', 'ScaleNameToCode', 'ScaleCodeToPath', 'ScaleNameToPath',
+		'ScaleCodeToName', 'ScaleCodeToSection', 'ScaleCodeToBrand', 'ScaleCodeToModel', 'ScaleCodeToLocation',
+		'ScaleCodeToIPNetwork', 'ScaleCodeToIPDevice', 'ScaleCodeToFullIP', 'ScaleCodeToPortRaw', 'ScaleCodeToTcpPort',
+		'ScaleCodeToBaseMode', 'ScaleCodeToType', 'ScaleCodeToBaud', 'ScaleCodeToSub', 'ScaleCodeToPlumDir',
+		'BackofficeNumToMachineName', 'BackofficeNumToLabel', 'BackofficeNumToPath',
+		'ServerMachineName', 'ServerLabel', 'ServerPath', 'WindowsScales'
+	)
+	# Published to FunctionResults (the node properties plus the reverse maps)
+	$resultNames = $nodeNames + @('MachineNameToLaneNum', 'MachineNameToBackofficeNum', 'MachineNameToBackofficePath')
+	# Hashtable maps (cache: JSON object <-> hashtable)
+	$mapNames = @($resultNames | Where-Object { $_ -notmatch '^(NumberOf|ServerMachineName$|ServerLabel$|ServerPath$|LaneMachineNames$|ScaleCodes$)' })
+	# Scale fields that also get their own ScaleCodeTo<Field> map (only when set)
+	$scaleFieldMaps = @(
+		@('Section', 'ScaleCodeToSection'), @('ScaleBrand', 'ScaleCodeToBrand'), @('ScaleModel', 'ScaleCodeToModel'),
+		@('ScaleLocation', 'ScaleCodeToLocation'), @('IPNetwork', 'ScaleCodeToIPNetwork'), @('IPDevice', 'ScaleCodeToIPDevice'),
+		@('FullIP', 'ScaleCodeToFullIP'), @('PortRaw', 'ScaleCodeToPortRaw'), @('TcpPort', 'ScaleCodeToTcpPort'),
+		@('BaseMode', 'ScaleCodeToBaseMode'), @('Type', 'ScaleCodeToType'), @('Baud', 'ScaleCodeToBaud'),
+		@('Sub', 'ScaleCodeToSub'), @('PlumDir', 'ScaleCodeToPlumDir')
+	)
 
-	# Reuse in-memory results first
+	# Count labels (GUI only; absent in background jobs)
+	$updateLabels = {
+		param ($Servers, $Backoffices, $Lanes, $Scales)
+		if ($null -ne $NodesBackoffices) { $NodesBackoffices.Text = "Number of Backoffices: $Backoffices" }
+		if ($null -ne $NodesStore) { $NodesStore.Text = "Number of Lanes: $Lanes" }
+		if ($null -ne $scalesLabel) { $scalesLabel.Text = "Number of Scales: $Scales" }
+		if ($null -ne $form) { $form.Refresh() }
+	}
+
+	# Builds $Nodes from the local variables and publishes everything (dot-sourced: runs in
+	# this function's scope)
+	$publish = {
+		$nodeProps = [ordered]@{ }
+		foreach ($n in $nodeNames) { $nodeProps[$n] = Get-Variable -Name $n -ValueOnly }
+		$Nodes = [PSCustomObject]$nodeProps
+		foreach ($n in $resultNames) { $script:FunctionResults[$n] = Get-Variable -Name $n -ValueOnly }
+		$script:FunctionResults['Nodes'] = $Nodes
+		$script:FunctionResults['XchNodesIniPathsUsed'] = @($XchNodesIniPathsUsed | Select-Object -Unique)
+		& $updateLabels $NumberOfServers $NumberOfBackoffices $NumberOfLanes $NumberOfScales
+	}
+
+	# Store number as used for the cache match (3 digits, 4+ digit stores keep theirs)
+	$normalizeStore = {
+		param ([string]$Value)
+		$digits = ([string]$Value -replace '[^\d]', '')
+		if (-not $digits) { return $Value }
+		try
+		{
+			if ($digits.Length -le 3) { return ([int]$digits).ToString('000') }
+			return ([int]$digits).ToString('0000')
+		}
+		catch { return $Value }
+	}
+	$StoreNumberNorm = & $normalizeStore $StoreNumber
+
+	# ------------------------------------------------------------------------------------------------
+	# 0a. In-memory results for this store (this launch already discovered them)
+	# ------------------------------------------------------------------------------------------------
 	if (-not $RefreshCache)
 	{
 		try
 		{
-			$existingStoreNorm = [string]$script:FunctionResults['StoreNumber']
-			if ($existingStoreNorm)
+			$existingStoreNorm = & $normalizeStore ([string]$script:FunctionResults['StoreNumber'])
+			if ($script:FunctionResults['Nodes'] -and ($existingStoreNorm -eq $StoreNumberNorm) -and $script:FunctionResults['LaneNumToMachineName'])
 			{
-				$existingDigits = ($existingStoreNorm -replace '[^\d]', '')
-				if ($existingDigits)
-				{
-					if ($existingDigits.Length -le 3) { $existingStoreNorm = ([int]$existingDigits).ToString('000') }
-					else { $existingStoreNorm = ([int]$existingDigits).ToString('0000') }
-				}
-			}
-			if (
-				$script:FunctionResults['Nodes'] -and
-				($existingStoreNorm -eq $StoreNumberNorm) -and
-				$script:FunctionResults['LaneNumToMachineName']
-			)
-			{
-				if ($NodesHost -ne $null) { $NodesHost.Text = "Number of Servers: $($script:FunctionResults['NumberOfServers'])" }
-				if ($NodesBackoffices -ne $null) { $NodesBackoffices.Text = "Number of Backoffices: $($script:FunctionResults['NumberOfBackoffices'])" }
-				if ($NodesStore -ne $null) { $NodesStore.Text = "Number of Lanes: $($script:FunctionResults['NumberOfLanes'])" }
-				if ($scalesLabel -ne $null) { $scalesLabel.Text = "Number of Scales: $($script:FunctionResults['NumberOfScales'])" }
-				if ($form -ne $null) { $form.Refresh() }
+				& $updateLabels $script:FunctionResults['NumberOfServers'] $script:FunctionResults['NumberOfBackoffices'] $script:FunctionResults['NumberOfLanes'] $script:FunctionResults['NumberOfScales']
 				return $script:FunctionResults['Nodes']
 			}
 		}
 		catch { }
 	}
 
-	# Try load cache file
-	$cacheFresh = $false
-	$cacheObj = $null
-	if ((-not $RefreshCache) -and $CachePath -and (Test-Path $CachePath))
+	# ------------------------------------------------------------------------------------------------
+	# 0b. File cache for this store
+	# ------------------------------------------------------------------------------------------------
+	if ((-not $RefreshCache) -and (Test-Path -LiteralPath $CachePath))
 	{
 		try
 		{
 			$raw = Get-Content -LiteralPath $CachePath -Raw -ErrorAction Stop
-			if (-not [string]::IsNullOrWhiteSpace($raw))
-			{
-				$cacheObj = $raw | ConvertFrom-Json -ErrorAction Stop
-				if (
-					$cacheObj -and
-					$cacheObj.CacheSchemaVersion -and
-					([int]$cacheObj.CacheSchemaVersion -eq $CacheSchemaVersion) -and
-					$cacheObj.StoreNumber -and
-					($cacheObj.StoreNumber.ToString() -eq $StoreNumberNorm)
-				)
-				{
-					$cacheFresh = $true
-				}
-			}
-		}
-		catch
-		{
-			$cacheFresh = $false
 			$cacheObj = $null
-		}
-	}
-
-	# If cache is fresh, hydrate FunctionResults + return without doing DB/file work
-	if ($cacheFresh -and $cacheObj -and $cacheObj.Results)
-	{
-		try
-		{
-			$r = $cacheObj.Results
-
-			# Helper inline converter: PSCustomObject -> hashtable
-			$toHash = {
-				param ($o)
-				$h = @{ }
-				if ($o -and $o.PSObject -and $o.PSObject.Properties)
-				{
-					foreach ($p in $o.PSObject.Properties)
-					{
-						$h[$p.Name] = $p.Value
-					}
-				}
-				$h
-			}
-
-			$NumberOfLanes = [int]$r.NumberOfLanes
-			$NumberOfServers = [int]$r.NumberOfServers
-			$NumberOfBackoffices = [int]$r.NumberOfBackoffices
-			$NumberOfScales = [int]$r.NumberOfScales
-
-			$LaneMachineNames = @($r.LaneMachineNames)
-			$ScaleCodes = @($r.ScaleCodes)
-
-			$LaneNumToMachineName = & $toHash $r.LaneNumToMachineName
-			$MachineNameToLaneNum = & $toHash $r.MachineNameToLaneNum
-			$LaneMachineLabels = & $toHash $r.LaneMachineLabels
-			$LaneMachinePath = & $toHash $r.LaneMachinePath
-			$LaneMachineToServerPath = & $toHash $r.LaneMachineToServerPath
-
-			$ScaleLabels = & $toHash $r.ScaleLabels
-			$ScaleExePaths = & $toHash $r.ScaleExePaths
-			$ScaleCodeToIPInfo = & $toHash $r.ScaleCodeToIPInfo
-			$ScaleNameToCode = & $toHash $r.ScaleNameToCode
-			$ScaleCodeToPath = & $toHash $r.ScaleCodeToPath
-			$ScaleNameToPath = & $toHash $r.ScaleNameToPath
-
-			$ScaleCodeToName = & $toHash $r.ScaleCodeToName
-			$ScaleCodeToSection = & $toHash $r.ScaleCodeToSection
-			$ScaleCodeToBrand = & $toHash $r.ScaleCodeToBrand
-			$ScaleCodeToModel = & $toHash $r.ScaleCodeToModel
-			$ScaleCodeToLocation = & $toHash $r.ScaleCodeToLocation
-			$ScaleCodeToIPNetwork = & $toHash $r.ScaleCodeToIPNetwork
-			$ScaleCodeToIPDevice = & $toHash $r.ScaleCodeToIPDevice
-			$ScaleCodeToFullIP = & $toHash $r.ScaleCodeToFullIP
-			$ScaleCodeToPortRaw = & $toHash $r.ScaleCodeToPortRaw
-			$ScaleCodeToTcpPort = & $toHash $r.ScaleCodeToTcpPort
-			$ScaleCodeToBaseMode = & $toHash $r.ScaleCodeToBaseMode
-			$ScaleCodeToType = & $toHash $r.ScaleCodeToType
-			$ScaleCodeToBaud = & $toHash $r.ScaleCodeToBaud
-			$ScaleCodeToSub = & $toHash $r.ScaleCodeToSub
-			$ScaleCodeToPlumDir = & $toHash $r.ScaleCodeToPlumDir
-
-			$BackofficeNumToMachineName = & $toHash $r.BackofficeNumToMachineName
-			$MachineNameToBackofficeNum = & $toHash $r.MachineNameToBackofficeNum
-			$BackofficeNumToLabel = & $toHash $r.BackofficeNumToLabel
-			$BackofficeNumToPath = & $toHash $r.BackofficeNumToPath
-			$MachineNameToBackofficePath = & $toHash $r.MachineNameToBackofficePath
-
-			$ServerMachineName = $r.ServerMachineName
-			$ServerLabel = $r.ServerLabel
-			$ServerPath = $r.ServerPath
-
-			$WindowsScales = & $toHash $r.WindowsScales
-
-			$XchNodesIniPathsUsed = @()
-			try
+			if (-not [string]::IsNullOrWhiteSpace($raw)) { $cacheObj = $raw | ConvertFrom-Json -ErrorAction Stop }
+			if ($cacheObj -and $cacheObj.Results -and $cacheObj.CacheSchemaVersion -and
+				([int]$cacheObj.CacheSchemaVersion -eq $CacheSchemaVersion) -and
+				$cacheObj.StoreNumber -and ($cacheObj.StoreNumber.ToString() -eq $StoreNumberNorm))
 			{
-				if ($r.PSObject.Properties.Name -contains 'XchNodesIniPathsUsed')
+				$r = $cacheObj.Results
+				foreach ($n in $mapNames)
 				{
-					$XchNodesIniPathsUsed = @($r.XchNodesIniPathsUsed)
+					$h = @{ }
+					$o = $r.$n
+					if ($o -and $o.PSObject -and $o.PSObject.Properties) { foreach ($p in $o.PSObject.Properties) { $h[$p.Name] = $p.Value } }
+					Set-Variable -Name $n -Value $h
 				}
+				$NumberOfLanes = [int]$r.NumberOfLanes
+				$NumberOfServers = [int]$r.NumberOfServers
+				$NumberOfBackoffices = [int]$r.NumberOfBackoffices
+				$NumberOfScales = [int]$r.NumberOfScales
+				$LaneMachineNames = @($r.LaneMachineNames)
+				$ScaleCodes = @($r.ScaleCodes)
+				$ServerMachineName = $r.ServerMachineName
+				$ServerLabel = $r.ServerLabel
+				$ServerPath = $r.ServerPath
+				$XchNodesIniPathsUsed = @()
+				if ($r.PSObject.Properties.Name -contains 'XchNodesIniPathsUsed') { $XchNodesIniPathsUsed = @($r.XchNodesIniPathsUsed) }
+
+				. $publish
+				return $Nodes
 			}
-			catch { }
-
-			$Nodes = [PSCustomObject]@{
-				NumberOfLanes			   = $NumberOfLanes
-				NumberOfServers		       = $NumberOfServers
-				NumberOfBackoffices	       = $NumberOfBackoffices
-				NumberOfScales			   = $NumberOfScales
-				LaneMachineNames		   = $LaneMachineNames
-				LaneNumToMachineName	   = $LaneNumToMachineName
-				LaneMachineLabels		   = $LaneMachineLabels
-				LaneMachinePath		       = $LaneMachinePath
-				LaneMachineToServerPath    = $LaneMachineToServerPath
-				ScaleCodes				   = $ScaleCodes
-				ScaleLabels			       = $ScaleLabels
-				ScaleExePaths			   = $ScaleExePaths
-				ScaleCodeToIPInfo		   = $ScaleCodeToIPInfo
-				ScaleNameToCode		       = $ScaleNameToCode
-				ScaleCodeToPath		       = $ScaleCodeToPath
-				ScaleNameToPath		       = $ScaleNameToPath
-				ScaleCodeToName		       = $ScaleCodeToName
-				ScaleCodeToSection		   = $ScaleCodeToSection
-				ScaleCodeToBrand		   = $ScaleCodeToBrand
-				ScaleCodeToModel		   = $ScaleCodeToModel
-				ScaleCodeToLocation	       = $ScaleCodeToLocation
-				ScaleCodeToIPNetwork	   = $ScaleCodeToIPNetwork
-				ScaleCodeToIPDevice	       = $ScaleCodeToIPDevice
-				ScaleCodeToFullIP		   = $ScaleCodeToFullIP
-				ScaleCodeToPortRaw		   = $ScaleCodeToPortRaw
-				ScaleCodeToTcpPort		   = $ScaleCodeToTcpPort
-				ScaleCodeToBaseMode	       = $ScaleCodeToBaseMode
-				ScaleCodeToType		       = $ScaleCodeToType
-				ScaleCodeToBaud		       = $ScaleCodeToBaud
-				ScaleCodeToSub			   = $ScaleCodeToSub
-				ScaleCodeToPlumDir		   = $ScaleCodeToPlumDir
-				BackofficeNumToMachineName = $BackofficeNumToMachineName
-				BackofficeNumToLabel	   = $BackofficeNumToLabel
-				BackofficeNumToPath	       = $BackofficeNumToPath
-				ServerMachineName		   = $ServerMachineName
-				ServerLabel			       = $ServerLabel
-				ServerPath				   = $ServerPath
-				WindowsScales			   = $WindowsScales
-			}
-
-			$script:FunctionResults['NumberOfLanes'] = $NumberOfLanes
-			$script:FunctionResults['NumberOfServers'] = $NumberOfServers
-			$script:FunctionResults['NumberOfBackoffices'] = $NumberOfBackoffices
-			$script:FunctionResults['NumberOfScales'] = $NumberOfScales
-			$script:FunctionResults['LaneMachineNames'] = $LaneMachineNames
-			$script:FunctionResults['LaneNumToMachineName'] = $LaneNumToMachineName
-			$script:FunctionResults['MachineNameToLaneNum'] = $MachineNameToLaneNum
-			$script:FunctionResults['LaneMachineLabels'] = $LaneMachineLabels
-			$script:FunctionResults['LaneMachinePath'] = $LaneMachinePath
-			$script:FunctionResults['LaneMachineToServerPath'] = $LaneMachineToServerPath
-			$script:FunctionResults['ScaleCodes'] = $ScaleCodes
-			$script:FunctionResults['ScaleLabels'] = $ScaleLabels
-			$script:FunctionResults['ScaleExePaths'] = $ScaleExePaths
-			$script:FunctionResults['ScaleCodeToIPInfo'] = $ScaleCodeToIPInfo
-			$script:FunctionResults['ScaleNameToCode'] = $ScaleNameToCode
-			$script:FunctionResults['ScaleCodeToPath'] = $ScaleCodeToPath
-			$script:FunctionResults['ScaleNameToPath'] = $ScaleNameToPath
-			$script:FunctionResults['ScaleCodeToName'] = $ScaleCodeToName
-			$script:FunctionResults['ScaleCodeToSection'] = $ScaleCodeToSection
-			$script:FunctionResults['ScaleCodeToBrand'] = $ScaleCodeToBrand
-			$script:FunctionResults['ScaleCodeToModel'] = $ScaleCodeToModel
-			$script:FunctionResults['ScaleCodeToLocation'] = $ScaleCodeToLocation
-			$script:FunctionResults['ScaleCodeToIPNetwork'] = $ScaleCodeToIPNetwork
-			$script:FunctionResults['ScaleCodeToIPDevice'] = $ScaleCodeToIPDevice
-			$script:FunctionResults['ScaleCodeToFullIP'] = $ScaleCodeToFullIP
-			$script:FunctionResults['ScaleCodeToPortRaw'] = $ScaleCodeToPortRaw
-			$script:FunctionResults['ScaleCodeToTcpPort'] = $ScaleCodeToTcpPort
-			$script:FunctionResults['ScaleCodeToBaseMode'] = $ScaleCodeToBaseMode
-			$script:FunctionResults['ScaleCodeToType'] = $ScaleCodeToType
-			$script:FunctionResults['ScaleCodeToBaud'] = $ScaleCodeToBaud
-			$script:FunctionResults['ScaleCodeToSub'] = $ScaleCodeToSub
-			$script:FunctionResults['ScaleCodeToPlumDir'] = $ScaleCodeToPlumDir
-			$script:FunctionResults['BackofficeNumToMachineName'] = $BackofficeNumToMachineName
-			$script:FunctionResults['MachineNameToBackofficeNum'] = $MachineNameToBackofficeNum
-			$script:FunctionResults['BackofficeNumToLabel'] = $BackofficeNumToLabel
-			$script:FunctionResults['BackofficeNumToPath'] = $BackofficeNumToPath
-			$script:FunctionResults['MachineNameToBackofficePath'] = $MachineNameToBackofficePath
-			$script:FunctionResults['ServerMachineName'] = $ServerMachineName
-			$script:FunctionResults['ServerLabel'] = $ServerLabel
-			$script:FunctionResults['ServerPath'] = $ServerPath
-			$script:FunctionResults['WindowsScales'] = $WindowsScales
-			$script:FunctionResults['Nodes'] = $Nodes
-			$script:FunctionResults['XchNodesIniPathsUsed'] = $XchNodesIniPathsUsed
-
-			if ($NodesHost -ne $null) { $NodesHost.Text = "Number of Servers: $NumberOfServers" }
-			if ($NodesBackoffices -ne $null) { $NodesBackoffices.Text = "Number of Backoffices: $NumberOfBackoffices" }
-			if ($NodesStore -ne $null) { $NodesStore.Text = "Number of Lanes: $NumberOfLanes" }
-			if ($scalesLabel -ne $null) { $scalesLabel.Text = "Number of Scales: $NumberOfScales" }
-			if ($form -ne $null) { $form.Refresh() }
-
-			return $Nodes
 		}
 		catch
 		{
-			# If cache hydrate fails for any reason, fall through to normal logic below
+			# unreadable / old cache: discover again below
 		}
 	}
 
 	# ====================================================================================
-	# INITIALIZE ALL MAPPING STRUCTURES
+	# DISCOVERY - start empty
 	# ====================================================================================
-	$HostPath = "$OfficePath"
+	foreach ($n in $mapNames) { Set-Variable -Name $n -Value @{ } }
 	$LaneMachineNames = @()
-	$LaneNumToMachineName = @{ }
-	$LaneMachineLabels = @{ }
-	$LaneMachinePath = @{ }
-	$LaneMachineToServerPath = @{ }
 	$ScaleCodes = @()
-	$ScaleLabels = @{ }
-	$ScaleExePaths = @{ }
-	$ScaleCodeToIPInfo = @{ }
-
-	# CHANGE:
-	#   TER scales are grouped by 80X only.
-	#   TBS scales keep original ScaleCode exactly as stored in TBS_SCL_ver520.
-	$TerScaleBy80X = @{ }
-	$TbsScaleRows = New-Object System.Collections.ArrayList
-
-	$ScaleCodeToName = @{ }
-	$ScaleCodeToSection = @{ }
-	$ScaleCodeToBrand = @{ }
-	$ScaleCodeToModel = @{ }
-	$ScaleCodeToLocation = @{ }
-	$ScaleCodeToIPNetwork = @{ }
-	$ScaleCodeToIPDevice = @{ }
-	$ScaleCodeToFullIP = @{ }
-	$ScaleCodeToPortRaw = @{ }
-	$ScaleCodeToTcpPort = @{ }
-	$ScaleCodeToBaseMode = @{ }
-	$ScaleCodeToType = @{ }
-	$ScaleCodeToBaud = @{ }
-	$ScaleCodeToSub = @{ }
-	$ScaleCodeToPlumDir = @{ }
-
-	$BackofficeNumToMachineName = @{ }
-	$BackofficeNumToLabel = @{ }
-	$BackofficeNumToPath = @{ }
 	$ServerMachineName = $null
 	$ServerLabel = $null
 	$ServerPath = $null
+	$NumberOfLanes = 0
+	$NumberOfServers = 0
+	$NumberOfBackoffices = 0
+	$NumberOfScales = 0
 
-	$MachineNameToLaneNum = @{ }
-	$MachineNameToBackofficeNum = @{ }
-	$MachineNameToBackofficePath = @{ }
+	# TER scales are grouped by their 80X terminal; TBS scales keep the ScaleCode stored in
+	# TBS_SCL_ver520.
+	$TerScaleBy80X = @{ }
+	$TbsScaleRows = New-Object System.Collections.ArrayList
+
+	# Classify one TER_TAB / Ter_Load row (dot-sourced: updates this function's variables)
+	$addTerRow = {
+		param ([string]$terminal, [string]$label, [string]$path, [string]$hostPath)
+
+		if (($terminal -match '^0\d\d$' -or $path -match '^\\\\[^\\]+\\') -and $terminal -notmatch '^8' -and $terminal -notmatch '^9')
+		{
+			# Lane
+			$machineName = if ($path -match '\\\\([^\\]+)\\') { $matches[1] } else { $terminal }
+			$LaneMachineNames += $machineName
+			if ($terminal -match '^0\d\d$') { $LaneNumToMachineName[$terminal] = $machineName }
+			$LaneMachineLabels[$machineName] = $label
+			$LaneMachinePath[$machineName] = $path
+			$LaneMachineToServerPath[$machineName] = $hostPath
+		}
+		elseif ($terminal -match '^8\d\d$' -and $path -match '(?i)XchScale\\XchScale\.exe$')
+		{
+			# TER scale (one entry per 80X terminal; later rows only fill gaps)
+			if (-not $TerScaleBy80X.ContainsKey($terminal))
+			{
+				$TerScaleBy80X[$terminal] = [PSCustomObject]@{
+					Code          = $terminal
+					ScaleCode     = $terminal
+					BaseScaleCode = $terminal
+					Label         = $label
+					ScaleName     = $label
+					Path          = $path
+					HostPath      = $hostPath
+					ScaleBrand    = $null
+					Scalevendor   = $null
+					ScaleModel    = $null
+					ScaleLocation = $null
+					IPNetwork     = $null
+					IPDevice      = $null
+					FullIP        = $null
+					PortRaw       = $null
+					TcpPort       = $null
+					Section       = $null
+					BaseMode      = $null
+					Type          = $null
+					Baud          = $null
+					Sub           = $null
+					PlumDir       = $null
+					Active        = $null
+					Source        = 'TER'
+				}
+			}
+			else
+			{
+				$existingTer = $TerScaleBy80X[$terminal]
+				if ([string]::IsNullOrWhiteSpace([string]$existingTer.Label) -and $label) { $existingTer.Label = $label }
+				if ([string]::IsNullOrWhiteSpace([string]$existingTer.ScaleName) -and $label) { $existingTer.ScaleName = $label }
+				if ([string]::IsNullOrWhiteSpace([string]$existingTer.Path) -and $path) { $existingTer.Path = $path }
+				if ([string]::IsNullOrWhiteSpace([string]$existingTer.HostPath) -and $hostPath) { $existingTer.HostPath = $hostPath }
+			}
+		}
+		elseif ($terminal -eq '901' -and $path -match '^@[^@]+$')
+		{
+			# Store server
+			$ServerMachineName = $path -replace '^@', ''
+			$ServerLabel = $label
+			$ServerPath = $path
+		}
+		elseif ($terminal -match '^9(0[2-9]|[1-8]\d|9[0-8])$' -and $path -match '^@[^@]+$')
+		{
+			# Backoffice
+			$BackofficeNumToMachineName[$terminal] = $path -replace '^@', ''
+			$BackofficeNumToLabel[$terminal] = $label
+			$BackofficeNumToPath[$terminal] = $path
+		}
+	}
 
 	$TerLoadSqlPath = $null
-	if (-not [string]::IsNullOrWhiteSpace($LoadPath))
-	{
-		$TerLoadSqlPath = Join-Path $LoadPath 'Ter_Load.sql'
-	}
+	if (-not [string]::IsNullOrWhiteSpace($LoadPath)) { $TerLoadSqlPath = Join-Path $LoadPath 'Ter_Load.sql' }
 
 	# ====================================================================================
-	# Build XchNodes.ini candidate list only.
+	# XchNodes.ini candidates: <storeman>\XchScale (+ one or two folder levels below)
 	# ====================================================================================
-	$XchScalePath = $null
-	$XchNodesIniPath = $null
-	$XchNodesIniCandidates = @()
-
 	$XchSearchRoots = @()
-
-	try
+	foreach ($rootCandidate in @([string]$script:FunctionResults['StoremanPath'], [string]$script:BasePath))
 	{
-		if ($script:FunctionResults.ContainsKey('StoremanPath') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['StoremanPath']))
-		{
-			$storemanRoot = ([string]$script:FunctionResults['StoremanPath']).Trim().TrimEnd('\')
-			if (-not [string]::IsNullOrWhiteSpace($storemanRoot))
-			{
-				$XchSearchRoots += ([System.IO.Path]::Combine($storemanRoot, 'XchScale'))
-			}
-		}
+		if (-not [string]::IsNullOrWhiteSpace($rootCandidate)) { $XchSearchRoots += [System.IO.Path]::Combine($rootCandidate.Trim().TrimEnd('\'), 'XchScale') }
 	}
-	catch { }
-
-	try
-	{
-		if ($script:BasePath)
-		{
-			$storemanRoot = ([string]$script:BasePath).Trim().TrimEnd('\')
-			if (-not [string]::IsNullOrWhiteSpace($storemanRoot))
-			{
-				$XchSearchRoots += ([System.IO.Path]::Combine($storemanRoot, 'XchScale'))
-			}
-		}
-	}
-	catch { }
-
 	if (-not [string]::IsNullOrWhiteSpace($OfficePath))
 	{
 		try
 		{
 			$officeTrimmed = ([string]$OfficePath).Trim().TrimEnd('\')
-			$officeLeaf = Split-Path -Path $officeTrimmed -Leaf
-			if ($officeLeaf -ieq 'Office')
+			if ((Split-Path -Path $officeTrimmed -Leaf) -ieq 'Office')
 			{
 				$storemanRoot = Split-Path -Path $officeTrimmed -Parent
-				if (-not [string]::IsNullOrWhiteSpace($storemanRoot))
-				{
-					$XchSearchRoots += ([System.IO.Path]::Combine($storemanRoot.TrimEnd('\'), 'XchScale'))
-				}
+				if (-not [string]::IsNullOrWhiteSpace($storemanRoot)) { $XchSearchRoots += [System.IO.Path]::Combine($storemanRoot.TrimEnd('\'), 'XchScale') }
 			}
-
-			$XchSearchRoots += ([System.IO.Path]::Combine($officeTrimmed, 'XchScale'))
+			$XchSearchRoots += [System.IO.Path]::Combine($officeTrimmed, 'XchScale')
 		}
 		catch { }
 	}
 
-	$seenXchRoots = @{ }
-	$UniqueXchSearchRoots = @()
+	$XchNodesIniCandidates = New-Object System.Collections.Generic.List[string]
+	$seenIni = @{ }
+	$addIni = {
+		param ([string]$IniPath)
+		if ([System.IO.File]::Exists($IniPath) -and -not $seenIni.ContainsKey($IniPath.Trim().ToLowerInvariant()))
+		{
+			$seenIni[$IniPath.Trim().ToLowerInvariant()] = $true
+			$XchNodesIniCandidates.Add($IniPath)
+		}
+	}
+	$seenRoots = @{ }
 	foreach ($root in $XchSearchRoots)
 	{
-		if ([string]::IsNullOrWhiteSpace([string]$root)) { continue }
 		$rootPath = ([string]$root).Trim().Trim('"')
-		if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
-
-		$rootKey = $rootPath.ToLowerInvariant()
-		if ($seenXchRoots.ContainsKey($rootKey)) { continue }
-		$seenXchRoots[$rootKey] = $true
-		$UniqueXchSearchRoots += $rootPath
-	}
-	$XchSearchRoots = $UniqueXchSearchRoots
-
-	$seenIniPaths = @{ }
-	foreach ($rootPath in $XchSearchRoots)
-	{
+		if ([string]::IsNullOrWhiteSpace($rootPath) -or $seenRoots.ContainsKey($rootPath.ToLowerInvariant())) { continue }
+		$seenRoots[$rootPath.ToLowerInvariant()] = $true
 		try
 		{
 			if (-not (Test-Path -LiteralPath $rootPath -PathType Container)) { continue }
+			& $addIni ([System.IO.Path]::Combine($rootPath, 'XchNodes.ini'))
 
-			$directIni = [System.IO.Path]::Combine($rootPath, 'XchNodes.ini')
-			if ([System.IO.File]::Exists($directIni))
-			{
-				$iniKey = $directIni.Trim().ToLowerInvariant()
-				if (-not $seenIniPaths.ContainsKey($iniKey))
-				{
-					$seenIniPaths[$iniKey] = $true
-					$XchNodesIniCandidates += $directIni
-				}
-			}
-
-			# Avoid a full recursive crawl during startup. Some stores have very large/problematic
-			# XchScale trees, and a bounded search is enough for the normal XchNodes.ini layouts.
-			$childDirs = @()
-			try { $childDirs = @(Get-ChildItem -LiteralPath $rootPath -Directory -ErrorAction SilentlyContinue) }
-			catch { $childDirs = @() }
-
-			foreach ($childDir in $childDirs)
-			{
-				if (-not $childDir) { continue }
-				$iniFull = [System.IO.Path]::Combine([string]$childDir.FullName, 'XchNodes.ini')
-				if (-not [System.IO.File]::Exists($iniFull)) { continue }
-
-				$iniKey = $iniFull.Trim().ToLowerInvariant()
-				if (-not $seenIniPaths.ContainsKey($iniKey))
-				{
-					$seenIniPaths[$iniKey] = $true
-					$XchNodesIniCandidates += $iniFull
-				}
-			}
-
-			if ($XchNodesIniCandidates.Count -eq 0 -and $childDirs.Count -gt 0)
+			# Bounded search (some stores have very large XchScale trees): children, then
+			# grandchildren only if nothing was found yet
+			$childDirs = @(Get-ChildItem -LiteralPath $rootPath -Directory -ErrorAction SilentlyContinue)
+			foreach ($childDir in $childDirs) { & $addIni ([System.IO.Path]::Combine([string]$childDir.FullName, 'XchNodes.ini')) }
+			if ($XchNodesIniCandidates.Count -eq 0)
 			{
 				foreach ($childDir in $childDirs)
 				{
-					if (-not $childDir) { continue }
-
-					$grandChildDirs = @()
-					try { $grandChildDirs = @(Get-ChildItem -LiteralPath $childDir.FullName -Directory -ErrorAction SilentlyContinue) }
-					catch { $grandChildDirs = @() }
-
-					foreach ($grandChildDir in $grandChildDirs)
+					foreach ($grandChildDir in @(Get-ChildItem -LiteralPath $childDir.FullName -Directory -ErrorAction SilentlyContinue))
 					{
-						if (-not $grandChildDir) { continue }
-						$iniFull = [System.IO.Path]::Combine([string]$grandChildDir.FullName, 'XchNodes.ini')
-						if (-not [System.IO.File]::Exists($iniFull)) { continue }
-
-						$iniKey = $iniFull.Trim().ToLowerInvariant()
-						if (-not $seenIniPaths.ContainsKey($iniKey))
-						{
-							$seenIniPaths[$iniKey] = $true
-							$XchNodesIniCandidates += $iniFull
-						}
+						& $addIni ([System.IO.Path]::Combine([string]$grandChildDir.FullName, 'XchNodes.ini'))
 					}
 				}
 			}
@@ -4768,42 +4614,23 @@ function Retrieve_Nodes
 		catch { }
 	}
 
-	if ($XchNodesIniCandidates.Count -gt 0)
-	{
-		$XchNodesIniPath = $XchNodesIniCandidates[0]
-		try { $XchScalePath = Split-Path -Path $XchNodesIniPath -Parent }
-		catch { }
-	}
-
+	# ====================================================================================
+	# 1. PRIMARY: STORE DATABASE (TER_TAB, TBS_SCL_ver520)
+	# ====================================================================================
 	$server = $script:FunctionResults['DBSERVER']
 	$database = $script:FunctionResults['DBNAME']
 	$ConnectionString = Normalize_Sql_ConnectionString -RawConnectionString $script:FunctionResults['ConnectionString'] -Server $server -Database $database -SqlUser $script:FunctionResults['SQL_UserID'] -SqlPwd $script:FunctionResults['SQL_UserPwd']
 	$NodesFromDatabase = $false
 	$SqlModule = $script:FunctionResults['SqlModuleName']
 
-	# ====================================================================================
-	# DETECT SQL MODULE
-	# ====================================================================================
 	if (-not $SqlModule -or $SqlModule -eq 'None')
 	{
 		Write_Log "SQL PowerShell module not installed - using the built-in SQL client for node info." "yellow"
 	}
 
-	# ====================================================================================
-	# 1. PRIMARY: LOAD FROM DATABASE (TER_TAB, TBS_SCL_ver520)
-	# ====================================================================================
-	# The lane query targets this store's rows (TER_TAB WHERE F1056 = store number), so
-	# a DB connection is only useful when the store number is actually known. Without the
-	# storeman folder the store number is 'N/A' and the connection (if any) is a
-	# localhost/placeholder target - opening it just burns ~15s on timeouts for a query
-	# that can never return valid lanes. The local-file fallbacks below run instead.
-	$hasUsableStoreNumber = $false
-	try
-	{
-		$hasUsableStoreNumber = (([string]$StoreNumber -replace '[^\d]', '').Length -gt 0)
-	}
-	catch { }
-
+	# The lane query filters on this store (TER_TAB.F1056); without a known store number the
+	# connection is a placeholder target and would only burn ~15 s on timeouts.
+	$hasUsableStoreNumber = (([string]$StoreNumber -replace '[^\d]', '').Length -gt 0)
 	if ($ConnectionString -and -not $hasUsableStoreNumber)
 	{
 		Write_Log "Store number unknown - skipping the store database lookup (no store to query against). Using local files instead." "yellow"
@@ -4822,36 +4649,28 @@ function Retrieve_Nodes
 		$startupQueryTimeoutSeconds = 10
 		$startupConnectionTimeoutSeconds = 5
 		$startupConnectionString = $ConnectionString
-		if ($invokeSqlCmd) { $supportsConnStr = $invokeSqlCmd.Parameters.ContainsKey('ConnectionString') }
-		if ($invokeSqlCmd) { $supportsConnTimeout = $invokeSqlCmd.Parameters.ContainsKey('ConnectionTimeout') }
+		if ($invokeSqlCmd)
+		{
+			$supportsConnStr = $invokeSqlCmd.Parameters.ContainsKey('ConnectionString')
+			$supportsConnTimeout = $invokeSqlCmd.Parameters.ContainsKey('ConnectionTimeout')
+		}
+		elseif ($SqlModule -and $SqlModule -ne 'None')
+		{
+			Write_Log "SQL module '$SqlModule' not available on this machine - using the built-in SQL client." "yellow"
+		}
 		else
 		{
-			if ($SqlModule -and $SqlModule -ne 'None')
-			{
-				Write_Log "SQL module '$SqlModule' not available on this machine - using the built-in SQL client." "yellow"
-			}
-			else
-			{
-				Write_Log "SQL module not available on this machine - using the built-in SQL client." "yellow"
-			}
+			Write_Log "SQL module not available on this machine - using the built-in SQL client." "yellow"
 		}
 
+		# Invoke-Sqlcmd when available, else SqlClient (returns rows either way)
 		$invokeStartupQuery = {
-			param(
-				[string]$Query,
-				[int]$QueryTimeout = 10
-			)
+			param ([string]$Query, [int]$QueryTimeout = 10)
 
 			if ($invokeSqlCmd)
 			{
-				if ($supportsConnStr)
-				{
-					return (& $invokeSqlCmd -ConnectionString $startupConnectionString -Query $Query -QueryTimeout $QueryTimeout -ErrorAction Stop)
-				}
-				if ($supportsConnTimeout)
-				{
-					return (& $invokeSqlCmd -ServerInstance $server -Database $database -Query $Query -QueryTimeout $QueryTimeout -ConnectionTimeout $startupConnectionTimeoutSeconds -ErrorAction Stop)
-				}
+				if ($supportsConnStr) { return (& $invokeSqlCmd -ConnectionString $startupConnectionString -Query $Query -QueryTimeout $QueryTimeout -ErrorAction Stop) }
+				if ($supportsConnTimeout) { return (& $invokeSqlCmd -ServerInstance $server -Database $database -Query $Query -QueryTimeout $QueryTimeout -ConnectionTimeout $startupConnectionTimeoutSeconds -ErrorAction Stop) }
 				return (& $invokeSqlCmd -ServerInstance $server -Database $database -Query $Query -QueryTimeout $QueryTimeout -ErrorAction Stop)
 			}
 
@@ -4874,7 +4693,8 @@ function Retrieve_Nodes
 			return $dt
 		}
 
-		if ($supportsConnStr -and -not [string]::IsNullOrWhiteSpace($startupConnectionString))
+		# Short connect timeout for the startup queries
+		if (-not [string]::IsNullOrWhiteSpace($startupConnectionString))
 		{
 			try
 			{
@@ -4893,195 +4713,76 @@ function Retrieve_Nodes
 
 		$NodesFromDatabase = $true
 		$safeStoreNumber = ($StoreNumber -replace '[^\d]', '')
-		if (-not [string]::IsNullOrWhiteSpace($safeStoreNumber))
-		{
-			if ($safeStoreNumber.Length -le 3) { $safeStoreNumber = ([int]$safeStoreNumber).ToString('000') }
-			else { $safeStoreNumber = ([int]$safeStoreNumber).ToString('0000') }
-		}
-		else { $safeStoreNumber = '000' }
+		if ($safeStoreNumber.Length -le 3) { $safeStoreNumber = ([int]$safeStoreNumber).ToString('000') }
+		else { $safeStoreNumber = ([int]$safeStoreNumber).ToString('0000') }
 		try
 		{
-			$queryTerTab = @"
-SELECT F1057, F1058, F1125, F1169
-FROM TER_TAB
-WHERE F1056 = '$safeStoreNumber'
-"@
-			$terTabResult = & $invokeStartupQuery $queryTerTab $startupQueryTimeoutSeconds
-
+			$terTabResult = & $invokeStartupQuery "SELECT F1057, F1058, F1125, F1169 FROM TER_TAB WHERE F1056 = '$safeStoreNumber'" $startupQueryTimeoutSeconds
 			foreach ($row in $terTabResult)
 			{
-				$terminal = [string]$row.F1057
-				$label = [string]$row.F1058
-				$path = [string]$row.F1125
-				$hostPath = [string]$row.F1169
-
-				if (
-					($terminal -match '^0\d\d$' -or $path -match '^\\\\[^\\]+\\') -and
-					$terminal -notmatch '^8' -and $terminal -notmatch '^9'
-				)
-				{
-					$machineName = $null
-					if ($path -match '\\\\([^\\]+)\\') { $machineName = $matches[1] }
-					else { $machineName = $terminal }
-
-					$LaneMachineNames += $machineName
-					if ($terminal -match '^0\d\d$') { $LaneNumToMachineName[$terminal] = $machineName }
-					$LaneMachineLabels[$machineName] = $label
-					$LaneMachinePath[$machineName] = $path
-					$LaneMachineToServerPath[$machineName] = $hostPath
-				}
-				elseif ($terminal -match '^8\d\d$' -and $terminal -notmatch '^0' -and $terminal -notmatch '^9' -and $path -match '(?i)XchScale\\XchScale\.exe$')
-				{
-					# CHANGE:
-					#   TER stays grouped by 80X only.
-					if (-not $TerScaleBy80X.ContainsKey($terminal))
-					{
-						$TerScaleBy80X[$terminal] = [PSCustomObject]@{
-							Code		  = $terminal
-							ScaleCode	  = $terminal
-							BaseScaleCode = $terminal
-							Label		  = $label
-							ScaleName	  = $label
-							Path		  = $path
-							HostPath	  = $hostPath
-							ScaleBrand    = $null
-							Scalevendor   = $null
-							ScaleModel    = $null
-							ScaleLocation = $null
-							IPNetwork	  = $null
-							IPDevice	  = $null
-							FullIP	      = $null
-							PortRaw	      = $null
-							TcpPort	      = $null
-							Section	      = $null
-							BaseMode	  = $null
-							Type		  = $null
-							Baud		  = $null
-							Sub		      = $null
-							PlumDir	      = $null
-							Active	      = $null
-							Source	      = 'TER'
-						}
-					}
-					else
-					{
-						$existingTer = $TerScaleBy80X[$terminal]
-						if ([string]::IsNullOrWhiteSpace([string]$existingTer.Label) -and $label) { $existingTer.Label = $label }
-						if ([string]::IsNullOrWhiteSpace([string]$existingTer.ScaleName) -and $label) { $existingTer.ScaleName = $label }
-						if ([string]::IsNullOrWhiteSpace([string]$existingTer.Path) -and $path) { $existingTer.Path = $path }
-						if ([string]::IsNullOrWhiteSpace([string]$existingTer.HostPath) -and $hostPath) { $existingTer.HostPath = $hostPath }
-					}
-				}
-				elseif ($terminal -eq '901' -and $path -match '^@[^@]+$')
-				{
-					$ServerMachineName = $path -replace '^@', ''
-					$ServerLabel = $label
-					$ServerPath = $path
-				}
-				elseif ($terminal -match '^9(0[2-9]|[1-8]\d|9[0-8])$' -and $path -match '^@[^@]+$')
-				{
-					$machineName = $path -replace '^@', ''
-					$BackofficeNumToMachineName[$terminal] = $machineName
-					$BackofficeNumToLabel[$terminal] = $label
-					$BackofficeNumToPath[$terminal] = $path
-				}
+				. $addTerRow ([string]$row.F1057) ([string]$row.F1058) ([string]$row.F1125) ([string]$row.F1169)
 			}
 
-			$NumberOfLanes = $LaneMachineNames.Count
-			$NumberOfServers = if ($ServerMachineName) { 1 }
-			else { 0 }
-			$NumberOfBackoffices = $BackofficeNumToMachineName.Count
-
-			$queryTbsSclScales = @"
-SELECT ScaleCode, ScaleName, ScaleLocation, IPNetwork, IPDevice, Active, ScaleBrand, ScaleModel
-FROM TBS_SCL_ver520
-WHERE Active = 'Y'
-"@
+			$tbsSclScalesResult = $null
 			try
 			{
-				$tbsSclScalesResult = & $invokeStartupQuery $queryTbsSclScales $startupQueryTimeoutSeconds
+				$tbsSclScalesResult = & $invokeStartupQuery "SELECT ScaleCode, ScaleName, ScaleLocation, IPNetwork, IPDevice, Active, ScaleBrand, ScaleModel FROM TBS_SCL_ver520 WHERE Active = 'Y'" $startupQueryTimeoutSeconds
 			}
 			catch
 			{
-				if ($_.Exception.Message -match "Invalid object name 'TBS_SCL_ver520'")
-				{
-					$tbsSclScalesResult = $null
-				}
-				else
-				{
-					throw
-				}
+				# A store without the TBS scale table simply has no TBS scales
+				if ($_.Exception.Message -notmatch "Invalid object name 'TBS_SCL_ver520'") { throw }
 			}
 
-			if ($tbsSclScalesResult)
+			# Column value as string, $null when empty / DBNull
+			$col = {
+				param ($v)
+				if ([string]::IsNullOrWhiteSpace([string]$v)) { return $null }
+				return [string]$v
+			}
+			$tbsRowOrdinal = 0
+			foreach ($row in @($tbsSclScalesResult))
 			{
-				$tbsRowOrdinal = 0
-				foreach ($row in $tbsSclScalesResult)
-				{
-					$tbsRowOrdinal++
+				if ($null -eq $row) { continue }
+				$tbsRowOrdinal++
+				$rawScaleCode = ([string]$row.ScaleCode).Trim()
+				if ([string]::IsNullOrWhiteSpace($rawScaleCode)) { continue }
 
-					# CHANGE:
-					#   Keep original TBS ScaleCode exactly as stored.
-					$rawScaleCode = $null
-					try { $rawScaleCode = ([string]$row.ScaleCode).Trim() }
-					catch { $rawScaleCode = $null }
-					if ([string]::IsNullOrWhiteSpace($rawScaleCode)) { continue }
+				$tbsScaleName = & $col $row.ScaleName
+				$tbsIPNetwork = & $col $row.IPNetwork
+				if ($tbsIPNetwork) { $tbsIPNetwork = $tbsIPNetwork.Trim() }
+				$tbsIPDevice = & $col $row.IPDevice
+				if ($tbsIPDevice) { $tbsIPDevice = $tbsIPDevice.Trim() }
+				$tbsBrand = & $col $row.ScaleBrand
+				$tbsLabel = if ($tbsScaleName) { $tbsScaleName } else { "Scale $rawScaleCode" }
 
-					$tbsScaleName = $null
-					if (-not [string]::IsNullOrWhiteSpace([string]$row.ScaleName)) { $tbsScaleName = [string]$row.ScaleName }
-
-					$tbsScaleLocation = $null
-					if (-not [string]::IsNullOrWhiteSpace([string]$row.ScaleLocation)) { $tbsScaleLocation = [string]$row.ScaleLocation }
-
-					$tbsIPNetwork = $null
-					if (-not [string]::IsNullOrWhiteSpace([string]$row.IPNetwork)) { $tbsIPNetwork = [string]$row.IPNetwork.Trim() }
-
-					$tbsIPDevice = $null
-					if (-not [string]::IsNullOrWhiteSpace([string]$row.IPDevice)) { $tbsIPDevice = [string]$row.IPDevice.Trim() }
-
-					$tbsFullIP = $null
-					if ($tbsIPNetwork -or $tbsIPDevice)
-					{
-						$tbsFullIP = "$tbsIPNetwork$tbsIPDevice"
-					}
-
-					$tbsActive = $null
-					if (-not [string]::IsNullOrWhiteSpace([string]$row.Active)) { $tbsActive = [string]$row.Active }
-
-					$tbsBrand = $null
-					if (-not [string]::IsNullOrWhiteSpace([string]$row.ScaleBrand)) { $tbsBrand = [string]$row.ScaleBrand }
-
-					$tbsModel = $null
-					if (-not [string]::IsNullOrWhiteSpace([string]$row.ScaleModel)) { $tbsModel = [string]$row.ScaleModel }
-
-					$null = $TbsScaleRows.Add(([PSCustomObject]@{
-								RawScaleCode  = $rawScaleCode
-								TbsRowOrdinal = $tbsRowOrdinal
-								ScaleCode	  = $rawScaleCode
-								BaseScaleCode = $rawScaleCode
-								Label		  = if ($tbsScaleName) { $tbsScaleName } else { "Scale $rawScaleCode" }
-								ScaleName	  = if ($tbsScaleName) { $tbsScaleName } else { "Scale $rawScaleCode" }
-								Path		  = $null
-								HostPath	  = $null
-								ScaleBrand    = $tbsBrand
-								Scalevendor   = $tbsBrand
-								ScaleModel    = $tbsModel
-								ScaleLocation = $tbsScaleLocation
-								IPNetwork	  = $tbsIPNetwork
-								IPDevice	  = $tbsIPDevice
-								FullIP	      = $tbsFullIP
-								PortRaw	      = $null
-								TcpPort	      = $null
-								Section	      = $null
-								BaseMode	  = $null
-								Type		  = $null
-								Baud		  = $null
-								Sub		      = $null
-								PlumDir	      = $null
-								Active	      = $tbsActive
-								Source	      = 'TBS'
-							}))
-				}
+				$null = $TbsScaleRows.Add([PSCustomObject]@{
+						RawScaleCode  = $rawScaleCode
+						TbsRowOrdinal = $tbsRowOrdinal
+						ScaleCode     = $rawScaleCode
+						BaseScaleCode = $rawScaleCode
+						Label         = $tbsLabel
+						ScaleName     = $tbsLabel
+						Path          = $null
+						HostPath      = $null
+						ScaleBrand    = $tbsBrand
+						Scalevendor   = $tbsBrand
+						ScaleModel    = & $col $row.ScaleModel
+						ScaleLocation = & $col $row.ScaleLocation
+						IPNetwork     = $tbsIPNetwork
+						IPDevice      = $tbsIPDevice
+						FullIP        = if ($tbsIPNetwork -or $tbsIPDevice) { "$tbsIPNetwork$tbsIPDevice" } else { $null }
+						PortRaw       = $null
+						TcpPort       = $null
+						Section       = $null
+						BaseMode      = $null
+						Type          = $null
+						Baud          = $null
+						Sub           = $null
+						PlumDir       = $null
+						Active        = & $col $row.Active
+						Source        = 'TBS'
+					})
 			}
 		}
 		catch
@@ -5092,230 +4793,104 @@ WHERE Active = 'Y'
 	}
 
 	# ====================================================================================
-	# 2. FALLBACK: LOAD FROM Ter_Load.sql IF DB IS NOT AVAILABLE
+	# 2. FALLBACK: Office\Load\Ter_Load.sql
 	# ====================================================================================
-	$TerLoadUsed = $false
-	if ((-not $NodesFromDatabase) -and $TerLoadSqlPath -and (Test-Path $TerLoadSqlPath))
+	if ((-not $NodesFromDatabase) -and $TerLoadSqlPath -and (Test-Path -LiteralPath $TerLoadSqlPath))
 	{
 		Write_Log "Using Ter_Load.sql as backup for TER_TAB information." "yellow"
-		$TerLoadUsed = $true
-		$content = Get-Content $TerLoadSqlPath -Raw
-
+		$content = Get-Content -LiteralPath $TerLoadSqlPath -Raw
 		if ($content -match 'INSERT INTO Ter_Load VALUES\s*(.*);' -or $content -match 'INSERT INTO Ter_Load VALUES\s*(.*)')
 		{
-			$insertBlock = $matches[1]
-			$values = $insertBlock -split '\),\s*\(' | ForEach-Object { $_.Trim('() ') }
-
-			foreach ($value in $values)
+			foreach ($value in ($matches[1] -split '\),\s*\(' | ForEach-Object { $_.Trim('() ') }))
 			{
-				$fields = $value -split "',\s*'" | ForEach-Object { $_.Trim("'") }
+				$fields = @($value -split "',\s*'" | ForEach-Object { $_.Trim("'") })
 				if ($fields.Count -ge 5 -and $fields[0] -eq $StoreNumber)
 				{
-					$terminal = [string]$fields[1]
-					$label = [string]$fields[2]
-					$path = [string]$fields[3]
-					$hostPath = [string]$fields[4]
-
-					if (
-						($terminal -match '^0\d\d$' -or $path -match '^\\\\[^\\]+\\') -and
-						$terminal -notmatch '^8' -and $terminal -notmatch '^9'
-					)
-					{
-						$machineName = $null
-						if ($path -match '\\\\([^\\]+)\\') { $machineName = $matches[1] }
-						else { $machineName = $terminal }
-
-						$LaneMachineNames += $machineName
-						if ($terminal -match '^0\d\d$') { $LaneNumToMachineName[$terminal] = $machineName }
-						$LaneMachineLabels[$machineName] = $label
-						$LaneMachinePath[$machineName] = $path
-						$LaneMachineToServerPath[$machineName] = $hostPath
-					}
-					elseif ($terminal -match '^8\d\d$' -and $terminal -notmatch '^0' -and $terminal -notmatch '^9' -and $path -match '(?i)XchScale\\XchScale\.exe$')
-					{
-						if (-not $TerScaleBy80X.ContainsKey($terminal))
-						{
-							$TerScaleBy80X[$terminal] = [PSCustomObject]@{
-								Code		  = $terminal
-								ScaleCode	  = $terminal
-								BaseScaleCode = $terminal
-								Label		  = $label
-								ScaleName	  = $label
-								Path		  = $path
-								HostPath	  = $hostPath
-								ScaleBrand    = $null
-								Scalevendor   = $null
-								ScaleModel    = $null
-								ScaleLocation = $null
-								IPNetwork	  = $null
-								IPDevice	  = $null
-								FullIP	      = $null
-								PortRaw	      = $null
-								TcpPort	      = $null
-								Section	      = $null
-								BaseMode	  = $null
-								Type		  = $null
-								Baud		  = $null
-								Sub		      = $null
-								PlumDir	      = $null
-								Active	      = $null
-								Source	      = 'TER'
-							}
-						}
-						else
-						{
-							$existingTer = $TerScaleBy80X[$terminal]
-							if ([string]::IsNullOrWhiteSpace([string]$existingTer.Label) -and $label) { $existingTer.Label = $label }
-							if ([string]::IsNullOrWhiteSpace([string]$existingTer.ScaleName) -and $label) { $existingTer.ScaleName = $label }
-							if ([string]::IsNullOrWhiteSpace([string]$existingTer.Path) -and $path) { $existingTer.Path = $path }
-							if ([string]::IsNullOrWhiteSpace([string]$existingTer.HostPath) -and $hostPath) { $existingTer.HostPath = $hostPath }
-						}
-					}
-					elseif ($terminal -eq '901' -and $path -match '^@[^@]+$')
-					{
-						$ServerMachineName = $path -replace '^@', ''
-						$ServerLabel = $label
-						$ServerPath = $path
-					}
-					elseif ($terminal -match '^9(0[2-9]|[1-8]\d|9[0-8])$' -and $path -match '^@[^@]+$')
-					{
-						$machineName = $path -replace '^@', ''
-						$BackofficeNumToMachineName[$terminal] = $machineName
-						$BackofficeNumToLabel[$terminal] = $label
-						$BackofficeNumToPath[$terminal] = $path
-					}
+					. $addTerRow ([string]$fields[1]) ([string]$fields[2]) ([string]$fields[3]) ([string]$fields[4])
 				}
 			}
 		}
-
-		$NumberOfLanes = $LaneMachineNames.Count
-		$NumberOfServers = if ($ServerMachineName) { 1 }
-		else { 0 }
-		$NumberOfBackoffices = $BackofficeNumToMachineName.Count
 	}
 
 	# ====================================================================================
-	# 2.5 ENRICH TER 80X SCALES FROM ALL XchNodes.ini CANDIDATES
+	# 2.5 ENRICH TER 80X SCALES FROM XchNodes.ini (best section per scale wins)
 	# ====================================================================================
 	$XchNodesIniPathsUsed = @()
 	if ($TerScaleBy80X.Count -gt 0 -and $XchNodesIniCandidates.Count -gt 0)
 	{
-		$AllowedScaleCodes = @($TerScaleBy80X.Keys | Where-Object { $_ -match '^8\d\d$' } | Select-Object -Unique)
 		$AllowedScaleCodeSet = @{ }
-		foreach ($allowedCode in $AllowedScaleCodes) { $AllowedScaleCodeSet[$allowedCode] = $true }
+		foreach ($allowedCode in @($TerScaleBy80X.Keys | Where-Object { $_ -match '^8\d\d$' })) { $AllowedScaleCodeSet[$allowedCode] = $true }
 
-		$storeDigits = ($StoreNumber -replace '[^\d]', '')
+		# Section names are <store><terminal>, e.g. 001801 or 0001801
 		$storeSectionPrefixes = @()
-		if (-not [string]::IsNullOrWhiteSpace($storeDigits))
+		$storeDigits = ($StoreNumber -replace '[^\d]', '')
+		if ($storeDigits)
 		{
-			try
-			{
-				$storeSectionPrefixes += ([int]$storeDigits).ToString('000')
-				$storeSectionPrefixes += ([int]$storeDigits).ToString('0000')
-			}
-			catch
-			{
-				$storeSectionPrefixes += $storeDigits
-			}
-			if (-not ($storeSectionPrefixes -contains $storeDigits)) { $storeSectionPrefixes += $storeDigits }
+			try { $storeSectionPrefixes += ([int]$storeDigits).ToString('000'); $storeSectionPrefixes += ([int]$storeDigits).ToString('0000') }
+			catch { }
+			$storeSectionPrefixes += $storeDigits
+			$storeSectionPrefixes = @($storeSectionPrefixes | Select-Object -Unique)
 		}
-		$storeSectionPrefixes = @($storeSectionPrefixes | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
 
 		$BestXchByBaseScaleCode = @{ }
 		$sourceRank = 0
-
 		foreach ($candidateIni in @($XchNodesIniCandidates | Select-Object -Unique))
 		{
 			$sourceRank++
 			$XchNodesIniPathsUsed += $candidateIni
-
 			try
 			{
 				$iniRaw = Get-Content -LiteralPath $candidateIni -Raw -ErrorAction Stop
-				$sectionMatches = [regex]::Matches($iniRaw, '(?ms)^\[(?<name>[^\]]+)\]\s*(?<body>.*?)(?=^\[|\z)')
-
-				foreach ($sectionMatch in $sectionMatches)
+				foreach ($sectionMatch in [regex]::Matches($iniRaw, '(?ms)^\[(?<name>[^\]]+)\]\s*(?<body>.*?)(?=^\[|\z)'))
 				{
 					$sectionKey = [string]$sectionMatch.Groups['name'].Value.Trim()
-					$sectionBody = [string]$sectionMatch.Groups['body'].Value
 					if ([string]::IsNullOrWhiteSpace($sectionKey)) { continue }
 
-					$currentMap = [ordered]@{ }
-					foreach ($bodyLineRaw in ($sectionBody -split "`r?`n"))
+					$currentMap = @{ }
+					foreach ($bodyLine in ([string]$sectionMatch.Groups['body'].Value -split "`r?`n"))
 					{
-						$bodyLine = [string]$bodyLineRaw
 						$bodyTrim = $bodyLine.Trim()
 						if ([string]::IsNullOrWhiteSpace($bodyTrim) -or $bodyTrim -match '^[;#]') { continue }
-
-						if ($bodyTrim -match '^\s*([^=]+?)\s*=\s*(.*)\s*$')
-						{
-							$key = $matches[1].Trim()
-							$val = $matches[2]
-							$currentMap[$key] = $val
-						}
+						if ($bodyTrim -match '^\s*([^=]+?)\s*=\s*(.*)\s*$') { $currentMap[$matches[1].Trim()] = $matches[2] }
 					}
+					$get = { param ($k) if ($currentMap.ContainsKey($k)) { [string]$currentMap[$k] } else { $null } }
 
 					$sectionTerminal = $null
-					if ($sectionKey -match '(\d{3})$')
-					{
-						if ($matches[1] -match '^8\d\d$') { $sectionTerminal = $matches[1] }
-					}
+					if ($sectionKey -match '(\d{3})$' -and $matches[1] -match '^8\d\d$') { $sectionTerminal = $matches[1] }
 
-					$numberRaw = $null
-					if ($currentMap.Contains('NUMBER')) { $numberRaw = ([string]$currentMap['NUMBER']).Trim() }
-
+					# NUMBER=1 -> 801, NUMBER=801 -> 801
+					$numberRaw = & $get 'NUMBER'
+					if ($numberRaw) { $numberRaw = $numberRaw.Trim() }
 					$scaleCodeFromNumber = $null
-					if (-not [string]::IsNullOrWhiteSpace($numberRaw) -and $numberRaw -match '^\d+$')
+					if ($numberRaw -match '^\d+$')
 					{
 						try
 						{
 							$n = [int]$numberRaw
-							if ($n -ge 0 -and $n -le 99)
-							{
-								$scaleCodeFromNumber = ('8{0:00}' -f $n)
-							}
-							elseif ($n -ge 800 -and $n -le 899)
-							{
-								$scaleCodeFromNumber = ('{0:000}' -f $n)
-							}
+							if ($n -ge 0 -and $n -le 99) { $scaleCodeFromNumber = ('8{0:00}' -f $n) }
+							elseif ($n -ge 800 -and $n -le 899) { $scaleCodeFromNumber = ('{0:000}' -f $n) }
 						}
 						catch { }
 					}
 
+					# Match rank: 0 = <store><terminal> section, 1 = terminal suffix only, 2 = NUMBER
 					$matchedScaleCode = $null
 					$matchRank = 99
-
 					if ($sectionTerminal -and $AllowedScaleCodeSet.ContainsKey($sectionTerminal))
-					{
-						foreach ($prefix in $storeSectionPrefixes)
-						{
-							if ($sectionKey -ieq "$prefix$sectionTerminal")
-							{
-								$matchedScaleCode = $sectionTerminal
-								$matchRank = 0
-								break
-							}
-						}
-					}
-
-					if (-not $matchedScaleCode -and $sectionTerminal -and $AllowedScaleCodeSet.ContainsKey($sectionTerminal))
 					{
 						$matchedScaleCode = $sectionTerminal
 						$matchRank = 1
+						foreach ($prefix in $storeSectionPrefixes) { if ($sectionKey -ieq "$prefix$sectionTerminal") { $matchRank = 0; break } }
 					}
-
-					if (-not $matchedScaleCode -and $scaleCodeFromNumber -and $AllowedScaleCodeSet.ContainsKey($scaleCodeFromNumber))
+					elseif ($scaleCodeFromNumber -and $AllowedScaleCodeSet.ContainsKey($scaleCodeFromNumber))
 					{
 						$matchedScaleCode = $scaleCodeFromNumber
 						$matchRank = 2
 					}
-
 					if (-not $matchedScaleCode) { continue }
 
-					$portRaw = $null
-					if ($currentMap.Contains('Port')) { $portRaw = [string]$currentMap['Port'] }
-
-					$portValue = $null
+					# Port=IP 192.168.1.50:3001 -> FullIP / TcpPort / IPNetwork + IPDevice
+					$portRaw = & $get 'Port'
 					$tcpPort = $null
 					$fullIP = $null
 					$ipNetwork = $null
@@ -5328,82 +4903,48 @@ WHERE Active = 'Y'
 							$fullIP = $matches[1].Trim()
 							$tcpPort = $matches[2].Trim()
 						}
-						else
-						{
-							$fullIP = $portValue
-						}
+						else { $fullIP = $portValue }
 
 						if ($fullIP -match '^\d{1,3}(?:\.\d{1,3}){3}$')
 						{
 							$lastDot = $fullIP.LastIndexOf('.')
-							if ($lastDot -gt 0)
-							{
-								$ipNetwork = $fullIP.Substring(0, $lastDot + 1)
-								$ipDevice = $fullIP.Substring($lastDot + 1)
-							}
+							$ipNetwork = $fullIP.Substring(0, $lastDot + 1)
+							$ipDevice = $fullIP.Substring($lastDot + 1)
 						}
 					}
 
 					$completeness = 0
 					if ($fullIP) { $completeness += 10 }
-					if ($currentMap.Contains('Scalevendor') -and -not [string]::IsNullOrWhiteSpace([string]$currentMap['Scalevendor'])) { $completeness += 5 }
-					if ($currentMap.Contains('ScaleModel') -and -not [string]::IsNullOrWhiteSpace([string]$currentMap['ScaleModel'])) { $completeness += 5 }
+					if (-not [string]::IsNullOrWhiteSpace((& $get 'Scalevendor'))) { $completeness += 5 }
+					if (-not [string]::IsNullOrWhiteSpace((& $get 'ScaleModel'))) { $completeness += 5 }
 					if ($portRaw) { $completeness += 3 }
-					if ($currentMap.Contains('Baud') -and -not [string]::IsNullOrWhiteSpace([string]$currentMap['Baud'])) { $completeness += 1 }
-					if ($currentMap.Contains('Type') -and -not [string]::IsNullOrWhiteSpace([string]$currentMap['Type'])) { $completeness += 1 }
-					if ($currentMap.Contains('BaseMode') -and -not [string]::IsNullOrWhiteSpace([string]$currentMap['BaseMode'])) { $completeness += 1 }
+					foreach ($k in 'Baud', 'Type', 'BaseMode') { if (-not [string]::IsNullOrWhiteSpace((& $get $k))) { $completeness += 1 } }
 
 					$entryObj = [PSCustomObject]@{
-						SourceIniPath	    = $candidateIni
-						SourceRank		    = $sourceRank
-						MatchRank		    = $matchRank
-						Completeness	    = $completeness
-						Section			    = $sectionKey
-						SectionTerminal	    = $sectionTerminal
-						Number			    = $numberRaw
-						ScaleCodeFromNumber = $scaleCodeFromNumber
-						ScaleCode		    = $matchedScaleCode
-						BaseMode		    = if ($currentMap.Contains('BaseMode')) { [string]$currentMap['BaseMode'] } else { $null }
-						Type			    = if ($currentMap.Contains('Type')) { [string]$currentMap['Type'] } else { $null }
-						ScaleBrand		    = if ($currentMap.Contains('Scalevendor')) { [string]$currentMap['Scalevendor'] } else { $null }
-						Scalevendor		    = if ($currentMap.Contains('Scalevendor')) { [string]$currentMap['Scalevendor'] } else { $null }
-						ScaleModel		    = if ($currentMap.Contains('ScaleModel')) { [string]$currentMap['ScaleModel'] } else { $null }
-						Baud			    = if ($currentMap.Contains('Baud')) { [string]$currentMap['Baud'] } else { $null }
-						PortRaw			    = $portRaw
-						Port			    = $fullIP
-						TcpPort			    = $tcpPort
-						IPNetwork		    = $ipNetwork
-						IPDevice		    = $ipDevice
-						FullIP			    = $fullIP
-						Sub				    = if ($currentMap.Contains('Sub')) { [string]$currentMap['Sub'] } else { $null }
-						PlumDir			    = if ($currentMap.Contains('PlumDir')) { [string]$currentMap['PlumDir'] } else { $null }
-						EnableLogging	    = if ($currentMap.Contains('EnableLogging')) { [string]$currentMap['EnableLogging'] } else { $null }
-						ShowGUI			    = if ($currentMap.Contains('ShowGUI')) { [string]$currentMap['ShowGUI'] } else { $null }
+						SourceRank   = $sourceRank
+						MatchRank    = $matchRank
+						Completeness = $completeness
+						Section      = $sectionKey
+						BaseMode     = & $get 'BaseMode'
+						Type         = & $get 'Type'
+						ScaleBrand   = & $get 'Scalevendor'
+						ScaleModel   = & $get 'ScaleModel'
+						Baud         = & $get 'Baud'
+						PortRaw      = $portRaw
+						TcpPort      = $tcpPort
+						IPNetwork    = $ipNetwork
+						IPDevice     = $ipDevice
+						FullIP       = $fullIP
+						Sub          = & $get 'Sub'
+						PlumDir      = & $get 'PlumDir'
 					}
 
-					$replaceXch = $false
-					if (-not $BestXchByBaseScaleCode.ContainsKey($matchedScaleCode))
-					{
-						$replaceXch = $true
-					}
-					else
-					{
-						$existingXch = $BestXchByBaseScaleCode[$matchedScaleCode]
-						if ($entryObj.MatchRank -lt $existingXch.MatchRank)
-						{
-							$replaceXch = $true
-						}
-						elseif ($entryObj.MatchRank -eq $existingXch.MatchRank -and $entryObj.Completeness -gt $existingXch.Completeness)
-						{
-							$replaceXch = $true
-						}
-						elseif ($entryObj.MatchRank -eq $existingXch.MatchRank -and $entryObj.Completeness -eq $existingXch.Completeness -and $entryObj.SourceRank -lt $existingXch.SourceRank)
-						{
-							$replaceXch = $true
-						}
-					}
-
-					if ($replaceXch)
+					# Keep the best section: lower MatchRank, then more complete, then earlier file
+					$existingXch = $BestXchByBaseScaleCode[$matchedScaleCode]
+					if (-not $existingXch -or
+						$entryObj.MatchRank -lt $existingXch.MatchRank -or
+						($entryObj.MatchRank -eq $existingXch.MatchRank -and $entryObj.Completeness -gt $existingXch.Completeness) -or
+						($entryObj.MatchRank -eq $existingXch.MatchRank -and $entryObj.Completeness -eq $existingXch.Completeness -and $entryObj.SourceRank -lt $existingXch.SourceRank))
 					{
 						$BestXchByBaseScaleCode[$matchedScaleCode] = $entryObj
 					}
@@ -5415,160 +4956,91 @@ WHERE Active = 'Y'
 			}
 		}
 
+		# Fill the TER scales' empty fields from their best XchNodes section
 		foreach ($terCode in @($TerScaleBy80X.Keys))
 		{
-			if (-not $BestXchByBaseScaleCode.ContainsKey($terCode)) { continue }
 			$xchEntry = $BestXchByBaseScaleCode[$terCode]
 			$terEntry = $TerScaleBy80X[$terCode]
 			if (-not $xchEntry -or -not $terEntry) { continue }
-
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.IPNetwork) -and $xchEntry.IPNetwork) { $terEntry.IPNetwork = [string]$xchEntry.IPNetwork }
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.IPDevice) -and $xchEntry.IPDevice) { $terEntry.IPDevice = [string]$xchEntry.IPDevice }
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.FullIP) -and $xchEntry.FullIP) { $terEntry.FullIP = [string]$xchEntry.FullIP }
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.PortRaw) -and $xchEntry.PortRaw) { $terEntry.PortRaw = [string]$xchEntry.PortRaw }
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.TcpPort) -and $xchEntry.TcpPort) { $terEntry.TcpPort = [string]$xchEntry.TcpPort }
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.Section) -and $xchEntry.Section) { $terEntry.Section = [string]$xchEntry.Section }
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.BaseMode) -and $xchEntry.BaseMode) { $terEntry.BaseMode = [string]$xchEntry.BaseMode }
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.Type) -and $xchEntry.Type) { $terEntry.Type = [string]$xchEntry.Type }
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.Baud) -and $xchEntry.Baud) { $terEntry.Baud = [string]$xchEntry.Baud }
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.Sub) -and $xchEntry.Sub) { $terEntry.Sub = [string]$xchEntry.Sub }
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.PlumDir) -and $xchEntry.PlumDir) { $terEntry.PlumDir = [string]$xchEntry.PlumDir }
+			foreach ($field in 'IPNetwork', 'IPDevice', 'FullIP', 'PortRaw', 'TcpPort', 'Section', 'BaseMode', 'Type', 'Baud', 'Sub', 'PlumDir', 'ScaleModel')
+			{
+				if ([string]::IsNullOrWhiteSpace([string]$terEntry.$field) -and $xchEntry.$field) { $terEntry.$field = [string]$xchEntry.$field }
+			}
 			if ([string]::IsNullOrWhiteSpace([string]$terEntry.ScaleBrand) -and $xchEntry.ScaleBrand)
 			{
 				$terEntry.ScaleBrand = [string]$xchEntry.ScaleBrand
 				$terEntry.Scalevendor = [string]$xchEntry.ScaleBrand
 			}
-			if ([string]::IsNullOrWhiteSpace([string]$terEntry.ScaleModel) -and $xchEntry.ScaleModel) { $terEntry.ScaleModel = [string]$xchEntry.ScaleModel }
 		}
 	}
 
 	# ====================================================================================
-	# 2.75 REMOVE TER SCALES THAT MATCH A TBS SCALE BY SAME IP
+	# 2.75 DROP TER SCALES THAT ARE ALSO A TBS SCALE (same IP) - the TBS row wins
 	# ====================================================================================
+	$normalizedIp = {
+		param ($e)
+		if (-not [string]::IsNullOrWhiteSpace([string]$e.FullIP)) { return ([string]$e.FullIP).Trim().ToLowerInvariant() }
+		if (-not [string]::IsNullOrWhiteSpace([string]$e.IPNetwork) -or -not [string]::IsNullOrWhiteSpace([string]$e.IPDevice))
+		{
+			return ("$([string]$e.IPNetwork)$([string]$e.IPDevice)").Trim().ToLowerInvariant()
+		}
+		return $null
+	}
 	$TbsByNormalizedIp = @{ }
 	foreach ($tbsEntry in @($TbsScaleRows))
 	{
-		if (-not $tbsEntry) { continue }
-
-		$tbsIpNorm = $null
-		if (-not [string]::IsNullOrWhiteSpace([string]$tbsEntry.FullIP))
-		{
-			$tbsIpNorm = ([string]$tbsEntry.FullIP).Trim().ToLowerInvariant()
-		}
-		elseif (-not [string]::IsNullOrWhiteSpace([string]$tbsEntry.IPNetwork) -or -not [string]::IsNullOrWhiteSpace([string]$tbsEntry.IPDevice))
-		{
-			$tbsIpNorm = ("$([string]$tbsEntry.IPNetwork)$([string]$tbsEntry.IPDevice)").Trim().ToLowerInvariant()
-		}
-
-		if ([string]::IsNullOrWhiteSpace($tbsIpNorm)) { continue }
-
-		if (-not $TbsByNormalizedIp.ContainsKey($tbsIpNorm))
-		{
-			$TbsByNormalizedIp[$tbsIpNorm] = New-Object System.Collections.ArrayList
-		}
-		$null = $TbsByNormalizedIp[$tbsIpNorm].Add($tbsEntry)
+		$ip = & $normalizedIp $tbsEntry
+		if ($ip -and -not $TbsByNormalizedIp.ContainsKey($ip)) { $TbsByNormalizedIp[$ip] = $tbsEntry }
 	}
 
 	$FinalTerBy80X = @{ }
 	foreach ($terCode in @($TerScaleBy80X.Keys | Sort-Object { [int]$_ }))
 	{
 		$terEntry = $TerScaleBy80X[$terCode]
-		if (-not $terEntry) { continue }
-
-		$terIpNorm = $null
-		if (-not [string]::IsNullOrWhiteSpace([string]$terEntry.FullIP))
+		$ip = & $normalizedIp $terEntry
+		if ($ip -and $TbsByNormalizedIp.ContainsKey($ip))
 		{
-			$terIpNorm = ([string]$terEntry.FullIP).Trim().ToLowerInvariant()
-		}
-		elseif (-not [string]::IsNullOrWhiteSpace([string]$terEntry.IPNetwork) -or -not [string]::IsNullOrWhiteSpace([string]$terEntry.IPDevice))
-		{
-			$terIpNorm = ("$([string]$terEntry.IPNetwork)$([string]$terEntry.IPDevice)").Trim().ToLowerInvariant()
-		}
-
-		if (-not [string]::IsNullOrWhiteSpace($terIpNorm) -and $TbsByNormalizedIp.ContainsKey($terIpNorm))
-		{
-			# Same IP exists in TER and TBS -> keep TBS only
-			$matchingTbsRow = @($TbsByNormalizedIp[$terIpNorm]) | Select-Object -First 1
-			if ($matchingTbsRow)
+			$matchingTbsRow = $TbsByNormalizedIp[$ip]
+			foreach ($field in 'Path', 'HostPath', 'PortRaw', 'TcpPort', 'Section', 'BaseMode', 'Type', 'Baud', 'Sub', 'PlumDir')
 			{
-				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.Path) -and $terEntry.Path) { $matchingTbsRow.Path = [string]$terEntry.Path }
-				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.HostPath) -and $terEntry.HostPath) { $matchingTbsRow.HostPath = [string]$terEntry.HostPath }
-				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.PortRaw) -and $terEntry.PortRaw) { $matchingTbsRow.PortRaw = [string]$terEntry.PortRaw }
-				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.TcpPort) -and $terEntry.TcpPort) { $matchingTbsRow.TcpPort = [string]$terEntry.TcpPort }
-				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.Section) -and $terEntry.Section) { $matchingTbsRow.Section = [string]$terEntry.Section }
-				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.BaseMode) -and $terEntry.BaseMode) { $matchingTbsRow.BaseMode = [string]$terEntry.BaseMode }
-				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.Type) -and $terEntry.Type) { $matchingTbsRow.Type = [string]$terEntry.Type }
-				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.Baud) -and $terEntry.Baud) { $matchingTbsRow.Baud = [string]$terEntry.Baud }
-				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.Sub) -and $terEntry.Sub) { $matchingTbsRow.Sub = [string]$terEntry.Sub }
-				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.PlumDir) -and $terEntry.PlumDir) { $matchingTbsRow.PlumDir = [string]$terEntry.PlumDir }
+				if ([string]::IsNullOrWhiteSpace([string]$matchingTbsRow.$field) -and $terEntry.$field) { $matchingTbsRow.$field = [string]$terEntry.$field }
 			}
-
 			continue
 		}
-
 		$FinalTerBy80X[$terCode] = $terEntry
 	}
 
 	# ====================================================================================
-	# 2.9 MATERIALIZE FINAL SCALE KEYS / MAPS
+	# 2.9 FINAL SCALE KEYS AND MAPS (TER by 80X first, then TBS by original ScaleCode)
 	# ====================================================================================
-	$ScaleCodes = @()
-	$ScaleLabels = @{ }
-	$ScaleExePaths = @{ }
-	$ScaleCodeToIPInfo = @{ }
-	$ScaleNameToCode = @{ }
-	$ScaleCodeToPath = @{ }
-	$ScaleNameToPath = @{ }
-
-	$ScaleCodeToName = @{ }
-	$ScaleCodeToSection = @{ }
-	$ScaleCodeToBrand = @{ }
-	$ScaleCodeToModel = @{ }
-	$ScaleCodeToLocation = @{ }
-	$ScaleCodeToIPNetwork = @{ }
-	$ScaleCodeToIPDevice = @{ }
-	$ScaleCodeToFullIP = @{ }
-	$ScaleCodeToPortRaw = @{ }
-	$ScaleCodeToTcpPort = @{ }
-	$ScaleCodeToBaseMode = @{ }
-	$ScaleCodeToType = @{ }
-	$ScaleCodeToBaud = @{ }
-	$ScaleCodeToSub = @{ }
-	$ScaleCodeToPlumDir = @{ }
-
-	# Materialize TER first with true 80X keys
-	foreach ($terCode in @($FinalTerBy80X.Keys | Sort-Object { [int]$_ }))
-	{
-		$terEntry = $FinalTerBy80X[$terCode]
-		if (-not $terEntry) { continue }
-
-		$finalKey = [string]$terCode
+	$addScale = {
+		param ([string]$finalKey, $entry, [string]$source)
 
 		$finalObj = [PSCustomObject]@{
-			Code		  = $finalKey
-			ScaleCode	  = $finalKey
-			BaseScaleCode = $terEntry.BaseScaleCode
-			Label		  = $terEntry.Label
-			ScaleName	  = $terEntry.ScaleName
-			Path		  = $terEntry.Path
-			HostPath	  = $terEntry.HostPath
-			ScaleBrand    = $terEntry.ScaleBrand
-			Scalevendor   = if ($terEntry.Scalevendor) { $terEntry.Scalevendor } else { $terEntry.ScaleBrand }
-			ScaleModel    = $terEntry.ScaleModel
-			ScaleLocation = $terEntry.ScaleLocation
-			IPNetwork	  = $terEntry.IPNetwork
-			IPDevice	  = $terEntry.IPDevice
-			FullIP	      = $terEntry.FullIP
-			PortRaw	      = $terEntry.PortRaw
-			TcpPort	      = $terEntry.TcpPort
-			Section	      = $terEntry.Section
-			BaseMode	  = $terEntry.BaseMode
-			Type		  = $terEntry.Type
-			Baud		  = $terEntry.Baud
-			Sub		      = $terEntry.Sub
-			PlumDir	      = $terEntry.PlumDir
-			Active	      = $terEntry.Active
-			Source	      = 'TER'
+			Code          = $finalKey
+			ScaleCode     = $finalKey
+			BaseScaleCode = $entry.BaseScaleCode
+			Label         = $entry.Label
+			ScaleName     = $entry.ScaleName
+			Path          = $entry.Path
+			HostPath      = $entry.HostPath
+			ScaleBrand    = $entry.ScaleBrand
+			Scalevendor   = if ($entry.Scalevendor) { $entry.Scalevendor } else { $entry.ScaleBrand }
+			ScaleModel    = $entry.ScaleModel
+			ScaleLocation = $entry.ScaleLocation
+			IPNetwork     = $entry.IPNetwork
+			IPDevice      = $entry.IPDevice
+			FullIP        = $entry.FullIP
+			PortRaw       = $entry.PortRaw
+			TcpPort       = $entry.TcpPort
+			Section       = $entry.Section
+			BaseMode      = $entry.BaseMode
+			Type          = $entry.Type
+			Baud          = $entry.Baud
+			Sub           = $entry.Sub
+			PlumDir       = $entry.PlumDir
+			Active        = $entry.Active
+			Source        = $source
 		}
 
 		$ScaleCodes += $finalKey
@@ -5576,567 +5048,135 @@ WHERE Active = 'Y'
 		$ScaleLabels[$finalKey] = $finalObj.Label
 		$ScaleExePaths[$finalKey] = $finalObj.Path
 		$ScaleCodeToPath[$finalKey] = $finalObj.Path
-
 		if ($finalObj.ScaleName)
 		{
 			$ScaleNameToCode[$finalObj.ScaleName] = $finalKey
 			$ScaleNameToPath[$finalObj.ScaleName] = $finalObj.Path
 			$ScaleCodeToName[$finalKey] = $finalObj.ScaleName
 		}
-		if ($finalObj.Section) { $ScaleCodeToSection[$finalKey] = $finalObj.Section }
-		if ($finalObj.ScaleBrand) { $ScaleCodeToBrand[$finalKey] = $finalObj.ScaleBrand }
-		if ($finalObj.ScaleModel) { $ScaleCodeToModel[$finalKey] = $finalObj.ScaleModel }
-		if ($finalObj.ScaleLocation) { $ScaleCodeToLocation[$finalKey] = $finalObj.ScaleLocation }
-		if ($finalObj.IPNetwork) { $ScaleCodeToIPNetwork[$finalKey] = $finalObj.IPNetwork }
-		if ($finalObj.IPDevice) { $ScaleCodeToIPDevice[$finalKey] = $finalObj.IPDevice }
-		if ($finalObj.FullIP) { $ScaleCodeToFullIP[$finalKey] = $finalObj.FullIP }
-		if ($finalObj.PortRaw) { $ScaleCodeToPortRaw[$finalKey] = $finalObj.PortRaw }
-		if ($finalObj.TcpPort) { $ScaleCodeToTcpPort[$finalKey] = $finalObj.TcpPort }
-		if ($finalObj.BaseMode) { $ScaleCodeToBaseMode[$finalKey] = $finalObj.BaseMode }
-		if ($finalObj.Type) { $ScaleCodeToType[$finalKey] = $finalObj.Type }
-		if ($finalObj.Baud) { $ScaleCodeToBaud[$finalKey] = $finalObj.Baud }
-		if ($finalObj.Sub) { $ScaleCodeToSub[$finalKey] = $finalObj.Sub }
-		if ($finalObj.PlumDir) { $ScaleCodeToPlumDir[$finalKey] = $finalObj.PlumDir }
+		foreach ($fm in $scaleFieldMaps)
+		{
+			$fv = $finalObj.($fm[0])
+			if ($fv) { (Get-Variable -Name $fm[1] -ValueOnly)[$finalKey] = $fv }
+		}
 	}
 
-	# Materialize TBS next with original/raw ScaleCode keys
+	foreach ($terCode in @($FinalTerBy80X.Keys | Sort-Object { [int]$_ }))
+	{
+		. $addScale ([string]$terCode) $FinalTerBy80X[$terCode] 'TER'
+	}
+
+	# A TBS ScaleCode that collides with an existing key gets a _TBS<n> suffix
 	$TbsKeyCounts = @{ }
 	foreach ($tbsEntry in @($TbsScaleRows))
 	{
-		if (-not $tbsEntry) { continue }
-
 		$rawKey = [string]$tbsEntry.RawScaleCode
 		if ([string]::IsNullOrWhiteSpace($rawKey)) { continue }
-
 		$finalKey = $rawKey
-
-		# If raw/original TBS key collides with an existing key, keep original and add suffix only when needed
-		if ($ScaleCodeToIPInfo.ContainsKey($finalKey))
+		if (-not $TbsKeyCounts.ContainsKey($rawKey)) { $TbsKeyCounts[$rawKey] = 1 }
+		while ($ScaleCodeToIPInfo.ContainsKey($finalKey))
 		{
-			if (-not $TbsKeyCounts.ContainsKey($rawKey)) { $TbsKeyCounts[$rawKey] = 1 }
-
-			do
-			{
-				$TbsKeyCounts[$rawKey]++
-				$finalKey = "{0}_TBS{1}" -f $rawKey, $TbsKeyCounts[$rawKey]
-			}
-			while ($ScaleCodeToIPInfo.ContainsKey($finalKey))
+			$TbsKeyCounts[$rawKey]++
+			$finalKey = "{0}_TBS{1}" -f $rawKey, $TbsKeyCounts[$rawKey]
 		}
-		else
-		{
-			if (-not $TbsKeyCounts.ContainsKey($rawKey)) { $TbsKeyCounts[$rawKey] = 1 }
-		}
+		. $addScale $finalKey $tbsEntry 'TBS'
+	}
 
-		$finalObj = [PSCustomObject]@{
-			Code		  = $finalKey
-			ScaleCode	  = $finalKey
-			BaseScaleCode = $tbsEntry.BaseScaleCode
-			Label		  = $tbsEntry.Label
-			ScaleName	  = $tbsEntry.ScaleName
-			Path		  = $tbsEntry.Path
-			HostPath	  = $tbsEntry.HostPath
-			ScaleBrand    = $tbsEntry.ScaleBrand
-			Scalevendor   = if ($tbsEntry.Scalevendor) { $tbsEntry.Scalevendor } else { $tbsEntry.ScaleBrand }
-			ScaleModel    = $tbsEntry.ScaleModel
-			ScaleLocation = $tbsEntry.ScaleLocation
-			IPNetwork	  = $tbsEntry.IPNetwork
-			IPDevice	  = $tbsEntry.IPDevice
-			FullIP	      = $tbsEntry.FullIP
-			PortRaw	      = $tbsEntry.PortRaw
-			TcpPort	      = $tbsEntry.TcpPort
-			Section	      = $tbsEntry.Section
-			BaseMode	  = $tbsEntry.BaseMode
-			Type		  = $tbsEntry.Type
-			Baud		  = $tbsEntry.Baud
-			Sub		      = $tbsEntry.Sub
-			PlumDir	      = $tbsEntry.PlumDir
-			Active	      = $tbsEntry.Active
-			Source	      = 'TBS'
-		}
-
-		$ScaleCodes += $finalKey
-		$ScaleCodeToIPInfo[$finalKey] = $finalObj
-		$ScaleLabels[$finalKey] = $finalObj.Label
-		$ScaleExePaths[$finalKey] = $finalObj.Path
-		$ScaleCodeToPath[$finalKey] = $finalObj.Path
-
-		if ($finalObj.ScaleName)
-		{
-			$ScaleNameToCode[$finalObj.ScaleName] = $finalKey
-			$ScaleNameToPath[$finalObj.ScaleName] = $finalObj.Path
-			$ScaleCodeToName[$finalKey] = $finalObj.ScaleName
-		}
-		if ($finalObj.Section) { $ScaleCodeToSection[$finalKey] = $finalObj.Section }
-		if ($finalObj.ScaleBrand) { $ScaleCodeToBrand[$finalKey] = $finalObj.ScaleBrand }
-		if ($finalObj.ScaleModel) { $ScaleCodeToModel[$finalKey] = $finalObj.ScaleModel }
-		if ($finalObj.ScaleLocation) { $ScaleCodeToLocation[$finalKey] = $finalObj.ScaleLocation }
-		if ($finalObj.IPNetwork) { $ScaleCodeToIPNetwork[$finalKey] = $finalObj.IPNetwork }
-		if ($finalObj.IPDevice) { $ScaleCodeToIPDevice[$finalKey] = $finalObj.IPDevice }
-		if ($finalObj.FullIP) { $ScaleCodeToFullIP[$finalKey] = $finalObj.FullIP }
-		if ($finalObj.PortRaw) { $ScaleCodeToPortRaw[$finalKey] = $finalObj.PortRaw }
-		if ($finalObj.TcpPort) { $ScaleCodeToTcpPort[$finalKey] = $finalObj.TcpPort }
-		if ($finalObj.BaseMode) { $ScaleCodeToBaseMode[$finalKey] = $finalObj.BaseMode }
-		if ($finalObj.Type) { $ScaleCodeToType[$finalKey] = $finalObj.Type }
-		if ($finalObj.Baud) { $ScaleCodeToBaud[$finalKey] = $finalObj.Baud }
-		if ($finalObj.Sub) { $ScaleCodeToSub[$finalKey] = $finalObj.Sub }
-		if ($finalObj.PlumDir) { $ScaleCodeToPlumDir[$finalKey] = $finalObj.PlumDir }
+	# ====================================================================================
+	# 3. REVERSE MAPS, COUNTS, BIZERBA (WINDOWS) SCALES
+	# ====================================================================================
+	foreach ($kv in @($LaneNumToMachineName.GetEnumerator())) { $MachineNameToLaneNum[$kv.Value] = $kv.Key }
+	foreach ($kv in @($BackofficeNumToMachineName.GetEnumerator()))
+	{
+		$MachineNameToBackofficeNum[$kv.Value] = $kv.Key
+		if ($BackofficeNumToPath.ContainsKey($kv.Key)) { $MachineNameToBackofficePath[$kv.Value] = $BackofficeNumToPath[$kv.Key] }
 	}
 
 	$NumberOfLanes = $LaneMachineNames.Count
-	$NumberOfServers = if ($ServerMachineName) { 1 }
-	else { 0 }
+	$NumberOfServers = if ($ServerMachineName) { 1 } else { 0 }
 	$NumberOfBackoffices = $BackofficeNumToMachineName.Count
 	$NumberOfScales = $ScaleCodes.Count
 
-	# ====================================================================================
-	# 3. CLEAN 1:1 MAPPINGS FOR ALL NODES (NO ALIASES, INCLUDE PATHS)
-	# ====================================================================================
-
-	# ---- LANES ----
-	$CleanLaneNumToMachineName = @{ }
-	$CleanMachineNameToLaneNum = @{ }
-	$CleanLaneNumToPath = @{ }
-	$CleanMachineNameToPath = @{ }
-	$CleanLaneNumToServerPath = @{ }
-	$CleanMachineNameToServerPath = @{ }
-
-	foreach ($kv in $LaneNumToMachineName.GetEnumerator())
-	{
-		$laneNum = $kv.Key
-		$machine = $kv.Value
-		$CleanLaneNumToMachineName[$laneNum] = $machine
-		$CleanMachineNameToLaneNum[$machine] = $laneNum
-
-		if ($LaneMachinePath.ContainsKey($machine))
-		{
-			$CleanLaneNumToPath[$laneNum] = $LaneMachinePath[$machine]
-			$CleanMachineNameToPath[$machine] = $LaneMachinePath[$machine]
-		}
-		if ($LaneMachineToServerPath.ContainsKey($machine))
-		{
-			$CleanLaneNumToServerPath[$laneNum] = $LaneMachineToServerPath[$machine]
-			$CleanMachineNameToServerPath[$machine] = $LaneMachineToServerPath[$machine]
-		}
-	}
-	$LaneNumToMachineName = $CleanLaneNumToMachineName
-	$MachineNameToLaneNum = $CleanMachineNameToLaneNum
-	$LaneNumToPath = $CleanLaneNumToPath
-	$MachineNameToPath = $CleanMachineNameToPath
-	$LaneNumToServerPath = $CleanLaneNumToServerPath
-	$MachineNameToServerPath = $CleanMachineNameToServerPath
-
-	# ---- SCALES ----
-	$CleanScaleCodeToIPInfo = @{ }
-	$CleanScaleNameToCode = @{ }
-	$CleanScaleCodeToPath = @{ }
-	$CleanScaleNameToPath = @{ }
-
-	$CleanScaleCodeToName = @{ }
-	$CleanScaleCodeToSection = @{ }
-	$CleanScaleCodeToBrand = @{ }
-	$CleanScaleCodeToModel = @{ }
-	$CleanScaleCodeToLocation = @{ }
-	$CleanScaleCodeToIPNetwork = @{ }
-	$CleanScaleCodeToIPDevice = @{ }
-	$CleanScaleCodeToFullIP = @{ }
-	$CleanScaleCodeToPortRaw = @{ }
-	$CleanScaleCodeToTcpPort = @{ }
-	$CleanScaleCodeToBaseMode = @{ }
-	$CleanScaleCodeToType = @{ }
-	$CleanScaleCodeToBaud = @{ }
-	$CleanScaleCodeToSub = @{ }
-	$CleanScaleCodeToPlumDir = @{ }
-
-	foreach ($kv in $ScaleCodeToIPInfo.GetEnumerator())
-	{
-		$scaleKey = $kv.Key
-		$scale = $kv.Value
-
-		$CleanScaleCodeToIPInfo[$scaleKey] = $scale
-
-		if ($scale.ScaleName)
-		{
-			$CleanScaleNameToCode[$scale.ScaleName] = $scaleKey
-			$CleanScaleNameToPath[$scale.ScaleName] = $scale.Path
-		}
-
-		$CleanScaleCodeToPath[$scaleKey] = $scale.Path
-
-		if ($scale.ScaleName) { $CleanScaleCodeToName[$scaleKey] = $scale.ScaleName }
-		if ($scale.Section) { $CleanScaleCodeToSection[$scaleKey] = $scale.Section }
-		if ($scale.ScaleBrand) { $CleanScaleCodeToBrand[$scaleKey] = $scale.ScaleBrand }
-		if ($scale.ScaleModel) { $CleanScaleCodeToModel[$scaleKey] = $scale.ScaleModel }
-		if ($scale.ScaleLocation) { $CleanScaleCodeToLocation[$scaleKey] = $scale.ScaleLocation }
-		if ($scale.IPNetwork) { $CleanScaleCodeToIPNetwork[$scaleKey] = $scale.IPNetwork }
-		if ($scale.IPDevice) { $CleanScaleCodeToIPDevice[$scaleKey] = $scale.IPDevice }
-		if ($scale.FullIP) { $CleanScaleCodeToFullIP[$scaleKey] = $scale.FullIP }
-		if ($scale.PortRaw) { $CleanScaleCodeToPortRaw[$scaleKey] = $scale.PortRaw }
-		if ($scale.TcpPort) { $CleanScaleCodeToTcpPort[$scaleKey] = $scale.TcpPort }
-		if ($scale.BaseMode) { $CleanScaleCodeToBaseMode[$scaleKey] = $scale.BaseMode }
-		if ($scale.Type) { $CleanScaleCodeToType[$scaleKey] = $scale.Type }
-		if ($scale.Baud) { $CleanScaleCodeToBaud[$scaleKey] = $scale.Baud }
-		if ($scale.Sub) { $CleanScaleCodeToSub[$scaleKey] = $scale.Sub }
-		if ($scale.PlumDir) { $CleanScaleCodeToPlumDir[$scaleKey] = $scale.PlumDir }
-	}
-
-	$ScaleCodeToIPInfo = $CleanScaleCodeToIPInfo
-	$ScaleNameToCode = $CleanScaleNameToCode
-	$ScaleCodeToPath = $CleanScaleCodeToPath
-	$ScaleNameToPath = $CleanScaleNameToPath
-
-	$ScaleCodeToName = $CleanScaleCodeToName
-	$ScaleCodeToSection = $CleanScaleCodeToSection
-	$ScaleCodeToBrand = $CleanScaleCodeToBrand
-	$ScaleCodeToModel = $CleanScaleCodeToModel
-	$ScaleCodeToLocation = $CleanScaleCodeToLocation
-	$ScaleCodeToIPNetwork = $CleanScaleCodeToIPNetwork
-	$ScaleCodeToIPDevice = $CleanScaleCodeToIPDevice
-	$ScaleCodeToFullIP = $CleanScaleCodeToFullIP
-	$ScaleCodeToPortRaw = $CleanScaleCodeToPortRaw
-	$ScaleCodeToTcpPort = $CleanScaleCodeToTcpPort
-	$ScaleCodeToBaseMode = $CleanScaleCodeToBaseMode
-	$ScaleCodeToType = $CleanScaleCodeToType
-	$ScaleCodeToBaud = $CleanScaleCodeToBaud
-	$ScaleCodeToSub = $CleanScaleCodeToSub
-	$ScaleCodeToPlumDir = $CleanScaleCodeToPlumDir
-
-	# ---- BACKOFFICES ----
-	$CleanBackofficeNumToMachineName = @{ }
-	$CleanMachineNameToBackofficeNum = @{ }
-	$CleanBackofficeNumToPath = @{ }
-	$CleanMachineNameToBOPath = @{ }
-
-	foreach ($kv in $BackofficeNumToMachineName.GetEnumerator())
-	{
-		$boNum = $kv.Key
-		$machine = $kv.Value
-		$CleanBackofficeNumToMachineName[$boNum] = $machine
-		$CleanMachineNameToBackofficeNum[$machine] = $boNum
-
-		if ($BackofficeNumToPath.ContainsKey($boNum))
-		{
-			$CleanBackofficeNumToPath[$boNum] = $BackofficeNumToPath[$boNum]
-			$CleanMachineNameToBOPath[$machine] = $BackofficeNumToPath[$boNum]
-		}
-	}
-	$BackofficeNumToMachineName = $CleanBackofficeNumToMachineName
-	$MachineNameToBackofficeNum = $CleanMachineNameToBackofficeNum
-	$BackofficeNumToPath = $CleanBackofficeNumToPath
-	$MachineNameToBackofficePath = $CleanMachineNameToBOPath
-
-	# ====================================================================================
-	# 5. BUILD WINDOWS SCALES ONLY
-	# ====================================================================================
-	$WindowsScales = @{ }
-	foreach ($code in $ScaleCodeToIPInfo.Keys)
+	# Bizerba scales run Windows (C$ shares, credentials, file deployment)
+	foreach ($code in @($ScaleCodeToIPInfo.Keys))
 	{
 		$scale = $ScaleCodeToIPInfo[$code]
-		if (-not $scale) { continue }
-
-		$isBizerba = $false
-
-		if ($scale.ScaleBrand -and ([string]$scale.ScaleBrand -match '(?i)bizerba')) { $isBizerba = $true }
-		elseif ($scale.Scalevendor -and ([string]$scale.Scalevendor -match '(?i)bizerba')) { $isBizerba = $true }
-		elseif ($scale.ScaleModel -and ([string]$scale.ScaleModel -match '(?i)bizerba')) { $isBizerba = $true }
-		elseif ($scale.ScaleName -and ([string]$scale.ScaleName -match '(?i)bizerba')) { $isBizerba = $true }
-		elseif ($scale.Label -and ([string]$scale.Label -match '(?i)bizerba')) { $isBizerba = $true }
-
-		if ($isBizerba)
+		foreach ($field in 'ScaleBrand', 'Scalevendor', 'ScaleModel', 'ScaleName', 'Label')
 		{
-			$WindowsScales[$code] = $scale
+			if ($scale.$field -and ([string]$scale.$field -match '(?i)bizerba')) { $WindowsScales[$code] = $scale; break }
 		}
 	}
 
-	# ====================================================================================
-	# 6. BUILD RETURN OBJECT & STORE TO GLOBAL FUNCTIONRESULTS
-	# ====================================================================================
-	$Nodes = [PSCustomObject]@{
-		NumberOfLanes			   = $NumberOfLanes
-		NumberOfServers		       = $NumberOfServers
-		NumberOfBackoffices	       = $NumberOfBackoffices
-		NumberOfScales			   = $NumberOfScales
-		LaneMachineNames		   = $LaneMachineNames
-		LaneNumToMachineName	   = $LaneNumToMachineName
-		LaneMachineLabels		   = $LaneMachineLabels
-		LaneMachinePath		       = $LaneMachinePath
-		LaneMachineToServerPath    = $LaneMachineToServerPath
-		ScaleCodes				   = $ScaleCodes
-		ScaleLabels			       = $ScaleLabels
-		ScaleExePaths			   = $ScaleExePaths
-		ScaleCodeToIPInfo		   = $ScaleCodeToIPInfo
-		ScaleNameToCode		       = $ScaleNameToCode
-		ScaleCodeToPath		       = $ScaleCodeToPath
-		ScaleNameToPath		       = $ScaleNameToPath
-		ScaleCodeToName		       = $ScaleCodeToName
-		ScaleCodeToSection		   = $ScaleCodeToSection
-		ScaleCodeToBrand		   = $ScaleCodeToBrand
-		ScaleCodeToModel		   = $ScaleCodeToModel
-		ScaleCodeToLocation	       = $ScaleCodeToLocation
-		ScaleCodeToIPNetwork	   = $ScaleCodeToIPNetwork
-		ScaleCodeToIPDevice	       = $ScaleCodeToIPDevice
-		ScaleCodeToFullIP		   = $ScaleCodeToFullIP
-		ScaleCodeToPortRaw		   = $ScaleCodeToPortRaw
-		ScaleCodeToTcpPort		   = $ScaleCodeToTcpPort
-		ScaleCodeToBaseMode	       = $ScaleCodeToBaseMode
-		ScaleCodeToType		       = $ScaleCodeToType
-		ScaleCodeToBaud		       = $ScaleCodeToBaud
-		ScaleCodeToSub			   = $ScaleCodeToSub
-		ScaleCodeToPlumDir		   = $ScaleCodeToPlumDir
-		BackofficeNumToMachineName = $BackofficeNumToMachineName
-		BackofficeNumToLabel	   = $BackofficeNumToLabel
-		BackofficeNumToPath	       = $BackofficeNumToPath
-		ServerMachineName		   = $ServerMachineName
-		ServerLabel			       = $ServerLabel
-		ServerPath				   = $ServerPath
-		WindowsScales			   = $WindowsScales
-	}
-
-	$script:FunctionResults['NumberOfLanes'] = $NumberOfLanes
-	$script:FunctionResults['NumberOfServers'] = $NumberOfServers
-	$script:FunctionResults['NumberOfBackoffices'] = $NumberOfBackoffices
-	$script:FunctionResults['NumberOfScales'] = $NumberOfScales
-	$script:FunctionResults['LaneMachineNames'] = $LaneMachineNames
-	$script:FunctionResults['LaneNumToMachineName'] = $LaneNumToMachineName
-	$script:FunctionResults['MachineNameToLaneNum'] = $MachineNameToLaneNum
-	$script:FunctionResults['LaneMachineLabels'] = $LaneMachineLabels
-	$script:FunctionResults['LaneMachinePath'] = $LaneMachinePath
-	$script:FunctionResults['LaneMachineToServerPath'] = $LaneMachineToServerPath
-	$script:FunctionResults['ScaleCodes'] = $ScaleCodes
-	$script:FunctionResults['ScaleLabels'] = $ScaleLabels
-	$script:FunctionResults['ScaleExePaths'] = $ScaleExePaths
-	$script:FunctionResults['ScaleCodeToIPInfo'] = $ScaleCodeToIPInfo
-	$script:FunctionResults['ScaleNameToCode'] = $ScaleNameToCode
-	$script:FunctionResults['ScaleCodeToPath'] = $ScaleCodeToPath
-	$script:FunctionResults['ScaleNameToPath'] = $ScaleNameToPath
-	$script:FunctionResults['ScaleCodeToName'] = $ScaleCodeToName
-	$script:FunctionResults['ScaleCodeToSection'] = $ScaleCodeToSection
-	$script:FunctionResults['ScaleCodeToBrand'] = $ScaleCodeToBrand
-	$script:FunctionResults['ScaleCodeToModel'] = $ScaleCodeToModel
-	$script:FunctionResults['ScaleCodeToLocation'] = $ScaleCodeToLocation
-	$script:FunctionResults['ScaleCodeToIPNetwork'] = $ScaleCodeToIPNetwork
-	$script:FunctionResults['ScaleCodeToIPDevice'] = $ScaleCodeToIPDevice
-	$script:FunctionResults['ScaleCodeToFullIP'] = $ScaleCodeToFullIP
-	$script:FunctionResults['ScaleCodeToPortRaw'] = $ScaleCodeToPortRaw
-	$script:FunctionResults['ScaleCodeToTcpPort'] = $ScaleCodeToTcpPort
-	$script:FunctionResults['ScaleCodeToBaseMode'] = $ScaleCodeToBaseMode
-	$script:FunctionResults['ScaleCodeToType'] = $ScaleCodeToType
-	$script:FunctionResults['ScaleCodeToBaud'] = $ScaleCodeToBaud
-	$script:FunctionResults['ScaleCodeToSub'] = $ScaleCodeToSub
-	$script:FunctionResults['ScaleCodeToPlumDir'] = $ScaleCodeToPlumDir
-	$script:FunctionResults['BackofficeNumToMachineName'] = $BackofficeNumToMachineName
-	$script:FunctionResults['MachineNameToBackofficeNum'] = $MachineNameToBackofficeNum
-	$script:FunctionResults['BackofficeNumToLabel'] = $BackofficeNumToLabel
-	$script:FunctionResults['BackofficeNumToPath'] = $BackofficeNumToPath
-	$script:FunctionResults['MachineNameToBackofficePath'] = $MachineNameToBackofficePath
-	$script:FunctionResults['ServerMachineName'] = $ServerMachineName
-	$script:FunctionResults['ServerLabel'] = $ServerLabel
-	$script:FunctionResults['ServerPath'] = $ServerPath
-	$script:FunctionResults['WindowsScales'] = $WindowsScales
-	$script:FunctionResults['Nodes'] = $Nodes
-	$script:FunctionResults['XchNodesIniPathsUsed'] = @($XchNodesIniPathsUsed | Select-Object -Unique)
+	. $publish
 
 	# ====================================================================================
-	# 7. OPTIONAL: UPDATE GUI LABELS IF PRESENT
+	# 4. CACHE WRITE (keys sorted so the file is readable and stable)
 	# ====================================================================================
-	if ($NodesHost -ne $null) { $NodesHost.Text = "Number of Servers: $NumberOfServers" }
-	if ($NodesBackoffices -ne $null) { $NodesBackoffices.Text = "Number of Backoffices: $NumberOfBackoffices" }
-	if ($NodesStore -ne $null) { $NodesStore.Text = "Number of Lanes: $NumberOfLanes" }
-	if ($scalesLabel -ne $null) { $scalesLabel.Text = "Number of Scales: $NumberOfScales" }
-	if ($form -ne $null) { $form.Refresh() }
-
-	# ====================================================================================
-	# 8. CACHE WRITE
-	# ====================================================================================
-	if ($CachePath)
+	try
 	{
-		try
-		{
-			$sortedLaneNums = @($LaneNumToMachineName.Keys) | Where-Object { $_ -match '^\d{3}$' } | Sort-Object { [int]$_ }
-
-			$outLaneNumToMachineName = [ordered]@{ }
-			foreach ($k in $sortedLaneNums) { $outLaneNumToMachineName[$k] = $LaneNumToMachineName[$k] }
-
-			$outMachineNameToLaneNum = [ordered]@{ }
-			foreach ($kv in ($MachineNameToLaneNum.GetEnumerator() | Sort-Object { [int]($_.Value) }, { $_.Key }))
-			{
-				$outMachineNameToLaneNum[$kv.Key] = $kv.Value
-			}
-
-			$outLaneMachineLabels = [ordered]@{ }
-			$outLaneMachinePath = [ordered]@{ }
-			$outLaneMachineToServerPath = [ordered]@{ }
-			foreach ($ln in $sortedLaneNums)
-			{
-				$m = $LaneNumToMachineName[$ln]
-				if ($m)
-				{
-					if ($LaneMachineLabels.ContainsKey($m)) { $outLaneMachineLabels[$m] = $LaneMachineLabels[$m] }
-					if ($LaneMachinePath.ContainsKey($m)) { $outLaneMachinePath[$m] = $LaneMachinePath[$m] }
-					if ($LaneMachineToServerPath.ContainsKey($m)) { $outLaneMachineToServerPath[$m] = $LaneMachineToServerPath[$m] }
-				}
-			}
-
-			$outScaleLabels = [ordered]@{ }
-			foreach ($k in (@($ScaleLabels.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleLabels[$k] = $ScaleLabels[$k] }
-
-			$outScaleExePaths = [ordered]@{ }
-			foreach ($k in (@($ScaleExePaths.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleExePaths[$k] = $ScaleExePaths[$k] }
-
-			$outScaleCodeToIPInfo = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToIPInfo.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToIPInfo[$k] = $ScaleCodeToIPInfo[$k] }
-
-			$outScaleNameToCode = [ordered]@{ }
-			foreach ($kv in ($ScaleNameToCode.GetEnumerator() | Sort-Object { $_.Value }, { $_.Key })) { $outScaleNameToCode[$kv.Key] = $kv.Value }
-
-			$outScaleCodeToPath = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToPath.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToPath[$k] = $ScaleCodeToPath[$k] }
-
-			$outScaleNameToPath = [ordered]@{ }
-			foreach ($kv in ($ScaleNameToPath.GetEnumerator() | Sort-Object { $_.Key })) { $outScaleNameToPath[$kv.Key] = $kv.Value }
-
-			$outScaleCodeToName = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToName.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToName[$k] = $ScaleCodeToName[$k] }
-
-			$outScaleCodeToSection = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToSection.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToSection[$k] = $ScaleCodeToSection[$k] }
-
-			$outScaleCodeToBrand = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToBrand.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToBrand[$k] = $ScaleCodeToBrand[$k] }
-
-			$outScaleCodeToModel = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToModel.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToModel[$k] = $ScaleCodeToModel[$k] }
-
-			$outScaleCodeToLocation = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToLocation.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToLocation[$k] = $ScaleCodeToLocation[$k] }
-
-			$outScaleCodeToIPNetwork = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToIPNetwork.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToIPNetwork[$k] = $ScaleCodeToIPNetwork[$k] }
-
-			$outScaleCodeToIPDevice = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToIPDevice.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToIPDevice[$k] = $ScaleCodeToIPDevice[$k] }
-
-			$outScaleCodeToFullIP = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToFullIP.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToFullIP[$k] = $ScaleCodeToFullIP[$k] }
-
-			$outScaleCodeToPortRaw = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToPortRaw.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToPortRaw[$k] = $ScaleCodeToPortRaw[$k] }
-
-			$outScaleCodeToTcpPort = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToTcpPort.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToTcpPort[$k] = $ScaleCodeToTcpPort[$k] }
-
-			$outScaleCodeToBaseMode = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToBaseMode.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToBaseMode[$k] = $ScaleCodeToBaseMode[$k] }
-
-			$outScaleCodeToType = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToType.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToType[$k] = $ScaleCodeToType[$k] }
-
-			$outScaleCodeToBaud = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToBaud.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToBaud[$k] = $ScaleCodeToBaud[$k] }
-
-			$outScaleCodeToSub = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToSub.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToSub[$k] = $ScaleCodeToSub[$k] }
-
-			$outScaleCodeToPlumDir = [ordered]@{ }
-			foreach ($k in (@($ScaleCodeToPlumDir.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outScaleCodeToPlumDir[$k] = $ScaleCodeToPlumDir[$k] }
-
-			$outBackofficeNumToMachineName = [ordered]@{ }
-			foreach ($k in (@($BackofficeNumToMachineName.Keys) | Sort-Object { [int]$_ })) { $outBackofficeNumToMachineName[$k] = $BackofficeNumToMachineName[$k] }
-
-			$outMachineNameToBackofficeNum = [ordered]@{ }
-			foreach ($kv in ($MachineNameToBackofficeNum.GetEnumerator() | Sort-Object { [int]($_.Value) }, { $_.Key })) { $outMachineNameToBackofficeNum[$kv.Key] = $kv.Value }
-
-			$outBackofficeNumToLabel = [ordered]@{ }
-			foreach ($k in (@($BackofficeNumToLabel.Keys) | Sort-Object { [int]$_ })) { $outBackofficeNumToLabel[$k] = $BackofficeNumToLabel[$k] }
-
-			$outBackofficeNumToPath = [ordered]@{ }
-			foreach ($k in (@($BackofficeNumToPath.Keys) | Sort-Object { [int]$_ })) { $outBackofficeNumToPath[$k] = $BackofficeNumToPath[$k] }
-
-			$outMachineNameToBackofficePath = [ordered]@{ }
-			foreach ($kv in ($MachineNameToBackofficePath.GetEnumerator() | Sort-Object { $_.Key })) { $outMachineNameToBackofficePath[$kv.Key] = $kv.Value }
-
-			$outWindowsScales = [ordered]@{ }
-			foreach ($k in (@($WindowsScales.Keys) | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ })) { $outWindowsScales[$k] = $WindowsScales[$k] }
-
-			$outXchNodesIniPathsUsed = @($XchNodesIniPathsUsed | Select-Object -Unique)
-
-			$outLaneMachineNames = @($LaneMachineNames)
-			try
-			{
-				if ($outLaneMachineNames.Count -gt 0 -and $MachineNameToLaneNum.Count -gt 0)
-				{
-					$outLaneMachineNames = $outLaneMachineNames | Sort-Object {
-						try { [int]($MachineNameToLaneNum[$_] -replace '[^\d]', '0') }
-						catch { 999999 }
-					}, { $_ }
-				}
-			}
-			catch { }
-
-			$outScaleCodes = @($ScaleCodes)
-			try
-			{
-				$outScaleCodes = $outScaleCodes | Sort-Object { [int](($_ -replace '[^\d]', '0')) }, { $_ }
-			}
-			catch { }
-
-			$cacheOut = [pscustomobject]@{
-				LastUpdated = (Get-Date).ToString('o')
-				CacheSchemaVersion = $CacheSchemaVersion
-				StoreNumber = $StoreNumberNorm
-				Results	    = [pscustomobject]@{
-					NumberOfLanes			    = $NumberOfLanes
-					NumberOfServers			    = $NumberOfServers
-					NumberOfBackoffices		    = $NumberOfBackoffices
-					NumberOfScales			    = $NumberOfScales
-					LaneMachineNames		    = $outLaneMachineNames
-					LaneNumToMachineName	    = $outLaneNumToMachineName
-					MachineNameToLaneNum	    = $outMachineNameToLaneNum
-					LaneMachineLabels		    = $outLaneMachineLabels
-					LaneMachinePath			    = $outLaneMachinePath
-					LaneMachineToServerPath	    = $outLaneMachineToServerPath
-					ScaleCodes				    = $outScaleCodes
-					ScaleLabels				    = $outScaleLabels
-					ScaleExePaths			    = $outScaleExePaths
-					ScaleCodeToIPInfo		    = $outScaleCodeToIPInfo
-					ScaleNameToCode			    = $outScaleNameToCode
-					ScaleCodeToPath			    = $outScaleCodeToPath
-					ScaleNameToPath			    = $outScaleNameToPath
-					ScaleCodeToName			    = $outScaleCodeToName
-					ScaleCodeToSection		    = $outScaleCodeToSection
-					ScaleCodeToBrand		    = $outScaleCodeToBrand
-					ScaleCodeToModel		    = $outScaleCodeToModel
-					ScaleCodeToLocation		    = $outScaleCodeToLocation
-					ScaleCodeToIPNetwork	    = $outScaleCodeToIPNetwork
-					ScaleCodeToIPDevice		    = $outScaleCodeToIPDevice
-					ScaleCodeToFullIP		    = $outScaleCodeToFullIP
-					ScaleCodeToPortRaw		    = $outScaleCodeToPortRaw
-					ScaleCodeToTcpPort		    = $outScaleCodeToTcpPort
-					ScaleCodeToBaseMode		    = $outScaleCodeToBaseMode
-					ScaleCodeToType			    = $outScaleCodeToType
-					ScaleCodeToBaud			    = $outScaleCodeToBaud
-					ScaleCodeToSub			    = $outScaleCodeToSub
-					ScaleCodeToPlumDir		    = $outScaleCodeToPlumDir
-					BackofficeNumToMachineName  = $outBackofficeNumToMachineName
-					MachineNameToBackofficeNum  = $outMachineNameToBackofficeNum
-					BackofficeNumToLabel	    = $outBackofficeNumToLabel
-					BackofficeNumToPath		    = $outBackofficeNumToPath
-					MachineNameToBackofficePath = $outMachineNameToBackofficePath
-					ServerMachineName		    = $ServerMachineName
-					ServerLabel				    = $ServerLabel
-					ServerPath				    = $ServerPath
-					WindowsScales			    = $outWindowsScales
-					XchNodesIniPathsUsed	    = $outXchNodesIniPathsUsed
-				}
-			}
-
-			($cacheOut | ConvertTo-Json -Depth 16) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
+		$numKey = { [double]((([string]$_.Key) -replace '[^\d]', '0')) }
+		$sortMap = {
+			param ($Map, [object[]]$SortBy)
+			$o = [ordered]@{ }
+			foreach ($kv in @($Map.GetEnumerator() | Sort-Object $SortBy)) { $o[$kv.Key] = $kv.Value }
+			return $o
 		}
-		catch { }
-	}
 
-	# ====================================================================================
-	# 9. RETURN THE NODES OBJECT FOR SCRIPT CALLERS
-	# ====================================================================================
+		$out = [ordered]@{ }
+		foreach ($n in $mapNames) { $out[$n] = & $sortMap (Get-Variable -Name $n -ValueOnly) @($numKey, { $_.Key }) }
+
+		# Lanes: only 3-digit lane numbers; the per-machine maps follow the lane order
+		$sortedLaneNums = @($LaneNumToMachineName.Keys | Where-Object { $_ -match '^\d{3}$' } | Sort-Object { [int]$_ })
+		$out['LaneNumToMachineName'] = [ordered]@{ }
+		foreach ($k in 'LaneMachineLabels', 'LaneMachinePath', 'LaneMachineToServerPath') { $out[$k] = [ordered]@{ } }
+		foreach ($ln in $sortedLaneNums)
+		{
+			$m = $LaneNumToMachineName[$ln]
+			$out['LaneNumToMachineName'][$ln] = $m
+			if (-not $m) { continue }
+			foreach ($k in 'LaneMachineLabels', 'LaneMachinePath', 'LaneMachineToServerPath')
+			{
+				$src = Get-Variable -Name $k -ValueOnly
+				if ($src.ContainsKey($m)) { $out[$k][$m] = $src[$m] }
+			}
+		}
+		$byValueThenKey = @({ [double]((([string]$_.Value) -replace '[^\d]', '0')) }, { $_.Key })
+		$out['MachineNameToLaneNum'] = & $sortMap $MachineNameToLaneNum $byValueThenKey
+		$out['MachineNameToBackofficeNum'] = & $sortMap $MachineNameToBackofficeNum $byValueThenKey
+		$out['ScaleNameToCode'] = & $sortMap $ScaleNameToCode @({ $_.Value }, { $_.Key })
+		$out['ScaleNameToPath'] = & $sortMap $ScaleNameToPath @({ $_.Key })
+		$out['MachineNameToBackofficePath'] = & $sortMap $MachineNameToBackofficePath @({ $_.Key })
+
+		$outLaneMachineNames = @($LaneMachineNames)
+		if ($outLaneMachineNames.Count -gt 0 -and $MachineNameToLaneNum.Count -gt 0)
+		{
+			$outLaneMachineNames = @($outLaneMachineNames | Sort-Object { [double](([string]$MachineNameToLaneNum[$_]) -replace '[^\d]', '0') }, { $_ })
+		}
+
+		$results = [ordered]@{
+			NumberOfLanes       = $NumberOfLanes
+			NumberOfServers     = $NumberOfServers
+			NumberOfBackoffices = $NumberOfBackoffices
+			NumberOfScales      = $NumberOfScales
+			LaneMachineNames    = $outLaneMachineNames
+			ScaleCodes          = @($ScaleCodes | Sort-Object { [double](([string]$_) -replace '[^\d]', '0') }, { $_ })
+			ServerMachineName   = $ServerMachineName
+			ServerLabel         = $ServerLabel
+			ServerPath          = $ServerPath
+		}
+		foreach ($n in $mapNames) { $results[$n] = $out[$n] }
+		$results['XchNodesIniPathsUsed'] = @($XchNodesIniPathsUsed | Select-Object -Unique)
+
+		$cacheOut = [ordered]@{
+			LastUpdated        = (Get-Date).ToString('o')
+			CacheSchemaVersion = $CacheSchemaVersion
+			StoreNumber        = $StoreNumberNorm
+			Results            = $results
+		}
+		($cacheOut | ConvertTo-Json -Depth 16) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
+	}
+	catch { }
+
 	return $Nodes
 }
 
