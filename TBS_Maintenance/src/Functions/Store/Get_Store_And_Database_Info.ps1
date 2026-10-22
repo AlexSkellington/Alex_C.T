@@ -521,7 +521,7 @@ function Get_Store_And_Database_Info
 			{
 				$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
 				# Hover shows where the name came from (system.ini / INFO WIN.INI)
-				try { if ($toolTip -and $script:FunctionResults['StoreNameSource']) { $toolTip.SetToolTip($storeNameLabel, "Store name from " + $script:FunctionResults['StoreNameSource']) } }
+				try { if ($toolTip -and $script:FunctionResults['StoreNameSource']) { $toolTip.SetToolTip($storeNameLabel, "Store name from " + $script:FunctionResults['StoreNameSource'] + ". Click to ping all nodes (Lanes > Scales > Backoffices).") } }
 				catch { }
 				$anyLabelChanged = $true
 			}

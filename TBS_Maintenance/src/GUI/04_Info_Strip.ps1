@@ -217,6 +217,7 @@ $toolTip.SetToolTip($storeNameLabel, "Shows store name. Click to ping all nodes 
 $storeNameLabel.Add_Click({
 		$script:LastActivity = Get-Date
 		$orig = $storeNameLabel.ForeColor
+		$origText = $storeNameLabel.Text
 		$storeNameLabel.ForeColor = $uiAccent
 		try
 		{
@@ -228,6 +229,8 @@ $storeNameLabel.Add_Click({
 		}
 		finally
 		{
+			# Put the store name back (only the colour used to be restored: "Pinging..." stuck)
+			$storeNameLabel.Text = $origText
 			$storeNameLabel.ForeColor = $orig
 		}
 	})

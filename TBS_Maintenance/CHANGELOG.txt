@@ -5,6 +5,17 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.3  -  2026-10-22
+#  Store name after a ping, full KEY EXPIRED badge
+# ===================================================================================================
+#
+#  [FIX]  Clicking the store name to ping all nodes left "Store Name: Pinging..." on screen -
+#         only the colour was restored afterwards. The name is put back now, and its tooltip
+#         keeps the "click to ping" hint next to the name's source file.
+#  [FIX]  The banner's store / badge area had a fixed 250 px width: with the store name shown
+#         ("Store 998 - Thrifty Warehouse") the KEY EXPIRED / TEST badge was cut off. The area
+#         now sizes to its contents (never under the clock).
+## ===================================================================================================
 #  v2.7.2  -  2026-10-22
 #  Store name read from system.ini first
 # ===================================================================================================

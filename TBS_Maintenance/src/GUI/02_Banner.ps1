@@ -241,6 +241,12 @@ $layoutBanner = {
 		# is controlled separately; before the form is shown, .Visible
 		# misreports False, so it must not gate positioning)
 		$bannerTestBadge.Location = New-Object System.Drawing.Point(($bannerDateLabel.Right + 8), (& $centerY $bannerTestBadge))
+		# Width = what the store label + badge need (the fixed 250 px clipped "KEY EXPIRED" once
+		# the store name was shown), but never under the clock
+		$needed = $bannerTestBadge.Right + 4
+		if (-not $script:IsTestEnvironment) { $needed = $bannerDateLabel.Right + 4 }
+		$room = $clockLabel.Left - $bannerStatusPanel.Left - 12
+		$bannerStatusPanel.Width = [Math]::Max(50, [Math]::Min($needed, $room))
 		$appIconPanel.Location = New-Object System.Drawing.Point(12, (& $centerY $appIconPanel))
 	}
 	catch { }
