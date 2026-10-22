@@ -24,17 +24,17 @@ function Close_Open_Transactions
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
-	
+
 	# ==================== Start and validate XE path ====================
 	Write_Log "`r`n==================== Starting Close_Open_Transactions ====================`r`n" "blue"
-	
+
 	$XEFolderPath = "$OfficePath\XE${StoreNumber}901"
 	if (-not (Test-Path $XEFolderPath))
 	{
 		Write_Log "XE folder not found: $XEFolderPath" "red"
 		return
 	}
-	
+
 	# ==================== Validate SQL module availability ====================
 	$SqlModule = $script:FunctionResults['SqlModuleName']
 	if (-not $SqlModule -or $SqlModule -eq "None")
@@ -42,10 +42,10 @@ function Close_Open_Transactions
 		Write_Log "No SQL Server module available (SqlServer or SQLPS). Cannot close transactions." "red"
 		return
 	}
-	
+
 	# SQL string for closing all open transactions (manual fallback)
 	$CloseTransactionManual = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE')"
-	
+
 	# Paths for logs (keep a persistent transaction log)
 	$LogFolderPath = "$BasePath\Scripts_by_Alex_C.T"
 	$LogFilePath = Join-Path -Path $LogFolderPath -ChildPath "Closed_Transactions_LOG.txt"
@@ -54,9 +54,9 @@ function Close_Open_Transactions
 		try { New-Item -Path $LogFolderPath -ItemType Directory -Force | Out-Null }
 		catch { Write_Log "Failed to create log directory '$LogFolderPath'. Error: $_" "red"; return }
 	}
-	
+
 	$MatchedTransactions = $false
-	
+
 	try
 	{
 		$currentTime = Get-Date
@@ -64,7 +64,7 @@ function Close_Open_Transactions
 		$files = Get-ChildItem -Path $XEFolderPath -Filter "S*.???" | Where-Object {
 			($currentTime - $_.LastWriteTime).TotalDays -le 30
 		}
-		
+
 		# ==================== PROCESS EACH XE ERROR FILE FOUND ====================
 		if ($files -and $files.Count -gt 0)
 		{
@@ -75,14 +75,14 @@ function Close_Open_Transactions
 					# Attempt to extract the lane number from the filename
 					if ($file.Name -match '^S.*\.(\d{3})$') { $LaneNumber = $Matches[1] }
 					else { continue }
-					
+
 					# Read contents for parsing
 					$content = Get-Content -Path $file.FullName
 					$fromLine = $content | Where-Object { $_ -like 'From:*' }
 					$subjectLine = $content | Where-Object { $_ -like 'Subject:*' }
 					$msgLine = $content | Where-Object { $_ -like 'MSG:*' }
 					$lastRecordedStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' }
-					
+
 					# Parse out store/lane numbers from the "From:" line
 					if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
 					{
@@ -108,7 +108,7 @@ function Close_Open_Transactions
 											Write_Log "Lane $LaneNumber is offline. Skipping transaction close." "yellow"
 											continue
 										}
-										
+
 										# Get full DB connection info for this lane
 										$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
 										$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
@@ -117,11 +117,11 @@ function Close_Open_Transactions
 										$dbName = $laneInfo['DBName']
 										$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber"
 										$protocolWorked = $false
-										
+
 										# Try protocol (Named Pipes/TCP), otherwise fallback to file
 										Import-Module $SqlModule -ErrorAction Stop
 										$supportsConnStr = (Get-Command Invoke-Sqlcmd).Parameters.ContainsKey('ConnectionString')
-										
+
 										# ----------- Try Named Pipes protocol first -----------
 										if ($protocolType -eq "Named Pipes")
 										{
@@ -158,7 +158,7 @@ function Close_Open_Transactions
 											}
 											catch { Write_Log "TCP failed for lane $LaneNumber." "yellow" }
 										}
-										
+
 										# ----------- Fallback: File-based SQI if protocol failed -----------
 										if (-not $protocolWorked)
 										{
@@ -176,17 +176,17 @@ function Close_Open_Transactions
 												Write_Log "Lane directory $LaneDirectory not found (file fallback)." "yellow"
 											}
 										}
-										
+
 										# Log the close action
 										$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Closed transaction $transactionNumber on lane $LaneNumber"
 										Add-Content -Path $LogFilePath -Value $logMessage
-										
+
 										# Remove processed XE file
 										Remove-Item -Path $file.FullName -Force
-										
+
 										Write_Log "Processed file $($file.Name) for lane $LaneNumber and closed transaction $transactionNumber" "green"
 										$MatchedTransactions = $true
-										
+
 										# ----------- Optionally restart all programs on the lane -----------
 										Start-Sleep -Seconds 3
 										$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
@@ -218,7 +218,7 @@ function Close_Open_Transactions
 				}
 			}
 		}
-		
+
 		# ==================== If no matching files: Manual prompt for lane ====================
 		if (-not $MatchedTransactions)
 		{
@@ -230,7 +230,7 @@ function Close_Open_Transactions
 				Write_Log "`r`n==================== Close_Open_Transactions Function Completed ====================" "blue"
 				return
 			}
-			
+
 			foreach ($LaneNumber in $selection.Lanes)
 			{
 				$LaneNumber = if ($LaneNumber -is [pscustomobject] -and $LaneNumber.LaneNumber) { $LaneNumber.LaneNumber }
@@ -251,10 +251,10 @@ function Close_Open_Transactions
 				$dbName = $laneInfo['DBName']
 				$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE'"
 				$protocolWorked = $false
-				
+
 				Import-Module $SqlModule -ErrorAction Stop
 				$supportsConnStr = (Get-Command Invoke-Sqlcmd).Parameters.ContainsKey('ConnectionString')
-				
+
 				if ($protocolType -eq "Named Pipes")
 				{
 					try
@@ -289,7 +289,7 @@ function Close_Open_Transactions
 					}
 					catch { Write_Log "TCP failed for lane $LaneNumber." "yellow" }
 				}
-				
+
 				if (-not $protocolWorked)
 				{
 					$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"

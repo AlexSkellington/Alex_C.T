@@ -23,13 +23,13 @@ function Ping_All_Nodes
 		[string]$NodeType,
 		[string]$StoreNumber
 	)
-	
+
 	Write_Log "`r`n==================== Starting Ping_All_Nodes ($NodeType) Function ====================`r`n" "blue"
-	
+
 	$nodesToPing = @()
 	$nodeLabel = ""
 	$nodeSummary = ""
-	
+
 	switch ($NodeType)
 	{
 		"Lane" {
@@ -55,7 +55,7 @@ function Ping_All_Nodes
 			}
 			$nodesToPing = $nodesToPing | Sort-Object { [int]$_.Key }
 		}
-		
+
 		"Scale" {
 			$nodeLabel = "Scale"
 			$nodeSummary = "Scales"
@@ -100,7 +100,7 @@ function Ping_All_Nodes
 			}
 			$nodesToPing = $finalNodesToPing
 		}
-		
+
 		"Backoffice" {
 			$nodeLabel = "Backoffice"
 			$nodeSummary = "Backoffices"
@@ -125,7 +125,7 @@ function Ping_All_Nodes
 			$nodesToPing = $nodesToPing | Sort-Object { [int]$_.Key }
 		}
 	}
-	
+
 	# Final deduplication by Target (just to be sure)
 	$uniqueTargets = @{ }
 	$finalList = @()
@@ -138,15 +138,15 @@ function Ping_All_Nodes
 		}
 	}
 	$nodesToPing = $finalList
-	
+
 	if ($nodesToPing.Count -eq 0)
 	{
 		Write_Log "No valid $nodeSummary found to ping." "yellow"
 		return
 	}
-	
+
 	Write_Log "All $nodeSummary will be pinged." "green"
-	
+
 	# v2.6.9: probe all valid targets in parallel (capped concurrency, 400ms
 	# timeout) and then log the results in node order. This replaces the old
 	# serial Test-Connection loop, which could block for minutes when several
@@ -164,23 +164,23 @@ function Ping_All_Nodes
 	{
 		$probe = Test-Hosts_Parallel -Targets $probeTargets
 	}
-	
+
 	$successCount = 0
 	$failureCount = 0
 	$skippedCount = 0
-	
+
 	foreach ($node in $nodesToPing)
 	{
 		$primary = $node.Key
 		$target = $node.Target
-		
+
 		# Compose labelInfo only for scales if present and non-empty
 		$labelInfo = ""
 		if ($NodeType -eq "Scale" -and $node.PSObject.Properties.Name -contains "Label" -and $node.Label -and $node.Label -ne "")
 		{
 			$labelInfo = " [($($node.Label))]"
 		}
-		
+
 		if ([string]::IsNullOrWhiteSpace($target) -or $target -in @("Unknown", "Not Found"))
 		{
 			# For lanes/backoffices, $labelInfo is always ""
@@ -188,7 +188,7 @@ function Ping_All_Nodes
 			$skippedCount++
 			continue
 		}
-		
+
 		$state = 'ERROR'
 		if ($probe.ContainsKey($target)) { $state = $probe[$target] }
 		if ($state -eq 'OK')
@@ -207,7 +207,7 @@ function Ping_All_Nodes
 			$failureCount++
 		}
 	}
-	
+
 
 	$summaryMsg = "Ping Summary for $nodeSummary"
 	if ($StoreNumber) { $summaryMsg += " (Store Number: $StoreNumber)" }

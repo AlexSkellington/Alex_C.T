@@ -27,19 +27,19 @@ function Start_Lane_Protocol_Jobs
 		[Parameter(Mandatory)]
 		[string]$SqlModuleName
 	)
-	
+
 	# ---------- assemblies ----------
 	try { Add-Type -AssemblyName System.Windows.Forms 2>$null }
 	catch { }
 	try { Add-Type -AssemblyName System.Data 2>$null }
 	catch { }
-	
+
 	# ---------- paths ----------
 	$script:ProtocolResultsFile = Join-Path $script:SetupFiles 'Protocol_Results.txt'
 	$resultsDir = [System.IO.Path]::GetDirectoryName($script:ProtocolResultsFile)
 	if (-not (Test-Path $resultsDir)) { New-Item -Path $resultsDir -ItemType Directory -Force | Out-Null }
 	if (-not (Test-Path $script:ProtocolResultsFile)) { New-Item -Path $script:ProtocolResultsFile -ItemType File -Force | Out-Null }
-	
+
 	# ---------- globals ----------
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{ } }
@@ -50,16 +50,16 @@ function Start_Lane_Protocol_Jobs
 	if (-not $script:LaneSqlProtocolEnableJobs) { $script:LaneSqlProtocolEnableJobs = @{ } }
 	# store lane map for repeated runs
 	$script:LaneProtocolLaneMap = $LaneNumToMachineName
-	
+
 	# stop flag
 	$script:LaneProtocolStop = $false
-	
+
 	# ---------- prevent double start ----------
 	if ($script:protocolTimer)
 	{
 		return
 	}
-	
+
 	# ---------- warm from file (best effort) ----------
 	$loadedProtocolCount = 0
 	try
@@ -75,18 +75,18 @@ function Start_Lane_Protocol_Jobs
 					$proto = $matches[2].Trim()
 					$laneNum = (($laneRaw -replace '[^\d]', '')).PadLeft(3, '0')
 					if ([string]::IsNullOrWhiteSpace($laneNum)) { continue }
-					
+
 					$script:LaneProtocols[$laneNum] = $proto
 					$script:LaneProtocols[$laneRaw] = $proto
 					$loadedProtocolCount++
-					
+
 					$mn = $LaneNumToMachineName[$laneNum]
 					if ($mn)
 					{
 						$script:LaneProtocols[$mn] = $proto
 						$script:LaneProtocols[$mn.ToLower()] = $proto
 					}
-					
+
 					$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
 					$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = $proto }
 				}
@@ -94,7 +94,7 @@ function Start_Lane_Protocol_Jobs
 		}
 	}
 	catch { }
-	
+
 	# ---------- runspace pool (kept alive) ----------
 	if (-not $script:LaneProtocolPool)
 	{
@@ -107,7 +107,7 @@ function Start_Lane_Protocol_Jobs
 		$pool.Open()
 		$script:LaneProtocolPool = $pool
 	}
-	
+
 	# ---------- worker script (NO nested functions) ----------
 	$script:LaneProtocolWorker = @'
 param([string]$machine,[string]$lane)
@@ -166,7 +166,7 @@ if ($protocol -eq 'File') {
 
 [PSCustomObject]@{ Lane = $lane; Protocol = $protocol }
 '@
-	
+
 	# ---------- cadence ----------
 	if (-not $script:LaneProtocolLastRun) { $script:LaneProtocolLastRun = (Get-Date).AddYears(-10) }
 
@@ -213,7 +213,7 @@ if ($protocol -eq 'File') {
 
 		return $null
 	}.GetNewClosure()
-	
+
 	$getNextLaneSqlEnableRunDate = {
 		$scheduledDate = Get-Date
 		try
@@ -228,25 +228,25 @@ if ($protocol -eq 'File') {
 		}
 		return $scheduledDate
 	}.GetNewClosure()
-	
+
 	$startLaneSqlEnableBackgroundJob = {
 		param (
 			[string]$LaneNumber,
 			[string]$MachineName
 		)
-		
+
 		if ([string]::IsNullOrWhiteSpace($LaneNumber) -or [string]::IsNullOrWhiteSpace($MachineName))
 		{
 			return
 		}
-		
+
 		$laneKey = $LaneNumber.ToString().PadLeft(3, '0')
 		$existingJobState = $script:LaneSqlProtocolEnableJobs[$laneKey]
 		if ($existingJobState -and $existingJobState.Process -and -not $existingJobState.Process.HasExited)
 		{
 			return
 		}
-		
+
 		$scheduledDate = & $getNextLaneSqlEnableRunDate
 		$sourceScriptPath = $null
 		try
@@ -264,7 +264,7 @@ if ($protocol -eq 'File') {
 		{
 			$sourceScriptPath = $null
 		}
-		
+
 		if ([string]::IsNullOrWhiteSpace($sourceScriptPath))
 		{
 			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
@@ -275,7 +275,7 @@ if ($protocol -eq 'File') {
 			}
 			return
 		}
-		
+
 		$fnDefinition = $null
 		try
 		{
@@ -296,7 +296,7 @@ if ($protocol -eq 'File') {
 		{
 			$fnDefinition = $null
 		}
-		
+
 		if ([string]::IsNullOrWhiteSpace($fnDefinition))
 		{
 			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
@@ -374,15 +374,15 @@ if (`$ok) { exit 0 } else { exit 1 }
 			Pending	     = $true
 		}
 	}.GetNewClosure()
-	
+
 	$harvestLaneSqlEnableJobs = {
 		if (-not $script:LaneSqlProtocolEnableJobs -or $script:LaneSqlProtocolEnableJobs.Count -eq 0) { return }
-		
+
 		foreach ($laneKey in @($script:LaneSqlProtocolEnableJobs.Keys))
 		{
 			$st = $script:LaneSqlProtocolEnableJobs[$laneKey]
 			if (-not $st) { continue }
-			
+
 			$proc = $st.Process
 			$launcherScriptPath = $st.ScriptPath
 			if (-not $proc)
@@ -394,21 +394,21 @@ if (`$ok) { exit 0 } else { exit 1 }
 			}
 			try { if (-not $proc.HasExited) { continue } }
 			catch { continue }
-			
+
 			$success = $false
 			try { $success = ($proc.ExitCode -eq 0) }
 			catch { $success = $false }
 			try { if ($launcherScriptPath) { Remove-Item -LiteralPath $launcherScriptPath -Force -ErrorAction SilentlyContinue } }
 			catch { }
 			[void]$script:LaneSqlProtocolEnableJobs.Remove($laneKey)
-			
+
 			$machineName = $null
 			$scheduledFor = $null
 			try { $machineName = [string]$st.MachineName }
 			catch { $machineName = $null }
 			try { $scheduledFor = $st.ScheduledFor }
 			catch { $scheduledFor = $null }
-			
+
 			$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
 				TaskPresent  = $success
 				LastChecked  = Get-Date
@@ -417,19 +417,19 @@ if (`$ok) { exit 0 } else { exit 1 }
 			}
 		}
 	}.GetNewClosure()
-	
+
 	# ---------- timer (UI thread, safe) ----------
 	$script:protocolTimer = New-Object System.Windows.Forms.Timer
 	$script:protocolTimer.Interval = 1000
-	
+
 	$script:protocolTimer.add_Tick({
-			
+
 			if ($script:LaneProtocolStop) { return }
-			
+
 			# 0) harvest background SQL-enable scheduling jobs
 			try { & $harvestLaneSqlEnableJobs }
 			catch { }
-			
+
 			# 1) harvest completed jobs
 			$changed = $false
 			if ($script:LaneProtocolJobs -and $script:LaneProtocolJobs.Count -gt 0)
@@ -438,7 +438,7 @@ if (`$ok) { exit 0 } else { exit 1 }
 				{
 					$st = $script:LaneProtocolJobs[$laneKey]
 					if (-not $st) { continue }
-					
+
 					$startedRaw = $st.Started
 					$started = & $normalizeLaneProtocolTimestamp $startedRaw
 					$jobTimedOut = $false
@@ -456,11 +456,11 @@ if (`$ok) { exit 0 } else { exit 1 }
 					{
 						$laneNum = (($laneKey -replace '[^\d]', '')).PadLeft(3, '0')
 						if ([string]::IsNullOrWhiteSpace($laneNum)) { $laneNum = $laneKey }
-						
+
 						$laneMap = $script:LaneProtocolLaneMap
 						$mn = $null
 						if ($laneMap) { $mn = $laneMap[$laneNum] }
-						
+
 						$script:LaneProtocols[$laneNum] = 'Offline'
 						$script:LaneProtocols[$laneKey] = 'Offline'
 						if ($mn)
@@ -468,14 +468,14 @@ if (`$ok) { exit 0 } else { exit 1 }
 							$script:LaneProtocols[$mn] = 'Offline'
 							$script:LaneProtocols[$mn.ToLower()] = 'Offline'
 						}
-						
+
 						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
 						$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = 'Offline' }
-						
+
 						$changed = $true
 						continue
 					}
-					
+
 					$handle = $st.Handle
 					if ($handle -and $handle.IsCompleted)
 					{
@@ -485,24 +485,24 @@ if (`$ok) { exit 0 } else { exit 1 }
 						catch { $resultList = $null }
 						try { if ($ps) { $ps.Dispose() } }
 						catch { }
-						
+
 						[void]$script:LaneProtocolJobs.Remove($laneKey)
-						
+
 						$result = $null
 						if ($resultList -and $resultList.Count -ge 1) { $result = $resultList[0] }
 						if (-not $result) { $result = [pscustomobject]@{ Lane = $laneKey; Protocol = 'Offline' } }
-						
+
 						$rawLane = [string]$result.Lane
 						$laneNum = (($rawLane -replace '[^\d]', '')).PadLeft(3, '0')
 						if ([string]::IsNullOrWhiteSpace($laneNum)) { $laneNum = $laneKey }
-						
+
 						$proto = [string]$result.Protocol
 						if ([string]::IsNullOrWhiteSpace($proto)) { $proto = 'File' }
-						
+
 						$laneMap = $script:LaneProtocolLaneMap
 						$mn = $null
 						if ($laneMap) { $mn = $laneMap[$laneNum] }
-						
+
 						$script:LaneProtocols[$laneNum] = $proto
 						$script:LaneProtocols[$rawLane] = $proto
 						if ($mn)
@@ -510,7 +510,7 @@ if (`$ok) { exit 0 } else { exit 1 }
 							$script:LaneProtocols[$mn] = $proto
 							$script:LaneProtocols[$mn.ToLower()] = $proto
 						}
-						
+
 						$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $laneNum })
 						$script:ProtocolResults += [pscustomobject]@{ Lane = $laneNum; Protocol = $proto }
 						if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($mn))
@@ -527,12 +527,12 @@ if (`$ok) { exit 0 } else { exit 1 }
 								MachineName  = $mn
 							}
 						}
-						
+
 						$changed = $true
 					}
 				}
 			}
-			
+
 			# 1b) if any protocol jobs went stale, rebuild the pool so stuck probes do not wedge the app
 			$staleLaneKeys = @()
 			try
@@ -542,7 +542,7 @@ if (`$ok) { exit 0 } else { exit 1 }
 					$st = $script:LaneProtocolJobs[$laneKey]
 					if (-not $st) { continue }
 					if ($st.Handle -and $st.Handle.IsCompleted) { continue }
-					
+
 					$startedRaw = $st.Started
 					$started = & $normalizeLaneProtocolTimestamp $startedRaw
 					$jobTimedOut = $false
@@ -563,7 +563,7 @@ if (`$ok) { exit 0 } else { exit 1 }
 				}
 			}
 			catch { }
-			
+
 			if ($staleLaneKeys.Count -gt 0)
 			{
 				foreach ($st in @($script:LaneProtocolJobs.Values))
@@ -571,9 +571,9 @@ if (`$ok) { exit 0 } else { exit 1 }
 					try { if ($st -and $st.PS) { $st.PS.Dispose() } }
 					catch { }
 				}
-				
+
 				$script:LaneProtocolJobs = @{ }
-				
+
 				try
 				{
 					if ($script:LaneProtocolPool)
@@ -583,9 +583,9 @@ if (`$ok) { exit 0 } else { exit 1 }
 					}
 				}
 				catch { }
-				
+
 				$script:LaneProtocolPool = $null
-				
+
 				$minThreads = 1
 				$maxThreads = [Math]::Max(8, [Environment]::ProcessorCount * 2)
 				$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
@@ -596,7 +596,7 @@ if (`$ok) { exit 0 } else { exit 1 }
 				$script:LaneProtocolPool = $pool
 				$script:LaneProtocolLastRun = Get-Date
 			}
-			
+
 			# 2) write file when something changed
 			if ($changed)
 			{
@@ -608,7 +608,7 @@ if (`$ok) { exit 0 } else { exit 1 }
 				}
 				catch { }
 			}
-			
+
 			# 3) start a new scan every 60s ONLY if no jobs running
 			if ($script:LaneProtocolJobs.Count -eq 0)
 			{
@@ -634,7 +634,7 @@ if (`$ok) { exit 0 } else { exit 1 }
 				if ($ageSeconds -ge 60)
 				{
 					$script:LaneProtocolLastRun = Get-Date
-					
+
 					$laneMap = $script:LaneProtocolLaneMap
 					if ($laneMap)
 					{
@@ -642,16 +642,16 @@ if (`$ok) { exit 0 } else { exit 1 }
 						{
 							$numStr = ($k -replace '[^\d]', '')
 							if (-not $numStr) { continue }
-							
+
 							$laneNum = $numStr.PadLeft(3, '0')
 							$machine = $laneMap[$k]
 							if ([string]::IsNullOrWhiteSpace($machine)) { continue }
-							
+
 							$ps = [System.Management.Automation.PowerShell]::Create()
 							$ps.RunspacePool = $script:LaneProtocolPool
 							$null = $ps.AddScript($script:LaneProtocolWorker).AddArgument([string]$machine).AddArgument([string]$laneNum)
 							$handle = $ps.BeginInvoke()
-							
+
 							$script:LaneProtocolJobs[$laneNum] = @{
 								PS	    = $ps
 								Handle  = $handle
@@ -662,6 +662,6 @@ if (`$ok) { exit 0 } else { exit 1 }
 				}
 			}
 		}.GetNewClosure())
-	
+
 	$script:protocolTimer.Start()
 }

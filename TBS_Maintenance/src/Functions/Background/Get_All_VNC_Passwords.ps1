@@ -32,17 +32,17 @@ function Get_All_VNC_Passwords
 		[Parameter(Mandatory = $false)]
 		[hashtable]$BackofficeNumToMachineName
 	)
-	
+
 	# Default VNC password for lanes, backoffices, and scales with fixed passwords (e.g., Ishida)
 	$DefaultVNCPassword = "4330df922eb03b6e"
 	$script:DefaultVNCPassword = $DefaultVNCPassword
-	
+
 	$uvncFolders = @(
 		"C$\Program Files\uvnc bvba\UltraVNC",
 		"C$\Program Files (x86)\uvnc bvba\UltraVNC"
 	)
 	$AllVNCPasswords = @{ }
-	
+
 	# 1. Build main node list and tag brands for scales
 	$NodeList = @()
 	$BizerbaScales = @()
@@ -104,9 +104,9 @@ function Get_All_VNC_Passwords
 	}
 	if ($BackofficeNumToMachineName) { $NodeList += $BackofficeNumToMachineName.Values | Where-Object { $_ } }
 	$NodeList = $NodeList | Sort-Object -Unique
-	
+
 	if (($NodeList.Count -eq 0) -and ($BizerbaScales.Count -eq 0)) { throw "No machines provided for password extraction." }
-	
+
 	# 2. Ping regular nodes first (v2.6.9: parallel probe with a concurrency
 	# cap - the old serial Test-Connection loop could block for minutes when
 	# several nodes were down)
@@ -124,11 +124,11 @@ function Get_All_VNC_Passwords
 			$AllVNCPasswords[$node] = $null
 		}
 	}
-	
+
 	# 3. Start jobs for online regular nodes
 	$jobs = @()
 	$MaxConcurrentJobs = 20 # Increased for faster processing
-	
+
 	foreach ($machineName in $OnlineNodes)
 	{
 		while ($jobs.Count -ge $MaxConcurrentJobs)
@@ -224,7 +224,7 @@ function Get_All_VNC_Passwords
 			return @{ Machine = $machineName; Password = $password }
 		}
 	}
-	
+
 	# Only wait if there is anything to wait for: when the throttle loop above
 	# has already drained all jobs, $jobs is empty/null and Wait-Job throws a
 	# parameter validation error.
@@ -236,7 +236,7 @@ function Get_All_VNC_Passwords
 			if ($j.State -ne 'Completed') { Stop-Job -Job $j -ErrorAction SilentlyContinue }
 		}
 	}
-	
+
 	foreach ($j in $jobs)
 	{
 		$result = Receive-Job $j
@@ -246,7 +246,7 @@ function Get_All_VNC_Passwords
 		}
 		Remove-Job $j -Force
 	}
-	
+
 	# 4. Handle Bizerba scales (using cmdkey/bizuser logic, serially)
 	foreach ($b in $BizerbaScales)
 	{
@@ -259,14 +259,14 @@ function Get_All_VNC_Passwords
 		$username = "bizuser"
 		$password = $null
 		$fullIniPath = $null
-		
+
 		# Ping check first
 		if (-not (Test-Connection -ComputerName $scaleHost -Count 1 -Quiet -ErrorAction SilentlyContinue))
 		{
 			$AllVNCPasswords[$scaleHost] = $null
 			continue
 		}
-		
+
 		foreach ($uvncIniRel in $uvncIniRelativePaths)
 		{
 			foreach ($pw in $passwords)

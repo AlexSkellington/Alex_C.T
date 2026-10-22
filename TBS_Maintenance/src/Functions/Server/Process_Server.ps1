@@ -24,25 +24,25 @@ function Process_Server
 		[Parameter(Mandatory = $false)]
 		[switch]$PromptForSections
 	)
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Banner: Start
 	# ------------------------------------------------------------------------------------------------
 	Write_Log "`r`n==================== Starting Server Database Maintenance ====================`r`n" "blue"
-	
+
 	if ($PromptForSections)
 	{
 		[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
 		[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Variables and settings
 	# ------------------------------------------------------------------------------------------------
 	$sqlScript = $script:ServerSQLScript
 	$dbName = $script:FunctionResults['DBNAME']
 	$server = $script:FunctionResults['DBSERVER']
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Load SQL script content. Primary source is the in-memory $script:ServerSQLScript
 	# variable, set by Generate_SQL_Scripts during warmup. If it is not ready yet (the
@@ -55,7 +55,7 @@ function Process_Server
 		try { Generate_SQL_Scripts -StoreNumber $script:StoreNumber | Out-Null } catch { }
 		$sqlScript = $script:ServerSQLScript
 	}
-	
+
 	if (-not [string]::IsNullOrWhiteSpace($sqlScript))
 	{
 		Write_Log "Executing SQL script from variable..." "blue"
@@ -83,19 +83,19 @@ function Process_Server
 		Write_Log "No SQL script content or file path provided." "red"
 		return
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Parse SQL sections (comment blocks) to execute
 	# ------------------------------------------------------------------------------------------------
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	$matches = [regex]::Matches($sqlScript, $sectionPattern)
-	
+
 	if ($matches.Count -eq 0)
 	{
 		Write_Log "No SQL sections found to execute." "red"
 		return
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Prompt for section selection if requested
 	# ------------------------------------------------------------------------------------------------
@@ -113,19 +113,19 @@ function Process_Server
 		}
 	}
 	$useSpecificSections = $SectionsToRun -and $SectionsToRun.Count -gt 0
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Get connection string and import detected SQL module
 	# ------------------------------------------------------------------------------------------------
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-	
+
 	if (-not $ConnectionString -or -not $server -or -not $dbName)
 	{
 		Write_Log "DB server, DB name, or connection string not found. Cannot execute SQL script." "red"
 		return
 	}
-	
+
 	if ($SqlModuleName -and $SqlModuleName -ne "None")
 	{
 		Import-Module $SqlModuleName -ErrorAction Stop
@@ -136,7 +136,7 @@ function Process_Server
 		Write_Log "No valid SQL module available for SQL operations!" "red"
 		return
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Check if Invoke-Sqlcmd supports ConnectionString parameter
 	# ------------------------------------------------------------------------------------------------
@@ -145,7 +145,7 @@ function Process_Server
 	{
 		$supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString'
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Execute each SQL section, one by one (NO RETRIES, NO FILE COPY)
 	# ------------------------------------------------------------------------------------------------
@@ -154,19 +154,19 @@ function Process_Server
 	{
 		$sectionName = $match.Groups['SectionName'].Value.Trim()
 		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
-		
+
 		if ($useSpecificSections -and ($SectionsToRun -notcontains $sectionName)) { continue }
 		if ([string]::IsNullOrWhiteSpace($sqlCommands))
 		{
 			Write_Log "Section '$sectionName' has no commands. Skipping..." "yellow"
 			continue
 		}
-		
+
 		Write_Log "`r`nExecuting section: '$sectionName'" "blue"
 		Write_Log "--------------------------------------------------------------------------------"
 		Write_Log "$sqlCommands" "orange"
 		Write_Log "--------------------------------------------------------------------------------"
-		
+
 		try
 		{
 			if ($supportsConnectionString)
@@ -185,7 +185,7 @@ function Process_Server
 			$failedSections += $sectionName
 		}
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Completion summary
 	# ------------------------------------------------------------------------------------------------
@@ -197,6 +197,6 @@ function Process_Server
 	{
 		Write_Log "The following sections failed: $($failedSections -join ', ')" "red"
 	}
-	
+
 	Write_Log "`r`n==================== Completed Server Database Maintenance ====================" "blue"
 }

@@ -32,7 +32,7 @@ function Clear_XE_Folder
 		[ValidateRange(1, 3650)]
 		[int]$HealthMaxAgeDays = 30
 	)
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 0) Validate folder exists
 	# ------------------------------------------------------------------------------------------------
@@ -41,7 +41,7 @@ function Clear_XE_Folder
 		Write_Log "Folder '$FolderPath' (Urgent Messages) does not exist." "red"
 		return $null
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 1) STARTUP CLEANUP
 	#    - Deletes EVERYTHING except valid S*.??? health files
@@ -50,14 +50,14 @@ function Clear_XE_Folder
 	try
 	{
 		$now = Get-Date
-		
+
 		$items = Get-ChildItem -LiteralPath $FolderPath -Recurse -Force -ErrorAction SilentlyContinue |
 		Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 }
-		
+
 		foreach ($item in $items)
 		{
 			$keep = $false
-			
+
 			# Startup mode: delete FATAL*
 			if ($item.Name -like 'FATAL*')
 			{
@@ -74,19 +74,19 @@ function Clear_XE_Folder
 					$content = $null
 					try { $content = Get-Content -LiteralPath $item.FullName -ErrorAction Stop }
 					catch { $content = $null }
-					
+
 					if ($content)
 					{
 						$fromLine = $content | Where-Object { $_ -like 'From:*' } | Select-Object -First 1
 						$subjectLine = $content | Where-Object { $_ -like 'Subject:*' } | Select-Object -First 1
 						$msgLine = $content | Where-Object { $_ -like 'MSG:*' } | Select-Object -First 1
 						$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' } | Select-Object -First 1
-						
+
 						if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
 						{
 							$fileStoreNumber = $Matches[1]
 							$fileLaneNumber = $Matches[2]
-							
+
 							if ($fileStoreNumber -eq $StoreNumber -and
 								$item.Name -match '^S.*\.(\d{3})$' -and
 								$fileLaneNumber -eq $Matches[1] -and
@@ -100,7 +100,7 @@ function Clear_XE_Folder
 					}
 				}
 			}
-			
+
 			if (-not $keep)
 			{
 				for ($i = 0; $i -lt 8; $i++)
@@ -122,7 +122,7 @@ function Clear_XE_Folder
 	{
 		Write_Log "An error occurred during startup cleaning of '$FolderPath': $_" "red"
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 2) MONITOR (FileSystemWatcher in a background job)
 	#    - Keeps NEW FATAL* while running
@@ -131,7 +131,7 @@ function Clear_XE_Folder
 	try
 	{
 		$jobName = "XEWatcherJob_$StoreNumber"
-		
+
 		# Replace any existing watcher job
 		$existing = Get-Job -Name $jobName -ErrorAction SilentlyContinue
 		if ($existing)
@@ -141,7 +141,7 @@ function Clear_XE_Folder
 			try { Remove-Job -Job $existing -Force -ErrorAction SilentlyContinue | Out-Null }
 			catch { }
 		}
-		
+
 		$job = Start-Job -Name $jobName -ArgumentList $FolderPath, $StoreNumber, $HealthMaxAgeDays, $SweepIntervalSeconds -ScriptBlock {
 			param (
 				[string]$FolderPath,
@@ -149,21 +149,21 @@ function Clear_XE_Folder
 				[int]$HealthMaxAgeDays,
 				[int]$SweepIntervalSeconds
 			)
-			
+
 			$ErrorActionPreference = 'SilentlyContinue'
-			
+
 			# --- Watcher object ---
 			$fsw = New-Object System.IO.FileSystemWatcher
 			$fsw.Path = $FolderPath
 			$fsw.IncludeSubdirectories = $true
 			$fsw.NotifyFilter = [IO.NotifyFilters]'FileName, DirectoryName, LastWrite, CreationTime'
-			
+
 			# --- Shared processor (MONITOR MODE: keep FATAL*) ---
 			$ProcessPath = {
 				param ([string]$Path)
-				
+
 				if (-not $Path) { return }
-				
+
 				# Retry Get-Item because events can fire before writer finishes.
 				$item = $null
 				for ($t = 0; $t -lt 8; $t++)
@@ -177,16 +177,16 @@ function Clear_XE_Folder
 					catch { Start-Sleep -Milliseconds 120 }
 				}
 				if (-not $item) { return }
-				
+
 				# Keep NEW FATAL* while running
 				if ($item.Name -like 'FATAL*') { return }
-				
+
 				# Skip reparse points
 				if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return }
-				
+
 				$now = Get-Date
 				$keep = $false
-				
+
 				if ($item.PSIsContainer)
 				{
 					$keep = $false
@@ -198,19 +198,19 @@ function Clear_XE_Folder
 						$content = $null
 						try { $content = Get-Content -LiteralPath $item.FullName -ErrorAction Stop }
 						catch { $content = $null }
-						
+
 						if ($content)
 						{
 							$fromLine = $content | Where-Object { $_ -like 'From:*' } | Select-Object -First 1
 							$subjectLine = $content | Where-Object { $_ -like 'Subject:*' } | Select-Object -First 1
 							$msgLine = $content | Where-Object { $_ -like 'MSG:*' } | Select-Object -First 1
 							$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' } | Select-Object -First 1
-							
+
 							if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
 							{
 								$fileStoreNumber = $Matches[1]
 								$fileLaneNumber = $Matches[2]
-								
+
 								if ($fileStoreNumber -eq $StoreNumber -and
 									$item.Name -match '^S.*\.(\d{3})$' -and
 									$fileLaneNumber -eq $Matches[1] -and
@@ -224,7 +224,7 @@ function Clear_XE_Folder
 						}
 					}
 				}
-				
+
 				if (-not $keep)
 				{
 					for ($i = 0; $i -lt 8; $i++)
@@ -241,24 +241,24 @@ function Clear_XE_Folder
 					}
 				}
 			}
-			
+
 			# Register events (no -Action) and consume them with Wait-Event (best in jobs)
 			$createdId = "XE_Created_$StoreNumber"
 			$changedId = "XE_Changed_$StoreNumber"
 			$renamedId = "XE_Renamed_$StoreNumber"
-			
+
 			Register-ObjectEvent -InputObject $fsw -EventName Created -SourceIdentifier $createdId | Out-Null
 			Register-ObjectEvent -InputObject $fsw -EventName Changed -SourceIdentifier $changedId | Out-Null
 			Register-ObjectEvent -InputObject $fsw -EventName Renamed -SourceIdentifier $renamedId | Out-Null
-			
+
 			$fsw.EnableRaisingEvents = $true
 			$nextSweep = (Get-Date).AddSeconds($SweepIntervalSeconds)
-			
+
 			while ($true)
 			{
 				# Wait briefly for an event
 				$e = Wait-Event -Timeout 1
-				
+
 				if ($e)
 				{
 					try
@@ -273,7 +273,7 @@ function Clear_XE_Folder
 						try { Remove-Event -EventIdentifier $e.EventIdentifier -ErrorAction SilentlyContinue }
 						catch { }
 					}
-					
+
 					# Drain burst
 					while ($true)
 					{
@@ -292,12 +292,12 @@ function Clear_XE_Folder
 						}
 					}
 				}
-				
+
 				# Periodic sweep fallback
 				if ((Get-Date) -ge $nextSweep)
 				{
 					$nextSweep = (Get-Date).AddSeconds($SweepIntervalSeconds)
-					
+
 					try
 					{
 						if (Test-Path -LiteralPath $FolderPath)
@@ -311,7 +311,7 @@ function Clear_XE_Folder
 				}
 			}
 		}
-		
+
 		# Write_Log "XE watcher job started: $jobName" "green"
 		return $job
 	}

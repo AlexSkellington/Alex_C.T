@@ -25,13 +25,13 @@ function Schedule_Lane_DB_Maintenance
 		[string]$StoreNumber
 	)
 	Write_Log "`r`n==================== Starting Schedule_Lane_DB_Maintenance ====================`r`n" "blue"
-	
+
 	if (-not $LaneSQLScript)
 	{
 		Write_Log "Lane SQL script content variable (`\$LaneSQLScript`) is empty or not defined." "red"
 		return
 	}
-	
+
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if (-not $selection -or -not $selection.Lanes)
 	{
@@ -52,7 +52,7 @@ function Schedule_Lane_DB_Maintenance
 	}
 	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
 	$LaneSQLScriptContent = $LaneSQLScript -replace "`n", "`r`n"
-	
+
 	# Prompt user for the repeat interval in days
 	Add-Type -AssemblyName System.Windows.Forms
 	$daysPromptForm = New-Object System.Windows.Forms.Form
@@ -60,40 +60,40 @@ function Schedule_Lane_DB_Maintenance
 	$daysPromptForm.Width = 350
 	$daysPromptForm.Height = 160
 	$daysPromptForm.StartPosition = "CenterScreen"
-	
+
 	$label = New-Object System.Windows.Forms.Label
 	$label.Text = "How many days between each run (minimum 1):"
 	$label.AutoSize = $true
 	$label.Location = New-Object System.Drawing.Point(15, 20)
 	$daysPromptForm.Controls.Add($label)
-	
+
 	$textBox = New-Object System.Windows.Forms.TextBox
 	$textBox.Location = New-Object System.Drawing.Point(20, 50)
 	$textBox.Width = 60
 	$textBox.Text = "7"
 	$daysPromptForm.Controls.Add($textBox)
-	
+
 	$okButton = New-Object System.Windows.Forms.Button
 	$okButton.Text = "OK"
 	$okButton.Location = New-Object System.Drawing.Point(90, 90)
 	$okButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::OK })
 	$daysPromptForm.Controls.Add($okButton)
-	
+
 	$cancelButton = New-Object System.Windows.Forms.Button
 	$cancelButton.Text = "Cancel"
 	$cancelButton.Location = New-Object System.Drawing.Point(170, 90)
 	$cancelButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
 	$daysPromptForm.Controls.Add($cancelButton)
-	
+
 	$daysPromptForm.AcceptButton = $okButton
 	$daysPromptForm.CancelButton = $cancelButton
-	
+
 	if ($daysPromptForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
 	{
 		Write_Log "Operation cancelled by user in interval prompt." "yellow"
 		return
 	}
-	
+
 	[int]$UserDays = 0
 	if ([int]::TryParse($textBox.Text, [ref]$UserDays) -and $UserDays -ge 1)
 	{
@@ -104,7 +104,7 @@ function Schedule_Lane_DB_Maintenance
 		Write_Log "Invalid or no interval provided, using 7 days." "yellow"
 		$RepeatDays = 7
 	}
-	
+
 	foreach ($LaneNumber in $selection.Lanes)
 	{
 		# ----------- USE MAPPING ----------
@@ -118,7 +118,7 @@ function Schedule_Lane_DB_Maintenance
 		$DestScriptPath = Join-Path $LaneOfficeFolder "LANE_DB_MAINTENANCE.SQI"
 		$LocalXFPath = Join-Path $OfficePath "XF$StoreNumber$LaneNumber"
 		$SchedulerMacroPath = Join-Path $LocalXFPath "Add_LaneDBMaintenance_to_RUN_TAB.sqi"
-		
+
 		# Prepare scheduler macro content (unique task number per lane if needed)
 		$TaskNumber = 750
 		$HostTarget = "{0:D3}" -f [int]$LaneNumber
@@ -132,8 +132,8 @@ function Schedule_Lane_DB_Maintenance
 		$Minutes = 0
 		$LastRanDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
 		$NextRunDate = (Get-Date).AddDays($RepeatDays).ToString("yyyy-MM-dd HH:mm:ss.fff")
-		
-		
+
+
 		$SchedulerMacroContent = @"
  /* First delete the scheduled maintenance if it exists */
  DELETE FROM RUN_TAB WHERE F1103 = '$CommandToRun' AND F1000 = '$HostTarget';
@@ -145,7 +145,7 @@ function Schedule_Lane_DB_Maintenance
  /* Activate the new task right away */
  @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
 "@ -replace "`n", "`r`n"
-		
+
 		try
 		{
 			if (-not (Test-Path $LaneOfficeFolder))
@@ -164,7 +164,7 @@ function Schedule_Lane_DB_Maintenance
 			Write_Log "Failed to create required directories: $_" "red"
 			continue
 		}
-		
+
 		# Write the lane repair script
 		try
 		{
@@ -177,7 +177,7 @@ function Schedule_Lane_DB_Maintenance
 			Write_Log "Failed to write script: $_" "red"
 			continue
 		}
-		
+
 		# Write the scheduler macro
 		try
 		{
@@ -190,7 +190,7 @@ function Schedule_Lane_DB_Maintenance
 			Write_Log "Failed to write scheduler macro: $_" "red"
 			continue
 		}
-		
+
 		# Remove archive bit if set (optional)
 		try
 		{
@@ -209,6 +209,6 @@ function Schedule_Lane_DB_Maintenance
 			Write_Log "Failed to remove the archive bit from '$DestScriptPath'. Error: $_" "red"
 		}
 	}
-	
+
 	Write_Log "`r`n==================== Schedule_Lane_DB_Maintenance Function Completed ====================" "blue"
 }

@@ -29,7 +29,7 @@ function Start_Quarterly_System_Health_Maintenance
 		[int]$RetentionCount = 8,
 		[int]$SummaryRetentionLines = 250
 	)
-	
+
 	$statePath = $script:SystemHealthMaintenanceStatePath
 	$lockPath = $script:SystemHealthMaintenanceLockPath
 	$workerPath = $script:SystemHealthMaintenanceWorkerPath
@@ -40,7 +40,7 @@ function Start_Quarterly_System_Health_Maintenance
 	$setupFolder = $script:SetupFiles
 	$nowUtc = [DateTime]::UtcNow
 	$state = $null
-	
+
 	try
 	{
 		if (-not (Test-Path -LiteralPath $logFolder)) { New-Item -Path $logFolder -ItemType Directory -Force | Out-Null }
@@ -52,7 +52,7 @@ function Start_Quarterly_System_Health_Maintenance
 		catch { }
 		return $false
 	}
-	
+
 	try
 	{
 		if (Test-Path -LiteralPath $statePath)
@@ -64,7 +64,7 @@ function Start_Quarterly_System_Health_Maintenance
 	{
 		$state = $null
 	}
-	
+
 	$workerScriptText = @'
 param (
 	[string]$StatePath,
@@ -237,7 +237,7 @@ finally
 	catch { }
 }
 '@
-	
+
 	try
 	{
 		Set-Content -LiteralPath $workerPath -Value $workerScriptText -Encoding UTF8 -Force
@@ -248,7 +248,7 @@ finally
 		catch { }
 		return $false
 	}
-	
+
 	$existingWorkerPid = $null
 	try
 	{
@@ -262,7 +262,7 @@ finally
 		}
 	}
 	catch { }
-	
+
 	if (-not $existingWorkerPid -and $state -and $state.Pid)
 	{
 		try
@@ -272,7 +272,7 @@ finally
 		}
 		catch { }
 	}
-	
+
 	if ($existingWorkerPid)
 	{
 		try
@@ -293,23 +293,23 @@ finally
 			($runningState | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $statePath -Encoding UTF8 -Force
 		}
 		catch { }
-		
+
 		return @{ Started = $false; Running = $true; Due = $false }
 	}
-	
+
 	$lastCompletedUtc = $null
 	if ($state -and $state.LastCompletedTimeUtc)
 	{
 		try { $lastCompletedUtc = [DateTime]::Parse([string]$state.LastCompletedTimeUtc).ToUniversalTime() }
 		catch { $lastCompletedUtc = $null }
 	}
-	
+
 	if ($state -and $state.Status -eq 'Running')
 	{
 		try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue }
 		catch { }
 	}
-	
+
 	if ($lastCompletedUtc)
 	{
 		$nextDueUtc = $lastCompletedUtc.AddMonths($IntervalMonths)
@@ -318,7 +318,7 @@ finally
 			return @{ Started = $false; Running = $false; Due = $false; NextDueUtc = $nextDueUtc }
 		}
 	}
-	
+
 	$runId = [guid]::NewGuid().ToString()
 	$runLogName = '{0}{1}.log' -f $runLogPrefix, (Get-Date -Format 'yyyyMMdd_HHmmss')
 	$runLogPath = Join-Path $logFolder $runLogName
@@ -326,7 +326,7 @@ finally
 	try { $psExe = (Get-Process -Id $PID -ErrorAction Stop).Path }
 	catch { $psExe = $null }
 	if ([string]::IsNullOrWhiteSpace($psExe)) { $psExe = 'powershell.exe' }
-	
+
 	$argList = @(
 		'-NoProfile',
 		'-ExecutionPolicy', 'Bypass',
@@ -340,11 +340,11 @@ finally
 		'-SummaryRetentionLines', [string]$SummaryRetentionLines,
 		'-RunId', $runId
 	)
-	
+
 	try
 	{
 		$proc = Start-Process -FilePath $psExe -ArgumentList $argList -WindowStyle Hidden -PassThru -ErrorAction Stop
-		
+
 		$runningState = [pscustomobject]@{
 			Status			     = 'Running'
 			Pid				     = $proc.Id

@@ -25,12 +25,12 @@ function Get_Table_Aliases
 	param (
 		[switch]$RefreshCache
 	)
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Per-function cache
 	# ------------------------------------------------------------------------------------------------
 	$CachePath = Join-Path $script:SetupFiles 'Get_Table_Aliases.txt'
-	
+
 	# Reuse in-memory alias map first
 	if (-not $RefreshCache)
 	{
@@ -60,13 +60,13 @@ function Get_Table_Aliases
 		}
 		catch { }
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Version detection (relies on Get_Store_And_Database_Info setting SMSVersionFull)
 	# ------------------------------------------------------------------------------------------------
 	$MinSupportedSMSVersion = "3.3.0.0"
 	$MaxSupportedSMSVersion = "3.6.1.8"
-	
+
 	$SMSVersionRaw = $script:FunctionResults['SMSVersionFull']
 	$SMSVersion = $SMSVersionRaw
 	if ($SMSVersion -match '([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)')
@@ -77,7 +77,7 @@ function Get_Table_Aliases
 	{
 		$SMSVersion = "0.0.0.0"
 	}
-	
+
 	# Version range check
 	$versionInRange = $false
 	try
@@ -88,7 +88,7 @@ function Get_Table_Aliases
 		if ($vTest -ge $vMin -and $vTest -le $vMax) { $versionInRange = $true }
 	}
 	catch { $versionInRange = $false }
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Ensure LoadPath exists (dynamic mode only)
 	# ------------------------------------------------------------------------------------------------
@@ -100,7 +100,7 @@ function Get_Table_Aliases
 		}
 		catch { }
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# ------------------------------------------------------------------------------------------------
 	# Try load cache file (small)
@@ -121,20 +121,20 @@ function Get_Table_Aliases
 					{
 						foreach ($p in $cacheObj.Results.AliasHash.PSObject.Properties) { $AliasHash[$p.Name] = $p.Value }
 					}
-					
+
 					# Rebuild TableHash hashtable
 					$TableHash = @{ }
 					if ($cacheObj.Results.TableHash -and $cacheObj.Results.TableHash.PSObject -and $cacheObj.Results.TableHash.PSObject.Properties)
 					{
 						foreach ($p in $cacheObj.Results.TableHash.PSObject.Properties) { $TableHash[$p.Name] = $p.Value }
 					}
-					
+
 					$script:FunctionResults['Get_Table_Aliases'] = @{
 						Aliases   = @()
 						AliasHash = $AliasHash
 						TableHash = $TableHash
 					}
-					
+
 					return $AliasHash
 				}
 			}
@@ -144,7 +144,7 @@ function Get_Table_Aliases
 			# Cache errors fall through to rebuild
 		}
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Compute signature for *_Load.sql files (used only when dynamic rebuild is needed)
 	# ------------------------------------------------------------------------------------------------
@@ -157,14 +157,14 @@ function Get_Table_Aliases
 			$fileCount = 0
 			$newestUtc = $null
 			$totalBytes = 0
-			
+
 			if ($files)
 			{
 				$fileCount = $files.Count
 				$newestUtc = ($files | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).LastWriteTimeUtc
 				$totalBytes = [int64](($files | Measure-Object Length -Sum).Sum)
 			}
-			
+
 			$loadSignature = [pscustomobject]@{
 				Root = [string]$LoadPath
 				FileCount = [int]$fileCount
@@ -174,7 +174,7 @@ function Get_Table_Aliases
 		}
 	}
 	catch { $loadSignature = $null }
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Hardcoded alias [?][?][?] table mapping
 	# ------------------------------------------------------------------------------------------------
@@ -220,14 +220,14 @@ function Get_Table_Aliases
 		'UNT'	   = 'UNT_TAB'
 		'VENDOR'   = 'VENDOR_TAB'
 	}
-	
+
 	# Build reverse (table [?][?][?] alias)
 	$TableToAlias = @{ }
 	foreach ($k in $AliasToTable.Keys)
 	{
 		$TableToAlias[$AliasToTable[$k]] = $k
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Static mode (supported range)
 	# ------------------------------------------------------------------------------------------------
@@ -239,7 +239,7 @@ function Get_Table_Aliases
 			AliasHash = $AliasToTable
 			TableHash = $TableToAlias
 		}
-		
+
 		# Cache write (Static, small)
 		if ($CachePath)
 		{
@@ -255,20 +255,20 @@ function Get_Table_Aliases
 						TableHash = [pscustomobject]$TableToAlias
 					}
 				}
-				
+
 				($cacheOut | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
 			}
 			catch { }
 		}
-		
+
 		return $AliasToTable
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Dynamic scan mode (out of supported range)
 	# ------------------------------------------------------------------------------------------------
 	Write-Host "SMS Version $SMSVersion is outside supported range ($MinSupportedSMSVersion - $MaxSupportedSMSVersion). Scanning SQL files for table/alias map..." -ForegroundColor Yellow
-	
+
 	$BaseTables = @(
 		'OBJ', 'POS', 'PRICE', 'COST', 'DSD', 'KIT', 'LOC', 'ALT', 'ECL',
 		'SCL', 'SCL_TXT', 'SCL_NUT', 'DEPT', 'SDP', 'CAT', 'RPC', 'FAM',
@@ -276,12 +276,12 @@ function Get_Table_Aliases
 		'RES', 'ROUTE', 'VENDOR', 'DELV', 'CLT', 'CLG', 'CLF', 'CLR',
 		'CLL', 'CLT_ITM', 'CLF_SDP', 'STD', 'CFG', 'MOD'
 	)
-	
+
 	$escapedTables = $BaseTables | Sort-Object Length -Descending | ForEach-Object { [regex]::Escape($_) }
 	$tablesPattern = $escapedTables -join '|'
 	$pattern = "^\s*@CREATE\s*\(\s*['""]?(?<Table>($tablesPattern)(_[A-Z]+))?['""]?\s*,\s*['""]?(?<Alias>[\w-]+)['""]?\s*\);"
 	$regex = [regex]::new($pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-	
+
 	if (-not $LoadPath -or -not (Test-Path $LoadPath))
 	{
 		Write-Warning "LoadPath is not available; cannot scan *_Load.sql files. Returning empty hashtable."
@@ -289,12 +289,12 @@ function Get_Table_Aliases
 		$script:FunctionResults['Get_Table_Aliases'] = @{ Aliases = @(); AliasHash = $empty; TableHash = @{ } }
 		return $empty
 	}
-	
+
 	$allSqlFiles = Get-ChildItem -LiteralPath $LoadPath -Recurse -Filter '*_Load.sql' -File -ErrorAction SilentlyContinue
-	
+
 	$AliasToTableLive = @{ }
 	$TableToAliasLive = @{ }
-	
+
 	foreach ($file in $allSqlFiles)
 	{
 		foreach ($baseTable in $BaseTables)
@@ -303,7 +303,7 @@ function Get_Table_Aliases
 			{
 				$content = Get-Content -LiteralPath $file.FullName -ErrorAction SilentlyContinue
 				if (-not $content) { break }
-				
+
 				foreach ($line in $content)
 				{
 					$lineClean = $line -replace '--.*', '' -replace '/\*.*?\*/', ''
@@ -326,18 +326,18 @@ function Get_Table_Aliases
 			}
 		}
 	}
-	
+
 	if ($AliasToTableLive.Count -eq 0)
 	{
 		Write-Warning "No table-alias pairs detected. Using empty hashtable."
 	}
-	
+
 	$script:FunctionResults['Get_Table_Aliases'] = @{
 		Aliases   = @() # intentionally empty (keep cache small)
 		AliasHash = $AliasToTableLive
 		TableHash = $TableToAliasLive
 	}
-	
+
 	# Cache write (Dynamic, small + signature)
 	if ($CachePath)
 	{
@@ -353,11 +353,11 @@ function Get_Table_Aliases
 					TableHash = [pscustomobject]$TableToAliasLive
 				}
 			}
-			
+
 			($cacheOut | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
 		}
 		catch { }
 	}
-	
+
 	return $AliasToTableLive
 }

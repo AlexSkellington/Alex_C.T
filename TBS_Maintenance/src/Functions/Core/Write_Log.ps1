@@ -45,7 +45,7 @@ function Write_Log
 		[Parameter(Mandatory = $false)]
 		[switch]$FileOnly
 	)
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Resolve timestamp (OFF by default - user preference; opt in per call with -IncludeTimestamp)
 	# ----------------------------------------------------------------------------------------------
@@ -55,7 +55,7 @@ function Write_Log
 		try { $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
 		catch { $timestamp = $null }
 	}
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Resolve the active log control robustly (handles refactors / recreated controls)
 	# Priority:
@@ -65,14 +65,14 @@ function Write_Log
 	#   4) $script:FunctionResults['LogBox'] (if used)
 	# ----------------------------------------------------------------------------------------------
 	$lb = $null
-	
+
 	# Helper inline checks (no nested functions required)
 	try
 	{
 		if ($logBox -and ($logBox -is [System.Windows.Forms.RichTextBox]) -and -not $logBox.IsDisposed) { $lb = $logBox }
 	}
 	catch { }
-	
+
 	if (-not $lb)
 	{
 		try
@@ -117,7 +117,7 @@ function Write_Log
 		}
 		catch { }
 	}
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Normalize color (string name OR actual System.Drawing.Color)
 	# ----------------------------------------------------------------------------------------------
@@ -148,7 +148,7 @@ function Write_Log
 		}
 	}
 	catch { $selColor = [System.Drawing.Color]::Black }
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Presentation layer (v2.6.8) - makes the log output calmer and easier to read:
 	#   1) Test mode: known expected conditions are reworded into friendly explanations
@@ -188,7 +188,7 @@ function Write_Log
 				}
 			}
 		}
-		
+
 		# --- 2) Squash raw .NET exception dumps ----------------------------------------
 		# Turns:
 		#   "...: Exception calling ""Open"" with ""0"" argument(s): ""A network-related or...""
@@ -214,7 +214,7 @@ function Write_Log
 			if ($sp -gt 200) { $cut = $cut.Substring(0, $sp) }
 			$Message = $cut + '...'
 		}
-		
+
 		# --- 3) Severity tag by color --------------------------------------------------
 		# NOTE: explicit -eq tests, not a switch() - PowerShell switch() does not
 		# match System.Drawing.Color values (falls to default).
@@ -225,7 +225,7 @@ function Write_Log
 		elseif ($selColor -eq [System.Drawing.Color]::Red)      { $tag = '[FAIL] ' }
 		elseif ($selColor -eq [System.Drawing.Color]::DodgerBlue){ $tag = '[INFO] ' }
 		elseif ($selColor -eq [System.Drawing.Color]::Cyan)     { $tag = '[INFO] ' }
-		
+
 		# --- 4) Repeat suppression -------------------------------------------------------
 		# The same line (tag + text) is only written once per 120 seconds. This stops
 		# per-lane startup jobs from filling the log with the identical error.
@@ -238,14 +238,14 @@ function Write_Log
 			return
 		}
 		$script:LogSeen[$lineKey] = $nowT
-		
+
 		$Message = $tag + $Message
 	}
-	
+
 	# Compose message
 	$fullMessage = if ($timestamp) { "[$timestamp] $Message" }
 	else { $Message }
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# File log (v2.6.9): every line is appended to
 	#   C:\Tecnica_Systems\Alex_C.T\Log\TBS_Maintenance_<date>.log   (one file per day)
@@ -278,7 +278,7 @@ function Write_Log
 	{
 		# Silent - a missing log folder or disk problem must not surface in the UI
 	}
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# If we have a UI log, write to it safely (cross-thread aware).
 	# -FileOnly lines never reach the box (file log only - see param docs).
@@ -290,27 +290,27 @@ function Write_Log
 			param ($rtb,
 				$text,
 				$color)
-			
+
 			try
 			{
 				if (-not $rtb -or $rtb.IsDisposed) { return }
-				
+
 				# Append colored line
 				$rtb.SelectionStart = $rtb.TextLength
 				$rtb.SelectionLength = 0
 				$rtb.SelectionColor = $color
 				$rtb.AppendText($text + "`r`n")
-				
+
 				# Reset to default color for future appends
 				$rtb.SelectionColor = $rtb.ForeColor
-				
+
 				# Autoscroll
 				$rtb.SelectionStart = $rtb.TextLength
 				$rtb.ScrollToCaret()
 			}
 			catch { }
 		}
-		
+
 		try
 		{
 			# Marshal to UI thread if needed
@@ -330,7 +330,7 @@ function Write_Log
 			# If anything about UI writing fails, fall back to console below
 		}
 	}
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Console fallback (until logBox is initialized OR if UI write failed).
 	# Skipped for -FileOnly lines: the file log is their only destination.

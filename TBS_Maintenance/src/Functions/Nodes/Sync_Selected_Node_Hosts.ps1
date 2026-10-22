@@ -27,13 +27,13 @@ function Sync_Selected_Node_Hosts
 		[string]$StoreNumber
 	)
 	Write_Log "`r`n==================== Starting Sync_Selected_Node_Hosts ====================`r`n" "blue"
-	
+
 	if (-not $script:FunctionResults['LaneNumToMachineName'] -or -not $script:FunctionResults['BackofficeNumToMachineName'])
 	{
 		Write_Log "Node mappings not found. Please run Retrieve_Nodes first." "red"
 		return
 	}
-	
+
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes @("Lane", "Backoffice")
 	if (-not $selection)
 	{
@@ -42,11 +42,11 @@ function Sync_Selected_Node_Hosts
 	}
 	$lanes = $selection.Lanes
 	$backoffices = $selection.Backoffices
-	
+
 	$ipToHost = @{ }
 	$changedMappings = @()
 	$finalRows = @()
-	
+
 	# ---------------- Local machine details (robust local IPv4 selection) ----------------
 	$localHostname = $env:COMPUTERNAME
 	$localIp = $null
@@ -56,28 +56,28 @@ function Sync_Selected_Node_Hosts
 		$badRegex = '(?i)(vpn|virtual|vmware|hyper[- ]?v|vbox|virtualbox|loopback|hamachi|zerotier|tailscale|anyconnect|forti|juniper|pulse|citrix|openvpn|wireguard|proton|nord|ppp|remote)'
 		$nics = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
 		Where-Object { $_.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up }
-		
+
 		$candidates = @()
 		foreach ($nic in $nics)
 		{
 			if ($nic.Name -match $badRegex -or $nic.Description -match $badRegex) { continue }
-			
+
 			$type = $nic.NetworkInterfaceType.ToString()
 			if ($type -notin @('Ethernet', 'Wireless80211')) { continue } # prefer physical/LAN
-			
+
 			$props = $nic.GetIPProperties()
 			$hasGw = $false
 			foreach ($gw in $props.GatewayAddresses)
 			{
 				if ($gw.Address -and $gw.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $hasGw = $true; break }
 			}
-			
+
 			foreach ($ua in $props.UnicastAddresses)
 			{
 				if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
 				$ip = $ua.Address.ToString()
 				if ($ip -eq '0.0.0.0' -or $ip.StartsWith('127.') -or $ip.StartsWith('169.254.')) { continue }
-				
+
 				$isPrivate = ($ip -match '^(10\.)|(192\.168\.)|(172\.(1[6-9]|2[0-9]|3[0-1])\.)')
 				$score = 0
 				if ($type -eq 'Ethernet') { $score += 100 }
@@ -85,7 +85,7 @@ function Sync_Selected_Node_Hosts
 				else { $score += 10 }
 				if ($hasGw) { $score += 50 }
 				if ($isPrivate) { $score += 20 }
-				
+
 				$candidates += [PSCustomObject]@{
 					IP		   = $ip
 					NicName    = $nic.Name
@@ -97,7 +97,7 @@ function Sync_Selected_Node_Hosts
 				}
 			}
 		}
-		
+
 		if ($candidates.Count -gt 0)
 		{
 			$chosen = $candidates | Sort-Object Score -Descending | Select-Object -First 1
@@ -110,7 +110,7 @@ function Sync_Selected_Node_Hosts
 	{
 		# swallow; fallback below
 	}
-	
+
 	# Fallbacks if the scoring path didn't produce an IP
 	if (-not $localIp)
 	{
@@ -128,7 +128,7 @@ function Sync_Selected_Node_Hosts
 		return
 	}
 	$ipToHost[$localIp] = $localHostname
-	
+
 	# ---------------- Add lanes/backoffices ----------------
 	$nodes = @()
 	foreach ($lane in $lanes)
@@ -141,7 +141,7 @@ function Sync_Selected_Node_Hosts
 		$hostname = $script:FunctionResults['BackofficeNumToMachineName'][$bo]
 		if ($hostname) { $nodes += @{ Hostname = $hostname; LaneNum = $bo; Type = 'Backoffice' } }
 	}
-	
+
 	foreach ($n in $nodes)
 	{
 		if ($n.Hostname -eq $localHostname) { continue } # already added as local
@@ -165,13 +165,13 @@ function Sync_Selected_Node_Hosts
 		}
 		$ipToHost[$ip] = $n.Hostname
 	}
-	
+
 	if ($ipToHost.Count -eq 0)
 	{
 		Write_Log "No valid IP/hostname mappings found for selected nodes." "yellow"
 		return
 	}
-	
+
 	# ---------------- Load previous hosts file mappings ----------------
 	$hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
 	$oldLines = if (Test-Path $hostsPath) { Get-Content $hostsPath -Raw }
@@ -181,7 +181,7 @@ function Sync_Selected_Node_Hosts
 	{
 		if ($line -match '^\s*([0-9\.]+)\s+(\S+)\s*$') { $oldMappings[$matches[2].ToLower()] = $matches[1] }
 	}
-	
+
 	# Preserve all lines before the first bare "IP hostname" mapping
 	$defaultSection = @()
 	$customStart = $false
@@ -201,7 +201,7 @@ function Sync_Selected_Node_Hosts
 		$defaultSection = $defaultSection[0 .. ($defaultSection.Count - 2)]
 	}
 	$outputLines = @($defaultSection + '', '') # Always 1 blank line after defaults
-	
+
 	# ---------------- Build custom mappings (local first, then others by IP) ----------------
 	$orderedMappings = @()
 	$orderedMappings += @{ IP = $localIp; Hostname = $localHostname }
@@ -210,7 +210,7 @@ function Sync_Selected_Node_Hosts
 		if ($ip -eq $localIp) { continue } # already first
 		$orderedMappings += @{ IP = $ip; Hostname = $ipToHost[$ip] }
 	}
-	
+
 	foreach ($entry in $orderedMappings)
 	{
 		$hn = $entry.Hostname
@@ -222,10 +222,10 @@ function Sync_Selected_Node_Hosts
 		$outputLines += "$ip`t$hn"
 		if ($rowColor -eq "yellow") { $changedMappings += "$hn ($oldIp => $ip)" }
 	}
-	
+
 	# ---------------- Write hosts file (local) ----------------
 	Set-Content -Path $hostsPath -Value $outputLines -Encoding ascii
-	
+
 	# ---------------- Copy hosts file to selected nodes (skip local) ----------------
 	foreach ($entry in $orderedMappings)
 	{
@@ -243,7 +243,7 @@ function Sync_Selected_Node_Hosts
 			Write_Log "Failed to copy hosts file to $hn [$ip]: $_" "red"
 		}
 	}
-	
+
 	# ---------------- Table Output ----------------
 	Write_Log "`r`nHost file mappings (sorted by IP, local host first):" "blue"
 	$maxIpLen = ($finalRows | ForEach-Object { "$($_.IP)".Length } | Measure-Object -Maximum).Maximum

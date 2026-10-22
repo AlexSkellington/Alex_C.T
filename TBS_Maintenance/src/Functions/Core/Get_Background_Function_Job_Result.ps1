@@ -24,14 +24,14 @@ function Get_Background_Function_Job_Result
 		[Parameter(Mandatory = $true)]
 		[System.Management.Automation.Job]$Job
 	)
-	
+
 	if (-not $Job) { return $null }
 	if ($Job.State -in @('Running', 'NotStarted')) { return $null }
-	
+
 	$result = $null
 	try { $result = @(Receive-Job -Job $Job -ErrorAction SilentlyContinue) | Select-Object -Last 1 } catch { }
 	try { Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
-	
+
 	if ($result)
 	{
 		if ($result.FunctionResults)
@@ -50,7 +50,7 @@ function Get_Background_Function_Job_Result
 			}
 		}
 	}
-	
+
 	if ($script:BgfJobs -and $script:BgfJobs.ContainsKey($Job.Id))
 	{
 		$script:BgfJobs.Remove($Job.Id)

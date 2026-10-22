@@ -23,16 +23,16 @@ function Open_Selected_Node_C_Path
 		[ValidateSet("Lane", "Scale")]
 		[string[]]$NodeTypes = @("Lane", "Scale")
 	)
-	
+
 	Write_Log "`r`n==================== Starting Open_Selected_Node_C_Path Function ====================`r`n" "blue"
-	
+
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes $NodeTypes
 	if (-not $selection)
 	{
 		Write_Log "No selection made. Exiting." "Yellow"
 		return
 	}
-	
+
 	# Normalize lane selection to 3-digit and get machine name
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	$lanes = @()
@@ -57,7 +57,7 @@ function Open_Selected_Node_C_Path
 			}
 		}
 	}
-	
+
 	# Normalize scale selection (scale objects or just codes)
 	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
 	if ($selection.Scales -and $selection.Scales.Count -gt 0)
@@ -74,7 +74,7 @@ function Open_Selected_Node_C_Path
 				$scale = $ScaleCodeToIPInfo[$scaleObj]
 			}
 			if (-not $scale) { Write_Log "Could not resolve scale info for $scaleObj." "Red"; continue }
-			
+
 			$scaleHost = $null
 			if ($scale.PSObject.Properties['FullIP'] -and $scale.FullIP)
 			{
@@ -89,10 +89,10 @@ function Open_Selected_Node_C_Path
 				$scaleHost = $scale.ScaleName
 			}
 			if (-not $scaleHost) { Write_Log "Could not determine host for $($scale.ScaleCode)." "Red"; continue }
-			
+
 			$sharePath = "\\$scaleHost\c$"
 			$opened = $false
-			
+
 			# Try bizuser/bizerba, then bizuser/biyerba
 			cmdkey /add:$scaleHost /user:bizuser /pass:bizerba | Out-Null
 			Start-Process "explorer.exe" $sharePath

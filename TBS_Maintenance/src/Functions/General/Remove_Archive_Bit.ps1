@@ -21,14 +21,14 @@ function Remove_Archive_Bit
 {
 	[CmdletBinding()]
 	param ()
-	
+
 	Write_Log "`r`n==================== Starting Remove_Archive_Bit Function ====================`r`n" "blue"
-	
+
 	# ---------------------------
 	# NO-PROMPT "always sensing" poll interval (seconds)
 	# ---------------------------
 	$AutoPollSeconds = 3
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Validate required context
 	# ------------------------------------------------------------------------------------------------
@@ -38,12 +38,12 @@ function Remove_Archive_Bit
 		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# --- Main context variables
 	$iniFile = $StartupIniPath
 	$storeNumber = [string]$script:FunctionResults['StoreNumber']
 	$scriptFolder = $script:ScriptsFolder
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Resolve OfficePath to LOCAL filesystem path when OfficePath is a local UNC share
 	#   Example: \\localhost\storeman\office  ->  C:\Storeman\Office (if share "storeman" points to C:\Storeman)
@@ -57,17 +57,17 @@ function Remove_Archive_Bit
 			$host = [string]$matches[1]
 			$share = [string]$matches[2]
 			$rest = [string]$matches[3]
-			
+
 			$isLocalHost = $false
 			if ($host -match '^(?i)localhost$') { $isLocalHost = $true }
 			elseif ($host -eq $env:COMPUTERNAME) { $isLocalHost = $true }
 			elseif ($host -eq "$($env:COMPUTERNAME).$($env:USERDNSDOMAIN)") { $isLocalHost = $true }
-			
+
 			if ($isLocalHost)
 			{
 				$rest2 = ""
 				if ($rest) { $rest2 = $rest.TrimStart('\') }
-				
+
 				$sharePath = $null
 				try
 				{
@@ -75,7 +75,7 @@ function Remove_Archive_Bit
 					if ($sm -and $sm.Path) { $sharePath = [string]$sm.Path }
 				}
 				catch { }
-				
+
 				if (-not $sharePath)
 				{
 					try
@@ -85,7 +85,7 @@ function Remove_Archive_Bit
 					}
 					catch { }
 				}
-				
+
 				if (-not [string]::IsNullOrWhiteSpace($sharePath))
 				{
 					if (-not [string]::IsNullOrWhiteSpace($rest2))
@@ -101,7 +101,7 @@ function Remove_Archive_Bit
 		}
 	}
 	catch { }
-	
+
 	# IMPORTANT: build Ter_Load paths AFTER local resolution (service must not depend on UNC)
 	$terFileRaw = Join-Path $OfficePath "Load\Ter_Load.sql"
 	$terFileLocal = Join-Path $OfficePathLocalResolved "Load\Ter_Load.sql"
@@ -111,13 +111,13 @@ function Remove_Archive_Bit
 		# Fallback only if local doesn't exist
 		$terFile = $terFileRaw
 	}
-	
+
 	# Optional: log what we're using (helps confirm fix)
 	Write_Log "OfficePath (raw): $OfficePath" "yellow"
 	Write_Log "OfficePath (local resolved): $OfficePathLocalResolved" "yellow"
 	Write_Log "Ter_Load (local preferred): $terFileLocal" "yellow"
 	Write_Log "Ter_Load (selected): $terFile" "yellow"
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Service install paths
 	# ------------------------------------------------------------------------------------------------
@@ -127,12 +127,12 @@ function Remove_Archive_Bit
 	$svcPS1 = Join-Path $svcScripts "Remove_Archive_Bit_Service.ps1"
 	$svcConfigPath = Join-Path $installRoot "Remove_Archive_Bit_Config.json"
 	$serviceName = "Remove_Archive_Bit"
-	
+
 	foreach ($d in @($installRoot, $svcScripts, $svcLogsDir))
 	{
 		if (-not (Test-Path -LiteralPath $d)) { New-Item -Path $d -ItemType Directory -Force | Out-Null }
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# NSSM: Use already-downloaded NSSM only (NO downloads here)
 	#   We will accept:
@@ -142,7 +142,7 @@ function Remove_Archive_Bit
 	# ------------------------------------------------------------------------------------------------
 	$nssmExe = $null
 	$nssmCandidates = @()
-	
+
 	try
 	{
 		if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('NssmExe') -and $script:FunctionResults['NssmExe'])
@@ -151,16 +151,16 @@ function Remove_Archive_Bit
 		}
 	}
 	catch { }
-	
+
 	try
 	{
 		if ($script:NssmExe) { $nssmCandidates += [string]$script:NssmExe }
 	}
 	catch { }
-	
+
 	# Preferred default location from your Download_NSSM function
 	$nssmCandidates += $script:NssmDefaultPath
-	
+
 	foreach ($p in $nssmCandidates)
 	{
 		if ([string]::IsNullOrWhiteSpace($p)) { continue }
@@ -170,7 +170,7 @@ function Remove_Archive_Bit
 			break
 		}
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Normalize lane map (we only use lane numbers; NEVER build \\POS### paths)
 	# ------------------------------------------------------------------------------------------------
@@ -178,15 +178,15 @@ function Remove_Archive_Bit
 	if ($script:FunctionResults.ContainsKey('LaneNumToMachineName') -and $script:FunctionResults['LaneNumToMachineName'])
 	{
 		$tmp = [ordered]@{ }
-		
+
 		foreach ($kv in $script:FunctionResults['LaneNumToMachineName'].GetEnumerator())
 		{
 			$k = [string]$kv.Key
 			$v = [string]$kv.Value
-			
+
 			$l = $null
 			$m = $null
-			
+
 			if ($k -match '^\d{1,3}$')
 			{
 				$l = ("{0:000}" -f ([int]$k))
@@ -198,23 +198,23 @@ function Remove_Archive_Bit
 				$m = if (-not [string]::IsNullOrWhiteSpace($v)) { $v }
 				else { $k }
 			}
-			
+
 			if (-not $l) { continue }
 			if ([string]::IsNullOrWhiteSpace($m)) { continue }
 			if ($m -like '@SMSSERVER') { continue }
-			
+
 			if (-not $tmp.Contains($l)) { $tmp[$l] = $m }
 		}
-		
+
 		if ($tmp.Count -gt 0) { $LaneMapNormalized = $tmp }
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# UI: Run / Install / Uninstall
 	# ------------------------------------------------------------------------------------------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Remove Archive Bit"
 	$form.Size = New-Object System.Drawing.Size(480, 240)
@@ -223,57 +223,57 @@ function Remove_Archive_Bit
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
 	$form.Tag = $null
-	
+
 	$label = New-Object System.Windows.Forms.Label
 	$label.Text = "Choose an action:`r`n- Run Now (one-time)`r`n- Install Service (always-on, Ter_Load driven)`r`n- Uninstall Service"
 	$label.Location = New-Object System.Drawing.Point(20, 15)
 	$label.Size = New-Object System.Drawing.Size(440, 60)
 	$label.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$form.Controls.Add($label)
-	
+
 	$btnRunNow = New-Object System.Windows.Forms.Button
 	$btnRunNow.Text = "Run Now"
 	$btnRunNow.Location = New-Object System.Drawing.Point(10, 95)
 	$btnRunNow.Size = New-Object System.Drawing.Size(140, 45)
 	$form.Controls.Add($btnRunNow)
-	
+
 	$btnService = New-Object System.Windows.Forms.Button
 	$btnService.Text = "Install Service"
 	$btnService.Location = New-Object System.Drawing.Point(165, 95)
 	$btnService.Size = New-Object System.Drawing.Size(140, 45)
 	$form.Controls.Add($btnService)
-	
+
 	$btnUninstall = New-Object System.Windows.Forms.Button
 	$btnUninstall.Text = "Uninstall Service"
 	$btnUninstall.Location = New-Object System.Drawing.Point(315, 95)
 	$btnUninstall.Size = New-Object System.Drawing.Size(140, 45)
 	$form.Controls.Add($btnUninstall)
-	
+
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Location = New-Object System.Drawing.Point(190, 160)
 	$btnCancel.Size = New-Object System.Drawing.Size(90, 32)
 	$form.Controls.Add($btnCancel)
-	
+
 	$btnRunNow.Add_Click({ $form.Tag = "run"; $form.DialogResult = 'OK'; $form.Close() })
 	$btnService.Add_Click({ $form.Tag = "service"; $form.DialogResult = 'OK'; $form.Close() })
 	$btnUninstall.Add_Click({ $form.Tag = "uninstall"; $form.DialogResult = 'OK'; $form.Close() })
 	$btnCancel.Add_Click({ $form.Tag = "cancel"; $form.DialogResult = 'Cancel'; $form.Close() })
-	
+
 	$form.AcceptButton = $btnRunNow
 	$form.CancelButton = $btnCancel
-	
+
 	[void]$form.ShowDialog()
 	$selectedAction = [string]$form.Tag
 	$form.Dispose()
-	
+
 	if ($selectedAction -eq "cancel" -or -not $selectedAction)
 	{
 		Write_Log "User cancelled Remove_Archive_Bit." "yellow"
 		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# UNINSTALL SERVICE
 	# ------------------------------------------------------------------------------------------------
@@ -294,7 +294,7 @@ function Remove_Archive_Bit
 			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
-		
+
 		$existingSvc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 		if (-not $existingSvc)
 		{
@@ -302,13 +302,13 @@ function Remove_Archive_Bit
 			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
-		
+
 		# Try native uninstall first (no NSSM needed)
 		try { & sc.exe stop $serviceName *> $null }
 		catch { }
 		try { & sc.exe delete $serviceName *> $null }
 		catch { }
-		
+
 		Start-Sleep -Milliseconds 700
 		if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue))
 		{
@@ -316,7 +316,7 @@ function Remove_Archive_Bit
 			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
-		
+
 		# If sc.exe didn't fully remove it, fall back to NSSM - but ONLY if NSSM exists (NO downloads)
 		if (-not $nssmExe -or -not (Test-Path -LiteralPath $nssmExe))
 		{
@@ -325,12 +325,12 @@ function Remove_Archive_Bit
 			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
-		
+
 		try { & $nssmExe stop $serviceName *> $null }
 		catch { }
 		try { & $nssmExe remove $serviceName confirm *> $null }
 		catch { }
-		
+
 		Start-Sleep -Milliseconds 700
 		if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
 		{
@@ -339,13 +339,13 @@ function Remove_Archive_Bit
 			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
-		
+
 		Write_Log "Service '$serviceName' uninstalled successfully." "green"
 		Write_Log "NSSM used: $nssmExe" "green"
 		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# INSTALL SERVICE (LOCAL Office + LOCAL Ter_Load, REALTIME WATCHERS)
 	# ------------------------------------------------------------------------------------------------
@@ -366,7 +366,7 @@ function Remove_Archive_Bit
 			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
-		
+
 		if (-not $storeNumber)
 		{
 			Write_Log "ERROR: Store number not present in context." "red"
@@ -379,7 +379,7 @@ function Remove_Archive_Bit
 			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
-		
+
 		# NSSM must exist for install (NO downloads here)
 		if (-not $nssmExe -or -not (Test-Path -LiteralPath $nssmExe))
 		{
@@ -388,7 +388,7 @@ function Remove_Archive_Bit
 			Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 			return
 		}
-		
+
 		# Service config
 		$configObj = [ordered]@{
 			StoreNumber = "$storeNumber"
@@ -401,7 +401,7 @@ function Remove_Archive_Bit
 		}
 		($configObj | ConvertTo-Json -Depth 7) | Set-Content -LiteralPath $svcConfigPath -Encoding UTF8 -Force
 		Write_Log "Service config saved: $svcConfigPath" "green"
-		
+
 		# Service script (LOCAL paths only)
 		$svcContent = @"
 #requires -Version 5.1
@@ -635,13 +635,13 @@ while (`$true)
 	Start-Sleep -Seconds `$AutoPollSeconds
 }
 "@
-		
+
 		$svcContent | Set-Content -LiteralPath $svcPS1 -Encoding UTF8 -Force
 		Write_Log "Service script saved: $svcPS1" "green"
-		
+
 		$serviceStdOut = Join-Path $svcLogsDir "Remove_Archive_Bit_Service_stdout.log"
 		$serviceStdErr = Join-Path $svcLogsDir "Remove_Archive_Bit_Service_stderr.log"
-		
+
 		$existingSvc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 		if ($existingSvc)
 		{
@@ -650,31 +650,31 @@ while (`$true)
 			try { & $nssmExe remove $serviceName confirm *> $null }
 			catch { }
 		}
-		
+
 		& $nssmExe install $serviceName "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
 				   -NoProfile -ExecutionPolicy Bypass -File "$svcPS1" *> $null
-		
+
 		& $nssmExe set $serviceName AppDirectory "$svcScripts" *> $null
 		& $nssmExe set $serviceName AppStdout "$serviceStdOut" *> $null
 		& $nssmExe set $serviceName AppStderr "$serviceStdErr" *> $null
 		& $nssmExe set $serviceName Start SERVICE_AUTO_START *> $null
-		
+
 		# LOCAL filesystem permissions; avoids UNC auth failures
 		& $nssmExe set $serviceName ObjectName "LocalSystem" "" *> $null
-		
+
 		& $nssmExe set $serviceName DisplayName "Remove Archive Bit (LOCAL XF Watcher)" *> $null
 		& $nssmExe set $serviceName Description "Clears archive/read-only bits in LOCAL XF folders; watches Ter_Load.sql and filesystem changes." *> $null
-		
+
 		& $nssmExe start $serviceName *> $null
-		
+
 		Write_Log "Service '$serviceName' installed and started as: LocalSystem" "green"
 		Write_Log "Logs: $svcLogsDir" "green"
 		Write_Log "NSSM used: $nssmExe" "green"
-		
+
 		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# RUN NOW (one-time)
 	# ------------------------------------------------------------------------------------------------
@@ -696,17 +696,17 @@ while (`$true)
 		Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# --- Run Now: ALWAYS LOCAL paths (never \\POS###)
 	$didLaneWork = $false
-	
+
 	if ($LaneMapNormalized)
 	{
 		foreach ($laneNum in ($LaneMapNormalized.Keys | Sort-Object { [int]$_ }))
 		{
 			$localLanePath = Join-Path $OfficePathLocalResolved ("XF{0}{1}" -f $storeNumber, $laneNum)
 			$lp = $localLanePath.Trim().Trim('"')
-			
+
 			if (Test-Path -LiteralPath $lp)
 			{
 				Write_Log "Refreshing attributes (recursive) in $lp..." "green"
@@ -725,7 +725,7 @@ while (`$true)
 	{
 		Write_Log "Lane map not found/usable. Falling back to Ter_Load.sql parsing (LOCAL rebuild)..." "yellow"
 	}
-	
+
 	# Fallback: robust Ter_Load scan for XF<store><lane>
 	if (-not $didLaneWork)
 	{
@@ -733,34 +733,34 @@ while (`$true)
 		$lines = @()
 		try { $lines = Get-Content -LiteralPath $terFile -ErrorAction SilentlyContinue }
 		catch { }
-		
+
 		$picked = @()
 		try { $picked = $lines | Where-Object { $_ -match 'Terminal\s*0' } }
 		catch { }
-		
+
 		$text = ""
 		if ($picked -and $picked.Count -gt 0) { $text = ($picked -join "`n") }
 		else { $text = ($lines -join "`n") }
-		
+
 		if (-not [string]::IsNullOrWhiteSpace($text))
 		{
 			try
 			{
 				$snEsc = [regex]::Escape($storeNumber)
 				$rx = '(?i)XF' + $snEsc + '\d{3}'
-				
+
 				foreach ($m in [regex]::Matches($text, $rx))
 				{
 					$folder = ([string]$m.Value).ToUpper()
 					if ($folder.EndsWith('900') -or $folder.EndsWith('901')) { continue }
-					
+
 					$local = Join-Path $OfficePathLocalResolved $folder
 					if (-not $lanePaths.Contains($local)) { [void]$lanePaths.Add($local) }
 				}
 			}
 			catch { }
 		}
-		
+
 		# fallback: enumerate folders if still empty
 		if ($lanePaths.Count -eq 0)
 		{
@@ -777,7 +777,7 @@ while (`$true)
 			}
 			catch { }
 		}
-		
+
 		if ($lanePaths.Count -gt 0)
 		{
 			foreach ($p in $lanePaths)
@@ -801,7 +801,7 @@ while (`$true)
 			Write_Log "No LOCAL lane paths could be derived from Ter_Load.sql and no XF lane folders found locally." "yellow"
 		}
 	}
-	
+
 	# Server roots LOCAL
 	foreach ($suffix in 900, 901)
 	{
@@ -819,6 +819,6 @@ while (`$true)
 			Write_Log "Server path not found: $sp" "yellow"
 		}
 	}
-	
+
 	Write_Log "`r`n==================== Remove_Archive_Bit Function Completed ====================" "blue"
 }

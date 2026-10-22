@@ -116,7 +116,7 @@ if (-not $IsAdmin -and -not $script:LaneSqlEnableWorkerMode -and [Environment]::
 				"-ExecutionPolicy", "Bypass"
 				"-File", $scriptPath
 			)
-			
+
 			if ($args -and $args.Count -gt 0)
 			{
 				foreach ($a in $args)
@@ -124,7 +124,7 @@ if (-not $IsAdmin -and -not $script:LaneSqlEnableWorkerMode -and [Environment]::
 					$argList += "$a"
 				}
 			}
-			
+
 			$psExe = $null
 			try { $psExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source }
 			catch { }
@@ -137,11 +137,11 @@ if (-not $IsAdmin -and -not $script:LaneSqlEnableWorkerMode -and [Environment]::
 			{
 				$psExe = "powershell.exe"
 			}
-			
+
 			Start-Process -FilePath $psExe -ArgumentList $argList -Verb RunAs | Out-Null
 			exit 0
 		}
-		
+
 		if ($isExeLaunch)
 		{
 			$exeArgList = @()

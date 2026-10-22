@@ -25,9 +25,9 @@ function Send_SERVER_time_to_Lanes
 		[string]$StoreNumber,
 		[switch]$Schedule # Optional: enables scheduling mode (prompt for interval)
 	)
-	
+
 	Write_Log "`r`n==================== Starting Time Sync ====================`r`n" "blue"
-	
+
 	# 1. Unified Lane Picker
 	$laneSelection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if (-not $laneSelection -or -not $laneSelection.Lanes -or $laneSelection.Lanes.Count -eq 0)
@@ -37,7 +37,7 @@ function Send_SERVER_time_to_Lanes
 		return
 	}
 	$selectedLanes = $laneSelection.Lanes
-	
+
 	# 2. Scheduling Mode Prompt (Optional)
 	$isScheduling = $false
 	$intervalMinutes = 0
@@ -74,7 +74,7 @@ function Send_SERVER_time_to_Lanes
 		}
 		$isScheduling = $true
 	}
-	
+
 	# 3. (v2.6.9) the per-lane work runs as a BACKGROUND job so the
 	#    UI thread never blocks. Per-lane details go to the file log as
 	#    the job progresses; the shared job reaper logs the one-line

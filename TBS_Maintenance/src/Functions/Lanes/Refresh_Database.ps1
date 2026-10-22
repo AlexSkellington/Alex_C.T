@@ -25,9 +25,9 @@ function Refresh_Database
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
-	
+
 	Write_Log "`r`n==================== Starting Refresh_Database ====================`r`n" "blue"
-	
+
 	# --------------------------------------------------
 	# STEP 1: Use Show_Node_Selection_Form to select registers/lanes
 	# --------------------------------------------------
@@ -38,7 +38,7 @@ function Refresh_Database
 		Write_Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# Normalize to 3-digit lane/register numbers (always as strings)
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	$registersToProcess = $selection.Lanes | ForEach-Object {
@@ -53,7 +53,7 @@ function Refresh_Database
 		Write_Log "No valid registers selected for processing." "yellow"
 		return
 	}
-	
+
 	# --------------------------------------------------
 	# STEP 2: Define the SQI content to refresh the database
 	# --------------------------------------------------
@@ -63,7 +63,7 @@ function Refresh_Database
 "@
 	# Ensure the SQI content uses CRLF line endings (ANSI PC format)
 	$SQIContent = $SQIContent -replace "`n", "`r`n"
-	
+
 	# --------------------------------------------------
 	# STEP 3: For each selected register, deploy the SQI file
 	# --------------------------------------------------
@@ -76,13 +76,13 @@ function Refresh_Database
 			Write_Log "Register directory $RegisterDirectory not found. Skipping register $register." "yellow"
 			continue
 		}
-		
+
 		# Define the full path to the SQI file (named "Refresh_Database.sqi")
 		$SQIFilePath = Join-Path -Path $RegisterDirectory -ChildPath "Refresh_Database.sqi"
-		
+
 		# Write the SQI file in ANSI (PC) format (using ASCII encoding)
 		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
-		
+
 		# Remove the Archive attribute (set file attributes to Normal)
 		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
 		Write_Log "Deployed Refresh_Database.sqi command to register $register in directory $RegisterDirectory." "green"

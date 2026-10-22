@@ -26,12 +26,12 @@ function Reboot_Nodes
 		[string[]]$NodeTypes = @("Lane", "Scale", "Backoffice")
 	)
 	Write_Log "`r`n==================== Starting Reboot_Nodes Function ====================`r`n" "blue"
-	
+
 	# Load global node data
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
 	$BackofficeNumToMachineName = $script:FunctionResults['BackofficeNumToMachineName']
-	
+
 	# --- Use the shared selection dialog ---
 	if ($Selection)
 	{
@@ -47,7 +47,7 @@ function Reboot_Nodes
 		Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# ---- Lanes ----
 	if ($NodeTypes -contains "Lane" -and $selection.Lanes -and $selection.Lanes.Count -gt 0)
 	{
@@ -101,7 +101,7 @@ function Reboot_Nodes
 			}
 		}
 	}
-	
+
 	# ---- Scales ----
 	if ($NodeTypes -contains "Scale" -and $selection.Scales -and $selection.Scales.Count -gt 0)
 	{
@@ -142,7 +142,7 @@ function Reboot_Nodes
 			}
 		}
 	}
-	
+
 	# ---- Backoffices ----
 	if ($NodeTypes -contains "Backoffice" -and $selection.Backoffices -and $selection.Backoffices.Count -gt 0)
 	{
@@ -179,7 +179,7 @@ function Reboot_Nodes
 			}
 		}
 	}
-	
+
 	Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
 	[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected nodes.", "Reboot",
 		[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)

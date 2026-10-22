@@ -26,13 +26,13 @@ function Schedule_Server_DB_Maintenance
 		[string]$ServerNumber = "901"
 	)
 	Write_Log "`r`n==================== Starting Schedule_Server_DB_Maintenance ====================`r`n" "blue"
-	
+
 	if (-not $script:ScheduleServerScript)
 	{
 		Write_Log "Server SQL script content variable (`\$script:ScheduleServerScript`) is empty or not defined." "red"
 		return
 	}
-	
+
 	# Prompt user for the repeat interval in days (once)
 	Add-Type -AssemblyName System.Windows.Forms
 	$daysPromptForm = New-Object System.Windows.Forms.Form
@@ -40,40 +40,40 @@ function Schedule_Server_DB_Maintenance
 	$daysPromptForm.Width = 350
 	$daysPromptForm.Height = 160
 	$daysPromptForm.StartPosition = "CenterScreen"
-	
+
 	$label = New-Object System.Windows.Forms.Label
 	$label.Text = "How many days between each run (minimum 1):"
 	$label.AutoSize = $true
 	$label.Location = New-Object System.Drawing.Point(15, 20)
 	$daysPromptForm.Controls.Add($label)
-	
+
 	$textBox = New-Object System.Windows.Forms.TextBox
 	$textBox.Location = New-Object System.Drawing.Point(20, 50)
 	$textBox.Width = 60
 	$textBox.Text = "7"
 	$daysPromptForm.Controls.Add($textBox)
-	
+
 	$okButton = New-Object System.Windows.Forms.Button
 	$okButton.Text = "OK"
 	$okButton.Location = New-Object System.Drawing.Point(90, 90)
 	$okButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::OK })
 	$daysPromptForm.Controls.Add($okButton)
-	
+
 	$cancelButton = New-Object System.Windows.Forms.Button
 	$cancelButton.Text = "Cancel"
 	$cancelButton.Location = New-Object System.Drawing.Point(170, 90)
 	$cancelButton.Add_Click({ $daysPromptForm.DialogResult = [System.Windows.Forms.DialogResult]::Cancel })
 	$daysPromptForm.Controls.Add($cancelButton)
-	
+
 	$daysPromptForm.AcceptButton = $okButton
 	$daysPromptForm.CancelButton = $cancelButton
-	
+
 	if ($daysPromptForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
 	{
 		Write_Log "Operation cancelled by user in interval prompt." "yellow"
 		return
 	}
-	
+
 	[int]$UserDays = 0
 	if ([int]::TryParse($textBox.Text, [ref]$UserDays) -and $UserDays -ge 1)
 	{
@@ -84,22 +84,22 @@ function Schedule_Server_DB_Maintenance
 		Write_Log "Invalid or no interval provided, using 7 days." "yellow"
 		$RepeatDays = 7
 	}
-	
+
 	# Paths: Office for the script, XF for the scheduler macro
 	$OfficeFolder = $OfficePath
 	$DestScriptPath = Join-Path $OfficeFolder "SERVER_DB_MAINTENANCE.SQI"
 	$LocalXFPath = Join-Path $OfficePath "XF$StoreNumber$ServerNumber"
 	$SchedulerMacroPath = Join-Path $LocalXFPath "Add_ServerDBMaintenance_to_RUN_TAB.sqi"
-	
+
 	if (-not (Test-Path $LocalXFPath))
 	{
 		Write_Log "Local XF folder not found: $LocalXFPath (repair script and scheduler not dropped)." "red"
 		return
 	}
-	
+
 	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
 	$ServerSQLScriptContent = $script:ScheduleServerScript
-	
+
 	$TaskNumber = 750
 	$HostTarget = "{0:D3}" -f [int]$ServerNumber
 	$CommandToRun = 'sqi=SERVER_DB_MAINTENANCE'
@@ -112,7 +112,7 @@ function Schedule_Server_DB_Maintenance
 	$Minutes = 0
 	$LastRanDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
 	$NextRunDate = (Get-Date).AddDays($RepeatDays).ToString("yyyy-MM-dd HH:mm:ss.fff")
-	
+
 	$SchedulerMacroContent = @"
  /* First delete the scheduled maintenance if it exists */
  DELETE FROM RUN_TAB WHERE F1103 = '$CommandToRun' AND F1000 = '$HostTarget';
@@ -124,7 +124,7 @@ function Schedule_Server_DB_Maintenance
  /* Activate the new task right away */
  @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
 "@ -replace "`n", "`r`n"
-	
+
 	# Write the server repair script
 	try
 	{
@@ -137,7 +137,7 @@ function Schedule_Server_DB_Maintenance
 		Write_Log "Failed to write server script: $_" "red"
 		return
 	}
-	
+
 	# Write the scheduler macro
 	try
 	{
@@ -150,7 +150,7 @@ function Schedule_Server_DB_Maintenance
 		Write_Log "Failed to write scheduler macro: $_" "red"
 		return
 	}
-	
+
 	# Remove archive bit if set (optional)
 	try
 	{
@@ -168,6 +168,6 @@ function Schedule_Server_DB_Maintenance
 	{
 		Write_Log "Failed to remove the archive bit from '$DestScriptPath'. Error: $_" "red"
 	}
-	
+
 	Write_Log "`r`n==================== Schedule_Server_DB_Maintenance Function Completed ====================" "blue"
 }

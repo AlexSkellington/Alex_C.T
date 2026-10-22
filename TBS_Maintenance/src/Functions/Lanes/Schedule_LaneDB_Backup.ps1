@@ -19,7 +19,7 @@
 function Schedule_LaneDB_Backup
 {
 	Write_Log "`r`n==================== Starting Schedule_LaneDB_Backup ====================`r`n" "blue"
-	
+
 	# 1. Node selection (lanes only)
 	$StoreNumber = $script:FunctionResults['StoreNumber']
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Lanes for DB Backup"
@@ -28,7 +28,7 @@ function Schedule_LaneDB_Backup
 		Write_Log "No lanes selected for backup." "yellow"
 		return
 	}
-	
+
 	# 2. Check ProtocolResults for connectivity
 	$goodLanes = @()
 	foreach ($lane in $selection.Lanes)
@@ -42,11 +42,11 @@ function Schedule_LaneDB_Backup
 		Write_Log "No selected lanes are available for DB backup." "red"
 		return
 	}
-	
+
 	# 3. Prompt for backup options, user and password (all in one form, more spacing)
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	$form = New-Object Windows.Forms.Form
 	$form.Text = "Configure Lane DB Backup Scheduler"
 	$form.Size = [Drawing.Size]::new(500, 425) # Larger form
@@ -54,14 +54,14 @@ function Schedule_LaneDB_Backup
 	$form.FormBorderStyle = 'FixedDialog'
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
-	
+
 	# -- Backup Settings GroupBox --
 	$grpBackup = New-Object Windows.Forms.GroupBox
 	$grpBackup.Text = "Backup Settings"
 	$grpBackup.Location = [Drawing.Point]::new(20, 15)
 	$grpBackup.Size = [Drawing.Size]::new(450, 180)
 	$form.Controls.Add($grpBackup)
-	
+
 	# Time
 	$lblTime = New-Object Windows.Forms.Label
 	$lblTime.Text = "Time to run backup (24h, HH:mm):"
@@ -74,7 +74,7 @@ function Schedule_LaneDB_Backup
 	$txtTime.Location = [Drawing.Point]::new(260, 33)
 	$txtTime.Size = [Drawing.Size]::new(80, 24)
 	$grpBackup.Controls.Add($txtTime)
-	
+
 	# Frequency
 	$lblFreq = New-Object Windows.Forms.Label
 	$lblFreq.Text = "Frequency (every X days):"
@@ -88,7 +88,7 @@ function Schedule_LaneDB_Backup
 	$numFreq.Location = [Drawing.Point]::new(260, 68)
 	$numFreq.Size = [Drawing.Size]::new(80, 24)
 	$grpBackup.Controls.Add($numFreq)
-	
+
 	# Retention
 	$lblKeep = New-Object Windows.Forms.Label
 	$lblKeep.Text = "How many backups to keep:"
@@ -102,7 +102,7 @@ function Schedule_LaneDB_Backup
 	$numKeep.Location = [Drawing.Point]::new(260, 103)
 	$numKeep.Size = [Drawing.Size]::new(80, 24)
 	$grpBackup.Controls.Add($numKeep)
-	
+
 	# Backup folder (local copy) - picker opens at the default; accept it or switch
 	$lblDir = New-Object Windows.Forms.Label
 	$lblDir.Text = "Backup folder (local copy):"
@@ -124,14 +124,14 @@ function Schedule_LaneDB_Backup
 		if ($p) { $txtDir.Text = $p }
 	})
 	$grpBackup.Controls.Add($btnBrowse)
-	
+
 	# -- Task User/Password GroupBox --
 	$grpUser = New-Object Windows.Forms.GroupBox
 	$grpUser.Text = "Scheduled Task Credentials"
 	$grpUser.Location = [Drawing.Point]::new(20, 205)
 	$grpUser.Size = [Drawing.Size]::new(450, 100)
 	$form.Controls.Add($grpUser)
-	
+
 	# Username (default Administrator)
 	$lblUser = New-Object Windows.Forms.Label
 	$lblUser.Text = "Task user (default: Administrator):"
@@ -143,7 +143,7 @@ function Schedule_LaneDB_Backup
 	$txtUser.Location = [Drawing.Point]::new(260, 33)
 	$txtUser.Size = [Drawing.Size]::new(130, 24)
 	$grpUser.Controls.Add($txtUser)
-	
+
 	# Password (masked)
 	$lblPwd = New-Object Windows.Forms.Label
 	$lblPwd.Text = "Task password (blank = only when user logged in):"
@@ -156,7 +156,7 @@ function Schedule_LaneDB_Backup
 	$txtPwd.Size = [Drawing.Size]::new(120, 24)
 	$txtPwd.UseSystemPasswordChar = $true
 	$grpUser.Controls.Add($txtPwd)
-	
+
 	# OK/Cancel
 	$btnOK = New-Object Windows.Forms.Button
 	$btnOK.Text = "OK"
@@ -166,7 +166,7 @@ function Schedule_LaneDB_Backup
 	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 	$form.AcceptButton = $btnOK
 	$form.Controls.Add($btnOK)
-	
+
 	$btnCancel = New-Object Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Location = [Drawing.Point]::new(260, 325)
@@ -175,7 +175,7 @@ function Schedule_LaneDB_Backup
 	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
-	
+
 	# Show dialog and handle input
 	$result = $form.ShowDialog()
 	if ($result -ne [System.Windows.Forms.DialogResult]::OK)
@@ -193,7 +193,7 @@ function Schedule_LaneDB_Backup
 	$taskUser = $txtUser.Text.Trim()
 	if (-not $taskUser) { $taskUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name }
 	$taskPwd = $txtPwd.Text
-	
+
 	# Validate time
 	if ($timeInput -notmatch '^\d{2}:\d{2}$')
 	{
@@ -208,7 +208,7 @@ function Schedule_LaneDB_Backup
 		Write_Log "Invalid time (out of range)." "red"
 		return
 	}
-	
+
 	# 4. Loop over each lane and schedule backup
 	foreach ($lane in $goodLanes)
 	{
@@ -225,7 +225,7 @@ function Schedule_LaneDB_Backup
 		}
 		$machine = $laneInfo.MachineName
 		$dbName = $laneInfo.DBName
-		
+
 		# Determine protocol and sqlcmd -S string
 		$protocol = $script:LaneProtocols[$lane]
 		switch ($protocol)
@@ -234,15 +234,15 @@ function Schedule_LaneDB_Backup
 			"Named Pipes" { $sqlcmdS = $laneInfo.NamedPipes }
 			default       { Write_Log "Unknown/unsupported protocol for $machine, skipping." "yellow"; continue }
 		}
-		
+
 		# Set backup and script directories (per-lane); local-copy root from the user's choice
 		$scriptsDir = $script:ScriptsFolder
 		$machineFolder = Join-Path $chosenParent $machine
-		
+
 		# ----> KEY: name backup script exactly as Run_${MachineName}_DB_Backup.ps1
 		$scriptName = "Run_${machine}_DB_Backup.ps1"
 		$backupScriptPath = Join-Path $scriptsDir $scriptName
-		
+
 		# Compose the backup script for this lane (matches server style)
 		$backupScript = @"
 # Auto-generated by Schedule_${machine}_DB_Backup (Alex_C.T)
@@ -322,12 +322,12 @@ if (`$exitCode -eq 0) {
     "[`$(Get-Date)]   sqlcmd output: `$errMsg" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
 }
 "@
-		
+
 		# Write the script to scripts folder under machine folder
 		$parentDir = Split-Path $backupScriptPath -Parent
 		if (-not (Test-Path $parentDir)) { New-Item -Path $parentDir -ItemType Directory -Force | Out-Null }
 		Set-Content -Path $backupScriptPath -Value $backupScript -Encoding UTF8
-		
+
 		# Build Task Scheduler arguments
 		$hour = "{0:D2}" -f [int]$hours
 		$min = "{0:D2}" -f [int]$minutes
@@ -336,7 +336,7 @@ if (`$exitCode -eq 0) {
 		if ($freqInput -gt 1) { $freqArg = "/SC DAILY /MO $freqInput" }
 		$taskName = "${machine}_DB_Backup_Schedule"
 		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$backupScriptPath`"`""
-		
+
 		# Task Scheduler command: Default is Administrator, with /IT if no password (interactive, user logged in required)
 		if ($taskUser -eq "" -or $taskUser -eq "SYSTEM")
 		{
@@ -353,7 +353,7 @@ if (`$exitCode -eq 0) {
 			# Run as user with password (runs in background even if user not logged in)
 			$cmd = "schtasks.exe /Create /RU `"$taskUser`" /RP `"$taskPwd`" /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
 		}
-		
+
 		Write_Log "Scheduling Lane $lane ($machine): $cmd" "cyan"
 		Invoke-Expression $cmd
 		if ($LASTEXITCODE -eq 0)
@@ -365,6 +365,6 @@ if (`$exitCode -eq 0) {
 			Write_Log "Failed to schedule backup for $machine." "red"
 		}
 	}
-	
+
 	Write_Log "`r`n==================== Schedule_LaneDB_Backup Completed ====================" "blue"
 }

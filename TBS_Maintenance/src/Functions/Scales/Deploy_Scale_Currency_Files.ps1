@@ -21,7 +21,7 @@
 function Deploy_Scale_Currency_Files
 {
 	Write_Log "`r`n==================== Starting Deploy_Scale_Currency_Files ====================`r`n" "blue"
-	
+
 	# ---- Node selection for scales (show tabbed GUI) ----
 	$StoreNumber = $script:FunctionResults['StoreNumber']
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale" -OnlyBizerbaScales
@@ -30,11 +30,11 @@ function Deploy_Scale_Currency_Files
 		Write_Log "No scales selected for deployment." "yellow"
 		return
 	}
-	
+
 	# ---- Load Assemblies ----
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	# ---- Create Form ----
 	$form = New-Object Windows.Forms.Form
 	$form.Text = "Set Currency Symbol"
@@ -45,7 +45,7 @@ function Deploy_Scale_Currency_Files
 	$form.MinimizeBox = $false
 	$form.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 252)
 	$form.Icon = [System.Drawing.SystemIcons]::Information
-	
+
 	# ---- Centered, bold, wrapped label ----
 	$lbl = New-Object Windows.Forms.Label
 	$lbl.Text = "Please enter the currency symbol to use`nfor all scale price files:"
@@ -57,7 +57,7 @@ function Deploy_Scale_Currency_Files
 	$lbl.AutoSize = $false
 	$lbl.ForeColor = [System.Drawing.Color]::FromArgb(33, 33, 33)
 	$form.Controls.Add($lbl)
-	
+
 	# ---- ComboBox for common symbols ----
 	$cmbCurrency = New-Object Windows.Forms.ComboBox
 	$cmbCurrency.Items.AddRange(@('$', [char]0x20AC, [char]0x00A3, [char]0x00A5, [char]0x20B9, [char]0x20BD, [char]0x20A9, [char]0x20BA, [char]0x20AA))
@@ -70,11 +70,11 @@ function Deploy_Scale_Currency_Files
 	$cmbCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $cmbCurrency.Width)/2), 80)
 	$cmbCurrency.FlatStyle = 'Flat'
 	$form.Controls.Add($cmbCurrency)
-	
+
 	# ---- Tooltip ----
 	$toolTip = New-Object System.Windows.Forms.ToolTip
 	$toolTip.SetToolTip($cmbCurrency, "Select a common symbol or type a custom one (up to 3 characters).")
-	
+
 	# ---- Preview Label ----
 	$previewLabel = New-Object Windows.Forms.Label
 	$previewLabel.Text = "Preview: $1.99"
@@ -85,7 +85,7 @@ function Deploy_Scale_Currency_Files
 	$previewLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$previewLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 100)
 	$form.Controls.Add($previewLabel)
-	
+
 	# ---- Update preview on text change ----
 	$cmbCurrency.Add_TextChanged({
 			$symbol = ($this.Text).Trim()
@@ -99,12 +99,12 @@ function Deploy_Scale_Currency_Files
 			if ([string]::IsNullOrWhiteSpace($cmbCurrency.Text)) { $cmbCurrency.Text = '$' }
 			$previewLabel.Text = "Preview: $($cmbCurrency.Text.Trim())1.99"
 		})
-	
+
 	# ---- OK / Cancel ----
 	$btnWidth = 100; $btnHeight = 36; $btnSpacing = 24; $btnY = 170
 	$totalBtnWidth = $btnWidth * 2 + $btnSpacing
 	$startX = [Math]::Floor(($form.ClientSize.Width - $totalBtnWidth)/2)
-	
+
 	$btnOK = New-Object Windows.Forms.Button
 	$btnOK.Text = "OK"
 	$btnOK.Size = [System.Drawing.Size]::new($btnWidth, $btnHeight)
@@ -126,7 +126,7 @@ function Deploy_Scale_Currency_Files
 		})
 	$form.AcceptButton = $btnOK
 	$form.Controls.Add($btnOK)
-	
+
 	$btnCancel = New-Object Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Size = [System.Drawing.Size]::new($btnWidth, $btnHeight)
@@ -141,7 +141,7 @@ function Deploy_Scale_Currency_Files
 	$btnCancel.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $form.Close() })
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
-	
+
 	$form.Add_Resize({
 			$lbl.Width = $form.ClientSize.Width - 40
 			$cmbCurrency.Location = [System.Drawing.Point]::new([Math]::Floor(($form.ClientSize.Width - $cmbCurrency.Width)/2), 80)
@@ -151,7 +151,7 @@ function Deploy_Scale_Currency_Files
 			$btnOK.Location = [System.Drawing.Point]::new($startX, $btnY)
 			$btnCancel.Location = [System.Drawing.Point]::new($startX + $btnWidth + $btnSpacing, $btnY)
 		})
-	
+
 	# ---- Show the form ----
 	$res = $form.ShowDialog()
 	if ($res -ne [System.Windows.Forms.DialogResult]::OK)
@@ -161,13 +161,13 @@ function Deploy_Scale_Currency_Files
 	}
 	$currency = $cmbCurrency.Text.Trim()
 	if (-not $currency) { $currency = '$' }
-	
+
 	# ---- Inline file content templates ----
 	# NOTE: These are what get *inlined* by the scale. If a BOM is present at the start of the file,
 	#       the BOM shows up right before the first visible token (your currency). Hence No-BOM writes.
 	$totalprice_txt = "=$%$ BT20 =`"$currency *#.##`""
 	$unitprice_txt = "=$%$ BT10 =`"$currency *#.##`""
-	
+
 	$totalprice_properties = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <properties>
@@ -177,7 +177,7 @@ function Deploy_Scale_Currency_Files
     </source>
 </properties>
 "@
-	
+
 	$unitprice_properties = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <properties>
@@ -187,18 +187,18 @@ function Deploy_Scale_Currency_Files
     </source>
 </properties>
 "@
-	
+
 	# ---- Push files to each selected scale ----
 	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
 	$results = @()
-	
+
 	foreach ($scaleCode in $selection.Scales)
 	{
 		$scaleObj = $ScaleCodeToIPInfo[$scaleCode]
 		$scaleIP = $scaleObj.FullIP
 		$scaleLabel = $scaleObj.ScaleName
 		$targetPath = "\\$scaleIP\c$\bizstorecard\bizerba\_fileIO\generic_data\in"
-		
+
 		$result = [PSCustomObject]@{
 			Scale = "$scaleLabel [$scaleIP]"
 			ScaleCode = $scaleCode
@@ -206,7 +206,7 @@ function Deploy_Scale_Currency_Files
 			Result = "Success"
 			Details = @()
 		}
-		
+
 		$isAccessible = $false
 		try
 		{
@@ -220,7 +220,7 @@ function Deploy_Scale_Currency_Files
 			$results += ,$result
 			continue
 		}
-		
+
 		if (-not $isAccessible)
 		{
 			try
@@ -237,7 +237,7 @@ function Deploy_Scale_Currency_Files
 				continue
 			}
 		}
-		
+
 		# ==========================================================================================
 		# CHANGED: Write files as UTF-8 **without BOM** so the first bytes are the actual content.
 		#          Using .NET API here because PS5.1 `-Encoding UTF8` includes a BOM.
@@ -245,12 +245,12 @@ function Deploy_Scale_Currency_Files
 		try
 		{
 			$utf8NoBom = New-Object System.Text.UTF8Encoding($false) # $false => NO BOM
-			
+
 			[System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_totalprice.txt'), $totalprice_txt, $utf8NoBom) # No BOM
 			[System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_unitprice.txt'), $unitprice_txt, $utf8NoBom) # No BOM
 			[System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_totalprice.properties'), $totalprice_properties, $utf8NoBom) # No BOM
 			[System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_unitprice.properties'), $unitprice_properties, $utf8NoBom) # No BOM
-			
+
 			# Optional: ensure CRLF line endings (Windows) on the XML (usually fine as-is).
 			# If your environment requires explicit CRLF normalization, uncomment:
 			# $crlf = "`r`n"
@@ -258,7 +258,7 @@ function Deploy_Scale_Currency_Files
 			#     ($totalprice_properties -replace "`r?`n",$crlf), $utf8NoBom)
 			# [System.IO.File]::WriteAllText((Join-Path $targetPath 'na_f_unitprice.properties'),
 			#     ($unitprice_properties -replace "`r?`n",$crlf), $utf8NoBom)
-			
+
 			$result.Details += "Files copied successfully (UTF-8 without BOM)."
 			Write_Log "Deployed price files to $($scaleLabel) [$scaleIP] with Currency ($currency)" "green"
 		}
@@ -268,10 +268,10 @@ function Deploy_Scale_Currency_Files
 			$result.Details = @("File write failed (network/permission).")
 			Write_Log "Could not deploy price files to $($scaleLabel) [$scaleIP]. File write failed or network/permission denied." "yellow"
 		}
-		
+
 		$results += ,$result
 	}
-	
+
 	# ---- Show summary ----
 	Write_Log "Deployment summary:" "Magenta"
 	foreach ($r in $results)
@@ -280,17 +280,17 @@ function Deploy_Scale_Currency_Files
 		if ($r.Result -eq "Success") { Write_Log $msg "green" }
 		else { Write_Log $msg "red" }
 	}
-	
+
 	# ---- Prompt for reboot of only SUCCESSFUL scales ----
 	$successScales = $results | Where-Object { $_.Result -eq "Success" -and $_.PSObject.Properties.Match('ScaleCode') } | Select-Object -ExpandProperty ScaleCode
 	$successScalesLabels = $results | Where-Object { $_.Result -eq "Success" } | ForEach-Object { $_.Scale }
-	
+
 	if ($successScales.Count -gt 0)
 	{
 		$scaleListText = ($successScalesLabels -join "`n")
 		$rebootMsg = "Do you want to reboot the following successfully deployed scales now to apply changes?`n`n$scaleListText"
 		$dialogResult = [System.Windows.Forms.MessageBox]::Show($rebootMsg, "Reboot Scales?", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-		
+
 		if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Yes)
 		{
 			Write_Log "User chose to reboot all successfully deployed scales." "cyan"
@@ -303,6 +303,6 @@ function Deploy_Scale_Currency_Files
 			foreach ($s in $successScalesLabels) { Write_Log "$s" "yellow" }
 		}
 	}
-	
+
 	Write_Log "`r`n==================== Deploy_Scale_Currency_Files Completed ====================" "blue"
 }

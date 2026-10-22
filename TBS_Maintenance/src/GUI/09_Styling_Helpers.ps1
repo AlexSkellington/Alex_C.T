@@ -1,5 +1,5 @@
 ######################################################################################################################
-# 
+#
 # Modern UI Styling Helpers (NO functions - scriptblocks only)
 #
 # - Keeps code PS 5.1 friendly
@@ -17,9 +17,9 @@ if (-not $script:UiTextDark) { $script:UiTextDark = [System.Drawing.Color]::From
 # ----------------------------------------------------------------------------
 $Apply_Modern_Button_Style = {
 	param ([System.Windows.Forms.Button]$Btn)
-	
+
 	if (-not $Btn) { return }
-	
+
 	try
 	{
 		# Base look - modern flat design with subtle elevation
@@ -31,12 +31,12 @@ $Apply_Modern_Button_Style = {
 		$Btn.Cursor = [System.Windows.Forms.Cursors]::Hand
 		$Btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 		$Btn.Padding = New-Object System.Windows.Forms.Padding(10, 4, 10, 4)
-		
+
 		# Border + hover states (elevated card feel)
 		$Btn.FlatAppearance.BorderSize = 0
 		$Btn.FlatAppearance.MouseOverBackColor = $script:UiAccentLight
 		$Btn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(220, 235, 250)
-		
+
 		# Subtle shadow effect (bottom border)
 		$Btn.add_Paint({
 				param ($s, $e)
@@ -49,7 +49,7 @@ $Apply_Modern_Button_Style = {
 				}
 				catch { }
 			})
-		
+
 		# Store original colors for restore
 		if (-not $Btn.Tag -or ($Btn.Tag -isnot [pscustomobject]))
 		{
@@ -58,7 +58,7 @@ $Apply_Modern_Button_Style = {
 				OrigFore = $Btn.ForeColor
 			}
 		}
-		
+
 		# Hover effects (lift + accent)
 		$Btn.add_MouseEnter({
 				param ($s, $e)
@@ -110,9 +110,9 @@ $Apply_Modern_Button_Style = {
 # ===================================================================================================
 $Apply_Modern_Menu_Style = {
 	param ([System.Windows.Forms.ContextMenuStrip]$Menu)
-	
+
 	if (-not $Menu) { return }
-	
+
 	try
 	{
 		$Menu.ShowImageMargin = $false
@@ -124,7 +124,7 @@ $Apply_Modern_Menu_Style = {
 		$Menu.Padding = New-Object System.Windows.Forms.Padding(2)
 		$Menu.GripMargin = New-Object System.Windows.Forms.Padding(0)
 		$Menu.ItemMargin = New-Object System.Windows.Forms.Padding(2)
-		
+
 		# Custom renderer for modern menu
 		# (NOTE: do NOT assign a ProfessionalColorTable to $Menu.Renderer here -
 		#  it throws and the custom renderer below would silently never be applied)
@@ -222,15 +222,15 @@ $Style_SubMenu = {
 # ----------------------------------------------------------------------------
 $Apply_Modern_Popup_Style = {
 	param ([System.Windows.Forms.Form]$PopupForm)
-	
+
 	if (-not $PopupForm -or $PopupForm.IsDisposed) { return }
-	
+
 	$stylePopupControls = $null
 	$stylePopupControls = {
 		param ($Control)
-		
+
 		if (-not $Control) { return }
-		
+
 		try
 		{
 			if ($Control -is [System.Windows.Forms.Button])
@@ -239,7 +239,7 @@ $Apply_Modern_Popup_Style = {
 				$minWidth = [Math]::Max([int]$Control.Width, [int]($measured.Width + 22))
 				$minHeight = [Math]::Max([int]$Control.Height, [int]($measured.Height + 12), 32)
 				$preserveAccentBack = ($Control.BackColor -eq [System.Drawing.Color]::Yellow -or $Control.BackColor -eq [System.Drawing.Color]::LightGreen)
-				
+
 				$Control.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 				$Control.UseVisualStyleBackColor = $false
 				if (-not $preserveAccentBack)
@@ -336,14 +336,14 @@ $Apply_Modern_Popup_Style = {
 				$Control.DefaultCellStyle.SelectionForeColor = $script:UiTextDark
 				$Control.AlternatingRowsDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(250, 251, 253)
 			}
-			
+
 			if ($Control.ContextMenuStrip)
 			{
 				& $Apply_Modern_Menu_Style $Control.ContextMenuStrip
 			}
 		}
 		catch { }
-		
+
 		try
 		{
 			foreach ($child in @($Control.Controls))
@@ -353,7 +353,7 @@ $Apply_Modern_Popup_Style = {
 		}
 		catch { }
 	}
-	
+
 	try
 	{
 		$PopupForm.BackColor = $uiBg
@@ -366,14 +366,14 @@ $Apply_Modern_Popup_Style = {
 			if ($prop) { $prop.SetValue($PopupForm, $true, $null) }
 		}
 		catch { }
-		
+
 		if ($PopupForm.MainMenuStrip)
 		{
 			$PopupForm.MainMenuStrip.BackColor = $script:UiCardBg
 			$PopupForm.MainMenuStrip.ForeColor = $script:UiTextDark
 			$PopupForm.MainMenuStrip.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 		}
-		
+
 		& $stylePopupControls $PopupForm
 	}
 	catch { }
@@ -387,23 +387,23 @@ if (-not $script:PopupThemeTimer)
 			try
 			{
 				if ([System.Windows.Forms.Application]::OpenForms.Count -le 1 -and $script:StyledPopupForms.Count -eq 0) { return }
-				
+
 				$activeHashes = @{ }
 				foreach ($openForm in [System.Windows.Forms.Application]::OpenForms)
 				{
 					if (-not $openForm -or $openForm.IsDisposed) { continue }
 					if ($form -and [object]::ReferenceEquals($openForm, $form)) { continue }
-					
+
 					$formHash = [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($openForm)
 					$activeHashes[$formHash] = $true
-					
+
 					if (-not $script:StyledPopupForms.ContainsKey($formHash))
 					{
 						& $Apply_Modern_Popup_Style $openForm
 						$script:StyledPopupForms[$formHash] = $true
 					}
 				}
-				
+
 				foreach ($staleHash in @($script:StyledPopupForms.Keys))
 				{
 					if (-not $activeHashes.ContainsKey($staleHash))

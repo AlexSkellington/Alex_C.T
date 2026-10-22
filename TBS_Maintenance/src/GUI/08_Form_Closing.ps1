@@ -3,7 +3,7 @@
 # ------------------------------------------------------------------------------------------------
 $form.add_FormClosing({
 		$script:SuppressClosePrompt = $false
-		
+
 		# ---- Timers ----
 		try { if ($script:IdleTimer) { $script:IdleTimer.Stop(); $script:IdleTimer.Dispose(); $script:IdleTimer = $null } }
 		catch { }
@@ -19,7 +19,7 @@ $form.add_FormClosing({
 		catch { }
 		try { if ($script:PopupThemeTimer) { $script:PopupThemeTimer.Stop(); $script:PopupThemeTimer.Dispose(); $script:PopupThemeTimer = $null } }
 		catch { }
-		
+
 		try
 		{
 			if ($global:ProtocolFormTimer)
@@ -30,7 +30,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		# ---- Popup form (optional) ----
 		try
 		{
@@ -44,7 +44,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		# Fast exit: the host process closes right after ShowDialog returns, so expensive
 		# background teardown here only slows the X button down.
 		try { $script:LaneProtocolStop = $true }
@@ -66,7 +66,7 @@ $form.add_FormClosing({
 		}
 		catch { }
 		return
-		
+
 		# Stop XE watcher jobs (kept from your earlier close handler)
 		try
 		{
@@ -80,11 +80,11 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		# ---- Lane protocol updater cleanup (timer + pool) ----
 		try { $script:LaneProtocolStop = $true }
 		catch { }
-		
+
 		try
 		{
 			if ($script:protocolTimer)
@@ -97,7 +97,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		try
 		{
 			if ($script:LaneProtocolJobs)
@@ -117,7 +117,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		try
 		{
 			if ($script:LaneDbSizeJobs)
@@ -137,7 +137,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		try
 		{
 			if ($script:LaneProtocolPool)
@@ -163,7 +163,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		try
 		{
 			if ($script:VncExportTask)
@@ -187,7 +187,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		try
 		{
 			if ($script:RemoteMachineInfoTask)
@@ -211,7 +211,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		# ---- Scale credential runspaces (if you used the background cred helper) ----
 		try
 		{
@@ -225,7 +225,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		try
 		{
 			if ($script:ScaleCredTasks)
@@ -245,7 +245,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		try
 		{
 			if ($script:ScaleCredPool)
@@ -259,7 +259,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		# --- Any lingering job from earlier versions (defensive) ---
 		try
 		{
@@ -271,7 +271,7 @@ $form.add_FormClosing({
 			}
 		}
 		catch { }
-		
+
 		# Final housekeeping
 		try { Write_Log "Form is closing. Performing cleanup." "green" }
 		catch { }

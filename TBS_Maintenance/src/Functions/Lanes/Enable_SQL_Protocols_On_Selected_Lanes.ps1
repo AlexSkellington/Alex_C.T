@@ -30,12 +30,12 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 		[Parameter(Mandatory = $false)]
 		[switch]$CreateLinkedServers
 	)
-	
+
 	# ---- Default CreateLinkedServers to $true if omitted -------------------------------------------
 	if (-not $PSBoundParameters.ContainsKey('CreateLinkedServers')) { $CreateLinkedServers = $true }
-	
+
 	Write_Log "`r`n==================== Starting Enable_SQL_Protocols_On_Selected_Lanes ====================`r`n" "blue"
-	
+
 	# ---- Resolve lane -> machine -------------------------------------------------------------------
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	if (-not $LaneNumToMachineName -or $LaneNumToMachineName.Count -eq 0)
@@ -44,11 +44,11 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 		Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Completed ====================" "blue"
 		return
 	}
-	
+
 	# ---- Local SQL instance for linked-server operations -------------------------------------------
 	$localInstance = $script:FunctionResults['DBSERVER']
 	if ([string]::IsNullOrWhiteSpace($localInstance) -or $localInstance -eq 'N/A') { $localInstance = 'localhost' }
-	
+
 	# ---- Lane selection UI -------------------------------------------------------------------------
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if (-not $selection -or -not $selection.Lanes -or $selection.Lanes.Count -eq 0)
@@ -57,7 +57,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 		Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Completed ====================" "blue"
 		return
 	}
-	
+
 	# ---- Normalize lane list (ensure 3-digit strings) ----------------------------------------------
 	$lanes =
 	$selection.Lanes |
@@ -67,19 +67,19 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 	} |
 	ForEach-Object { $_.ToString().PadLeft(3, '0') } |
 	Sort-Object -Unique
-	
+
 	Write_Log "Selected lanes: $($lanes -join ', ')" "green"
-	
+
 	# ---- Prepare caches used elsewhere in your script ----------------------------------------------
 	if (-not $script:LaneProtocols) { $script:LaneProtocols = @{ } }
 	if (-not $script:ProtocolResults) { $script:ProtocolResults = @() }
-	
+
 	# ---- Create a runspace pool (MTA). Throttle to a reasonable degree of parallelism --------------
 	$maxThreads = [Math]::Min($lanes.Count, [Math]::Max(2, [Environment]::ProcessorCount))
 	$pool = [RunspaceFactory]::CreateRunspacePool(1, $maxThreads)
 	$pool.ApartmentState = 'MTA'
 	$pool.Open()
-	
+
 	# ---- Script that each runspace will execute (NO nested functions; just inline code) ------------
 	$laneWork = @'
 param($machine,$lane,$StoreNumber,$tcpPort,$createLinks,$localInstance)
@@ -496,7 +496,7 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
     Restarted = $laneNeedsRestart
 }
 '@
-	
+
 	# ---- Launch all lanes in parallel via runspaces -----------------------------------------------
 	$tasks = @()
 	foreach ($lane in $lanes)
@@ -507,17 +507,17 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 			Write_Log "Machine name not found for lane $lane. Skipping." "yellow"
 			continue
 		}
-		
+
 		# Create PowerShell instance bound to the runspace pool
 		$ps = [PowerShell]::Create()
 		$ps.RunspacePool = $pool
 		# IMPORTANT: pass a pure boolean for $createLinks
 		$ps.AddScript($laneWork).AddArgument($machine).AddArgument($lane).AddArgument($StoreNumber).AddArgument($tcpPort).AddArgument([bool]$CreateLinkedServers.IsPresent).AddArgument($localInstance) | Out-Null
-		
+
 		$handle = $ps.BeginInvoke()
 		$tasks += [pscustomobject]@{ Lane = $lane; Machine = $machine; PS = $ps; Handle = $handle; Done = $false }
 	}
-	
+
 	# ---- Collect results as lanes complete (quasi-live) -------------------------------------------
 	$restarted = @()
 	while ($true)
@@ -533,15 +533,15 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 					$res = $t.PS.EndInvoke($t.Handle)
 					$t.PS.Dispose()
 					$t.Done = $true
-					
+
 					# Emit buffered logs for this lane
 					foreach ($line in $res.Output) { Write_Log $line.Text $line.Color }
-					
+
 					# Persist in-memory protocol maps
 					$script:LaneProtocols[$res.Lane] = $res.Protocol
 					$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $res.Lane }
 					$script:ProtocolResults += [PSCustomObject]@{ Lane = $res.Lane; Protocol = $res.Protocol }
-					
+
 					# Persist to file (dedup by lane)
 					$protocolResultsFile = $script:ProtocolResultsFile
 					$laneStr = $res.Lane.ToString().PadLeft(3, '0')
@@ -558,7 +558,7 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 					$all += "$laneStr,$proto"
 					$sorted = $all | Sort-Object { ($_ -split ',')[0] -as [int] }
 					[System.IO.File]::WriteAllLines($protocolResultsFile, $sorted, [System.Text.Encoding]::UTF8)
-					
+
 					if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($res.Machine))
 					{
 						# Menu action: report the scheduling outcome in the log box.
@@ -586,9 +586,9 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 							MachineName  = $res.Machine
 						}
 					}
-					
+
 					if ($res.Restarted) { $restarted += $res.Lane }
-					
+
 					# Final per-lane summary line
 					Write_Log "Protocol detected for $($res.Machine) (Lane $($res.Lane)): $proto" "magenta"
 				}
@@ -601,17 +601,17 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 		if ($allDone) { break }
 		Start-Sleep -Milliseconds 150
 	}
-	
+
 	# ---- Cleanup pool -----------------------------------------------------------------------------
 	$pool.Close()
 	$pool.Dispose()
-	
+
 	# ---- Post-actions for lanes that needed restart -----------------------------------------------
 	if ($restarted.Count -gt 0)
 	{
 		Send_Restart_All_Programs -StoreNumber $StoreNumber -LaneNumbers $restarted -Silent
 		Write_Log "Restart All Programs sent to restarted lanes: $($restarted -join ', ')" "green"
 	}
-	
+
 	Write_Log "`r`n==================== Enable_SQL_Protocols_On_Selected_Lanes Completed ====================" "blue"
 }

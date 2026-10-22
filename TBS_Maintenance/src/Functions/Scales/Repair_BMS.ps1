@@ -35,21 +35,21 @@ function Repair_BMS
 		[Parameter(Mandatory = $false)]
 		[bool]$RemoveTerminalsCache = $true
 	)
-	
+
 	Write_Log "`r`n==================== Starting Repair_BMS (IMMEDIATE TASKKILL) ====================`r`n" "blue"
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 0) Elevation check (required for service control + protected folder deletes)
 	# ------------------------------------------------------------------------------------------------
 	$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
 	IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-	
+
 	if (-not $isAdmin)
 	{
 		Write_Log "Insufficient permissions. Please run as Administrator." "red"
 		return
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 1) Validate BMSSrv.exe path
 	# ------------------------------------------------------------------------------------------------
@@ -58,7 +58,7 @@ function Repair_BMS
 		Write_Log "BMSSrv.exe not found at: $BMSSrvPath" "red"
 		return
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 2) Constants / paths
 	# ------------------------------------------------------------------------------------------------
@@ -66,15 +66,15 @@ function Repair_BMS
 	$bmsRoot = $script:BmsRootPath
 	$toBizerbaPath = Join-Path $bmsRoot "toBizerba"
 	$terminalsPath = Join-Path $bmsRoot "terminals"
-	
+
 	# Kill only what you want (silent)
 	$killImages = @(
 		"BMSSrv.exe",
 		"BMS.exe"
 	)
-	
+
 	Write_Log "Phase 1: IMMEDIATE kill (no wait loops)..." "blue"
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 3) Kill from the get-go (NO waiting) - SILENT
 	# ------------------------------------------------------------------------------------------------
@@ -87,7 +87,7 @@ function Repair_BMS
 	{
 		Write_Log "taskkill by service filter threw an exception (often harmless): $_" "yellow"
 	}
-	
+
 	foreach ($img in $killImages)
 	{
 		try
@@ -100,22 +100,22 @@ function Repair_BMS
 			Write_Log "taskkill for $img threw an exception (often harmless): $_" "yellow"
 		}
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 4) Disable/Stop service quickly (best-effort, no waits)
 	#    - Skip noisy net stop unless service is actually not stopped
 	# ------------------------------------------------------------------------------------------------
 	Write_Log "Phase 2: Disable/Stop service (best-effort, no waits)..." "blue"
-	
+
 	$svcBefore = $null
 	try { $svcBefore = Get-Service -Name $serviceName -ErrorAction Stop }
 	catch { $svcBefore = $null }
-	
+
 	try { cmd /c ("sc.exe config {0} start= disabled >nul 2>&1" -f $serviceName) }
 	catch { }
 	try { Set-Service -Name $serviceName -StartupType Disabled -ErrorAction SilentlyContinue }
 	catch { }
-	
+
 	if ($svcBefore -and $svcBefore.Status -ne 'Stopped')
 	{
 		try { cmd /c ("sc.exe stop {0} >nul 2>&1" -f $serviceName) }
@@ -124,7 +124,7 @@ function Repair_BMS
 		catch { } # silent
 		try { Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue }
 		catch { }
-		
+
 		# Re-kill once more (still no waits)
 		try { cmd /c 'taskkill /F /T /FI "SERVICES eq BMS" >nul 2>&1' }
 		catch { }
@@ -138,12 +138,12 @@ function Repair_BMS
 	{
 		Write_Log "Service is already stopped or not present; skipping net stop to avoid console noise." "gray"
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 5) Cleanup filesystem (fast)
 	# ------------------------------------------------------------------------------------------------
 	Write_Log "Phase 3: Cleanup folders..." "blue"
-	
+
 	if ($CleanToBizerba)
 	{
 		if (Test-Path -LiteralPath $toBizerbaPath)
@@ -152,7 +152,7 @@ function Repair_BMS
 			{
 				Get-ChildItem -LiteralPath $toBizerbaPath -Force -ErrorAction SilentlyContinue |
 				Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-				
+
 				Write_Log "Cleared: $toBizerbaPath" "green"
 			}
 			catch
@@ -169,7 +169,7 @@ function Repair_BMS
 	{
 		Write_Log "CleanToBizerba disabled (skip)." "gray"
 	}
-	
+
 	if ($RemoveTerminalsCache)
 	{
 		if (Test-Path -LiteralPath $terminalsPath)
@@ -193,13 +193,13 @@ function Repair_BMS
 	{
 		Write_Log "RemoveTerminalsCache disabled (skip)." "gray"
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 6) Unregister (delete service) + Register again (BMSSrv.exe -reg)
 	#    - CHANGED: BMSSrv.exe output is redirected so it doesn't print to console
 	# ------------------------------------------------------------------------------------------------
 	Write_Log "Phase 4: Unregister (sc delete) + Register (BMSSrv.exe -reg)..." "blue"
-	
+
 	try
 	{
 		# Pre-kill again (helps with "marked for deletion" locks)
@@ -210,7 +210,7 @@ function Repair_BMS
 			try { cmd /c ("taskkill /F /T /IM {0} >nul 2>&1" -f $img) }
 			catch { }
 		}
-		
+
 		cmd /c ("sc.exe delete {0} >nul 2>&1" -f $serviceName)
 		Write_Log "Issued: sc delete $serviceName (silent)" "yellow"
 	}
@@ -218,11 +218,11 @@ function Repair_BMS
 	{
 		Write_Log "sc delete threw an exception (service may already be gone): $_" "yellow"
 	}
-	
+
 	# --- Register service again, SILENT (no console spam) ---
 	$tmpOut = Join-Path $env:TEMP ("BMSSrv_reg_stdout_{0}.log" -f ([Guid]::NewGuid().ToString("N")))
 	$tmpErr = Join-Path $env:TEMP ("BMSSrv_reg_stderr_{0}.log" -f ([Guid]::NewGuid().ToString("N")))
-	
+
 	try
 	{
 		# Ensure temp files don't exist
@@ -230,11 +230,11 @@ function Repair_BMS
 		catch { }
 		try { if (Test-Path -LiteralPath $tmpErr) { Remove-Item -LiteralPath $tmpErr -Force -ErrorAction SilentlyContinue } }
 		catch { }
-		
+
 		# CHANGED: Redirect output + hide window so BMSSrv does not write to the console
 		$proc = Start-Process -FilePath $BMSSrvPath -ArgumentList "-reg" -WindowStyle Hidden -Wait -PassThru `
 							  -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr
-		
+
 		if ($proc.ExitCode -ne 0)
 		{
 			$stdout = ""; $stderr = ""
@@ -242,13 +242,13 @@ function Repair_BMS
 			catch { }
 			try { if (Test-Path -LiteralPath $tmpErr) { $stderr = (Get-Content -LiteralPath $tmpErr -ErrorAction SilentlyContinue | Out-String).Trim() } }
 			catch { }
-			
+
 			Write_Log ("BMSSrv.exe -reg failed (exit code {0})." -f $proc.ExitCode) "red"
 			if ($stdout) { Write_Log ("BMSSrv stdout: {0}" -f $stdout) "yellow" }
 			if ($stderr) { Write_Log ("BMSSrv stderr: {0}" -f $stderr) "yellow" }
 			return
 		}
-		
+
 		Write_Log "BMSSrv.exe -reg completed successfully (silent)." "green"
 	}
 	catch
@@ -264,21 +264,21 @@ function Repair_BMS
 		try { if (Test-Path -LiteralPath $tmpErr) { Remove-Item -LiteralPath $tmpErr -Force -ErrorAction SilentlyContinue } }
 		catch { }
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# 7) Re-enable + start service (avoid "service is not started" noise)
 	# ------------------------------------------------------------------------------------------------
 	Write_Log "Phase 5: Start service..." "blue"
-	
+
 	try { cmd /c ("sc.exe config {0} start= auto >nul 2>&1" -f $serviceName) }
 	catch { }
 	try { Set-Service -Name $serviceName -StartupType Automatic -ErrorAction SilentlyContinue }
 	catch { }
-	
+
 	$svcAfterReg = $null
 	try { $svcAfterReg = Get-Service -Name $serviceName -ErrorAction Stop }
 	catch { $svcAfterReg = $null }
-	
+
 	if ($svcAfterReg -and $svcAfterReg.Status -ne 'Running')
 	{
 		try { cmd /c ("net start {0} /y >nul 2>&1" -f $serviceName) }
@@ -290,11 +290,11 @@ function Repair_BMS
 	{
 		Write_Log "Service already running or not present immediately after registration; skipping net start." "gray"
 	}
-	
+
 	$svcFinal = $null
 	try { $svcFinal = Get-Service -Name $serviceName -ErrorAction Stop }
 	catch { $svcFinal = $null }
-	
+
 	if ($svcFinal -and $svcFinal.Status -eq 'Running')
 	{
 		Write_Log "'$serviceName' is running." "green"
@@ -305,6 +305,6 @@ function Repair_BMS
 		else { "NotFound" }
 		Write_Log "WARNING: Could not confirm '$serviceName' running. Current state: $st" "yellow"
 	}
-	
+
 	Write_Log "`r`n==================== Repair_BMS Completed (IMMEDIATE TASKKILL) ====================`r`n" "blue"
 }

@@ -97,7 +97,7 @@ $form.add_Shown({
 			# (and doesn't have) available.
 			$rule = '--------------------------------------------------'
 			$modeTag = if ($script:StoremanKeyStale) { '[ KEY  ]' } elseif ($script:IsTestEnvironment) { '[ TEST ]' } else { '[ LIVE ]' }
-			
+
 			# Snapshot the lines already in the log (text + color) so the
 			# summary can be written on top of them, in order.
 			$oldLines = @()
@@ -117,9 +117,9 @@ $form.add_Shown({
 				}
 			}
 			catch { $oldLines = @() }
-			
+
 			try { $logBox.Clear() } catch { }
-			
+
 			$storeNum = ''
 			$storeName = ''
 			$smsVer = ''
@@ -133,11 +133,11 @@ $form.add_Shown({
 				}
 			}
 			catch { }
-			
+
 			Write_Log $rule -FileOnly -IncludeTimestamp:$false -Raw
 			Write_Log (" TBS MAINTENANCE SCRIPT   v{0} ({1})   {2}" -f $VersionNumber, $VersionDate, $modeTag) -FileOnly -IncludeTimestamp:$false -Raw
 			Write_Log $rule -FileOnly -IncludeTimestamp:$false -Raw
-			
+
 			if ($script:StoremanKeyStale)
 			{
 				$staleKeyDate = if ($script:StoremanKeyDate) { $script:StoremanKeyDate.ToString('MM/dd/yyyy') } else { 'unknown' }
@@ -174,9 +174,9 @@ $form.add_Shown({
 					Write_Log $storeLine -FileOnly -IncludeTimestamp:$false -Raw
 				}
 			}
-			
+
 			Write_Log $rule -FileOnly -IncludeTimestamp:$false -Raw
-			
+
 			# Re-append the original startup lines with their colors
 			foreach ($old in $oldLines)
 			{
@@ -216,35 +216,35 @@ $logBox.Add_MouseUp({
 # Layout that also positions the log frame + log box
 $layoutLogArea = {
 	if (-not $form -or $form.IsDisposed) { return }
-	
+
 	try
 	{
 		# Width aligned to top strip card
 		$rowW = [math]::Max(200, $form.ClientSize.Width - (2 * $padSide))
-		
+
 		# Log top starts just below the top strip card
 		$logTop = $topStripCard.Bottom + $gapCards
-		
+
 		# Bottom bound uses status strip height
 		$bottomReserve = 0
 		if ($statusStrip -and -not $statusStrip.IsDisposed) { $bottomReserve = $statusStrip.Height }
-		
+
 		# Compute available height for the log area
 		$availH = $form.ClientSize.Height - $logTop - $bottomReserve - $gapCards
 		$logH = [math]::Max($minLogH, $availH)
-		
+
 		# Frame
 		$logFrame.Left = $padSide
 		$logFrame.Top = $logTop
 		$logFrame.Width = $rowW
 		$logFrame.Height = $logH
-		
+
 		# Log box inset (padding inside frame) - account for header
 		$logBox.Left = $logFrame.Left + $logInnerPad
 		$logBox.Top = 28 + $logInnerPad # Account for header height
 		$logBox.Width = [math]::Max(50, $logFrame.Width - (2 * $logInnerPad))
 		$logBox.Height = [math]::Max(50, $logFrame.Height - 28 - (2 * $logInnerPad))
-		
+
 		# Keep top strip aligned
 		& $layoutTopStrip
 	}

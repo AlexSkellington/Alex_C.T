@@ -31,17 +31,17 @@ function Send_TIME_Sync_Lanes_Worker
 		[switch]$IsScheduling,
 		[int]$IntervalMinutes = 0
 	)
-	
+
 	# The mailslot type does not exist in a job runspace; this is a
 	# no-op where it is already loaded.
 	try { Ensure_MailslotSender_Type } catch { }
-	
+
 	# 3. Build Time String
 	$now = Get-Date
 	$dateStr = $now.ToString("MM/dd/yyyy")
 	$timeStr = $now.ToString("HHmmss")
 	$wizCommand = "@WIZRPL(DATE=$dateStr)@WIZRPL(TIME=$timeStr)"
-	
+
 	foreach ($lane in $selectedLanes)
 	{
 		# Lane number normalization
@@ -49,16 +49,16 @@ function Send_TIME_Sync_Lanes_Worker
 		elseif ($lane -is [int]) { "{0:D3}" -f $lane }
 		elseif ($lane.Length -lt 3) { $lane.PadLeft(3, '0') }
 		else { $lane }
-		
+
 		$machine = $script:FunctionResults['LaneNumToMachineName'][$laneNum]
 		if (-not $machine)
 		{
 			Write_Log "No machine name found for lane $laneNum." "red"
 			continue
 		}
-		
+
 		$success = $false
-		
+
 		# -------- PRIMARY: REMOTE SCHTASKS --------
 		try
 		{
@@ -72,7 +72,7 @@ function Send_TIME_Sync_Lanes_Worker
 				$serverIP = $env:COMPUTERNAME
 			}
 			$command = "net time \\$serverIP /set /yes"
-			
+
 			$taskName = if ($isScheduling) { "ScheduledTimeSync" }
 			else { "SyncTime" }
 			$scheduleSc = if ($isScheduling) { "/sc minute" }
@@ -83,7 +83,7 @@ function Send_TIME_Sync_Lanes_Worker
 			else { "" } # Omit /st for immediate run
 			$logMessage = if ($isScheduling) { "Scheduled time sync every $intervalMinutes minutes on lane" }
 			else { "Executed time sync on lane" }
-			
+
 			$createCmd = "schtasks /create /s $machine /tn $taskName /tr `"$command`" $scheduleSc $scheduleMo $scheduleSt /ru SYSTEM /f /rl HIGHEST"
 			$createOutput = Invoke-Expression $createCmd 2>&1
 			if ($LASTEXITCODE -eq 0)
@@ -128,7 +128,7 @@ function Send_TIME_Sync_Lanes_Worker
 		{
 			Write_Log "Exception during schtasks create/run: $_" "yellow"
 		}
-		
+
 		# -------- SECONDARY: FILE-DROP WITH @EXEC --------
 		if (-not $success)
 		{
@@ -136,17 +136,17 @@ function Send_TIME_Sync_Lanes_Worker
 			{
 				$TempDir = $env:TEMP
 				$xfFolder = Join-Path $OfficePath ("XF{0}{1}" -f $StoreNumber, $laneNum)
-				
+
 				if (-not (Test-Path $xfFolder))
 				{
 					Write_Log "XF folder for lane $laneNum does not exist: $xfFolder" "red"
 					continue
 				}
-				
+
 				# Use the server's IP for net time
 				try { $serverIP = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1 -ErrorAction Stop).IPv4Address.IPAddressToString }
 				catch { $serverIP = $env:COMPUTERNAME }
-				
+
 				# Always-available lane path
 				$remoteShareRoot = "\\$machine\Storeman\Temp"
 				if (-not (Test-Path $remoteShareRoot))
@@ -154,34 +154,34 @@ function Send_TIME_Sync_Lanes_Worker
 					Write_Log "Lane share not reachable: $remoteShareRoot" "yellow"
 					throw "Storeman\Temp not reachable"
 				}
-				
+
 				$remoteBatPath = Join-Path $remoteShareRoot "sync_time.bat"
-				
+
 				# Create local BAT (ASCII)
 				$batContent = "@echo off`r`nnet time \\$serverIP /set /yes"
 				$localBatPath = Join-Path $TempDir ("sync_time_{0}.bat" -f $laneNum)
 				Set-Content -Path $localBatPath -Value $batContent -Encoding Ascii
-				
+
 				# Copy to lane
 				Copy-Item -Path $localBatPath -Destination $remoteBatPath -Force -ErrorAction Stop
 				Remove-Item -Path $localBatPath -Force -ErrorAction SilentlyContinue
 				Write_Log "Copied sync_time.bat to \\$machine\Storeman\Temp for lane $laneNum." "green"
-				
+
 				# Drop exec trigger in XF (ASCII)
 				$execFilePath = Join-Path $xfFolder "exec_time_sync.txt"
 				$execContent = "@EXEC(Run='" + (Join-Path $script:PrimaryStoremanRoot 'Temp\sync_time.bat') + "')"
 				Set-Content -Path $execFilePath -Value $execContent -Encoding Ascii -ErrorAction Stop
-				
+
 				# Clear archive bit on exec trigger (so SMS processes it cleanly)
 				try { attrib -a -r "$execFilePath" 2>$null | Out-Null }
 				catch { }
-				
+
 				Write_Log "Created @EXEC trigger in XF folder for lane $laneNum (Storeman\Temp path)." "green"
-				
+
 				# Optional: cleanup remote bat after a bit
 				Start-Sleep -Seconds 10
 				Remove-Item -Path $remoteBatPath -Force -ErrorAction SilentlyContinue
-				
+
 				$success = $true
 			}
 			catch
@@ -189,7 +189,7 @@ function Send_TIME_Sync_Lanes_Worker
 				Write_Log "File/@EXEC fallback failed for lane ${laneNum}: $_" "red"
 			}
 		}
-		
+
 		# -------- TERTIARY: MAILSLOT --------
 		if (-not $success)
 		{
@@ -212,12 +212,12 @@ function Send_TIME_Sync_Lanes_Worker
 				Write_Log "Exception during mailslot send (final fallback): $_" "yellow"
 			}
 		}
-		
+
 		if (-not $success)
 		{
 			Write_Log "All methods failed for lane $laneNum!" "red"
 		}
 	}
-	
+
 	Write_Log "`r`n==================== Ending Time Sync ====================`r`n" "blue"
 }

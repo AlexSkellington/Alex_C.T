@@ -28,25 +28,25 @@ function Get_All_Lanes_Database_Info
 		[string]$LaneNumber,
 		[switch]$RefreshCache
 	)
-	
+
 	# Ensure bucket exists (unchanged behavior)
 	if (-not $script:FunctionResults.ContainsKey('LaneDatabaseInfo'))
 	{
 		$script:FunctionResults['LaneDatabaseInfo'] = @{ }
 	}
 	$LaneDatabaseInfo = $script:FunctionResults['LaneDatabaseInfo']
-	
+
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	if (-not $LaneNumToMachineName) { return $null }
-	
+
 	# Guard against null OfficePath causing Join-Path errors (fast fail, no guessing)
 	if ([string]::IsNullOrWhiteSpace($OfficePath)) { return $null }
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Per-function cache file (only run queries if memory/file data is missing or -RefreshCache is used)
 	# ------------------------------------------------------------------------------------------------
 	$CachePath = Join-Path $script:SetupFiles 'Get_All_Lanes_Database_Info.txt'
-	
+
 	# Normalize LaneNumber if provided (keep it simple + safe)
 	$RequestedLane = $null
 	if ($LaneNumber)
@@ -54,7 +54,7 @@ function Get_All_Lanes_Database_Info
 		$digits = ($LaneNumber -replace '[^\d]', '')
 		if ($digits) { $RequestedLane = $digits.PadLeft(3, '0') }
 	}
-	
+
 	if (-not $RefreshCache)
 	{
 		# Reuse in-memory data first
@@ -66,7 +66,7 @@ function Get_All_Lanes_Database_Info
 		{
 			return
 		}
-		
+
 		# Reuse file cache if present
 		if ($CachePath -and (Test-Path $CachePath))
 		{
@@ -89,7 +89,7 @@ function Get_All_Lanes_Database_Info
 				}
 			}
 			catch { }
-			
+
 			if ($RequestedLane)
 			{
 				if ($LaneDatabaseInfo.ContainsKey($RequestedLane)) { return $LaneDatabaseInfo[$RequestedLane] }
@@ -100,45 +100,45 @@ function Get_All_Lanes_Database_Info
 			}
 		}
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Memory/file cache is missing/unreadable, or caller requested -RefreshCache => query lanes ONCE, then write file
 	# ------------------------------------------------------------------------------------------------
 	$lanesToProcess = @()
-	
+
 	# Always build a full cache when missing
 	$lanesToProcess += $LaneNumToMachineName.Keys
-	
+
 	# Ensure requested lane is included even if it would normally be skipped in "full mode"
 	if ($RequestedLane) { $lanesToProcess = @($RequestedLane) + $lanesToProcess }
-	
+
 	# De-dupe + keep only numeric 3-digit lanes
 	$lanesToProcess = $lanesToProcess | ForEach-Object {
 		$d = ($_.ToString() -replace '[^\d]', '')
 		if ($d) { $d.PadLeft(3, '0') }
 	} | Where-Object { $_ } | Select-Object -Unique
-	
+
 	$changed = $false
-	
+
 	foreach ($laneNumber in $lanesToProcess)
 	{
 		# If cached already in memory, skip
 		if ($LaneDatabaseInfo.ContainsKey($laneNumber)) { continue }
-		
+
 		# Skip unwanted lanes for full mode (same logic as before)
 		# IMPORTANT: If the user explicitly requested a lane, do NOT skip it.
 		if (-not $RequestedLane -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
 		if ($RequestedLane -and $laneNumber -ne $RequestedLane -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
-		
+
 		$machineName = $LaneNumToMachineName[$laneNumber]
 		if (-not $machineName) { continue }
-		
+
 		# ---------- 1. Try LOCAL Startup file (INI\STARTUP.###) ----------
 		$startupLocalPath = Join-Path $OfficePath "INI\STARTUP.$($laneNumber.PadLeft(3, '0'))"
 		$startupIniPath = $null
 		$content = $null
 		$source = $null
-		
+
 		if (Test-Path $startupLocalPath)
 		{
 			try
@@ -148,7 +148,7 @@ function Get_All_Lanes_Database_Info
 			}
 			catch { $content = $null }
 		}
-		
+
 		# ---------- 2. Fallback: Try REMOTE Startup.ini ----------
 		if (-not $content)
 		{
@@ -177,12 +177,12 @@ function Get_All_Lanes_Database_Info
 				catch { $content = $null }
 			}
 		}
-		
+
 		if (-not $content) { continue }
-		
+
 		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
 		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
-		
+
 		if ($dbNameLine)
 		{
 			$dbName = ($dbNameLine -replace '^DBNAME=', '').Trim()
@@ -191,7 +191,7 @@ function Get_All_Lanes_Database_Info
 		{
 			continue
 		}
-		
+
 		if ($dbServerLine)
 		{
 			$dbServerRaw = ($dbServerLine -replace '^DBSERVER=', '').Trim()
@@ -200,7 +200,7 @@ function Get_All_Lanes_Database_Info
 		{
 			$dbServerRaw = ""
 		}
-		
+
 		# -------------- PATCH: Remove trailing backslash unless a named instance is present --------------
 		if ($dbServerRaw -match '^[^\\]+\\$')
 		{
@@ -216,7 +216,7 @@ function Get_All_Lanes_Database_Info
 			$dbServer = $dbServerRaw
 		}
 		# END PATCH --------------------------------------------------------------------------------------
-		
+
 		# Parse instance name for Named Pipes/TCP logic
 		$serverName = $dbServer
 		$instanceName = $null
@@ -236,7 +236,7 @@ function Get_All_Lanes_Database_Info
 			$serverName = $dbServer
 			$instanceName = $null
 		}
-		
+
 		# Build connection strings
 		if ($instanceName -and $instanceName.ToUpper() -ne "MSSQLSERVER")
 		{
@@ -248,11 +248,11 @@ function Get_All_Lanes_Database_Info
 			$namedPipes = "np:\\$serverName\pipe\sql\query"
 			$tcpServer = $serverName
 		}
-		
+
 		$tcpConnStr = "Server=$tcpServer;Database=$dbName;Integrated Security=True;"
 		$namedPipesConnStr = "Server=$namedPipes;Database=$dbName;Integrated Security=True;"
 		$simpleConnStr = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
-		
+
 		$laneInfo = @{
 			'MachineName'	    = $machineName
 			'DBName'		    = $dbName
@@ -266,11 +266,11 @@ function Get_All_Lanes_Database_Info
 			'TcpConnStr'	    = $tcpConnStr
 			'Source'		    = $source
 		}
-		
+
 		$LaneDatabaseInfo[$laneNumber] = $laneInfo
 		$changed = $true
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Write cache ONCE (only if we found anything new)
 	#   IMPORTANT: Write LaneDatabaseInfo ordered by lane number for clean file output.
@@ -286,17 +286,17 @@ function Get_All_Lanes_Database_Info
 			{
 				$orderedLaneDb[$k] = $LaneDatabaseInfo[$k]
 			}
-			
+
 			$cacheOut = [pscustomobject]@{
 				LastUpdated = (Get-Date).ToString('o')
 				LaneDatabaseInfo = $orderedLaneDb
 			}
-			
+
 			($cacheOut | ConvertTo-Json -Depth 12) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
 		}
 		catch { }
 	}
-	
+
 	# Return behavior (same intent as original):
 	if ($RequestedLane)
 	{

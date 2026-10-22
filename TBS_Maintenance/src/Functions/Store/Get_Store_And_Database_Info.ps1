@@ -33,7 +33,7 @@ function Get_Store_And_Database_Info
 		[string]$SystemIniPath,
 		[switch]$RefreshCache
 	)
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Cache (per-function file) - only re-run if memory/file data is missing/unreadable or -RefreshCache is used
 	# ------------------------------------------------------------------------------------------------
@@ -43,9 +43,9 @@ function Get_Store_And_Database_Info
 		'SMSVersionFull', 'StampDate', 'StampTime', 'KeyNumber',
 		'DBSERVER', 'DBNAME', 'ConnectionString', 'ResolvedWinIniPath'
 	)
-	
+
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
-	
+
 	# CHANGE: Wrap the whole function in try/finally so GUI labels update even if we "return" on cache hit
 	try
 	{
@@ -62,7 +62,7 @@ function Get_Store_And_Database_Info
 			}
 		}
 		catch { $availableSqlModule = $null }
-		
+
 		if (-not $RefreshCache)
 		{
 			# Reuse in-memory values if they are already populated for this launch
@@ -83,7 +83,7 @@ function Get_Store_And_Database_Info
 			{
 				return
 			}
-			
+
 			# Reuse file cache if present
 			if ($CachePath -and (Test-Path $CachePath))
 			{
@@ -106,7 +106,7 @@ function Get_Store_And_Database_Info
 				catch { }
 			}
 		}
-		
+
 		if ([string]::IsNullOrWhiteSpace($availableSqlModule) -or $availableSqlModule -eq 'N/A')
 		{
 			try
@@ -131,19 +131,19 @@ function Get_Store_And_Database_Info
 			}
 		}
 		$script:FunctionResults['SqlModuleName'] = $availableSqlModule
-		
+
 		# ------------------------------------------------------------------------------------------------
 		# Initialize results with N/A for every expected property (+ resolved WIN.INI path)
 		# ------------------------------------------------------------------------------------------------
 		foreach ($f in $fields) { $script:FunctionResults[$f] = 'N/A' }
-		
+
 		# ==================================================================================================
 		# Parse Startup.ini first to learn STORE and TER and to derive likely DBs folder(s)
 		# ==================================================================================================
 		$startupStore = $null
 		$startupTer = $null
 		$probableDbsRoots = @()
-		
+
 		if ($StartupIniPath -and (Test-Path $StartupIniPath))
 		{
 			try
@@ -152,7 +152,7 @@ function Get_Store_And_Database_Info
 				{
 					$t = $line.Trim()
 					if ($t.StartsWith(';')) { continue }
-					
+
 					if ($t -match '^\s*STORE\s*=\s*(\d+)\s*$')
 					{
 						$startupStore = ($Matches[1] -as [int]).ToString('000')
@@ -162,7 +162,7 @@ function Get_Store_And_Database_Info
 						$startupTer = ($Matches[1] -as [int]).ToString('000')
 					}
 				}
-				
+
 				if ($startupStore)
 				{
 					$script:FunctionResults['StoreNumber'] = $startupStore
@@ -172,7 +172,7 @@ function Get_Store_And_Database_Info
 				{
 					Write_Log "STORE= not found in Startup.ini. Will still attempt WIN.INI path resolution." "yellow"
 				}
-				
+
 				$storemanRoot = Split-Path -Path $StartupIniPath -Parent
 				if ($storemanRoot)
 				{
@@ -190,19 +190,19 @@ function Get_Store_And_Database_Info
 		{
 			Write_Log "Startup.ini path not provided or not found. Skipping STORE/TER pre-resolution." "yellow"
 		}
-		
+
 		foreach ($fallback in $script:StoremanOfficeDbsFallbacks)
 		{
 			if (Test-Path -LiteralPath $fallback) { $probableDbsRoots += $fallback }
 		}
 		$probableDbsRoots = $probableDbsRoots | Sort-Object -Unique
-		
+
 		# ==================================================================================================
 		# Resolve correct INFO_*_WIN.INI matching Startup.ini STORE/TER
 		# ==================================================================================================
 		$resolvedWinIni = $null
 		$needResolve = $true
-		
+
 		if ($WinIniPath -and (Test-Path $WinIniPath))
 		{
 			$name = [System.IO.Path]::GetFileName($WinIniPath)
@@ -227,7 +227,7 @@ function Get_Store_And_Database_Info
 				Write_Log "Provided WIN.INI name '$name' does not match expected pattern 'INFO_SSSLLL_WIN.INI'. Will search for the correct one." "yellow"
 			}
 		}
-		
+
 		if ($needResolve -and $probableDbsRoots.Count -gt 0)
 		{
 			try
@@ -236,21 +236,21 @@ function Get_Store_And_Database_Info
 				{
 					Get-ChildItem -LiteralPath $root -Filter 'INFO_*_WIN.INI' -File -ErrorAction SilentlyContinue
 				}
-				
+
 				$scored = @(
 					foreach ($f in $candidates)
 					{
 						$m = [System.Text.RegularExpressions.Regex]::Match($f.Name, '^INFO_(\d{3})(\d{3})_WIN\.INI$')
 						if (-not $m.Success) { continue }
-						
+
 						$s = $m.Groups[1].Value
 						$t = $m.Groups[2].Value
-						
+
 						$score = 0
 						if ($startupStore -and $s -eq $startupStore) { $score += 10 }
 						if ($startupTer -and $t -eq $startupTer) { $score += 5 }
 						if (-not $startupTer -and $t -eq '901') { $score += 3 }
-						
+
 						[PSCustomObject]@{
 							File  = $f
 							Store = $s
@@ -260,7 +260,7 @@ function Get_Store_And_Database_Info
 						}
 					}
 				) | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, @{ Expression = 'Age'; Descending = $true }
-				
+
 				if ($scored -and $scored[0].Score -gt 0)
 				{
 					$resolvedWinIni = $scored[0].File.FullName
@@ -279,7 +279,7 @@ function Get_Store_And_Database_Info
 				Write_Log "Error while resolving WIN.INI: $($_.Exception.Message)" "red"
 			}
 		}
-		
+
 		if ($resolvedWinIni)
 		{
 			$WinIniPath = $resolvedWinIni
@@ -297,7 +297,7 @@ function Get_Store_And_Database_Info
 				Write_Log "Proceeding with provided WIN.INI (unvalidated): $WinIniPath" "yellow"
 			}
 		}
-		
+
 		# ------------------------------------------------------------------------------------------------
 		# Extract Store Info from WIN.INI
 		# ------------------------------------------------------------------------------------------------
@@ -309,11 +309,11 @@ function Get_Store_And_Database_Info
 				$trimmed = $line.Trim()
 				if ($trimmed -match '^\[(.+)\]$') { $currentSection = $Matches[1]; continue }
 				if ($trimmed -notmatch "=" -or $trimmed.StartsWith(";")) { continue }
-				
+
 				$parts = $trimmed -split "=", 2
 				$key = $parts[0].Trim()
 				$value = $parts[1].Trim()
-				
+
 				switch ($currentSection)
 				{
 					"ORIGIN" {
@@ -351,7 +351,7 @@ function Get_Store_And_Database_Info
 				Write_Log "No store info file (INFO_*_WIN.INI) found at $WinIniPath" "red"
 			}
 		}
-		
+
 		# ------------------------------------------------------------------------------------------------
 		# Fallback: StoreName from system.ini ([SMS] Name=...)
 		# ------------------------------------------------------------------------------------------------
@@ -376,13 +376,13 @@ function Get_Store_And_Database_Info
 				}
 			}
 		}
-		
+
 		# ------------------------------------------------------------------------------------------------
 		# Extract SQL Server/Database from SMSStart INI
 		# ------------------------------------------------------------------------------------------------
 		$dbServer = $null
 		$dbName = $null
-		
+
 		if ($SmsStartIniPath -and (Test-Path $SmsStartIniPath))
 		{
 			foreach ($line in Get-Content -LiteralPath $SmsStartIniPath)
@@ -397,7 +397,7 @@ function Get_Store_And_Database_Info
 				if ($dbServer -and $dbName) { break }
 			}
 		}
-		
+
 		# ------------------------------------------------------------------------------------------------
 		# Fallback: Startup.ini for DBSERVER/DBNAME
 		# ------------------------------------------------------------------------------------------------
@@ -417,7 +417,7 @@ function Get_Store_And_Database_Info
 			if (-not $dbServer) { $dbServer = "localhost" }
 			if (-not $dbName) { $dbName = "STORESQL" }
 		}
-		
+
 		# ------------------------------------------------------------------------------------------------
 		# Finalize connection string
 		# ------------------------------------------------------------------------------------------------
@@ -428,7 +428,7 @@ function Get_Store_And_Database_Info
 			$script:FunctionResults['ConnectionString'] =
 			"Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True;Connect Timeout=5;Application Name=TBS_Maintenance_Script"
 		}
-		
+
 		# ------------------------------------------------------------------------------------------------
 		# Cache write (store EVERYTHING this function collects)
 		# ------------------------------------------------------------------------------------------------
@@ -443,13 +443,13 @@ function Get_Store_And_Database_Info
 					if ($null -eq $v -or ($v -is [string] -and [string]::IsNullOrWhiteSpace($v))) { $v = 'N/A' }
 					$results[$k] = $v
 				}
-				
+
 				$cacheOut = [ordered]@{
 					LastUpdated = (Get-Date).ToString('o')
 					StoreNumber = $script:FunctionResults['StoreNumber']
 					Results	    = $results
 				}
-				
+
 				($cacheOut | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
 			}
 			catch { }
@@ -465,7 +465,7 @@ function Get_Store_And_Database_Info
 		try
 		{
 			$anyLabelChanged = $false
-			
+
 			if ($storeNumberLabel -ne $null)
 			{
 				$storeNumberLabel.Text = "Store Number: $($script:FunctionResults['StoreNumber'])"
@@ -506,7 +506,7 @@ function Get_Store_And_Database_Info
 				$smsVersionLabel.Text = "SMS Version: $($script:FunctionResults['SMSVersionFull'])"
 				$anyLabelChanged = $true
 			}
-			
+
 			if ($anyLabelChanged)
 			{
 				if ($form -ne $null) { $form.Refresh() }

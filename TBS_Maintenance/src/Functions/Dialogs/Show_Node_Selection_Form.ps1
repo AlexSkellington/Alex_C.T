@@ -31,10 +31,10 @@ function Show_Node_Selection_Form
 		# NEW: cap lane selection at 1 (optional)
 		[int]$LaneSelectionLimit = 0 # NEW: cap lane selection at N (0 = unlimited)
 	)
-	
+
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	# Normalize exclusions (names lowercased; lanes as 3-digit)
 	$__ex_names = @()
 	$__ex_lanes = @()
@@ -56,7 +56,7 @@ function Show_Node_Selection_Form
 		$__ex_names = $__ex_names | Select-Object -Unique
 		$__ex_lanes = $__ex_lanes | Select-Object -Unique
 	}
-	
+
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = $Title
 	$form.Size = New-Object System.Drawing.Size(430, 450)
@@ -64,14 +64,14 @@ function Show_Node_Selection_Form
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
-	
+
 	$tabs = New-Object System.Windows.Forms.TabControl
 	$tabs.Location = New-Object System.Drawing.Point(10, 10)
 	$tabs.Size = New-Object System.Drawing.Size(390, 320)
 	$form.Controls.Add($tabs)
-	
+
 	$tabControls = @{ }
-	
+
 	# ----- Lanes Tab -----
 	if ("Lane" -in $NodeTypes)
 	{
@@ -84,13 +84,13 @@ function Show_Node_Selection_Form
 		$tabLanes.Controls.Add($clbLanes)
 		$tabs.TabPages.Add($tabLanes)
 		$tabControls["Lanes"] = $clbLanes
-		
+
 		# Load lane node data from FunctionResults
 		$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 		$LaneMachineLabels = $script:FunctionResults['LaneMachineLabels']
 		$LaneMachinePath = $script:FunctionResults['LaneMachinePath']
 		$LaneMachineToServerPath = $script:FunctionResults['LaneMachineToServerPath']
-		
+
 		$allLanes = @()
 		if ($script:FunctionResults.ContainsKey('LaneMachineNames') -and $script:FunctionResults['LaneMachineNames'].Count -gt 0)
 		{
@@ -101,7 +101,7 @@ function Show_Node_Selection_Form
 			$laneFolders = Get-ChildItem -Path $OfficePath -Directory -Filter "XF${StoreNumber}0*"
 			if ($laneFolders) { $allLanes = $laneFolders | ForEach-Object { $_.Name.Substring($_.Name.Length - 3, 3) } }
 		}
-		
+
 		$sortedLanes = $allLanes | Sort-Object
 		foreach ($laneMachine in $sortedLanes)
 		{
@@ -111,13 +111,13 @@ function Show_Node_Selection_Form
 			{
 				if ($LaneNumToMachineName[$key] -eq $laneMachine -and $key -match '^\d{3}$') { $laneNum = $key; break }
 			}
-			
+
 			# Skip excluded by machine name or lane number
 			$__skip = $false
 			if ($laneMachine -and ($__ex_names -contains $laneMachine.ToLower())) { $__skip = $true }
 			elseif ($laneNum -and ($__ex_lanes -contains $laneNum)) { $__skip = $true }
 			if ($__skip) { continue }
-			
+
 			# Add item
 			$obj = [PSCustomObject]@{
 				LaneNumber  = $laneNum
@@ -130,7 +130,7 @@ function Show_Node_Selection_Form
 			$obj | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.DisplayName } -Force
 			$clbLanes.Items.Add($obj) | Out-Null
 		}
-		
+
 		# --- Enforce optional selection cap for lanes (single or N) ---
 		$__laneCap = if ($SingleLaneOnly) { 1 }
 		elseif ($LaneSelectionLimit -gt 0) { [int]$LaneSelectionLimit }
@@ -159,7 +159,7 @@ function Show_Node_Selection_Form
 				})
 		}
 	}
-	
+
 	# ----- Scales Tab -----
 	if ("Scale" -in $NodeTypes)
 	{
@@ -172,7 +172,7 @@ function Show_Node_Selection_Form
 		$tabScales.Controls.Add($clbScales)
 		$tabs.TabPages.Add($tabScales)
 		$tabControls["Scales"] = $clbScales
-		
+
 		$allScales = @()
 		if ($script:FunctionResults.ContainsKey('ScaleCodeToIPInfo'))
 		{
@@ -180,7 +180,7 @@ function Show_Node_Selection_Form
 			if ($OnlyBizerbaScales) { $allScales = $allScales | Where-Object { $_.ScaleBrand -match 'bizerba' } }
 		}
 		$sortedScales = $allScales | Sort-Object { [int]($_.ScaleCode) }
-		
+
 		$uniqueScaleIPs = @{ }
 		$dedupedScales = @()
 		foreach ($scale in $sortedScales)
@@ -194,7 +194,7 @@ function Show_Node_Selection_Form
 				$dedupedScales += $scale
 			}
 		}
-		
+
 		foreach ($scale in $dedupedScales)
 		{
 			# Skip excluded by name/code
@@ -202,7 +202,7 @@ function Show_Node_Selection_Form
 			if ($scale.ScaleName -and ($__ex_names -contains ($scale.ScaleName.ToLower()))) { $__skip = $true }
 			elseif ($scale.ScaleCode -and ($__ex_lanes -contains ('{0:D3}' -f ([int]$scale.ScaleCode)))) { $__skip = $true }
 			if ($__skip) { continue }
-			
+
 			$ip = if ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
 			else { "" }
 			$displayName = "$($scale.ScaleName) [$ip]"
@@ -221,7 +221,7 @@ function Show_Node_Selection_Form
 			$clbScales.Items.Add($scaleObj) | Out-Null
 		}
 	}
-	
+
 	# ----- Backoffices Tab -----
 	if ("Backoffice" -in $NodeTypes)
 	{
@@ -234,32 +234,32 @@ function Show_Node_Selection_Form
 		$tabBO.Controls.Add($clbBO)
 		$tabs.TabPages.Add($tabBO)
 		$tabControls["Backoffices"] = $clbBO
-		
+
 		$boDict = if ($script:FunctionResults.ContainsKey('BackofficeNumToMachineName')) { $script:FunctionResults['BackofficeNumToMachineName'] }
 		else { @{ } }
 		$boLabels = $script:FunctionResults['BackofficeNumToLabel']
 		$boPaths = $script:FunctionResults['BackofficeNumToPath']
-		
+
 		$seenBonumbers = @{ }
 		foreach ($boNumKey in $boDict.Keys | Sort-Object)
 		{
 			if ($boNumKey -match '(\d{3})')
 			{
 				$bonum = $matches[1]
-				
+
 				# Skip excluded by machine name or BO number
 				$__skip = $false
 				$machineName = $boDict[$boNumKey]
 				if ($machineName -and ($__ex_names -contains $machineName.ToLower())) { $__skip = $true }
 				elseif ($__ex_lanes -contains $bonum) { $__skip = $true }
 				if ($__skip) { continue }
-				
+
 				if (-not $seenBonumbers.ContainsKey($bonum))
 				{
 					$seenBonumbers[$bonum] = $true
 					$label = $boLabels[$boNumKey]
 					$path = $boPaths[$boNumKey]
-					
+
 					$obj = [PSCustomObject]@{
 						BONumber    = $bonum
 						MachineName = $machineName
@@ -273,19 +273,19 @@ function Show_Node_Selection_Form
 			}
 		}
 	}
-	
+
 	$btnSelectAll = New-Object System.Windows.Forms.Button
 	$btnSelectAll.Location = New-Object System.Drawing.Point(20, 340)
 	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
 	$btnSelectAll.Text = "Select All"
 	$btnSelectAll.BackColor = [System.Drawing.SystemColors]::Control
-	
+
 	$btnDeselectAll = New-Object System.Windows.Forms.Button
 	$btnDeselectAll.Location = New-Object System.Drawing.Point(220, 340)
 	$btnDeselectAll.Size = New-Object System.Drawing.Size(180, 32)
 	$btnDeselectAll.Text = "Deselect All"
 	$btnDeselectAll.BackColor = [System.Drawing.SystemColors]::Control
-	
+
 	$setBtnColor = {
 		param ($btn,
 			$state)
@@ -298,7 +298,7 @@ function Show_Node_Selection_Form
 	}
 	&$setBtnColor $btnSelectAll 0
 	&$setBtnColor $btnDeselectAll 0
-	
+
 	# --- SINGLE TAB SELECT ALL LOGIC ---
 	if ($tabs.TabPages.Count -eq 1)
 	{
@@ -342,7 +342,7 @@ function Show_Node_Selection_Form
 		$tabSelectState = @{ }
 		$lastSelectTabIndex = $null
 		$selectAllYellowTabIndex = $null
-		
+
 		$btnSelectAll.Add_Click({
 				$tabName = $tabs.SelectedTab.Text
 				$clb = $tabControls[$tabName]
@@ -500,10 +500,10 @@ function Show_Node_Selection_Form
 				&$setBtnColor $btnDeselectAll 0
 			})
 	}
-	
+
 	$form.Controls.Add($btnSelectAll)
 	$form.Controls.Add($btnDeselectAll)
-	
+
 	# OK Button
 	$btnOK = New-Object System.Windows.Forms.Button
 	$btnOK.Text = "OK"
@@ -512,7 +512,7 @@ function Show_Node_Selection_Form
 	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 	$form.AcceptButton = $btnOK
 	$form.Controls.Add($btnOK)
-	
+
 	# Cancel Button
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
@@ -522,11 +522,11 @@ function Show_Node_Selection_Form
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
 	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $form }
-	
+
 	# ----- Show form & collect selections -----
 	$dialogResult = $form.ShowDialog()
 	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
-	
+
 	$result = @{ }
 	if ("Lane" -in $NodeTypes)
 	{
@@ -579,7 +579,7 @@ function Show_Node_Selection_Form
 		}
 		$result.Backoffices = $selectedBONums
 	}
-	
+
 	# Basic validation
 	if ($result.Keys.Count -eq 0 -or ($result.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum -eq 0)
 	{
@@ -588,7 +588,7 @@ function Show_Node_Selection_Form
 		Remove-Variable -Name __laneLimitWarned -Scope Script -ErrorAction SilentlyContinue
 		return $null
 	}
-	
+
 	Remove-Variable -Name __laneLimitWarned -Scope Script -ErrorAction SilentlyContinue
 	return $result
 }

@@ -13,7 +13,7 @@ $bannerPanel.add_Paint({
 		try
 		{
 			$rect = New-Object System.Drawing.Rectangle(0, 0, $s.Width, $s.Height)
-			
+
 			# Main gradient
 			$brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
 				$rect,
@@ -23,7 +23,7 @@ $bannerPanel.add_Paint({
 			)
 			$e.Graphics.FillRectangle($brush, $rect)
 			$brush.Dispose()
-			
+
 			# Left accent stripe (colorful indicator)
 			$accentRect = New-Object System.Drawing.Rectangle(0, 0, 4, $s.Height)
 			$accentBrush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
@@ -34,7 +34,7 @@ $bannerPanel.add_Paint({
 			)
 			$e.Graphics.FillRectangle($accentBrush, $accentRect)
 			$accentBrush.Dispose()
-			
+
 			# Subtle bottom line
 			$pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(60, 60, 60))
 			$e.Graphics.DrawLine($pen, 4, $s.Height - 1, $s.Width, $s.Height - 1)
@@ -60,7 +60,7 @@ $appIconPanel.add_Paint({
 			$e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
 			$cx = $s.Width / 2.0
 			$cy = $s.Height / 2.0
-			
+
 			# Blue disc (vertical gradient for a little depth)
 			$disc = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
 				(New-Object System.Drawing.Rectangle(1, 1, $s.Width - 2, $s.Height - 2)),
@@ -69,7 +69,7 @@ $appIconPanel.add_Paint({
 				0.0)
 			$e.Graphics.FillEllipse($disc, 1, 1, $s.Width - 2, $s.Height - 2)
 			$disc.Dispose()
-			
+
 			# White hex nut (flat-top hexagon)
 			$r = 7.5
 			$hex = New-Object System.Drawing.Drawing2D.GraphicsPath
@@ -85,7 +85,7 @@ $appIconPanel.add_Paint({
 			$e.Graphics.FillPath($white, $hex)
 			$hex.Close()
 			$hex.Dispose()
-			
+
 			# Punch out the center so it reads as a nut
 			$punch = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 122, 204))
 			$e.Graphics.FillEllipse($punch, $cx - 3.2, $cy - 3.2, 6.4, 6.4)

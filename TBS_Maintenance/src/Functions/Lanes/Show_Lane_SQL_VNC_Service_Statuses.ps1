@@ -15,7 +15,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 {
 	$storeNumber = $script:FunctionResults['StoreNumber']
 	$laneMap = $script:FunctionResults['LaneNumToMachineName']
-	
+
 	if (-not $laneMap -or $laneMap.Count -eq 0)
 	{
 		[System.Windows.Forms.MessageBox]::Show(
@@ -26,7 +26,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 		) | Out-Null
 		return
 	}
-	
+
 	$selectedLanes = @($laneMap.Keys | Where-Object { $_ -and $laneMap.ContainsKey([string]$_) } | Sort-Object { [int]$_ })
 	if (-not $selectedLanes -or $selectedLanes.Count -eq 0)
 	{
@@ -38,7 +38,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 		) | Out-Null
 		return
 	}
-	
+
 	$formSvc = New-Object System.Windows.Forms.Form
 	$formSvc.Text = "Lane SQL / VNC Services"
 	$formSvc.StartPosition = 'CenterParent'
@@ -46,7 +46,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	$formSvc.MinimumSize = New-Object System.Drawing.Size(860, 420)
 	$formSvc.MaximizeBox = $true
 	$formSvc.MinimizeBox = $false
-	
+
 	$layoutSvc = New-Object System.Windows.Forms.TableLayoutPanel
 	$layoutSvc.Dock = 'Fill'
 	$layoutSvc.ColumnCount = 1
@@ -55,13 +55,13 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	[void]$layoutSvc.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 	[void]$layoutSvc.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	$formSvc.Controls.Add($layoutSvc)
-	
+
 	$lblSvcHeader = New-Object System.Windows.Forms.Label
 	$lblSvcHeader.Text = ("Store {0} - SQL and VNC service status for all {1} lane(s)" -f $storeNumber, $selectedLanes.Count)
 	$lblSvcHeader.AutoSize = $true
 	$lblSvcHeader.Margin = New-Object System.Windows.Forms.Padding(12, 12, 12, 6)
 	$layoutSvc.Controls.Add($lblSvcHeader, 0, 0)
-	
+
 	$gridSvc = New-Object System.Windows.Forms.DataGridView
 	$gridSvc.Dock = 'Fill'
 	$gridSvc.AllowUserToAddRows = $false
@@ -86,7 +86,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	$gridSvc.Columns["VncService"].FillWeight = 120
 	$gridSvc.Columns["VncStatus"].FillWeight = 85
 	$layoutSvc.Controls.Add($gridSvc, 0, 1)
-	
+
 	$pnlSvcBottom = New-Object System.Windows.Forms.TableLayoutPanel
 	$pnlSvcBottom.Dock = 'Fill'
 	$pnlSvcBottom.ColumnCount = 1
@@ -96,14 +96,14 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	[void]$pnlSvcBottom.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	[void]$pnlSvcBottom.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	$layoutSvc.Controls.Add($pnlSvcBottom, 0, 2)
-	
+
 	$lblSvcStatus = New-Object System.Windows.Forms.Label
 	$lblSvcStatus.Text = "Checking all lanes..."
 	$lblSvcStatus.AutoSize = $true
 	$lblSvcStatus.Anchor = 'Left'
 	$lblSvcStatus.Margin = New-Object System.Windows.Forms.Padding(0, 8, 12, 0)
 	$pnlSvcBottom.Controls.Add($lblSvcStatus, 0, 0)
-	
+
 	$pnlSvcActions = New-Object System.Windows.Forms.FlowLayoutPanel
 	$pnlSvcActions.AutoSize = $true
 	$pnlSvcActions.WrapContents = $false
@@ -112,12 +112,12 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	$pnlSvcActions.Dock = 'Fill'
 	$pnlSvcActions.Margin = New-Object System.Windows.Forms.Padding(0, 4, 0, 0)
 	$pnlSvcBottom.Controls.Add($pnlSvcActions, 0, 1)
-	
+
 	$btnSvcRefresh = New-Object System.Windows.Forms.Button
 	$btnSvcRefresh.Text = "Refresh All"
 	$btnSvcRefresh.Size = New-Object System.Drawing.Size(110, 32)
 	$pnlSvcActions.Controls.Add($btnSvcRefresh)
-	
+
 	$btnSvcClose = New-Object System.Windows.Forms.Button
 	$btnSvcClose.Text = "Close"
 	$btnSvcClose.Size = New-Object System.Drawing.Size(110, 32)
@@ -125,20 +125,20 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	$pnlSvcActions.Controls.Add($btnSvcClose)
 	$formSvc.AcceptButton = $btnSvcClose
 	$formSvc.CancelButton = $btnSvcClose
-	
+
 	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $formSvc }
-	
+
 	$svcJobs = @{ }
 	$svcActionJobs = @{ }
 	$rowMap = @{ }
 	$totalRows = $selectedLanes.Count
-	
+
 	$startActionJobForSelectedRow = {
 		param (
 			[string]$ServiceKind,
 			[string]$RequestedAction
 		)
-		
+
 		if (-not $gridSvc.SelectedRows -or $gridSvc.SelectedRows.Count -eq 0)
 		{
 			[System.Windows.Forms.MessageBox]::Show(
@@ -149,10 +149,10 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			) | Out-Null
 			return
 		}
-		
+
 		$row = $gridSvc.SelectedRows[0]
 		if (-not $row) { return }
-		
+
 		$laneKey = [string]$row.Cells["Lane"].Value
 		$machineName = [string]$row.Cells["Machine"].Value
 		$expectedSqlService = [string]$row.Cells["SqlService"].Value
@@ -160,7 +160,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 		else { [string]$row.Cells["VncService"].Value }
 		$statusColumn = if ($ServiceKind -eq 'SQL') { 'SqlStatus' }
 		else { 'VncStatus' }
-		
+
 		if ([string]::IsNullOrWhiteSpace($laneKey) -or [string]::IsNullOrWhiteSpace($machineName)) { return }
 		if ($svcActionJobs.ContainsKey($laneKey))
 		{
@@ -172,7 +172,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			) | Out-Null
 			return
 		}
-		
+
 		if ([string]::IsNullOrWhiteSpace($serviceName) -or $serviceName -in @('Checking...', 'Not Found', 'Unavailable'))
 		{
 			[System.Windows.Forms.MessageBox]::Show(
@@ -183,10 +183,10 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			) | Out-Null
 			return
 		}
-		
+
 		$row.Cells[$statusColumn].Value = "$RequestedAction..."
 		$lblSvcStatus.Text = ("{0} {1} on lane {2}..." -f $RequestedAction, $ServiceKind, $laneKey)
-		
+
 		$job = Start-Job -Name ("LaneServiceAction_{0}_{1}_{2}" -f $machineName, $ServiceKind, $RequestedAction) -ArgumentList $laneKey, $machineName, $expectedSqlService, $ServiceKind, $serviceName, $RequestedAction -ScriptBlock {
 			param (
 				[string]$Lane,
@@ -196,14 +196,14 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				[string]$ServiceName,
 				[string]$RequestedAction
 			)
-			
+
 			$getServiceSnapshot = {
 				param (
 					[string]$SnapshotLane,
 					[string]$SnapshotMachine,
 					[string]$SnapshotExpectedSqlService
 				)
-				
+
 				$result = [ordered]@{
 					Lane	   = $SnapshotLane
 					Machine    = $SnapshotMachine
@@ -213,7 +213,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					VncStatus  = 'Not Found'
 					ActionSummary = $null
 				}
-				
+
 				$services = $null
 				$serviceFetchError = $null
 				try
@@ -224,7 +224,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				{
 					$serviceFetchError = $_.Exception.Message
 				}
-				
+
 				if (-not $services)
 				{
 					try
@@ -237,7 +237,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 						$serviceFetchError = $_.Exception.Message
 					}
 				}
-				
+
 				if (-not $services)
 				{
 					$result.SqlStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
@@ -247,7 +247,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					$result.VncService = 'Unavailable'
 					return [pscustomobject]$result
 				}
-				
+
 				$sqlService = $services | Where-Object { $_.Name -ieq $SnapshotExpectedSqlService } | Select-Object -First 1
 				if (-not $sqlService)
 				{
@@ -258,7 +258,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					$result.SqlService = [string]$sqlService.Name
 					$result.SqlStatus = [string]$sqlService.Status
 				}
-				
+
 				$vncService = $services | Where-Object {
 					$svcName = [string]$_.Name
 					$svcDisplay = [string]$_.DisplayName
@@ -270,10 +270,10 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					$result.VncService = [string]$vncService.Name
 					$result.VncStatus = [string]$vncService.Status
 				}
-				
+
 				return [pscustomobject]$result
 			}
-			
+
 			$actionSummary = "$RequestedAction request sent."
 			$serviceEscaped = $ServiceName.Replace("'", "''")
 			try
@@ -304,7 +304,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					$actionSummary = "Failed to $RequestedAction $ServiceKind on lane ${Lane}: $($_.Exception.Message)"
 				}
 			}
-			
+
 			$targetStatus = if ($RequestedAction -eq 'Stop') { 'Stopped' }
 			else { 'Running' }
 			for ($i = 0; $i -lt 18; $i++)
@@ -319,12 +319,12 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					return $snapshot
 				}
 			}
-			
+
 			$snapshot = & $getServiceSnapshot $Lane $Machine $ExpectedSqlService
 			$snapshot.ActionSummary = $actionSummary
 			return $snapshot
 		}
-		
+
 		$svcActionJobs[$laneKey] = @{
 			Job		    = $job
 			Row		    = $row.Index
@@ -332,16 +332,16 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			ServiceKind = $ServiceKind
 		}
 	}
-	
+
 	$refreshSvcLanes = {
 		param (
 			[string[]]$LaneKeysToRefresh
 		)
-		
+
 		foreach ($laneKey in @($LaneKeysToRefresh))
 		{
 			if (-not $laneMap.ContainsKey($laneKey)) { continue }
-			
+
 			if ($svcJobs.ContainsKey($laneKey))
 			{
 				try { Stop-Job -Job $svcJobs[$laneKey].Job -ErrorAction SilentlyContinue }
@@ -350,7 +350,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				catch { }
 				[void]$svcJobs.Remove($laneKey)
 			}
-			
+
 			$machineName = [string]$laneMap[$laneKey]
 			$expectedSqlService = 'MSSQLSERVER'
 			try
@@ -372,21 +372,21 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				}
 			}
 			catch { }
-			
+
 			$rowIndex = [int]$rowMap[$laneKey]
 			if ($rowIndex -lt 0 -or $rowIndex -ge $gridSvc.Rows.Count) { continue }
 			$gridSvc.Rows[$rowIndex].Cells["SqlService"].Value = $expectedSqlService
 			$gridSvc.Rows[$rowIndex].Cells["SqlStatus"].Value = 'Checking...'
 			$gridSvc.Rows[$rowIndex].Cells["VncService"].Value = 'Checking...'
 			$gridSvc.Rows[$rowIndex].Cells["VncStatus"].Value = 'Checking...'
-			
+
 			$job = Start-Job -Name ("LaneServiceStatus_{0}" -f $machineName) -ArgumentList $laneKey, $machineName, $expectedSqlService -ScriptBlock {
 				param (
 					[string]$Lane,
 					[string]$Machine,
 					[string]$ExpectedSqlService
 				)
-				
+
 				$result = [ordered]@{
 					Lane	   = $Lane
 					Machine    = $Machine
@@ -395,7 +395,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					VncService = 'Not Found'
 					VncStatus  = 'Not Found'
 				}
-				
+
 				$reachable = $false
 				try
 				{
@@ -404,7 +404,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
 				}
 				catch { }
-				
+
 				if (-not $reachable)
 				{
 					$tcp = $null
@@ -429,7 +429,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 						catch { }
 					}
 				}
-				
+
 				if (-not $reachable)
 				{
 					$result.SqlStatus = 'Offline'
@@ -437,7 +437,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					$result.VncService = 'Offline'
 					return [pscustomobject]$result
 				}
-				
+
 				$services = $null
 				$serviceFetchError = $null
 				try
@@ -448,7 +448,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				{
 					$serviceFetchError = $_.Exception.Message
 				}
-				
+
 				if (-not $services)
 				{
 					try
@@ -461,7 +461,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 						$serviceFetchError = $_.Exception.Message
 					}
 				}
-				
+
 				if (-not $services)
 				{
 					$result.SqlStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
@@ -471,7 +471,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					$result.VncService = 'Unavailable'
 					return [pscustomobject]$result
 				}
-				
+
 				$sqlService = $services | Where-Object { $_.Name -ieq $ExpectedSqlService } | Select-Object -First 1
 				if (-not $sqlService)
 				{
@@ -482,7 +482,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					$result.SqlService = [string]$sqlService.Name
 					$result.SqlStatus = [string]$sqlService.Status
 				}
-				
+
 				$vncService = $services | Where-Object {
 					$svcName = [string]$_.Name
 					$svcDisplay = [string]$_.DisplayName
@@ -494,10 +494,10 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					$result.VncService = [string]$vncService.Name
 					$result.VncStatus = [string]$vncService.Status
 				}
-				
+
 				return [pscustomobject]$result
 			}
-			
+
 			$svcJobs[$laneKey] = @{
 				Job	    = $job
 				Row	    = $rowIndex
@@ -505,7 +505,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			}
 		}
 	}
-	
+
 	$svcRowMenu = New-Object System.Windows.Forms.ContextMenuStrip
 	if ($Apply_Modern_Menu_Style) { & $Apply_Modern_Menu_Style $svcRowMenu }
 	$miSvcRefreshLane = New-Object System.Windows.Forms.ToolStripMenuItem("Refresh This Lane")
@@ -557,13 +557,13 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			}
 			catch { }
 		})
-	
+
 	foreach ($lane in $selectedLanes)
 	{
 		$laneKey = [string]$lane
 		$machineName = [string]$laneMap[$laneKey]
 		$expectedSqlService = 'MSSQLSERVER'
-		
+
 		try
 		{
 			$dbInfo = Get_All_Lanes_Database_Info -LaneNumber $laneKey
@@ -573,7 +573,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				foreach ($p in $dbInfo.PSObject.Properties) { $tmpDbInfo[$p.Name] = $p.Value }
 				$dbInfo = $tmpDbInfo
 			}
-			
+
 			if ($dbInfo -and $dbInfo.ContainsKey('InstanceName'))
 			{
 				$instanceName = [string]$dbInfo['InstanceName']
@@ -584,17 +584,17 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			}
 		}
 		catch { }
-		
+
 		$rowIndex = $gridSvc.Rows.Add($laneKey, $machineName, $expectedSqlService, 'Checking...', 'Checking...', 'Checking...')
 		$rowMap[$laneKey] = $rowIndex
-		
+
 		$job = Start-Job -Name ("LaneServiceStatus_{0}" -f $machineName) -ArgumentList $laneKey, $machineName, $expectedSqlService -ScriptBlock {
 			param (
 				[string]$Lane,
 				[string]$Machine,
 				[string]$ExpectedSqlService
 			)
-			
+
 			$result = [ordered]@{
 				Lane	   = $Lane
 				Machine    = $Machine
@@ -603,7 +603,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				VncService = 'Not Found'
 				VncStatus  = 'Not Found'
 			}
-			
+
 			$reachable = $false
 			try
 			{
@@ -612,7 +612,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
 			}
 			catch { }
-			
+
 			if (-not $reachable)
 			{
 				$tcp = $null
@@ -637,7 +637,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					catch { }
 				}
 			}
-			
+
 			if (-not $reachable)
 			{
 				$result.SqlStatus = 'Offline'
@@ -645,10 +645,10 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				$result.VncService = 'Offline'
 				return [pscustomobject]$result
 			}
-			
+
 			$services = $null
 			$serviceFetchError = $null
-			
+
 			try
 			{
 				$services = Get-Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, Status
@@ -657,7 +657,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			{
 				$serviceFetchError = $_.Exception.Message
 			}
-			
+
 			if (-not $services)
 			{
 				try
@@ -670,7 +670,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 					$serviceFetchError = $_.Exception.Message
 				}
 			}
-			
+
 			if (-not $services)
 			{
 				$result.SqlStatus = 'Error'
@@ -685,7 +685,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				}
 				return [pscustomobject]$result
 			}
-			
+
 			$sqlService = $services | Where-Object { $_.Name -ieq $ExpectedSqlService } | Select-Object -First 1
 			if (-not $sqlService)
 			{
@@ -699,7 +699,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				$result.SqlService = [string]$sqlService.Name
 				$result.SqlStatus = [string]$sqlService.Status
 			}
-			
+
 			$vncService = $services | Where-Object {
 				$svcName = [string]$_.Name
 				$svcDisplay = [string]$_.DisplayName
@@ -711,23 +711,23 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				$result.VncService = [string]$vncService.Name
 				$result.VncStatus = [string]$vncService.Status
 			}
-			
+
 			return [pscustomobject]$result
 		}
-		
+
 		$svcJobs[$laneKey] = @{
 			Job	    = $job
 			Row	    = $rowIndex
 			Machine = $machineName
 		}
 	}
-	
+
 	$btnSvcRefresh.Add_Click({
 			$script:LastActivity = Get-Date
 			& $refreshSvcLanes @($selectedLanes | ForEach-Object { [string]$_ })
 			$lblSvcStatus.Text = "Refreshing all lanes..."
 		})
-	
+
 	$svcTimer = New-Object System.Windows.Forms.Timer
 	$svcTimer.Interval = 700
 	$svcTimer.Add_Tick({
@@ -735,20 +735,20 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			{
 				$entry = $svcJobs[$laneKey]
 				if (-not $entry) { continue }
-				
+
 				$job = $entry.Job
 				if (-not $job)
 				{
 					$doneCount++
 					continue
 				}
-				
+
 				if ($job.State -in @('Completed', 'Failed', 'Stopped'))
 				{
 					$result = $null
 					try { $result = Receive-Job -Job $job -ErrorAction SilentlyContinue }
 					catch { }
-					
+
 					$rowIndex = [int]$entry.Row
 					if ($rowIndex -ge 0 -and $rowIndex -lt $gridSvc.Rows.Count)
 					{
@@ -774,24 +774,24 @@ function Show_Lane_SQL_VNC_Service_Statuses
 							$row.Cells["VncStatus"].Value = 'Error'
 						}
 					}
-					
+
 					try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
 					catch { }
 					[void]$svcJobs.Remove($laneKey)
 				}
 			}
-			
+
 			foreach ($laneKey in @($svcActionJobs.Keys))
 			{
 				$entry = $svcActionJobs[$laneKey]
 				if (-not $entry -or -not $entry.Job) { continue }
-				
+
 				if ($entry.Job.State -in @('Completed', 'Failed', 'Stopped'))
 				{
 					$result = $null
 					try { $result = Receive-Job -Job $entry.Job -ErrorAction SilentlyContinue }
 					catch { }
-					
+
 					$rowIndex = [int]$entry.Row
 					if ($rowIndex -ge 0 -and $rowIndex -lt $gridSvc.Rows.Count -and $result)
 					{
@@ -809,18 +809,18 @@ function Show_Lane_SQL_VNC_Service_Statuses
 							VncStatus = [string]$result.VncStatus
 						}
 					}
-					
+
 					if ($result -and -not [string]::IsNullOrWhiteSpace([string]$result.ActionSummary))
 					{
 						$lblSvcStatus.Text = [string]$result.ActionSummary
 					}
-					
+
 					try { Remove-Job -Job $entry.Job -Force -ErrorAction SilentlyContinue }
 					catch { }
 					[void]$svcActionJobs.Remove($laneKey)
 				}
 			}
-			
+
 			$pendingStatusCount = $svcJobs.Count
 			$pendingActionCount = $svcActionJobs.Count
 			if ($pendingActionCount -gt 0)
@@ -838,7 +838,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			}
 		})
 	$svcTimer.Start()
-	
+
 	$formSvc.Add_FormClosing({
 			try
 			{
@@ -849,7 +849,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				}
 			}
 			catch { }
-			
+
 			foreach ($laneKey in @($svcJobs.Keys))
 			{
 				$entry = $svcJobs[$laneKey]
@@ -860,7 +860,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 				catch { }
 			}
 			$svcJobs.Clear()
-			
+
 			foreach ($laneKey in @($svcActionJobs.Keys))
 			{
 				$entry = $svcActionJobs[$laneKey]
@@ -872,6 +872,6 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			}
 			$svcActionJobs.Clear()
 		})
-	
+
 	[void]$formSvc.ShowDialog()
 }

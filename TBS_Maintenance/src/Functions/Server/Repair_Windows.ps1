@@ -14,13 +14,13 @@ function Repair_Windows
 {
 	[CmdletBinding()]
 	param ()
-	
+
 	Write_Log "`r`n==================== Starting Repair_Windows Function ====================`r`n" "blue"
-	
+
 	# Import GUI assemblies if needed
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	# Confirm user intent
 	$confirmationResult = [System.Windows.Forms.MessageBox]::Show(
 		"The Windows repair process will take a long time and make significant changes to your system. Do you want to proceed?",
@@ -33,9 +33,9 @@ function Repair_Windows
 		Write_Log "Windows repair process cancelled by the user." "yellow"
 		return
 	}
-	
+
 	Write_Log "Starting Windows repair process. This might take a while, please wait..." "blue"
-	
+
 	# Create the Repair Options Form
 	$repairForm = New-Object System.Windows.Forms.Form
 	$repairForm.Text = "Select Repair Operations"
@@ -45,48 +45,48 @@ function Repair_Windows
 	$repairForm.MaximizeBox = $false
 	$repairForm.MinimizeBox = $false
 	$repairForm.ShowInTaskbar = $false
-	
+
 	# Operation Checkboxes (with correct .Location and .Size types)
 	$checkboxes = @()
-	
+
 	$cb1 = New-Object System.Windows.Forms.CheckBox
 	$cb1.Text = "Windows Defender Update and Scan"
 	$cb1.Location = [System.Drawing.Point]::new(20, 20)
 	$cb1.Size = [System.Drawing.Size]::new(350, 25)
 	$checkboxes += $cb1
-	
+
 	$cb2 = New-Object System.Windows.Forms.CheckBox
 	$cb2.Text = "Run DISM Commands"
 	$cb2.Location = [System.Drawing.Point]::new(20, 60)
 	$cb2.Size = [System.Drawing.Size]::new(350, 25)
 	$checkboxes += $cb2
-	
+
 	$cb3 = New-Object System.Windows.Forms.CheckBox
 	$cb3.Text = "Run System File Checker (SFC)"
 	$cb3.Location = [System.Drawing.Point]::new(20, 100)
 	$cb3.Size = [System.Drawing.Size]::new(350, 25)
 	$checkboxes += $cb3
-	
+
 	$cb4 = New-Object System.Windows.Forms.CheckBox
 	$cb4.Text = "Disk Cleanup"
 	$cb4.Location = [System.Drawing.Point]::new(20, 140)
 	$cb4.Size = [System.Drawing.Size]::new(350, 25)
 	$checkboxes += $cb4
-	
+
 	$cb5 = New-Object System.Windows.Forms.CheckBox
 	$cb5.Text = "Optimize Drives"
 	$cb5.Location = [System.Drawing.Point]::new(20, 180)
 	$cb5.Size = [System.Drawing.Size]::new(350, 25)
 	$checkboxes += $cb5
-	
+
 	$cb6 = New-Object System.Windows.Forms.CheckBox
 	$cb6.Text = "Schedule Check Disk"
 	$cb6.Location = [System.Drawing.Point]::new(20, 220)
 	$cb6.Size = [System.Drawing.Size]::new(350, 25)
 	$checkboxes += $cb6
-	
+
 	foreach ($cb in $checkboxes) { $repairForm.Controls.Add($cb) }
-	
+
 	# "Select All" checkbox
 	$cbAll = New-Object System.Windows.Forms.CheckBox
 	$cbAll.Text = "Select All"
@@ -96,7 +96,7 @@ function Repair_Windows
 			foreach ($cb in $checkboxes) { $cb.Checked = $cbAll.Checked }
 		})
 	$repairForm.Controls.Add($cbAll)
-	
+
 	# Enable/Disable Run Button logic
 	$runButton = New-Object System.Windows.Forms.Button
 	$runButton.Text = "Run"
@@ -108,7 +108,7 @@ function Repair_Windows
 	{
 		$cb.Add_CheckedChanged({ $runButton.Enabled = ($checkboxes | Where-Object { $_.Checked }).Count -gt 0 })
 	}
-	
+
 	# Show form and get selections
 	$selectedParams = @{ }
 	$runButton.Add_Click({
@@ -121,16 +121,16 @@ function Repair_Windows
 			$repairForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
 			$repairForm.Close()
 		})
-	
+
 	$dialogResult = $repairForm.ShowDialog()
 	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
 	{
 		Write_Log "Windows repair process cancelled by the user." "yellow"
 		return
 	}
-	
+
 	# -------------------- Operations Begin --------------------
-	
+
 	if ($selectedParams.Defender)
 	{
 		try
@@ -147,7 +147,7 @@ function Repair_Windows
 		catch { Write_Log "Defender update/scan failed: $_" "red" }
 	}
 	else { Write_Log "Skipping Windows Defender update and scan as per user request." "yellow" }
-	
+
 	if ($selectedParams.DISM)
 	{
 		try
@@ -164,7 +164,7 @@ function Repair_Windows
 		catch { Write_Log "DISM failed: $_" "red" }
 	}
 	else { Write_Log "Skipping DISM operations as per user request." "yellow" }
-	
+
 	if ($selectedParams.SFC)
 	{
 		try
@@ -177,7 +177,7 @@ function Repair_Windows
 		catch { Write_Log "SFC failed: $_" "red" }
 	}
 	else { Write_Log "Skipping System File Checker as per user request." "yellow" }
-	
+
 	if ($selectedParams.DiskCleanup)
 	{
 		try
@@ -189,7 +189,7 @@ function Repair_Windows
 		catch { Write_Log "Disk Cleanup failed: $_" "red" }
 	}
 	else { Write_Log "Skipping Disk Cleanup as per user request." "yellow" }
-	
+
 	if ($selectedParams.OptimizeDrives)
 	{
 		try
@@ -205,7 +205,7 @@ function Repair_Windows
 		catch { Write_Log "Drive optimization failed: $_" "red" }
 	}
 	else { Write_Log "Skipping disk optimization as per user request." "yellow" }
-	
+
 	if ($selectedParams.CheckDisk)
 	{
 		try
@@ -218,6 +218,6 @@ function Repair_Windows
 		catch { Write_Log "Check Disk scheduling failed: $_" "red" }
 	}
 	else { Write_Log "Skipping Check Disk scheduling as per user request." "yellow" }
-	
+
 	Write_Log "`r`n==================== Repair_Windows Function Completed ====================" "blue"
 }

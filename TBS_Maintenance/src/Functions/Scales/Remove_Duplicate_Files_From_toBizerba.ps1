@@ -24,24 +24,24 @@ function Remove_Duplicate_Files_From_toBizerba
 {
 	[CmdletBinding()]
 	param ()
-	
+
 	Write_Log "`r`n==================== Starting Remove_Duplicate_Files_From_toBizerba Function ====================`r`n" "blue"
-	
+
 	# ==========================================================================================
 	# CORE PATHS
 	# ==========================================================================================
 	$TargetPath = $script:BmsToBizerbaPath
 	$serviceName = "Remove_Duplicate_Files_From_toBizerba"
-	
+
 	$serviceRoot = $script:DuplicateFileMonitorServiceRoot
 	$svcScripts = Join-Path $serviceRoot "Scripts"
-	
+
 	$psScriptName = "Remove_Duplicate_Files_From_toBizerba.ps1"
 	$psScriptPath = Join-Path $svcScripts $psScriptName
-	
+
 	# CHANGE: single combined log for everything (service script + NSSM stdout/stderr)
 	$singleLog = Join-Path $script:ScriptsLog "Remove_Duplicate_Files_From_toBizerba.log"
-	
+
 	# ==========================================================================================
 	# Ensure folders exist
 	# ==========================================================================================
@@ -49,13 +49,13 @@ function Remove_Duplicate_Files_From_toBizerba
 	{
 		if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -ItemType Directory -Force | Out-Null }
 	}
-	
+
 	# ==========================================================================================
 	# Resolve NSSM executable (NO downloads)
 	# ==========================================================================================
 	$nssmExe = $null
 	$nssmCandidates = @()
-	
+
 	try
 	{
 		if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('NssmExe') -and $script:FunctionResults['NssmExe'])
@@ -64,21 +64,21 @@ function Remove_Duplicate_Files_From_toBizerba
 		}
 	}
 	catch { }
-	
+
 	try
 	{
 		if ($script:NssmExe) { $nssmCandidates += [string]$script:NssmExe }
 	}
 	catch { }
-	
+
 	$nssmCandidates += $script:NssmDefaultPath
-	
+
 	foreach ($c in $nssmCandidates)
 	{
 		if ([string]::IsNullOrWhiteSpace($c)) { continue }
 		if (Test-Path -LiteralPath $c) { $nssmExe = $c; break }
 	}
-	
+
 	# ==========================================================================================
 	# WRITE WATCHER SCRIPT (NO interpolation bugs; concise logging; never exits)
 	# ==========================================================================================
@@ -244,14 +244,14 @@ while ($true)
 	Start-Sleep -Seconds $IntervalSeconds
 }
 '@
-	
+
 	# Inject paths safely into the single-quoted script (escape single quotes for PS literals)
 	$tpEsc = $TargetPath.Replace("'", "''")
 	$lfEsc = $singleLog.Replace("'", "''")
-	
+
 	$psScriptContent = $psScriptContent.Replace('__TARGETPATH__', $tpEsc)
 	$psScriptContent = $psScriptContent.Replace('__LOGFILE__', $lfEsc)
-	
+
 	Set-Content -LiteralPath $psScriptPath -Value $psScriptContent -Encoding UTF8 -Force
 	if (-not (Test-Path -LiteralPath $psScriptPath))
 	{
@@ -259,18 +259,18 @@ while ($true)
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 		return
 	}
-	
+
 	# ==========================================================================================
 	# SERVICE EXISTS?
 	# ==========================================================================================
 	$hasService = [bool](Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
-	
+
 	# ==========================================================================================
 	# GUI
 	# ==========================================================================================
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Duplicate File Monitor"
 	$form.Size = New-Object System.Drawing.Size(440, 230)
@@ -278,39 +278,39 @@ while ($true)
 	$form.FormBorderStyle = 'FixedDialog'
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
-	
+
 	$label = New-Object System.Windows.Forms.Label
 	$label.Text = "How do you want to run the Duplicate File Monitor for:`r`n$TargetPath"
 	$label.Location = New-Object System.Drawing.Point(16, 15)
 	$label.Size = New-Object System.Drawing.Size(390, 40)
 	$label.TextAlign = 'MiddleCenter'
 	$form.Controls.Add($label)
-	
+
 	$btnRunNow = New-Object System.Windows.Forms.Button
 	$btnRunNow.Text = "Run Now (as Job)"
 	$btnRunNow.Location = New-Object System.Drawing.Point(10, 70)
 	$btnRunNow.Size = New-Object System.Drawing.Size(110, 35)
 	$form.Controls.Add($btnRunNow)
-	
+
 	$btnService = New-Object System.Windows.Forms.Button
 	$btnService.Text = "Install Service"
 	$btnService.Location = New-Object System.Drawing.Point(125, 70)
 	$btnService.Size = New-Object System.Drawing.Size(140, 35)
 	$form.Controls.Add($btnService)
-	
+
 	$btnDeleteService = New-Object System.Windows.Forms.Button
 	$btnDeleteService.Text = "Uninstall Service"
 	$btnDeleteService.Location = New-Object System.Drawing.Point(270, 70)
 	$btnDeleteService.Size = New-Object System.Drawing.Size(140, 35)
 	$btnDeleteService.Enabled = $hasService
 	$form.Controls.Add($btnDeleteService)
-	
+
 	$lblSec = New-Object System.Windows.Forms.Label
 	$lblSec.Text = "Interval (seconds):"
 	$lblSec.Location = New-Object System.Drawing.Point(70, 120)
 	$lblSec.Size = New-Object System.Drawing.Size(110, 22)
 	$form.Controls.Add($lblSec)
-	
+
 	$numSec = New-Object System.Windows.Forms.NumericUpDown
 	$numSec.Location = New-Object System.Drawing.Point(185, 118)
 	$numSec.Size = New-Object System.Drawing.Size(50, 24)
@@ -318,23 +318,23 @@ while ($true)
 	$numSec.Maximum = 3600
 	$numSec.Value = 5
 	$form.Controls.Add($numSec)
-	
+
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Location = New-Object System.Drawing.Point(10, 148)
 	$btnCancel.Size = New-Object System.Drawing.Size(400, 35)
 	$form.Controls.Add($btnCancel)
-	
+
 	$state = @{ Action = $null; Interval = 5 }
 	$monitorJob = $null
-	
+
 	$form.Add_FormClosing({
 			if ($monitorJob -and $monitorJob.State -eq 'Running')
 			{
 				try { Stop-Job -Job $monitorJob -Force; Remove-Job -Job $monitorJob -Force; Write_Log "Monitor job stopped on form close." "yellow" }
 				catch { }
 			}
-			
+
 			Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
 				$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
 			} | ForEach-Object {
@@ -342,23 +342,23 @@ while ($true)
 				catch { }
 			}
 		})
-	
+
 	$btnRunNow.Add_Click({
 			if ($btnRunNow.Text -eq "Run Now (as Job)")
 			{
 				$state.Interval = [int]$numSec.Value
 				try { "" | Set-Content -LiteralPath $singleLog -Encoding UTF8 -Force }
 				catch { }
-				
+
 				$monitorJob = Start-Job -Name 'DuplicateFileMonitorJob' -ScriptBlock {
 					param ($scriptPath,
 						$interval,
 						$logFile)
 					& "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $scriptPath -IntervalSeconds $interval *>> $logFile
 				} -ArgumentList $psScriptPath, $state.Interval, $singleLog
-				
+
 				Write_Log "Started monitor job (ID: $($monitorJob.Id)). Log: $singleLog" "green"
-				
+
 				$btnRunNow.Text = "Stop Monitor"
 				$btnService.Enabled = $false
 				$btnDeleteService.Enabled = $false
@@ -371,34 +371,34 @@ while ($true)
 					try { Stop-Job -Job $monitorJob -Force; Remove-Job -Job $monitorJob -Force; Write_Log "Monitor job stopped by user." "yellow" }
 					catch { }
 				}
-				
+
 				Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
 					$_.CommandLine -and $_.CommandLine -match [Regex]::Escape($psScriptPath)
 				} | ForEach-Object {
 					try { Stop-Process -Id $_.ProcessId -Force; Write_Log "Stopped powershell.exe PID $($_.ProcessId) by user stop" "yellow" }
 					catch { }
 				}
-				
+
 				$btnRunNow.Text = "Run Now (as Job)"
 				$btnService.Enabled = $true
 				$btnDeleteService.Enabled = $hasService
 				$btnCancel.Text = "Cancel"
 			}
 		})
-	
+
 	$btnService.Add_Click({ $state.Interval = [int]$numSec.Value; $state.Action = "service"; $form.Close() })
 	$btnDeleteService.Add_Click({ $state.Action = "uninstall"; $form.Close() })
 	$btnCancel.Add_Click({ $form.Close() })
-	
+
 	$form.ShowDialog() | Out-Null
-	
+
 	if (-not $state.Action)
 	{
 		Write_Log "User cancelled Duplicate File Monitor dialog." "yellow"
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 		return
 	}
-	
+
 	# ==========================================================================================
 	# ADMIN CHECK FOR SERVICE ACTIONS
 	# ==========================================================================================
@@ -406,7 +406,7 @@ while ($true)
 	{
 		$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 		).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-		
+
 		if (-not $IsAdmin)
 		{
 			Write_Log "Service install/uninstall requires Administrator. Re-run as Admin." "red"
@@ -414,7 +414,7 @@ while ($true)
 			return
 		}
 	}
-	
+
 	# ==========================================================================================
 	# UNINSTALL (SC.EXE ONLY)
 	# ==========================================================================================
@@ -426,7 +426,7 @@ while ($true)
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
-		
+
 		Write_Log "Stopping service '$serviceName' before uninstall..." "yellow"
 		try { & $env:ComSpec /c ("sc stop `"{0}`"" -f $serviceName) *> $null }
 		catch { }
@@ -434,7 +434,7 @@ while ($true)
 		catch { }
 		try { & $env:ComSpec /c ("sc delete `"{0}`"" -f $serviceName) *> $null }
 		catch { }
-		
+
 		Start-Sleep -Milliseconds 800
 		if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
 		{
@@ -442,12 +442,12 @@ while ($true)
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
-		
+
 		Write_Log "Service '$serviceName' uninstalled successfully." "green"
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 		return
 	}
-	
+
 	# ==========================================================================================
 	# INSTALL SERVICE (requires NSSM present - NO downloads)
 	# ==========================================================================================
@@ -460,11 +460,11 @@ while ($true)
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
-		
+
 		# Fresh log for easy debugging
 		try { "" | Set-Content -LiteralPath $singleLog -Encoding UTF8 -Force }
 		catch { }
-		
+
 		# Remove existing service (clean reinstall)
 		if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
 		{
@@ -476,17 +476,17 @@ while ($true)
 			catch { }
 			Start-Sleep -Seconds 1
 		}
-		
+
 		$psExe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
 		$interval = [int]$state.Interval
-		
+
 		# Install with args as separate tokens (no quoting issues)
 		& $nssmExe install $serviceName $psExe `
 				   '-NoProfile' `
 				   '-ExecutionPolicy' 'Bypass' `
 				   '-File' $psScriptPath `
 				   '-IntervalSeconds' "$interval"
-		
+
 		if ($LASTEXITCODE -ne 0)
 		{
 			Write_Log "ERROR: NSSM install failed (ExitCode=$LASTEXITCODE). NSSM: $nssmExe" "red"
@@ -494,17 +494,17 @@ while ($true)
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
-		
+
 		# Configure service
 		& $nssmExe set $serviceName AppDirectory $svcScripts *> $null
 		& $nssmExe set $serviceName Start SERVICE_AUTO_START *> $null
 		& $nssmExe set $serviceName ObjectName "LocalSystem" *> $null
-		
+
 		# ONE log file for NSSM stdout + stderr
 		& $nssmExe set $serviceName AppStdout $singleLog *> $null
 		& $nssmExe set $serviceName AppStderr $singleLog *> $null
 		& $nssmExe set $serviceName AppRotateFiles 0 *> $null
-		
+
 		& $nssmExe start $serviceName *> $null
 		if ($LASTEXITCODE -ne 0)
 		{
@@ -513,7 +513,7 @@ while ($true)
 			Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 			return
 		}
-		
+
 		Start-Sleep -Milliseconds 800
 		$s = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 		if ($s -and $s.Status -ne 'Running')
@@ -526,11 +526,11 @@ while ($true)
 			Write_Log "Single log: $singleLog" "green"
 			Write_Log "NSSM used: $nssmExe" "gray"
 		}
-		
+
 		Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 		return
 	}
-	
+
 	Write_Log "No valid action selected. Exiting." "yellow"
 	Write_Log "`r`n==================== Remove_Duplicate_Files_From_toBizerba Completed ====================" "blue"
 }

@@ -34,10 +34,10 @@ function Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
 		[string]$TcpPort = '1433',
 		[string]$StartTime = '04:15'
 	)
-	
+
 	if ([string]::IsNullOrWhiteSpace($LaneNumber) -or [string]::IsNullOrWhiteSpace($MachineName)) { return $false }
 	if (-not $script:LaneSqlProtocolEnableTaskState) { $script:LaneSqlProtocolEnableTaskState = @{ } }
-	
+
 	$laneKey = $LaneNumber.ToString().PadLeft(3, '0')
 	$taskName = "Enable_SQL_Protocols_Lane_$laneKey"
 	$scriptName = "${taskName}.ps1"
@@ -49,7 +49,7 @@ function Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
 		[pscustomobject]@{ Share = "\\$MachineName\d$\Storeman\Temp"; Local = "D:\Storeman\Temp" },
 		[pscustomobject]@{ Share = "\\$MachineName\e$\Storeman\Temp"; Local = "E:\Storeman\Temp" }
 	)
-	
+
 	$scheduledDate = Get-Date
 	try
 	{
@@ -62,7 +62,7 @@ function Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
 		$scheduledDate = (Get-Date).AddDays(1).Date.AddHours(4).AddMinutes(15)
 	}
 	$scheduledDateText = $scheduledDate.ToString('MM/dd/yyyy')
-	
+
 	$workerScript = @'
 param(
     [string]$TaskName,
@@ -242,7 +242,7 @@ foreach ($svcName in $servicesToRestart)
 try { schtasks.exe /Delete /TN $TaskName /F | Out-Null } catch { }
 try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3 >nul & del /f /q `"$PSCommandPath`"" -WindowStyle Hidden } catch { }
 '@
-	
+
 	try
 	{
 		foreach ($candidate in $remoteTempCandidates)
@@ -268,7 +268,7 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 	catch
 	{
 	}
-	
+
 	if ([string]::IsNullOrWhiteSpace($remoteScriptSharePath) -or [string]::IsNullOrWhiteSpace($localScriptPath))
 	{
 		try { Write_Log ("Could not schedule SQL enable task for lane {0}: no writable Storeman Temp share found on {1}" -f $laneKey, $MachineName) 'red' | Out-Null } catch { }
@@ -280,7 +280,7 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 		}
 		return $false
 	}
-	
+
 	$null = & schtasks.exe /Query /S $MachineName /TN $taskName 2>$null
 	$taskExists = ($LASTEXITCODE -eq 0)
 	$scriptExists = $false
@@ -301,7 +301,7 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 		try { & schtasks.exe /Delete /S $MachineName /TN $taskName /F 2>$null | Out-Null }
 		catch { }
 	}
-	
+
 	try
 	{
 		Set-Content -LiteralPath $remoteScriptSharePath -Value $workerScript -Encoding UTF8 -Force -ErrorAction Stop
@@ -317,7 +317,7 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 		}
 		return $false
 	}
-	
+
 	$taskAction = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$localScriptPath`" -TaskName `"$taskName`" -TcpPort `"$TcpPort`""
 	$createOutput = & schtasks.exe /Create /S $MachineName /RU SYSTEM /RL HIGHEST /SC ONCE /TN $taskName /TR $taskAction /ST $StartTime /SD $scheduledDateText /F 2>&1
 	if ($LASTEXITCODE -eq 0)
@@ -330,7 +330,7 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 		}
 		return $true
 	}
-	
+
 	try { Remove-Item -LiteralPath $remoteScriptSharePath -Force -ErrorAction SilentlyContinue }
 	catch { }
 	$createOutputText = [string]($createOutput | Out-String)

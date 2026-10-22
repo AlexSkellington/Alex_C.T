@@ -27,7 +27,7 @@ function Install_FUNCTIONS_Into_SMS
 		# if not provided, we try common script-scoped fallbacks
 		[switch]$Silent
 	)
-	
+
 	$writeLog = {
 		param (
 			[string]$Message,
@@ -35,12 +35,12 @@ function Install_FUNCTIONS_Into_SMS
 		)
 		if (-not $Silent) { Write_Log $Message $Color }
 	}
-	
+
 	& $writeLog "`r`n==================== Starting Install_FUNCTIONS_Into_SMS ====================`r`n" "blue"
-	
+
 	# Registered macro marker ([?][?]) as a safe char literal; we always inject via $($reg) to avoid encoding surprises.
 	$reg = [char]0x00AE
-	
+
 	# --------------------------------------------------------------------------------------------------------------
 	# Resolve/validate OfficePath (prefer explicit param; fallback to common script-scoped variables)
 	# --------------------------------------------------------------------------------------------------------------
@@ -54,14 +54,14 @@ function Install_FUNCTIONS_Into_SMS
 		& $writeLog "Office path not found or not provided: '$OfficePath'." "red"
 		return
 	}
-	
+
 	# --- Destination paths (always three files) ---
 	$DeploySysPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_SYS.sql"
 	$DeployMultiFctPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_MULTI_FCT.sqm"
-	
+
 	# --- Encoding: ANSI (Windows-1252), no BOM ---
 	$ansi = [System.Text.Encoding]::GetEncoding(1252)
-	
+
 	# ===============================================================================================================
 	#                                             DEPLOY_SYS.sql (ALWAYS includes "Multiple Functions")
 	# ===============================================================================================================
@@ -127,7 +127,7 @@ ORDER BY STO.F1000"));
 
 @EXEC(sqi=USERE_DEPLOY_SYS);
 "@
-	
+
 	# ===============================================================================================================
 	#                                      DEPLOY_MULTI_FCT.sqm (template)
 	#   Supports CSV and ranges (e.g., 123,234,300-305).
@@ -221,12 +221,12 @@ ORDER BY F1000,F1063;
 @DBHOT(HOT_WIZ,LINETOPARAM,PARAMSAV_DEPLOY_MULTI_FCT);
 @DBHOT(HOT_WIZ,CLR,PARAMSAV_DEPLOY_MULTI_FCT);
 "@
-	
+
 	# ===============================================================================================================
 	#                                                  WRITE FILES (Always three)
 	#   CHANGE: No nested helper; inline: normalize to CRLF [?][?][?] write ANSI [?][?][?] clear attributes [?][?][?] log.
 	# ===============================================================================================================
-	
+
 	# -- DEPLOY_SYS.sql --
 	try
 	{
@@ -239,7 +239,7 @@ ORDER BY F1000,F1063;
 	{
 		& $writeLog "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
 	}
-	
+
 	# -- DEPLOY_MULTI_FCT.sqm --
 	try
 	{
@@ -252,6 +252,6 @@ ORDER BY F1000,F1063;
 	{
 		& $writeLog "Failed to write 'DEPLOY_FCT.sqm'. Error: $_" "red"
 	}
-	
+
 	& $writeLog "`r`n==================== Install_FUNCTIONS_Into_SMS Completed ====================`r`n" "blue"
 }

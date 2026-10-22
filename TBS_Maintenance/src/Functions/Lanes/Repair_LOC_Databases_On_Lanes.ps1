@@ -27,22 +27,22 @@ function Repair_LOC_Databases_On_Lanes
 		[string]$StoreNumber,
 		[int]$CommandTimeout = 900 # per-statement timeout (seconds)
 	)
-	
+
 	# ----------------------------------------
 	# Banner: Start
 	# ----------------------------------------
 	Write_Log "`r`n==================== Starting Repair_LOC_Databases_On_Lanes Function ====================`r`n" "blue"
-	
+
 	# ----------------------------------------
 	# Normalize store (3 digits) for any labels/logs
 	# ----------------------------------------
 	$StoreNumber = "$StoreNumber".PadLeft(3, '0')
-	
+
 	# ----------------------------------------
 	# Validate required caches
 	# ----------------------------------------
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
-	
+
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	if (-not $LaneNumToMachineName -or $LaneNumToMachineName.Count -eq 0)
 	{
@@ -50,7 +50,7 @@ function Repair_LOC_Databases_On_Lanes
 		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# ----------------------------------------
 	# Import SQL module and capture Invoke-Sqlcmd
 	# ----------------------------------------
@@ -61,7 +61,7 @@ function Repair_LOC_Databases_On_Lanes
 		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	$invokeSqlcmdCmd = $null
 	try
 	{
@@ -74,7 +74,7 @@ function Repair_LOC_Databases_On_Lanes
 		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# Detect whether Invoke-Sqlcmd supports -ConnectionString
 	$InvokeSupportsConnString = $false
 	try
@@ -85,25 +85,25 @@ function Repair_LOC_Databases_On_Lanes
 		}
 	}
 	catch { $InvokeSupportsConnString = $false }
-	
+
 	# Ensure SqlClient types are available for fallback mode
 	try { Add-Type -AssemblyName System.Data 2>$null }
 	catch { }
-	
+
 	$invokeSqlTable = {
 		param (
 			[string]$ConnectionString,
 			[string]$Query,
 			[int]$Timeout = 30
 		)
-		
+
 		if ($InvokeSupportsConnString)
 		{
 			$rows = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $Query -QueryTimeout $Timeout -ErrorAction Stop
 			if ($null -eq $rows) { return @() }
 			return @($rows)
 		}
-		
+
 		$dt = New-Object System.Data.DataTable
 		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
 		try
@@ -122,23 +122,23 @@ function Repair_LOC_Databases_On_Lanes
 			try { $cn.Dispose() }
 			catch { }
 		}
-		
+
 		return $dt
 	}
-	
+
 	$invokeSqlNonQuery = {
 		param (
 			[string]$ConnectionString,
 			[string]$Query,
 			[int]$Timeout = 30
 		)
-		
+
 		if ($InvokeSupportsConnString)
 		{
 			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $Query -QueryTimeout $Timeout -ErrorAction Stop | Out-Null
 			return
 		}
-		
+
 		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
 		try
 		{
@@ -156,26 +156,26 @@ function Repair_LOC_Databases_On_Lanes
 			catch { }
 		}
 	}
-	
+
 	$getRowCount = {
 		param ($Rows)
-		
+
 		if ($Rows -is [System.Data.DataTable]) { return $Rows.Rows.Count }
 		if ($null -eq $Rows) { return 0 }
 		return @($Rows).Count
 	}
-	
+
 	$getDatabaseState = {
 		param (
 			[string]$ConnectionString,
 			[string]$DatabaseName
 		)
-		
+
 		if ([string]::IsNullOrWhiteSpace($DatabaseName)) { return $null }
-		
+
 		$dbLiteral = $DatabaseName.Replace("'", "''")
 		$rows = & $invokeSqlTable $ConnectionString "SELECT state_desc FROM sys.databases WHERE name = N'$dbLiteral';" 10
-		
+
 		if ($rows -is [System.Data.DataTable])
 		{
 			if ($rows.Rows.Count -gt 0) { return [string]$rows.Rows[0]['state_desc'] }
@@ -184,16 +184,16 @@ function Repair_LOC_Databases_On_Lanes
 		{
 			return [string]($rows | Select-Object -First 1 -ExpandProperty state_desc)
 		}
-		
+
 		return $null
 	}
-	
+
 	$getSystemDbProblems = {
 		param ([string]$ConnectionString)
-		
+
 		$rows = & $invokeSqlTable $ConnectionString "SELECT name, state_desc FROM sys.databases WHERE name IN ('master','model','msdb','tempdb');" 10
 		$bad = New-Object System.Collections.Generic.List[pscustomobject]
-		
+
 		if ($rows -is [System.Data.DataTable])
 		{
 			foreach ($row in $rows.Rows)
@@ -216,13 +216,13 @@ function Repair_LOC_Databases_On_Lanes
 				}
 			}
 		}
-		
+
 		return @($bad)
 	}
-	
+
 	$testSqlConnectivity = {
 		param ([string]$ConnectionString)
-		
+
 		try
 		{
 			[void](& $invokeSqlTable $ConnectionString "SELECT 1 AS ok;" 5)
@@ -233,28 +233,28 @@ function Repair_LOC_Databases_On_Lanes
 			return $false
 		}
 	}
-	
+
 	$getCheckDbIssueCount = {
 		param (
 			[string]$ConnectionString,
 			[string]$QuotedDbName,
 			[int]$Timeout = 900
 		)
-		
+
 		$rows = & $invokeSqlTable $ConnectionString "DBCC CHECKDB ($QuotedDbName) WITH NO_INFOMSGS, ALL_ERRORMSGS, TABLERESULTS;" $Timeout
 		return (& $getRowCount $rows)
 	}
-	
+
 	$detectLaneProtocol = {
 		param ([string]$MachineName)
-		
+
 		if ([string]::IsNullOrWhiteSpace($MachineName)) { return $null }
-		
+
 		$candidates = @(
 			@{ Label = 'TCP'; ConnectionString = "Data Source=tcp:$MachineName;Initial Catalog=master;Integrated Security=True;Connect Timeout=2;TrustServerCertificate=True;" },
 			@{ Label = 'Named Pipes'; ConnectionString = "Data Source=np:$MachineName;Initial Catalog=master;Integrated Security=True;Connect Timeout=2;TrustServerCertificate=True;" }
 		)
-		
+
 		foreach ($candidate in $candidates)
 		{
 			if (& $testSqlConnectivity $candidate.ConnectionString)
@@ -262,15 +262,15 @@ function Repair_LOC_Databases_On_Lanes
 				return $candidate.Label
 			}
 		}
-		
+
 		return $null
 	}
-	
+
 	# ----------------------------------------
 	# Load protocol results file (SOURCE OF TRUTH)
 	# ----------------------------------------
 	$protoFile = $script:ProtocolResultsFile
-	
+
 	$LaneProtocolsFromFile = @{ }
 	if (Test-Path $protoFile)
 	{
@@ -284,7 +284,7 @@ function Repair_LOC_Databases_On_Lanes
 				{
 					$laneRaw = $matches[1].Trim()
 					$proto = $matches[2].Trim()
-					
+
 					$laneDigits = ($laneRaw -replace '[^\d]', '')
 					if (-not [string]::IsNullOrWhiteSpace($laneDigits))
 					{
@@ -304,7 +304,7 @@ function Repair_LOC_Databases_On_Lanes
 	{
 		Write_Log "ProtocolResultsFile not found: $protoFile. Will fall back to in-memory/live protocol detection for this run." "yellow"
 	}
-	
+
 	# ----------------------------------------
 	# Lane selection (same UX pattern)
 	# ----------------------------------------
@@ -319,7 +319,7 @@ function Repair_LOC_Databases_On_Lanes
 		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	if ($selection -eq $null)
 	{
 		Write_Log "Lane DB repair canceled by user." "yellow"
@@ -332,7 +332,7 @@ function Repair_LOC_Databases_On_Lanes
 		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# Normalize lane list from selection (handles PSCustomObject or strings/ints)
 	$Lanes = @()
 	if ($selection.Lanes[0] -is [PSCustomObject] -and $selection.Lanes[0].PSObject.Properties.Name -contains 'LaneNumber')
@@ -352,13 +352,13 @@ function Repair_LOC_Databases_On_Lanes
 		}
 	}
 	$Lanes = @($Lanes | Where-Object { $_ } | Select-Object -Unique)
-	
+
 	# ----------------------------------------
 	# In-function dialog to pick repair level
 	# ----------------------------------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Database Repair Level"
 	$form.Size = New-Object System.Drawing.Size(520, 240)
@@ -366,52 +366,52 @@ function Repair_LOC_Databases_On_Lanes
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
-	
+
 	$lbl = New-Object System.Windows.Forms.Label
 	$lbl.Text = "Choose how aggressive the repair should be:"
 	$lbl.AutoSize = $true
 	$lbl.Location = New-Object System.Drawing.Point(12, 12)
 	$form.Controls.Add($lbl)
-	
+
 	$grp = New-Object System.Windows.Forms.GroupBox
 	$grp.Text = "Repair Level"
 	$grp.Location = New-Object System.Drawing.Point(12, 36)
 	$grp.Size = New-Object System.Drawing.Size(490, 110)
 	$form.Controls.Add($grp)
-	
+
 	$rbAudit = New-Object System.Windows.Forms.RadioButton
 	$rbAudit.Text = "Audit only (DBCC CHECKDB, no changes)"
 	$rbAudit.AutoSize = $true
 	$rbAudit.Location = New-Object System.Drawing.Point(16, 24)
 	$rbAudit.Checked = $true
 	$grp.Controls.Add($rbAudit)
-	
+
 	$rbQuick = New-Object System.Windows.Forms.RadioButton
 	$rbQuick.Text = "Quick repair (REPAIR_REBUILD)"
 	$rbQuick.AutoSize = $true
 	$rbQuick.Location = New-Object System.Drawing.Point(16, 48)
 	$grp.Controls.Add($rbQuick)
-	
+
 	$rbDeep = New-Object System.Windows.Forms.RadioButton
 	$rbDeep.Text = "Deep repair (REPAIR_ALLOW_DATA_LOSS)"
 	$rbDeep.AutoSize = $true
 	$rbDeep.Location = New-Object System.Drawing.Point(16, 72)
 	$grp.Controls.Add($rbDeep)
-	
+
 	$chkConfirm = New-Object System.Windows.Forms.CheckBox
 	$chkConfirm.Text = "I understand deep repair can cause data loss."
 	$chkConfirm.AutoSize = $true
 	$chkConfirm.Location = New-Object System.Drawing.Point(28, 152)
 	$chkConfirm.Enabled = $false
 	$form.Controls.Add($chkConfirm)
-	
+
 	[void]$rbDeep.Add_CheckedChanged({
 			if ($rbDeep.Checked) { $chkConfirm.Enabled = $true }
 			else { $chkConfirm.Enabled = $false; $chkConfirm.Checked = $false }
 		})
 	[void]$rbAudit.Add_CheckedChanged({ if ($rbAudit.Checked) { $chkConfirm.Enabled = $false; $chkConfirm.Checked = $false } })
 	[void]$rbQuick.Add_CheckedChanged({ if ($rbQuick.Checked) { $chkConfirm.Enabled = $false; $chkConfirm.Checked = $false } })
-	
+
 	$btnOK = New-Object System.Windows.Forms.Button
 	$btnOK.Text = "OK"
 	$btnOK.Location = New-Object System.Drawing.Point(314, 172)
@@ -419,7 +419,7 @@ function Repair_LOC_Databases_On_Lanes
 	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 	$form.AcceptButton = $btnOK
 	$form.Controls.Add($btnOK)
-	
+
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Location = New-Object System.Drawing.Point(417, 172)
@@ -427,7 +427,7 @@ function Repair_LOC_Databases_On_Lanes
 	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
-	
+
 	$dlg = $form.ShowDialog()
 	if ($dlg -ne [System.Windows.Forms.DialogResult]::OK)
 	{
@@ -435,53 +435,53 @@ function Repair_LOC_Databases_On_Lanes
 		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	$Level = 'Audit'
 	if ($rbQuick.Checked) { $Level = 'Quick' }
 	if ($rbDeep.Checked) { $Level = 'Deep' }
-	
+
 	if ($Level -eq 'Deep' -and -not $chkConfirm.Checked)
 	{
 		Write_Log "Deep repair selected but confirmation not checked. Aborting." "yellow"
 		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	Write_Log ("Selected repair level: {0}" -f $Level) "gray"
-	
+
 	# ----------------------------------------
 	# Summary container
 	# ----------------------------------------
 	$laneSummary = New-Object System.Collections.Generic.List[pscustomobject]
-	
+
 	# ----------------------------------------
 	# Lane processing loop
 	# ----------------------------------------
 	foreach ($LaneNumber in ($Lanes | Sort-Object))
 	{
 		$laneKeyP = ("$LaneNumber" -replace '[^\d]', '').PadLeft(3, '0')
-		
+
 		# Resolve machine name
 		$machineName = $null
 		if ($LaneNumToMachineName.ContainsKey($laneKeyP)) { $machineName = $LaneNumToMachineName[$laneKeyP] }
 		elseif ($LaneNumToMachineName.ContainsKey($LaneNumber)) { $machineName = $LaneNumToMachineName[$LaneNumber] }
-		
+
 		if (-not $machineName)
 		{
 			Write_Log ("Lane {0}: No machine mapping found. Skipping." -f $laneKeyP) "yellow"
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = ''; Protocol = ''; DBServer = ''; DBName = ''; Level = $Level; Result = 'NoMachine' })
 			continue
 		}
-		
+
 		# Protocol from file, then in-memory cache, then live detection
 		$proto = $null
 		if ($LaneProtocolsFromFile.ContainsKey($laneKeyP)) { $proto = [string]$LaneProtocolsFromFile[$laneKeyP] }
-		
+
 		if ([string]::IsNullOrWhiteSpace($proto) -and $script:LaneProtocols)
 		{
 			$tryKeys = @($laneKeyP, $LaneNumber)
 			if ($machineName) { $tryKeys += @($machineName, $machineName.ToLower()) }
-			
+
 			foreach ($k in $tryKeys)
 			{
 				if (-not [string]::IsNullOrWhiteSpace("$k") -and $script:LaneProtocols.ContainsKey($k))
@@ -491,7 +491,7 @@ function Repair_LOC_Databases_On_Lanes
 				}
 			}
 		}
-		
+
 		if ([string]::IsNullOrWhiteSpace($proto))
 		{
 			$proto = & $detectLaneProtocol $machineName
@@ -506,14 +506,14 @@ function Repair_LOC_Databases_On_Lanes
 				$script:LaneProtocols[$machineName.ToLower()] = $proto
 			}
 		}
-		
+
 		if ([string]::IsNullOrWhiteSpace($proto))
 		{
 			Write_Log ("Lane {0} ({1}): No usable protocol found in file, memory, or live detection. Skipping." -f $laneKeyP, $machineName) "yellow"
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = ''; DBServer = ''; DBName = ''; Level = $Level; Result = 'NoProtocolDetected' })
 			continue
 		}
-		
+
 		if ($proto -ne 'TCP' -and $proto -ne 'Named Pipes')
 		{
 			# File / Unknown -> do not attempt DB operations
@@ -521,41 +521,41 @@ function Repair_LOC_Databases_On_Lanes
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = ''; DBName = ''; Level = $Level; Result = 'ProtocolNotReachable' })
 			continue
 		}
-		
+
 		# Resolve lane DB info (Startup.ini parsing cached by your helper)
 		$dbInfo = $null
 		try { $dbInfo = Get_All_Lanes_Database_Info -LaneNumber $laneKeyP }
 		catch { $dbInfo = $null }
-		
+
 		if ($dbInfo -and ($dbInfo -isnot [hashtable]))
 		{
 			$tmpDbInfo = @{ }
 			foreach ($p in $dbInfo.PSObject.Properties) { $tmpDbInfo[$p.Name] = $p.Value }
 			$dbInfo = $tmpDbInfo
 		}
-		
+
 		if (-not $dbInfo)
 		{
 			Write_Log ("Lane {0} ({1}): Could not get DB info. Skipping." -f $laneKeyP, $machineName) "yellow"
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = ''; DBName = ''; Level = $Level; Result = 'NoDbInfo' })
 			continue
 		}
-		
+
 		$dbName = $dbInfo['DBName']
 		$dbServer = $dbInfo['DBServer']
 		$instanceName = $dbInfo['InstanceName']
 		$csNamedPipes = $dbInfo['NamedPipesConnStr']
 		$csTcp = $dbInfo['TcpConnStr']
-		
+
 		Write_Log ("`r`n--- Lane {0} ({1}) | Protocol={2} | DB: {3} on {4} ---" -f $laneKeyP, $machineName, $proto, $dbName, $dbServer) "blue"
-		
+
 		if ([string]::IsNullOrWhiteSpace($dbName) -or [string]::IsNullOrWhiteSpace($dbServer))
 		{
 			Write_Log "Incomplete DB info (DBName or DBServer missing). Skipping lane." "yellow"
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'IncompleteDbInfo' })
 			continue
 		}
-		
+
 		# Guardrail: refuse if the application DB name is a system DB (protects from bad Startup.ini)
 		$sysDbNames = @('master', 'model', 'msdb', 'tempdb')
 		if ($sysDbNames -contains $dbName.ToLower())
@@ -564,19 +564,19 @@ function Repair_LOC_Databases_On_Lanes
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'Refused_SystemDbName' })
 			continue
 		}
-		
+
 		# Choose the correct raw connection string based on protocol from file
 		$rawCs = $null
 		if ($proto -eq 'TCP') { $rawCs = $csTcp }
 		if ($proto -eq 'Named Pipes') { $rawCs = $csNamedPipes }
-		
+
 		if ([string]::IsNullOrWhiteSpace($rawCs))
 		{
 			Write_Log ("Lane {0} ({1}): Missing {2} connection string in dbInfo. Skipping." -f $laneKeyP, $machineName, $proto) "yellow"
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'NoConnStrForProtocol' })
 			continue
 		}
-		
+
 		# Build MASTER connection string for system checks + repairs (no fallbacks: we obey protocol file)
 		$connStr = $rawCs
 		if ($connStr -match '(?i)\bDatabase\s*=\s*[^;]+;')
@@ -588,21 +588,21 @@ function Repair_LOC_Databases_On_Lanes
 			if ($connStr.Trim().EndsWith(';')) { $connStr = $connStr + 'Database=master;' }
 			else { $connStr = $connStr + ';Database=master;' }
 		}
-		
+
 		# Add safe extras if not already present (do NOT override auth)
 		if ($connStr -notmatch '(?i)\bTrustServerCertificate\s*=') { $connStr += 'TrustServerCertificate=True;' }
 		if ($connStr -notmatch '(?i)\bApplication\s*Name\s*=') { $connStr += 'Application Name=TBS_DBRepair;' }
 		if ($connStr -notmatch '(?i)\bIntegrated\s*Security\s*=' -and $connStr -notmatch '(?i)\bUser\s*ID\s*=') { $connStr += 'Integrated Security=True;' }
-		
+
 		# Quote db identifier safely for T-SQL
 		$qDb = "[" + ($dbName -replace "]", "]]") + "]"
 		$dbNameQuoted = $dbName.Replace("'", "''")
-		
+
 		# ----------------------------------------
 		# Unified query execution (Invoke-Sqlcmd if possible; else SqlClient)
 		# ----------------------------------------
 		$ExecError = $null
-		
+
 		# Probe: connection + DB existence/state
 		$probeRows = $null
 		$probeTsql = @"
@@ -610,7 +610,7 @@ SELECT name, state_desc
 FROM sys.databases
 WHERE name = N'$dbNameQuoted';
 "@
-		
+
 		try
 		{
 			if ($InvokeSupportsConnString)
@@ -645,18 +645,18 @@ WHERE name = N'$dbNameQuoted';
 		{
 			$ExecError = $_
 		}
-		
+
 		if ($ExecError)
 		{
 			Write_Log ("Lane {0} ({1}): Probe failed using {2}. Skipping. Error: {3}" -f $laneKeyP, $machineName, $proto, $ExecError.Exception.Message) "yellow"
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'ConnProbeFailed' })
 			continue
 		}
-		
+
 		# Normalize probe result handling for both object array and DataTable
 		$targetDbFound = $false
 		$targetDbState = $null
-		
+
 		if ($probeRows -is [System.Data.DataTable])
 		{
 			if ($probeRows.Rows.Count -gt 0)
@@ -673,17 +673,17 @@ WHERE name = N'$dbNameQuoted';
 				$targetDbState = [string]($probeRows | Select-Object -First 1 -ExpandProperty state_desc)
 			}
 		}
-		
+
 		if (-not $targetDbFound)
 		{
 			Write_Log ("Lane {0} ({1}): Target DB '{2}' not found in sys.databases. Skipping." -f $laneKeyP, $machineName, $dbName) "yellow"
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'DbMissing' })
 			continue
 		}
-		
+
 		if ([string]::IsNullOrWhiteSpace($targetDbState)) { $targetDbState = 'Unknown' }
 		Write_Log ("Target DB state (pre): {0}" -f $targetDbState) "gray"
-		
+
 		# ----------------------------------------
 		# System DB health gate (tempdb/model/msdb/master states)
 		# ----------------------------------------
@@ -697,44 +697,44 @@ WHERE name = N'$dbNameQuoted';
 			$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'SystemDbStateUnknown' })
 			continue
 		}
-		
+
 		if ($badSystemDbs.Count -gt 0)
 		{
 			Write_Log ("Lane {0} ({1}): System DBs not ONLINE detected." -f $laneKeyP, $machineName) "yellow"
 			foreach ($b in $badSystemDbs) { Write_Log ("  - {0}: {1}" -f $b.Name, $b.State) "yellow" }
-			
+
 			# Determine SQL service name based on instance
 			$svcName = "MSSQLSERVER"
 			if ($instanceName -and ($instanceName.ToUpper() -ne "MSSQLSERVER"))
 			{
 				$svcName = "MSSQL`$$instanceName"
 			}
-			
+
 			# tempdb handling: offer restart SQL service
 			$hasTempdbIssue = $false
 			foreach ($b in $badSystemDbs) { if ($b.Name -eq 'tempdb') { $hasTempdbIssue = $true } }
-			
+
 			if ($hasTempdbIssue)
 			{
 				$msg = "Lane $laneKeyP ($machineName): tempdb is not ONLINE.`r`n`r`n" +
 				"Would you like to restart the SQL Server service ($svcName) on $machineName now?`r`n" +
 				"This will drop connections and recreate tempdb."
-				
+
 				$resp = [System.Windows.Forms.MessageBox]::Show(
 					$msg,
 					"Restart SQL Service for tempdb",
 					[System.Windows.Forms.MessageBoxButtons]::YesNo,
 					[System.Windows.Forms.MessageBoxIcon]::Warning
 				)
-				
+
 				if ($resp -eq [System.Windows.Forms.DialogResult]::Yes)
 				{
 					Write_Log ("Attempting to restart service {0} on {1}..." -f $svcName, $machineName) "gray"
-					
+
 					# Stop service
 					try { & sc.exe "\\$machineName" stop $svcName | Out-Null }
 					catch { }
-					
+
 					# Wait for stopped up to ~60s
 					$stopped = $false
 					for ($i = 0; $i -lt 30; $i++)
@@ -751,11 +751,11 @@ WHERE name = N'$dbNameQuoted';
 					}
 					if ($stopped) { Write_Log "Service stopped." "gray" }
 					else { Write_Log "WARN: Service did not report STOPPED in time." "yellow" }
-					
+
 					# Start service
 					try { & sc.exe "\\$machineName" start $svcName | Out-Null }
 					catch { }
-					
+
 					# Wait for running up to ~90s
 					$running = $false
 					for ($i = 0; $i -lt 45; $i++)
@@ -772,7 +772,7 @@ WHERE name = N'$dbNameQuoted';
 					}
 					if ($running) { Write_Log "Service started." "green" }
 					else { Write_Log "ERROR: Service did not report RUNNING in time." "red" }
-					
+
 					# Re-probe system DBs after restart (simple loop)
 					$reprobeOK = $false
 					for ($t = 1; $t -le 60; $t++)
@@ -803,14 +803,14 @@ WHERE name = N'$dbNameQuoted';
 							Start-Sleep -Milliseconds 2000
 						}
 					}
-					
+
 					if (-not $reprobeOK)
 					{
 						Write_Log "ERROR: Could not reconnect after service restart; skipping lane." "red"
 						$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'ServiceRestartFailed' })
 						continue
 					}
-					
+
 					try
 					{
 						$badSystemDbs = @(& $getSystemDbProblems $connStr)
@@ -821,13 +821,13 @@ WHERE name = N'$dbNameQuoted';
 						$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'SystemDbReprobeFailed' })
 						continue
 					}
-					
+
 					$tempdbStillBad = $false
 					foreach ($b in $badSystemDbs)
 					{
 						if ($b.Name -eq 'tempdb') { $tempdbStillBad = $true; break }
 					}
-					
+
 					if ($tempdbStillBad)
 					{
 						Write_Log "ERROR: tempdb is still not ONLINE after SQL service restart. Skipping lane." "red"
@@ -842,7 +842,7 @@ WHERE name = N'$dbNameQuoted';
 					continue
 				}
 			}
-			
+
 			# If master is bad -> do not automate
 			$hasMaster = $false
 			$hasModel = $false
@@ -853,7 +853,7 @@ WHERE name = N'$dbNameQuoted';
 				if ($b.Name -eq 'model') { $hasModel = $true }
 				if ($b.Name -eq 'msdb') { $hasMsdb = $true }
 			}
-			
+
 			if ($hasMaster)
 			{
 				Write_Log "CRITICAL: master is not ONLINE. Automated repair is not supported here." "red"
@@ -861,51 +861,51 @@ WHERE name = N'$dbNameQuoted';
 				$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'MasterNotOnline' })
 				continue
 			}
-			
+
 			# model/msdb -> optional emergency deep repair prompt
 			$targets = @()
 			if ($hasModel) { $targets += 'model' }
 			if ($hasMsdb) { $targets += 'msdb' }
-			
+
 			if ($targets.Count -gt 0)
 			{
 				$list = ($targets -join ', ')
 				$warn = "Lane $laneKeyP ($machineName): $list is not ONLINE.`r`n`r`n" +
 				"Attempt DEEP REPAIR (EMERGENCY + REPAIR_ALLOW_DATA_LOSS) for these system DB(s)?`r`n" +
 				"This can cause data loss. Recommended alternative is RESTORE from backup."
-				
+
 				$resp2 = [System.Windows.Forms.MessageBox]::Show(
 					$warn,
 					"Deep Repair system DB(s)?",
 					[System.Windows.Forms.MessageBoxButtons]::YesNo,
 					[System.Windows.Forms.MessageBoxIcon]::Warning
 				)
-				
+
 				if ($resp2 -ne [System.Windows.Forms.DialogResult]::Yes)
 				{
 					Write_Log ("User declined deep repair for system DB(s): {0}. Skipping lane with guidance to RESTORE." -f $list) "yellow"
 					$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'SystemDbNotOnline_Skipped' })
 					continue
 				}
-				
+
 				foreach ($sysDb in $targets)
 				{
 					Write_Log ("Attempting deep repair on system DB: {0}" -f $sysDb) "yellow"
 					$qSys = "[" + ($sysDb -replace "]", "]]") + "]"
-					
+
 					# Best-effort sequence
 					try
 					{
 						& $invokeSqlNonQuery $connStr "ALTER DATABASE $qSys SET EMERGENCY;" 30
 					}
 					catch { Write_Log ("WARN: EMERGENCY failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
-					
+
 					try
 					{
 						& $invokeSqlNonQuery $connStr "ALTER DATABASE $qSys SET SINGLE_USER WITH ROLLBACK IMMEDIATE;" 30
 					}
 					catch { Write_Log ("WARN: SINGLE_USER failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
-					
+
 					try
 					{
 						$ts = "DBCC CHECKDB ($qSys, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS;"
@@ -913,20 +913,20 @@ WHERE name = N'$dbNameQuoted';
 						Write_Log ("Deep repair completed on {0}." -f $sysDb) "green"
 					}
 					catch { Write_Log ("Deep repair failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "red" }
-					
+
 					try
 					{
 						& $invokeSqlNonQuery $connStr "ALTER DATABASE $qSys SET ONLINE;" 30
 					}
 					catch { Write_Log ("WARN: ONLINE restore failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
-					
+
 					try
 					{
 						& $invokeSqlNonQuery $connStr "ALTER DATABASE $qSys SET MULTI_USER;" 30
 					}
 					catch { Write_Log ("WARN: MULTI_USER restore failed on {0}: {1}" -f $sysDb, $_.Exception.Message) "yellow" }
 				}
-				
+
 				try
 				{
 					$badSystemDbs = @(& $getSystemDbProblems $connStr)
@@ -937,7 +937,7 @@ WHERE name = N'$dbNameQuoted';
 					$laneSummary.Add([pscustomobject]@{ Lane = $laneKeyP; Machine = $machineName; Protocol = $proto; DBServer = $dbServer; DBName = $dbName; Level = $Level; Result = 'SystemDbReprobeFailed' })
 					continue
 				}
-				
+
 				if ($badSystemDbs.Count -gt 0)
 				{
 					Write_Log "System DBs still not ONLINE after repair attempt. Skipping lane." "red"
@@ -947,7 +947,7 @@ WHERE name = N'$dbNameQuoted';
 				}
 			}
 		}
-		
+
 		# ----------------------------------------
 		# Snapshot DB state BEFORE repair (sys.databases)
 		# ----------------------------------------
@@ -957,10 +957,10 @@ WHERE name = N'$dbNameQuoted';
 			$stateBefore = & $getDatabaseState $connStr $dbName
 		}
 		catch { }
-		
+
 		if ([string]::IsNullOrWhiteSpace($stateBefore)) { $stateBefore = 'Unknown' }
 		Write_Log ("DB state before: {0}" -f $stateBefore) "gray"
-		
+
 		# ----------------------------------------
 		# Repair execution (always try to restore DB to MULTI_USER in finally)
 		# ----------------------------------------
@@ -968,11 +968,11 @@ WHERE name = N'$dbNameQuoted';
 		$usedQuick = $false
 		$usedDeep = $false
 		$auditIssueCount = $null
-		
+
 		# In all repair modes we may toggle SINGLE_USER / EMERGENCY
 		$didSingleUser = $false
 		$didEmergency = $false
-		
+
 		try
 		{
 			if ($Level -eq 'Audit')
@@ -993,7 +993,7 @@ WHERE name = N'$dbNameQuoted';
 			elseif ($Level -eq 'Quick')
 			{
 				Write_Log ("{0}: Quick repair (REPAIR_REBUILD)..." -f $dbName) "gray"
-				
+
 				# SINGLE_USER
 				try
 				{
@@ -1017,7 +1017,7 @@ WHERE name = N'$dbNameQuoted';
 				{
 					Write_Log ("WARN: SINGLE_USER failed: {0}" -f $_.Exception.Message) "yellow"
 				}
-				
+
 				# DBCC repair
 				$ts = "DBCC CHECKDB ($qDb, REPAIR_REBUILD) WITH ALL_ERRORMSGS, TABLERESULTS;"
 				if ($InvokeSupportsConnString)
@@ -1036,7 +1036,7 @@ WHERE name = N'$dbNameQuoted';
 						catch { }
 					}
 				}
-				
+
 				$ok = $true
 				$usedQuick = $true
 				Write_Log "Quick repair completed." "green"
@@ -1044,7 +1044,7 @@ WHERE name = N'$dbNameQuoted';
 			elseif ($Level -eq 'Deep')
 			{
 				Write_Log ("{0}: Deep repair (EMERGENCY + REPAIR_ALLOW_DATA_LOSS)..." -f $dbName) "gray"
-				
+
 				# EMERGENCY
 				try
 				{
@@ -1068,7 +1068,7 @@ WHERE name = N'$dbNameQuoted';
 				{
 					Write_Log ("WARN: EMERGENCY failed: {0}" -f $_.Exception.Message) "yellow"
 				}
-				
+
 				# SINGLE_USER
 				try
 				{
@@ -1092,7 +1092,7 @@ WHERE name = N'$dbNameQuoted';
 				{
 					Write_Log ("WARN: SINGLE_USER failed: {0}" -f $_.Exception.Message) "yellow"
 				}
-				
+
 				# DBCC deep repair
 				$ts = "DBCC CHECKDB ($qDb, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS, TABLERESULTS;"
 				if ($InvokeSupportsConnString)
@@ -1111,7 +1111,7 @@ WHERE name = N'$dbNameQuoted';
 						catch { }
 					}
 				}
-				
+
 				$ok = $true
 				$usedDeep = $true
 				Write_Log "Deep repair completed." "green"
@@ -1156,7 +1156,7 @@ WHERE name = N'$dbNameQuoted';
 					Write_Log ("WARN: MULTI_USER restore failed: {0}" -f $_.Exception.Message) "yellow"
 				}
 			}
-			
+
 			# Best-effort: if we set EMERGENCY, try to clear it by setting ONLINE
 			if ($didEmergency)
 			{
@@ -1184,7 +1184,7 @@ WHERE name = N'$dbNameQuoted';
 				}
 			}
 		}
-		
+
 		# ----------------------------------------
 		# Snapshot state AFTER repair
 		# ----------------------------------------
@@ -1194,10 +1194,10 @@ WHERE name = N'$dbNameQuoted';
 			$stateAfter = & $getDatabaseState $connStr $dbName
 		}
 		catch { }
-		
+
 		if ([string]::IsNullOrWhiteSpace($stateAfter)) { $stateAfter = 'Unknown' }
 		Write_Log ("DB state after:  {0}" -f $stateAfter) "gray"
-		
+
 		# ----------------------------------------
 		# Summarize lane result
 		# ----------------------------------------
@@ -1216,7 +1216,7 @@ WHERE name = N'$dbNameQuoted';
 			if ($Level -eq 'Audit') { $result = 'AuditFinishedButStateNotOnline' }
 			else { $result = 'PostRepairStateNotOnline' }
 		}
-		
+
 		$laneSummary.Add([pscustomobject]@{
 				Lane	    = $laneKeyP
 				Machine	    = $machineName
@@ -1228,10 +1228,10 @@ WHERE name = N'$dbNameQuoted';
 				DeepRepair  = $usedDeep
 				Result	    = $result
 			})
-		
+
 		Write_Log ("Lane {0} | DB {1} -> Level={2}, Protocol={3}, Quick={4}, Deep={5}, Result={6}" -f $laneKeyP, $dbName, $Level, $proto, $usedQuick, $usedDeep, $result) "gray"
 	}
-	
+
 	# ----------------------------------------
 	# Summary table + finish banner
 	# ----------------------------------------
@@ -1249,6 +1249,6 @@ WHERE name = N'$dbNameQuoted';
 	{
 		Write_Log "No lanes processed." "yellow"
 	}
-	
+
 	Write_Log "==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
 }

@@ -20,18 +20,18 @@ function Fix_Deploy_CHG
 	param (
 		[string]$OfficePath = $script:OfficePath
 	)
-	
+
 	Write_Log "`r`n==================== Starting Fix_Deploy_CHG Function ====================`r`n" "blue"
-	
+
 	$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
-	
+
 	if (-not (Test-Path $deployChgFile))
 	{
 		Write_Log "DEPLOY_CHG.sql not found at $deployChgFile" "red"
 		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
 		return
 	}
-	
+
 	$exeLine = ""
 	$fastDeployPath = $script:ScaleManagementAppFastDeployPathCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 	$regularDeployPath = $script:ScaleManagementAppPathCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
@@ -51,7 +51,7 @@ function Fix_Deploy_CHG
 		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# --- Restore DEPLOY_CHG.sql ---
 	try
 	{
@@ -78,7 +78,7 @@ function Fix_Deploy_CHG
 		Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# --- Delete the minutes task if it exists ---
 	$minutesTaskName = "Update_Scales_Specials_Task_Minutes"
 	$taskExists = schtasks /Query /TN "$minutesTaskName" 2>&1 | Select-String -Quiet -Pattern "$minutesTaskName"
@@ -94,6 +94,6 @@ function Fix_Deploy_CHG
 			Write_Log "Attempted to delete '$minutesTaskName' after restore but schtasks said: $deleteOut" "yellow"
 		}
 	}
-	
+
 	Write_Log "`r`n==================== Fix_Deploy_CHG Function Completed ====================" "blue"
 }

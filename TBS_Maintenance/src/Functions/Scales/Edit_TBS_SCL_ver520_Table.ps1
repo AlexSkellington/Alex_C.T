@@ -18,9 +18,9 @@ function Edit_TBS_SCL_ver520_Table
 {
 	[CmdletBinding()]
 	param ()
-	
+
 	Write_Log "`r`n==================== Starting Edit_TBS_SCL_ver520_Table (No Drag / No Checkbox) ====================`r`n" "blue"
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# 1) Resolve DB info and build connection string (SQL Auth preferred, else Integrated)
 	# ----------------------------------------------------------------------------------------------
@@ -28,20 +28,20 @@ function Edit_TBS_SCL_ver520_Table
 	$database = $script:FunctionResults['DBNAME']
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
 	$connectionString = Normalize_Sql_ConnectionString -RawConnectionString $script:FunctionResults['ConnectionString'] -Server $server -Database $database -SqlUser $script:FunctionResults['SQL_UserID'] -SqlPwd $script:FunctionResults['SQL_UserPwd']
-	
+
 	if (-not $server -or -not $database)
 	{
 		Write_Log "DB server or DB name missing - cannot proceed." "red"
 		return
 	}
-	
+
 	if (-not $connectionString)
 	{
 		Write_Log "Unable to build a valid SQL connection string from cached values." "red"
 		return
 	}
 	$script:FunctionResults['ConnectionString'] = $connectionString
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# 2) Pick SQL runner (Invoke-Sqlcmd if available, else .NET SqlClient)
 	# ----------------------------------------------------------------------------------------------
@@ -63,7 +63,7 @@ function Edit_TBS_SCL_ver520_Table
 		Write_Log "No SQL module name provided. Using .NET SqlClient fallback." "yellow"
 	}
 	$supportsConnectionString = $InvokeSqlCmd -and ($InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString')
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# 3) Discover the /24 prefix in use; prefer NIC that can reach the SQL server; else NIC w/ gateway; else first RFC1918
 	#     Result: $allowedPrefix like '192.168.5' (used to validate/normalize IPNetwork).
@@ -85,14 +85,14 @@ function Edit_TBS_SCL_ver520_Table
 			}
 		}
 		catch { }
-		
+
 		$allNics = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
 			$_.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up
 		}
-		
+
 		# CHANGE: Inline subnet comparison (no helper function). Compare (addr & mask) for equality.
 		$pickedIP = $null
-		
+
 		# Pass 1: NIC whose IPv4 shares subnet with SQL server
 		if ($serverIPv4s.Count -gt 0)
 		{
@@ -103,10 +103,10 @@ function Edit_TBS_SCL_ver520_Table
 				{
 					if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
 					if ($ua.IPv4Mask -eq $null) { continue }
-					
+
 					$aBytes = $ua.Address.GetAddressBytes()
 					$mBytes = $ua.IPv4Mask.GetAddressBytes()
-					
+
 					$matchFound = $false
 					foreach ($srv in $serverIPv4s)
 					{
@@ -127,7 +127,7 @@ function Edit_TBS_SCL_ver520_Table
 				if ($pickedIP) { break }
 			}
 		}
-		
+
 		# Pass 2: NIC with default gateway
 		if (-not $pickedIP)
 		{
@@ -140,7 +140,7 @@ function Edit_TBS_SCL_ver520_Table
 					if ($gw.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $hasGw = $true; break }
 				}
 				if (-not $hasGw) { continue }
-				
+
 				foreach ($ua in $ipProps.UnicastAddresses)
 				{
 					if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
@@ -150,7 +150,7 @@ function Edit_TBS_SCL_ver520_Table
 				if ($pickedIP) { break }
 			}
 		}
-		
+
 		# Pass 3: first RFC1918 IPv4
 		if (-not $pickedIP)
 		{
@@ -172,7 +172,7 @@ function Edit_TBS_SCL_ver520_Table
 				if ($pickedIP) { break }
 			}
 		}
-		
+
 		if ($pickedIP)
 		{
 			$parts = $pickedIP.Split('.')
@@ -183,7 +183,7 @@ function Edit_TBS_SCL_ver520_Table
 		}
 	}
 	catch { }
-	
+
 	if ($allowedPrefix)
 	{
 		Write_Log "IPNetwork allowed prefix detected (active NIC): $allowedPrefix" "cyan"
@@ -192,7 +192,7 @@ function Edit_TBS_SCL_ver520_Table
 	{
 		Write_Log "WARNING: Could not determine active NIC / RFC1918 IPv4. IPNetwork validation will be skipped (but trailing '.' will still be enforced if parsable)." "yellow" # CHANGE: note trailing '.' enforcement still happens
 	}
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# 4) Load table -> DataTable (include Orig* columns to anchor updates)
 	# ----------------------------------------------------------------------------------------------
@@ -202,9 +202,9 @@ SELECT
 FROM [TBS_SCL_ver520]
 ORDER BY ScaleCode ASC;
 "@
-	
+
 	Write_Log "Loading table for edit..." "blue"
-	
+
 	# CHANGE: Inline query execution (no $runQuery helper). Return rows.
 	$rows = $null
 	try
@@ -240,14 +240,14 @@ ORDER BY ScaleCode ASC;
 		return
 	}
 	if (-not $rows) { return }
-	
+
 	$dt = New-Object System.Data.DataTable
 	foreach ($c in 'ScaleCode', 'ScaleName', 'ScaleBrand', 'ScaleModel', 'IPNetwork', 'IPDevice', 'BufferTime', 'Active',
 		'OrigScaleBrand', 'OrigScaleModel', 'OrigIPNetwork', 'OrigIPDevice')
 	{
 		[void]$dt.Columns.Add($c)
 	}
-	
+
 	foreach ($r in $rows)
 	{
 		$nr = $dt.NewRow()
@@ -266,13 +266,13 @@ ORDER BY ScaleCode ASC;
 		$nr['OrigIPDevice'] = [string]$r.IPDevice
 		[void]$dt.Rows.Add($nr)
 	}
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# 5) WinForms UI - simple layout (no drag UI, no checkbox)
 	# ----------------------------------------------------------------------------------------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Edit Placings - TBS_SCL_ver520"
 	$form.StartPosition = 'CenterScreen'
@@ -280,7 +280,7 @@ ORDER BY ScaleCode ASC;
 	$form.MinimumSize = New-Object System.Drawing.Size(960, 600)
 	$form.AutoScaleMode = 'Dpi'
 	$form.TopMost = $true
-	
+
 	$grid = New-Object System.Windows.Forms.DataGridView
 	$grid.Dock = [System.Windows.Forms.DockStyle]::Fill
 	$grid.AutoGenerateColumns = $false
@@ -293,7 +293,7 @@ ORDER BY ScaleCode ASC;
 	$grid.ColumnHeadersHeightSizeMode = 'AutoSize'
 	$grid.AllowUserToOrderColumns = $true
 	$grid.RowHeadersWidth = 30
-	
+
 	# CHANGE: Inline column creation (removed $AddCol helper).
 	$col_ScaleCode = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_ScaleCode.HeaderText = 'ScaleCode'
@@ -301,56 +301,56 @@ ORDER BY ScaleCode ASC;
 	$col_ScaleCode.ReadOnly = $false
 	$col_ScaleCode.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_ScaleCode) | Out-Null
-	
+
 	$col_ScaleName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_ScaleName.HeaderText = 'ScaleName'
 	$col_ScaleName.DataPropertyName = 'ScaleName'
 	$col_ScaleName.ReadOnly = $false
 	$col_ScaleName.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_ScaleName) | Out-Null
-	
+
 	$col_ScaleBrand = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_ScaleBrand.HeaderText = 'ScaleBrand'
 	$col_ScaleBrand.DataPropertyName = 'ScaleBrand'
 	$col_ScaleBrand.ReadOnly = $false
 	$col_ScaleBrand.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_ScaleBrand) | Out-Null
-	
+
 	$col_ScaleModel = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_ScaleModel.HeaderText = 'ScaleModel'
 	$col_ScaleModel.DataPropertyName = 'ScaleModel'
 	$col_ScaleModel.ReadOnly = $false
 	$col_ScaleModel.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_ScaleModel) | Out-Null
-	
+
 	$col_IPNetwork = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_IPNetwork.HeaderText = 'IPNetwork'
 	$col_IPNetwork.DataPropertyName = 'IPNetwork'
 	$col_IPNetwork.ReadOnly = $false
 	$col_IPNetwork.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_IPNetwork) | Out-Null
-	
+
 	$col_IPDevice = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_IPDevice.HeaderText = 'IPDevice'
 	$col_IPDevice.DataPropertyName = 'IPDevice'
 	$col_IPDevice.ReadOnly = $false
 	$col_IPDevice.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_IPDevice) | Out-Null
-	
+
 	$col_BufferTime = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_BufferTime.HeaderText = 'BufferTime'
 	$col_BufferTime.DataPropertyName = 'BufferTime'
 	$col_BufferTime.ReadOnly = $false
 	$col_BufferTime.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_BufferTime) | Out-Null
-	
+
 	$col_Active = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_Active.HeaderText = 'Active'
 	$col_Active.DataPropertyName = 'Active'
 	$col_Active.ReadOnly = $false
 	$col_Active.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_Active) | Out-Null
-	
+
 	# Hidden originals
 	$col_OrigScaleBrand = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_OrigScaleBrand.HeaderText = 'OrigScaleBrand'
@@ -359,7 +359,7 @@ ORDER BY ScaleCode ASC;
 	$col_OrigScaleBrand.Visible = $false
 	$col_OrigScaleBrand.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_OrigScaleBrand) | Out-Null
-	
+
 	$col_OrigScaleModel = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_OrigScaleModel.HeaderText = 'OrigScaleModel'
 	$col_OrigScaleModel.DataPropertyName = 'OrigScaleModel'
@@ -367,7 +367,7 @@ ORDER BY ScaleCode ASC;
 	$col_OrigScaleModel.Visible = $false
 	$col_OrigScaleModel.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_OrigScaleModel) | Out-Null
-	
+
 	$col_OrigIPNetwork = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_OrigIPNetwork.HeaderText = 'OrigIPNetwork'
 	$col_OrigIPNetwork.DataPropertyName = 'OrigIPNetwork'
@@ -375,7 +375,7 @@ ORDER BY ScaleCode ASC;
 	$col_OrigIPNetwork.Visible = $false
 	$col_OrigIPNetwork.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_OrigIPNetwork) | Out-Null
-	
+
 	$col_OrigIPDevice = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$col_OrigIPDevice.HeaderText = 'OrigIPDevice'
 	$col_OrigIPDevice.DataPropertyName = 'OrigIPDevice'
@@ -383,16 +383,16 @@ ORDER BY ScaleCode ASC;
 	$col_OrigIPDevice.Visible = $false
 	$col_OrigIPDevice.SortMode = 'NotSortable'
 	$grid.Columns.Add($col_OrigIPDevice) | Out-Null
-	
+
 	$grid.DataSource = $dt
 	$form.Controls.Add($grid)
-	
+
 	# Bottom bar
 	$bottom = New-Object System.Windows.Forms.Panel
 	$bottom.Dock = [System.Windows.Forms.DockStyle]::Bottom
 	$bottom.Height = 86
 	$form.Controls.Add($bottom)
-	
+
 	$lbl = New-Object System.Windows.Forms.Label
 	$lbl.AutoSize = $true
 	$lbl.Location = New-Object System.Drawing.Point(10, 10)
@@ -407,40 +407,40 @@ ORDER BY ScaleCode ASC;
 		$lbl.Text = "Edit cells directly. Auto Sort applies standard order + numbering and saves immediately.  Active must be Y/N. IPNetwork will be normalized to 'A.B.C.' (trailing dot) if parsable."
 	}
 	$bottom.Controls.Add($lbl)
-	
+
 	$btnAuto = New-Object System.Windows.Forms.Button
 	$btnAuto.Text = "Auto Sort (BIZERBA first)"
 	$btnAuto.Size = New-Object System.Drawing.Size(220, 28)
 	$btnAuto.Location = New-Object System.Drawing.Point(10, 44)
 	$bottom.Controls.Add($btnAuto)
-	
+
 	$btnRefresh = New-Object System.Windows.Forms.Button
 	$btnRefresh.Text = "Refresh"
 	$btnRefresh.Size = New-Object System.Drawing.Size(100, 28)
 	$btnRefresh.Location = New-Object System.Drawing.Point(240, 44)
 	$bottom.Controls.Add($btnRefresh)
-	
+
 	$btnClose = New-Object System.Windows.Forms.Button
 	$btnClose.Text = "Close"
 	$btnClose.Size = New-Object System.Drawing.Size(100, 28)
 	$bottom.Controls.Add($btnClose)
-	
+
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Size = New-Object System.Drawing.Size(100, 28)
 	$bottom.Controls.Add($btnCancel)
-	
+
 	$btnSave = New-Object System.Windows.Forms.Button
 	$btnSave.Text = "Save"
 	$btnSave.Size = New-Object System.Drawing.Size(100, 28)
 	$bottom.Controls.Add($btnSave)
-	
+
 	# CHANGE: Inline initial placement (removed $placeButtons helper)
 	$bw = [int]$bottom.ClientSize.Width
 	$btnSave.Location = New-Object System.Drawing.Point(($bw - 110), 44)
 	$btnCancel.Location = New-Object System.Drawing.Point(($bw - 220), 44)
 	$btnClose.Location = New-Object System.Drawing.Point(($bw - 330), 44)
-	
+
 	# CHANGE: Inline resize handler computes placements directly
 	$form.add_Resize({
 			$bw2 = [int]$bottom.ClientSize.Width
@@ -448,7 +448,7 @@ ORDER BY ScaleCode ASC;
 			$btnCancel.Location = New-Object System.Drawing.Point(($bw2 - 220), 44)
 			$btnClose.Location = New-Object System.Drawing.Point(($bw2 - 330), 44)
 		})
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Helper-less inline SAVE logic (duplicated in Save and Auto Sort to keep "all inline" constraint)
 	# ----------------------------------------------------------------------------------------------
@@ -503,7 +503,7 @@ BEGIN CATCH
   RAISERROR(@msg, 16, 1);
 END CATCH;
 '@
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# 6) Button: Save (validate + write exactly what's in grid; no renumber)
 	# ----------------------------------------------------------------------------------------------
@@ -511,7 +511,7 @@ END CATCH;
 			# Commit any in-progress grid edits (inline, no helper)
 			if ($grid -and $grid.IsCurrentCellInEditMode) { [void]$grid.EndEdit() }
 			else { if ($grid) { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) } }
-			
+
 			# Validate ScaleCode unique & numeric; Active Y/N; IPNetwork matches allowed /24 if available
 			$seenCodes = @{ }
 			$rowIdx = 0
@@ -530,7 +530,7 @@ END CATCH;
 					return
 				}
 				$seenCodes[$val] = $true
-				
+
 				$actRaw = [string]$row['Active']; if ($null -eq $actRaw) { $actRaw = '' }
 				$actUp = $actRaw.Trim().ToUpper()
 				if ($actUp -ne 'Y' -and $actUp -ne 'N')
@@ -539,11 +539,11 @@ END CATCH;
 					return
 				}
 				$row['Active'] = $actUp
-				
+
 				# --- IPNetwork normalization/enforcement (ALWAYS ends with a period) -----------------
 				$ipnRaw = [string]$row['IPNetwork']; if ($null -eq $ipnRaw) { $ipnRaw = '' }
 				$ipnRaw = $ipnRaw.Trim()
-				
+
 				if ($allowedPrefix)
 				{
 					# Validate input looks like allowedPrefix.(something optional), then normalize strictly to "$allowedPrefix."
@@ -559,7 +559,7 @@ END CATCH;
 						[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$($rowIdx + 1) must be within '$allowedPrefix.*'. Got '$ipnRaw'.", "IPNetwork Out of Range", 'OK', 'Error')
 						return
 					}
-					
+
 					# CHANGE: enforce trailing period
 					$row['IPNetwork'] = "$allowedPrefix." # <-- always ends with a '.'
 				}
@@ -580,10 +580,10 @@ END CATCH;
 					}
 				}
 				# --------------------------------------------------------------------------------------
-				
+
 				$rowIdx = $rowIdx + 1
 			}
-			
+
 			# Build VALUES block with proper SQL escaping
 			$values = New-Object System.Collections.Generic.List[string]
 			foreach ($row in $dt.Rows)
@@ -596,12 +596,12 @@ END CATCH;
 				$nBuf = ([string]$row['BufferTime']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
 				$nName = ([string]$row['ScaleName']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
 				$nAct = ([string]$row['Active']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				
+
 				$oBrand = (([string]$row['OrigScaleBrand'])) -replace "'", "''"
 				$oModel = (([string]$row['OrigScaleModel'])) -replace "'", "''"
 				$oIPNet = (([string]$row['OrigIPNetwork'])) -replace "'", "''"
 				$oIPDev = (([string]$row['OrigIPDevice'])) -replace "'", "''"
-				
+
 				$values.Add("('$oBrand','$oModel','$oIPNet','$oIPDev','$nBrand','$nModel','$nIPNet','$nIPDev',$nCode,'$nBuf','$nName','$nAct')")
 			}
 			if ($values.Count -eq 0)
@@ -609,11 +609,11 @@ END CATCH;
 				Write_Log "Nothing to save." "yellow"
 				return
 			}
-			
+
 			$sqlSave = $sqlSaveTemplate.Replace('$(VALUES_BLOCK)', ([string]::Join(",`r`n  ", $values)))
-			
+
 			Write_Log "Saving to database..." "blue"
-			
+
 			# Execute non-query inline
 			$ok = $true
 			try
@@ -647,7 +647,7 @@ END CATCH;
 				[void][System.Windows.Forms.MessageBox]::Show("Save failed. Check logs.", "Error", 'OK', 'Error')
 			}
 			if (-not $ok) { return }
-			
+
 			# Refresh view from DB
 			Write_Log "Refreshing view..." "blue"
 			$fresh = $null
@@ -683,7 +683,7 @@ END CATCH;
 				Write_Log "SQL error (refresh): $($_.Exception.Message)" "red"
 				return
 			}
-			
+
 			if ($fresh)
 			{
 				$dt.Rows.Clear() | Out-Null
@@ -706,11 +706,11 @@ END CATCH;
 				}
 				$grid.Refresh()
 			}
-			
+
 			[void][System.Windows.Forms.MessageBox]::Show("Saved and refreshed.", "Success", 'OK', 'Information')
 			Write_Log "Saved and refreshed." "green"
 		})
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# 7) Auto Sort: BIZERBA by numeric IP then ISHIDA, renumber, template names, immediate SAVE
 	# ----------------------------------------------------------------------------------------------
@@ -728,7 +728,7 @@ END CATCH;
 				if ($o.ScaleBrand -eq 'BIZERBA') { $snapB += $o }
 				elseif ($o.ScaleBrand -eq 'ISHIDA') { $snapI += $o }
 			}
-			
+
 			# Sort by numeric IPDevice (non-numeric last), then by raw IPDevice
 			$snapB = $snapB | Sort-Object @{
 				Expression = {
@@ -744,7 +744,7 @@ END CATCH;
 				}
 			},
 										  @{ Expression = { $_.IPDevice } }
-			
+
 			$dt.BeginLoadData()
 			try
 			{
@@ -753,7 +753,7 @@ END CATCH;
 				foreach ($s in $snapI) { $nr = $dt.NewRow(); foreach ($k in $s.Keys) { $nr[$k] = [string]$s[$k] }; [void]$dt.Rows.Add($nr) }
 			}
 			finally { $dt.EndLoadData() }
-			
+
 			# Template naming + BufferTime for BIZERBA; Ishida WMAI name rule
 			$firstB = $true
 			foreach ($r in $dt.Rows)
@@ -769,7 +769,7 @@ END CATCH;
 			foreach ($r in $dt.Rows) { if ($r['ScaleBrand'] -eq 'ISHIDA' -and $r['ScaleModel'] -eq 'WMAI') { $ishWmai += $r } }
 			if ($ishWmai.Count -gt 1) { foreach ($r in $ishWmai) { $r['ScaleName'] = "Ishida Wrapper $($r['IPDevice'])" } }
 			elseif ($ishWmai.Count -eq 1) { $ishWmai[0]['ScaleName'] = 'Ishida Wrapper' }
-			
+
 			# Renumber: BIZERBA start at 10; ISHIDA start at (last BIZERBA)+10 or 20 if none
 			$codeB = 10
 			foreach ($r in $dt.Rows) { if ($r['ScaleBrand'] -eq 'BIZERBA') { $r['ScaleCode'] = [string]$codeB; $codeB = $codeB + 1 } }
@@ -777,13 +777,13 @@ END CATCH;
 			if ($codeB -gt 10) { $ishidaStart = ($codeB - 1) + 10 }
 			$codeI = $ishidaStart
 			foreach ($r in $dt.Rows) { if ($r['ScaleBrand'] -eq 'ISHIDA') { $r['ScaleCode'] = [string]$codeI; $codeI = $codeI + 1 } }
-			
+
 			$grid.Refresh()
-			
+
 			# Immediately SAVE (same validation rules as Save button)
 			if ($grid -and $grid.IsCurrentCellInEditMode) { [void]$grid.EndEdit() }
 			else { if ($grid) { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) } }
-			
+
 			$seenCodes2 = @{ }
 			$rowIdx2 = 0
 			foreach ($row2 in $dt.Rows)
@@ -801,7 +801,7 @@ END CATCH;
 					return
 				}
 				$seenCodes2[$val2] = $true
-				
+
 				$actRaw2 = [string]$row2['Active']; if ($null -eq $actRaw2) { $actRaw2 = '' }
 				$actUp2 = $actRaw2.Trim().ToUpper()
 				if ($actUp2 -ne 'Y' -and $actUp2 -ne 'N')
@@ -810,11 +810,11 @@ END CATCH;
 					return
 				}
 				$row2['Active'] = $actUp2
-				
+
 				# --- IPNetwork normalization/enforcement (ALWAYS ends with a period) -----------------
 				$ipnRaw2 = [string]$row2['IPNetwork']; if ($null -eq $ipnRaw2) { $ipnRaw2 = '' }
 				$ipnRaw2 = $ipnRaw2.Trim()
-				
+
 				if ($allowedPrefix)
 				{
 					$m2 = [regex]::Match($ipnRaw2, '^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\.(?:\d{1,3}|\*|x|X)?)?\s*$')
@@ -829,7 +829,7 @@ END CATCH;
 						[void][System.Windows.Forms.MessageBox]::Show("IPNetwork at row #$($rowIdx2 + 1) must be within '$allowedPrefix.*'. Got '$ipnRaw2'.", "IPNetwork Out of Range", 'OK', 'Error')
 						return
 					}
-					
+
 					# CHANGE: enforce trailing period
 					$row2['IPNetwork'] = "$allowedPrefix." # <-- always ends with '.'
 				}
@@ -849,10 +849,10 @@ END CATCH;
 					}
 				}
 				# --------------------------------------------------------------------------------------
-				
+
 				$rowIdx2 = $rowIdx2 + 1
 			}
-			
+
 			$values2 = New-Object System.Collections.Generic.List[string]
 			foreach ($row3 in $dt.Rows)
 			{
@@ -864,12 +864,12 @@ END CATCH;
 				$nBuf2 = ([string]$row3['BufferTime']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
 				$nName2 = ([string]$row3['ScaleName']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
 				$nAct2 = ([string]$row3['Active']).Replace("`r", "").Replace("`n", "") -replace "'", "''"
-				
+
 				$oBrand2 = (([string]$row3['OrigScaleBrand'])) -replace "'", "''"
 				$oModel2 = (([string]$row3['OrigScaleModel'])) -replace "'", "''"
 				$oIPNet2 = (([string]$row3['OrigIPNetwork'])) -replace "'", "''"
 				$oIPDev2 = (([string]$row3['OrigIPDevice'])) -replace "'", "''"
-				
+
 				$values2.Add("('$oBrand2','$oModel2','$oIPNet2','$oIPDev2','$nBrand2','$nModel2','$nIPNet2','$nIPDev2',$nCode2,'$nBuf2','$nName2','$nAct2')")
 			}
 			if ($values2.Count -eq 0)
@@ -877,11 +877,11 @@ END CATCH;
 				Write_Log "Nothing to save after Auto Sort." "yellow"
 				return
 			}
-			
+
 			$sqlSave2 = $sqlSaveTemplate.Replace('$(VALUES_BLOCK)', ([string]::Join(",`r`n  ", $values2)))
-			
+
 			Write_Log "Saving to database after Auto Sort..." "blue"
-			
+
 			$ok2 = $true
 			try
 			{
@@ -914,7 +914,7 @@ END CATCH;
 				[void][System.Windows.Forms.MessageBox]::Show("Save after Auto Sort failed. Check logs.", "Error", 'OK', 'Error')
 			}
 			if (-not $ok2) { return }
-			
+
 			# Refresh view from DB
 			Write_Log "Refreshing view after Auto Sort..." "blue"
 			$fresh2 = $null
@@ -950,7 +950,7 @@ END CATCH;
 				Write_Log "SQL error (refresh after Auto Sort): $($_.Exception.Message)" "red"
 				return
 			}
-			
+
 			if ($fresh2)
 			{
 				$dt.Rows.Clear() | Out-Null
@@ -973,11 +973,11 @@ END CATCH;
 				}
 				$grid.Refresh()
 			}
-			
+
 			[void][System.Windows.Forms.MessageBox]::Show("Auto Sort applied, saved, and refreshed.", "Success", 'OK', 'Information')
 			Write_Log "Auto Sort applied, saved, and refreshed." "green"
 		})
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# 8) Refresh / Close / Cancel wiring (inline)
 	# ----------------------------------------------------------------------------------------------
@@ -1016,7 +1016,7 @@ END CATCH;
 				Write_Log "SQL error (refresh): $($_.Exception.Message)" "red"
 				return
 			}
-			
+
 			if ($fresh)
 			{
 				$dt.Rows.Clear() | Out-Null
@@ -1040,13 +1040,13 @@ END CATCH;
 				$grid.Refresh()
 			}
 		})
-	
+
 	$btnClose.add_Click({ $form.Close() })
 	$btnCancel.add_Click({
 			Write_Log "Cancel: reloading from database..." "yellow"
 			$btnRefresh.PerformClick()
 		})
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# 9) Show dialog
 	# ----------------------------------------------------------------------------------------------

@@ -43,21 +43,21 @@ function Download_NSSM
 		# If you want failures to throw
 		[switch]$ThrowOnFail
 	)
-	
+
 	# Single log path (overwrite each run)
 	$script:NssmDownloadLog = Join-Path $script:ScriptsLog 'Download_NSSM_LOG.txt'
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Target paths
 	# ------------------------------------------------------------------------------------------------
 	$script:NssmDir = Join-Path $ToolsRoot 'NSSM'
 	$script:NssmExe = Join-Path $script:NssmDir 'nssm.exe'
-	
+
 	# Publish paths for other functions
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 	$script:FunctionResults['NssmDir'] = $script:NssmDir
 	$script:FunctionResults['NssmExe'] = $script:NssmExe
-	
+
 	# Ensure tools folders exist
 	try
 	{
@@ -69,13 +69,13 @@ function Download_NSSM
 		if ($ThrowOnFail) { throw "Download_NSSM: Failed creating tools folder(s). $($_.Exception.Message)" }
 		return @{ Success = $false; Path = $script:NssmExe; Note = 'Tools folder create failed'; Error = $_.Exception.Message; Log = $script:NssmDownloadLog }
 	}
-	
+
 	# Fast return if already present and not forcing
 	if (-not $ForceDownload -and (Test-Path $script:NssmExe))
 	{
 		return @{ Success = $true; Path = $script:NssmExe; Note = 'Already present'; Log = $script:NssmDownloadLog }
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Download script (runs in current session OR a background runspace)
 	#   - NO nested functions (uses scriptblocks)
@@ -310,7 +310,7 @@ catch
 	return @{ Success = $false; Path = $NssmExe; Note = 'Exception'; Error = $_.Exception.Message }
 }
 '@
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Background job (in-process runspace) - avoids hidden spawned PowerShell that AV hates
 	# ------------------------------------------------------------------------------------------------
@@ -321,7 +321,7 @@ catch
 		{
 			return @{ Success = $true; Path = $script:NssmExe; Note = 'Already downloading in background'; Log = $script:NssmDownloadLog }
 		}
-		
+
 		try
 		{
 			# Create a 1-thread runspace pool
@@ -329,19 +329,19 @@ catch
 			$pool.ApartmentState = 'MTA'
 			$pool.ThreadOptions = 'ReuseThread'
 			$pool.Open()
-			
+
 			$ps = [PowerShell]::Create()
 			$ps.RunspacePool = $pool
-			
+
 			$null = $ps.AddScript($downloadScriptText)
 			$null = $ps.AddArgument($ToolsRoot)
 			$null = $ps.AddArgument([bool]$ForceDownload.IsPresent)
 			$null = $ps.AddArgument($script:NssmDir)
 			$null = $ps.AddArgument($script:NssmExe)
 			$null = $ps.AddArgument($script:NssmDownloadLog)
-			
+
 			$handle = $ps.BeginInvoke()
-			
+
 			# Keep a handle so we can wait later if needed
 			$script:NssmDownloadJob = @{
 				PS	    = $ps
@@ -351,7 +351,7 @@ catch
 				Log	    = $script:NssmDownloadLog
 				Exe	    = $script:NssmExe
 			}
-			
+
 			# Return immediately unless -Wait is also requested
 			if (-not $Wait)
 			{
@@ -364,14 +364,14 @@ catch
 			return @{ Success = $false; Path = $script:NssmExe; Note = 'Background start failed'; Error = $_.Exception.Message; Log = $script:NssmDownloadLog }
 		}
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Wait mode (only blocks when asked)
 	# ------------------------------------------------------------------------------------------------
 	if ($Wait)
 	{
 		$deadline = (Get-Date).AddSeconds($WaitTimeoutSeconds)
-		
+
 		while ((Get-Date) -lt $deadline)
 		{
 			if (Test-Path $script:NssmExe)
@@ -392,20 +392,20 @@ catch
 					}
 					catch { }
 				}
-				
+
 				return @{ Success = $true; Path = $script:NssmExe; Note = 'NSSM ready'; Log = $script:NssmDownloadLog }
 			}
-			
+
 			# Keep WinForms responsive if applicable
 			try { [System.Windows.Forms.Application]::DoEvents() }
 			catch { }
 			Start-Sleep -Milliseconds $WaitPollMilliseconds
 		}
-		
+
 		if ($ThrowOnFail) { throw "Download_NSSM: Timed out waiting for NSSM. Check log: $script:NssmDownloadLog" }
 		return @{ Success = $false; Path = $script:NssmExe; Note = 'Timed out waiting for NSSM'; Log = $script:NssmDownloadLog }
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Synchronous (blocking) if neither -Background nor -Wait
 	# ------------------------------------------------------------------------------------------------
@@ -413,12 +413,12 @@ catch
 	{
 		$sb = [ScriptBlock]::Create($downloadScriptText)
 		$result = & $sb $ToolsRoot ([bool]$ForceDownload.IsPresent) $script:NssmDir $script:NssmExe $script:NssmDownloadLog
-		
+
 		if ($result -and $result.Success)
 		{
 			return @{ Success = $true; Path = $script:NssmExe; Note = $result.Note; Log = $script:NssmDownloadLog }
 		}
-		
+
 		if ($ThrowOnFail) { throw "Download_NSSM: Failed. Check log: $script:NssmDownloadLog" }
 		return @{ Success = $false; Path = $script:NssmExe; Note = 'Failed'; Log = $script:NssmDownloadLog }
 	}

@@ -1,5 +1,5 @@
 ######################################################################################################################
-# 
+#
 # Server Tools Button
 #
 ######################################################################################################################
@@ -18,7 +18,7 @@ $Create_CategoryButton = {
 		[int]$Y,
 		[System.Windows.Forms.ContextMenuStrip]$ContextMenu
 	)
-	
+
 	$Btn = New-Object System.Windows.Forms.Button
 	$Btn.Text = "$Icon $ButtonText"
 	$Btn.Location = New-Object System.Drawing.Point($X, $Y)
@@ -34,14 +34,14 @@ $Create_CategoryButton = {
 	$Btn.FlatAppearance.BorderSize = 0
 	$Btn.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(240, 245, 250)
 	$Btn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(225, 238, 250)
-	
+
 	# Store category color for hover
 	$Btn.Tag = [pscustomobject]@{
 		CategoryColor = $CategoryColor
 		OrigFore = $Btn.ForeColor
 		OrigBack = $Btn.BackColor
 	}
-	
+
 	# Bottom accent line
 	$Btn.add_Paint({
 			param ($s, $e)
@@ -51,7 +51,7 @@ $Create_CategoryButton = {
 				$pen = New-Object System.Drawing.Pen($s.Tag.CategoryColor, 3)
 				$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
 				$pen.Dispose()
-				
+
 				# Subtle bottom shadow
 				$pen2 = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(200, 200, 200))
 				$e.Graphics.DrawLine($pen2, 2, $s.Height - 1, $s.Width - 2, $s.Height - 1)
@@ -59,7 +59,7 @@ $Create_CategoryButton = {
 			}
 			catch { }
 		})
-	
+
 	# Hover effect
 	$Btn.add_MouseEnter({
 			param ($s, $e)
@@ -79,14 +79,14 @@ $Create_CategoryButton = {
 			}
 			catch { }
 		})
-	
+
 	# Show context menu on click
 	$Btn.add_Click({
 			param ($s, $e)
 			$script:LastActivity = Get-Date
 			$ContextMenu.Show($s, 0, $s.Height)
 		})
-	
+
 	return $Btn
 }
 
@@ -165,7 +165,7 @@ $toolTip.SetToolTip($ServerToolsButton, "Click for server-related tools. Right-c
 $form.Controls.Add($ServerToolsButton)
 
 ############################################################################
-# 1) Server DB Maintenance 
+# 1) Server DB Maintenance
 ############################################################################
 $ServerDBMaintenanceItem = New-Object System.Windows.Forms.ToolStripMenuItem("Server DB Maintenance")
 $ServerDBMaintenanceItem.ToolTipText = "Runs maintenance on the store server database."

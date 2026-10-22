@@ -36,19 +36,19 @@ function Export_VNC_Files_For_All_Nodes
 		[Parameter(Mandatory = $false)]
 		[switch]$InternalBackgroundJob
 	)
-	
+
 	$log = {
 		param (
 			[string]$Message,
 			[string]$Color = "Black"
 		)
-		
+
 		if (-not $SilentBackground)
 		{
 			Write_Log $Message $Color
 		}
 	}
-	
+
 	$validLaneMap = @{ }
 	if ($LaneNumToMachineName)
 	{
@@ -61,7 +61,7 @@ function Export_VNC_Files_For_All_Nodes
 			}
 		}
 	}
-	
+
 	$validScaleMap = @{ }
 	if ($ScaleCodeToIPInfo)
 	{
@@ -85,14 +85,14 @@ function Export_VNC_Files_For_All_Nodes
 					$ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
 				}
 			}
-			
+
 			if (-not [string]::IsNullOrWhiteSpace($ip))
 			{
 				$validScaleMap[[string]$kv.Key] = $scaleObj
 			}
 		}
 	}
-	
+
 	$validBackofficeMap = @{ }
 	if ($BackofficeNumToMachineName)
 	{
@@ -105,11 +105,11 @@ function Export_VNC_Files_For_All_Nodes
 			}
 		}
 	}
-	
+
 	$LaneNumToMachineName = $validLaneMap
 	$ScaleCodeToIPInfo = $validScaleMap
 	$BackofficeNumToMachineName = $validBackofficeMap
-	
+
 	if ($RunInBackground -and -not $InternalBackgroundJob)
 	{
 		$hasAnyNodes = (
@@ -117,9 +117,9 @@ function Export_VNC_Files_For_All_Nodes
 			($ScaleCodeToIPInfo -and $ScaleCodeToIPInfo.Count -gt 0) -or
 			($BackofficeNumToMachineName -and $BackofficeNumToMachineName.Count -gt 0)
 		)
-		
+
 		if (-not $hasAnyNodes) { return }
-		
+
 		if (
 			$script:VncExportTask -and
 			$script:VncExportTask.Job -and
@@ -128,13 +128,13 @@ function Export_VNC_Files_For_All_Nodes
 		{
 			return
 		}
-		
+
 		try
 		{
 			$writeLogDefinition = 'param([string]$Message, $Color, [switch]$IncludeTimestamp)'
 			$getAllVncPasswordsDefinition = ${function:Get_All_VNC_Passwords}.ToString()
 			$exportVncDefinition = ${function:Export_VNC_Files_For_All_Nodes}.ToString()
-			
+
 			$job = Start-Job -Name 'VNCExportJob' -ScriptBlock {
 				param (
 					[string]$WriteLogDefinition,
@@ -147,18 +147,18 @@ function Export_VNC_Files_For_All_Nodes
 					[string]$UltraVncFolder,
 					[int]$AnsiCodePage
 				)
-				
+
 				Add-Type -AssemblyName System.Windows.Forms 2>$null
 				Add-Type -AssemblyName System.Drawing 2>$null
-				
+
 				Set-Item -Path function:Write_Log -Value ([scriptblock]::Create($WriteLogDefinition))
 				Set-Item -Path function:Get_All_VNC_Passwords -Value ([scriptblock]::Create($GetAllVncPasswordsDefinition))
 				Set-Item -Path function:Export_VNC_Files_For_All_Nodes -Value ([scriptblock]::Create($ExportVncDefinition))
-				
+
 				$script:UltraVncFolder = $UltraVncFolder
 				$script:ansiPcEncoding = [System.Text.Encoding]::GetEncoding($AnsiCodePage)
 				$script:FunctionResults = @{ }
-				
+
 				try
 				{
 					Export_VNC_Files_For_All_Nodes `
@@ -168,13 +168,13 @@ function Export_VNC_Files_For_All_Nodes
 												   -AllVNCPasswords $AllVncPasswords `
 												   -SilentBackground `
 												   -InternalBackgroundJob
-					
+
 					$passwordCache = $null
 					if ($script:FunctionResults.ContainsKey('AllVNCPasswords'))
 					{
 						$passwordCache = $script:FunctionResults['AllVNCPasswords']
 					}
-					
+
 					[pscustomobject]@{
 						Success		    = $true
 						AllVNCPasswords = $passwordCache
@@ -200,12 +200,12 @@ function Export_VNC_Files_For_All_Nodes
 				$script:UltraVncFolder,
 				1252
 			)
-			
+
 			$script:VncExportTask = @{
 				Job	    = $job
 				Started = Get-Date
 			}
-			
+
 			if (-not $script:VncExportReaper)
 			{
 				$script:VncExportReaper = New-Object System.Windows.Forms.Timer
@@ -225,22 +225,22 @@ function Export_VNC_Files_For_All_Nodes
 							catch { }
 							return
 						}
-						
+
 						$taskState = $script:VncExportTask
 						if (-not $taskState.Job -or $taskState.Job.State -in @('Running', 'NotStarted')) { return }
-						
+
 						$result = $null
 						try { $result = Receive-Job -Job $taskState.Job -ErrorAction SilentlyContinue }
 						catch { }
 						try { Remove-Job -Job $taskState.Job -Force -ErrorAction SilentlyContinue | Out-Null }
 						catch { }
-						
+
 						$resultObj = $null
 						if ($result)
 						{
 							$resultObj = @($result) | Select-Object -Last 1
 						}
-						
+
 						if (
 							$resultObj -and
 							$resultObj.Success -and
@@ -251,9 +251,9 @@ function Export_VNC_Files_For_All_Nodes
 						{
 							$script:FunctionResults['AllVNCPasswords'] = $resultObj.AllVNCPasswords
 						}
-						
+
 						$script:VncExportTask = $null
-						
+
 						try
 						{
 							if ($script:VncExportReaper)
@@ -266,7 +266,7 @@ function Export_VNC_Files_For_All_Nodes
 						catch { }
 					})
 			}
-			
+
 			$script:VncExportReaper.Start()
 		}
 		catch
@@ -275,10 +275,10 @@ function Export_VNC_Files_For_All_Nodes
 			catch { }
 			$script:VncExportTask = $null
 		}
-		
+
 		return
 	}
-	
+
 	& $log "`r`n==================== Starting Export_VNCFiles_ForAllNodes ====================`r`n" "blue"
 	$DefaultVNCPassword = "4330df922eb03b6e"
 	$desktop = [Environment]::GetFolderPath("Desktop")
@@ -288,21 +288,21 @@ function Export_VNC_Files_For_All_Nodes
 	$hasLaneNodes = ($LaneNumToMachineName -and $LaneNumToMachineName.Count -gt 0)
 	$hasScaleNodes = ($ScaleCodeToIPInfo -and $ScaleCodeToIPInfo.Count -gt 0)
 	$hasBackofficeNodes = ($BackofficeNumToMachineName -and $BackofficeNumToMachineName.Count -gt 0)
-	
+
 	if (-not ($hasLaneNodes -or $hasScaleNodes -or $hasBackofficeNodes))
 	{
 		& $log "No lanes, scales, or backoffices were found. Nothing to export." "yellow"
 		& $log "`r`n==================== Export_VNCFiles_ForAllNodes Completed ====================" "blue"
 		return
 	}
-	
+
 	# ---- If passwords not provided, scan them ----
 	if (-not $AllVNCPasswords -or $AllVNCPasswords.Count -eq 0)
 	{
 		& $log "Gathering VNC passwords for all machines`r`n" "magenta"
 		$AllVNCPasswords = Get_All_VNC_Passwords -LaneNumToMachineName $LaneNumToMachineName -ScaleCodeToIPInfo $ScaleCodeToIPInfo -BackofficeNumToMachineName $BackofficeNumToMachineName
 	}
-	
+
 	# --- Shared VNC file content with token ---
 	$vncTemplate = @"
 [connection]
@@ -408,12 +408,12 @@ AutoAcceptNoDSM=0
 RequireEncryption=0
 PreemptiveUpdates=0
 "@
-	
+
 	$resolveVncPassword = {
 		param (
 			[string]$LookupKey
 		)
-		
+
 		if (
 			$AllVNCPasswords -and
 			-not [string]::IsNullOrWhiteSpace($LookupKey) -and
@@ -423,25 +423,25 @@ PreemptiveUpdates=0
 		{
 			return [string]$AllVNCPasswords[$LookupKey]
 		}
-		
+
 		return $DefaultVNCPassword
 	}
-	
+
 	$writeExports = {
 		param (
 			[System.Collections.ArrayList]$Exports,
 			[string]$TargetDir,
 			[string]$CategoryLabel
 		)
-		
+
 		if (-not $Exports -or $Exports.Count -eq 0)
 		{
 			& $log "No $CategoryLabel VNC files to export. Skipping folder creation.`r`n" "gray"
 			return 0
 		}
-		
+
 		[void][System.IO.Directory]::CreateDirectory($TargetDir)
-		
+
 		foreach ($item in $Exports)
 		{
 			$content = $vncTemplate.Replace('%%HOST%%', $item.Host).Replace('%%PASSWORD%%', $item.Password)
@@ -449,15 +449,15 @@ PreemptiveUpdates=0
 			{
 				$content = $content -replace 'AllowUntrustedServers=0', 'AllowUntrustedServers=1'
 			}
-			
+
 			[System.IO.File]::WriteAllText($item.FilePath, $content, $script:ansiPcEncoding)
 			& $log "Created: $($item.FilePath)" "green"
 		}
-		
+
 		& $log "$($Exports.Count) $CategoryLabel VNC files written to $TargetDir`r`n" "blue"
 		return $Exports.Count
 	}
-	
+
 	# ---- Lanes ---- #
 	& $log "-------------------- Exporting Lane VNC Files --------------------" "blue"
 	$laneExports = New-Object System.Collections.ArrayList
@@ -466,7 +466,7 @@ PreemptiveUpdates=0
 	{
 		$machineName = [string]$kv.Value
 		if ([string]::IsNullOrWhiteSpace($machineName)) { continue }
-		
+
 		# Only write one file per machine name
 		$machineKey = $machineName.Trim().ToLowerInvariant()
 		if (-not $dedupedLanes.ContainsKey($machineKey))
@@ -480,7 +480,7 @@ PreemptiveUpdates=0
 			{
 				$fileName = "Lane_$($kv.Key).vnc"
 			}
-			
+
 			[void]$laneExports.Add([pscustomobject]@{
 					FilePath = [System.IO.Path]::Combine($lanesDir, $fileName)
 					Host	 = $machineName
@@ -490,7 +490,7 @@ PreemptiveUpdates=0
 		}
 	}
 	$laneCount = & $writeExports $laneExports $lanesDir 'lane'
-	
+
 	# ---- Scales ---- #
 	& $log "-------------------- Exporting Scale VNC Files --------------------" "blue"
 	$scaleExports = New-Object System.Collections.ArrayList
@@ -507,7 +507,7 @@ PreemptiveUpdates=0
 			$ipKey = $ip.Trim().ToLowerInvariant()
 			if ($dedupedScales.ContainsKey($ipKey)) { continue }
 			$dedupedScales[$ipKey] = $true
-			
+
 			$octets = $ip -split '\.'
 			$lastOctet = $octets[-1]
 			$brandRaw = ($scaleObj.ScaleBrand -as [string]).Trim()
@@ -532,7 +532,7 @@ PreemptiveUpdates=0
 			{
 				$fileName = "Scale_${lastOctet}.vnc"
 			}
-			
+
 			[void]$scaleExports.Add([pscustomobject]@{
 					FilePath = [System.IO.Path]::Combine($scalesDir, $fileName)
 					Host	 = $ip
@@ -542,7 +542,7 @@ PreemptiveUpdates=0
 		}
 	}
 	$scaleCount = & $writeExports $scaleExports $scalesDir 'scale'
-	
+
 	# ---- Backoffices ---- #
 	& $log "-------------------- Exporting Backoffice VNC Files --------------------" "blue"
 	$boExports = New-Object System.Collections.ArrayList
@@ -552,13 +552,13 @@ PreemptiveUpdates=0
 		$boName = [string]$kv.Value
 		$terminal = $kv.Key
 		if ([string]::IsNullOrWhiteSpace($boName)) { continue }
-		
+
 		$boKey = $boName.Trim().ToLowerInvariant()
 		if (-not $dedupedBOs.ContainsKey($boKey))
 		{
 			$dedupedBOs[$boKey] = $true
 			$fileName = "Backoffice_${terminal}.vnc"
-			
+
 			[void]$boExports.Add([pscustomobject]@{
 					FilePath = [System.IO.Path]::Combine($backofficesDir, $fileName)
 					Host	 = $boName
@@ -568,7 +568,7 @@ PreemptiveUpdates=0
 		}
 	}
 	$boCount = & $writeExports $boExports $backofficesDir 'backoffice'
-	
+
 	& $log "VNC file export complete!" "green"
 	& $log "`r`n==================== Export_VNCFiles_ForAllNodes Completed ====================" "blue"
 }

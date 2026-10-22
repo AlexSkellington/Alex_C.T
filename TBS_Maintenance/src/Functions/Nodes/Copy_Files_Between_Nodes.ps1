@@ -18,7 +18,7 @@
 function Copy_Files_Between_Nodes
 {
 	Write_Log "`r`n==================== Starting Copy_Files_Between_Nodes ====================`r`n" "blue"
-	
+
 	# =========================================================================================
 	# CONFIG: Quick items + optional extra server roots
 	#   Label   -> text shown in the Quick... context menu (tip: start with '\storeman\...')
@@ -34,12 +34,12 @@ function Copy_Files_Between_Nodes
 		# Add more here...
 		# @{ Label = "\storeman\XchDev\ApiVerifoneMX.ini"; Rel="XchDev\ApiVerifoneMX.ini"; Type="File"; LaneOnly=$false }
 	)
-	
+
 	# Optional extra server roots to try AFTER $BasePath (if present in any scope)
 	$ExtraServerRoots = @(
 		# "E:\storeman"
 	)
-	
+
 	# ---------------- Known lanes for combo (reads your cached maps if present) ----------------
 	$knownLanes = @()
 	if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'])
@@ -50,12 +50,12 @@ function Copy_Files_Between_Nodes
 	{
 		$knownLanes = $script:FunctionResults['LaneNumToMachineName'].Values | Where-Object { $_ } | Select-Object -Unique
 	}
-	
+
 	# ========================= UI - DPI-safe layout =========================
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	[void][System.Windows.Forms.Application]::EnableVisualStyles()
-	
+
 	# --- Form shell ---
 	$frm = New-Object System.Windows.Forms.Form
 	$frm.Text = "Copy Files Between Nodes - Pick Source and Folders"
@@ -67,7 +67,7 @@ function Copy_Files_Between_Nodes
 	$frm.FormBorderStyle = 'FixedDialog'
 	$frm.Size = New-Object System.Drawing.Size(760, 560)
 	$frm.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 252)
-	
+
 	# --- Main layout (header, source, items, bottom) ---
 	$layoutMain = New-Object System.Windows.Forms.TableLayoutPanel
 	$layoutMain.Dock = 'Fill'
@@ -79,7 +79,7 @@ function Copy_Files_Between_Nodes
 	[void]$layoutMain.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 	[void]$layoutMain.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	$frm.Controls.Add($layoutMain)
-	
+
 	# Header
 	$lbl = New-Object System.Windows.Forms.Label
 	$lbl.Text = "Choose the source and which folder(s)/file(s) to copy to the selected lanes:"
@@ -87,7 +87,7 @@ function Copy_Files_Between_Nodes
 	$lbl.AutoSize = $true
 	$lbl.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
 	$layoutMain.Controls.Add($lbl, 0, 0)
-	
+
 	# ---------------- Source group ----------------
 	$grpSrc = New-Object System.Windows.Forms.GroupBox
 	$grpSrc.Text = "Source"
@@ -97,7 +97,7 @@ function Copy_Files_Between_Nodes
 	$grpSrc.Padding = New-Object System.Windows.Forms.Padding(12)
 	$grpSrc.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
 	$layoutMain.Controls.Add($grpSrc, 0, 1)
-	
+
 	# Source row: Server (alone), then Lane + combo same row
 	$layoutSrc = New-Object System.Windows.Forms.TableLayoutPanel
 	$layoutSrc.Dock = 'Top'
@@ -111,37 +111,37 @@ function Copy_Files_Between_Nodes
 	[void]$layoutSrc.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	[void]$layoutSrc.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	$grpSrc.Controls.Add($layoutSrc)
-	
+
 	$rbServer = New-Object System.Windows.Forms.RadioButton
 	$rbServer.Text = "Server (this computer)"
 	$rbServer.Checked = $true
 	$rbServer.AutoSize = $true
 	$layoutSrc.Controls.Add($rbServer, 0, 0)
 	$layoutSrc.SetColumnSpan($rbServer, 3)
-	
+
 	$rbLane = New-Object System.Windows.Forms.RadioButton
 	$rbLane.Text = "Lane (source)"
 	$rbLane.AutoSize = $true
 	$layoutSrc.Controls.Add($rbLane, 0, 1)
-	
+
 	$lblLane = New-Object System.Windows.Forms.Label
 	$lblLane.Text = "Select lane:"
 	$lblLane.AutoSize = $true
 	$lblLane.Margin = New-Object System.Windows.Forms.Padding(12, 3, 6, 0)
 	$layoutSrc.Controls.Add($lblLane, 1, 1)
-	
+
 	$cboLane = New-Object System.Windows.Forms.ComboBox
 	$cboLane.DropDownStyle = 'DropDownList'
 	$cboLane.Enabled = $false
 	$cboLane.Dock = 'Top'
 	$layoutSrc.Controls.Add($cboLane, 2, 1)
-	
+
 	$knownLanes | Sort-Object | ForEach-Object { [void]$cboLane.Items.Add($_) }
 	$rbLane.Add_CheckedChanged({
 			$cboLane.Enabled = $rbLane.Checked
 			if ($rbLane.Checked -and $cboLane.Items.Count -gt 0 -and -not $cboLane.SelectedItem) { $cboLane.SelectedIndex = 0 }
 		})
-	
+
 	# ---------------- Item picker group ----------------
 	$grpItems = New-Object System.Windows.Forms.GroupBox
 	$grpItems.Text = "Folder(s)/File(s) to Copy"
@@ -149,7 +149,7 @@ function Copy_Files_Between_Nodes
 	$grpItems.Padding = New-Object System.Windows.Forms.Padding(12)
 	$grpItems.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
 	$layoutMain.Controls.Add($grpItems, 0, 2)
-	
+
 	$layoutItems = New-Object System.Windows.Forms.TableLayoutPanel
 	$layoutItems.Dock = 'Fill'
 	$layoutItems.ColumnCount = 2
@@ -159,13 +159,13 @@ function Copy_Files_Between_Nodes
 	[void]$layoutItems.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 	[void]$layoutItems.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	$grpItems.Controls.Add($layoutItems)
-	
+
 	$clb = New-Object System.Windows.Forms.CheckedListBox
 	$clb.CheckOnClick = $true
 	$clb.Dock = 'Fill'
 	$clb.HorizontalScrollbar = $true # show long UNC paths completely
 	$layoutItems.Controls.Add($clb, 0, 0)
-	
+
 	$pnlBtns = New-Object System.Windows.Forms.FlowLayoutPanel
 	$pnlBtns.FlowDirection = 'TopDown'
 	$pnlBtns.WrapContents = $false
@@ -174,34 +174,34 @@ function Copy_Files_Between_Nodes
 	$pnlBtns.Padding = New-Object System.Windows.Forms.Padding(0)
 	$pnlBtns.Margin = New-Object System.Windows.Forms.Padding(12, 0, 0, 0)
 	$layoutItems.Controls.Add($pnlBtns, 1, 0)
-	
+
 	# ---- Add button now says "Add Folder/Files..." and shows a small context menu ----
 	$btnAdd = New-Object System.Windows.Forms.Button
 	$btnAdd.Text = "Add Folder/Files..."
 	$btnAdd.Width = 160; $btnAdd.Height = 30
 	$pnlBtns.Controls.Add($btnAdd)
-	
+
 	$btnQuick = New-Object System.Windows.Forms.Button
 	$btnQuick.Text = "Quick..."
 	$btnQuick.Width = 160; $btnQuick.Height = 30
 	$btnQuick.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
 	$pnlBtns.Controls.Add($btnQuick)
-	
+
 	$btnRemove = New-Object System.Windows.Forms.Button
 	$btnRemove.Text = "Remove"
 	$btnRemove.Width = 160; $btnRemove.Height = 30
 	$btnRemove.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
 	$pnlBtns.Controls.Add($btnRemove)
-	
+
 	$chkMirror = New-Object System.Windows.Forms.CheckBox
 	$chkMirror.Text = "Mirror (delete extras on targets)"
 	$chkMirror.AutoSize = $true
 	$chkMirror.Margin = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
 	$layoutItems.Controls.Add($chkMirror, 0, 1)
-	
+
 	$toolTip = New-Object System.Windows.Forms.ToolTip
 	$toolTip.SetToolTip($chkMirror, "Robocopy /MIR will delete files on the destination that are not present in the source.")
-	
+
 	# ---------------- Bottom buttons ----------------
 	$pnlBottom = New-Object System.Windows.Forms.TableLayoutPanel
 	$pnlBottom.AutoSize = $true
@@ -211,37 +211,37 @@ function Copy_Files_Between_Nodes
 	[void]$pnlBottom.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	$pnlBottom.Dock = 'Right'
 	$layoutMain.Controls.Add($pnlBottom, 0, 3)
-	
+
 	$btnOK = New-Object System.Windows.Forms.Button
 	$btnOK.Text = "OK"
 	$btnOK.Width = 110; $btnOK.Height = 32
 	$btnOK.Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0)
 	$pnlBottom.Controls.Add($btnOK, 0, 0)
-	
+
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Width = 110; $btnCancel.Height = 32
 	$btnCancel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 	$pnlBottom.Controls.Add($btnCancel, 1, 0)
-	
+
 	$frm.AcceptButton = $btnOK
 	$frm.CancelButton = $btnCancel
-	
+
 	# ===================== QUICK CONTEXT MENU (built once; no auto-reopen) =====================
 	$cmsQuick = New-Object System.Windows.Forms.ContextMenuStrip
 	foreach ($qi in $QuickItems)
 	{
 		if (-not $qi) { continue }
-		
+
 		$mi = New-Object System.Windows.Forms.ToolStripMenuItem
 		$mi.Text = $qi.Label
 		$mi.Tag = $qi # keep metadata with the menu item
-		
+
 		# Click handler MUST use param($s,$e); $s = sender (the menu item)
 		$mi.Add_Click({
 				param ($s,
 					$e)
-				
+
 				# Resolve storeman root based on radio selection
 				$root = $null
 				if ($rbServer.Checked)
@@ -281,12 +281,12 @@ function Copy_Files_Between_Nodes
 						return
 					}
 				}
-				
+
 				# Build full path safely (trim any leading slash in Rel so Join-Path doesn't drop root)
 				$meta = $s.Tag
 				$rel = ([string]$meta.Rel).Trim().TrimStart('\', '/')
 				$full = [System.IO.Path]::Combine($root, $rel)
-				
+
 				# Verify exists BEFORE adding
 				if (-not (Test-Path -LiteralPath $full))
 				{
@@ -295,7 +295,7 @@ function Copy_Files_Between_Nodes
 					Write_Log "[Source Missing] $full not found; not added to list." "yellow"
 					return
 				}
-				
+
 				# Add real full path (avoid duplicates)
 				if (-not ($clb.Items -contains $full))
 				{
@@ -303,10 +303,10 @@ function Copy_Files_Between_Nodes
 					Write_Log "Added item: $full" "gray"
 				}
 			})
-		
+
 		[void]$cmsQuick.Items.Add($mi)
 	}
-	
+
 	# On open: toggle LaneOnly items enabled/disabled, then show menu (no auto-reopen)
 	$btnQuick.Add_Click({
 			foreach ($mi in $cmsQuick.Items)
@@ -320,17 +320,17 @@ function Copy_Files_Between_Nodes
 			}
 			$cmsQuick.Show($btnQuick, 0, $btnQuick.Height)
 		})
-	
+
 	# ===================== "Add Folder/Files..." context menu =====================
 	$cmsAdd = New-Object System.Windows.Forms.ContextMenuStrip
 	$miAddFolder = New-Object System.Windows.Forms.ToolStripMenuItem
 	$miAddFolder.Text = "Add Folder..."
 	[void]$cmsAdd.Items.Add($miAddFolder)
-	
+
 	$miAddFiles = New-Object System.Windows.Forms.ToolStripMenuItem
 	$miAddFiles.Text = "Add File(s)..."
 	[void]$cmsAdd.Items.Add($miAddFiles)
-	
+
 	# Helper (inline): resolve initial root based on selected source
 	$resolveInitialRoot = {
 		$initialPath = $null
@@ -372,21 +372,21 @@ function Copy_Files_Between_Nodes
 		}
 		return $initialPath
 	}
-	
+
 	# --- Add Folder... (keeps your old logic, just under the new menu) ---
 	$miAddFolder.Add_Click({
 			$initialPath = & $resolveInitialRoot
 			if (-not $initialPath) { return }
-			
+
 			$fd = New-Object System.Windows.Forms.FolderBrowserDialog
 			$fd.Description = "Pick a folder under \storeman\ (based on your selected source)."
 			$fd.ShowNewFolderButton = $false
 			$fd.RootFolder = [System.Environment+SpecialFolder]::Desktop
 			$fd.SelectedPath = $initialPath
-			
+
 			$res = $fd.ShowDialog()
 			if ($res -ne [System.Windows.Forms.DialogResult]::OK -or -not $fd.SelectedPath) { return }
-			
+
 			if ($fd.SelectedPath -notmatch '(?i)[\\/](storeman)[\\/]')
 			{
 				[System.Windows.Forms.MessageBox]::Show("Please choose a folder under \storeman\.", "Not Allowed",
@@ -406,21 +406,21 @@ function Copy_Files_Between_Nodes
 				Write_Log "Added item: $($fd.SelectedPath)" "gray"
 			}
 		})
-	
+
 	# --- Add File(s)... (new) ---
 	$miAddFiles.Add_Click({
 			$initialPath = & $resolveInitialRoot
 			if (-not $initialPath) { return }
-			
+
 			$ofd = New-Object System.Windows.Forms.OpenFileDialog
 			$ofd.Title = "Pick file(s) under \storeman\ (based on your selected source)"
 			$ofd.InitialDirectory = $initialPath
 			$ofd.Multiselect = $true
 			$ofd.Filter = "All files (*.*)|*.*"
-			
+
 			$res = $ofd.ShowDialog()
 			if ($res -ne [System.Windows.Forms.DialogResult]::OK -or -not $ofd.FileNames -or $ofd.FileNames.Count -eq 0) { return }
-			
+
 			foreach ($f in $ofd.FileNames)
 			{
 				if ($f -notmatch '(?i)[\\/](storeman)[\\/]')
@@ -443,10 +443,10 @@ function Copy_Files_Between_Nodes
 				}
 			}
 		})
-	
+
 	# Show the mini menu when clicking "Add Folder/Files..." (no re-open behavior)
 	$btnAdd.Add_Click({ $cmsAdd.Show($btnAdd, 0, $btnAdd.Height) })
-	
+
 	# Remove entries
 	$btnRemove.Add_Click({
 			$toRemove = @()
@@ -454,7 +454,7 @@ function Copy_Files_Between_Nodes
 			if (-not $toRemove -and $clb.SelectedIndex -ge 0) { $toRemove = @($clb.SelectedIndex) }
 			$toRemove | Sort-Object -Descending | ForEach-Object { $clb.Items.RemoveAt($_) }
 		})
-	
+
 	# ---------------- OK / Cancel logic ----------------
 	$btnOK.Add_Click({
 			$formValid = $true
@@ -482,7 +482,7 @@ function Copy_Files_Between_Nodes
 			if ($formValid) { $script:__CopyMaps_DialogResult = 'OK'; $frm.Close() }
 		})
 	$btnCancel.Add_Click({ $script:__CopyMaps_DialogResult = 'Cancel'; $frm.Close() })
-	
+
 	[void]$frm.ShowDialog()
 	$dialogResult = $script:__CopyMaps_DialogResult
 	Remove-Variable -Name __CopyMaps_DialogResult -Scope Script -ErrorAction SilentlyContinue
@@ -492,7 +492,7 @@ function Copy_Files_Between_Nodes
 		Write_Log "`r`n==================== Copy_Files_Between_Nodes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# ===================== Gather choices =====================
 	$useServerAsSource = $rbServer.Checked
 	$sourceMachine = if ($useServerAsSource) { $env:COMPUTERNAME }
@@ -501,7 +501,7 @@ function Copy_Files_Between_Nodes
 	$doMirror = [bool]$chkMirror.Checked
 	Write_Log "Source machine: $sourceMachine  |  Mirror: $doMirror" "cyan"
 	Write_Log "Selected item(s): $($itemsToCopy -join ' | ')" "cyan"
-	
+
 	# ===================== Destination selection =====================
 	$StoreNumber = $script:FunctionResults['StoreNumber']
 	$selection = $null; $triedExclude = $false
@@ -515,7 +515,7 @@ function Copy_Files_Between_Nodes
 		$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane" -Title "Select Destination Lanes for Copy"
 	}
 	if ($selection -eq $null) { Write_Log "Destination selection canceled by user." "yellow"; return }
-	
+
 	$Lanes = @()
 	if ($selection.Lanes -and $selection.Lanes.Count -gt 0)
 	{
@@ -528,14 +528,14 @@ function Copy_Files_Between_Nodes
 	elseif ($selection -is [System.Collections.IEnumerable] -and -not ($selection -is [string])) { $Lanes = @($selection) }
 	elseif ($selection -is [string]) { $Lanes = @($selection -split '[,\s]+' | Where-Object { $_ }) }
 	else { Write_Log "No destination lanes selected." "yellow"; return }
-	
+
 	# Map lane numbers -> machine names
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	if (-not $LaneNumToMachineName -or $LaneNumToMachineName.Count -eq 0)
 	{
 		Write_Log "[Mapping Missing] LaneNumToMachineName not available; cannot map lanes to machines." "red"; return
 	}
-	
+
 	$destMachines = @()
 	foreach ($ln in $Lanes)
 	{
@@ -582,7 +582,7 @@ function Copy_Files_Between_Nodes
 		Write_Log "No destination lanes selected." "yellow"; return
 	}
 	Write_Log "Destinations ($($destMachines.Count)): $($destMachines -join ', ')" "gray"
-	
+
 	# ===================== Validate destination roots =====================
 	$destRootMap = @{ }
 	$unreachable = @()
@@ -600,11 +600,11 @@ function Copy_Files_Between_Nodes
 		$destMachines = $destMachines | Where-Object { $destRootMap.ContainsKey($_) }
 		if (-not $destMachines -or $destMachines.Count -eq 0) { Write_Log "No reachable destinations remain. Aborting." "red"; return }
 	}
-	
+
 	# ===================== Copy loop (folder OR single file) =====================
 	$failList = New-Object System.Collections.Generic.List[string]
 	$okCount = 0
-	
+
 	foreach ($picked in $itemsToCopy)
 	{
 		# relative path under \storeman\
@@ -612,7 +612,7 @@ function Copy_Files_Between_Nodes
 		$m = [regex]::Match($picked, '(?i)[\\/](storeman)[\\/](?<sub>.*)$')
 		if ($m.Success) { $rel = $m.Groups['sub'].Value }
 		else { Write_Log "[Invalid Path] '$picked' is not under \storeman\." "red"; $failList.Add("$sourceMachine :: $picked (not under \storeman\)"); continue }
-		
+
 		# resolve source full path again (validate)
 		if ($useServerAsSource)
 		{
@@ -628,16 +628,16 @@ function Copy_Files_Between_Nodes
 			$srcFull = Join-Path $srcRoot $rel
 			if (-not (Test-Path -LiteralPath $srcFull)) { Write_Log "[Source Missing] $srcFull not found on lane." "red"; $failList.Add("$sourceMachine :: $srcFull (missing)"); continue }
 		}
-		
+
 		$isFile = $false
 		try { $isFile = Test-Path -LiteralPath $srcFull -PathType Leaf }
 		catch { $isFile = $false }
-		
+
 		foreach ($dest in $destMachines)
 		{
 			$dstRoot = $destRootMap[$dest]
 			if (-not $dstRoot) { $failList.Add("$dest :: (no root)"); continue }
-			
+
 			if ($isFile)
 			{
 				# Single file copy (no /MIR)
@@ -645,7 +645,7 @@ function Copy_Files_Between_Nodes
 				$dstDir = Split-Path -Path $dstFull -Parent
 				try { if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null } }
 				catch { Write_Log "[Create Failed] $dstDir : $($_.Exception.Message)" "red"; $failList.Add("$dest :: $dstDir (create failed)"); continue }
-				
+
 				$srcDir = Split-Path -Path $srcFull -Parent
 				$fileName = Split-Path -Path $srcFull -Leaf
 				$null = & robocopy @($srcDir, $dstDir, $fileName, '/R:2', '/W:2', '/NFL', '/NDL', '/NP')
@@ -664,7 +664,7 @@ function Copy_Files_Between_Nodes
 				$dstFull = Join-Path $dstRoot $rel
 				try { if (-not (Test-Path -LiteralPath $dstFull)) { New-Item -ItemType Directory -Path $dstFull -Force | Out-Null } }
 				catch { Write_Log "[Create Failed] $dstFull : $($_.Exception.Message)" "red"; $failList.Add("$dest :: $dstFull (create failed)"); continue }
-				
+
 				$args = @($srcFull, $dstFull, '/E', '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
 				if ($doMirror) { $args += '/MIR' }
 				$null = & robocopy @args
@@ -678,7 +678,7 @@ function Copy_Files_Between_Nodes
 			}
 		}
 	}
-	
+
 	# ===================== Summary =====================
 	$totalOps = ($itemsToCopy.Count) * ($destMachines.Count)
 	$failCount = $failList.Count

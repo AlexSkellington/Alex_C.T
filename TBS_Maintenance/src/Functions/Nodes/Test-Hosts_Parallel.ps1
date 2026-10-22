@@ -25,7 +25,7 @@ function Test-Hosts_Parallel
 		[int]$TimeoutMs = 400,
 		[int]$MaxConcurrency = 10
 	)
-	
+
 	begin { $all = @() }
 	process { $all += @($Targets) }
 	end
@@ -33,7 +33,7 @@ function Test-Hosts_Parallel
 		$all = @($all | Where-Object { $_ })
 		$out = @{}
 		if ($all.Count -eq 0) { return $out }
-		
+
 		$done = $false
 		try
 		{
@@ -53,7 +53,7 @@ function Test-Hosts_Parallel
 			$done = $true
 		}
 		catch { $done = $false }
-		
+
 		if (-not $done)
 		{
 			# Serial fallback (previous behavior)
@@ -67,7 +67,7 @@ function Test-Hosts_Parallel
 				catch { $out[$t] = 'ERROR' }
 			}
 		}
-		
+
 		return $out
 	}
 }

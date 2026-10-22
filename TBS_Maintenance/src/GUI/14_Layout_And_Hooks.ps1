@@ -32,10 +32,10 @@ if ($logBox) { $logBox.Anchor = 'Top,Left,Right,Bottom' }
 
 $layoutBottom = {
 	if (-not $form -or $form.IsDisposed) { return }
-	
+
 	# --- Compute shared row width (log + button row align) ---------------------
 	$rowW = [math]::Max(200, $form.ClientSize.Width - (2 * $padSide))
-	
+
 	# --- Account for StatusStrip (THIS fixes the "buttons cut off" issue) -----
 	$bottomReserve = 0
 	try
@@ -43,7 +43,7 @@ $layoutBottom = {
 		if ($statusStrip -and -not $statusStrip.IsDisposed) { $bottomReserve = $statusStrip.Height }
 	}
 	catch { $bottomReserve = 0 }
-	
+
 	# --- Determine log top dynamically (banner + card + margin) -------------
 	$logTop = $bannerPanel.Bottom + $topStripCard.Height + 10
 	try
@@ -54,29 +54,29 @@ $layoutBottom = {
 		}
 	}
 	catch { }
-	
+
 	# --- Button row Y (above status strip) ------------------------------------
 	$btnY = $form.ClientSize.Height - $bottomReserve - $btnH - $padBottom
-	
+
 	# --- Lay out log area (with header) ---------------------------------------
 	$hasLogFrame = $false
 	try { $hasLogFrame = ($logFrame -and -not $logFrame.IsDisposed) }
 	catch { $hasLogFrame = $false }
-	
+
 	# Header height
 	$lgHeaderH = 28
 	$lgPadding = 10
-	
+
 	if ($hasLogFrame)
 	{
 		# Frame uses the full row width
 		$logFrame.Left = $padSide
 		$logFrame.Top = $logTop
 		$logFrame.Width = $rowW
-		
+
 		# Height ensures a constant gap above buttons (accounting for header)
 		$logFrame.Height = [math]::Max($minLogH, $btnY - $logFrame.Top - $gapAboveButtons)
-		
+
 		# Inner logBox inset for clean "card" look (accounting for header + padding)
 		$logBox.Left = $lgPadding
 		$logBox.Top = $lgHeaderH + $lgPadding
@@ -91,11 +91,11 @@ $layoutBottom = {
 		$logBox.Width = $rowW
 		$logBox.Height = [math]::Max($minLogH, $btnY - $logBox.Top - $gapAboveButtons)
 	}
-	
+
 	# --- Compute dynamic button width so the four buttons fill the row --------
 	$gapH = $gapHPreferred
 	$btnW = [math]::Floor(($rowW - (3 * $gapH)) / 4)
-	
+
 	# If too small, clamp width and reduce gaps (not below gapHMin)
 	if ($btnW -lt $btnMinW)
 	{
@@ -110,17 +110,17 @@ $layoutBottom = {
 		$extra = $rowW - $used
 		if ($extra -gt 0) { $gapH += [math]::Floor($extra / 3) }
 	}
-	
+
 	# --- Position buttons left->right; group width == logbox width ------------
 	$x = $padSide
 	$ServerToolsButton.SetBounds($x, $btnY, $btnW, $btnH); $x += $btnW + $gapH
 	$LaneToolsButton.SetBounds($x, $btnY, $btnW, $btnH); $x += $btnW + $gapH
 	$ScaleToolsButton.SetBounds($x, $btnY, $btnW, $btnH); $x += $btnW + $gapH
 	$GeneralToolsButton.SetBounds($x, $btnY, $btnW, $btnH)
-	
+
 	# Keep right-side labels aligned with the logbox edge
 	& $layoutTopStrip
-	
+
 	# Ensure status strip stays visible
 	try { if ($statusStrip -and -not $statusStrip.IsDisposed) { $statusStrip.BringToFront() } }
 	catch { }
@@ -138,7 +138,7 @@ if ($form.MinimumSize.Width -lt $minW)
 $form.add_Resize({ & $layoutBottom })
 
 ######################################################################################################################
-# 
+#
 # Global Activity Hooks (controls & menus)
 #
 ######################################################################################################################

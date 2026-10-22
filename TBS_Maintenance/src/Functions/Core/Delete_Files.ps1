@@ -29,27 +29,27 @@ function Delete_Files
 		[Parameter(HelpMessage = "Run the deletion as a background job.")]
 		[switch]$AsJob
 	)
-	
+
 	if ($AsJob)
 	{
 		$scriptBlock = {
 			param ($Path,
 				$SpecifiedFiles,
 				$Exclusions)
-			
+
 			$deletedCount = 0
 			$rp = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
 			if (-not $rp) { return 0 }
 			$targetPath = $rp.Path
 			$gciBase = Join-Path $targetPath '*'
-			
+
 			try
 			{
 				# Build Get-ChildItem params safely
 				$gciParams = @{ Path = $gciBase; Recurse = $true; Force = $true; ErrorAction = 'SilentlyContinue' }
 				if ($SpecifiedFiles -and $SpecifiedFiles.Count -gt 0) { $gciParams['Include'] = $SpecifiedFiles }
 				if ($Exclusions -and $Exclusions.Count -gt 0) { $gciParams['Exclude'] = $Exclusions }
-				
+
 				$items = Get-ChildItem @gciParams
 				if ($items)
 				{
@@ -70,10 +70,10 @@ function Delete_Files
 				return $deletedCount
 			}
 		}
-		
+
 		return Start-Job -Name ("DeleteFilesJob_{0}" -f ((($Path -replace '[^A-Za-z0-9_-]', '_').Trim('_')))) -ScriptBlock $scriptBlock -ArgumentList $Path, $SpecifiedFiles, $Exclusions
 	}
-	
+
 	# -------- Synchronous path --------
 	$deletedCount = 0
 	$rp = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
@@ -84,13 +84,13 @@ function Delete_Files
 	}
 	$targetPath = $rp.Path
 	$gciBase = Join-Path $targetPath '*'
-	
+
 	try
 	{
 		$gciParams = @{ Path = $gciBase; Recurse = $true; Force = $true; ErrorAction = 'SilentlyContinue' }
 		if ($SpecifiedFiles -and $SpecifiedFiles.Count -gt 0) { $gciParams['Include'] = $SpecifiedFiles }
 		if ($Exclusions -and $Exclusions.Count -gt 0) { $gciParams['Exclude'] = $Exclusions }
-		
+
 		$items = Get-ChildItem @gciParams
 		if ($items)
 		{
@@ -108,7 +108,7 @@ function Delete_Files
 		{
 			Write_Log "No items matched in '$targetPath'." "yellow"
 		}
-		
+
 		Write_Log "Total items deleted: $deletedCount" "blue"
 		return $deletedCount
 	}

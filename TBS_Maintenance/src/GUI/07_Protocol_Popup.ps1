@@ -434,15 +434,15 @@ if (-not $global:ProtocolForm)
 	$global:ProtocolForm.BackColor = $uiBg
 	$global:ProtocolForm.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 	if ($script:TbsAppIcon) { try { $global:ProtocolForm.Icon = $script:TbsAppIcon } catch { } }
-	
+
 	# No minimize/maximize
 	$global:ProtocolForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$global:ProtocolForm.MaximizeBox = $false
 	$global:ProtocolForm.MinimizeBox = $false
-	
+
 	# Hide when focus leaves
 	$global:ProtocolForm.add_Deactivate({ $global:ProtocolForm.Hide() })
-	
+
 	$global:ProtocolGrid = New-Object System.Windows.Forms.DataGridView
 	$global:ProtocolGrid.Location = New-Object System.Drawing.Point(12, 12)
 	$global:ProtocolGrid.Size = New-Object System.Drawing.Size(460, 396)
@@ -474,7 +474,7 @@ if (-not $global:ProtocolForm)
 			}
 			catch { }
 		})
-	
+
 	# Modern-ish grid styling (safe/light)
 	try
 	{
@@ -494,9 +494,9 @@ if (-not $global:ProtocolForm)
 		$global:ProtocolGrid.DefaultCellStyle.SelectionForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 	}
 	catch { }
-	
+
 	$global:ProtocolForm.Controls.Add($global:ProtocolGrid)
-	
+
 	# Hint line under the grid
 	$protocolHint = New-Object System.Windows.Forms.Label
 	$protocolHint.Text = "Double-click a row to open its database folder."
@@ -505,7 +505,7 @@ if (-not $global:ProtocolForm)
 	$protocolHint.AutoSize = $true
 	$protocolHint.Location = New-Object System.Drawing.Point(14, 412)
 	$global:ProtocolForm.Controls.Add($protocolHint)
-	
+
 	$closeBtn = New-Object System.Windows.Forms.Button
 	$closeBtn.Text = "Hide"
 	$closeBtn.Location = New-Object System.Drawing.Point(176, 438)
@@ -521,7 +521,7 @@ if (-not $global:ProtocolForm)
 	$closeBtn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(235, 242, 252)
 	$closeBtn.Add_Click({ $global:ProtocolForm.Hide() })
 	$global:ProtocolForm.Controls.Add($closeBtn)
-	
+
 	# Prevent disposal on X; just hide
 	$global:ProtocolForm.add_FormClosing({
 			$_.Cancel = $true
@@ -540,7 +540,7 @@ if (-not $global:ProtocolFormTimer)
 				{
 					$st = $script:LaneDbSizeJobs[$laneKey]
 					if (-not $st) { continue }
-					
+
 					$handle = $st.Handle
 					if ($handle -and $handle.IsCompleted)
 					{
@@ -550,12 +550,12 @@ if (-not $global:ProtocolFormTimer)
 						catch { $resultList = $null }
 						try { if ($ps) { $ps.Dispose() } }
 						catch { }
-						
+
 						[void]$script:LaneDbSizeJobs.Remove($laneKey)
-						
+
 						$result = $null
 						if ($resultList -and $resultList.Count -ge 1) { $result = $resultList[0] }
-						
+
 						if ($result)
 						{
 							$script:LaneDbSizeMap[$laneKey] = [pscustomobject]@{
@@ -579,9 +579,9 @@ if (-not $global:ProtocolFormTimer)
 					}
 				}
 			}
-			
+
 			if (-not $global:ProtocolForm.Visible) { return }
-			
+
 			# Save scroll & selection BEFORE clearing rows
 			$prevRowCount = $global:ProtocolGrid.Rows.Count
 			$scrollIndex = 0
@@ -596,10 +596,10 @@ if (-not $global:ProtocolFormTimer)
 				try { $selIndex = $global:ProtocolGrid.SelectedRows[0].Index }
 				catch { $selIndex = $null }
 			}
-			
+
 			# Refresh grid
 			$global:ProtocolGrid.Rows.Clear()
-			
+
 			$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 			$storeNumberForPopup = [string]$script:FunctionResults['StoreNumber']
 			if ($storeNumberForPopup) { $storeNumberForPopup = ($storeNumberForPopup -replace '[^\d]', '').PadLeft(3, '0') }
@@ -616,33 +616,33 @@ if (-not $global:ProtocolFormTimer)
 				try { $dbsRootForPopup = [System.IO.Path]::Combine($OfficePath, 'Dbs') }
 				catch { $dbsRootForPopup = $null }
 			}
-			
+
 			$popupMode = [string]$script:ProtocolPopupMode
 			if ([string]::IsNullOrWhiteSpace($popupMode)) { $popupMode = 'Lane' }
-			
+
 			if ($popupMode -eq 'Server')
 			{
 				$global:ProtocolForm.Text = "Server DB / Log Sizes"
 				$global:ProtocolGrid.Columns[0].Name = "Server"
-				
+
 				$now = Get-Date
 				$serverKey = '__SERVER__'
 				$serverDisplay = [string]$script:FunctionResults['DBSERVER']
 				if ([string]::IsNullOrWhiteSpace($serverDisplay) -or $serverDisplay -eq 'N/A') { $serverDisplay = $env:COMPUTERNAME }
-				
+
 				$dbName = [string]$script:FunctionResults['DBNAME']
 				if ($dbName -eq 'N/A') { $dbName = $null }
-				
+
 				$connStr = [string]$script:FunctionResults['ConnectionString']
 				if ($connStr -eq 'N/A') { $connStr = $null }
-				
+
 				$smsStartFallbackPath = $null
 				if (-not [string]::IsNullOrWhiteSpace($dbsRootForPopup) -and -not [string]::IsNullOrWhiteSpace($storeNumberForPopup))
 				{
 					try { $smsStartFallbackPath = [System.IO.Path]::Combine($dbsRootForPopup, ("INFO_{0}901_SMSStart.ini" -f $storeNumberForPopup)) }
 					catch { $smsStartFallbackPath = $null }
 				}
-				
+
 				$proto = 'Local'
 				try
 				{
@@ -653,19 +653,19 @@ if (-not $global:ProtocolFormTimer)
 					else { $proto = 'Server' }
 				}
 				catch { }
-				
+
 				if (-not ($script:LaneDbSizeJobs.ContainsKey($serverKey)))
 				{
 					$sizeEntry = $script:LaneDbSizeMap[$serverKey]
 					$lastUpdate = $null
 					try { $lastUpdate = $sizeEntry.LastUpdate }
 					catch { $lastUpdate = $null }
-					
+
 					$needsRefresh = $false
 					if (-not $sizeEntry) { $needsRefresh = $true }
 					elseif (-not ($lastUpdate -is [datetime])) { $needsRefresh = $true }
 					elseif ((($now) - $lastUpdate).TotalSeconds -ge $script:LaneDbSizeRefreshSeconds) { $needsRefresh = $true }
-					
+
 					if ($needsRefresh -and $script:LaneDbSizePool)
 					{
 						$workerProtocol = if ([string]::IsNullOrWhiteSpace($connStr)) { 'File' }
@@ -679,7 +679,7 @@ if (-not $global:ProtocolFormTimer)
 						{
 							$canRunWorker = -not [string]::IsNullOrWhiteSpace($connStr)
 						}
-						
+
 						if (-not $canRunWorker)
 						{
 							$script:LaneDbSizeMap[$serverKey] = [pscustomobject]@{
@@ -699,7 +699,7 @@ if (-not $global:ProtocolFormTimer)
 								OpenPath = $null
 								LastUpdate = $lastUpdate
 							}
-							
+
 							$ps = [System.Management.Automation.PowerShell]::Create()
 							$ps.RunspacePool = $script:LaneDbSizePool
 							$null = $ps.AddScript($script:LaneDbSizeWorker).
@@ -710,12 +710,12 @@ if (-not $global:ProtocolFormTimer)
 							AddArgument([string]$dbName).
 							AddArgument([string]$smsStartFallbackPath)
 							$handle = $ps.BeginInvoke()
-							
+
 							$script:LaneDbSizeJobs[$serverKey] = @{ PS = $ps; Handle = $handle }
 						}
 					}
 				}
-				
+
 				$sizeEntry = $script:LaneDbSizeMap[$serverKey]
 				$dataText = '...'
 				$logText = '...'
@@ -728,7 +728,7 @@ if (-not $global:ProtocolFormTimer)
 					}
 					catch { }
 				}
-				
+
 				$r = $global:ProtocolGrid.Rows.Add()
 				$global:ProtocolGrid.Rows[$r].Cells[0].Value = $serverDisplay
 				$global:ProtocolGrid.Rows[$r].Cells[1].Value = $proto
@@ -741,24 +741,24 @@ if (-not $global:ProtocolFormTimer)
 			{
 				$global:ProtocolForm.Text = "Lane Protocols / DB Sizes"
 				$global:ProtocolGrid.Columns[0].Name = "Lane"
-				
+
 				# Prefer the new map (best), else fall back to LaneProtocols
 				$map = $script:ProtocolResultsMap
 				if (-not $map) { $map = $script:LaneProtocols }
-				
+
 				if ($map -and $map.Count -gt 0)
 				{
 					# Only numeric 3-digit lanes (LaneProtocols can also contain machine-name keys)
 					$laneKeys = @($map.Keys | Where-Object { "$_" -match '^\d{3}$' } | Sort-Object { [int]$_ })
-					
+
 					$laneDbInfoMap = $script:FunctionResults['LaneDatabaseInfo']
 					$now = Get-Date
-					
+
 					foreach ($ln in $laneKeys)
 					{
 						$proto = [string]$map[$ln]
 						if ([string]::IsNullOrWhiteSpace($proto)) { $proto = "File" }
-						
+
 						$machineName = $ln
 						if ($LaneNumToMachineName)
 						{
@@ -769,7 +769,7 @@ if (-not $global:ProtocolFormTimer)
 							}
 							catch { }
 						}
-						
+
 						$dbInfo = $null
 						try
 						{
@@ -779,13 +779,13 @@ if (-not $global:ProtocolFormTimer)
 							}
 						}
 						catch { }
-						
+
 						if (-not $dbInfo)
 						{
 							try { $dbInfo = Get_All_Lanes_Database_Info -LaneNumber $ln }
 							catch { $dbInfo = $null }
 						}
-						
+
 						$dbName = $null
 						$connStr = $null
 						$smsStartFallbackPath = $null
@@ -817,19 +817,19 @@ if (-not $global:ProtocolFormTimer)
 							try { $smsStartFallbackPath = ("\\{0}\storeman\office\dbs\INFO_{1}{2}_SMSStart.ini" -f $machineName, $storeNumberForPopup, $ln) }
 							catch { $smsStartFallbackPath = $null }
 						}
-						
+
 						if (-not ($script:LaneDbSizeJobs.ContainsKey($ln)))
 						{
 							$sizeEntry = $script:LaneDbSizeMap[$ln]
 							$lastUpdate = $null
 							try { $lastUpdate = $sizeEntry.LastUpdate }
 							catch { $lastUpdate = $null }
-							
+
 							$needsRefresh = $false
 							if (-not $sizeEntry) { $needsRefresh = $true }
 							elseif (-not ($lastUpdate -is [datetime])) { $needsRefresh = $true }
 							elseif ((($now) - $lastUpdate).TotalSeconds -ge $script:LaneDbSizeRefreshSeconds) { $needsRefresh = $true }
-							
+
 							if ($proto -eq 'Offline')
 							{
 								$script:LaneDbSizeMap[$ln] = [pscustomobject]@{
@@ -851,7 +851,7 @@ if (-not $global:ProtocolFormTimer)
 								{
 									$canRunWorker = -not [string]::IsNullOrWhiteSpace($connStr)
 								}
-								
+
 								if (-not $canRunWorker)
 								{
 									$script:LaneDbSizeMap[$ln] = [pscustomobject]@{
@@ -871,7 +871,7 @@ if (-not $global:ProtocolFormTimer)
 										OpenPath = $null
 										LastUpdate = $lastUpdate
 									}
-									
+
 									$ps = [System.Management.Automation.PowerShell]::Create()
 									$ps.RunspacePool = $script:LaneDbSizePool
 									$null = $ps.AddScript($script:LaneDbSizeWorker).
@@ -882,12 +882,12 @@ if (-not $global:ProtocolFormTimer)
 									AddArgument([string]$dbName).
 									AddArgument([string]$smsStartFallbackPath)
 									$handle = $ps.BeginInvoke()
-									
+
 									$script:LaneDbSizeJobs[$ln] = @{ PS = $ps; Handle = $handle }
 								}
 							}
 						}
-						
+
 						$sizeEntry = $script:LaneDbSizeMap[$ln]
 						$dataText = '...'
 						$logText = '...'
@@ -900,7 +900,7 @@ if (-not $global:ProtocolFormTimer)
 							}
 							catch { }
 						}
-						
+
 						$r = $global:ProtocolGrid.Rows.Add()
 						$global:ProtocolGrid.Rows[$r].Cells[0].Value = $machineName
 						$global:ProtocolGrid.Rows[$r].Cells[1].Value = $proto
@@ -909,7 +909,7 @@ if (-not $global:ProtocolFormTimer)
 						try { $global:ProtocolGrid.Rows[$r].Tag = [string]$sizeEntry.OpenPath }
 						catch { }
 					}
-					
+
 					# Optional: rebuild $script:ProtocolResults so any other old code keeps working
 					$script:ProtocolResults = @(
 						foreach ($ln in $laneKeys)
@@ -919,7 +919,7 @@ if (-not $global:ProtocolFormTimer)
 					)
 				}
 			}
-			
+
 			# Column widths (Lane/Protocol fixed, DB/Log fill; account for scrollbar)
 			$col0Width = if ($popupMode -eq 'Server') { 180 }
 			else { 130 }
@@ -940,12 +940,12 @@ if (-not $global:ProtocolFormTimer)
 			if ($logWidth -lt 90) { $logWidth = 90 }
 			$global:ProtocolGrid.Columns[2].Width = $dbWidth
 			$global:ProtocolGrid.Columns[3].Width = $logWidth
-			
+
 			if ($global:ProtocolGrid.Columns[2].Width + $global:ProtocolGrid.Columns[3].Width -gt $remainingWidth)
 			{
 				$global:ProtocolGrid.Columns[3].Width = [math]::Max(90, $remainingWidth - $global:ProtocolGrid.Columns[2].Width)
 			}
-			
+
 			# Restore scroll & selection safely
 			$rowCount = $global:ProtocolGrid.Rows.Count
 			if ($rowCount -gt 0)

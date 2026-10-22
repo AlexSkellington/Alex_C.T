@@ -4,10 +4,10 @@ $form.Add_Shown({
 		$script:StartupWarmupIndex = 0
 		$script:StartupWarmupSteps = @()
 		$script:StartupScaleCredStarted = $false
-		
+
 		# Startup milestone (file log): the moment the window first appears
 		try { Write_Log ("Startup: window shown {0:N1}s after script start" -f ((Get-Date) - $script:StartupT0).TotalSeconds) 'green' -FileOnly } catch { }
-		
+
 		try
 		{
 			if ($script:StartupScaleCredTimer)
@@ -18,7 +18,7 @@ $form.Add_Shown({
 			}
 		}
 		catch { }
-		
+
 		$script:StartupScaleCredTimer = New-Object System.Windows.Forms.Timer
 		$script:StartupScaleCredTimer.Interval = 250
 		$script:StartupScaleCredTimer.Add_Tick({
@@ -32,9 +32,9 @@ $form.Add_Shown({
 					}
 				}
 				catch { }
-				
+
 				if ($script:StartupScaleCredStarted) { return }
-				
+
 				try
 				{
 					$windowsScales = $script:FunctionResults['WindowsScales']
@@ -48,7 +48,7 @@ $form.Add_Shown({
 			})
 		try { $script:StartupScaleCredTimer.Start() }
 		catch { }
-		
+
 		# v2.6.9: these steps run as BACKGROUND JOBS (Mode = 'Job'). The tick
 		# handler below starts each one and polls it, so no step can freeze the
 		# UI thread. Every job refreshes the function's FILE cache; OnComplete
@@ -133,7 +133,7 @@ $form.Add_Shown({
 						Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue |
 						Where-Object { $_.State -in @('Completed', 'Failed', 'Stopped') } |
 						Remove-Job -Force -ErrorAction SilentlyContinue
-						
+
 						$runningInsertJob = Get-Job -Name 'InsertTestItemJob' -State Running -ErrorAction SilentlyContinue | Select-Object -First 1
 						if (-not $runningInsertJob)
 						{
@@ -142,7 +142,7 @@ $form.Add_Shown({
 							$dbs = $script:FunctionResults['DBSERVER']
 							$dbn = $script:FunctionResults['DBNAME']
 							$sqlModule = $script:FunctionResults['SqlModuleName']
-							
+
 							Start-Job -Name 'InsertTestItemJob' -ArgumentList $fnBody, $cs, $dbs, $dbn, $sqlModule -ScriptBlock {
 								param (
 									[string]$InsertTestItemBody,
@@ -151,14 +151,14 @@ $form.Add_Shown({
 									[string]$DbName,
 									[string]$SqlModule
 								)
-								
+
 								$script:FunctionResults = @{
 									ConnectionString = $ConnectionString
 									DBSERVER		 = $DbServer
 									DBNAME		     = $DbName
 									SqlModuleName    = $SqlModule
 								}
-								
+
 								Set-Item -Path Function:\Insert_Test_Item -Value ([scriptblock]::Create($InsertTestItemBody))
 								Insert_Test_Item -ConnectionString $ConnectionString -Silent | Out-Null
 							} | Out-Null
@@ -244,7 +244,7 @@ $form.Add_Shown({
 				if (-not $script:StartupWarmupSteps -or $script:StartupWarmupIndex -ge $script:StartupWarmupSteps.Count)
 				{
 					$script:StartupWarmupStatus = $null
-					
+
 					try
 					{
 						if ($script:StartupWarmupTimer)
@@ -255,18 +255,18 @@ $form.Add_Shown({
 						}
 					}
 					catch { }
-					
+
 					$script:StartupWarmupSteps = @()
 					$script:StartupWarmupIndex = 0
 					return
 				}
-				
+
 				$step = $script:StartupWarmupSteps[$script:StartupWarmupIndex]
-				
+
 				try { $script:StartupWarmupStatus = if ($step -and $step.Label) { [string]$step.Label }
 					else { $null } }
 				catch { $script:StartupWarmupStatus = $null }
-				
+
 				# v2.6.9: 'Job' steps run in a background job - this tick only
 				# starts or polls them, so the UI thread never waits on them.
 				if ($step -and $step.Mode -eq 'Job')
@@ -306,7 +306,7 @@ $form.Add_Shown({
 					}
 					return
 				}
-				
+
 				# Sync steps run inline - each one takes a few hundred ms at most.
 				try
 				{

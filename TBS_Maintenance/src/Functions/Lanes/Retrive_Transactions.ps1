@@ -31,7 +31,7 @@ function Retrive_Transactions
 		[Parameter(Mandatory = $false)]
 		[switch]$ForceSQI
 	)
-	
+
 	# -----------------------------
 	# Logging fallback (PS 5.1 safe)
 	# -----------------------------
@@ -42,9 +42,9 @@ function Retrive_Transactions
 		if ($hasWriteLog) { Write_Log $Msg $Color }
 		else { Write-Host $Msg }
 	}
-	
+
 	& $log "`r`n==================== Starting Retrive_Transactions ====================`r`n" "blue"
-	
+
 	# -----------------------------
 	# Resolve OfficePath
 	# -----------------------------
@@ -57,13 +57,13 @@ function Retrive_Transactions
 		$office = $script:StoremanOfficeRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 		if (-not $office) { $office = $script:PrimaryStoremanOfficePath }
 	}
-	
+
 	if (-not $script:OfficePath -or -not (Test-Path $script:OfficePath)) { $script:OfficePath = $office }
 	$OfficePath = $script:OfficePath
-	
+
 	$st = $StoreNumber.Trim()
 	if ($st -match '^\d+$') { $st = $st.PadLeft(3, '0') }
-	
+
 	# -----------------------------
 	# Ensure Invoke-Sqlcmd exists
 	#   If unavailable, continue in SQI-only mode
@@ -87,19 +87,19 @@ function Retrive_Transactions
 		$canUseSql = $false
 		& $log "Invoke-Sqlcmd not available. SQI mode will be used for all selected lanes." "yellow"
 	}
-	
+
 	if (-not (Get-Command Get_All_Lanes_Database_Info -ErrorAction SilentlyContinue))
 	{
 		& $log "Get_All_Lanes_Database_Info not found. Cannot guarantee correct DB connections." "red"
 		return
 	}
-	
+
 	# -----------------------------
 	# UI: Date range + transaction range (FIL1/FIL2)
 	# -----------------------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "TRS CLT Reprocess - Select Range"
 	$form.Size = New-Object System.Drawing.Size(420, 240)
@@ -107,37 +107,37 @@ function Retrive_Transactions
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
 	$form.FormBorderStyle = 'FixedDialog'
-	
+
 	$lblStart = New-Object System.Windows.Forms.Label
 	$lblStart.Text = "Start Date:"
 	$lblStart.Location = New-Object System.Drawing.Point(12, 20)
 	$lblStart.AutoSize = $true
 	$form.Controls.Add($lblStart)
-	
+
 	$dtStart = New-Object System.Windows.Forms.DateTimePicker
 	$dtStart.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
 	$dtStart.Location = New-Object System.Drawing.Point(120, 16)
 	$dtStart.Width = 120
 	$form.Controls.Add($dtStart)
-	
+
 	$lblStop = New-Object System.Windows.Forms.Label
 	$lblStop.Text = "Stop Date:"
 	$lblStop.Location = New-Object System.Drawing.Point(12, 55)
 	$lblStop.AutoSize = $true
 	$form.Controls.Add($lblStop)
-	
+
 	$dtStop = New-Object System.Windows.Forms.DateTimePicker
 	$dtStop.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
 	$dtStop.Location = New-Object System.Drawing.Point(120, 51)
 	$dtStop.Width = 120
 	$form.Controls.Add($dtStop)
-	
+
 	$lblFil1 = New-Object System.Windows.Forms.Label
 	$lblFil1.Text = "Tran Start (FIL1):"
 	$lblFil1.Location = New-Object System.Drawing.Point(12, 92)
 	$lblFil1.AutoSize = $true
 	$form.Controls.Add($lblFil1)
-	
+
 	$numFil1 = New-Object System.Windows.Forms.NumericUpDown
 	$numFil1.Location = New-Object System.Drawing.Point(160, 88)
 	$numFil1.Width = 140
@@ -145,13 +145,13 @@ function Retrive_Transactions
 	$numFil1.Maximum = 99999999
 	$numFil1.Value = 0
 	$form.Controls.Add($numFil1)
-	
+
 	$lblFil2 = New-Object System.Windows.Forms.Label
 	$lblFil2.Text = "Tran Stop (FIL2):"
 	$lblFil2.Location = New-Object System.Drawing.Point(12, 127)
 	$lblFil2.AutoSize = $true
 	$form.Controls.Add($lblFil2)
-	
+
 	$numFil2 = New-Object System.Windows.Forms.NumericUpDown
 	$numFil2.Location = New-Object System.Drawing.Point(160, 123)
 	$numFil2.Width = 140
@@ -159,7 +159,7 @@ function Retrive_Transactions
 	$numFil2.Maximum = 99999999
 	$numFil2.Value = 99999999
 	$form.Controls.Add($numFil2)
-	
+
 	$btnOk = New-Object System.Windows.Forms.Button
 	$btnOk.Text = "OK"
 	$btnOk.Location = New-Object System.Drawing.Point(95, 165)
@@ -174,7 +174,7 @@ function Retrive_Transactions
 				) | Out-Null
 				return
 			}
-			
+
 			$form.Tag = @{
 				Start = $dtStart.Value
 				Stop  = $dtStop.Value
@@ -185,7 +185,7 @@ function Retrive_Transactions
 			$form.Close()
 		})
 	$form.Controls.Add($btnOk)
-	
+
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Location = New-Object System.Drawing.Point(210, 165)
@@ -195,10 +195,10 @@ function Retrive_Transactions
 			$form.Close()
 		})
 	$form.Controls.Add($btnCancel)
-	
+
 	$form.AcceptButton = $btnOk
 	$form.CancelButton = $btnCancel
-	
+
 	$dlg = $form.ShowDialog()
 	if ($dlg -ne [System.Windows.Forms.DialogResult]::OK -or -not $form.Tag)
 	{
@@ -206,21 +206,21 @@ function Retrive_Transactions
 		& $log "==================== Retrive_Transactions Completed ====================" "blue"
 		return
 	}
-	
+
 	$startDate = $form.Tag.Start.Date
 	$stopDate = $form.Tag.Stop.Date
 	$startDT = $startDate
 	$stopDT = $stopDate.AddDays(1).AddSeconds(-1)
-	
+
 	$fil1 = [int]$form.Tag.FIL1
 	$fil2 = [int]$form.Tag.FIL2
-	
+
 	# ALWAYS clear (no duplicates allowed)
 	$doClear = $true
-	
+
 	& $log ("Range: {0} 00:00:00  ->  {1} 23:59:59 | FIL1={2} FIL2={3} | ClearExisting=True (forced)" -f `
 		$startDate.ToString("MM/dd/yyyy"), $stopDate.ToString("MM/dd/yyyy"), $fil1, $fil2) "green"
-	
+
 	# -----------------------------
 	# Lane selection
 	# -----------------------------
@@ -230,35 +230,35 @@ function Retrive_Transactions
 		& $log "Lane selection cancelled / empty." "yellow"
 		return
 	}
-	
+
 	$lanes = @($selection.Lanes)
 	& $log ("Target lanes: {0}" -f ($lanes -join ', ')) "yellow"
-	
+
 	# -----------------------------
 	# Processing
 	# -----------------------------
 	$summary = New-Object System.Collections.Generic.List[object]
-	
+
 	foreach ($laneRaw in $lanes)
 	{
 		$l = $laneRaw.ToString().Trim()
 		if ($l -match '^\d+$') { $l = ("{0:D3}" -f [int]$l) }
 		$lane = $l
-		
+
 		$laneInfo = $null
 		try { $laneInfo = Get_All_Lanes_Database_Info -LaneNumber $lane }
 		catch { $laneInfo = $null }
-		
+
 		if ($laneInfo -and ($laneInfo -isnot [hashtable]))
 		{
 			$tmp = @{ }
 			foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
 			$laneInfo = $tmp
 		}
-		
+
 		$dbName = $null
 		if ($laneInfo -and $laneInfo.ContainsKey('DBName')) { $dbName = [string]$laneInfo['DBName'] }
-		
+
 		$machine = $null
 		if ($laneInfo -and $laneInfo.ContainsKey('MachineName')) { $machine = [string]$laneInfo['MachineName'] }
 		if ([string]::IsNullOrWhiteSpace($machine) -and $script:FunctionResults -and $script:FunctionResults.ContainsKey('LaneNumToMachineName'))
@@ -266,7 +266,7 @@ function Retrive_Transactions
 			try { $machine = [string]$script:FunctionResults['LaneNumToMachineName'][$lane] }
 			catch { }
 		}
-		
+
 		$preferredProtocolRaw = $null
 		if ($script:LaneProtocols)
 		{
@@ -279,18 +279,18 @@ function Retrive_Transactions
 		}
 		$protoNorm = if ($preferredProtocolRaw) { $preferredProtocolRaw.Trim().ToLower() }
 		else { $null }
-		
+
 		$useSql = $canUseSql
 		if ($ForceSQI) { $useSql = $false }
 		elseif ($protoNorm -eq 'file') { $useSql = $false }
 		elseif ([string]::IsNullOrWhiteSpace($dbName)) { $useSql = $false }
-		
+
 		$transListTable = "SAL_HDR_SUS$lane"
 		$targetTbl = "dbo.$transListTable"
-		
+
 		$startIso = $startDT.ToString("yyyy-MM-ddTHH:mm:ss")
 		$stopIso = $stopDT.ToString("yyyy-MM-ddTHH:mm:ss")
-		
+
 		$sql = @"
 SET NOCOUNT ON;
 
@@ -320,21 +320,21 @@ SET @Inserted = @@ROWCOUNT;
 
 SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 "@
-		
+
 		$method = $null
 		$usedProtoDisplay = $preferredProtocolRaw
 		$inserted = $null
 		$deleted = $null
 		$sqiPath = $null
 		$errText = $null
-		
+
 		if ($useSql)
 		{
 			$npServer = if ($laneInfo -and $laneInfo.ContainsKey('NamedPipes')) { [string]$laneInfo['NamedPipes'] }
 			else { $null }
 			$tcpServer = if ($laneInfo -and $laneInfo.ContainsKey('TcpServer')) { [string]$laneInfo['TcpServer'] }
 			else { $null }
-			
+
 			$attempts = @()
 			if ($protoNorm -eq 'tcp')
 			{
@@ -351,16 +351,16 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 				$attempts += [pscustomobject]@{ Proto = 'Named Pipes'; Server = $npServer }
 				$attempts += [pscustomobject]@{ Proto = 'TCP'; Server = $tcpServer }
 			}
-			
+
 			$connected = $false
 			foreach ($a in $attempts)
 			{
 				if ([string]::IsNullOrWhiteSpace($a.Server)) { continue }
-				
+
 				try
 				{
 					$res = Invoke-Sqlcmd -ServerInstance $a.Server -Database $dbName -Query $sql -QueryTimeout 120 -ErrorAction Stop
-					
+
 					# Robust parse
 					$row = $null
 					if ($res -is [System.Data.DataSet])
@@ -376,7 +376,7 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 						if ($res.Count -gt 0) { $row = $res[0] }
 					}
 					else { $row = $res }
-					
+
 					if ($row -is [System.Data.DataRow])
 					{
 						if ($row.Table.Columns.Contains('InsertedRows')) { $inserted = [int]$row['InsertedRows'] }
@@ -389,7 +389,7 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 						try { if ($row.PSObject.Properties.Match('DeletedRows').Count -gt 0) { $deleted = [int]$row.DeletedRows } }
 						catch { }
 					}
-					
+
 					$connected = $true
 					$method = "SQL"
 					$usedProtoDisplay = $a.Proto
@@ -401,30 +401,30 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 					$connected = $false
 				}
 			}
-			
+
 			if (-not $connected)
 			{
 				& $log ("SQL failed on lane {0} ({1}). Falling back to SQI. Error: {2}" -f $lane, $machine, $errText) "yellow"
 				$useSql = $false
 			}
 		}
-		
+
 		if (-not $useSql)
 		{
 			$method = "SQI"
-			
+
 			$xfDir = Join-Path $office ("XF{0}{1}" -f $st, $lane)
 			if (-not (Test-Path $xfDir))
 			{
 				try { New-Item -Path $xfDir -ItemType Directory -Force | Out-Null }
 				catch { }
 			}
-			
+
 			$sqiPath = Join-Path $xfDir "trs_clt_reprocess.sqi"
-			
+
 			$startFmt = $startDate.ToString("MM/dd/yyyy")
 			$stopFmt = $stopDate.ToString("MM/dd/yyyy")
-			
+
 			$sqi = New-Object System.Text.StringBuilder
 			[void]$sqi.AppendLine("@WIZSET(DETAIL=D);")
 			[void]$sqi.AppendLine("@WIZINIT;")
@@ -441,7 +441,7 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 			[void]$sqi.AppendLine("INSERT INTO @WIZGET(TRANS_LIST) SELECT @DBFLD(@WIZGET(TRANS_LIST)) FROM SAL_HDR@WIZGET(TRANS_LOCAL)")
 			[void]$sqi.AppendLine("WHERE F1067='CLOSE' and F254>='@WIZGET(START)' and F254<='@WIZGET(STOP)' AND")
 			[void]$sqi.AppendLine("F1032>=@WIZGET(FIL1) and F1032<=@WIZGET(FIL2);")
-			
+
 			try
 			{
 				$sqi.ToString() | Out-File -FilePath $sqiPath -Encoding ASCII -Force
@@ -458,11 +458,11 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 				& $log ("Failed to write SQI for lane {0} ({1}): {2}" -f $lane, $machine, $errText) "red"
 			}
 		}
-		
+
 		$protoOut = $usedProtoDisplay
 		if ([string]::IsNullOrWhiteSpace($protoOut)) { $protoOut = $preferredProtocolRaw }
 		if ([string]::IsNullOrWhiteSpace($protoOut)) { $protoOut = "Unknown" }
-		
+
 		$summary.Add([pscustomobject]@{
 				Lane	 = $lane
 				Machine  = $machine
@@ -474,16 +474,16 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 				Error    = $errText
 			})
 	}
-	
+
 	& $log "`r`n----- Build Summary -----" "yellow"
 	try { $summary | Sort-Object Lane | Format-Table -AutoSize | Out-String | ForEach-Object { & $log $_ "blue" } }
 	catch { & $log ("Could not format summary table: {0}" -f $_.Exception.Message) "red" }
-	
+
 	$totInserted = ($summary | Where-Object { $_.Method -eq 'SQL' -and $_.Inserted -ne $null } | Measure-Object Inserted -Sum).Sum
 	$totDeleted = ($summary | Where-Object { $_.Method -eq 'SQL' -and $_.Deleted -ne $null -and $_.Deleted -is [int] } | Measure-Object Deleted -Sum).Sum
 	& $log ("Totals (SQL lanes): Deleted={0}  Inserted={1}" -f ($totDeleted -as [int]), ($totInserted -as [int])) "green"
-	
+
 	& $log "`r`n==================== Retrive_Transactions Completed ====================`r`n" "blue"
-	
+
 	return [pscustomobject]@{ Summary = $summary }
 }

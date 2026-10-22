@@ -34,7 +34,7 @@ function Pick_And_Update_IshidaSDPs
 		# reserved for future use
 		[switch]$Force
 	)
-	
+
 	# ---------------- Logging shim (Write_Log if present, else host) ----------------
 	$logInfo = {
 		param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'cyan' }
@@ -56,15 +56,15 @@ function Pick_And_Update_IshidaSDPs
 		param ($m) if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log $m 'blue' }
 		else { Write-Host $m -ForegroundColor Blue }
 	}
-	
+
 	& $logBlue "`r`n==================== Starting Pick_And_Update_IshidaSDPs ====================`r`n"
-	
+
 	# ---------------- Resolve DB info from your cache ----------------
 	$dbName = $script:FunctionResults['DBNAME']
 	$server = $script:FunctionResults['DBSERVER']
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-	
+
 	if (-not $dbName -or -not $server -or -not $ConnectionString)
 	{
 		if (Get-Command Get_Store_And_Database_Info -ErrorAction SilentlyContinue)
@@ -78,7 +78,7 @@ function Pick_And_Update_IshidaSDPs
 			$SqlModuleName = $script:FunctionResults['SqlModuleName']
 		}
 	}
-	
+
 	# ---------------- Build a ConnectionString when missing ----------------
 	if (-not $ConnectionString -and $server -and $dbName)
 	{
@@ -96,14 +96,14 @@ function Pick_And_Update_IshidaSDPs
 		}
 		$script:FunctionResults['ConnectionString'] = $ConnectionString
 	}
-	
+
 	if (-not $server -or -not $dbName)
 	{
 		& $logErr "DB server or DB name unresolved. Cannot read SDP_TAB."
 		& $logBlue "`r`n==================== Pick_And_Update_IshidaSDPs Completed ====================`r`n"
 		return
 	}
-	
+
 	# ---------------- Prepare SQL execution (Invoke-Sqlcmd or .NET) ----------------
 	$InvokeSqlCmd = $null
 	if ($SqlModuleName -and $SqlModuleName -ne 'None')
@@ -124,7 +124,7 @@ function Pick_And_Update_IshidaSDPs
 	}
 	$supportsConnectionString = $false
 	if ($InvokeSqlCmd) { $supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString' }
-	
+
 	# ---------------- Read SDP_TAB (F04 number, F1022 name) ----------------
 	$sql = @"
 IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='SDP_TAB')
@@ -142,7 +142,7 @@ SELECT
 FROM SDP_TAB
 ORDER BY CAST([F04] AS int);
 "@
-	
+
 	try
 	{
 		if ($InvokeSqlCmd)
@@ -175,14 +175,14 @@ ORDER BY CAST([F04] AS int);
 		& $logBlue "`r`n==================== Pick_And_Update_IshidaSDPs Completed ====================`r`n"
 		return
 	}
-	
+
 	if (-not $rows -or $rows.Rows.Count -eq 0)
 	{
 		& $logWarn "SDP_TAB returned 0 rows."
 		& $logBlue "`r`n==================== Pick_And_Update_IshidaSDPs Completed ====================`r`n"
 		return
 	}
-	
+
 	# Normalize for UI
 	$sdpList = @()
 	foreach ($r in $rows)
@@ -193,7 +193,7 @@ ORDER BY CAST([F04] AS int);
 		}
 	}
 	& $logInfo ("Loaded SDPs: " + ($sdpList.Count))
-	
+
 	# ---------------- Find target config files ----------------
 	$targets = @()
 	if ($ConfigPath)
@@ -223,7 +223,7 @@ ORDER BY CAST([F04] AS int);
 		& $logBlue "`r`n==================== Pick_And_Update_IshidaSDPs Completed ====================`r`n"
 		return
 	}
-	
+
 	# ---------------- Read IshidaSDPs from first config (for pre-checks) ----------------
 	$firstConfig = $targets[0].FullName
 	[xml]$xmlFirst = Get-Content -LiteralPath $firstConfig -Raw
@@ -245,18 +245,18 @@ ORDER BY CAST([F04] AS int);
 		foreach ($part in ($existingRaw -split ',')) { $p = $part.Trim(); if ($p -match '^\s*(\d+)') { $existingNums += [int]$Matches[1] } }
 	}
 	& $logInfo ("Current IshidaSDPs in first config: " + ($existingRaw -replace '\s+', ' '))
-	
+
 	# ---------- build the "top bar" title text with the already-checked list ----------
 	# CHANGE: Put already-in-config SDPs on the form title (top bar). Truncate if too long.
 	$existingListText = ($existingNums | Sort-Object -Unique) -join ','
 	if ([string]::IsNullOrWhiteSpace($existingListText)) { $existingListText = 'None' }
 	$existingShort = $existingListText
 	if ($existingShort.Length -gt 90) { $existingShort = $existingShort.Substring(0, 90) + '... (' + $existingNums.Count + ' total)' } # CHANGE
-	
+
 	# ---------------- Build WinForms picker ----------------
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select Ishida SDPs  |  Already in config: $existingShort" # CHANGE: show on top bar
 	$form.StartPosition = 'CenterScreen'
@@ -264,36 +264,36 @@ ORDER BY CAST([F04] AS int);
 	$form.MinimizeBox = $false
 	$form.MaximizeBox = $false
 	$form.TopMost = $true
-	
+
 	$search = New-Object System.Windows.Forms.TextBox
 	$search.Location = New-Object System.Drawing.Point(10, 10)
 	$search.Size = New-Object System.Drawing.Size(505, 24)
 	$form.Controls.Add($search)
-	
+
 	$btnAll = New-Object System.Windows.Forms.Button
 	$btnAll.Text = "Select All"
 	$btnAll.Location = New-Object System.Drawing.Point(520, 10)
 	$btnAll.Size = New-Object System.Drawing.Size(100, 28)
 	$form.Controls.Add($btnAll)
-	
+
 	$btnNone = New-Object System.Windows.Forms.Button
 	$btnNone.Text = "Clear"
 	$btnNone.Location = New-Object System.Drawing.Point(520, 44)
 	$btnNone.Size = New-Object System.Drawing.Size(100, 28)
 	$form.Controls.Add($btnNone)
-	
+
 	$list = New-Object System.Windows.Forms.CheckedListBox
 	$list.Location = New-Object System.Drawing.Point(10, 44)
 	$list.Size = New-Object System.Drawing.Size(505, 520)
 	$list.CheckOnClick = $true
 	$form.Controls.Add($list)
-	
+
 	$legend = New-Object System.Windows.Forms.Label
 	$legend.AutoSize = $true
 	$legend.Location = New-Object System.Drawing.Point(10, 570)
 	$legend.Text = "Checked = selected. Pre-checked = already in config. Click Save to write."
 	$form.Controls.Add($legend)
-	
+
 	$btnOK = New-Object System.Windows.Forms.Button
 	$btnOK.Text = "Save"
 	$btnOK.Location = New-Object System.Drawing.Point(520, 536)
@@ -301,7 +301,7 @@ ORDER BY CAST([F04] AS int);
 	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 	$form.AcceptButton = $btnOK
 	$form.Controls.Add($btnOK)
-	
+
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Location = New-Object System.Drawing.Point(520, 570)
@@ -309,7 +309,7 @@ ORDER BY CAST([F04] AS int);
 	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
-	
+
 	$allEntries = @()
 	foreach ($s in $sdpList)
 	{
@@ -318,7 +318,7 @@ ORDER BY CAST([F04] AS int);
 		$allEntries += [pscustomobject]@{ Display = $display; Number = $s.SdpNumber }
 		if ($existingNums -contains [int]$s.SdpNumber) { $list.SetItemChecked(($list.Items.Count - 1), $true) }
 	}
-	
+
 	$search.Add_TextChanged({
 			$needle = $search.Text.Trim()
 			$list.Items.Clear()
@@ -330,10 +330,10 @@ ORDER BY CAST([F04] AS int);
 				if ($text -match '^\s*(\d+)') { if ($existingNums -contains [int]$Matches[1]) { $list.SetItemChecked($i, $true) } }
 			}
 		})
-	
+
 	$btnAll.Add_Click({ for ($i = 0; $i -lt $list.Items.Count; $i++) { $list.SetItemChecked($i, $true) } })
 	$btnNone.Add_Click({ for ($i = 0; $i -lt $list.Items.Count; $i++) { $list.SetItemChecked($i, $false) } })
-	
+
 	$dialogResult = $form.ShowDialog()
 	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
 	{
@@ -341,7 +341,7 @@ ORDER BY CAST([F04] AS int);
 		& $logBlue "`r`n==================== Pick_And_Update_IshidaSDPs Completed ====================`r`n"
 		return
 	}
-	
+
 	$selectedNums = @()
 	foreach ($item in $list.CheckedItems)
 	{
@@ -349,20 +349,20 @@ ORDER BY CAST([F04] AS int);
 		if ($text -match '^\s*(\d+)') { $selectedNums += [int]$Matches[1] }
 	}
 	$selectedNums = $selectedNums | Sort-Object -Unique
-	
+
 	# ---------- write "Null" when nothing is selected ----------
 	# CHANGE: If user leaves everything unchecked, write "Null" to the config value.
 	$valueToWrite = if ($selectedNums.Count -gt 0) { ($selectedNums -join ',') }
 	else { 'Null' }
-	
+
 	& $logInfo ("User selected SDPs -> " + $valueToWrite)
-	
+
 	# ---------------- Write back to each target config ----------------
 	foreach ($t in $targets)
 	{
 		$path = $t.FullName
 		if (-not $PSCmdlet.ShouldProcess($path, "Set appSettings 'IshidaSDPs'")) { continue }
-		
+
 		try
 		{
 			$item = Get-Item -LiteralPath $path -ErrorAction Stop
@@ -373,7 +373,7 @@ ORDER BY CAST([F04] AS int);
 			}
 		}
 		catch { & $logErr "Cannot access file attributes for ${path}: $($_.Exception.Message)"; continue }
-		
+
 		try
 		{
 			$dir = Split-Path -LiteralPath $path -Parent
@@ -384,16 +384,16 @@ ORDER BY CAST([F04] AS int);
 			& $logOk "Backup created: $bak"
 		}
 		catch { & $logWarn "Backup failed for ${path}: $($_.Exception.Message)" }
-		
+
 		try
 		{
 			[xml]$xml = Get-Content -LiteralPath $path -Raw
 			$cfg = $xml.configuration; if (-not $cfg) { $cfg = $xml.DocumentElement }
 			if (-not $cfg) { & $logErr "Invalid config: no <configuration> root in $path"; continue }
-			
+
 			$as = $cfg.appSettings
 			if (-not $as) { $as = $xml.CreateElement('appSettings'); [void]$cfg.AppendChild($as); & $logWarn "Created <appSettings> section in $path" }
-			
+
 			$key = 'IshidaSDPs'
 			$node = $as.SelectSingleNode("add[@key='$key']")
 			if ($node)
@@ -410,7 +410,7 @@ ORDER BY CAST([F04] AS int);
 				[void]$as.AppendChild($add)
 				& $logOk "Added $key with value '$valueToWrite'"
 			}
-			
+
 			$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 			$sw = New-Object System.IO.StreamWriter($path, $false, $utf8NoBom)
 			$xml.Save($sw); $sw.Close()
@@ -421,6 +421,6 @@ ORDER BY CAST([F04] AS int);
 			& $logErr "XML update failed for ${path}: $($_.Exception.Message)"
 		}
 	}
-	
+
 	& $logBlue "`r`n==================== Pick_And_Update_IshidaSDPs Completed ====================`r`n"
 }

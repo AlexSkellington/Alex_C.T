@@ -18,24 +18,24 @@ function Configure_System_Settings
 {
 	[CmdletBinding()]
 	param ()
-	
+
 	Write_Log "`r`n==================== Starting Configure_System_Settings ====================`r`n" "blue"
-	
+
 	try
 	{
 		# ==========================================================================================
 		# [CHANGE] Removed: Desktop organizing block
 		#          Moved into new function: Organize_Desktop_Items
 		# ==========================================================================================
-		
+
 		# ===========================================
 		# 1. Configure Power Settings
 		# ===========================================
 		Write_Log "`r`nConfiguring power plan and performance settings..." "blue"
-		
+
 		# High Performance plan GUID
 		$highPerfGUID = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
-		
+
 		try
 		{
 			powercfg /s $highPerfGUID
@@ -45,7 +45,7 @@ function Configure_System_Settings
 		{
 			Write_Log "Failed to set power plan to High Performance. Error: $_" "red"
 		}
-		
+
 		# Disable sleep (AC/DC)
 		try
 		{
@@ -57,7 +57,7 @@ function Configure_System_Settings
 		{
 			Write_Log "Failed to disable system sleep. Error: $_" "red"
 		}
-		
+
 		# Minimum processor performance to 100% (AC/DC)
 		try
 		{
@@ -72,7 +72,7 @@ function Configure_System_Settings
 		{
 			Write_Log "Failed to set processor performance. Error: $_" "red"
 		}
-		
+
 		# Turn off screen after 15 minutes (AC)
 		try
 		{
@@ -83,14 +83,14 @@ function Configure_System_Settings
 		{
 			Write_Log "Failed to set monitor timeout. Error: $_" "red"
 		}
-		
+
 		Write_Log "Power and performance settings complete." "green"
-		
+
 		# ===========================================
 		# 2. Configure Services
 		# ===========================================
 		Write_Log "`r`nConfiguring services to start automatically..." "blue"
-		
+
 		$servicesToConfigure = @("fdPHost", "FDResPub", "SSDPSRV", "upnphost")
 		foreach ($service in $servicesToConfigure)
 		{
@@ -98,7 +98,7 @@ function Configure_System_Settings
 			{
 				Set-Service -Name $service -StartupType Automatic -ErrorAction Stop
 				Write_Log "Set service '$service' to Automatic." "green"
-				
+
 				$svc = Get-Service -Name $service -ErrorAction Stop
 				if ($svc.Status -ne 'Running')
 				{
@@ -115,14 +115,14 @@ function Configure_System_Settings
 				Write_Log "Failed to configure service '$service'. Error: $_" "red"
 			}
 		}
-		
+
 		Write_Log "Service configuration complete." "green"
-		
+
 		# ===========================================
 		# 3. Configure Visual Settings
 		# ===========================================
 		Write_Log "`r`nConfiguring visual settings..." "blue"
-		
+
 		try
 		{
 			# Show thumbnails (IconsOnly = 0)
@@ -134,7 +134,7 @@ function Configure_System_Settings
 		{
 			Write_Log "Failed to enable thumbnails. Error: $_" "red"
 		}
-		
+
 		try
 		{
 			# Font smoothing + ClearType
@@ -146,7 +146,7 @@ function Configure_System_Settings
 		{
 			Write_Log "Failed to enable font smoothing. Error: $_" "red"
 		}
-		
+
 		# Restart Explorer to apply visual tweaks (kept here since it's visual-settings-related)
 		Write_Log "Restarting Explorer to apply changes..." "yellow"
 		try
@@ -158,7 +158,7 @@ function Configure_System_Settings
 		{
 			Write_Log "Explorer restart may already be complete or not required. Info: $_" "cyan"
 		}
-		
+
 		Write_Log "All system configurations have been applied." "green"
 		Write_Log "`r`n==================== Configure_System_Settings Completed ====================`r`n" "blue"
 	}

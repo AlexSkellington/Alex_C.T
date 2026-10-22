@@ -24,27 +24,27 @@ function Update_Lane_Config
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
-	
+
 	Write_Log "`r`n==================== Starting Update_Lane_Config Function ====================" "blue"
-	
+
 	if (-not (Test-Path $LoadPath))
 	{
 		Write_Log "`r`nLoad Base Path not found: $LoadPath" "yellow"
 		return
 	}
-	
+
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
 	if ($selection -eq $null)
 	{
 		Write_Log "`r`nLane processing canceled by user." "yellow"
 		return
 	}
-	
+
 	$Type = $selection.Type
 	$Lanes = $selection.Lanes
 	$processAllLanes = $false
 	if ($Type -eq "All") { $processAllLanes = $true }
-	
+
 	if ($processAllLanes)
 	{
 		try
@@ -65,13 +65,13 @@ function Update_Lane_Config
 			$processAllLanes = $false
 		}
 	}
-	
+
 	$ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
 	$runLoadFilename = "run_load.sql"
 	$lnkLoadFilename = "lnk_load.sql"
 	$stoLoadFilename = "sto_load.sql"
 	$terLoadFilename = "ter_load.sql"
-	
+
 	# Original SQL data (unchanged for file copy)
 	$runLoadScript = @"
 @CREATE(RUN_TAB,RUN);
@@ -136,7 +136,7 @@ SRC=SELECT * FROM Ter_Load);
 
 DROP TABLE Ter_Load;
 "@
-	
+
 	foreach ($laneNumber in $Lanes)
 	{
 		$protocolWorked = @{ }
@@ -155,7 +155,7 @@ DROP TABLE Ter_Load;
 			if (-not $MachineName) { $MachineName = "POS${laneNumber}" }
 			Write_Log "Lane #${laneNumber}: Fallback machine name '$MachineName'" "yellow"
 		}
-		
+
 		$laneFolderName = "XF${StoreNumber}${laneNumber}"
 		$laneFolderPath = Join-Path -Path $OfficePath -ChildPath $laneFolderName
 		if (-not (Test-Path $laneFolderPath))
@@ -167,14 +167,14 @@ DROP TABLE Ter_Load;
 		Write_Log "`r`nProcessing Lane #$laneNumber" "blue"
 		$actionSummaries = @()
 		$fileCopyNeeded = @()
-		
+
 		# --- FIX: Parse run_load rows ahead of time ---
 		$runRows =
 		$runLoadScript -split "INSERT INTO Run_Load VALUES", 2 |
 		Select-Object -Last 1 |
 		ForEach-Object { ($_ -replace "(?ms);.*", "") -split "`r?`n" } |
 		Where-Object { $_ -match "^\s*\(" }
-		
+
 		if ($namedPipesConnStr -and (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
 		{
 			foreach ($tableJob in @(
@@ -217,7 +217,7 @@ DROP TABLE Ter_Load;
 			{
 				$table = $tableJob.Table
 				$rows = $tableJob.Rows
-				
+
 				try
 				{
 					$srcConn = $script:FunctionResults['ConnectionString']
@@ -256,11 +256,11 @@ ORDER BY ORDINAL_POSITION
 					$dropCreate = "IF OBJECT_ID(N'[$table]', N'U') IS NOT NULL DROP TABLE [$table]; CREATE TABLE [$table] ($colDefsText);"
 					Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $dropCreate -QueryTimeout 30 -ErrorAction Stop
 					Write_Log "Dropped and recreated $table on lane $laneNumber via protocol." "green"
-					
+
 					# Get column names for the insert
 					$schema = Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$table' ORDER BY ORDINAL_POSITION" -QueryTimeout 30
 					$colNames = $schema | ForEach-Object { $_.COLUMN_NAME }
-					
+
 					$successfulRows = 0
 					foreach ($row in $rows)
 					{
@@ -344,7 +344,7 @@ ORDER BY ORDINAL_POSITION
 			# No protocol possible at all, mark all as needing fallback
 			$fileCopyNeeded += $runLoadFilename, $lnkLoadFilename, $stoLoadFilename, $terLoadFilename
 		}
-		
+
 		# --- Fallback file copy for only failed tables (preserving original format) ---
 		$tableFileData = @{
 			$runLoadFilename = $runLoadScript
@@ -381,7 +381,7 @@ ORDER BY ORDINAL_POSITION
 				$actionSummaries += "Failed to copy $file"
 			}
 		}
-		
+
 		$summaryMessage = "Lane ${laneNumber} (Machine: ${MachineName}): " + ($actionSummaries -join "; ")
 		Write_Log $summaryMessage "green"
 		if (-not ($script:ProcessedLanes -contains $laneNumber))
@@ -389,6 +389,6 @@ ORDER BY ORDINAL_POSITION
 			$script:ProcessedLanes += $laneNumber
 		}
 	}
-	
+
 	Write_Log "`r`n==================== Update_Lane_Config Function Completed ====================" "blue"
 }

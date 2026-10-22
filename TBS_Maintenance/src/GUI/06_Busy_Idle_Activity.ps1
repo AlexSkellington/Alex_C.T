@@ -8,7 +8,7 @@ $BusyTimer.add_Tick({
 		# Reset busy flags each tick
 		$script:IsBusy = $false
 		$script:BusyReason = $null
-		
+
 		# 1) Lane protocol runspace tasks?
 		try
 		{
@@ -27,7 +27,7 @@ $BusyTimer.add_Tick({
 			}
 		}
 		catch { }
-		
+
 		# 2) Lane protocol pool in-flight work?
 		if (-not $script:IsBusy)
 		{
@@ -46,7 +46,7 @@ $BusyTimer.add_Tick({
 			}
 			catch { }
 		}
-		
+
 		# 3) Scale credential helper tasks?
 		if (-not $script:IsBusy)
 		{
@@ -68,7 +68,7 @@ $BusyTimer.add_Tick({
 			}
 			catch { }
 		}
-		
+
 		# 4) Known launch background jobs?
 		if (-not $script:IsBusy)
 		{
@@ -86,7 +86,7 @@ $BusyTimer.add_Tick({
 			}
 			catch { }
 		}
-		
+
 		if (-not $script:IsBusy)
 		{
 			try
@@ -103,7 +103,7 @@ $BusyTimer.add_Tick({
 			}
 			catch { }
 		}
-		
+
 		if (-not $script:IsBusy)
 		{
 			try
@@ -117,7 +117,7 @@ $BusyTimer.add_Tick({
 			}
 			catch { }
 		}
-		
+
 		if (-not $script:IsBusy)
 		{
 			try
@@ -138,7 +138,7 @@ $BusyTimer.add_Tick({
 			}
 			catch { }
 		}
-		
+
 		# 5) Any other background jobs (EXCEPT ignored names/patterns)
 		if (-not $script:IsBusy)
 		{
@@ -153,7 +153,7 @@ $BusyTimer.add_Tick({
 					}
 					-not $ignore
 				}
-				
+
 				if ($jobs)
 				{
 					$script:IsBusy = $true
@@ -162,7 +162,7 @@ $BusyTimer.add_Tick({
 			}
 			catch { }
 		}
-		
+
 		# ---- Status strip update (modern) ----
 		try
 		{
@@ -197,12 +197,12 @@ $script:IdleTimer.add_Tick({
 			catch { }
 			return
 		}
-		
+
 		try
 		{
 			$minsIdle = (New-TimeSpan -Start $script:LastActivity -End (Get-Date)).TotalMinutes
 			$hardCloseReady = ($script:IdleHardCloseAfterMinutes -gt 0 -and $minsIdle -ge $script:IdleHardCloseAfterMinutes)
-			
+
 			# Status strip idle countdown
 			try
 			{
@@ -210,7 +210,7 @@ $script:IdleTimer.add_Tick({
 				$stIdle.Text = ("Idle close in: {0:n1} min" -f $left)
 			}
 			catch { }
-			
+
 			if ($minsIdle -ge $script:IdleMinutesAllowed)
 			{
 				if (-not $script:IsBusy -or $hardCloseReady)
@@ -227,7 +227,7 @@ $script:IdleTimer.add_Tick({
 						}
 					}
 					catch { }
-					
+
 					$script:SuppressClosePrompt = $true
 					if ($form -and -not $form.IsDisposed) { $form.Close() }
 				}
@@ -246,7 +246,7 @@ $script:IdleTimer.add_Tick({
 						}
 					}
 					catch { }
-					
+
 					# Reset so we don't spam + so user gets another full idle window
 					$script:LastActivity = Get-Date
 				}
@@ -270,7 +270,7 @@ try
 {
 	$stack = New-Object System.Collections.Stack
 	$stack.Push($form)
-	
+
 	while ($stack.Count -gt 0)
 	{
 		$parent = [System.Windows.Forms.Control]$stack.Pop()
@@ -298,10 +298,10 @@ try
 			{
 				$c = $e.Control
 				if (-not $c) { return }
-				
+
 				$stack2 = New-Object System.Collections.Stack
 				$stack2.Push($c)
-				
+
 				while ($stack2.Count -gt 0)
 				{
 					$p = [System.Windows.Forms.Control]$stack2.Pop()

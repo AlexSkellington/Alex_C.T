@@ -22,7 +22,7 @@
 function Update_ScaleConfig_And_DB
 {
 	Write_Log "`r`n==================== Starting Update_ScaleConfig_And_DB Function ====================`r`n" "blue"
-	
+
 	# ---- Set all defaults up front (edit as needed) ----
 	$Folder = $script:ScaleCommRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 	if (-not $Folder) { $Folder = $script:PrimaryScaleCommRoot }
@@ -33,7 +33,7 @@ function Update_ScaleConfig_And_DB
 	$SCL_Field = 'F272'
 	$SCL_Value = 3
 	$ItemKey = 'F01'
-	
+
 	# ---------------------------------------------------------------------------
 	# Prompt the user for which mode to use (GUI)
 	# ---------------------------------------------------------------------------
@@ -81,7 +81,7 @@ function Update_ScaleConfig_And_DB
 	}
 	$Mode = if ($radioSCL.Checked) { "SCL" }
 	else { "POS" }
-	
+
 	# ---------------------------------------------------------------------------
 	# XML Config Update (robust, always update or insert key)
 	# ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ function Update_ScaleConfig_And_DB
 			Write_Log "[$file] XML update error: $_" "red"
 		}
 	}
-	
+
 	# ---------------------------------------------------------------------------
 	# SQL Logic: run the appropriate update/merge (ONLY F272 IS CLEARED)
 	# ---------------------------------------------------------------------------

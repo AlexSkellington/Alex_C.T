@@ -30,7 +30,7 @@ function Insert_Test_Item
 		[int]$QueryTimeoutSeconds = 15,
 		[int]$ConnectionTimeoutSeconds = 5
 	)
-	
+
 	$writeLog = {
 		param (
 			[string]$Message,
@@ -38,7 +38,7 @@ function Insert_Test_Item
 		)
 		if (-not $Silent) { Write_Log $Message $Color }
 	}
-	
+
 	if ($ConnectionString)
 	{
 		try
@@ -55,7 +55,7 @@ function Insert_Test_Item
 			}
 		}
 	}
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Guard: Need connection context from Get_Store_And_Database_Info
 	# (DBSERVER/DBNAME and/or ConnectionString should be available)
@@ -66,9 +66,9 @@ function Insert_Test_Item
 		& $writeLog "Insert_Test_Item: No ConnectionString nor DBSERVER/DBNAME available. Run Get_Store_And_Database_Info first." "red"
 		return
 	}
-	
+
 	& $writeLog "`r`n==================== Starting Insert_Test_Item ====================`r`n" "blue"
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Ensure Invoke-Sqlcmd is available (prefer SqlServer, fallback to SQLPS)
 	# We honor the detection already done in Get_Store_And_Database_Info.
@@ -92,14 +92,14 @@ function Insert_Test_Item
 			# If import fails, we'll check again below; if still missing, we abort.
 		}
 	}
-	
+
 	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
 	{
 		& $writeLog "Insert_Test_Item: Invoke-Sqlcmd not available (SqlServer/SQLPS modules not loaded/installed)." "red"
 		& $writeLog "`r`n==================== Insert_Test_Item Aborted (No SQL Module) ====================`r`n" "blue"
 		return
 	}
-	
+
 	$invokeSqlcmdCommand = $null
 	$supportsConnTimeout = $false
 	try
@@ -111,7 +111,7 @@ function Insert_Test_Item
 		}
 	}
 	catch { }
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Decide primary vs. fallback path:
 	#   - If SqlServer module is detected, we ATTEMPT -ConnectionString (modern path).
@@ -120,15 +120,15 @@ function Insert_Test_Item
 	# ----------------------------------------------------------------------------------------------
 	$useConnectionString = $false # Default to fallback unless we validate modern path
 	$fallbackParams = @{ } # Will be used with -ServerInstance/-Database
-	
+
 	# Pull server/database from FunctionResults (preferred over parsing)
 	$serverInstanceFromInfo = $script:FunctionResults['DBSERVER']
 	$databaseFromInfo = $script:FunctionResults['DBNAME']
-	
+
 	# Compose fallback param set from known values
 	if ($serverInstanceFromInfo) { $fallbackParams['ServerInstance'] = $serverInstanceFromInfo }
 	if ($databaseFromInfo) { $fallbackParams['Database'] = $databaseFromInfo }
-	
+
 	# If we have SqlServer module, try modern path first.
 	if ($sqlModule -eq 'SqlServer' -and $ConnectionString)
 	{
@@ -149,7 +149,7 @@ function Insert_Test_Item
 		# Either SQLPS or no module indicated from detection - use fallback path.
 		$useConnectionString = $false
 	}
-	
+
 	# If planning to use fallback, validate it can connect
 	if (-not $useConnectionString)
 	{
@@ -166,7 +166,7 @@ function Insert_Test_Item
 				$fallbackParams['Database'] = $matches[1].Trim()
 			}
 		}
-		
+
 		try
 		{
 			$fallbackProbeParams = $fallbackParams.Clone()
@@ -186,7 +186,7 @@ function Insert_Test_Item
 			return
 		}
 	}
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Centralized SQL runner - ALWAYS use this for queries below so fallback is automatic.
 	# (CHANGE: kept as a scriptblock variable - not a nested *function* - to honor 'no nested functions')
@@ -208,7 +208,7 @@ function Insert_Test_Item
 			return Invoke-Sqlcmd @p
 		}
 	}
-	
+
 	# ----------------------------------------------------------------------------------------------
 	# Business logic: choose appropriate PLU (prefer the "test" one), then delete + insert rows
 	# (CHANGE: removed nested helper function; inlined the PLU test logic 3x for clarity/compliance)
@@ -216,15 +216,15 @@ function Insert_Test_Item
 	$now = Get-Date
 	$nowFull = $now.ToString("yyyy-MM-dd HH:mm:ss.fff")
 	$nowDate = $now.ToString("yyyy-MM-dd 00:00:00.000")
-	
+
 	$preferredPLU = '0020077700000'
 	$alternativePLU = '0020777700000'
 	$fallbackPLU = '0027777700000'
-	
+
 	$PLU = $null
 	$TestF267 = 777
 	$doInsert = $false
-	
+
 	# ---- Check preferred PLU (INLINE)
 	$okUse = $false
 	try
@@ -247,7 +247,7 @@ function Insert_Test_Item
 		$doInsert = $true
 		& $writeLog "Using preferred PLU: $PLU with F267: $TestF267" "green"
 	}
-	
+
 	# ---- If not chosen yet, check alternative PLU (INLINE)
 	if (-not $doInsert)
 	{
@@ -273,7 +273,7 @@ function Insert_Test_Item
 			& $writeLog "Using alternative PLU: $PLU with F267: $TestF267" "green"
 		}
 	}
-	
+
 	# ---- If still not chosen, check fallback PLU (INLINE)
 	if (-not $doInsert)
 	{
@@ -299,11 +299,11 @@ function Insert_Test_Item
 			& $writeLog "Using fallback PLU: $PLU with F267: $TestF267" "green"
 		}
 	}
-	
+
 	if ($doInsert -and $PLU)
 	{
 		& $writeLog "Deleting existing records for PLU: $PLU and F267: $TestF267" "yellow"
-		
+
 		# --- Always delete old rows for the chosen PLU/F267 to keep inserts deterministic
 		$deleteQueries = @(
 			"DELETE FROM SCL_TAB     WHERE F01 = '$PLU'",
@@ -317,7 +317,7 @@ function Insert_Test_Item
 			try { & $RunSql $q | Out-Null }
 			catch { & $writeLog "Error during deletion: $($_.Exception.Message)" "red" }
 		}
-		
+
 		# --- SCL_TAB
 		& $writeLog "Inserting into SCL_TAB..." "yellow"
 		try
@@ -330,7 +330,7 @@ VALUES
 			& $writeLog "SCL_TAB insertion successful" "green"
 		}
 		catch { & $writeLog "Error inserting into SCL_TAB: $($_.Exception.Message)" "red" }
-		
+
 		# --- OBJ_TAB
 		& $writeLog "Inserting into OBJ_TAB..." "yellow"
 		try
@@ -345,7 +345,7 @@ VALUES
 			& $writeLog "OBJ_TAB insertion successful" "green"
 		}
 		catch { & $writeLog "Error inserting into OBJ_TAB: $($_.Exception.Message)" "red" }
-		
+
 		# --- POS_TAB
 		& $writeLog "Inserting into POS_TAB..." "yellow"
 		try
@@ -358,7 +358,7 @@ VALUES
 			& $writeLog "POS_TAB insertion successful" "green"
 		}
 		catch { & $writeLog "Error inserting into POS_TAB: $($_.Exception.Message)" "red" }
-		
+
 		# --- PRICE_TAB
 		& $writeLog "Inserting into PRICE_TAB..." "yellow"
 		try
@@ -371,7 +371,7 @@ VALUES
 			& $writeLog "PRICE_TAB insertion successful" "green"
 		}
 		catch { & $writeLog "Error inserting into PRICE_TAB: $($_.Exception.Message)" "red" }
-		
+
 		# --- SCL_TXT_TAB
 		& $writeLog "Inserting into SCL_TXT_TAB..." "yellow"
 		try
@@ -384,7 +384,7 @@ VALUES
 			& $writeLog "SCL_TXT_TAB insertion successful" "green"
 		}
 		catch { & $writeLog "Error inserting into SCL_TXT_TAB: $($_.Exception.Message)" "red" }
-		
+
 		& $writeLog "`r`n==================== Insert_Test_Item Completed ====================`r`n" "blue"
 	}
 	else

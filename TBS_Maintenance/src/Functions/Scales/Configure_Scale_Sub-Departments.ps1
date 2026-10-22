@@ -25,10 +25,10 @@ function Configure_Scale_Sub-Departments
 		[string]$Database,
 		[string]$ConfigFolder = $script:PrimaryScaleCommRoot
 	)
-	
+
 	# ---- REQUIRED START BANNER (keep exactly as requested earlier) ----
 	Write_Log "`r`n==================== Starting Update_ScaleConfig_And_DB Function ====================`r`n" "blue"
-	
+
 	# -------------------- Resolve Server/DB (params > cache > defaults) --------------------
 	try
 	{
@@ -62,7 +62,7 @@ function Configure_Scale_Sub-Departments
 		Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
 		return
 	}
-	
+
 	# -------------------- Ensure Invoke-Sqlcmd is available --------------------
 	try
 	{
@@ -93,7 +93,7 @@ function Configure_Scale_Sub-Departments
 		Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
 		return
 	}
-	
+
 	# ==============================
 	# SQL templates (literal strings)
 	# ==============================
@@ -112,7 +112,7 @@ BEGIN
 END
 SELECT @Schema AS SchemaName, @Cnt AS RowCnt;
 "@
-	
+
 	$Tsql_Merge_FAM_Keep = @"
 SET NOCOUNT ON; SET XACT_ABORT ON;
 BEGIN TRY
@@ -131,7 +131,7 @@ COMMIT;
 END TRY
 BEGIN CATCH IF XACT_STATE()<>0 ROLLBACK; THROW; END CATCH;
 "@
-	
+
 	$Tsql_Merge_FAM_Overwrite = @"
 SET NOCOUNT ON; SET XACT_ABORT ON;
 BEGIN TRY
@@ -152,7 +152,7 @@ COMMIT;
 END TRY
 BEGIN CATCH IF XACT_STATE()<>0 ROLLBACK; THROW; END CATCH;
 "@
-	
+
 	$Tsql_Merge_RPC_Keep = @"
 SET NOCOUNT ON; SET XACT_ABORT ON;
 BEGIN TRY
@@ -171,7 +171,7 @@ COMMIT;
 END TRY
 BEGIN CATCH IF XACT_STATE()<>0 ROLLBACK; THROW; END CATCH;
 "@
-	
+
 	$Tsql_Merge_RPC_Overwrite = @"
 SET NOCOUNT ON; SET XACT_ABORT ON;
 BEGIN TRY
@@ -192,7 +192,7 @@ COMMIT;
 END TRY
 BEGIN CATCH IF XACT_STATE()<>0 ROLLBACK; THROW; END CATCH;
 "@
-	
+
 	$Tsql_Merge_CAT_Keep = @"
 SET NOCOUNT ON; SET XACT_ABORT ON;
 BEGIN TRY
@@ -342,7 +342,7 @@ END CATCH;
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
 	[void][System.Windows.Forms.Application]::EnableVisualStyles()
-	
+
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Scale Sub-Departments Configuration"
 	$form.StartPosition = "CenterScreen"
@@ -352,13 +352,13 @@ END CATCH;
 	$form.Topmost = $true
 	$form.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 252)
 	$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-	
+
 	# ---- FIX: no PreferredSize/ClientSize math. Set roomy, DPI-aware size and lock minimum. ----
 	$form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 	$form.AutoSize = $false
 	$form.Size = New-Object System.Drawing.Size -ArgumentList 700, 400 # width, height
 	$form.MinimumSize = $form.Size
-	
+
 	# Root layout
 	$root = New-Object System.Windows.Forms.TableLayoutPanel
 	$root.Dock = 'Fill'
@@ -369,7 +369,7 @@ END CATCH;
 	$root.Padding = New-Object System.Windows.Forms.Padding(12, 12, 12, 12)
 	$root.BackColor = $form.BackColor
 	$form.Controls.Add($root)
-	
+
 	# Title
 	$title = New-Object System.Windows.Forms.Label
 	$title.Text = "Choose how to configure Sub-Deparments for the scales"
@@ -377,7 +377,7 @@ END CATCH;
 	$title.AutoSize = $true
 	$title.Margin = New-Object System.Windows.Forms.Padding(4, 0, 4, 8)
 	$root.Controls.Add($title)
-	
+
 	# Group box
 	$grp = New-Object System.Windows.Forms.GroupBox
 	$grp.Text = "Mode"
@@ -386,7 +386,7 @@ END CATCH;
 	$grp.AutoSizeMode = 'GrowAndShrink'
 	$grp.Padding = New-Object System.Windows.Forms.Padding(12, 12, 12, 12)
 	$root.Controls.Add($grp)
-	
+
 	# Grid inside group
 	$grid = New-Object System.Windows.Forms.TableLayoutPanel
 	$grid.Dock = 'Top'
@@ -395,7 +395,7 @@ END CATCH;
 	$grid.ColumnCount = 1
 	$grid.RowCount = 8
 	$grp.Controls.Add($grid)
-	
+
 	# Auto radio + desc
 	$rbAuto = New-Object System.Windows.Forms.RadioButton
 	$rbAuto.Text = "Auto (pick empty table: FAM > RPC > CAT)"
@@ -403,63 +403,63 @@ END CATCH;
 	$rbAuto.Margin = New-Object System.Windows.Forms.Padding(4, 2, 4, 0)
 	$rbAuto.Checked = $true
 	$grid.Controls.Add($rbAuto)
-	
+
 	$descAuto = New-Object System.Windows.Forms.Label
 	$descAuto.Text = "   Recommended. Populates the first EMPTY table and sets SdpDefault accordingly."
 	$descAuto.AutoSize = $true
 	$descAuto.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 118)
 	$descAuto.Margin = New-Object System.Windows.Forms.Padding(22, 0, 4, 6)
 	$grid.Controls.Add($descAuto)
-	
+
 	# FAM radio + desc
 	$rbFAM = New-Object System.Windows.Forms.RadioButton
 	$rbFAM.Text = "Use FAM_TAB (Family) (OBJ.F16)"
 	$rbFAM.AutoSize = $true
 	$rbFAM.Margin = New-Object System.Windows.Forms.Padding(4, 2, 4, 0)
 	$grid.Controls.Add($rbFAM)
-	
+
 	$descFAM = New-Object System.Windows.Forms.Label
 	$descFAM.Text = "   Populates FAM_TAB with 7 rows. If it already has rows, you can back out or overwrite."
 	$descFAM.AutoSize = $true
 	$descFAM.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 118)
 	$descFAM.Margin = New-Object System.Windows.Forms.Padding(22, 0, 4, 6)
 	$grid.Controls.Add($descFAM)
-	
+
 	# RPC radio + desc
 	$rbRPC = New-Object System.Windows.Forms.RadioButton
 	$rbRPC.Text = "Use RPC_TAB (Report) (OBJ.F18)"
 	$rbRPC.AutoSize = $true
 	$rbRPC.Margin = New-Object System.Windows.Forms.Padding(4, 2, 4, 0)
 	$grid.Controls.Add($rbRPC)
-	
+
 	$descRPC = New-Object System.Windows.Forms.Label
 	$descRPC.Text = "   Populates RPC_TAB with 7 rows. If it already has rows, you can back out or overwrite."
 	$descRPC.AutoSize = $true
 	$descRPC.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 118)
 	$descRPC.Margin = New-Object System.Windows.Forms.Padding(22, 0, 4, 6)
 	$grid.Controls.Add($descRPC)
-	
+
 	# CAT radio + desc
 	$rbCAT = New-Object System.Windows.Forms.RadioButton
 	$rbCAT.Text = "Use CAT_TAB (Category) (OBJ.F17)"
 	$rbCAT.AutoSize = $true
 	$rbCAT.Margin = New-Object System.Windows.Forms.Padding(4, 2, 4, 0)
 	$grid.Controls.Add($rbCAT)
-	
+
 	$descCAT = New-Object System.Windows.Forms.Label
 	$descCAT.Text = "   Populates CAT_TAB with 7 rows. If it already has rows, you can back out or overwrite."
 	$descCAT.AutoSize = $true
 	$descCAT.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 118)
 	$descCAT.Margin = New-Object System.Windows.Forms.Padding(22, 0, 4, 6)
 	$grid.Controls.Add($descCAT)
-	
+
 	# Restore default
 	$chkRestore = New-Object System.Windows.Forms.CheckBox
 	$chkRestore.Text = "Restore default SdpDefault=1 (no DB changes)"
 	$chkRestore.AutoSize = $true
 	$chkRestore.Margin = New-Object System.Windows.Forms.Padding(8, 8, 4, 4)
 	$root.Controls.Add($chkRestore)
-	
+
 	# Footer: server|db
 	$status = New-Object System.Windows.Forms.Label
 	$status.Text = "Resolved target: " + $ServerInstance + " | " + $Database
@@ -467,7 +467,7 @@ END CATCH;
 	$status.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 118)
 	$status.Margin = New-Object System.Windows.Forms.Padding(8, 8, 4, 8)
 	$root.Controls.Add($status)
-	
+
 	# Buttons row
 	$btnPanel = New-Object System.Windows.Forms.TableLayoutPanel
 	$btnPanel.AutoSize = $true
@@ -479,27 +479,27 @@ END CATCH;
 	$btnPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	$btnPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
 	$root.Controls.Add($btnPanel)
-	
+
 	$spacer = New-Object System.Windows.Forms.Label
 	$spacer.AutoSize = $true
 	$btnPanel.Controls.Add($spacer, 0, 0)
-	
+
 	$btnRun = New-Object System.Windows.Forms.Button
 	$btnRun.Text = "Run"
 	$btnRun.AutoSize = $true
 	$btnRun.Margin = New-Object System.Windows.Forms.Padding(4, 0, 8, 0)
 	$btnPanel.Controls.Add($btnRun, 1, 0)
-	
+
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.AutoSize = $true
 	$btnCancel.Margin = New-Object System.Windows.Forms.Padding(4, 0, 8, 0)
 	$btnPanel.Controls.Add($btnCancel, 2, 0)
-	
+
 	# Default buttons
 	$form.AcceptButton = $btnRun
 	$form.CancelButton = $btnCancel
-	
+
 	# Tooltips
 	$tip = New-Object System.Windows.Forms.ToolTip
 	$tip.SetToolTip($rbAuto, "Automatically picks the first EMPTY table: FAM > RPC > CAT.")
@@ -507,7 +507,7 @@ END CATCH;
 	$tip.SetToolTip($rbRPC, "Use RPC_TAB. If it already has rows, you can overwrite or back out.")
 	$tip.SetToolTip($rbCAT, "Use CAT_TAB. If it already has rows, you can overwrite or back out.")
 	$tip.SetToolTip($chkRestore, "Only updates configs to SdpDefault=1. No database changes.")
-	
+
 	# Decide action (no nested funcs)
 	$script:_Sdp_Action = $null # "AUTO" | "FAM" | "RPC" | "CAT" | "RESTORE"
 	$btnRun.Add_Click({
@@ -532,7 +532,7 @@ END CATCH;
 			$form.Close()
 		})
 	$btnCancel.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $form.Close() })
-	
+
 	$dr = $form.ShowDialog()
 	if ($dr -ne [System.Windows.Forms.DialogResult]::OK -or -not $script:_Sdp_Action)
 	{
@@ -540,7 +540,7 @@ END CATCH;
 		Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
 		return
 	}
-	
+
 	# =========================
 	# Behavior: Restore default (no DB)
 	# =========================
@@ -571,7 +571,7 @@ END CATCH;
 		Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
 		return
 	}
-	
+
 	# =========================
 	# Table checks (schema + rowcount)
 	# =========================
@@ -591,7 +591,7 @@ END CATCH;
 	$famCount = 0; if ($famInfo -and $famInfo.RowCnt -ne $null) { $famCount = [int64]$famInfo.RowCnt }
 	$rpcCount = 0; if ($rpcInfo -and $rpcInfo.RowCnt -ne $null) { $rpcCount = [int64]$rpcInfo.RowCnt }
 	$catCount = 0; if ($catInfo -and $catInfo.RowCnt -ne $null) { $catCount = [int64]$catInfo.RowCnt }
-	
+
 	# =========================
 	# Execute selected action (parse-safe .Replace and clean Query build)
 	# =========================
@@ -599,7 +599,7 @@ END CATCH;
 	$chosenSchema = $null
 	$sdpValue = $null
 	$overwrite = $false
-	
+
 	if ($script:_Sdp_Action -eq 'AUTO')
 	{
 		if ($famInfo -and $famInfo.SchemaName -and $famCount -eq 0)
@@ -747,7 +747,7 @@ END CATCH;
 			return
 		}
 	}
-	
+
 	# =========================
 	# Update SdpDefault in config files
 	# =========================
@@ -784,7 +784,7 @@ END CATCH;
 		}
 		Write_Log ("SdpDefault successfully set to '" + $sdpValue + "'.") "green"
 	}
-	
+
 	# ---- REQUESTED COMPLETION BANNER (exact string) ----
 	Write_Log "`r`n==================== Configure_Scale_Sub-Departments Completed ====================`r`n" "blue"
 }

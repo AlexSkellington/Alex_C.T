@@ -43,14 +43,14 @@ if ($share -and -not [string]::IsNullOrWhiteSpace($share.Path))
 		# Read KeyString + KeyValidDate (inline)
 		$keyString = ""
 		$keyValid = $null
-		
+
 		try
 		{
 			$txt = Get-Content -Path $infoFile.FullName -Raw -ErrorAction Stop
-			
+
 			$mKey = [regex]::Match($txt, '(?im)^\s*KeyString\s*=\s*(.+?)\s*$')
 			if ($mKey.Success) { $keyString = ($mKey.Groups[1].Value).Trim() }
-			
+
 			$mDt = [regex]::Match($txt, '(?im)^\s*KeyValidDate\s*=\s*(\d{2}/\d{2}/\d{4})\s*$')
 			if ($mDt.Success)
 			{
@@ -59,14 +59,14 @@ if ($share -and -not [string]::IsNullOrWhiteSpace($share.Path))
 			}
 		}
 		catch { }
-		
+
 		# Key requirements for SHARE:
 		#   - KeyString present
 		#   - KeyValidDate exists and is NOT older than 14 days
 		$hasKeyString = -not [string]::IsNullOrWhiteSpace($keyString)
 		$minDate = (Get-Date).Date.AddDays(-14)
 		$keyWithinLimit = ($keyValid -is [datetime]) -and ($keyValid.Date -ge $minDate)
-		
+
 		if ($hasKeyString -and $keyWithinLimit)
 		{
 			$BasePath = $share.Path
@@ -117,7 +117,7 @@ if (-not $BasePath)
 	if ($testPath -and (Test-Path -LiteralPath $testPath))
 	{
 		$BasePath = $testPath
-		
+
 		# Defensive: make sure the test-environment flag is set no matter which
 		# fallback branch we took
 		if (-not $script:IsTestEnvironment)
@@ -126,7 +126,7 @@ if (-not $BasePath)
 			$script:StoremanSource = 'Test fallback'
 			$script:StoremanSourceReason = "no 'storeman' SMB share on this machine"
 		}
-		
+
 		# Optional: warn if the testing path still doesn't have INFO
 		$testInfo = Get-ChildItem -Path (Join-Path $BasePath 'Office\Dbs') -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
 		if (-not $testInfo)
@@ -142,7 +142,7 @@ if (-not $BasePath)
 		$script:IsTestEnvironment = $true
 		$script:StoremanSource = 'Drive-scan fallback'
 		Write-Warning "No 'storeman' SMB share and no existing C:\Storeman / D:\Storeman test root. Scanning all fixed drives for a *storeman* folder..."
-		
+
 		$storemanDirs = @()
 		$fixedDrives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 -and $_.Root -match '^[A-Z]:\\$' }
 		foreach ($drive in $fixedDrives)
@@ -157,7 +157,7 @@ if (-not $BasePath)
 			}
 			if ($dirs) { $storemanDirs += $dirs }
 		}
-		
+
 		$scanned = $null
 		if ($storemanDirs.Count -gt 0)
 		{
@@ -173,7 +173,7 @@ if (-not $BasePath)
 			}
 			if (-not $scanned) { $scanned = $storemanDirs[0] }
 		}
-		
+
 		if ($scanned)
 		{
 			$BasePath = $scanned.FullName

@@ -40,9 +40,9 @@ function Troubleshoot_ScaleCommApp
 		# NEW: where Office\DEPLOY_CHG.sql lives. If not passed, uses $script:OfficePath when available.
 		[string]$OfficePath
 	)
-	
+
 	Write_Log "`r`n==================== Starting Troubleshoot_ScaleCommApp ====================`r`n" "blue"
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Resolve expectations & connection (same behavior; no ternary)
 	# ------------------------------------------------------------------------------------------------
@@ -50,7 +50,7 @@ function Troubleshoot_ScaleCommApp
 	$server = $script:FunctionResults['DBSERVER']
 	$connStr = $script:FunctionResults['ConnectionString']
 	$sqlModule = $script:FunctionResults['SqlModuleName']
-	
+
 	if (-not $ExpectedDatabase -and $dbName) { $ExpectedDatabase = $dbName }
 	if (-not $ExpectedSqlInstance -and $server) { $ExpectedSqlInstance = $server }
 	if (-not $ExpectedStoreName)
@@ -58,7 +58,7 @@ function Troubleshoot_ScaleCommApp
 		$ExpectedStoreName = $script:FunctionResults['StoreName']
 		if (-not $ExpectedStoreName) { $ExpectedStoreName = $script:FunctionResults['STORENAME'] }
 	}
-	
+
 	if (-not $connStr -and $server -and $dbName)
 	{
 		# Build connection string inline (no helpers)
@@ -74,7 +74,7 @@ function Troubleshoot_ScaleCommApp
 		}
 		$script:FunctionResults['ConnectionString'] = $connStr
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# NEW: Pull StoreName from system.ini (case-insensitive NAME=) if not provided explicitly
 	#       Supports multiple candidate Office paths and robust parsing of NAME= line.
@@ -99,7 +99,7 @@ function Troubleshoot_ScaleCommApp
 		{
 			if ($officeCandidates -notcontains $configuredOffice) { $officeCandidates += $configuredOffice }
 		}
-		
+
 		# Try each candidate until we find a system.ini to parse
 		$systemIniPathUsed = $null
 		foreach ($off in $officeCandidates)
@@ -112,7 +112,7 @@ function Troubleshoot_ScaleCommApp
 				$raw = $null
 				try { $raw = Get-Content -LiteralPath $iniCandidate -Raw -ErrorAction Stop }
 				catch { $raw = $null }
-				
+
 				if ($raw)
 				{
 					# Split and scan lines
@@ -123,10 +123,10 @@ function Troubleshoot_ScaleCommApp
 						#         - Keeps '#' as literal text (so "Supermarket #2" is preserved)
 						#         - Strips ';' comments only when ';' is preceded by whitespace
 						#         - Supports quoted values and keeps everything inside quotes
-						
+
 						$trimLine = $ln.Trim()
 						if ([string]::IsNullOrWhiteSpace($trimLine)) { continue }
-						
+
 						# Look for NAME= at start of line (case-insensitive)
 						if ($trimLine -match '^\s*NAME\s*=')
 						{
@@ -135,7 +135,7 @@ function Troubleshoot_ScaleCommApp
 							if ($eqIndex -ge 0 -and ($eqIndex + 1) -lt $trimLine.Length)
 							{
 								$val = $trimLine.Substring($eqIndex + 1).Trim()
-								
+
 								# If quoted, keep everything inside the outer quotes
 								if ($val.StartsWith('"'))
 								{
@@ -160,7 +160,7 @@ function Troubleshoot_ScaleCommApp
 										$val = $mSemi.Groups[1].Value.Trim()
 									}
 								}
-								
+
 								if (-not [string]::IsNullOrWhiteSpace($val))
 								{
 									$systemIniStoreName = $val
@@ -174,7 +174,7 @@ function Troubleshoot_ScaleCommApp
 			}
 			if ($systemIniStoreName) { break }
 		}
-		
+
 		# If we found a NAME= in system.ini and user did not pass -ExpectedStoreName, adopt it
 		if ($systemIniStoreName -and -not $PSBoundParameters.ContainsKey('ExpectedStoreName'))
 		{
@@ -202,7 +202,7 @@ function Troubleshoot_ScaleCommApp
 	{
 		Write_Log "Error while reading system.ini for NAME=: $($_.Exception.Message)" "yellow"
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Active NIC prefix (fallback) - logged ONCE (inline)
 	# ------------------------------------------------------------------------------------------------
@@ -218,11 +218,11 @@ function Troubleshoot_ScaleCommApp
 			}
 		}
 		catch { }
-		
+
 		# Get all UP NICs
 		$allNics = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
 		Where-Object { $_.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up }
-		
+
 		# Try to pick an interface on the same subnet as SQL server (inline mask compare)
 		$pickedIP = $null
 		foreach ($ni in $allNics)
@@ -232,7 +232,7 @@ function Troubleshoot_ScaleCommApp
 			{
 				if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
 				if (-not $ua.IPv4Mask) { continue }
-				
+
 				foreach ($srv in $serverIPv4s)
 				{
 					$ok = $false
@@ -251,7 +251,7 @@ function Troubleshoot_ScaleCommApp
 			}
 			if ($pickedIP) { break }
 		}
-		
+
 		# Gateway-backed interface fallback
 		if (-not $pickedIP)
 		{
@@ -272,7 +272,7 @@ function Troubleshoot_ScaleCommApp
 				if ($pickedIP) { break }
 			}
 		}
-		
+
 		# RFC1918 preference fallback
 		if (-not $pickedIP)
 		{
@@ -297,15 +297,15 @@ function Troubleshoot_ScaleCommApp
 				if ($pickedIP) { break }
 			}
 		}
-		
+
 		# Derive /24 prefix
 		if ($pickedIP) { $p = $pickedIP.Split('.'); if ($p.Length -ge 3) { $ActiveNicPrefix = "$($p[0]).$($p[1]).$($p[2])" } }
 	}
 	catch { }
-	
+
 	if ($ActiveNicPrefix) { Write_Log "Active NIC /24 prefix: $ActiveNicPrefix" "cyan" }
 	else { Write_Log "Active NIC /24 prefix not detected (fallback may be unavailable)." "yellow" }
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# FIRST active scale full IP (robust) - logged ONCE (inline)
 	# ------------------------------------------------------------------------------------------------
@@ -321,7 +321,7 @@ function Troubleshoot_ScaleCommApp
 		}
 		$supportsConnStr = $false
 		if ($InvokeSqlCmd) { $supportsConnStr = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString' }
-		
+
 		# Query
 		$q = @"
 SELECT IPNetwork, IPDevice, ScaleCode, Active
@@ -331,7 +331,7 @@ ORDER BY
     TRY_CAST(ScaleCode AS INT),
     ScaleCode;
 "@
-		
+
 		# Execute query (inline; no helpers)
 		$rows = $null
 		try
@@ -356,21 +356,21 @@ ORDER BY
 			}
 		}
 		catch { $rows = $null }
-		
+
 		# Process rows
 		$hasRows = $false
 		if ($rows -is [System.Data.DataTable]) { if ($rows.Rows.Count -gt 0) { $hasRows = $true } }
 		elseif ($rows) { if ($rows.Count -gt 0) { $hasRows = $true } }
-		
+
 		if ($hasRows)
 		{
 			Write_Log "Loaded rows from TBS_SCL_ver520 for first-scale detection." "cyan"
-			
+
 			# Normalize enumeration
 			$enum = @()
 			if ($rows -is [System.Data.DataTable]) { $enum = $rows.Rows }
 			else { $enum = $rows }
-			
+
 			# Prefix frequency map (inline)
 			$pfxCounts = @{ }
 			foreach ($r in $enum)
@@ -395,14 +395,14 @@ ORDER BY
 					}
 				}
 			}
-			
+
 			$MostCommonPrefix = $null
 			if ($pfxCounts.Count -gt 0)
 			{
 				$MostCommonPrefix = ($pfxCounts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 1).Key
 				Write_Log "Most common IPNetwork prefix in table: $MostCommonPrefix" "cyan"
 			}
-			
+
 			# Filter "active" rows (inline)
 			$candidates = @()
 			foreach ($r in $enum)
@@ -415,7 +415,7 @@ ORDER BY
 				elseif ($act -eq 'Y' -or $act -eq '1' -or $act -eq 'TRUE') { $isActive = $true }
 				if ($isActive) { $candidates += $r }
 			}
-			
+
 			# Try 1: exact per-row prefix + device
 			foreach ($r in $candidates)
 			{
@@ -436,7 +436,7 @@ ORDER BY
 						}
 					}
 				}
-				
+
 				$devOct = $null
 				if ($null -ne $r.IPDevice)
 				{
@@ -446,10 +446,10 @@ ORDER BY
 						if ($tmp -ge 0 -and $tmp -le 255) { $devOct = $tmp }
 					}
 				}
-				
+
 				if ($pref -and ($null -ne $devOct)) { $firstScaleIP = "$pref.$devOct"; break }
 			}
-			
+
 			# Try 2: table-most-common prefix + device
 			if (-not $firstScaleIP -and $MostCommonPrefix)
 			{
@@ -467,7 +467,7 @@ ORDER BY
 					if ($null -ne $devOct) { $firstScaleIP = "$MostCommonPrefix.$devOct"; break }
 				}
 			}
-			
+
 			# Try 3: active NIC /24 prefix + device
 			if (-not $firstScaleIP -and $ActiveNicPrefix)
 			{
@@ -485,7 +485,7 @@ ORDER BY
 					if ($null -ne $devOct) { $firstScaleIP = "$ActiveNicPrefix.$devOct"; break }
 				}
 			}
-			
+
 			if ($firstScaleIP) { Write_Log "First scale IP resolved: $firstScaleIP" "cyan" }
 			else { Write_Log "First scale IP NOT resolved (need prefix + device)." "yellow" }
 		}
@@ -498,7 +498,7 @@ ORDER BY
 	{
 		Write_Log "DB connection info incomplete; first-scale detection skipped." "yellow"
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Locate target configs
 	# ------------------------------------------------------------------------------------------------
@@ -526,7 +526,7 @@ ORDER BY
 		Write_Log ("Multiple configs found; using first. Use -AllMatches to update all." + "`r`n - " + (($targets | ForEach-Object FullName) -join "`r`n - ")) "yellow"
 		$targets = @($targets[0])
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# ONE-TIME "Desired Settings" + "Existing (first file)" snapshot (inline getters)
 	# ------------------------------------------------------------------------------------------------
@@ -534,7 +534,7 @@ ORDER BY
 	$previewXml = $null
 	try { [xml]$previewXml = Get-Content -LiteralPath $previewPath -Raw -ErrorAction Stop }
 	catch { }
-	
+
 	$curStorePreview = $null; $curFirstIPPreview = $null; $curSqlInstPreview = $null; $curDbNamePreview = $null; $curBatchPreview = $null
 	if ($previewXml)
 	{
@@ -552,19 +552,19 @@ ORDER BY
 			}
 		}
 	}
-	
+
 	$dStore = '<unchanged/skip>'; if ($ExpectedStoreName) { $dStore = $ExpectedStoreName } # CHANGE: reflects system.ini-driven name when adopted
 	$dIP = '<skip>'; if ($firstScaleIP) { $dIP = $firstScaleIP }
 	$dInst = '<unchanged/skip>'; if ($ExpectedSqlInstance) { $dInst = $ExpectedSqlInstance }
 	$dDb = '<unchanged/skip>'; if ($ExpectedDatabase) { $dDb = $ExpectedDatabase }
-	
+
 	Write_Log "Desired Settings:" "blue"
 	Write_Log ("  StoreName          : {0}" -f $dStore) "green"
 	Write_Log ("  FistScaleIP        : {0}" -f $dIP) "green"
 	Write_Log ("  SQL_InstanceName   : {0}" -f $dInst) "green"
 	Write_Log ("  SQL_databaseName   : {0}" -f $dDb) "green"
 	Write_Log ("  Recs_BatchSendFull : 10000") "green"
-	
+
 	$leafPreview = Split-Path -Leaf $previewPath
 	Write_Log ("Existing (first file: {0}):" -f $leafPreview) "blue"
 	if (-not $curStorePreview) { $curStorePreview = '<missing>' }
@@ -577,7 +577,7 @@ ORDER BY
 	Write_Log ("  SQL_InstanceName   : {0}" -f $curSqlInstPreview) "yellow"
 	Write_Log ("  SQL_databaseName   : {0}" -f $curDbNamePreview) "yellow"
 	Write_Log ("  Recs_BatchSendFull : {0}" -f $curBatchPreview) "yellow"
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Apply to all targets (quiet per-file; track counts + saved list)
 	# ------------------------------------------------------------------------------------------------
@@ -586,12 +586,12 @@ ORDER BY
 	[int]$updated = 0
 	[int]$skipped = 0
 	$savedFiles = New-Object System.Collections.Generic.List[string]
-	
+
 	foreach ($t in $targets)
 	{
 		$audited++
 		$path = $t.FullName
-		
+
 		# Load XML
 		$xml = $null
 		try { [xml]$xml = Get-Content -LiteralPath $path -Raw -ErrorAction Stop }
@@ -600,7 +600,7 @@ ORDER BY
 		if (-not $cfg) { $skipped++; continue }
 		$as = $cfg.appSettings
 		if (-not $as) { $skipped++; continue }
-		
+
 		# READ current values (inline)
 		$curStore = $null; $curFirstIP = $null; $curInst = $null; $curDb = $null; $curBatch = $null
 		$n = $as.SelectSingleNode("add[@key='StoreName']"); if ($n) { $curStore = [string]$n.GetAttribute('value') }
@@ -608,9 +608,9 @@ ORDER BY
 		$n = $as.SelectSingleNode("add[@key='SQL_InstanceName']"); if ($n) { $curInst = [string]$n.GetAttribute('value') }
 		$n = $as.SelectSingleNode("add[@key='SQL_databaseName']"); if ($n) { $curDb = [string]$n.GetAttribute('value') }
 		$n = $as.SelectSingleNode("add[@key='Recs_BatchSendFull']"); if ($n) { $curBatch = [string]$n.GetAttribute('value') }
-		
+
 		$changedHere = $false
-		
+
 		# SET (inline create-if-missing)
 		if ($ExpectedStoreName -and $curStore -ne $ExpectedStoreName)
 		{
@@ -622,7 +622,7 @@ ORDER BY
 				$changedHere = $true
 			}
 		}
-		
+
 		if ($firstScaleIP -and $curFirstIP -ne $firstScaleIP)
 		{
 			if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set FistScaleIP'))
@@ -633,7 +633,7 @@ ORDER BY
 				$changedHere = $true
 			}
 		}
-		
+
 		if ($ExpectedSqlInstance -and $curInst -ne $ExpectedSqlInstance)
 		{
 			if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set SQL_InstanceName'))
@@ -644,7 +644,7 @@ ORDER BY
 				$changedHere = $true
 			}
 		}
-		
+
 		if ($ExpectedDatabase -and $curDb -ne $ExpectedDatabase)
 		{
 			if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set SQL_databaseName'))
@@ -655,7 +655,7 @@ ORDER BY
 				$changedHere = $true
 			}
 		}
-		
+
 		if ($curBatch -ne '10000')
 		{
 			if ($autoFix -and $PSCmdlet.ShouldProcess($path, 'Set Recs_BatchSendFull=10000'))
@@ -666,7 +666,7 @@ ORDER BY
 				$changedHere = $true
 			}
 		}
-		
+
 		# Save if changed
 		if ($changedHere -and $autoFix)
 		{
@@ -680,7 +680,7 @@ ORDER BY
 				}
 			}
 			catch { $skipped++; continue }
-			
+
 			try
 			{
 				$dir = Split-Path -LiteralPath $path -Parent
@@ -690,7 +690,7 @@ ORDER BY
 				Copy-Item -LiteralPath $path -Destination $bak -Force
 			}
 			catch { }
-			
+
 			try
 			{
 				$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -701,7 +701,7 @@ ORDER BY
 			catch { $skipped++ }
 		}
 	}
-	
+
 	# ==================================================================================================
 	# NEW: Restore DEPLOY_CHG.sql deploy line (integrated Fix_Deploy_CHG)
 	# ==================================================================================================
@@ -710,7 +710,7 @@ ORDER BY
 	if ($OfficePath)
 	{
 		$deployChgFile = Join-Path $OfficePath "DEPLOY_CHG.sql"
-		
+
 		if (Test-Path -LiteralPath $deployChgFile)
 		{
 			# Choose executable from the configured ScaleComm roots (prefer FastDEPLOY).
@@ -723,7 +723,7 @@ ORDER BY
 			if (-not $regularDeployCandidate) { $regularDeployCandidate = $script:ScaleManagementAppExePath }
 			if (Test-Path -LiteralPath $fastDeployCandidate) { $exeCandidate = $fastDeployCandidate }
 			elseif (Test-Path -LiteralPath $regularDeployCandidate) { $exeCandidate = $regularDeployCandidate }
-			
+
 			if ($exeCandidate)
 			{
 				# Build the two-line payload (comment + @EXEC)
@@ -744,19 +744,19 @@ ORDER BY
 				{
 					$deployExecRegex = "(?i)@EXEC\(RUN='(?:" + ($deployExecPatterns -join '|') + ")'\);"
 				}
-				
+
 				try
 				{
 					if ($PSCmdlet.ShouldProcess($deployChgFile, "Restore DEPLOY_CHG @EXEC line -> $exeCandidate"))
 					{
-						
+
 						# Read entire file and split into lines
 						$content = Get-Content -LiteralPath $deployChgFile -Raw
 						$lines = $content -split "`r?`n"
-						
+
 						# CHANGE: Build a mutable list so we can RemoveAt safely (arrays are fixed-size)
 						$filtered = New-Object System.Collections.Generic.List[string]
-						
+
 						# Filter OUT previous lines: our comment and any matching @EXEC to ScaleManagementApp(_FastDEPLOY).exe
 						foreach ($ln in $lines)
 						{
@@ -764,18 +764,18 @@ ORDER BY
 							if ($ln -match $deployExecRegex) { continue }
 							[void]$filtered.Add($ln)
 						}
-						
+
 						# CHANGE: Trim trailing blank lines safely using List.RemoveAt
 						while ($filtered.Count -gt 0 -and [string]::IsNullOrWhiteSpace($filtered[$filtered.Count - 1]))
 						{
 							$filtered.RemoveAt($filtered.Count - 1)
 						}
-						
+
 						# CHANGE: Append payload as two distinct lines (avoid embedded CRLFs inside a single element)
 						[void]$filtered.Add("") # ensure one blank line before our payload
 						[void]$filtered.Add("/* Deploy price changes to the scales */")
 						[void]$filtered.Add("@EXEC(RUN='$exeCandidate');")
-						
+
 						# If file is read-only, clear attribute only when -Force is given
 						$fileOk = $true
 						try
@@ -788,7 +788,7 @@ ORDER BY
 							}
 						}
 						catch { $fileOk = $false }
-						
+
 						if ($fileOk)
 						{
 							# Keep your original encoding choice for DEPLOY_CHG.sql
@@ -805,7 +805,7 @@ ORDER BY
 				{
 					Write_Log "Failed to restore line to DEPLOY_CHG.sql: $_" "red"
 				}
-				
+
 				# Delete the minutes scheduled task if it exists
 				try
 				{
@@ -840,15 +840,15 @@ ORDER BY
 	{
 		Write_Log "Office path not provided and \$script:OfficePath not available; skipping DEPLOY_CHG.sql restore." "yellow"
 	}
-	
+
 	# ------------------------------------------------------------------------------------------------
 	# Final summary
 	# ------------------------------------------------------------------------------------------------
 	$sumIP = 'n/a'
 	if ($firstScaleIP) { $sumIP = $firstScaleIP }
-	
+
 	Write_Log ("`r`nTroubleshoot_ScaleCommApp: Audited={0}, Updated={1}, Skipped={2}, FirstScaleIP={3}" -f $audited, $updated, $skipped, $sumIP) "blue"
 	if ($updated -gt 0) { Write_Log ("Saved files: {0}" -f ($savedFiles -join ', ')) "green" }
-	
+
 	Write_Log "`r`n==================== Troubleshoot_ScaleCommApp Completed ====================" "blue"
 }

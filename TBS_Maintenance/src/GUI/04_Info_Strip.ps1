@@ -55,7 +55,7 @@ $applyLinkStyle = {
 	param ([System.Windows.Forms.Label]$Label)
 	$Label.Cursor = [System.Windows.Forms.Cursors]::Hand
 	if (-not $Label.Tag) { $Label.Tag = [pscustomobject]@{ Color = $Label.ForeColor; Font = $Label.Font } }
-	
+
 	$Label.add_MouseEnter({
 			param ($s,
 				$e)
@@ -93,7 +93,7 @@ $applyInfoLabelStyle = {
 	$Label.Font = New-Object System.Drawing.Font("Segoe UI", [float]10, [System.Drawing.FontStyle]::Bold)
 	$Label.ForeColor = $uiTextPrimary
 	if (-not $Label.Tag) { $Label.Tag = [pscustomobject]@{ Color = $Label.ForeColor; Font = $Label.Font } }
-	
+
 	$Label.add_MouseEnter({
 			param ($s, $e)
 			try { $s.ForeColor = $uiAccent; $s.Font = New-Object System.Drawing.Font($s.Font, ($s.Font.Style -bor [System.Drawing.FontStyle]::Underline)) }
@@ -147,7 +147,7 @@ public static class NativeWin {
 "@ | ForEach-Object {
 				if (-not ("NativeWin" -as [type])) { Add-Type -TypeDefinition $_ -ErrorAction SilentlyContinue }
 			}
-			
+
 			$p = Get-Process -Name 'SMSStart' -ErrorAction SilentlyContinue |
 			Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 			if ($p)
@@ -158,7 +158,7 @@ public static class NativeWin {
 				if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Brought SMSStart to the foreground." "green" }
 				return
 			}
-			
+
 			$exe = Join-Path $BasePath 'SMSStart.exe'
 			$proc = $null
 			if (Test-Path -LiteralPath $exe)
@@ -170,13 +170,13 @@ public static class NativeWin {
 				$lnk = Get-ChildItem -LiteralPath $BasePath -Filter '*SMSStart*.lnk' -ErrorAction SilentlyContinue | Select-Object -First 1
 				if ($lnk) { $proc = Start-Process -FilePath $lnk.FullName -PassThru -ErrorAction Stop }
 			}
-			
+
 			if (-not $proc)
 			{
 				if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "SMSStart not found under $BasePath" "yellow" }
 				return
 			}
-			
+
 			$null = $proc.WaitForInputIdle(5000)
 			for ($i = 0; $i -lt 20 -and $proc.MainWindowHandle -eq 0; $i++)
 			{
@@ -389,7 +389,7 @@ $NodesBackoffices.Add_Click({
 # ------------------------------------------------------------------------------------------------
 $layoutTopStrip = {
 	if (-not $form -or $form.IsDisposed) { return }
-	
+
 	try
 	{
 		# Fit the top strip "card" to the form width with your side padding

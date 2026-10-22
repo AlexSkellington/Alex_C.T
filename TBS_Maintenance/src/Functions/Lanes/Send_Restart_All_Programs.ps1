@@ -24,12 +24,12 @@ function Send_Restart_All_Programs
 		[Parameter(Mandatory = $false)]
 		[switch]$Silent
 	)
-	
+
 	if (-not $Silent)
 	{
 		Write_Log "`r`n==================== Starting Send_Restart_All_Programs Function ====================`r`n" "blue"
 	}
-	
+
 	# Retrieve lane mappings using Retrieve_Nodes (guaranteed current)
 	$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 	if (-not $nodes -or -not $nodes.LaneNumToMachineName)
@@ -37,7 +37,7 @@ function Send_Restart_All_Programs
 		Write_Log "Failed to retrieve node information for store $StoreNumber." "red"
 		return
 	}
-	
+
 	# Lane selection: use passed-in list or picker
 	$lanes =
 	if ($LaneNumbers -and $LaneNumbers.Count -gt 0)
@@ -64,7 +64,7 @@ function Send_Restart_All_Programs
 			else { $_ }
 		}
 	}
-	
+
 	foreach ($lane in $lanes)
 	{
 		$machineName = $nodes.LaneNumToMachineName[$lane]
@@ -73,10 +73,10 @@ function Send_Restart_All_Programs
 			Write_Log "No machine found for lane $lane. Skipping." "yellow"
 			continue
 		}
-		
+
 		$mailslotAddress = "\\$machineName\Mailslot\SMSStart_${StoreNumber}${lane}"
 		$commandMessage = "@exec(RESTART_ALL=PROGRAMS)."
-		
+
 		try
 		{
 			$result = [MailslotSender]::SendMailslotCommand($mailslotAddress, $commandMessage)
@@ -103,7 +103,7 @@ function Send_Restart_All_Programs
 			}
 		}
 	}
-	
+
 	if (-not $Silent)
 	{
 		Write_Log "`r`n==================== Send_Restart_All_Programs Function Completed ====================" "blue"

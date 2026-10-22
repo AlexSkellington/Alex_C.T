@@ -35,7 +35,7 @@ function Get_Remote_Machine_Info
 		[object[]]$SelectedScales,
 		[object[]]$SelectedBackoffices
 	)
-	
+
 	$log = {
 		param (
 			[string]$Message,
@@ -46,28 +46,28 @@ function Get_Remote_Machine_Info
 			Write_Log $Message $Color
 		}
 	}
-	
+
 	& $log "`r`n==================== Starting Get_Remote_Machine_Info ====================`r`n" "blue"
-	
+
 	# --------------------------- Tunables ---------------------------
 	$maxConcurrentJobs = 10
 	$wmiTimeoutSeconds = 5
 	$cimTimeoutSeconds = 10
 	$regTimeoutSeconds = 30
 	$usePSRemotingFallback = $false # set $true to try PS-Session registry read before REG.EXE
-	
+
 	# --------------------------- Outputs (reset) ---------------------------
 	$script:LaneHardwareInfo = $null
 	$script:ScaleHardwareInfo = $null
 	$script:BackofficeHardwareInfo = $null
-	
+
 	# --------------------------- Inputs from your environment ---------------------------
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	$ScaleCodeToIPInfo = $script:FunctionResults['ScaleCodeToIPInfo']
 	$BackofficeNumToMachineName = $script:FunctionResults['BackofficeNumToMachineName']
 	$StoreNumber = $script:FunctionResults['StoreNumber']
 	$DbsPath = $script:DbsPath
-	
+
 	# --------------------------- Keep only discovered/usable nodes ---------------------------
 	$availableLaneNodes = @{ }
 	if ($LaneNumToMachineName)
@@ -81,7 +81,7 @@ function Get_Remote_Machine_Info
 			}
 		}
 	}
-	
+
 	$availableScaleNodes = @{ }
 	if ($ScaleCodeToIPInfo)
 	{
@@ -105,14 +105,14 @@ function Get_Remote_Machine_Info
 					$scaleIp = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
 				}
 			}
-			
+
 			if (-not [string]::IsNullOrWhiteSpace($scaleIp))
 			{
 				$availableScaleNodes[[string]$kv.Key] = $scaleObj
 			}
 		}
 	}
-	
+
 	$availableBackofficeNodes = @{ }
 	if ($BackofficeNumToMachineName)
 	{
@@ -125,15 +125,15 @@ function Get_Remote_Machine_Info
 			}
 		}
 	}
-	
+
 	$LaneNumToMachineName = $availableLaneNodes
 	$ScaleCodeToIPInfo = $availableScaleNodes
 	$BackofficeNumToMachineName = $availableBackofficeNodes
-	
+
 	$selectedLanes = @($SelectedLanes)
 	$selectedScales = @($SelectedScales)
 	$selectedBOs = @($SelectedBackoffices)
-	
+
 	if ($UseAllAvailableNodes -and
 		(-not $selectedLanes -or $selectedLanes.Count -eq 0) -and
 		(-not $selectedScales -or $selectedScales.Count -eq 0) -and
@@ -142,12 +142,12 @@ function Get_Remote_Machine_Info
 		$selectedLanes = @()
 		$selectedScales = @()
 		$selectedBOs = @()
-		
+
 		if ($LaneNumToMachineName) { $selectedLanes = @($LaneNumToMachineName.Keys | Sort-Object) }
 		if ($ScaleCodeToIPInfo) { $selectedScales = @($ScaleCodeToIPInfo.Keys | Sort-Object) }
 		if ($BackofficeNumToMachineName) { $selectedBOs = @($BackofficeNumToMachineName.Keys | Sort-Object) }
 	}
-	
+
 	if ((-not $UseAllAvailableNodes) -and
 		(-not $selectedLanes -or $selectedLanes.Count -eq 0) -and
 		(-not $selectedScales -or $selectedScales.Count -eq 0) -and
@@ -157,19 +157,19 @@ function Get_Remote_Machine_Info
 		$nodeSelection = Show_Node_Selection_Form -StoreNumber $StoreNumber `
 												  -NodeTypes @("Lane", "Scale", "Backoffice") `
 												  -Title "Select Nodes to Pull Hardware Info"
-		
+
 		if (-not $nodeSelection)
 		{
 			& $log "Get_Remote_Machine_Info cancelled by user." "yellow"
 			& $log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
 			return $false
 		}
-		
+
 		$selectedLanes = @($nodeSelection.Lanes)
 		$selectedScales = @($nodeSelection.Scales)
 		$selectedBOs = @($nodeSelection.Backoffices)
 	}
-	
+
 	if ((-not $selectedLanes -or $selectedLanes.Count -eq 0) -and
 		(-not $selectedScales -or $selectedScales.Count -eq 0) -and
 		(-not $selectedBOs -or $selectedBOs.Count -eq 0))
@@ -178,7 +178,7 @@ function Get_Remote_Machine_Info
 		& $log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
 		return $false
 	}
-	
+
 	if ($RunInBackground -and -not $InternalBackgroundJob)
 	{
 		if (
@@ -190,13 +190,13 @@ function Get_Remote_Machine_Info
 			& $log "Remote machine info export is already running in the background." "yellow"
 			return $true
 		}
-		
+
 		$job = $null
 		try
 		{
 			$getRemoteMachineInfoDefinition = ${function:Get_Remote_Machine_Info}.ToString()
 			$writeLogDefinition = 'param([string]$Message, $Color, [switch]$IncludeTimestamp)'
-			
+
 			$job = Start-Job -Name 'RemoteMachineInfoJob' -ScriptBlock {
 				param (
 					[string]$GetRemoteMachineInfoDefinition,
@@ -211,10 +211,10 @@ function Get_Remote_Machine_Info
 					[object[]]$SelectedScales,
 					[object[]]$SelectedBackoffices
 				)
-				
+
 				Set-Item -Path function:Write_Log -Value ([scriptblock]::Create($WriteLogDefinition))
 				Set-Item -Path function:Get_Remote_Machine_Info -Value ([scriptblock]::Create($GetRemoteMachineInfoDefinition))
-				
+
 				$script:FunctionResults = @{
 					LaneNumToMachineName	   = $LaneMap
 					ScaleCodeToIPInfo		   = $ScaleMap
@@ -222,7 +222,7 @@ function Get_Remote_Machine_Info
 					StoreNumber			       = $StoreNumber
 				}
 				$script:DbsPath = $DbsPath
-				
+
 				try
 				{
 					Get_Remote_Machine_Info `
@@ -231,7 +231,7 @@ function Get_Remote_Machine_Info
 											-SelectedBackoffices $SelectedBackoffices `
 											-InternalBackgroundJob `
 											-SilentBackground:$SilentBackgroundMode | Out-Null
-					
+
 					[pscustomobject]@{
 						Success			       = $true
 						LaneHardwareInfo	   = $script:LaneHardwareInfo
@@ -263,13 +263,13 @@ function Get_Remote_Machine_Info
 				$selectedScales,
 				$selectedBOs
 			)
-			
+
 			$script:RemoteMachineInfoTask = @{
 				Job	    = $job
 				Started = Get-Date
 				Silent  = [bool]$SilentBackground
 			}
-			
+
 			if (-not $script:RemoteMachineInfoReaper)
 			{
 				$script:RemoteMachineInfoReaper = New-Object System.Windows.Forms.Timer
@@ -289,22 +289,22 @@ function Get_Remote_Machine_Info
 							catch { }
 							return
 						}
-						
+
 						$taskState = $script:RemoteMachineInfoTask
 						if (-not $taskState.Job -or $taskState.Job.State -in @('Running', 'NotStarted')) { return }
-						
+
 						$result = $null
 						try { $result = Receive-Job -Job $taskState.Job -ErrorAction SilentlyContinue }
 						catch { }
 						try { Remove-Job -Job $taskState.Job -Force -ErrorAction SilentlyContinue | Out-Null }
 						catch { }
-						
+
 						$resultObj = $null
 						if ($result)
 						{
 							$resultObj = @($result) | Select-Object -Last 1
 						}
-						
+
 						if ($resultObj -and $resultObj.Success)
 						{
 							$script:LaneHardwareInfo = $resultObj.LaneHardwareInfo
@@ -321,9 +321,9 @@ function Get_Remote_Machine_Info
 							else { "Unknown error." }
 							Write_Log "Remote machine info export failed in background: $errText" "red"
 						}
-						
+
 						$script:RemoteMachineInfoTask = $null
-						
+
 						try
 						{
 							if ($script:RemoteMachineInfoReaper)
@@ -336,12 +336,12 @@ function Get_Remote_Machine_Info
 						catch { }
 					})
 			}
-			
+
 			if (-not $SilentBackground)
 			{
 				& $log "Remote machine info export started in background." "yellow"
 			}
-			
+
 			$script:RemoteMachineInfoReaper.Start()
 		}
 		catch
@@ -352,16 +352,16 @@ function Get_Remote_Machine_Info
 			& $log "Failed to start remote machine info export in background: $_" "red"
 			return $false
 		}
-		
+
 		return $true
 	}
-	
+
 	# --------------------------- Output folders ---------------------------
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
 	$scalesDir = Join-Path $desktop "Scales"
 	$backofficesDir = Join-Path $desktop "BackOffices"
-	
+
 	# --------------------------- Process 3 categories uniformly ---------------------------
 	foreach ($section in @(
 			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt' },
@@ -370,20 +370,20 @@ function Get_Remote_Machine_Info
 		))
 	{
 		if (-not $section.Selected -or $section.Selected.Count -eq 0) { continue }
-		
+
 		& $log "Processing $($section.Name) nodes..." "yellow"
 		Set-Variable -Name $($section.ResultsVar) -Value @{ }
 		Set-Variable -Name $($section.InfoLinesVar) -Value @()
-		
+
 		$jobs = @()
 		$pending = @{ }
-		
+
 		foreach ($sel in $section.Selected)
 		{
 			# -------- Canonical per-node identity: $NodeNumber (code) + $NodeName (machine/IP) --------
 			$NodeNumber = $null
 			$NodeName = $null
-			
+
 			if ($section.Name -eq 'Lanes')
 			{
 				if ($sel.PSObject.Properties.Name -contains 'LaneNumber' -and $sel.LaneNumber)
@@ -411,19 +411,19 @@ function Get_Remote_Machine_Info
 				else { $NodeNumber = "$sel" }
 				$NodeName = $BackofficeNumToMachineName[$NodeNumber]
 			}
-			
+
 			if (-not $NodeName)
 			{
 				& $log "Skipping $($section.Name) $NodeNumber (no NodeName/mapping found)" "red"
 				continue
 			}
-			
+
 			# -------- Optional INI path (used to augment fields) --------
 			$iniPattern = "INFO_${StoreNumber}${NodeNumber}_SMSStart.ini"
 			if ($section.Name -eq 'Lanes') { $iniPath = Join-Path "\\$NodeName\storeman\office\dbs" $iniPattern }
 			elseif ($section.Name -eq 'BackOffices') { $iniPath = Join-Path $DbsPath                         $iniPattern }
 			else { $iniPath = $null }
-			
+
 			# -------- Per-node job (throttled outside) --------
 			$job = Start-Job -Name ("RemoteMachineInfo_Node_{0}" -f $NodeName) -ArgumentList $NodeName, $NodeNumber, $iniPath, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $usePSRemotingFallback `
 							 -ScriptBlock {
@@ -436,7 +436,7 @@ function Get_Remote_Machine_Info
 					$regTimeoutSeconds,
 					$usePSRemotingFallback
 				)
-				
+
 				# --- 0) Result object scaffold ---
 				$info = [PSCustomObject]@{
 					Success			    = $false
@@ -450,7 +450,7 @@ function Get_Remote_Machine_Info
 					Error			    = $null
 					MachineNameOverride = $null
 				}
-				
+
 				# --- 0.1) Remember RemoteRegistry state up-front (so we can restore) ---
 				$originalState = $null
 				try
@@ -460,7 +460,7 @@ function Get_Remote_Machine_Info
 					$originalState = @{ StateLine = $stateLine; StartTypeLine = $startTypeLine }
 				}
 				catch { }
-				
+
 				# --- 1) WMI (fast) ---
 				if (-not (Test-Connection -ComputerName $NodeName -Count 1 -Quiet -ErrorAction SilentlyContinue))
 				{
@@ -476,7 +476,7 @@ function Get_Remote_Machine_Info
 							$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $NodeName -ErrorAction SilentlyContinue
 							$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $NodeName -ErrorAction SilentlyContinue | Select-Object -First 1
 							$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $NodeName -ErrorAction SilentlyContinue
-							
+
 							# BIOS
 							$biosVerOut = $null
 							try
@@ -503,7 +503,7 @@ function Get_Remote_Machine_Info
 								}
 							}
 							catch { }
-							
+
 							if ($sys -and $sys.Manufacturer -and $sys.Model)
 							{
 								[PSCustomObject]@{
@@ -520,7 +520,7 @@ function Get_Remote_Machine_Info
 						}
 						catch { $null }
 					} -ArgumentList $NodeName
-					
+
 					if (Wait-Job $wmiJob -Timeout $wmiTimeoutSeconds)
 					{
 						$wmiResult = Receive-Job $wmiJob 2>$null
@@ -532,7 +532,7 @@ function Get_Remote_Machine_Info
 						Remove-Job  $wmiJob -Force -ErrorAction SilentlyContinue
 						$wmiResult = $null
 					}
-					
+
 					if ($wmiResult -and $wmiResult.SystemManufacturer -and $wmiResult.SystemProductName)
 					{
 						$info.SystemManufacturer = $wmiResult.SystemManufacturer
@@ -549,7 +549,7 @@ function Get_Remote_Machine_Info
 						$info.Error = "WMI failed (access issue or null)"
 					}
 				}
-				
+
 				# --- 2) CIM (if WMI failed) ---
 				if (-not $info.Success)
 				{
@@ -563,7 +563,7 @@ function Get_Remote_Machine_Info
 								$sys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem  2>$null
 								$cpu = Get-CimInstance -CimSession $session -ClassName Win32_Processor       2>$null | Select-Object -First 1
 								$os = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem  2>$null
-								
+
 								# BIOS
 								$biosVerOut = $null
 								try
@@ -590,7 +590,7 @@ function Get_Remote_Machine_Info
 									}
 								}
 								catch { }
-								
+
 								Remove-CimSession $session 2>$null
 								if ($sys -and $sys.Manufacturer -and $sys.Model)
 								{
@@ -610,7 +610,7 @@ function Get_Remote_Machine_Info
 						}
 						catch { $null }
 					} -ArgumentList $NodeName
-					
+
 					if (Wait-Job $cimJob -Timeout $cimTimeoutSeconds)
 					{
 						$cimResult = Receive-Job $cimJob 2>$null
@@ -622,7 +622,7 @@ function Get_Remote_Machine_Info
 						Remove-Job  $cimJob -Force -ErrorAction SilentlyContinue
 						$cimResult = $null
 					}
-					
+
 					if ($cimResult -and $cimResult.SystemManufacturer -and $cimResult.SystemProductName)
 					{
 						$info.SystemManufacturer = $cimResult.SystemManufacturer
@@ -639,7 +639,7 @@ function Get_Remote_Machine_Info
 						$info.Error = "CIM failed (access issue or null)"
 					}
 				}
-				
+
 				# --- 3) PS-Remoting Registry (optional middle step) ---
 				if (-not $info.Success -and $usePSRemotingFallback)
 				{
@@ -667,7 +667,7 @@ function Get_Remote_Machine_Info
 									$prod = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemProductName -ErrorAction SilentlyContinue
 									$cpu = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction SilentlyContinue
 									$os = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
-									
+
 									# BIOS pieces
 									$biosVendor = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSVendor -ErrorAction SilentlyContinue).BIOSVendor
 									$biosVerStr = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSVersion -ErrorAction SilentlyContinue).BIOSVersion
@@ -676,7 +676,7 @@ function Get_Remote_Machine_Info
 										$biosVerStr = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemBiosVersion -ErrorAction SilentlyContinue).SystemBiosVersion
 									}
 									$biosDate = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSReleaseDate -ErrorAction SilentlyContinue).BIOSReleaseDate
-									
+
 									# Build OSInfo
 									$osInfo = $null
 									if ($os -and $os.ProductName) { $osInfo = $os.ProductName }
@@ -690,7 +690,7 @@ function Get_Remote_Machine_Info
 										if ($osInfo) { $osInfo = "$osInfo (Build $($os.CurrentBuild))" }
 										else { $osInfo = "Build $($os.CurrentBuild)" }
 									}
-									
+
 									# BIOS assemble
 									$biosOut = $null
 									if ($biosVendor -and $biosVerStr) { $biosOut = "$biosVendor $biosVerStr" }
@@ -701,7 +701,7 @@ function Get_Remote_Machine_Info
 										if ($biosOut) { $biosOut = "$biosOut ($biosDate)" }
 										else { $biosOut = $biosDate }
 									}
-									
+
 									$out.SystemManufacturer = $manuf.SystemManufacturer
 									$out.SystemProductName = $prod.SystemProductName
 									$out.CPU = $cpu.ProcessorNameString
@@ -729,7 +729,7 @@ function Get_Remote_Machine_Info
 							Method			   = 'REG(PSRemoting)'
 						}
 					}
-					
+
 					if ($regResult -and $regResult.Success)
 					{
 						if (-not $info.SystemManufacturer) { $info.SystemManufacturer = $regResult.SystemManufacturer }
@@ -746,7 +746,7 @@ function Get_Remote_Machine_Info
 						if ($regResult) { $info.Error = $regResult.Error; $info.Method = 'REG(PSRemoting)' }
 					}
 				}
-				
+
 				# --- 4) REG.EXE (starts RemoteRegistry if needed, then restores) ---
 				if (-not $info.Success)
 				{
@@ -760,7 +760,7 @@ function Get_Remote_Machine_Info
 						if ($start -and $start.Line -match 'DISABLED') { $wasDisabled = $true }
 						if ($wasDisabled) { sc.exe "\\$NodeName" config RemoteRegistry start= demand 2>$null | Out-Null }
 						if (-not $wasRunning) { sc.exe "\\$NodeName" start  RemoteRegistry 2>$null | Out-Null }
-						
+
 						# tiny inline getter: returns only the DATA (no "REG_SZ")
 						$getVal = {
 							param ($hive,
@@ -774,14 +774,14 @@ function Get_Remote_Machine_Info
 							$data = $line.Line -replace "^\s*$patternName\s+REG_\w+\s+", ""
 							$data.Trim()
 						}
-						
+
 						$manuf = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS'               'SystemManufacturer'
 						$prod = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS'               'SystemProductName'
 						$cpu = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\CentralProcessor\0' 'ProcessorNameString'
 						$osN = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'ProductName'
 						$osB = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'DisplayVersion'
 						$osV = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'CurrentBuild'
-						
+
 						# BIOS from REG.EXE
 						$biosVendor = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSVendor'
 						$biosVerStr = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSVersion'
@@ -805,10 +805,10 @@ function Get_Remote_Machine_Info
 							if ($biosOut) { $biosOut = "$biosOut ($biosDate)" }
 							else { $biosOut = $biosDate }
 						}
-						
+
 						# If CurrentBuild came as "0x... (7601)" keep the number in parentheses
 						if ($osV -and $osV -match '\((\d+)\)') { $osV = $matches[1] }
-						
+
 						# build a clean OS string
 						$osInfo = $null
 						if ($osN) { $osInfo = $osN }
@@ -822,7 +822,7 @@ function Get_Remote_Machine_Info
 							if ($osInfo) { $osInfo = "$osInfo (Build $osV)" }
 							else { $osInfo = "Build $osV" }
 						}
-						
+
 						if ($manuf -or $prod -or $cpu -or $osInfo -or $biosOut)
 						{
 							if (-not $info.SystemManufacturer) { $info.SystemManufacturer = $manuf }
@@ -857,7 +857,7 @@ function Get_Remote_Machine_Info
 						catch { }
 					}
 				}
-				
+
 				# --- 5) INI augmentation (optional; fills gaps if any fields still null) ---
 				$returnInfo = [PSCustomObject]@{
 					Machine    = $NodeName
@@ -880,7 +880,7 @@ function Get_Remote_Machine_Info
 							$returnInfo.IniFound = $true
 							$returnInfo.IniPath = $iniFile.FullName
 							$iniLines = Get-Content $iniFile.FullName -Encoding UTF8 -ErrorAction SilentlyContinue
-							
+
 							# tiny parser
 							$sections = @{ }
 							$curSec = ""
@@ -916,13 +916,13 @@ function Get_Remote_Machine_Info
 					}
 				}
 				catch { }
-				
+
 				return $returnInfo
 			}
-			
+
 			$jobs += $job
 			$pending[$job.Id] = $NodeName
-			
+
 			# Throttle
 			while ($jobs.Count -ge $maxConcurrentJobs)
 			{
@@ -934,7 +934,7 @@ function Get_Remote_Machine_Info
 						$result = Receive-Job $j 2>$null
 						$remoteName = $pending[$j.Id]
 						$info = $result.Info
-						
+
 						# Build display line
 						$line = "Machine Name: $remoteName |"
 						if ($info.Success)
@@ -963,17 +963,17 @@ function Get_Remote_Machine_Info
 							$line += " | Method: $($info.Method)"
 							& $log "Processed $remoteName ($($section.Name)): No info [$($info.Method)]" "yellow"
 						}
-						
+
 						# Append to info-lines
 						$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 						$infolines += $line
 						Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
-						
+
 						# Store rich info for programmatic use
 						$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
 						$results[$remoteName] = $info
 						Set-Variable -Name $($section.ResultsVar) -Value $results
-						
+
 						# Cleanup
 						Stop-Job $j -ErrorAction SilentlyContinue
 						Remove-Job $j -Force -ErrorAction SilentlyContinue
@@ -984,7 +984,7 @@ function Get_Remote_Machine_Info
 				else { break }
 			}
 		} # end foreach selected
-		
+
 		# Drain remaining jobs
 		if ($jobs.Count -gt 0)
 		{
@@ -994,7 +994,7 @@ function Get_Remote_Machine_Info
 				$remoteName = $pending[$j.Id]
 				$result = Receive-Job $j 2>$null
 				$info = $result.Info
-				
+
 				$line = "Machine Name: $remoteName |"
 				if ($info.Success)
 				{
@@ -1022,26 +1022,26 @@ function Get_Remote_Machine_Info
 					$line += " | Method: $($info.Method)"
 					& $log "Processed $remoteName ($($section.Name)): No info [$($info.Method)]" "yellow"
 				}
-				
+
 				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 				$infolines += $line
 				Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
-				
+
 				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
 				$results[$remoteName] = $info
 				Set-Variable -Name $($section.ResultsVar) -Value $results
-				
+
 				Stop-Job $j -ErrorAction SilentlyContinue
 				Remove-Job $j -Force -ErrorAction SilentlyContinue
 			}
 		}
-		
+
 		# Write file (stable sorting: IPs zero-padded; otherwise lexical)
 		$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
 		if ($infolines.Count)
 		{
 			[void][System.IO.Directory]::CreateDirectory($section.Dir)
-			
+
 			$sortedLines = $infolines | Sort-Object {
 				if ($_ -match "^Machine Name: ([^|]+)")
 				{
@@ -1059,15 +1059,15 @@ function Get_Remote_Machine_Info
 			$sortedLines -join "`r`n" | Set-Content -Path $filePath -Encoding Default
 			& $log "Exported $($section.Name) info to $filePath" "green"
 		}
-		
+
 		# Publish programmatic map
 		$mapOut = Get-Variable -Name $($section.ResultsVar) -ValueOnly
 		if ($section.Name -eq 'Lanes') { $script:LaneHardwareInfo = $mapOut }
 		elseif ($section.Name -eq 'Scales') { $script:ScaleHardwareInfo = $mapOut }
 		elseif ($section.Name -eq 'BackOffices') { $script:BackofficeHardwareInfo = $mapOut }
-		
+
 		& $log "Completed processing $($section.Name).`r`n" "green"
 	} # end sections
-	
+
 	& $log "==================== Get_Remote_Machine_Info Completed ====================" "blue"
 }

@@ -27,10 +27,10 @@ function Add_Scale_Credentials
 		[hashtable]$ScaleCodeToIPInfo,
 		[int]$MaxParallel = 16
 	)
-	
+
 	if (-not $script:ScaleCredTasks -or -not ($script:ScaleCredTasks -is [hashtable])) { $script:ScaleCredTasks = @{ } }
 	if ($MaxParallel -lt 1) { $MaxParallel = 1 }
-	
+
 	# Reap any completed tasks from prior calls before queuing more work.
 	foreach ($k in @($script:ScaleCredTasks.Keys))
 	{
@@ -38,7 +38,7 @@ function Add_Scale_Credentials
 		$completed = $true
 		try { $completed = (-not $st.Handle) -or $st.Handle.IsCompleted }
 		catch { $completed = $true }
-		
+
 		if ($completed)
 		{
 			try { if ($st.Handle -and $st.PS) { $null = $st.PS.EndInvoke($st.Handle) } }
@@ -48,7 +48,7 @@ function Add_Scale_Credentials
 			[void]$script:ScaleCredTasks.Remove($k)
 		}
 	}
-	
+
 	# Build candidate credential list once so we don't duplicate literals in the worker.
 	$credentialAttempts = @()
 	$seenCreds = @{ }
@@ -62,7 +62,7 @@ function Add_Scale_Credentials
 			catch { $user = $null }
 			try { $pass = [string]$cred.GetNetworkCredential().Password }
 			catch { $pass = $null }
-			
+
 			if (-not [string]::IsNullOrWhiteSpace($user) -and -not [string]::IsNullOrEmpty($pass))
 			{
 				$key = "$user`n$pass"
@@ -77,7 +77,7 @@ function Add_Scale_Credentials
 			}
 		}
 	}
-	
+
 	# Safety fallback: preserve previous behavior even if the script-scoped credentials were not initialized.
 	if (-not $credentialAttempts -or $credentialAttempts.Count -eq 0)
 	{
@@ -86,14 +86,14 @@ function Add_Scale_Credentials
 			[pscustomobject]@{ User = 'bizuser'; Pass = 'biyerba' }
 		)
 	}
-	
+
 	# Collect unique, valid IPs only.
 	$scaleIPs = @(
 		$ScaleCodeToIPInfo.Values | ForEach-Object {
 			$candidate = $null
 			if ($_.FullIP) { $candidate = [string]$_.FullIP }
 			elseif ($_.IPNetwork -and $_.IPDevice) { $candidate = "{0}{1}" -f $_.IPNetwork, $_.IPDevice }
-			
+
 			if (-not [string]::IsNullOrWhiteSpace($candidate))
 			{
 				$candidate = $candidate.Trim()
@@ -105,9 +105,9 @@ function Add_Scale_Credentials
 			}
 		} | Select-Object -Unique
 	)
-	
+
 	if ($scaleIPs.Count -eq 0) { return }
-	
+
 	# Shared pool: reuse while active, recreate when idle and the requested width changed.
 	$needNewPool = $false
 	$hasOpenPool = $false
@@ -122,7 +122,7 @@ function Add_Scale_Credentials
 	{
 		$hasOpenPool = $false
 	}
-	
+
 	if (-not $hasOpenPool)
 	{
 		$needNewPool = $true
@@ -136,7 +136,7 @@ function Add_Scale_Credentials
 		$script:ScaleCredPool = $null
 		$needNewPool = $true
 	}
-	
+
 	if ($needNewPool)
 	{
 		$script:ScaleCredPool = [runspacefactory]::CreateRunspacePool(1, $MaxParallel)
@@ -144,7 +144,7 @@ function Add_Scale_Credentials
 		$script:ScaleCredPool.Open()
 		$script:ScaleCredPoolMaxParallel = $MaxParallel
 	}
-	
+
 	# Auto-reap completed tasks so PS objects/pool get cleaned up even if this function is only called once.
 	if (-not $script:ScaleCredReaper)
 	{
@@ -161,7 +161,7 @@ function Add_Scale_Credentials
 							$done = $true
 							try { $done = (-not $task.Handle) -or $task.Handle.IsCompleted }
 							catch { $done = $true }
-							
+
 							if ($done)
 							{
 								try { if ($task.Handle -and $task.PS) { $null = $task.PS.EndInvoke($task.Handle) } }
@@ -172,7 +172,7 @@ function Add_Scale_Credentials
 							}
 						}
 					}
-					
+
 					if ((-not $script:ScaleCredTasks) -or $script:ScaleCredTasks.Count -eq 0)
 					{
 						try
@@ -193,15 +193,15 @@ function Add_Scale_Credentials
 			})
 	}
 	if ($script:ScaleCredReaper -and -not $script:ScaleCredReaper.Enabled) { $script:ScaleCredReaper.Start() }
-	
+
 	$worker = {
 		param (
 			[string]$ip,
 			[object[]]$CredentialAttempts
 		)
-		
+
 		$sharePath = "\\$ip\c$"
-		
+
 		# ---- quick SMB reachability (port 445) ----
 		$smbOk = $false
 		$client = $null
@@ -226,16 +226,16 @@ function Add_Scale_Credentials
 			try { if ($client) { $client.Close() } }
 			catch { }
 		}
-		
+
 		if (-not $smbOk) { return }
-		
+
 		# ---- already accessible without creds? ----
 		try
 		{
 			if (Test-Path -LiteralPath $sharePath) { return }
 		}
 		catch { }
-		
+
 		# ---- try credentials quickly via NET USE (no persistence) ----
 		foreach ($c in $CredentialAttempts)
 		{
@@ -245,13 +245,13 @@ function Add_Scale_Credentials
 			catch { $user = $null }
 			try { $pass = [string]$c.Pass }
 			catch { $pass = $null }
-			
+
 			if ([string]::IsNullOrWhiteSpace($user) -or [string]::IsNullOrEmpty($pass)) { continue }
-			
+
 			# Clear any lingering connection before each attempt so we don't inherit a stale state.
 			try { $null = & net.exe use $sharePath '/delete' '/y' 2>$null }
 			catch { }
-			
+
 			$mapRc = -1
 			try
 			{
@@ -259,12 +259,12 @@ function Add_Scale_Credentials
 				$mapRc = $LASTEXITCODE
 			}
 			catch { $mapRc = -1 }
-			
+
 			if ($mapRc -eq 0)
 			{
 				try { $null = & net.exe use $sharePath '/delete' '/y' 2>$null }
 				catch { }
-				
+
 				$cmdKeyRc = -1
 				try
 				{
@@ -272,7 +272,7 @@ function Add_Scale_Credentials
 					$cmdKeyRc = $LASTEXITCODE
 				}
 				catch { $cmdKeyRc = -1 }
-				
+
 				if ($cmdKeyRc -eq 0)
 				{
 					# Best-effort verification; even if Windows does not immediately reuse the credential,
@@ -282,12 +282,12 @@ function Add_Scale_Credentials
 					return
 				}
 			}
-			
+
 			try { $null = & net.exe use $sharePath '/delete' '/y' 2>$null }
 			catch { }
 		}
 	}
-	
+
 	foreach ($ip in $scaleIPs)
 	{
 		$existingTask = $script:ScaleCredTasks[$ip]
@@ -296,24 +296,24 @@ function Add_Scale_Credentials
 			$inFlight = $false
 			try { $inFlight = $existingTask.Handle -and -not $existingTask.Handle.IsCompleted }
 			catch { $inFlight = $false }
-			
+
 			if ($inFlight) { continue }
-			
+
 			try { if ($existingTask.Handle -and $existingTask.PS) { $null = $existingTask.PS.EndInvoke($existingTask.Handle) } }
 			catch { }
 			try { if ($existingTask.PS) { $existingTask.PS.Dispose() } }
 			catch { }
 			[void]$script:ScaleCredTasks.Remove($ip)
 		}
-		
+
 		$ps = [powershell]::Create()
 		$null = $ps.AddScript($worker.ToString()).AddArgument($ip).AddArgument($credentialAttempts)
-		
+
 		$ps.RunspacePool = $script:ScaleCredPool
 		try
 		{
 			$handle = $ps.BeginInvoke()
-			
+
 			# Stash to prevent GC and allow cleanup/busy tracking.
 			$script:ScaleCredTasks[$ip] = @{
 				PS	    = $ps
@@ -327,6 +327,6 @@ function Add_Scale_Credentials
 			catch { }
 		}
 	}
-	
+
 	# Note: We do not wait. This function returns immediately while tasks run in background.
 }

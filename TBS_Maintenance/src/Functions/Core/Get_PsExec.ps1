@@ -21,19 +21,19 @@ function Get_PsExec
 	param (
 		[string]$ToolsDir = $script:ToolsDir
 	)
-	
+
 	$psexecPath = Join-Path $ToolsDir "PsExec.exe"
 	$pstoolsZip = Join-Path $ToolsDir "PSTools.zip"
 	$pstoolsUrl = "https://download.sysinternals.com/files/PSTools.zip"
 	$jobName = "Get_PsExec_Download_Job"
-	
+
 	# Check if PsExec.exe already exists
 	if (Test-Path $psexecPath)
 	{
 		Write-Host "PsExec.exe is ready to be used at $psexecPath."
 		return $psexecPath
 	}
-	
+
 	# Check for existing running job (compatible method)
 	$existingJob = Get-Job | Where-Object { $_.Name -eq $jobName -and $_.State -eq 'Running' }
 	if ($existingJob)
@@ -58,7 +58,7 @@ function Get_PsExec
 				}
 				Write-Host "[Job] Downloading PSTools.zip..."
 				Invoke-WebRequest -Uri $pstoolsUrl -OutFile $pstoolsZip -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
-				
+
 				Write-Host "[Job] Extracting PsExec.exe..."
 				Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
 				$zip = [System.IO.Compression.ZipFile]::OpenRead($pstoolsZip)
@@ -78,7 +78,7 @@ function Get_PsExec
 					Write-Host "[Job] WARNING: PsExec.exe not found in ZIP!"
 				}
 				$zip.Dispose()
-				
+
 				if (Test-Path $pstoolsZip) { Remove-Item $pstoolsZip -ErrorAction SilentlyContinue }
 				if (Test-Path $psexecPath)
 				{
@@ -96,7 +96,7 @@ function Get_PsExec
 			}
 		} -ArgumentList $pstoolsUrl, $pstoolsZip, $ToolsDir, $psexecPath
 	}
-	
+
 	# Simple progress indicator (compatible with ISE)
 	Write-Host -NoNewline "Downloading and extracting PsExec.exe"
 	while ($job.State -eq "Running")
@@ -106,11 +106,11 @@ function Get_PsExec
 		$job = Get-Job | Where-Object { $_.Id -eq $job.Id }
 	}
 	Write-Host ""
-	
+
 	# Show job output
 	Receive-Job -Id $job.Id | ForEach-Object { Write-Host $_ }
 	Remove-Job -Id $job.Id -Force
-	
+
 	if (Test-Path $psexecPath)
 	{
 		Write-Host "All done! PsExec.exe is ready at $psexecPath"

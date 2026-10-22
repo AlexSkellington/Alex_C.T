@@ -20,9 +20,9 @@ function Generate_SQL_Scripts
 	param (
 		[string]$StoreNumber
 	)
-	
+
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
-	
+
 	# Normalize store number (existing behavior preserved: 3-digit format)
 	if (-not [string]::IsNullOrWhiteSpace($StoreNumber) -and $StoreNumber -match '^\d+$')
 	{
@@ -32,13 +32,13 @@ function Generate_SQL_Scripts
 	{
 		$StoreNumber = $StoreNumber.PadLeft(3, '0')
 	}
-	
+
 	if (-not $script:FunctionResults.ContainsKey('ConnectionString'))
 	{
 		Write_Log "Failed to retrieve the connection string." "red"
 		return
 	}
-	
+
 
 	# ------------------------------------------------------------------------------------------------
 	# Build scripts from CURRENT variables every time so the $script: content variables
@@ -48,7 +48,7 @@ function Generate_SQL_Scripts
 	$defaultStoreDbName = "STORESQL"
 	$defaultLaneDbName = "LANESQL"
 	$dbServer = $script:FunctionResults['DBSERVER']
-	
+
 	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace($script:FunctionResults['DBNAME']))
 	{
 		$storeDbName = $script:FunctionResults['DBNAME']
@@ -58,9 +58,9 @@ function Generate_SQL_Scripts
 		Write_Log "No 'DBNAME' in FunctionResults. Defaulting to '$defaultStoreDbName'." "yellow"
 		$storeDbName = $defaultStoreDbName
 	}
-	
+
 	$laneDbName = $defaultLaneDbName
-	
+
 	# ------------------ Lane script ------------------
 	$LaneSQLScript = @"
 /* Set a long timeout so the entire script runs */
@@ -165,9 +165,9 @@ ALTER DATABASE $laneDbName SET RECOVERY SIMPLE
 /* Clear the long database timeout */
 @WIZCLR(DBASE_TIMEOUT);
 "@
-	
+
 	$script:LaneSQLScript = $LaneSQLScript
-	
+
 	# ------------------ Filtered lane script ------------------
 	$ServerMemoryConfig = @"
 DECLARE @Memory25PercentMB BIGINT;
@@ -180,21 +180,21 @@ RECONFIGURE;
 EXEC sp_configure 'show advanced options', 0;
 RECONFIGURE;
 "@
-	
+
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
 	$sectionsToSkip = @(
 		'Set a long timeout so the entire script runs',
 		'Clear the long database timeout'
 	)
-	
+
 	$LaneSQLFiltered = ""
 	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
-	
+
 	foreach ($match in $matches)
 	{
 		$sectionName = $match.Groups['SectionName'].Value.Trim()
 		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
-		
+
 		if ($sectionsToSkip -contains $sectionName)
 		{
 			continue
@@ -209,13 +209,13 @@ RECONFIGURE;
 			$LaneSQLFiltered += "/* $sectionName */`r`n$sqlCommands`r`n`r`n"
 		}
 	}
-	
+
 	$script:LaneSQLFiltered = $LaneSQLFiltered
-	
+
 	# ------------------ Mailslot-friendly lane script ------------------
 	$lines = $script:LaneSQLScript -split "`r?`n"
 	$macroPattern = '^\s*(@|/|\*)'
-	
+
 	$fixedLines = foreach ($line in $lines)
 	{
 		if ($line -match $macroPattern -or [string]::IsNullOrWhiteSpace($line))
@@ -227,9 +227,9 @@ RECONFIGURE;
 			"@EXEC($line)"
 		}
 	}
-	
+
 	$script:LaneSQLScript_Mailslot = ($fixedLines -join "`r`n")
-	
+
 	# ------------------ Server script ------------------
 	$ServerSQLScript = @"
 /* Set memory configuration */
@@ -437,9 +437,9 @@ DBCC SHRINKFILE (${storeDbName}_Log);
 /* Restrict the indefinite log file growth */
 ALTER DATABASE $storeDbName SET RECOVERY SIMPLE;
 "@
-	
+
 	$script:ServerSQLScript = $ServerSQLScript
-	
+
 	# ------------------ Scheduled maintenance server script ------------------
 	$ScheduleServerScript = @"
 /* Set a long timeout so the entire script runs */
@@ -490,8 +490,8 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE
 /* Clear the long database timeout */
 @WIZCLR(DBASE_TIMEOUT);
 "@
-	
+
 	$script:ScheduleServerScript = $ScheduleServerScript
-	
+
 
 }

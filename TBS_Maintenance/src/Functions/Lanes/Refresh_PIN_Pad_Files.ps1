@@ -24,9 +24,9 @@ function Refresh_PIN_Pad_Files
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber
 	)
-	
+
 	Write_Log "`r`n==================== Starting Refresh_PIN_Pad_Files Function ====================`r`n" "blue"
-	
+
 	# ============================= Validate Environment =============================
 	# Validate OfficePath base directory
 	if (-not (Test-Path $OfficePath))
@@ -34,7 +34,7 @@ function Refresh_PIN_Pad_Files
 		Write_Log "XF Base Path not found: $OfficePath" "yellow"
 		return
 	}
-	
+
 	# Ensure required functions are loaded
 	foreach ($func in @('Show_Node_Selection_Form', 'Write_Log', 'Retrieve_Nodes'))
 	{
@@ -44,7 +44,7 @@ function Refresh_PIN_Pad_Files
 			return
 		}
 	}
-	
+
 	# Ensure lane mapping is available from Retrieve_Nodes
 	if (-not ($script:FunctionResults.ContainsKey('LaneNumToMachineName')))
 	{
@@ -52,7 +52,7 @@ function Refresh_PIN_Pad_Files
 		return
 	}
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-	
+
 	# ============================= Lane Selection UI =============================
 	# Use the node selector form to allow the user to choose which lanes to refresh
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
@@ -67,45 +67,45 @@ function Refresh_PIN_Pad_Files
 		Write_Log "No lanes selected for processing." "yellow"
 		return
 	}
-	
+
 	# ============================= File Types =============================
 	# List of PIN pad config files that should be "touched" (refreshed)
 	$fileExtensions = @("PreferredAIDs.ini", "EMVCAPKey.ini", "EMVAID.ini")
 	Write_Log "Starting refresh of file types: $($fileExtensions -join ', ') for Store Number: $StoreNumber." "green"
-	
+
 	# ============================= Main Processing Loop =============================
 	$totalRefreshed = 0
 	$totalFailed = 0
-	
+
 	foreach ($laneObj in $Lanes)
 	{
 		# Accept both plain lane number string or PSCustomObject with .LaneNumber property
 		$laneNum = if ($laneObj -is [pscustomobject] -and $laneObj.LaneNumber) { $laneObj.LaneNumber }
 		else { $laneObj }
 		$laneNum = $laneNum.PadLeft(3, '0')
-		
+
 		# Ensure this lane exists in LaneNumToMachineName
 		if ($LaneNumToMachineName.ContainsKey($laneNum))
 		{
 			$machineName = $LaneNumToMachineName[$laneNum]
-			
+
 			if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
 			{
 				Write_Log "Lane #${laneNum}: Machine name is invalid or unknown. Skipping refresh." "yellow"
 				continue
 			}
-			
+
 			# Build UNC path to lane's EMV config directory
 			$targetPath = "\\$machineName\Storeman\XchDev\EMVConfig\"
-			
+
 			if (-not (Test-Path -Path $targetPath))
 			{
 				Write_Log "Lane #${laneNum}: Target path '$targetPath' does not exist. Skipping." "yellow"
 				continue
 			}
-			
+
 			Write_Log "Processing Lane #$laneNum ($machineName) at '$targetPath'." "blue"
-			
+
 			foreach ($file in $fileExtensions)
 			{
 				$filePath = Join-Path -Path $targetPath -ChildPath $file

@@ -22,19 +22,19 @@ function Process_Lanes
 		[string]$StoreNumber,
 		[switch]$ProcessAllLanes
 	)
-	
+
 	Write_Log "`r`n==================== Starting Process_Lanes Function ====================`r`n" "blue"
-	
+
 	if (-not (Test-Path $OfficePath))
 	{
 		Write_Log "XF Base Path not found: $OfficePath" "yellow"
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# Make sure ProcessedLanes exists
 	if (-not $script:ProcessedLanes) { $script:ProcessedLanes = @() }
-	
+
 	# ----------------------------------------
 	# Import detected SQL module for Invoke-Sqlcmd usage
 	# ----------------------------------------
@@ -57,7 +57,7 @@ function Process_Lanes
 		Write_Log "No valid SQL module available for SQL operations!" "red"
 		return
 	}
-	
+
 	# ----------------------------------------
 	# Check for available Lane Machines
 	# ----------------------------------------
@@ -68,10 +68,10 @@ function Process_Lanes
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	$MachineNameToLaneNum = $script:FunctionResults['MachineNameToLaneNum']
 	if (-not $MachineNameToLaneNum) { $MachineNameToLaneNum = @{ } }
-	
+
 	# ----------------------------------------
 	# Get user's lane selection
 	# ----------------------------------------
@@ -82,7 +82,7 @@ function Process_Lanes
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# Support both string and object selections for lanes
 	if ($selection.Lanes -and $selection.Lanes.Count -gt 0)
 	{
@@ -101,7 +101,7 @@ function Process_Lanes
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# ----------------------------------------
 	# Parse Lane SQL script sections for processing
 	# ----------------------------------------
@@ -113,16 +113,16 @@ function Process_Lanes
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	$fixedSections = @(
 		"Set a long timeout so the entire script runs",
 		"Clear the long database timeout"
 	)
-	
+
 	$allSectionNames = $matches |
 	ForEach-Object { $_.Groups['SectionName'].Value.Trim() } |
 	Where-Object { $fixedSections -notcontains $_ }
-	
+
 	$SectionsToSend = Show_Section_Selection_Form -SectionNames $allSectionNames
 	if (-not $SectionsToSend -or $SectionsToSend.Count -eq 0)
 	{
@@ -130,7 +130,7 @@ function Process_Lanes
 		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
 		return
 	}
-	
+
 	# ----------------------------------------
 	# Pre-build the SQI script for fallback (same for all lanes)
 	# ----------------------------------------
@@ -138,39 +138,39 @@ function Process_Lanes
 	"--------------------------------------------------------------------------------`r`n"
 	$bottomBlock = "--------------------------------------------------------------------------------`r`n" +
 	"/* Clear the long database timeout */`r`n@WIZCLR(DBASE_TIMEOUT);"
-	
+
 	$middleBlock = ($matches | Where-Object {
 			$SectionsToSend -contains $_.Groups['SectionName'].Value.Trim()
 		}) | ForEach-Object {
 		"/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())"
 	} | Out-String
-	
+
 	$finalScript = $topBlock + $middleBlock + $bottomBlock
-	
+
 	# ----------------------------------------
 	# MULTIPLE lanes: Always file fallback
 	# ----------------------------------------
 	if ($Lanes.Count -gt 1)
 	{
 		Write_Log "Multiple lanes selected, using file-based fallback for all lanes." "yellow"
-		
+
 		foreach ($LaneNumber in $Lanes)
 		{
 			# Normalize lane number (accept "001" or "POS001" etc)
 			$laneNumCandidate = $LaneNumber
 			if ($MachineNameToLaneNum.ContainsKey($LaneNumber)) { $laneNumCandidate = $MachineNameToLaneNum[$LaneNumber] }
 			elseif ($LaneNumber -match '(\d{1,3})$') { $laneNumCandidate = $Matches[1] }
-			
+
 			if ($laneNumCandidate -match '^\d+$') { $laneNum = $laneNumCandidate.PadLeft(3, '0') }
 			else { $laneNum = $LaneNumber }
-			
+
 			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
 			if (-not $laneInfo)
 			{
 				Write_Log "Could not get DB info for lane $laneNum. Skipping." "yellow"
 				continue
 			}
-			
+
 			# Convert PSCustomObject -> hashtable (important when loaded from JSON cache)
 			if ($laneInfo -and ($laneInfo -isnot [System.Collections.IDictionary]))
 			{
@@ -178,12 +178,12 @@ function Process_Lanes
 				foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
 				$laneInfo = $tmp
 			}
-			
+
 			$machineName = $laneInfo['MachineName']
 			if (-not $machineName) { $machineName = $LaneNumToMachineName[$laneNum] }
-			
+
 			$LaneLocalPath = Join-Path $OfficePath ("XF" + $StoreNumber + $laneNum)
-			
+
 			if (Test-Path $LaneLocalPath)
 			{
 				Write_Log "Writing Lane_Database_Maintenance.sqi to Lane $laneNum ($machineName)..." "blue"
@@ -192,7 +192,7 @@ function Process_Lanes
 					Set-Content -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Value $finalScript -Encoding Ascii
 					Set-ItemProperty -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
 					Write_Log "Created and wrote to file at Lane #$laneNum ($machineName) successfully. (file copy)" "green"
-					
+
 					if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
 				}
 				catch
@@ -215,17 +215,17 @@ function Process_Lanes
 			$laneNumCandidate = $LaneNumber
 			if ($MachineNameToLaneNum.ContainsKey($LaneNumber)) { $laneNumCandidate = $MachineNameToLaneNum[$LaneNumber] }
 			elseif ($LaneNumber -match '(\d{1,3})$') { $laneNumCandidate = $Matches[1] }
-			
+
 			if ($laneNumCandidate -match '^\d+$') { $laneNum = $laneNumCandidate.PadLeft(3, '0') }
 			else { $laneNum = $LaneNumber }
-			
+
 			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
 			if (-not $laneInfo)
 			{
 				Write_Log "Could not get DB info for lane $laneNum. Skipping." "yellow"
 				continue
 			}
-			
+
 			# Convert PSCustomObject -> hashtable (important when loaded from JSON cache)
 			if ($laneInfo -and ($laneInfo -isnot [System.Collections.IDictionary]))
 			{
@@ -233,47 +233,47 @@ function Process_Lanes
 				foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
 				$laneInfo = $tmp
 			}
-			
+
 			$machineName = $laneInfo['MachineName']
 			$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
 			$tcpConnStr = $laneInfo['TcpConnStr']
-			
+
 			$LaneLocalPath = Join-Path $OfficePath ("XF" + $StoreNumber + $laneNum)
-			
+
 			# Get protocol for this lane
 			$laneKey = $laneNum.PadLeft(3, '0')
 			$protocolType = $null
 			if ($script:LaneProtocols) { $protocolType = $script:LaneProtocols[$laneKey] }
-			
+
 			$workingConnStr = $null
 			if ($protocolType -eq "Named Pipes") { $workingConnStr = $namedPipesConnStr }
 			elseif ($protocolType -eq "TCP") { $workingConnStr = $tcpConnStr }
-			
+
 			# Validate connection string (DO NOT replace it with "File")
 			$workingConnStrIsValid =
 			(-not [string]::IsNullOrWhiteSpace($workingConnStr)) -and
 			($workingConnStr -match '^\s*Server\s*=') -and
 			($workingConnStr -match 'Database\s*=')
-			
+
 			$displayProtocol = if ([string]::IsNullOrWhiteSpace($protocolType)) { "File" }
 			else { $protocolType }
 			$displayConnStr = if ($workingConnStrIsValid) { $workingConnStr }
 			else { "<file>" }
-			
+
 			Write_Log "Lane $laneNum uses protocol: $displayProtocol" "gray"
 			Write_Log "Lane $laneNum connection string: $displayConnStr" "gray"
-			
+
 			if ($protocolType -eq 'Offline')
 			{
 				Write_Log "Lane $laneNum ($machineName) is offline. Skipping." "yellow"
 				continue
 			}
-			
+
 			# If protocol not ready / invalid conn string, fallback to file
 			if (-not $protocolType -or $protocolType -eq "File" -or -not $workingConnStrIsValid)
 			{
 				Write_Log "Protocol not ready/unavailable for $machineName. Skipping protocol and using file copy." "yellow"
-				
+
 				if (Test-Path $LaneLocalPath)
 				{
 					Write_Log "`r`nProcessing $machineName using file fallback..." "blue"
@@ -284,7 +284,7 @@ function Process_Lanes
 						Set-Content -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Value $finalScript -Encoding Ascii
 						Set-ItemProperty -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
 						Write_Log "Created and wrote to file at Lane #$laneNum ($machineName) successfully. (file copy)" "green"
-						
+
 						if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
 					}
 					catch
@@ -298,38 +298,38 @@ function Process_Lanes
 				}
 				continue
 			}
-			
+
 			# ----------------------------------------
 			# Protocol execution: Try SQL via protocol
 			# ----------------------------------------
 			$protocolWorked = $false
-			
+
 			# These MUST be valid for ServerInstance fallback
 			$server = $laneInfo['TcpServer']
 			$database = $laneInfo['DBName']
 			if ([string]::IsNullOrWhiteSpace($database)) { $database = "LANESQL" } # critical fix
 			if ([string]::IsNullOrWhiteSpace($server) -and $workingConnStr -match 'Server\s*=\s*([^;]+)') { $server = $Matches[1].Trim() }
-			
+
 			$currentLogin = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-			
+
 			try
 			{
 				$matchesFiltered = [regex]::Matches($script:LaneSQLFiltered, $sectionPattern)
 				$sections = ($matchesFiltered | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() })
-				
+
 				foreach ($match in $sections)
 				{
 					$sectionName = $match.Groups['SectionName'].Value.Trim()
 					$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
-					
+
 					Write_Log "Executing section: '$sectionName' on $machineName" "blue"
 					Write_Log "--------------------------------------------------------------------------------"
 					Write_Log "$sqlCommands" "orange"
 					Write_Log "--------------------------------------------------------------------------------"
-					
+
 					$querySucceeded = $false
 					$retriedForMapping = $false
-					
+
 					for ($try = 1; $try -le 2; $try++)
 					{
 						try
@@ -343,18 +343,18 @@ function Process_Lanes
 						catch
 						{
 							$errorMsg = $_.Exception.Message
-							
+
 							if ($errorMsg -match 'Login failed for user' -and -not $retriedForMapping)
 							{
 								Write_Log "Login failed for $currentLogin on $machineName. Attempting to map user and retry..." "yellow"
 								$checkUserQuery = "SELECT COUNT(*) AS UserExists FROM sys.database_principals WHERE name = '$currentLogin'"
-								
+
 								try
 								{
 									$userExists = (& $InvokeSqlCmd -ServerInstance $server -Database $database -Query $checkUserQuery -ErrorAction Stop).UserExists
 								}
 								catch { $userExists = 0 }
-								
+
 								if ($userExists -eq 0)
 								{
 									$createUserSql = @"
@@ -378,7 +378,7 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 									catch { }
 									Write_Log "$currentLogin already mapped in [$database]." "gray"
 								}
-								
+
 								$retriedForMapping = $true
 								continue
 							}
@@ -407,7 +407,7 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 							}
 						}
 					}
-					
+
 					if (-not $querySucceeded) { break }
 				}
 			}
@@ -416,13 +416,13 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 				Write_Log "Failed to execute a section on $machineName via protocol: $_. Falling back to file." "yellow"
 				$protocolWorked = $false
 			}
-			
+
 			if ($protocolWorked)
 			{
 				if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
 				continue
 			}
-			
+
 			# Fallback: Classic file-based method
 			if (Test-Path $LaneLocalPath)
 			{
@@ -434,7 +434,7 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 					Set-Content -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Value $finalScript -Encoding Ascii
 					Set-ItemProperty -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
 					Write_Log "Created and wrote to file at Lane #$laneNum ($machineName) successfully. (file copy)" "green"
-					
+
 					if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
 				}
 				catch
@@ -448,7 +448,7 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 			}
 		}
 	}
-	
+
 	Write_Log "`r`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
 	if ($script:ProcessedLanes.Count -gt 0)
 	{

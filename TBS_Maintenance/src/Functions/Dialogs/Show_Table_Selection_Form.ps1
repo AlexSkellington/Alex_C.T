@@ -20,7 +20,7 @@ function Show_Table_Selection_Form
 	)
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
-	
+
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = "Select Tables to Process"
 	$form.Size = New-Object System.Drawing.Size(450, 570)
@@ -28,25 +28,25 @@ function Show_Table_Selection_Form
 	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 	$form.MaximizeBox = $false
 	$form.MinimizeBox = $false
-	
+
 	$label = New-Object System.Windows.Forms.Label
 	$label.Text = "Please select the tables you want to pump:"
 	$label.Location = New-Object System.Drawing.Point(10, 10)
 	$label.AutoSize = $true
 	$form.Controls.Add($label)
-	
+
 	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
 	$checkedListBox.Location = New-Object System.Drawing.Point(10, 40)
 	$checkedListBox.Size = New-Object System.Drawing.Size(410, 400)
 	$checkedListBox.CheckOnClick = $true
 	$form.Controls.Add($checkedListBox)
-	
+
 	$distinctTables = $AliasResults | Select-Object -ExpandProperty Table -Unique | Sort-Object
 	foreach ($tableName in $distinctTables)
 	{
 		[void]$checkedListBox.Items.Add($tableName, $false)
 	}
-	
+
 	# Buttons styled/positioned like Node form (Y=460 and 500 for a 550-height window)
 	$btnSelectAll = New-Object System.Windows.Forms.Button
 	$btnSelectAll.Text = "Select All"
@@ -54,14 +54,14 @@ function Show_Table_Selection_Form
 	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
 	$btnSelectAll.BackColor = [System.Drawing.SystemColors]::Control
 	$form.Controls.Add($btnSelectAll)
-	
+
 	$btnDeselectAll = New-Object System.Windows.Forms.Button
 	$btnDeselectAll.Text = "Deselect All"
 	$btnDeselectAll.Location = New-Object System.Drawing.Point(220, 460)
 	$btnDeselectAll.Size = New-Object System.Drawing.Size(180, 32)
 	$btnDeselectAll.BackColor = [System.Drawing.SystemColors]::Control
 	$form.Controls.Add($btnDeselectAll)
-	
+
 	$btnOK = New-Object System.Windows.Forms.Button
 	$btnOK.Text = "OK"
 	$btnOK.Location = New-Object System.Drawing.Point(60, 500)
@@ -69,7 +69,7 @@ function Show_Table_Selection_Form
 	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 	$form.AcceptButton = $btnOK
 	$form.Controls.Add($btnOK)
-	
+
 	$btnCancel = New-Object System.Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
 	$btnCancel.Location = New-Object System.Drawing.Point(220, 500)
@@ -78,7 +78,7 @@ function Show_Table_Selection_Form
 	$form.CancelButton = $btnCancel
 	$form.Controls.Add($btnCancel)
 	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $form }
-	
+
 	$setBtnColor = {
 		param ($btn,
 			$state)
@@ -89,7 +89,7 @@ function Show_Table_Selection_Form
 			Default { $btn.BackColor = [System.Drawing.SystemColors]::Control }
 		}
 	}
-	
+
 	$isAllChecked = {
 		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
 		{
@@ -104,7 +104,7 @@ function Show_Table_Selection_Form
 		}
 		return $false
 	}
-	
+
 	$btnSelectAll.Add_Click({
 			$allChecked = & $isAllChecked
 			if (-not $allChecked)
@@ -123,7 +123,7 @@ function Show_Table_Selection_Form
 			}
 			& $setBtnColor $btnSelectAll 0
 		})
-	
+
 	$checkedListBox.Add_ItemCheck({
 			Start-Sleep -Milliseconds 30
 			$allChecked = & $isAllChecked
@@ -173,7 +173,7 @@ function Show_Table_Selection_Form
 				& $setBtnColor $btnSelectAll 0
 			}
 		})
-	
+
 	$dialogResult = $form.ShowDialog()
 	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
 	{
