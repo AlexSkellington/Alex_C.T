@@ -5,7 +5,7 @@ PowerShell tools for TBS / SMS store systems (Windows PowerShell 5.1).
 | Tool | What it is | Run it |
 |---|---|---|
 | **TBS Maintenance Script** | WinForms app for the store server: server DB maintenance and backups, lane tools (SQL protocols, transactions, table pumps, time sync, DB repair), scale tools (Bizerba / Ishida, BMS, ScaleCommApp), node tools (ping, reboot, hosts, file copy) and general utilities. | `irm https://bit.ly/TBS_Maintenance_Script \| iex` (elevated PowerShell), or the packaged `TBS_Maintenance_Script_V<version>.exe` |
-| **MiniGhost** | Separate tool (`MiniGhost/MiniGhost.ps1`). | `irm https://bit.ly/MiniGhost \| iex` |
+| **MiniGhost** | Separate tool (`MiniGhost_V38.ps1`). | `irm https://bit.ly/MiniGhost \| iex` |
 
 ## Repository layout
 
@@ -17,31 +17,16 @@ TBS_Maintenance/        the TBS Maintenance Script - edit here
   docs/                 FUNCTIONS.md (generated index), ARCHITECTURE.md
   dist/                 build output (git-ignored) - published as a GitHub Release asset
   CHANGELOG.txt
-MiniGhost/              MiniGhost (separate project) - edit MiniGhost/MiniGhost.ps1
-TBS_Maintenace_Script_V2.ps1   launcher for bit.ly/TBS_Maintenance_Script  - do not edit
-MiniGhost_V38.ps1              launcher for bit.ly/MiniGhost               - do not edit
+MiniGhost_V38.ps1       MiniGhost (separate project)
 CLAUDE.md               working rules for this repository (also for AI assistants)
 ```
-
-## The two root launchers
-
-The short links cannot be changed (free bit.ly plan), so they keep pointing at these files:
-
-| Short link | Root file (launcher) | Downloads and runs |
-|---|---|---|
-| `bit.ly/TBS_Maintenance_Script` | `TBS_Maintenace_Script_V2.ps1` | the latest GitHub Release asset `TBS_Maintenance_Script.ps1` |
-| `bit.ly/MiniGhost` | `MiniGhost_V38.ps1` | `MiniGhost/MiniGhost.ps1` on `main` |
-
-Each launcher is ~20 lines: download the real script, run it with `Invoke-Expression` (so it
-still starts as an inline `irm | iex` launch), print a red line if the download fails. Keep
-their names and paths exactly as they are.
 
 ## How the TBS script reaches stores
 
 You edit the small files in `TBS_Maintenance/src`. `Build.ps1` joins them into one file,
 `TBS_Maintenance/dist/TBS_Maintenance_Script.ps1`, because `irm | iex` and PowerShell Studio
 both need a single script. That file is **not committed**: it is attached to a GitHub
-Release, and the root launcher downloads the latest release:
+Release, and the short link points at the latest release:
 
 ```
 https://github.com/AlexSkellington/Alex_C.T/releases/latest/download/TBS_Maintenance_Script.ps1

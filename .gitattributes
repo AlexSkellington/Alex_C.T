@@ -1,10 +1,12 @@
-# Root launchers: bit.ly/TBS_Maintenance_Script and bit.ly/MiniGhost point at these two files
-# and cannot be changed, so they stay as small launchers (see README.md). LF, as before.
+# TBS Maintenance Script
+#  - sources: Windows line endings in the working copy (PowerShell Studio friendly)
+#  - the BUILT script: LF everywhere, as in every earlier version - its here-strings (SQL,
+#    generated worker scripts) are written to disk and their code expects LF line breaks
+# Scoped on purpose so the other scripts in this repo keep their current storage.
 TBS_Maintenace_Script_V2.ps1    text eol=lf
-
-# TBS Maintenance Script sources: Windows line endings in the working copy (PowerShell Studio
-# friendly). The BUILT script (TBS_Maintenance/dist, git-ignored) is written with LF by
-# Build.ps1 - its here-strings (SQL, generated worker scripts) expect LF line breaks.
 TBS_Maintenance/**              text eol=crlf
 TBS_Maintenance/**/*.png        binary
 TBS_Maintenance/**/*.ico        binary
+
+# The built script is generated - collapse it in diffs / PR reviews.
+TBS_Maintenace_Script_V2.ps1    linguist-generated=true
