@@ -6,37 +6,123 @@
 
 # ===================================================================================================
 #  v2.7.0  -  2026-10-22
-#  Modular source tree, build step, and a full review pass with bug fixes
+#  Modular source tree, build step, and a full review of every function
 # ===================================================================================================
 #
 #  [REPO] The script now lives in TBS_Maintenance\src as one file per function (grouped by
 #         category), plus bootstrap, GUI and main-flow files. TBS_Maintenance\build\Build.ps1
-#         assembles them into the single TBS_Maintenace_Script_V2.ps1 (same path, so the short
-#         link, irm | iex and PowerShell Studio packaging work exactly as before).
-#  [REPO] Format-Sources.ps1 (whitespace normaliser), tests\Smoke.ps1 (sandboxed full-app run),
-#         the existing self-test moved to tests\.
+#         assembles them into the single TBS_Maintenace_Script_V2.ps1 (same path, LF line
+#         endings as before, so the short link, irm | iex and PowerShell Studio packaging work
+#         exactly as before). docs\FUNCTIONS.md lists every function, its file and callers.
+#  [REPO] Format-Sources.ps1 (whitespace normaliser), tests\Smoke.ps1 (sandboxed full-app run,
+#         baseline compare), the self-test moved to tests\ (85 checks).
 #
-#  [FIX]  Lane SQL protocol detection had stopped probing lanes since v2.6.7: the timer handler
-#         ran as a .GetNewClosure() closure, where every $script: variable is a separate, empty
-#         one - the loop never saw the lane map. Rewritten without closures; File-protocol
-#         lanes get their SQL-enable task scheduled again (now also from .exe / irm|iex
-#         launches, re-checked at most every 15 min, result logged once per change).
-#  [FIX]  Startup "test item" job never started since v2.6.6 (Get-Job -Name with -State is an
-#         invalid parameter combination and threw before Start-Job).
-#  [FIX]  Elevation: a packaged .exe started without arguments never elevated (empty
-#         -ArgumentList is rejected), and script paths with spaces were split. Both fixed.
-#  [FIX]  App icon + banner logo were never drawn (PointF/Rectangle arguments with arithmetic
-#         parsed as arrays). One shared logo painter now draws both.
-#  [FIX]  Menu renderer never compiled and an invalid ItemMargin assignment aborted menu
-#         styling - the intended modern menu look is now applied.
-#  [FIX]  Startup log box: lines lost their colour (RichTextBox.GetCharColor does not exist).
-#         The summary is file-only anyway, so the box is no longer cleared and rewritten.
+#  ---- Things that were silently broken -------------------------------------------------------
+#  [FIX]  Lane SQL protocol detection had stopped probing lanes since v2.6.7 (its timer ran
+#         as a .GetNewClosure() closure, where every $script: variable is a separate, empty
+#         one). Rewritten without closures; File-protocol lanes get their SQL-enable task
+#         again (also from .exe / irm|iex launches, re-checked at most every 15 min).
+#  [FIX]  Lane connections: SqlServer module 22+ encrypts by default and lanes use
+#         self-signed certificates, so every Invoke-Sqlcmd to a lane was refused and fell
+#         back to file drops. Lane connection strings (and cached ones) now trust the
+#         server certificate; Normalize_Sql_ConnectionString finally adds it too.
+#  [FIX]  SqlClient fallback (no SQL module installed) was broken wherever a
+#         SqlConnectionStringBuilder property was assigned (PowerShell treats it as a
+#         dictionary): Edit_TBS_SCL_ver520_Table, Troubleshoot_ScaleCommApp, IshidaSDPs,
+#         Retrieve_Nodes / Insert_Test_Item timeouts.
+#  [FIX]  These no longer require a SQL PowerShell module at all (SqlClient or file drop):
+#         Process_Server, Manage_Sa_Account, Process_Lanes, Close_Open_Transactions,
+#         Send_SMS_Key_to_Lanes, Repair_LOC_Databases_On_Lanes, Update_ScaleConfig_And_DB,
+#         Configure_Scale_Sub-Departments.
+#  [FIX]  Send_SMS_Key_to_Lanes: the SQL-auth fallback sent the password "TB" ("TB$upp0rT"
+#         in double quotes expanded $upp0rT to nothing).
+#  [FIX]  Test-Hosts_Parallel never ran in parallel (scriptblocks on runspace-less pool
+#         threads always threw) and fell back to serial Test-Connection: 8 dead hosts took
+#         32 s. Now async DNS + Ping: 12 targets in 0.6 s (Ping All, VNC export, ...).
+#  [FIX]  One-shot "Set Time on Lanes" never used schtasks (/sc once without /st); the
+#         server IP is resolved once per run.
+#  [FIX]  Startup test item job never started since v2.6.6 (Get-Job -Name with -State).
+#  [FIX]  Elevation: a packaged .exe started without arguments never elevated, and script
+#         paths with spaces were split on relaunch.
+#  [FIX]  App icon + banner logo were never drawn; the modern menu renderer never compiled.
+#  [FIX]  Quarterly health maintenance launched the TBS .exe itself (instead of PowerShell)
+#         from the packaged app, and recorded non-elevated runs as done for 3 months.
+#  [FIX]  Launch-time VNC export failed whenever it had to look up passwords (the job was
+#         missing Test-Hosts_Parallel).
+#  [FIX]  Remove_Archive_Bit assigned $host (read-only automatic variable): every UNC
+#         office path threw, so the local-share shortcut never worked.
+#  [FIX]  Pick_And_Update_IshidaSDPs always reported "SDP_TAB returned 0 rows" when a SQL
+#         module was installed.
+#  [FIX]  Enable SQL Protocols: the Named Pipes probe used doubled backslashes and never
+#         worked; Protocol_Results.txt lines could be glued together.
 #
-#  [CLEAN] Launch detection runs once (was duplicated), dead variables and unreachable code
-#          removed (refresh timer, close-prompt flag, unused paths, FormClosing teardown after
-#          return, unused button helpers).
+#  ---- Data safety --------------------------------------------------------------------------
+#  [FIX]  Backups (server DB, Storeman ZIP, lane DB) deleted the oldest backup BEFORE
+#         taking the new one - a failing backup cost a good one. Rotation is after success.
+#  [FIX]  Pump_Tables (SQL path): empty + bulk copy now run in one lane transaction; a
+#         failed copy used to leave the lane with an empty or half-filled table.
+#  [FIX]  Update_Lane_Config (SQL path) dropped and re-created RUN/LNK/STO/TER_TAB from the
+#         server's column list (losing indexes and unrelated RUN_TAB rows). It now does the
+#         keyed add/replace the load file does, from one row table shared with the file.
+#  [FIX]  INI_Editor read/wrote ASCII: accented text became "?" on save and on every merged
+#         lane (now ANSI). Save writes the section as shown - deleted/reordered keys used to
+#         stay in the file. Merge to lanes still only updates/adds keys.
+#  [FIX]  Edit_TBS_SCL_ver520_Table: scales with a NULL brand/model/IP part were never saved
+#         (no match on the original keys); the save now reports rows not matched.
+#  [FIX]  Insert_Test_Item could treat a real PLU as free and delete/overwrite it when its
+#         lookup failed.
+#  [FIX]  Fix_Journal backs up each changed file (outside the ZX folder) before editing.
+#  [FIX]  Sync_Selected_Node_Hosts: a failed local write (not admin) no longer pushes the
+#         OLD hosts file to every node; a one-line header no longer swallows the mappings.
+#  [FIX]  Organize_Desktop_Items no longer overwrites same-named items; keeps TBS/MiniGhost.
+#  [FIX]  Schedule_LaneDB_Backup logged the task password and broke on "$" in passwords;
+#         Update Scales Specials scheduling hung on a console password prompt (/ru without
+#         /rp or /it).
+#  [FIX]  Repair_LOC_Databases_On_Lanes: SINGLE_USER, DBCC and MULTI_USER run on one
+#         connection (the POS app could take the single-user slot in between).
+#  [FIX]  Update_ScaleConfig_And_DB checks the DB before touching configs; the F272 revert
+#         leaves a NOT NULL column alone.
 #
-# ===================================================================================================
+#  ---- Correctness ----------------------------------------------------------------------------
+#  [FIX]  Manage Bizerba Scales: results are read only from this run's Response.log lines
+#         (an older run's line was reported as this run's result).
+#  [FIX]  Configure_Scale_Sub-Departments: a missing table looked present (DBNull is truthy)
+#         and crashed the row count; Auto mode errors are caught.
+#  [FIX]  Show_Node_Selection_Form returned "OK" (a MessageBox result) instead of nothing;
+#         MessageBox results no longer leak out of other functions either.
+#  [FIX]  Get_Remote_Machine_Info, Enable SQL Protocols, Pump_Tables, Copy_Files_Between_Nodes:
+#         "$x = $x | Where-Object" collapsing to a single value (then += failed / indexed a
+#         string).
+#  [FIX]  Retrieve_Nodes cache write skipped on long codes ([int] overflow); non-numeric
+#         Store= / Terminal= no longer aborts the WIN.INI parse; Get_Table_Aliases cache is
+#         validated against the SMS version and Load files.
+#  [FIX]  Configure_System_Settings logged powercfg failures as success.
+#  [FIX]  SFC output (UTF-16) is decoded instead of logged as "Y o u   m u s t".
+#  [FIX]  Add_Scale_Credentials built 192.168.0.150 from "192.168.1" + "50".
+#  [FIX]  Open C$ on scales opens Explorer once, after a password worked.
+#  [FIX]  Smaller: Deploy currency preview showed ".99"; Repair_BMS log paths; Delete_DBS
+#         lane parsing; Install_FUNCTIONS_Into_SMS output folder; Retrive_Transactions skips
+#         SQL for offline lanes; Ensure_SQL_Enable honours -StartTime; Close transactions
+#         null-safe; Stop-Job -Force (no such parameter) in the duplicate-file monitor.
+#
+#  ---- Performance ----------------------------------------------------------------------------
+#  [PERF] Lane SQL/VNC service status window: one runspace pool instead of a powershell.exe
+#         per lane per refresh.
+#  [PERF] Remove_Archive_Bit service clears the bits of each touched item instead of a full
+#         recursive attrib + watcher rebuild on every file event.
+#  [PERF] Duplicate-file monitor reads each toBizerba file once per pass instead of once per
+#         pair of files.
+#  [PERF] Write_Log does less work per call; Show_Node_Selection_Form no longer sleeps per
+#         checked item; background jobs no longer serialise UI objects.
+#
+#  ---- Structure ------------------------------------------------------------------------------
+#  [CLEAN] Retrieve_Nodes ~1850 -> ~800 lines (verified identical output); Edit_TBS_SCL
+#          1055 -> 700; one DEPLOY_CHG.sql restore (Fix_Deploy_CHG) instead of three copies;
+#          one checklist dialog behind Show_Table/Section_Selection_Form; one category-button
+#          builder for the four tool buttons; activity hooks registered once; worker scripts
+#          and C# moved to src\Resources; dead code removed (Get_PsExec, unreachable blocks,
+#          unused variables and helpers).
+## ===================================================================================================
 #  v2.6.9  -  2026-09-01
 #  Drive-scan fallback, activation hardening, timeout + job hygiene
 # ===================================================================================================

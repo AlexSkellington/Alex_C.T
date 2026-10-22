@@ -58,6 +58,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\Smok
   `-ErrorAction SilentlyContinue`). Filter with `Where-Object { $_.State -eq 'Running' }`.
 - **`Start-Process -ArgumentList @()`** throws on an empty array - only pass it when non-empty,
   and quote arguments that contain spaces.
+- **`SqlConnectionStringBuilder`**: assign properties through `.PSBase.<Prop>` (PowerShell
+  treats the builder as a dictionary; `$csb.DataSource = x` throws). Reading is fine.
+- **SQL without a module**: stores may have no SqlServer/SQLPS module. New code uses
+  `System.Data.SqlClient` (always present); lane connection strings carry
+  `TrustServerCertificate=True` (SqlServer 22+ encrypts by default, lanes are self-signed).
+- **Results leak into output**: `[System.Windows.Forms.MessageBox]::Show(...)`, `.Add()`,
+  `Invoke-Sqlcmd` etc. return values - `[void]` / `$null =` them inside functions that return.
+- **Arrays collapse**: `$x = $x | Where-Object ...` becomes a scalar for one item (then `+=`
+  concatenates strings or throws). Wrap in `@()`. A returned DataTable is unrolled into its
+  rows. `[DBNull]::Value` is truthy and `[int][DBNull]` throws.
+- **Never assign automatic variables** (`$host` is read-only and throws; `$args`, `$input`,
+  `$matches`, `$_` get clobbered). In `"..."` strings `$1`, `$name` expand - put literal
+  dollar signs (passwords!) in single quotes or escape them.
+- **schtasks / native commands**: build an argument array and call `& schtasks.exe @args`
+  (never `Invoke-Expression` - it breaks on `$` and quotes); quote `/TR` paths as `\"path\"`;
+  `/sc once` needs `/st`; `/ru <user>` needs `/rp` or `/it` or it prompts on the console.
+  Native tools never throw: check `$LASTEXITCODE`.
+- **Backups rotate after success** - never delete old backups before the new one exists.
+- **Thread pool**: a scriptblock cannot run on a .NET thread-pool thread (no runspace) - use
+  a runspace pool or async .NET APIs (`SendPingAsync`, `GetHostAddressesAsync`).
+- **`Get-Job -Name <missing>`** records an error even with SilentlyContinue - filter with
+  `Get-Job | Where-Object { $_.Name -eq ... }`.
+- The built file is **LF**; newline conversions in sources use `-replace "`r?`n", "`r`n"`.
 - GUI files (`src/GUI/01..14`) run top to bottom in script scope and share variables
   (`$form`, `$toolTip`, `$logBox`, `$ui*` colours, `$layout*` blocks). Handlers resolve those
   names when they fire, not when they are created.
