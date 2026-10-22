@@ -3,27 +3,30 @@
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Reads store identity and SQL connection details (store name, address, SMS version, key
-#   number, DB server, database, connection string) from the Storeman INI files, preferring
-#   in-memory results, then the cache file; re-parses only when missing or -RefreshCache.
+#   number, DB server, database, connection string) from the Storeman INI files. The files are
+#   local and read in a few milliseconds, so they are parsed LIVE on every launch (no file
+#   cache: a cached copy showed stale names / servers until a background refresh replaced it).
+#   Within one launch, a repeat call returns the values already in memory.
 #
 # Parameters:
 #   - WinIniPath      [string]: path to INFO_*901_WIN.INI
 #   - SmsStartIniPath [string]: path to INFO_*901_SMSStart.ini
 #   - StartupIniPath  [string]: path to the Storeman Startup.ini
 #   - SystemIniPath   [string]: path to the Storeman system.ini
-#   - RefreshCache    [switch]: force re-parse and cache rewrite
+#   - RefreshCache    [switch]: re-parse even if this launch already has the values, and
+#                                re-detect the SQL module
 #
 # Variables:
 #   - $script:FunctionResults: receives StoreNumber, DBSERVER, DBNAME, ConnectionString,
 #     SMSVersionFull, SqlModuleName and friends
 #
 # Writes:
-#   - Setup_Files\Get_Store_And_Database_Info.txt (JSON cache)
+#   - Setup_Files\SqlModule.txt - the one remembered value: which SQL PowerShell module is
+#     installed (finding out scans every module folder - seconds on some store PCs). Re-checked
+#     once a day, when the remembered module folder is gone, or with -RefreshCache.
 #
 # Notes:
-#   - The SQL module is detected only when the store data is (re)parsed - a cache hit keeps the
-#     cached SqlModuleName (Get-Module -ListAvailable is slow).
-#   - Updates the GUI labels even on a cache hit (finally block).
+#   - Updates the GUI labels on every call, including the in-memory return (finally block).
 #   - StoreNumber / Terminal are 3-digit padded when numeric (1 -> 001).
 #   - StoreName is resolved here only: system.ini [SMS] Name= first, INFO_*_WIN.INI
 #     [STOREDETAIL] Name= as fallback ("Company Name" placeholder = empty); StoreNameSource
@@ -41,10 +44,6 @@ function Get_Store_And_Database_Info
 		[switch]$RefreshCache
 	)
 
-	# ------------------------------------------------------------------------------------------------
-	# Cache (per-function file) - only re-run if memory/file data is missing/unreadable or -RefreshCache is used
-	# ------------------------------------------------------------------------------------------------
-	$CachePath = Join-Path $script:SetupFiles 'Get_Store_And_Database_Info.txt'
 	$fields = @(
 		'StoreNumber', 'StoreName', 'StoreNameSource', 'CompanyName', 'Terminal', 'Address', 'City', 'State',
 		'SMSVersionFull', 'StampDate', 'StampTime', 'KeyNumber',
@@ -53,92 +52,61 @@ function Get_Store_And_Database_Info
 
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 
-	# try/finally: the GUI labels update even when a cache hit returns early
+	# try/finally: the GUI labels update even on the in-memory early return
 	try
 	{
-		$availableSqlModule = $null
+		# Already parsed during this launch -> nothing to re-read
+		if (-not $RefreshCache -and $script:FunctionResults.ContainsKey('StoreInfoParsedAt')) { return }
+
+		# The cache file of v2.7.3 and earlier is no longer used
 		try
 		{
-			if (
-				$script:FunctionResults.ContainsKey('SqlModuleName') -and
-				-not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['SqlModuleName']) -and
-				([string]$script:FunctionResults['SqlModuleName'] -ne 'N/A')
-			)
-			{
-				$availableSqlModule = [string]$script:FunctionResults['SqlModuleName']
-			}
+			$oldCache = Join-Path $script:SetupFiles 'Get_Store_And_Database_Info.txt'
+			if (Test-Path -LiteralPath $oldCache) { Remove-Item -LiteralPath $oldCache -Force -ErrorAction SilentlyContinue }
 		}
-		catch { $availableSqlModule = $null }
+		catch { }
 
-		if (-not $RefreshCache)
+		# ------------------------------------------------------------------------------------------------
+		# SQL module (SqlServer / SQLPS / None) - the only remembered value, see header
+		# ------------------------------------------------------------------------------------------------
+		$availableSqlModule = $null
+		$moduleMemo = $null
+		if ($script:SetupFiles) { $moduleMemo = Join-Path $script:SetupFiles 'SqlModule.txt' }
+		if (-not $RefreshCache -and $moduleMemo -and (Test-Path -LiteralPath $moduleMemo))
 		{
-			# Reuse in-memory values if they are already populated for this launch
-			$hasInMemoryResults = $true
-			foreach ($field in @('StoreNumber', 'StoreName', 'DBSERVER', 'DBNAME', 'ConnectionString', 'SMSVersionFull'))
+			try
 			{
-				if (
-					-not $script:FunctionResults.ContainsKey($field) -or
-					[string]::IsNullOrWhiteSpace([string]$script:FunctionResults[$field]) -or
-					([string]$script:FunctionResults[$field] -eq 'N/A')
-				)
+				# line 1: module name, line 2: its folder ('' for None)
+				$memo = @(Get-Content -LiteralPath $moduleMemo -ErrorAction Stop)
+				$memoAge = (Get-Date) - (Get-Item -LiteralPath $moduleMemo).LastWriteTime
+				$memoName = [string]$memo[0]
+				$memoBase = if ($memo.Count -gt 1) { [string]$memo[1] } else { '' }
+				if ($memoName -and $memoAge.TotalHours -lt 24 -and ($memoName -eq 'None' -or ($memoBase -and (Test-Path -LiteralPath $memoBase))))
 				{
-					$hasInMemoryResults = $false
-					break
+					$availableSqlModule = $memoName
 				}
 			}
-			if ($hasInMemoryResults)
+			catch { $availableSqlModule = $null }
+		}
+		if (-not $availableSqlModule)
+		{
+			$moduleBase = ''
+			try
 			{
-				return
+				$found = Get-Module SqlServer, SQLPS | Select-Object -First 1
+				if (-not $found) { $found = Get-Module -ListAvailable -Name SqlServer | Select-Object -First 1 }
+				if (-not $found) { $found = Get-Module -ListAvailable -Name SQLPS | Select-Object -First 1 }
+				if ($found) { $availableSqlModule = [string]$found.Name; $moduleBase = [string]$found.ModuleBase }
+				else { $availableSqlModule = 'None' }
 			}
-
-			# Reuse file cache if present
-			if ($CachePath -and (Test-Path $CachePath))
+			catch { $availableSqlModule = 'None' }
+			if ($moduleMemo)
 			{
-				try
-				{
-					$raw = Get-Content -LiteralPath $CachePath -Raw -ErrorAction Stop
-					if (-not [string]::IsNullOrWhiteSpace($raw))
-					{
-						$cache = $raw | ConvertFrom-Json -ErrorAction Stop
-						if ($cache -and $cache.Results)
-						{
-							foreach ($p in $cache.Results.PSObject.Properties)
-							{
-								$script:FunctionResults[$p.Name] = $p.Value
-							}
-							return
-						}
-					}
-				}
+				try { Set-Content -LiteralPath $moduleMemo -Value @($availableSqlModule, $moduleBase) -Encoding ASCII -Force }
 				catch { }
 			}
 		}
-
-		if ([string]::IsNullOrWhiteSpace($availableSqlModule) -or $availableSqlModule -eq 'N/A')
-		{
-			try
-			{
-				$loadedSqlModule = Get-Module SqlServer, SQLPS | Select-Object -First 1
-				if ($loadedSqlModule) { $availableSqlModule = [string]$loadedSqlModule.Name }
-			}
-			catch { }
-		}
-		if ([string]::IsNullOrWhiteSpace($availableSqlModule) -or $availableSqlModule -eq 'N/A')
-		{
-			try
-			{
-				if (Get-Module -ListAvailable -Name SqlServer | Select-Object -First 1) { $availableSqlModule = "SqlServer" }
-				elseif (Get-Module -ListAvailable -Name SQLPS | Select-Object -First 1) { $availableSqlModule = "SQLPS" }
-				else { $availableSqlModule = "None" }
-			}
-			catch
-			{
-				$availableSqlModule = if ($availableSqlModule) { $availableSqlModule }
-				else { "None" }
-			}
-		}
 		$script:FunctionResults['SqlModuleName'] = $availableSqlModule
-
 		# ------------------------------------------------------------------------------------------------
 		# Initialize results with N/A for every expected property (+ resolved WIN.INI path)
 		# ------------------------------------------------------------------------------------------------
@@ -476,31 +444,7 @@ function Get_Store_And_Database_Info
 			"Server=$dbServer;Database=$dbName;Integrated Security=True;Encrypt=True;TrustServerCertificate=True;Connect Timeout=5;Application Name=TBS_Maintenance_Script"
 		}
 
-		# ------------------------------------------------------------------------------------------------
-		# Cache write (store EVERYTHING this function collects)
-		# ------------------------------------------------------------------------------------------------
-		if ($CachePath)
-		{
-			try
-			{
-				$results = [ordered]@{ }
-				foreach ($k in ($fields + 'SqlModuleName'))
-				{
-					$v = $script:FunctionResults[$k]
-					if ($null -eq $v -or ($v -is [string] -and [string]::IsNullOrWhiteSpace($v))) { $v = 'N/A' }
-					$results[$k] = $v
-				}
-
-				$cacheOut = [ordered]@{
-					LastUpdated = (Get-Date).ToString('o')
-					StoreNumber = $script:FunctionResults['StoreNumber']
-					Results	    = $results
-				}
-
-				($cacheOut | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
-			}
-			catch { }
-		}
+		$script:FunctionResults['StoreInfoParsedAt'] = Get-Date
 	}
 	finally
 	{

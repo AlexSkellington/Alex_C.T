@@ -2,10 +2,10 @@
 #                                 SECTION: Main - Load Store Data
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Pre-window data load. Everything here reads the local cache files in Setup_Files, so the
-#   window can appear fast; the network refreshes run after Show as warmup steps (02).
+#   Pre-window data load - only fast, local reads, so the window appears quickly; the network
+#   refreshes run after Show as warmup steps (02).
 #     - starts the NSSM download in the background (returns immediately)
-#     - store + database info (a first run with no cache does its full fetch here)
+#     - store + database info, read LIVE from the store's INI files (a few ms)
 #     - store number normalisation (1 -> 001; 4+ digits keep 4+)
 #     - node discovery (lanes, scales, backoffices) from cache
 #
@@ -18,7 +18,6 @@
 
 Download_NSSM -Background | Out-Null
 
-Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
 Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
 $script:StoreNumber = [string]$script:FunctionResults['StoreNumber']
 if ($script:StoreNumber)

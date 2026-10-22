@@ -14,8 +14,8 @@ and the script runs top to bottom:
 | 2 | `src/Functions/**` | Function definitions only - nothing runs |
 | 3 | `src/Init/01` | MailslotSender type; `-LaneSqlEnableWorker` runs its job and exits (no window) |
 | 4 | `src/GUI/01..14` | Builds the window in script scope: form and theme, banner, status bar, info strip, log box, idle/busy timers, protocol window, closing logic, styling helpers, the four tool buttons and menus, bottom layout |
-| 5 | `src/Main/01` | **Pre-window load** from the local cache files only (fast): store/DB info, store number, nodes |
-| 6 | `src/Main/02` | Registers the **warmup**: after the window is shown, network refreshes run as background jobs (store info, nodes, lane DB info, table aliases, SQL scripts, SMS functions), then inline steps (test item, scale credentials, XE watcher, VNC export, hardware info, quarterly maintenance) |
+| 5 | `src/Main/01` | **Pre-window load**, local reads only (fast): store/DB info read live from the INI files, store number, nodes from cache |
+| 6 | `src/Main/02` | Registers the **warmup**: after the window is shown, network refreshes run as background jobs (nodes, lane DB info, table aliases, SMS functions), then inline steps (SQL scripts, test item, scale credentials, XE watcher, VNC export, hardware info, quarterly maintenance) |
 | 7 | `src/Main/03` | `ShowDialog()` - the script waits here until the window closes, then exits |
 
 Pre-window code must stay cache-only so the window appears quickly; anything that touches the
@@ -37,13 +37,16 @@ returns from memory, then the cache file, then the network.
 
 ## Caches (`$script:SetupFiles`)
 
-| File | Producer |
-|---|---|
-| `Get_Store_And_Database_Info.txt` | `Get_Store_And_Database_Info` |
-| `Retrieve_Nodes.txt` | `Retrieve_Nodes` |
-| `Get_All_Lanes_Database_Info.txt` | `Get_All_Lanes_Database_Info` (per-lane DB name, server, connection strings) |
-| `Get_Table_Aliases.txt` | `Get_Table_Aliases` (validated against SMS version and Load files) |
-| `Protocol_Results.txt` | `lane,protocol` lines - lane protocol detection; read by scheduled tasks too |
+Only data that is slow to get is cached. Store info is NOT cached: it comes from local INI
+files and is read live on every launch (a cached copy showed stale values until refreshed).
+
+| File | Producer | Why it is cached |
+|---|---|---|
+| `SqlModule.txt` | `Get_Store_And_Database_Info` | which SQL PowerShell module exists - finding out scans every module folder; re-checked daily |
+| `Retrieve_Nodes.txt` | `Retrieve_Nodes` | SQL query (or Ter_Load.sql) - lets the window open with the last node list while the fresh query runs |
+| `Get_All_Lanes_Database_Info.txt` | `Get_All_Lanes_Database_Info` | per-lane DB name / server, from each lane's Startup.ini over the network (~1.5 s per lane that is off) |
+| `Get_Table_Aliases.txt` | `Get_Table_Aliases` | parses every Load\*_Load.sql; validated against the SMS version and Load files |
+| `Protocol_Results.txt` | lane protocol detection | network probe of every lane; scheduled tasks on the lanes read it too |
 
 `-RefreshCache` on a producer rebuilds its cache; the warmup does that after the window shows.
 

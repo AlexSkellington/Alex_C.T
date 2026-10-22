@@ -49,6 +49,8 @@ $form.Add_Shown({
 		try { $script:StartupScaleCredTimer.Start() }
 		catch { }
 
+		# Store info is NOT refreshed here: it is read live before the window opens (local INI
+		# files, a few ms). These steps are the network / slow ones.
 		# v2.6.9: these steps run as BACKGROUND JOBS (Mode = 'Job'). The tick
 		# handler below starts each one and polls it, so no step can freeze the
 		# UI thread. Every job refreshes the function's FILE cache; OnComplete
@@ -62,23 +64,6 @@ $form.Add_Shown({
 		# variables directly (no job-scope handoff / ReturnVarNames wait).
 		# NOTE: CallArgs on 'Job' steps is a SCRIPTBLOCK evaluated at start time,
 		# so every job receives the current values of the variables it depends on.
-		$script:StartupWarmupSteps += [pscustomobject]@{
-			Label        = 'Refreshing store info...'
-			Mode         = 'Job'
-			FunctionName = 'Get_Store_And_Database_Info'
-			CallArgs     = { @{ WinIniPath = $WinIniPath; SmsStartIniPath = $SmsStartIniPath; StartupIniPath = $StartupIniPath; SystemIniPath = $SystemIniPath; RefreshCache = $true } }
-			SeedVars     = @{ SetupFiles = $script:SetupFiles; StoremanOfficeDbsFallbacks = $script:StoremanOfficeDbsFallbacks }
-			OnComplete   = {
-				try
-				{
-					Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
-					$script:StoreNumber = $script:FunctionResults['StoreNumber']
-					$script:StoreName = $script:FunctionResults['StoreName']
-					$script:SqlModuleName = $script:FunctionResults['SqlModuleName']
-				}
-				catch { }
-			}
-		}
 		$script:StartupWarmupSteps += [pscustomobject]@{
 			Label        = 'Refreshing node discovery...'
 			Mode         = 'Job'

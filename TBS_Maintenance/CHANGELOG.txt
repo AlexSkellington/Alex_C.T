@@ -5,6 +5,24 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.4  -  2026-10-22
+#  Store info read live, one less startup job
+# ===================================================================================================
+#
+#  [PERF] Store info (number, name, SMS version, SQL server / database) is read live from the
+#         store's INI files on every launch - a few milliseconds of local reads. The
+#         Get_Store_And_Database_Info.txt cache is gone (deleted on first run), and so is the
+#         "Refreshing store info" background job, which started a whole PowerShell process to
+#         re-read the same files. The window now shows the current values from the first
+#         frame (a cached copy showed stale names / servers until the refresh replaced it).
+#  [PERF] The pre-window load called Get_Store_And_Database_Info twice in a row; once now.
+#  [ROB]  The one remembered store value is which SQL PowerShell module is installed
+#         (Setup_Files\SqlModule.txt; finding out scans every module folder). It is re-checked
+#         once a day, when the module folder disappears, or with -RefreshCache.
+#  [NOTE] Caches that stay, because their data is slow to get: node list (SQL query), lane
+#         DB info (each lane's Startup.ini over the network), table aliases (every Load file),
+#         lane protocols (network probes, also read by the lanes' scheduled tasks).
+## ===================================================================================================
 #  v2.7.3  -  2026-10-22
 #  Store name after a ping, full KEY EXPIRED badge
 # ===================================================================================================
