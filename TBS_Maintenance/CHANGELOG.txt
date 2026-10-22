@@ -38,7 +38,8 @@
 #  [CLEAN] Removed the unused -LaneSqlEnableWorker startup mode (nothing started it).
 #  [NOTE] Both paths still switch the lane's SQL Server to mixed-mode logins (the Tecnica
 #         SQL-login fallback needs it).
-## ===================================================================================================
+#
+# ===================================================================================================
 #  v2.7.4  -  2026-10-22
 #  Store info read live, one less startup job
 # ===================================================================================================
