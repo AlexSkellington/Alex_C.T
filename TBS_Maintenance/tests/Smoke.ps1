@@ -18,7 +18,7 @@
 	Use -Baseline / -Compare to diff two runs (e.g. before and after a refactor).
 
 .PARAMETER ScriptPath
-	The built script. Default: TBS_Maintenace_Script_V2.ps1 in the repository root.
+	The built script. Default: TBS_Maintenance\dist\TBS_Maintenance_Script.ps1 (run Build.ps1 first).
 
 .PARAMETER Seconds
 	How long the window stays open (warmup runs during this time). Default 25.
@@ -46,7 +46,7 @@ param (
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $ScriptPath) { $ScriptPath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'TBS_Maintenace_Script_V2.ps1' }
+if (-not $ScriptPath) { $ScriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\TBS_Maintenance_Script.ps1' }
 if (-not (Test-Path -LiteralPath $ScriptPath)) { throw "script not found: $ScriptPath" }
 
 $sandbox = Join-Path $env:TEMP 'tbs-smoke'

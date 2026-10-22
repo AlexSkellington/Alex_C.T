@@ -14,9 +14,10 @@
 	#     right Functions\<Category> folder.
 	# ---------------------------------------------------------------------------------------------
 
-	# Output, relative to the repository root. Keep the historical 'Maintenace' spelling:
-	# the short link and every store's update mechanism point at this exact path.
-	OutputFile = 'TBS_Maintenace_Script_V2.ps1'
+	# Output, relative to the repository root. dist\ is git-ignored: the built file is not
+	# committed, it is attached to a GitHub Release under exactly this name, and the short link
+	# points at releases/latest/download/TBS_Maintenance_Script.ps1.
+	OutputFile = 'TBS_Maintenance/dist/TBS_Maintenance_Script.ps1'
 
 	Sources    = @(
 		# 1. Launch detection, elevation, globals, storeman detection (runs before anything else)

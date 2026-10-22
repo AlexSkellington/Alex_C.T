@@ -13,8 +13,8 @@
 #    powershell -ExecutionPolicy Bypass -File TBS_Maintenance_SelfTest.ps1
 #    powershell -ExecutionPolicy Bypass -File TBS_Maintenance_SelfTest.ps1 -ScriptPath C:\path\to\script.ps1
 #
-#  If -ScriptPath is not given, it uses the built TBS_Maintenace_Script_V2.ps1 at the
-#  repository root (when run from TBS_Maintenance\tests), else it looks for
+#  If -ScriptPath is not given, it uses the built TBS_Maintenance\dist\TBS_Maintenance_Script.ps1
+#  (when run from TBS_Maintenance\tests - run Build.ps1 first), else it looks for
 #  TBS_Maintenance_Script_V*.ps1 in:
 #    1. the folder this file is in
 #    2. %TEMP%
@@ -69,7 +69,7 @@ function Skip
 if (-not $ScriptPath -and $PSScriptRoot)
 {
 	# Repository layout: TBS_Maintenance\tests\ -> the built script at the repository root
-	$repoBuilt = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'TBS_Maintenace_Script_V2.ps1'
+	$repoBuilt = Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\TBS_Maintenance_Script.ps1'
 	if (Test-Path -LiteralPath $repoBuilt) { $ScriptPath = $repoBuilt }
 }
 if (-not $ScriptPath)

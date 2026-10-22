@@ -1,3 +1,6 @@
+# Built script: published as a GitHub Release asset, never committed
+TBS_Maintenance/dist/
+
 # PowerShell Studio: package output, per-machine package settings, autosave points
 bin/
 *.psbuild

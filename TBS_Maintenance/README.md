@@ -1,12 +1,12 @@
 # TBS Maintenance Script - sources
 
-The script ships as ONE file, `..\TBS_Maintenace_Script_V2.ps1`, so that
+The script ships as ONE file, `dist\TBS_Maintenance_Script.ps1` (built, not committed), so that
 
 ```powershell
 irm https://bit.ly/TBS_Maintenance_Script | iex
 ```
 
-and the PowerShell Studio `.exe` keep working. This folder holds the same code split into
+and the PowerShell Studio `.exe` work - both need a single script. This folder holds the same code split into
 small files that can be read and changed one at a time; `build\Build.ps1` puts them back
 together.
 
@@ -39,7 +39,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\Smok
 
 - **Build.ps1** fails on parse errors, non-ASCII characters, duplicate function names and
   source files the manifest does not cover; it regenerates `docs\FUNCTIONS.md`.
-  `-Check` exits 1 when the built file is out of date. Output is ASCII with LF line endings.
+  `-Check` exits 1 when `dist\` is out of date. Output is ASCII with LF line endings.
 - **Smoke.ps1** starts the real app with every Tecnica_Systems / ProgramData / Storeman path
   redirected to `%TEMP%\tbs-smoke` and the launch-time tasks (NSSM download, VNC, hardware,
   quarterly maintenance) switched off, shows the window off-screen and reports controls,
@@ -48,16 +48,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\Smok
   `C:\Tecnica_Systems` and can start DISM/SFC.
 - New function: add `src\Functions\<Category>\<Name>.ps1` with the same header format. No
   list to update.
-- Commit the sources **and** the rebuilt `TBS_Maintenace_Script_V2.ps1` together.
+- Commit only the sources. `dist\` is git-ignored; the built file goes out through a Release.
 
 The rules that keep stores working (PowerShell 5.1 only, ASCII, no `.GetNewClosure()`, and the
 other pitfalls found so far) are in `..\CLAUDE.md`.
 
 ## Release
 
+Stores run the file attached to the **latest GitHub Release**. Pushing to `main` changes
+nothing for them; publishing a release does.
+
 1. Bump `$VersionNumber` / `$VersionDate` in `src\Bootstrap\02_Version_And_Host.ps1` and add
    the matching entry at the top of `CHANGELOG.txt` (the self-test checks both).
-2. Build, self-test and smoke test green; commit on a branch; merge to `main`; push.
-   **Stores pick up `main` immediately** through the short link.
-3. Package: `Build.ps1 -PsBuild` writes the PowerShell Studio settings next to the built file;
-   open `TBS_Maintenace_Script_V2.ps1` in PowerShell Studio and package it.
+2. `Build.ps1`, self-test and smoke test green; commit; push to `main`.
+3. On GitHub: **Releases > Draft a new release**. Tag `v<version>` (e.g. `v2.7.1`) on `main`,
+   title `v<version>`, paste the changelog entry, attach
+   `TBS_Maintenance\dist\TBS_Maintenance_Script.ps1` - **keep that exact file name** - and
+   publish. `irm https://bit.ly/TBS_Maintenance_Script | iex` now runs it.
+4. Package: `Build.ps1 -PsBuild` writes the PowerShell Studio settings next to the built file;
+   open `dist\TBS_Maintenance_Script.ps1` in PowerShell Studio and package it. The `.exe`
+   can be attached to the same release.
+
+To roll back, delete the bad release (or mark an older one as latest).

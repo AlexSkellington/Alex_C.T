@@ -17,7 +17,7 @@
 
 .PARAMETER OutFile
 	Where to write the built script. Default: the OutputFile from Manifest.psd1, relative to
-	the repository root (TBS_Maintenace_Script_V2.ps1).
+	the repository root (TBS_Maintenance\dist\TBS_Maintenance_Script.ps1, git-ignored).
 
 .PARAMETER Check
 	Build in memory and compare with the existing output file instead of writing it.
@@ -198,6 +198,8 @@ if ($Check)
 	exit 1
 }
 
+$outDir = Split-Path -Parent $OutFile
+if ($outDir -and -not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
 [System.IO.File]::WriteAllBytes($OutFile, $bytes)
 
 if ($PsBuild)
