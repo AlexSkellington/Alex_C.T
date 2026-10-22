@@ -209,17 +209,11 @@ $form.Add_Shown({
 				}
 			},
 			[pscustomobject]@{
-				Label  = 'Checking quarterly maintenance...'
+				Label  = 'Checking server maintenance tasks...'
 				Action = {
-					if ($script:AutoQuarterlySystemHealthMaintenanceOnLaunch)
+					if ($script:AutoServerMaintenanceTasksOnLaunch)
 					{
-						try
-						{
-							Start_Quarterly_System_Health_Maintenance `
-																	  -IntervalMonths $script:SystemHealthMaintenanceIntervalMonths `
-																	  -RetentionCount $script:SystemHealthMaintenanceRetentionCount `
-																	  -SummaryRetentionLines $script:SystemHealthMaintenanceSummaryRetentionLines | Out-Null
-						}
+						try { Install_Server_Maintenance_Tasks -WeeklyTime $script:ServerMaintenanceWeeklyTime -MonthlyTime $script:ServerMaintenanceMonthlyTime }
 						catch { }
 					}
 				}

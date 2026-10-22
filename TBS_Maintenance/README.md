@@ -42,7 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\Smok
   `-Check` exits 1 when `dist\` is out of date. Output is ASCII with LF line endings.
 - **Smoke.ps1** starts the real app with every Tecnica_Systems / ProgramData / Storeman path
   redirected to `%TEMP%\tbs-smoke` and the launch-time tasks (NSSM download, VNC, hardware,
-  quarterly maintenance) switched off, shows the window off-screen and reports controls,
+  server maintenance task setup) switched off, shows the window off-screen and reports controls,
   menus, warmup progress and every runtime error. `-Baseline <file>` / `-Compare <file>` diff
   two runs. **Do not run the built script directly on a development PC** - it creates
   `C:\Tecnica_Systems` and can start DISM/SFC.

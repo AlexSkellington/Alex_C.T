@@ -8,7 +8,7 @@
 	  - every Tecnica_Systems / ProgramData / Storeman root is redirected to a TEMP sandbox,
 	    so nothing outside %TEMP% is created or changed
 	  - the NSSM background download is skipped
-	  - the launch-time VNC export, hardware export and quarterly maintenance are switched off
+	  - the launch-time VNC export, hardware export and server maintenance task setup are switched off
 	  - the window opens off-screen and closes itself after -Seconds
 	Everything else (bootstrap, storeman detection, every function definition, the whole GUI,
 	the pre-window store data load and the post-Show warmup steps) runs for real.
@@ -75,13 +75,13 @@ Patch 'Download_NSSM -Background | Out-Null' '# [smoke] NSSM download skipped'
 # Launch-time tasks that touch the machine (DISM/SFC, remote exports): off at the source.
 Patch '$script:AutoExportVncOnLaunch = $true' '$script:AutoExportVncOnLaunch = $false'
 Patch '$script:AutoExportRemoteMachineInfoOnLaunch = $true' '$script:AutoExportRemoteMachineInfoOnLaunch = $false'
-Patch '$script:AutoQuarterlySystemHealthMaintenanceOnLaunch = $true' '$script:AutoQuarterlySystemHealthMaintenanceOnLaunch = $false'
+Patch '$script:AutoServerMaintenanceTasksOnLaunch = $true' '$script:AutoServerMaintenanceTasksOnLaunch = $false'
 
 $harness = @'
 # ---------------- [smoke] harness replaces ShowDialog ----------------
 $script:AutoExportVncOnLaunch = $false
 $script:AutoExportRemoteMachineInfoOnLaunch = $false
-$script:AutoQuarterlySystemHealthMaintenanceOnLaunch = $false
+$script:AutoServerMaintenanceTasksOnLaunch = $false
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
 $form.Location = New-Object System.Drawing.Point(-4000, -4000)
 $form.ShowInTaskbar = $false

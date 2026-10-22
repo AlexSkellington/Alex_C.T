@@ -105,9 +105,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\Smok
 
 `tests/Smoke.ps1` runs the whole app in a sandbox: every Tecnica_Systems / ProgramData /
 Storeman root is redirected to `%TEMP%\tbs-smoke`, NSSM download and the launch-time
-VNC / hardware / quarterly maintenance tasks are off, the window opens off-screen and closes
+VNC / hardware / server-maintenance-task setup are off, the window opens off-screen and closes
 itself. Never run the built script directly on a dev PC to "try it": at launch it creates
-`C:\Tecnica_Systems`, downloads NSSM and can start DISM/SFC (quarterly maintenance).
+`C:\Tecnica_Systems`, downloads NSSM and registers the weekly / monthly server maintenance tasks.
 Use `-Baseline` / `-Compare` to diff two smoke runs (before/after a change).
 
 ## Releasing

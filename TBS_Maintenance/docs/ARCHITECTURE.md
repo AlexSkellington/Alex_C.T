@@ -15,7 +15,7 @@ and the script runs top to bottom:
 | 3 | `src/Init/01` | MailslotSender type |
 | 4 | `src/GUI/01..14` | Builds the window in script scope: form and theme, banner, status bar, info strip, log box, idle/busy timers, protocol window, closing logic, styling helpers, the four tool buttons and menus, bottom layout |
 | 5 | `src/Main/01` | **Pre-window load**, local reads only (fast): store/DB info read live from the INI files, store number, nodes from cache |
-| 6 | `src/Main/02` | Registers the **warmup**: after the window is shown, network refreshes run as background jobs (nodes, lane DB info, table aliases, SMS functions), then inline steps (SQL scripts, test item, scale credentials, XE watcher, VNC export, hardware info, quarterly maintenance) |
+| 6 | `src/Main/02` | Registers the **warmup**: after the window is shown, network refreshes run as background jobs (nodes, lane DB info, table aliases, SMS functions), then inline steps (SQL scripts, test item, scale credentials, XE watcher, VNC export, hardware info, server maintenance tasks) |
 | 7 | `src/Main/03` | `ShowDialog()` - the script waits here until the window closes, then exits |
 
 Pre-window code must stay cache-only so the window appears quickly; anything that touches the
@@ -64,6 +64,12 @@ files and is read live on every launch (a cached copy showed stale values until 
 - **Generated scripts + scheduled tasks / NSSM services** for anything that must outlive the
   window: DB backups, SMS key sync, lane SQL enable, Remove_Archive_Bit and the duplicate-file
   monitor. Their text lives in here-strings inside the function that installs them.
+- **Server maintenance**: one worker (`Resources/Workers/Server_Maintenance_Worker.ps1`, written
+  to `Scripts\Server_Maintenance.ps1` by `Get_Server_Maintenance_Worker`) run by two SYSTEM tasks
+  that `Install_Server_Maintenance_Tasks` keeps current at launch (weekly drive optimize, monthly
+  DISM / SFC / check disk) and, detached, by Server > Repair Windows (`Start_Server_Maintenance`,
+  which follows the log into the log box). Log: `Log\Server_Maintenance.log`, one line per step;
+  raw tool output in `Server_Maintenance_Detail_*.log` (6 kept).
 - **Lane SQL protocol enable**: the settings + restart code is
   `Resources/Workers/Sql_Protocol_Settings.ps1`, embedded into both the menu action
   (`Enable_SQL_Protocols_On_Selected_Lanes`, remote registry) and the 4:15 AM task script

@@ -48,7 +48,7 @@ $script:LaneSqlProtocolEnableJobs = @{ }
 # Launch-time background tasks (each one is a warmup step in Main\02_Startup_Warmup)
 $script:AutoExportVncOnLaunch = $true
 $script:AutoExportRemoteMachineInfoOnLaunch = $true
-$script:AutoQuarterlySystemHealthMaintenanceOnLaunch = $true
+$script:AutoServerMaintenanceTasksOnLaunch = $true
 
 # Node counts (set by Retrieve_Nodes)
 $NumberOfLanes = 0
@@ -83,16 +83,9 @@ $script:ProtocolResultsFile = Join-Path $script:SetupFiles "Protocol_Results.txt
 $script:NssmDefaultPath = Join-Path $script:ToolsDir "NSSM\nssm.exe"
 $script:DuplicateFileMonitorServiceRoot = Join-Path $script:AlexProgramDataRoot "Duplicate_File_Monitor_Service"
 
-# Quarterly system health maintenance (Start_Quarterly_System_Health_Maintenance)
-$script:SystemHealthMaintenanceStatePath = Join-Path $script:SetupFiles "Quarterly_System_Health_Maintenance_State.json"
-$script:SystemHealthMaintenanceLockPath = Join-Path $script:SetupFiles "Quarterly_System_Health_Maintenance.lock"
-$script:SystemHealthMaintenanceWorkerPath = Join-Path $script:ScriptsFolder "Quarterly_System_Health_Maintenance_Worker.ps1"
-$script:SystemHealthMaintenanceSummaryLogPath = Join-Path $script:ScriptsLog "Quarterly_System_Health_Maintenance_SUMMARY.txt"
-$script:SystemHealthMaintenanceRunLogPrefix = "Quarterly_System_Health_Maintenance_"
-$script:SystemHealthMaintenanceRunLogPattern = "Quarterly_System_Health_Maintenance_*.log"
-$script:SystemHealthMaintenanceIntervalMonths = 3
-$script:SystemHealthMaintenanceRetentionCount = 8
-$script:SystemHealthMaintenanceSummaryRetentionLines = 250
+# Server maintenance tasks (Install_Server_Maintenance_Tasks, Repair_Windows)
+$script:ServerMaintenanceWeeklyTime = '02:30'     # every Sunday: drive optimize
+$script:ServerMaintenanceMonthlyTime = '03:00'    # first Sunday of the month: DISM, SFC, check disk
 
 foreach ($corePath in @($script:BackupRoot, $script:ScriptsFolder, $script:ScriptsLog, $script:SetupFiles, $script:ToolsDir))
 {

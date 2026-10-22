@@ -5,6 +5,36 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.6  -  2026-10-22
+#  Server maintenance: weekly drive optimize, monthly repair, readable log, never blocks the tool
+# ===================================================================================================
+#
+#  [NEW]  Two Windows scheduled tasks (as SYSTEM), set up and kept current at every launch:
+#         TBS_Server_Maintenance_Weekly  - every Sunday 02:30: optimize each fixed drive
+#                                          (SSD: TRIM; hard drive: defrag only when 5% or more
+#                                          fragmented; RAID / virtual disks: Windows picks).
+#         TBS_Server_Maintenance_Monthly - first Sunday of the month 03:00: DISM repair +
+#                                          component cleanup, SFC, online check disk (no restart).
+#         They run whether or not anyone opens the tool. No dates in the schedules, so the
+#         server's date format does not matter.
+#  [NEW]  One log, Log\Server_Maintenance.log: a start line, one line per step with its result
+#         and duration ([OK] / [WARN] / [FAIL] / [SKIP]), and a "finished" line. Error codes
+#         are explained (e.g. DISM 0x800F081F = Windows Update not reachable). Raw DISM / SFC /
+#         chkdsk output goes to Server_Maintenance_Detail_<time>.log (newest 6 kept). At launch
+#         the log box shows one line with the last result of each job (red / yellow when it
+#         failed or is overdue).
+#  [CHG]  Server > Repair Windows runs in the background now: the window stays usable and the
+#         run continues if the tool is closed; its progress shows in the log box. The scheduled
+#         steps are pre-checked; Defender full scan, disk cleanup and "check disk with repair at
+#         next restart" stay manual. Only one maintenance run at a time.
+#  [FIX]  Repair Windows froze the window for the whole run, pasted each tool's full output into
+#         one log line, and logged nothing for drive optimization. Disk cleanup ran a cleanup
+#         profile that was never set up (did nothing); it now cleans every category and logs the
+#         space freed. DISM no longer passes the invalid /Source:WindowsUpdate.
+#  [CHG]  The quarterly DISM / SFC check at launch is gone (it only ran when someone opened the
+#         tool as admin). Its state, lock and worker files are deleted on first launch.
+#
+# ===================================================================================================
 #  v2.7.5  -  2026-10-22
 #  Lane SQL protocol enable: right drive, any date format, results you can see
 # ===================================================================================================
