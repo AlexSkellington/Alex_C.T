@@ -172,8 +172,12 @@ Write-Host "Script starting, pls wait..." -ForegroundColor Yellow
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "2.6.7"
-$VersionDate = "2026-04-18"
+$VersionNumber = "2.6.9"
+$VersionDate = "2026-09-01"
+
+# Startup milestone logging (v2.6.9): time zero for the "window shown in Xs"
+# and warmup-step durations that go to the Tecnica_Systems log folder.
+$script:StartupT0 = Get-Date
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -519,13 +523,28 @@ $script:BackupSqlPass = "TB`$upp0rT"
 # ---------------------------------------------------------------------------------------------------
 # ---------------------------------------------------------------------------------------------------
 # Locate Base Path: FAST + STRICT (Share) + TEST fallback ($script:PrimaryStoremanRoot)
-#   - Prefer local SMB share named "storeman" IF it has INFO + KeyString + KeyValidDate within last 7 days
+#   - Prefer local SMB share named "storeman" IF it has INFO + KeyString + KeyValidDate within last 14 days
 #   - Else default to the configured Storeman roots for testing environments
 # ---------------------------------------------------------------------------------------------------
 $BasePath = $null
 $infoRel = 'Office\Dbs\INFO_*901_WIN.INI'
 $testPath = $script:StoremanRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if (-not $testPath) { $testPath = $script:PrimaryStoremanRoot }
+
+# ---------------------------------------------------------------------------
+# Test-environment awareness: remember WHICH storeman source we ended up with,
+# so the GUI (banner badge, status bar, log) can clearly show that we are NOT
+# running against the production share.
+# ---------------------------------------------------------------------------
+$script:IsTestEnvironment = $false
+$script:StoremanSource = 'Production'
+$script:StoremanSourceReason = "SMB share 'storeman' with valid key"
+# Dedicated KEY EXPIRED state: the share + store data exist, but KeyValidDate is
+# older than 14 days. Distinct from plain test mode because store data (folder +
+# database) is usually STILL available there - the GUI says "re-key required"
+# instead of "tasks unavailable".
+$script:StoremanKeyStale = $false
+$script:StoremanKeyDate = $null
 
 # 1) Try local SMB share "storeman"
 $share = $null
@@ -563,40 +582,131 @@ if ($share -and -not [string]::IsNullOrWhiteSpace($share.Path))
 		
 		# Key requirements for SHARE:
 		#   - KeyString present
-		#   - KeyValidDate exists and is NOT older than 7 days
+		#   - KeyValidDate exists and is NOT older than 14 days
 		$hasKeyString = -not [string]::IsNullOrWhiteSpace($keyString)
-		$minDate = (Get-Date).Date.AddDays(-7)
-		$keyWithinWeek = ($keyValid -is [datetime]) -and ($keyValid.Date -ge $minDate)
+		$minDate = (Get-Date).Date.AddDays(-14)
+		$keyWithinLimit = ($keyValid -is [datetime]) -and ($keyValid.Date -ge $minDate)
 		
-		if ($hasKeyString -and $keyWithinWeek)
+		if ($hasKeyString -and $keyWithinLimit)
 		{
 			$BasePath = $share.Path
 		}
 		else
 		{
-			Write-Warning "Share 'storeman' found but key is missing or KeyValidDate is older than 7 days. Falling back to ${testPath} for testing."
+			$script:IsTestEnvironment = $true
+			$script:StoremanSource = 'Test fallback'
+			if ($hasKeyString -and ($keyValid -is [datetime]))
+			{
+				# Key exists but is older than 14 days -> dedicated KEY EXPIRED state
+				$script:StoremanKeyStale = $true
+				$script:StoremanKeyDate = $keyValid
+				$script:StoremanSourceReason = "SMB share 'storeman' exists with store data present, but KeyValidDate ($($keyValid.ToString('MM/dd/yyyy'))) is older than 14 days - re-key required"
+				Write-Warning "Share 'storeman' found but KeyValidDate ($($keyValid.ToString('MM/dd/yyyy'))) is older than 14 days - re-key required. Falling back to ${testPath}."
+			}
+			elseif (-not $hasKeyString)
+			{
+				$script:StoremanSourceReason = "SMB share 'storeman' exists but its KeyString is missing"
+				Write-Warning "Share 'storeman' found but KeyString is missing. Falling back to ${testPath} for testing."
+			}
+			else
+			{
+				$script:StoremanSourceReason = "SMB share 'storeman' exists but KeyValidDate is missing or unreadable"
+				Write-Warning "Share 'storeman' found but KeyValidDate is missing or unreadable. Falling back to ${testPath} for testing."
+			}
 		}
 	}
 	else
 	{
+		$script:IsTestEnvironment = $true
+		$script:StoremanSource = 'Test fallback'
+		$script:StoremanSourceReason = "SMB share 'storeman' exists but Office\Dbs\INFO_*901_WIN.INI is missing"
 		Write-Warning "Share 'storeman' found but INFO file missing. Falling back to ${testPath} for testing."
 	}
 }
 else
 {
-	Write-Warning "Storeman share 'storeman' not found. Falling back to ${testPath} for testing."
+	$script:IsTestEnvironment = $true
+	$script:StoremanSource = 'Test fallback'
+	$script:StoremanSourceReason = "no 'storeman' SMB share on this machine"
+	Write-Warning "Storeman share 'storeman' not found. Falling back to configured test roots / drive scan."
 }
 
-# 2) Testing fallback
+# 2) Testing fallback (configured roots) -> 3) drive-scan fallback (ported from MiniGhost)
 if (-not $BasePath)
 {
-	$BasePath = $testPath
-	
-	# Optional: warn if the testing path still doesn't have INFO
-	$testInfo = Get-ChildItem -Path (Join-Path $BasePath 'Office\Dbs') -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
-	if (-not $testInfo)
+	if ($testPath -and (Test-Path -LiteralPath $testPath))
 	{
-		Write-Warning "Testing fallback selected (${testPath}) but INFO_*901_WIN.INI was not found. Running with limited functionality."
+		$BasePath = $testPath
+		
+		# Defensive: make sure the test-environment flag is set no matter which
+		# fallback branch we took
+		if (-not $script:IsTestEnvironment)
+		{
+			$script:IsTestEnvironment = $true
+			$script:StoremanSource = 'Test fallback'
+			$script:StoremanSourceReason = "no 'storeman' SMB share on this machine"
+		}
+		
+		# Optional: warn if the testing path still doesn't have INFO
+		$testInfo = Get-ChildItem -Path (Join-Path $BasePath 'Office\Dbs') -Filter 'INFO_*901_WIN.INI' -ErrorAction SilentlyContinue | Select-Object -First 1
+		if (-not $testInfo)
+		{
+			Write-Warning "Testing fallback selected (${testPath}) but INFO_*901_WIN.INI was not found. Running with limited functionality."
+		}
+	}
+	else
+	{
+		# 3) FINAL FALLBACK (MiniGhost logic): scan every fixed drive for any
+		# *storeman* folder that contains a Startup.ini, preferring the one
+		# actually published as an SMB share.
+		$script:IsTestEnvironment = $true
+		$script:StoremanSource = 'Drive-scan fallback'
+		Write-Warning "No 'storeman' SMB share and no existing C:\Storeman / D:\Storeman test root. Scanning all fixed drives for a *storeman* folder..."
+		
+		$storemanDirs = @()
+		$fixedDrives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 -and $_.Root -match '^[A-Z]:\\$' }
+		foreach ($drive in $fixedDrives)
+		{
+			# Case-insensitive match for any *storeman* variation in directory name
+			$dirs = Get-ChildItem -Path "$($drive.Root)" -Directory -ErrorAction SilentlyContinue |
+			Where-Object { $_.Name -imatch 'storeman' } |
+			ForEach-Object {
+				$candidatePath = Join-Path $_.FullName '\'
+				$files = Get-ChildItem -Path $candidatePath -Filter 'Startup.ini' -ErrorAction SilentlyContinue
+				if ($files) { $_ }
+			}
+			if ($dirs) { $storemanDirs += $dirs }
+		}
+		
+		$scanned = $null
+		if ($storemanDirs.Count -gt 0)
+		{
+			# Prefer a path that is actually shared as a Windows share
+			$shares = Get-SmbShare -ErrorAction SilentlyContinue
+			foreach ($dir in $storemanDirs)
+			{
+				if ($shares.Path -contains $dir.FullName)
+				{
+					$scanned = $dir
+					break
+				}
+			}
+			if (-not $scanned) { $scanned = $storemanDirs[0] }
+		}
+		
+		if ($scanned)
+		{
+			$BasePath = $scanned.FullName
+			$script:StoremanSourceReason = "no 'storeman' SMB share and no test root - found '$BasePath' by drive scan (Startup.ini present)"
+			Write-Warning "Storeman folder found by drive scan: '$BasePath'. Running in test/fallback mode."
+		}
+		else
+		{
+			# Last resort: primary test root, explicitly flagged as missing
+			$BasePath = $testPath
+			$script:StoremanSourceReason += "; test root '$BasePath' does not exist and no *storeman* folder found by drive scan"
+			Write-Warning "Could not locate any storeman folder containing 'storeman\Startup.ini'. Running with limited functionality."
+		}
 	}
 }
 
@@ -638,10 +748,26 @@ $script:LocalHost = $env:COMPUTERNAME
 # ---------------------------------------------------------------------------------------------------
 # $scriptName = Split-Path -Leaf $PSCommandPath
 
-# ===================================================================================================
-#   Detect -ConnectionString support ONCE (run at top of script, before any SQL commands)
-# ===================================================================================================
 $script:SqlcmdSupportsConnectionString = $null
+
+# ===================================================================================================
+#                              FUNCTION: Normalize_Sql_ConnectionString
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Turns a stored connection string (or the Server/Database/User/Pwd parts) into one clean
+#   SqlClient connection string. Treats 'N/A' placeholders as empty and always adds
+#   TrustServerCertificate=True so older Windows builds can reach newer SQL servers.
+#
+# Parameters:
+#   - RawConnectionString  [any]: value from FunctionResults (string, hashtable or object with .ConnectionString)
+#   - Server               [string]: SQL server name (used when no usable connection string is stored)
+#   - Database             [string]: database name (used when no usable connection string is stored)
+#   - SqlUser              [string]: SQL login (used with Server/Database)
+#   - SqlPwd               [string]: SQL login password (used with Server/Database)
+#
+# Returns:
+#   The normalized connection string, or $null when nothing usable was given.
+# ===================================================================================================
 
 function Normalize_Sql_ConnectionString
 {
@@ -689,15 +815,27 @@ function Normalize_Sql_ConnectionString
 		$connStr = $null
 	}
 
-	if (-not $connStr -and -not [string]::IsNullOrWhiteSpace($Server) -and -not [string]::IsNullOrWhiteSpace($Database))
+	# Treat the 'N/A' placeholder the same as empty - otherwise this builds a
+	# real connection string pointing at a SQL server literally named "N/A",
+	# and every caller pays a full DNS/connect timeout (~15s at startup).
+	$serverNorm = $Server
+	$databaseNorm = $Database
+	try
+	{
+		if ([string]$Server -eq 'N/A' -or [string]$Server -eq 'System.Collections.Hashtable') { $serverNorm = '' }
+		if ([string]$Database -eq 'N/A' -or [string]$Database -eq 'System.Collections.Hashtable') { $databaseNorm = '' }
+	}
+	catch { }
+	
+	if (-not $connStr -and -not [string]::IsNullOrWhiteSpace($serverNorm) -and -not [string]::IsNullOrWhiteSpace($databaseNorm))
 	{
 		if (-not [string]::IsNullOrWhiteSpace($SqlUser) -and -not [string]::IsNullOrWhiteSpace($SqlPwd))
 		{
-			$connStr = "Server=$Server;Database=$Database;User ID=$SqlUser;Password=$SqlPwd;TrustServerCertificate=True;"
+			$connStr = "Server=${serverNorm};Database=${databaseNorm};User ID=$SqlUser;Password=$SqlPwd;TrustServerCertificate=True;"
 		}
 		else
 		{
-			$connStr = "Server=$Server;Database=$Database;Integrated Security=SSPI;TrustServerCertificate=True;"
+			$connStr = "Server=${serverNorm};Database=${databaseNorm};Integrated Security=SSPI;TrustServerCertificate=True;"
 		}
 	}
 
@@ -719,12 +857,24 @@ function Normalize_Sql_ConnectionString
 	return $connStr
 }
 
+# ===================================================================================================
+#                              FUNCTION: Ensure_MailslotSender_Type
 # ---------------------------------------------------------------------------------------------------
-# Add C# MailSlotSender Type for Direct Windows Mailslot Messaging (if not already loaded)
-# ---------------------------------------------------------------------------------------------------
-if (-not ([System.Management.Automation.PSTypeName]'MailslotSender').Type)
+# Description:
+#   Loads the C# MailslotSender type (kernel32 CreateFile/WriteFile) used for direct Windows
+#   mailslot messaging. Idempotent: a PSTypeName guard makes repeat calls no-ops, and it is a
+#   function (not a bare top-level block) so background jobs can load it too.
+#
+# Notes:
+#   - Called once at script top; any job that receives its body can call it as well.
+#   - Exposes [MailslotSender]::SendMailslotCommand(mailslotName, command).
+# ===================================================================================================
+
+function Ensure_MailslotSender_Type
 {
-	Add-Type -TypeDefinition @"
+	if (-not ([System.Management.Automation.PSTypeName]'MailslotSender').Type)
+	{
+		Add-Type -TypeDefinition @"
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
@@ -771,26 +921,27 @@ public class MailslotSender {
     }
 }
 "@
+	}
 }
 
+Ensure_MailslotSender_Type
+
 # ===================================================================================================
-#                                      FUNCTION: Get-PsExec
+#                              FUNCTION: Get_PsExec
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Ensures Sysinternals PsExec.exe is present at the specified tools directory (default: C:\Tecnica_Systems\Alex_C.T\Tools).
-#   If missing, downloads PSTools.zip from Microsoft, extracts PsExec.exe in the background,
-#   and provides a visible progress indicator compatible with ISE and console hosts.
-#   Cleans up temporary files and prints clear log output for all actions and errors.
+#   Ensures Sysinternals PsExec.exe exists in the tools directory. If missing, downloads
+#   PSTools.zip from Microsoft in a background job, extracts PsExec.exe, shows progress and
+#   removes the zip. Reuses a running download job so it never double-downloads.
 #
-# Improvements:
-#   - Fully self-contained, no helpers/nested functions.
-#   - Compatible with PowerShell ISE and Windows PowerShell 5+.
-#   - Progress display uses Write-Host for log-friendly output (no cursor jumps).
-#   - Extraction is robust: uses manual file copy for maximum compatibility.
-#   - Handles concurrent job detection; never double-downloads.
-#   - Detailed feedback on errors or success, always visible to the user.
+# Parameters:
+#   - ToolsDir  [string]: tools folder, defaults to $script:ToolsDir
 #
-# Author: Alex_C.T
+# Writes:
+#   - <ToolsDir>\PsExec.exe (PSTools.zip while extracting)
+#
+# Returns:
+#   Full path to PsExec.exe, or $null if it could not be produced.
 # ===================================================================================================
 
 function Get_PsExec
@@ -834,7 +985,7 @@ function Get_PsExec
 					New-Item -Path $ToolsDir -ItemType Directory | Out-Null
 				}
 				Write-Host "[Job] Downloading PSTools.zip..."
-				Invoke-WebRequest -Uri $pstoolsUrl -OutFile $pstoolsZip -UseBasicParsing -ErrorAction Stop
+				Invoke-WebRequest -Uri $pstoolsUrl -OutFile $pstoolsZip -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
 				
 				Write-Host "[Job] Extracting PsExec.exe..."
 				Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
@@ -901,17 +1052,29 @@ function Get_PsExec
 }
 
 # ===================================================================================================
-# 										Function Download_NSSM
+#                              FUNCTION: Download_NSSM
 # ---------------------------------------------------------------------------------------------------
-# What this does:
-#   - Ensures NSSM exists BEFORE any function tries to install/manage services
-#   - BACKGROUND mode (non-blocking): starts a hidden PowerShell worker process and returns immediately
-#   - WAIT mode (blocking only when requested): waits for NSSM to appear (or timeout) and returns status
-#   - Always writes a Status JSON + Log (log overwritten per run)
+# Description:
+#   Ensures nssm.exe exists before any function installs or manages services. Can start a
+#   hidden worker and return immediately (Background), wait for completion (Wait), or
+#   run synchronously. Always publishes the NSSM paths and writes a status log per run.
+#   Returns a hashtable @{ Success; Path; Note; Error; Log } describing the outcome.
 #
-# Why this fixes your "ISE vs App" issue:
-#   - A separate hidden powershell.exe process is far more reliable than runspace BeginInvoke in hosted apps
-#   - Timeouts prevent silent hangs that look like "does nothing"
+# Parameters:
+#   - ToolsRoot            [string]: tools root, defaults to $script:ToolsDir
+#   - ForceDownload        [switch]: redownload even if nssm.exe already exists
+#   - Background           [switch]: start a hidden worker and return immediately
+#   - Wait                 [switch]: block until nssm.exe appears (or timeout)
+#   - WaitTimeoutSeconds   [int]: max wait when -Wait is used (default 120)
+#   - WaitPollMilliseconds [int]: poll interval when -Wait is used (default 250)
+#   - ThrowOnFail          [switch]: throw instead of returning a failure result
+#
+# Variables:
+#   - $script:NssmDir / $script:NssmExe: published NSSM locations
+#   - $script:NssmDownloadLog: Download_NSSM_LOG.txt under the script log folder
+#
+# Writes:
+#   - <ToolsRoot>\NSSM\nssm.exe and the status log file
 # ===================================================================================================
 
 function Download_NSSM
@@ -1320,12 +1483,26 @@ catch
 }
 
 # ===================================================================================================
-#                   FUNCTION: Start_Quarterly_System_Health_Maintenance
+#                              FUNCTION: Start_Quarterly_System_Health_Maintenance
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Runs DISM/SFC maintenance at most once every configured interval. Launches a detached hidden
-#   PowerShell worker so the scan continues even if the main app closes. Persists run state in
-#   Setup_Files and writes summary/detail logs under the configured Log folder.
+#   Runs DISM/SFC system health maintenance at most once per interval. Launches a detached
+#   hidden PowerShell worker so the scan continues even if the main app closes, and persists
+#   run state plus summary/run logs under the configured folders.
+#
+# Parameters:
+#   - IntervalMonths        [int]: minimum months between runs (default 3)
+#   - RetentionCount        [int]: number of run logs to keep (default 8)
+#   - SummaryRetentionLines [int]: summary log lines to keep (default 250)
+#
+# Variables:
+#   - $script:SystemHealthMaintenance*: state/lock/worker/summary log paths (set at script top)
+#
+# Returns:
+#   @{ Started; Running; Due; Pid; RunLogPath } when a worker started, else $false.
+#
+# Writes:
+#   - state JSON, summary log and run logs under Setup_Files / the script log folder
 # ===================================================================================================
 
 function Start_Quarterly_System_Health_Maintenance
@@ -1677,17 +1854,25 @@ finally
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Write to Log
+#                              FUNCTION: Write_Log
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Writes messages to the log GUI box. No silent mode or file logging.
+#   The single logging entry point of this script. Writes a line to the GUI log box (colored),
+#   optionally to the console, and to the daily file log. Handles UI rebuilds, cross-thread
+#   updates, test-mode rewording and repeat suppression.
 #
-# Improvements:
-#   - FIX: Timestamp now actually works (your old $timestamp was commented out)
-#   - FIX: Finds the current live log control even after UI rebuilds
-#   - FIX: Safe cross-thread updates (InvokeRequired)
-#   - FIX: Avoids exceptions when form/control is disposed
-#   - Keeps console fallback if UI log not available
+# Parameters:
+#   - Message          [string]: the line to log (required)
+#   - Color            [any]: color name or System.Drawing.Color (default Black)
+#   - IncludeTimestamp [switch]: prefix the line with a timestamp (off by default)
+#   - Raw              [switch]: skip the presentation layer (severity tags, rewording)
+#   - FileOnly         [switch]: file log only - skip the box and console (v2.6.9)
+#
+# Variables:
+#   - $script:LogBox / $logBox / $global:LogBox: the active log control (found robustly)
+#
+# Notes:
+#   - Background job success lines use -FileOnly; only failures reach the box.
 # ===================================================================================================
 
 function Write_Log
@@ -1699,19 +1884,32 @@ function Write_Log
 		[Parameter(Mandatory = $false)]
 		$Color = "Black",
 		# accepts string names OR [System.Drawing.Color]
+		# Default OFF (user preference): log lines are clean, no timestamp prefix.
+		# Pass -IncludeTimestamp if a caller ever wants it back.
 		[Parameter(Mandatory = $false)]
-		[switch]$IncludeTimestamp = $true
+		[switch]$IncludeTimestamp = $false,
+		# Skip the presentation layer (severity tags, test-mode rewording,
+		# exception squashing, repeat suppression). Used by the startup
+		# summary block which formats its own lines.
+		[Parameter(Mandatory = $false)]
+		[switch]$Raw,
+		# v2.6.9: skip the log BOX and the console entirely - the line goes to
+		# the file log only. Used for background job lifecycle lines: the status
+		# bar already shows what the app is doing in the background, and the box
+		# only sees failures (user preference).
+		[Parameter(Mandatory = $false)]
+		[switch]$FileOnly
 	)
 	
 	# ----------------------------------------------------------------------------------------------
-	# Resolve timestamp (your original code had this commented out, so it never appeared)
+	# Resolve timestamp (OFF by default - user preference; opt in per call with -IncludeTimestamp)
 	# ----------------------------------------------------------------------------------------------
-	<#$timestamp = $null
+	$timestamp = $null
 	if ($IncludeTimestamp)
 	{
 		try { $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
 		catch { $timestamp = $null }
-	}#>
+	}
 	
 	# ----------------------------------------------------------------------------------------------
 	# Resolve the active log control robustly (handles refactors / recreated controls)
@@ -1806,14 +2004,141 @@ function Write_Log
 	}
 	catch { $selColor = [System.Drawing.Color]::Black }
 	
+	# ----------------------------------------------------------------------------------------------
+	# Presentation layer (v2.6.8) - makes the log output calmer and easier to read:
+	#   1) Test mode: known expected conditions are reworded into friendly explanations
+	#   2) Raw .NET exception dumps are squashed to a short first sentence
+	#   3) A severity tag is prefixed by color: [ OK ] / [WARN] / [FAIL] / [INFO]
+	#   4) Identical lines are suppressed for 120s (stops per-lane repeat spam)
+	# Skipped entirely when -Raw is passed (the startup summary block formats itself).
+	# ----------------------------------------------------------------------------------------------
+	if (-not $Raw)
+	{
+		# --- 1) Test-mode friendly rewording -------------------------------------------
+		# These conditions are EXPECTED when the storeman folder / store database is
+		# not available. Reword them so the log reads as a calm explanation instead
+		# of a wall of red errors. In production the original text is kept - there
+		# these conditions are real problems.
+		if ($script:IsTestEnvironment)
+		{
+			$friendlyMap = @(
+				@{ P = '^Startup\.ini path not provided';                 T = 'Store config (Startup.ini) not found on this machine. Continuing without store/terminal details - expected in test mode.'; C = 'orange' }
+				@{ P = '^WIN\.INI is unresolved';                         T = 'Store info file (WIN.INI) not found. Continuing without store details - expected in test mode.'; C = 'orange' }
+				@{ P = '^(No INFO_\*_WIN\.INI|No store info file)';        T = 'Store info file (INFO_*_WIN.INI) not found - expected in test mode.'; C = 'orange' }
+				@{ P = '^Failed to retrieve counts from the database';    T = 'Store database is not reachable - expected in test mode. Lane/scale info will come from local files where available.'; C = 'orange' }
+				@{ P = '\(Urgent Messages\) does not exist\.';            T = 'Urgent messages folder not found - expected in test mode (no storeman folder).'; C = 'orange' }
+			)
+			foreach ($entry in $friendlyMap)
+			{
+				if ($Message -match $entry.P)
+				{
+					$Message = $entry.T
+					$selColor = switch ($entry.C)
+					{
+						'orange' { [System.Drawing.Color]::Orange }
+						'blue'   { [System.Drawing.Color]::DodgerBlue }
+						default  { [System.Drawing.Color]::Gray }
+					}
+					break
+				}
+			}
+		}
+		
+		# --- 2) Squash raw .NET exception dumps ----------------------------------------
+		# Turns:
+		#   "...: Exception calling ""Open"" with ""0"" argument(s): ""A network-related or...""
+		# into:
+		#   "...: A network-related or..."  (first ~200 chars, on a word boundary)
+		if ($Message -match 'Exception calling "[^"]*" with "\d+" argument\(s\): "(.*)"')
+		{
+			$inner = $matches[1]
+			if ($inner.Length -gt 200)
+			{
+				$cut = $inner.Substring(0, 200)
+				$sp = $cut.LastIndexOf(' ')
+				if ($sp -gt 120) { $cut = $cut.Substring(0, $sp) }
+				$inner = $cut + '...'
+			}
+			$pre = $Message.Substring(0, $Message.IndexOf('Exception calling', [System.StringComparison]::Ordinal)).TrimEnd().TrimEnd(':').TrimEnd()
+			if ($pre) { $Message = "${pre}: $inner" } else { $Message = $inner }
+		}
+		elseif ($Message.Length -gt 300)
+		{
+			$cut = $Message.Substring(0, 300)
+			$sp = $cut.LastIndexOf(' ')
+			if ($sp -gt 200) { $cut = $cut.Substring(0, $sp) }
+			$Message = $cut + '...'
+		}
+		
+		# --- 3) Severity tag by color --------------------------------------------------
+		# NOTE: explicit -eq tests, not a switch() - PowerShell switch() does not
+		# match System.Drawing.Color values (falls to default).
+		$tag = ''
+		if ($selColor -eq [System.Drawing.Color]::Green)        { $tag = '[ OK ] ' }
+		elseif ($selColor -eq [System.Drawing.Color]::Orange)   { $tag = '[WARN] ' }
+		elseif ($selColor -eq [System.Drawing.Color]::Goldenrod){ $tag = '[WARN] ' }
+		elseif ($selColor -eq [System.Drawing.Color]::Red)      { $tag = '[FAIL] ' }
+		elseif ($selColor -eq [System.Drawing.Color]::DodgerBlue){ $tag = '[INFO] ' }
+		elseif ($selColor -eq [System.Drawing.Color]::Cyan)     { $tag = '[INFO] ' }
+		
+		# --- 4) Repeat suppression -------------------------------------------------------
+		# The same line (tag + text) is only written once per 120 seconds. This stops
+		# per-lane startup jobs from filling the log with the identical error.
+		if (-not $script:LogSeen) { $script:LogSeen = @{} }
+		if ($script:LogSeen.Count -gt 400) { $script:LogSeen.Clear() }
+		$lineKey = $tag + $Message
+		$nowT = [datetime]::Now
+		if ($script:LogSeen.ContainsKey($lineKey) -and ($nowT - $script:LogSeen[$lineKey]).TotalSeconds -lt 120)
+		{
+			return
+		}
+		$script:LogSeen[$lineKey] = $nowT
+		
+		$Message = $tag + $Message
+	}
+	
 	# Compose message
 	$fullMessage = if ($timestamp) { "[$timestamp] $Message" }
 	else { $Message }
 	
 	# ----------------------------------------------------------------------------------------------
-	# If we have a UI log, write to it safely (cross-thread aware)
+	# File log (v2.6.9): every line is appended to
+	#   C:\Tecnica_Systems\Alex_C.T\Log\TBS_Maintenance_<date>.log   (one file per day)
+	# - lines the UI shows (box writes are the presentation of the same line)
+	# - -FileOnly lines, which the UI deliberately does NOT show (job lifecycle)
+	# Lines suppressed by the 120-second repeat rule above are skipped here too,
+	# so the file stays as readable as the window.
+	# Opened with ReadWrite sharing because background jobs may append at the same time.
+	# Any failure here is silent - logging must never break maintenance work.
 	# ----------------------------------------------------------------------------------------------
-	if ($lb -and -not $lb.IsDisposed)
+	try
+	{
+		$logToday = (Get-Date -Format 'yyyy-MM-dd')
+		if (-not $script:LogFileLogDate -or ($script:LogFileLogDate -ne $logToday))
+		{
+			$script:LogFileLogDate = $logToday
+			$script:LogFileLogPath = Join-Path $script:ScriptsLog ("TBS_Maintenance_" + $logToday + ".log")
+		}
+		$logLine = (Get-Date -Format 'HH:mm:ss') + " " + $fullMessage
+		try
+		{
+			$logStream = [System.IO.File]::Open($script:LogFileLogPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+			$logWriter = New-Object System.IO.StreamWriter($logStream)
+			$logWriter.WriteLine($logLine)
+			$logWriter.Close()
+		}
+		catch { }
+	}
+	catch
+	{
+		# Silent - a missing log folder or disk problem must not surface in the UI
+	}
+	
+	# ----------------------------------------------------------------------------------------------
+	# If we have a UI log, write to it safely (cross-thread aware).
+	# -FileOnly lines never reach the box (file log only - see param docs).
+	# ----------------------------------------------------------------------------------------------
+	if (-not $FileOnly -and $lb -and -not $lb.IsDisposed)
 	{
 		# Define the UI write action as a scriptblock (NO nested function)
 		$uiWrite = {
@@ -1862,8 +2187,13 @@ function Write_Log
 	}
 	
 	# ----------------------------------------------------------------------------------------------
-	# Console fallback (until logBox is initialized OR if UI write failed)
+	# Console fallback (until logBox is initialized OR if UI write failed).
+	# Skipped for -FileOnly lines: the file log is their only destination.
 	# ----------------------------------------------------------------------------------------------
+	if ($FileOnly)
+	{
+		return
+	}
 	try
 	{
 		# Write-Host expects a ConsoleColor, so map common values
@@ -1892,14 +2222,333 @@ function Write_Log
 
 
 # ===================================================================================================
-#                               FUNCTION: Get_Store_And_Database_Info
+#                              FUNCTION: Start_Background_Function_Job
 # ---------------------------------------------------------------------------------------------------
-# UPDATED:
-#   - Uses in-memory results first, then Get_Store_And_Database_Info.txt if present
-#   - Always re-detects SQL module each run so it's accurate even when using cached data
-#   - Only re-parses INIs when memory/file data is missing or unreadable
-#   - Writes back merged results into Get_Store_And_Database_Info.txt
-#   - GUI labels still update even on memory/file reuse
+# Description:
+#   The one background-job builder for this script (v2.6.9). Runs a script function in a
+#   background job without blocking the UI thread. The job receives the function code,
+#   Write_Log, any dependent functions, a copy of the FunctionResults bag and seed variables,
+#   and its results are merged back into the live script scope when it finishes.
+#
+# Parameters:
+#   - FunctionName     [string]: function to run in the job (required)
+#   - Label            [string]: shown in the status bar / logged while the job runs
+#   - CallArgs         [hashtable]: named arguments splatted onto the function call
+#   - SeedVars         [hashtable]: script variables the function reads (name -> value)
+#   - ReturnVarNames   [string[]]: script variables the function writes back (names only)
+#   - DependentBodies  [hashtable]: extra functions the target calls (name -> body text)
+#   - OnComplete       [scriptblock]: run on the UI thread when the job completes
+#   - NotifyOnComplete [switch]: box line when the job ends without a result
+#
+# Variables:
+#   - $script:BgfJobs: registry of running jobs for the shared reaper timer
+#
+# Returns:
+#   The Start-Job job object, or $null if the function was not found.
+# ===================================================================================================
+
+function Start_Background_Function_Job
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$FunctionName,
+		# shown in the status bar / logged while the job runs
+		[string]$Label = '',
+		# named arguments splatted onto the function call, e.g. @{ RefreshCache = $true }
+		[hashtable]$CallArgs = @{},
+		# extra script variables the function reads (name -> value), e.g. @{ SetupFiles = $script:SetupFiles }
+		[hashtable]$SeedVars = @{},
+		# script variables the function WRITES that must be handed back to the
+		# main session (names only), e.g. @('LaneSQLScript', 'ServerSQLScript')
+		[string[]]$ReturnVarNames = @(),
+		# extra functions the target calls internally (name -> body text).
+		# Write_Log is always passed, so the job can log like the main session.
+		[hashtable]$DependentBodies = @{},
+		# scriptblock run on the UI thread when the job completes; it receives
+		# the result object (possibly $null). Used by warmup steps that must
+		# hydrate state from the warm cache after the job's network work.
+		[scriptblock]$OnComplete = $null,
+		# mark the job as one whose abnormal finish ("ended without a result")
+		# is worth a line in the log BOX. Normal success lines always go to the
+		# file log only - the status bar covers progress, the box sees failures.
+		[switch]$NotifyOnComplete
+	)
+	
+	if (-not $CallArgs) { $CallArgs = @{} }
+	if (-not $SeedVars) { $SeedVars = @{} }
+	if (-not $ReturnVarNames) { $ReturnVarNames = @() }
+	if (-not $DependentBodies) { $DependentBodies = @{} }
+	if (-not $script:BgfJobs) { $script:BgfJobs = @{} }
+	
+	# NOTE: use Get-Command, NOT ${function:$FunctionName} - the variable-drive
+	# syntax with a dynamic name does not resolve from inside a function body
+	# under Windows PowerShell 5.1 (only literal names work there).
+	$fnCmd = $null
+	try { $fnCmd = Get-Command -Name $FunctionName -CommandType Function -ErrorAction SilentlyContinue } catch { }
+	if (-not $fnCmd)
+	{
+		# NOTE: Out-Null keeps the return value clean even if a Write_Log
+		# variant ever writes to the pipeline.
+		try { Write_Log ("Start_Background_Function_Job: function '{0}' not found, cannot start job" -f $FunctionName) 'red' | Out-Null } catch { }
+		return $null
+	}
+	$fnBody = $fnCmd.ScriptBlock.ToString()
+	
+	# Copy the results bag - the job must never mutate the live one
+	$seedResults = @{}
+	if ($script:FunctionResults)
+	{
+		foreach ($k in @($script:FunctionResults.Keys)) { $seedResults[$k] = $script:FunctionResults[$k] }
+	}
+	
+	# Standard context every job needs so its Write_Log can find the file-log
+	# folder and honour test mode. Callers do not have to remember this.
+	$autoSeed = @{
+		ScriptsLog        = $script:ScriptsLog
+		IsTestEnvironment = $script:IsTestEnvironment
+	}
+	
+	$job = Start-Job -Name ('bgf_' + $FunctionName) -ScriptBlock {
+		param (
+			[string]$FnName,
+			[string]$FnBody,
+			[hashtable]$Deps,
+			[hashtable]$SeedResults,
+			[hashtable]$SeedVars,
+			[hashtable]$CallArgs,
+			[string[]]$ReturnVarNames,
+			[string]$WriteLogBody,
+			[hashtable]$AutoSeed
+		)
+		
+		Add-Type -AssemblyName System.Windows.Forms 2>$null
+		Add-Type -AssemblyName System.Drawing 2>$null
+		
+		Set-Item -Path function:Write_Log -Value ([scriptblock]::Create($WriteLogBody))
+		foreach ($depName in @($Deps.Keys))
+		{
+			Set-Item -Path ('function:' + $depName) -Value ([scriptblock]::Create($Deps[$depName]))
+		}
+		Set-Item -Path ('function:' + $FnName) -Value ([scriptblock]::Create($FnBody))
+		
+		$script:FunctionResults = @{ }
+		foreach ($k in @($SeedResults.Keys)) { $script:FunctionResults[$k] = $SeedResults[$k] }
+		foreach ($k in @($SeedVars.Keys))
+		{
+			Set-Variable -Scope Script -Name $k -Value $SeedVars[$k]
+		}
+		foreach ($k in @($AutoSeed.Keys))
+		{
+			if (-not (Get-Variable -Scope Script -Name $k -ValueOnly -ErrorAction SilentlyContinue))
+			{
+				Set-Variable -Scope Script -Name $k -Value $AutoSeed[$k]
+			}
+		}
+		
+		try
+		{
+			& (Get-Item -Path ('function:' + $FnName)) @CallArgs
+			$extraVars = @{}
+			foreach ($vn in $ReturnVarNames)
+			{
+				$vv = Get-Variable -Scope Script -Name $vn -ValueOnly -ErrorAction SilentlyContinue
+				if ($null -ne $vv) { $extraVars[$vn] = $vv }
+			}
+			[pscustomobject]@{
+				Success         = $true
+				FunctionResults = $script:FunctionResults
+				ExtraVars       = $extraVars
+				Error           = $null
+			}
+		}
+		catch
+		{
+			[pscustomobject]@{
+				Success         = $false
+				FunctionResults = $script:FunctionResults
+				ExtraVars       = @{}
+				Error           = $_.Exception.Message
+			}
+		}
+	} -ArgumentList @(
+		$FunctionName,
+		$fnBody,
+		$DependentBodies,
+		$seedResults,
+		$SeedVars,
+		$CallArgs,
+		$ReturnVarNames,
+		${function:Write_Log}.ToString(),
+		$autoSeed
+	)
+	
+	if (-not $job)
+	{
+		Write_Log ("Start_Background_Function_Job: failed to start job for '{0}'" -f $FunctionName) 'red'
+		return $null
+	}
+	
+	$script:BgfJobs[$job.Id] = @{
+		Job              = $job
+		Label            = $Label
+		Started          = Get-Date
+		OnComplete       = $OnComplete
+		NotifyOnComplete = [bool]$NotifyOnComplete
+	}
+	
+	# v2.6.9: ONE shared reaper polls every background FUNCTION job on the
+	# UI thread (1s tick), merges finished results and fires the job's
+	# OnComplete callback (warmup hydration) or a one-line completion notice.
+	# In hosts without a message pump (e.g. the selftest's child process) it
+	# simply never ticks, and callers may poll Get_Background_Function_Job_Result
+	# directly instead.
+	# NOTE: the other timers in this script (ScaleCredReaper, VncExportReaper,
+	# RemoteMachineInfoReaper, StartupScaleCredTimer, svcTimer) each manage an
+	# INLINE job pool with local-variable closures and specialized collect
+	# logic; they deliberately do not go through this engine. Migrating them
+	# would mean restructuring those functions into the worker pattern -
+	# considered and deferred (no performance gain, real regression risk).
+	try
+	{
+		if (-not $script:BgfJobReaper)
+		{
+			$script:BgfJobReaper = New-Object System.Windows.Forms.Timer
+			$script:BgfJobReaper.Interval = 1000
+			$script:BgfJobReaper.Add_Tick({
+					try
+					{
+						if (-not $script:BgfJobs -or $script:BgfJobs.Count -eq 0) { return }
+						foreach ($key in @($script:BgfJobs.Keys))
+						{
+							$entry = $script:BgfJobs[$key]
+							if (-not $entry -or -not $entry.Job) { continue }
+							if ($entry.Job.State -in @('Running', 'NotStarted')) { continue }
+							
+							$result = $null
+							try { $result = Get_Background_Function_Job_Result -Job $entry.Job } catch { }
+							
+							$secs = 0
+							try { $secs = ((Get-Date) - $entry.Started).TotalSeconds } catch { }
+							if ($result)
+							{
+								if ($result.Success)
+								{
+									# v2.6.9: success notices go to the FILE LOG ONLY (-FileOnly).
+									# The status bar already shows what the app is doing in the
+									# background, so the box stays quiet on success and only
+									# sees failures (user preference).
+									Write_Log ("Background job '{0}' finished in {1:N1}s" -f $entry.Label, $secs) 'blue' -FileOnly
+								}
+								else
+								{
+									Write_Log ("Background job '{0}' failed: {1}" -f $entry.Label, $result.Error) 'red'
+								}
+							}
+							elseif ($entry.NotifyOnComplete)
+							{
+								Write_Log ("Background job '{0}' ended without a result" -f $entry.Label) 'yellow'
+							}
+							
+							if ($entry.OnComplete)
+							{
+								try { & $entry.OnComplete $result } catch { }
+							}
+						}
+					}
+					catch { }
+			})
+			$script:BgfJobReaper.Start()
+		}
+	}
+	catch { }
+	return $job
+}
+
+# ===================================================================================================
+#                              FUNCTION: Get_Background_Function_Job_Result
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Polls a job created by Start_Background_Function_Job. Returns $null while the job is still
+#   running. When it has finished, receives the result (before removing the job), merges the
+#   job's FunctionResults and ExtraVars back into the live script scope and returns the
+#   result object. Safe to call repeatedly.
+#
+# Parameters:
+#   - Job  [Job]: the job object returned by Start_Background_Function_Job
+#
+# Variables:
+#   - $script:BgfJobs: the job's registry entry is removed on completion
+#
+# Returns:
+#   The job result object (Success/FunctionResults/ExtraVars/Error), or $null.
+# ===================================================================================================
+
+function Get_Background_Function_Job_Result
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[System.Management.Automation.Job]$Job
+	)
+	
+	if (-not $Job) { return $null }
+	if ($Job.State -in @('Running', 'NotStarted')) { return $null }
+	
+	$result = $null
+	try { $result = @(Receive-Job -Job $Job -ErrorAction SilentlyContinue) | Select-Object -Last 1 } catch { }
+	try { Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
+	
+	if ($result)
+	{
+		if ($result.FunctionResults)
+		{
+			if (-not $script:FunctionResults) { $script:FunctionResults = @{} }
+			foreach ($k in @($result.FunctionResults.Keys))
+			{
+				$script:FunctionResults[$k] = $result.FunctionResults[$k]
+			}
+		}
+		if ($result.ExtraVars)
+		{
+			foreach ($k in @($result.ExtraVars.Keys))
+			{
+				Set-Variable -Scope Script -Name $k -Value $result.ExtraVars[$k] -Force
+			}
+		}
+	}
+	
+	if ($script:BgfJobs -and $script:BgfJobs.ContainsKey($Job.Id))
+	{
+		$script:BgfJobs.Remove($Job.Id)
+	}
+	return $result
+}
+
+# ===================================================================================================
+#                              FUNCTION: Get_Store_And_Database_Info
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Reads store identity and SQL connection details (store name, address, SMS version, key
+#   number, DB server, database, connection string) from the Storeman INI files, preferring
+#   in-memory results, then the cache file; re-parses only when missing or -RefreshCache.
+#
+# Parameters:
+#   - WinIniPath      [string]: path to INFO_*901_WIN.INI
+#   - SmsStartIniPath [string]: path to INFO_*901_SMSStart.ini
+#   - StartupIniPath  [string]: path to the Storeman Startup.ini
+#   - SystemIniPath   [string]: path to the Storeman system.ini
+#   - RefreshCache    [switch]: force re-parse and cache rewrite
+#
+# Variables:
+#   - $script:FunctionResults: receives StoreNumber, DBSERVER, DBNAME, ConnectionString,
+#     SMSVersionFull, SqlModuleName and friends
+#
+# Writes:
+#   - Setup_Files\Get_Store_And_Database_Info.txt (JSON cache)
+#
+# Notes:
+#   - Always re-detects the SQL module; updates GUI labels even on a cache hit (finally block).
 # ===================================================================================================
 
 function Get_Store_And_Database_Info
@@ -2220,7 +2869,14 @@ function Get_Store_And_Database_Info
 		}
 		else
 		{
-			Write_Log "No INFO_*_WIN.INI found at $WinIniPath" "red"
+			if ([string]::IsNullOrWhiteSpace($WinIniPath))
+			{
+				Write_Log "No store info file (INFO_*_WIN.INI) found - no storeman folder detected on this machine." "red"
+			}
+			else
+			{
+				Write_Log "No store info file (INFO_*_WIN.INI) found at $WinIniPath" "red"
+			}
 		}
 		
 		# ------------------------------------------------------------------------------------------------
@@ -2347,6 +3003,31 @@ function Get_Store_And_Database_Info
 				$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
 				$anyLabelChanged = $true
 			}
+			if ($bannerDateLabel -ne $null)
+			{
+				try
+				{
+					$bn = $script:FunctionResults['StoreNumber']
+					$bnm = $script:FunctionResults['StoreName']
+					if ($bn -and "$bn" -ne 'N/A' -and -not [string]::IsNullOrWhiteSpace("$bn"))
+					{
+						if ($bnm -and "$bnm" -ne 'N/A' -and -not [string]::IsNullOrWhiteSpace("$bnm"))
+						{
+						$bnmShort = "$bnm"
+						if ($bnmShort.Length -gt 26) { $bnmShort = $bnmShort.Substring(0, 25).TrimEnd() + '...' }
+						$bannerDateLabel.Text = "Store $bn  -  $bnmShort"
+						}
+						else { $bannerDateLabel.Text = "Store $bn" }
+					}
+					else
+					{
+					$bannerDateLabel.Text = "Store Maintenance Console"
+					}
+					$anyLabelChanged = $true
+					try { if ($layoutBanner) { & $layoutBanner } } catch { }
+				}
+				catch { }
+			}
 			if ($smsVersionLabel -ne $null)
 			{
 				$smsVersionLabel.Text = "SMS Version: $($script:FunctionResults['SMSVersionFull'])"
@@ -2365,17 +3046,27 @@ function Get_Store_And_Database_Info
 }
 
 # ===================================================================================================
-#                            FUNCTION: Get_All_Lanes_Database_Info
+#                              FUNCTION: Get_All_Lanes_Database_Info
 # ---------------------------------------------------------------------------------------------------
-# CACHING (per your request):
-#   - Cache file per function under $script:SetupFiles:
-#       $script:SetupFiles\Get_All_Lanes_Database_Info.txt   (JSON)
-#   - ONLY queries lanes if in-memory data and cache file are both missing/unreadable
-#   - Cache stores ALL fields this function collects per lane (MachineName/DBName/DBServer/etc.)
-#   - Always hydrates $script:FunctionResults['LaneDatabaseInfo'] from memory/file when available
-#   - When cache is missing/unreadable: builds cache for all lanes (plus requested LaneNumber if provided),
-#     writes file, then returns requested lane if -LaneNumber was used.
-#   - Cache file LaneDatabaseInfo is always WRITTEN ORDERED by lane number (001,002,003...)
+# Description:
+#   Collects per-lane SQL details (machine name, DB server, DB name) for every lane of the
+#   store. Uses in-memory results first, then the per-function cache file, and only queries
+#   the lanes when both are missing or -RefreshCache is set. With -LaneNumber it returns
+#   that lane's info object.
+#
+# Parameters:
+#   - LaneNumber   [string]: return only this lane's data (3-digit, padded)
+#   - RefreshCache [switch]: force re-query and cache rewrite
+#
+# Variables:
+#   - $script:FunctionResults['LaneDatabaseInfo']: per-lane info bucket (output)
+#   - $script:FunctionResults['LaneNumToMachineName']: lane -> machine map (input)
+#
+# Returns:
+#   The requested lane's info object; nothing for a full-store refresh.
+#
+# Writes:
+#   - Setup_Files\Get_All_Lanes_Database_Info.txt (JSON cache, ordered by lane number)
 # ===================================================================================================
 
 function Get_All_Lanes_Database_Info
@@ -2509,7 +3200,21 @@ function Get_All_Lanes_Database_Info
 		if (-not $content)
 		{
 			$startupIniPath = "\\$machineName\storeman\Startup.ini"
-			if (Test-Path $startupIniPath)
+			$remoteShareReachable = $false
+			$tcpClient = New-Object System.Net.Sockets.TcpClient
+			try
+			{
+				$asyncResult = $tcpClient.BeginConnect($machineName, 445, $null, $null)
+				if ($asyncResult.AsyncWaitHandle.WaitOne(1500))
+				{
+					$tcpClient.EndConnect($asyncResult)
+					$remoteShareReachable = $true
+				}
+			}
+			catch { $remoteShareReachable = $false }
+			finally { $tcpClient.Dispose() }
+
+			if ($remoteShareReachable -and (Test-Path $startupIniPath))
 			{
 				try
 				{
@@ -2648,32 +3353,25 @@ function Get_All_Lanes_Database_Info
 }
 
 # ===================================================================================================
-#                               FUNCTION: Repair_LOC_Databases_On_Lanes
+#                              FUNCTION: Repair_LOC_Databases_On_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Pick lane(s), choose repair level (Audit / Quick / Deep) in a dialog.
-#   Uses Get_All_Lanes_Database_Info to resolve DB server/name per lane.
+#   Interactive database repair for lane (LOC) databases: pick lane(s) and a repair level
+#   (Audit / Quick / Deep) in a dialog, then run DBCC repair with safety gates. Uses
+#   Protocol_Results.txt as the protocol source of truth (File-protocol lanes are skipped),
+#   refuses system DB names and restores MULTI_USER state in finally blocks.
 #
-#   IMPORTANT IMPROVEMENTS:
-#     1) Uses Protocol_Results.txt as SOURCE OF TRUTH (TCP / Named Pipes / File)
-#        - If protocol is File or missing -> SKIP (no DB access attempt)
-#     2) Safer DB repair flow:
-#        - Refuses if lane DB resolves to a SYSTEM DB name (master/model/msdb/tempdb)
-#        - Always attempts to restore MULTI_USER (and clear EMERGENCY if used) via finally blocks
-#     3) Works even if Invoke-Sqlcmd lacks -ConnectionString:
-#        - Auto-detects support
-#        - Falls back to .NET SqlClient execution when needed (PS 5.1 safe)
-#     4) Better probe:
-#        - Confirms connection AND checks that target DB exists + state before repair
-#     5) System DB health gate:
-#        - If tempdb not ONLINE, offers to restart SQL service on the lane, then re-check
-#        - If master not ONLINE -> skip with guidance
-#        - If model/msdb not ONLINE -> offers emergency deep repair (explicit prompt)
+# Parameters:
+#   - StoreNumber    [string]: store number (required)
+#   - CommandTimeout [int]: per-statement SQL timeout in seconds (default 900)
+#
+# Variables:
+#   - $script:FunctionResults['LaneNumToMachineName']: required input (lane map)
+#   - $script:FunctionResults['SqlModuleName']: required input (SQL module)
 #
 # Notes:
-#   - No nested functions.
-#   - Only uses Write_Log for messaging (matches your style).
-#   - CommandTimeout controls DBCC runtime.
+#   - Falls back to .NET SqlClient when Invoke-Sqlcmd lacks -ConnectionString.
+#   - If tempdb is not ONLINE it offers to restart the lane SQL service, then re-checks.
 # ===================================================================================================
 
 function Repair_LOC_Databases_On_Lanes
@@ -3910,83 +4608,27 @@ WHERE name = N'$dbNameQuoted';
 }
 
 # ===================================================================================================
-#                           FUNCTION: Retrieve_Nodes
+#                              FUNCTION: Retrieve_Nodes
 # ---------------------------------------------------------------------------------------------------
-# **Purpose:**
-#   The `Retrieve_Nodes` function is designed to count various entities within a 
-#   system, specifically **hosts**, **stores**, **lanes**, **servers**, and **scales**. It primarily retrieves 
-#   these nodes from the `TER_TAB` database table and additional tables as needed. If database access fails, it gracefully falls 
-#   back to a file system-based mechanism to obtain the counts. Additionally, the function updates 
-#   GUI labels to reflect the current nodes and stores the results in a shared hashtable for use 
-#   by other parts of the script. For scales, the function retrieves the IPNetwork information from the 
-#   TBS_SCL_ver520 table.
+# Description:
+#   Counts the store's hosts, lanes, backoffices, servers and scales and builds the
+#   lane-number-to-machine-name map. Prefers database queries (TER_TAB, TBS_SCL_ver520,
+#   server check) with a file-system fallback, caches the result per store, updates the
+#   GUI count labels and returns the full nodes object.
 #
-# **Parameters:**
-#   - `[string]$StoreNumber`
-#       - **Description:** Specifies the identifier for a particular store. This parameter is 
-#         **mandatory** when `$Mode` is set to `"Store"` and is ignored when `$Mode` is `"Host"`.
+# Parameters:
+#   - StoreNumber  [string]: store to count (required)
+#   - RefreshCache [switch]: ignore in-memory/file cache and re-query
 #
-# **Variables:**
-#   - **Initialization Variables:**
-#       - `$HostPath`: Base directory path where store and host directories are located.
-#       - `$NumberOfLanes`, `$NumberOfStores`, `$NumberOfHosts`, `$NumberOfServers`, `$NumberOfScales`: Counters initialized to `0`.
-#       - `$LaneMachineNames`: Array to hold lane identifiers.
-#       - `$LaneNumToMachineName`: Hashtable to map lane numbers to machine names.
-#       - `$ScaleCodeToIPInfo`: Hashtable to map scale identifiers to their IPNetwork values.
-#   - **Database Connection Variables:**
-#       - `$ConnectionString`: Retrieves the database connection string from the `FunctionResults` hashtable.
-#       - `$NodesFromDatabase`: Boolean flag indicating whether to retrieve counts from the database.
-#   - **Result Variables:**
-#       - `$Nodes`: Custom PowerShell object aggregating all nodes counts and related data.
-#   - **GUI-Related Variables:**
-#       - `$NodesHost`, `$NodesStore`, `$NodesScales`: GUI label controls displaying the counts.
-#       - `$form`: GUI form that needs to be refreshed to display updated counts.
+# Variables:
+#   - $script:FunctionResults: receives Nodes, LaneNumToMachineName, ScaleCodeToIPInfo and
+#     the NumberOfLanes/Servers/Backoffices/Scales counts
 #
-# **Workflow:**
-#   1. **Retrieve Database Connection String:**
-#      - Attempts to get the connection string from `FunctionResults`.
-#      - If unavailable, calls `Get_Database_Connection_String` to generate it.
-#      - Sets `$CountsFromDatabase` based on availability.
+# Writes:
+#   - Setup_Files\Retrieve_Nodes.txt (JSON cache with schema version)
 #
-#   2. **Database Counting Mechanism (`$CountsFromDatabase = $true`):**
-#      - **Mode: `"Host"`**
-#          - Counts distinct stores excluding store number `'999'`.
-#          - Checks for the existence of the host server.
-#      - **Mode: `"Store"`**
-#          - Validates the presence of `$StoreNumber`.
-#          - Retrieves and counts lanes for the specified store.
-#          - Maps lane numbers to machine names.
-#          - Retrieves scales from TER_TAB (count only) and additional scales from TBS_SCL_ver520 (which provides the IPNetwork info).
-#          - Checks for the existence of the server for the store.
-#      - **Error Handling:**
-#          - Logs warnings and falls back if any database queries fail.
-#
-#   3. **Fallback Counting Mechanism (`$CountsFromDatabase = $false`):**
-#      - **Mode: `"Host"`**
-#          - Counts store directories matching specific patterns.
-#          - Checks for the existence of the host directory.
-#      - **Mode: `"Store"`**
-#          - Validates the presence of `$StoreNumber`.
-#          - Counts lane and scale directories matching specific patterns.
-#          - Checks for the existence of the server directory for the store.
-#
-#   4. **Compile and Store Results:**
-#      - Creates a `[PSCustomObject]` containing all counts and related data.
-#      - Updates the `FunctionResults` hashtable with the count results.
-#
-#   5. **Update GUI Labels:**
-#      - If not in silent mode and GUI labels are available, updates them with the latest counts.
-#      - Refreshes the GUI form to display the updated counts.
-#
-#   6. **Return Value:**
-#      - Returns the `$Nodes` custom object containing all the count information.
-#
-# **Summary:**
-#   The `Retrieve_Nodes` function is a robust PowerShell utility that accurately counts system entities 
-#   such as hosts, stores, lanes, servers, and scales. It prioritizes retrieving counts from a database to 
-#   ensure accuracy and reliability but includes a fallback mechanism leveraging the file system for 
-#   resilience. Additionally, it integrates with a GUI to display real-time counts, stores results 
-#   for easy access by other script components, and retrieves IPNetwork information for scales from the TBS_SCL_ver520 table.
+# Returns:
+#   PSCustomObject with all counts and the lane/scale maps.
 # ===================================================================================================
 
 function Retrieve_Nodes
@@ -4465,13 +5107,30 @@ function Retrieve_Nodes
 	# ====================================================================================
 	if (-not $SqlModule -or $SqlModule -eq 'None')
 	{
-		Write_Log "No SQL PowerShell module found. Using .NET SqlClient fallback for node info." "yellow"
+		Write_Log "SQL PowerShell module not installed - using the built-in SQL client for node info." "yellow"
 	}
 	
 	# ====================================================================================
 	# 1. PRIMARY: LOAD FROM DATABASE (TER_TAB, TBS_SCL_ver520)
 	# ====================================================================================
-	if ($ConnectionString)
+	# The lane query targets this store's rows (TER_TAB WHERE F1056 = store number), so
+	# a DB connection is only useful when the store number is actually known. Without the
+	# storeman folder the store number is 'N/A' and the connection (if any) is a
+	# localhost/placeholder target - opening it just burns ~15s on timeouts for a query
+	# that can never return valid lanes. The local-file fallbacks below run instead.
+	$hasUsableStoreNumber = $false
+	try
+	{
+		$hasUsableStoreNumber = (([string]$StoreNumber -replace '[^\d]', '').Length -gt 0)
+	}
+	catch { }
+	
+	if ($ConnectionString -and -not $hasUsableStoreNumber)
+	{
+		Write_Log "Store number unknown - skipping the store database lookup (no store to query against). Using local files instead." "yellow"
+	}
+	
+	if ($ConnectionString -and $hasUsableStoreNumber)
 	{
 		try
 		{
@@ -4486,7 +5145,17 @@ function Retrieve_Nodes
 		$startupConnectionString = $ConnectionString
 		if ($invokeSqlCmd) { $supportsConnStr = $invokeSqlCmd.Parameters.ContainsKey('ConnectionString') }
 		if ($invokeSqlCmd) { $supportsConnTimeout = $invokeSqlCmd.Parameters.ContainsKey('ConnectionTimeout') }
-		else { Write_Log "Invoke-Sqlcmd command not found in module $SqlModule. Using .NET SqlClient fallback." "yellow" }
+		else
+		{
+			if ($SqlModule -and $SqlModule -ne 'None')
+			{
+				Write_Log "SQL module '$SqlModule' not available on this machine - using the built-in SQL client." "yellow"
+			}
+			else
+			{
+				Write_Log "SQL module not available on this machine - using the built-in SQL client." "yellow"
+			}
+		}
 		
 		$invokeStartupQuery = {
 			param(
@@ -4544,12 +5213,19 @@ function Retrieve_Nodes
 		}
 		
 		$NodesFromDatabase = $true
+		$safeStoreNumber = ($StoreNumber -replace '[^\d]', '')
+		if (-not [string]::IsNullOrWhiteSpace($safeStoreNumber))
+		{
+			if ($safeStoreNumber.Length -le 3) { $safeStoreNumber = ([int]$safeStoreNumber).ToString('000') }
+			else { $safeStoreNumber = ([int]$safeStoreNumber).ToString('0000') }
+		}
+		else { $safeStoreNumber = '000' }
 		try
 		{
 			$queryTerTab = @"
 SELECT F1057, F1058, F1125, F1169
 FROM TER_TAB
-WHERE F1056 = '$StoreNumber'
+WHERE F1056 = '$safeStoreNumber'
 "@
 			$terTabResult = & $invokeStartupQuery $queryTerTab $startupQueryTimeoutSeconds
 			
@@ -5786,24 +6462,27 @@ WHERE Active = 'Y'
 }
 
 # ===================================================================================================
-#                                   FUNCTION: Retrive_Transactions
+#                              FUNCTION: Retrive_Transactions
 # ---------------------------------------------------------------------------------------------------
-# Purpose:
-#   PowerShell version of trs_clt_reprocess.sqi:
-#     - Builds a per-lane transaction list table (SAL_HDR_SUS@TER) from SAL_HDR
-#     - Filters by date range (START/STOP) and transaction range (FIL1/FIL2)
+# Description:
+#   PowerShell port of trs_clt_reprocess.sqi: rebuilds the per-lane transaction list table
+#   (SAL_HDR_SUS@TER) from SAL_HDR for a chosen date range and transaction range. Connects
+#   per the Start_Lane_Protocol_Jobs preference (TCP / Named Pipes / File); lanes on File
+#   protocol or any SQL failure fall back to writing trs_clt_reprocess.sqi to the lane XE folder.
 #
-# Connection correctness:
-#   - Uses Get_All_Lanes_Database_Info to obtain DBName + DBSERVER-derived TCP/NP targets
-#   - Honors Start_Lane_Protocol_Jobs preference: 'TCP' | 'Named Pipes' | 'File'
+# Parameters:
+#   - StoreNumber  [string]: store to process (required)
+#   - ForceSQI     [switch]: skip SQL and write the .sqi file for every lane
 #
-# Direct connection requirement:
-#   - Uses Invoke-Sqlcmd with -ServerInstance and -Database only
+# Variables:
+#   - $script:OfficePath: Storeman office root (resolved and back-filled)
+#   - $script:FunctionResults['SqlModuleName']: SQL module to import when Invoke-Sqlcmd is missing
 #
-# Fallback:
-#   - If protocol is File OR SQL fails => writes:
-#       XF<Store><Lane>\trs_clt_reprocess.sqi
-#     in the exact format requested.
+# Writes:
+#   - XF<Store><Lane>\trs_clt_reprocess.sqi on File-protocol / failed lanes
+#
+# Returns:
+#   PSCustomObject with a per-lane Summary (method, deleted/inserted counts).
 # ===================================================================================================
 
 function Retrive_Transactions
@@ -6143,7 +6822,7 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 				
 				try
 				{
-					$res = Invoke-Sqlcmd -ServerInstance $a.Server -Database $dbName -Query $sql -ErrorAction Stop
+					$res = Invoke-Sqlcmd -ServerInstance $a.Server -Database $dbName -Query $sql -QueryTimeout 120 -ErrorAction Stop
 					
 					# Robust parse
 					$row = $null
@@ -6273,22 +6952,24 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 }
 
 # ===================================================================================================
-# 									FUNCTION: Clear_XE_Folder  (FULL FIX)
+#                              FUNCTION: Clear_XE_Folder
 # ---------------------------------------------------------------------------------------------------
-# Behavior (per your requirement):
-#   STARTUP CLEAN:
-#     - Deletes EVERYTHING in XE EXCEPT valid S*.??? health files.
-#     - ALSO deletes FATAL* on startup (clears old errors).
+# Description:
+#   Keeps the lane XE (urgent messages) folder clean. At startup it deletes everything except
+#   valid S*.??? health files (also clearing old FATAL* errors), then starts a background
+#   watcher job that keeps newly arriving FATAL* files and deletes everything else except
+#   current health files on a regular sweep.
 #
-#   RUNTIME MONITOR (FileSystemWatcher):
-#     - Keeps NEW FATAL* while running.
-#     - Deletes everything else except the same valid health files.
+# Parameters:
+#   - FolderPath           [string]: XE folder (default <OfficePath>\XE<Store>901)
+#   - SweepIntervalSeconds [int]: periodic sweep interval in seconds, 2-3600 (default 30)
+#   - HealthMaxAgeDays     [int]: max age in days of health files kept, 1-3650 (default 30)
 #
-# Structure:
-#   - No nested functions.
-#   - Always runs (replaces existing watcher job).
-#   - ONE shared scriptblock processor used by events + sweep.
-#   - PS 5.1 compatible.
+# Returns:
+#   The watcher job when started; $null if the folder is missing or the job fails.
+#
+# Writes:
+#   - Deletes files under the XE folder (everything except valid health files)
 # ===================================================================================================
 
 function Clear_XE_Folder
@@ -6595,16 +7276,20 @@ function Clear_XE_Folder
 }
 
 # ===================================================================================================
-#                                       SECTION: Generate SQL Scripts
+#                              FUNCTION: Generate_SQL_Scripts
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Generates SQL scripts for Lanes and Stores, including memory configuration and maintenance tasks.
-#   Updated behavior:
-#     - Always rebuilds the expected SQL text in memory from current script variables
-#     - Rewrites generated files if:
-#         1) file is missing
-#         2) file is older than 30 days
-#         3) file content differs from the newly generated script text
+#   Generates the SQL setup/maintenance scripts for lanes and the store server (memory
+#   configuration, SQL user, schedules) from the current script variables. The five scripts are
+#   held in $script: variables for the in-process consumers; nothing is written to disk.
+#
+# Parameters:
+#   - StoreNumber  [string]: store number (normalized to 3 digits)
+#
+# Variables:
+#   - $script:FunctionResults: reads ConnectionString/DBSERVER/DBNAME
+#   - Writes $script:LaneSQLScript, $script:LaneSQLFiltered, $script:LaneSQLScript_Mailslot,
+#     $script:ServerSQLScript and $script:ScheduleServerScript for the maintenance schedulers
 # ===================================================================================================
 
 function Generate_SQL_Scripts
@@ -6613,27 +7298,7 @@ function Generate_SQL_Scripts
 		[string]$StoreNumber
 	)
 	
-	# ------------------------------------------------------------------------------------------------
-	# Output folder = $script:SetupFiles\SQL_Scripts
-	# Files are rewritten only when missing, stale, or different from the current generated content
-	# ------------------------------------------------------------------------------------------------
-	$ScriptRewriteMaxDays = 30
-	
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
-	
-	$outDir = Join-Path $script:SetupFiles 'SQL_Scripts'
-	try
-	{
-		if (-not (Test-Path $outDir))
-		{
-			New-Item -Path $outDir -ItemType Directory -Force | Out-Null
-		}
-	}
-	catch
-	{
-		Write_Log "Generate_SQL_Scripts: Failed to create SQL output folder: $outDir" "red"
-		return
-	}
 	
 	# Normalize store number (existing behavior preserved: 3-digit format)
 	if (-not [string]::IsNullOrWhiteSpace($StoreNumber) -and $StoreNumber -match '^\d+$')
@@ -6651,25 +7316,10 @@ function Generate_SQL_Scripts
 		return
 	}
 	
+
 	# ------------------------------------------------------------------------------------------------
-	# File set
-	# ------------------------------------------------------------------------------------------------
-	$laneFile = Join-Path $outDir "Lane.sql"
-	$laneFilteredFile = Join-Path $outDir "Lane_Filtered.sql"
-	$laneMailslotFile = Join-Path $outDir "Lane_Mailslot.sql"
-	$serverFile = Join-Path $outDir "Server.sql"
-	$scheduleFile = Join-Path $outDir "Server_Schedule.sql"
-	
-	# Track paths for use elsewhere
-	$script:FunctionResults['LaneSqlScriptPath'] = $laneFile
-	$script:FunctionResults['LaneSqlFilteredScriptPath'] = $laneFilteredFile
-	$script:FunctionResults['LaneSqlMailslotScriptPath'] = $laneMailslotFile
-	$script:FunctionResults['ServerSqlScriptPath'] = $serverFile
-	$script:FunctionResults['ServerScheduleSqlScriptPath'] = $scheduleFile
-	
-	# ------------------------------------------------------------------------------------------------
-	# Build scripts from CURRENT variables every time
-	# This ensures the cached files are updated if the main script variables changed
+	# Build scripts from CURRENT variables every time so the $script: content variables
+	# always reflect the live connection/store context for the maintenance consumers.
 	# ------------------------------------------------------------------------------------------------
 	$ConnectionString = $script:FunctionResults['ConnectionString']
 	$defaultStoreDbName = "STORESQL"
@@ -7120,91 +7770,29 @@ ALTER DATABASE $storeDbName SET RECOVERY SIMPLE
 	
 	$script:ScheduleServerScript = $ScheduleServerScript
 	
-	# ------------------------------------------------------------------------------------------------
-	# Write files only when needed:
-	#   - missing
-	#   - older than ScriptRewriteMaxDays
-	#   - content differs from current generated script
-	# ------------------------------------------------------------------------------------------------
-	$utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
-	
-	try
-	{
-		$targets = @(
-			@{ Path = $laneFile; Content = $script:LaneSQLScript; Name = "Lane.sql" },
-			@{ Path = $laneFilteredFile; Content = $script:LaneSQLFiltered; Name = "Lane_Filtered.sql" },
-			@{ Path = $laneMailslotFile; Content = $script:LaneSQLScript_Mailslot; Name = "Lane_Mailslot.sql" },
-			@{ Path = $serverFile; Content = $script:ServerSQLScript; Name = "Server.sql" },
-			@{ Path = $scheduleFile; Content = $script:ScheduleServerScript; Name = "Server_Schedule.sql" }
-		)
-		
-		foreach ($target in $targets)
-		{
-			$shouldWrite = $false
-			$reason = $null
-			$existingContent = $null
-			
-			if (-not (Test-Path $target.Path))
-			{
-				$shouldWrite = $true
-				$reason = "missing"
-			}
-			else
-			{
-				try
-				{
-					$fileItem = Get-Item -LiteralPath $target.Path -ErrorAction Stop
-					$fileAgeDays = ((Get-Date) - $fileItem.LastWriteTime).TotalDays
-					
-					if ($fileAgeDays -gt $ScriptRewriteMaxDays)
-					{
-						$shouldWrite = $true
-						$reason = "older than $ScriptRewriteMaxDays days"
-					}
-					else
-					{
-						$existingContent = [System.IO.File]::ReadAllText($target.Path)
-						
-						if ($existingContent -ne $target.Content)
-						{
-							$shouldWrite = $true
-							$reason = "content differs from current generated script"
-						}
-					}
-				}
-				catch
-				{
-					# If the file cannot be read/checked, force rewrite
-					$shouldWrite = $true
-					$reason = "read/check failed"
-				}
-			}
-			
-			if ($shouldWrite)
-			{
-				[System.IO.File]::WriteAllText($target.Path, $target.Content, $utf8NoBOM)
-				#	Write_Log "Updated SQL script: $($target.Name) ($reason)." "darkcyan"
-			}
-		}
-	}
-	catch
-	{
-		Write_Log "Generate_SQL_Scripts: Failed while writing SQL scripts. $($_.Exception.Message)" "red"
-	}
+
 }
 
 # ===================================================================================================
-#                        FUNCTION: Get_Table_Aliases
+#                              FUNCTION: Get_Table_Aliases
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Returns hashtable mapping table aliases to table names.
-#   Uses hardcoded mapping if SMSVersion is within supported range,
-#   else runs dynamic scan of *_Load.sql files.
+#   Returns a hashtable mapping SQL table aliases to table names. Uses a hardcoded mapping
+#   when the SMS version is in the supported range, otherwise scans the Office Load
+#   *_Load.sql files dynamically. Cached in memory for the launch and in a small file.
 #
-# CACHING (small + clean):
-#   - Cache: $script:SetupFiles\Get_Table_Aliases.txt
-#   - Reuse in-memory values first, then the cache file for the rest of the launch
-#   - CHANGE: Cache file stores ONLY AliasHash + TableHash (NO Aliases/Context/@CREATE noise)
+# Parameters:
+#   - RefreshCache  [switch]: ignore in-memory/file cache and rebuild
+#
+# Variables:
+#   - $script:FunctionResults: stores the alias/table hashes (Get_Table_Aliases bucket)
+#   - $LoadPath / $OfficePath: location of the Load SQL files (dynamic mode)
+#
+# Returns:
+#   Hashtable alias -> table name.
+#
+# Writes:
+#   - Setup_Files\Get_Table_Aliases.txt (JSON cache: AliasHash + TableHash only)
 # ===================================================================================================
 
 function Get_Table_Aliases
@@ -7363,7 +7951,7 @@ function Get_Table_Aliases
 	catch { $loadSignature = $null }
 	
 	# ------------------------------------------------------------------------------------------------
-	# Hardcoded alias → table mapping
+	# Hardcoded alias [?][?][?] table mapping
 	# ------------------------------------------------------------------------------------------------
 	$AliasToTable = @{
 		'ALT'	   = 'ALT_TAB'
@@ -7408,7 +7996,7 @@ function Get_Table_Aliases
 		'VENDOR'   = 'VENDOR_TAB'
 	}
 	
-	# Build reverse (table → alias)
+	# Build reverse (table [?][?][?] alias)
 	$TableToAlias = @{ }
 	foreach ($k in $AliasToTable.Keys)
 	{
@@ -7550,28 +8138,27 @@ function Get_Table_Aliases
 }
 
 # ===================================================================================================
-#                            FUNCTION: Get_All_VNC_Passwords
+#                              FUNCTION: Get_All_VNC_Passwords
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Scans all specified lanes for the UltraVNC configuration file (UltraVNC.ini, any case) in the
-#   default install locations (Program Files and Program Files (x86)). Extracts the encrypted VNC
-#   password and stores results in a hashtable keyed by machine name. Handles all filename case 
-#   variations. Designed for remote auditing of VNC password status across all lanes.
+#   Scans all lanes, backoffices and scales for the UltraVNC configuration file (UltraVNC.ini,
+#   any case) in the standard install locations, extracts the encrypted VNC password and
+#   returns a machine-name -> password hashtable. Uses a fixed default password for nodes
+#   where no UltraVNC.ini can be read.
 #
 # Parameters:
-#   - LaneNumToMachineName   [hashtable]: LaneNumber => MachineName mapping.
+#   - LaneNumToMachineName       [hashtable]: lane number -> machine name
+#   - ScaleCodeToIPInfo          [hashtable]: scale code -> scale info object
+#   - BackofficeNumToMachineName [hashtable]: backoffice number -> machine name
 #
-# Details:
-#   - Searches for UltraVNC.ini with any capitalization in both standard install folders.
-#   - Uses PowerShell remoting (Invoke-Command) to access remote lane files.
-#   - Finds the "passwd=" entry in the INI (case-insensitive, first match).
-#   - Returns a hashtable: MachineName => Password (or $null if not found).
-#   - Uses Write_Log for status, progress, and error messages.
+# Variables:
+#   - $script:DefaultVNCPassword: fixed default for stock-password nodes (e.g. Ishida)
 #
-# Usage:
-#   $LanePasswords = Get-AllLaneVNCPasswords -LaneNumToMachineName $LaneNumToMachineName
+# Returns:
+#   Hashtable MachineName => encrypted password (or $null when not found).
 #
-# Author: Alex_C.T
+# Writes:
+#   - $script:FunctionResults['AllVNCPasswords']
 # ===================================================================================================
 
 function Get_All_VNC_Passwords
@@ -7659,11 +8246,15 @@ function Get_All_VNC_Passwords
 	
 	if (($NodeList.Count -eq 0) -and ($BizerbaScales.Count -eq 0)) { throw "No machines provided for password extraction." }
 	
-	# 2. Ping regular nodes first
+	# 2. Ping regular nodes first (v2.6.9: parallel probe with a concurrency
+	# cap - the old serial Test-Connection loop could block for minutes when
+	# several nodes were down)
+	$onlineProbe = @{}
+	if ($NodeList.Count -gt 0) { $onlineProbe = Test-Hosts_Parallel -Targets $NodeList }
 	$OnlineNodes = @()
 	foreach ($node in $NodeList)
 	{
-		if (Test-Connection -ComputerName $node -Count 1 -Quiet -ErrorAction SilentlyContinue)
+		if ($onlineProbe[$node] -eq 'OK')
 		{
 			$OnlineNodes += $node
 		}
@@ -7682,8 +8273,23 @@ function Get_All_VNC_Passwords
 		while ($jobs.Count -ge $MaxConcurrentJobs)
 		{
 			$done = Wait-Job -Job $jobs -Any -Timeout 10
-			foreach ($j in $done) { Remove-Job $j -Force }
-			$jobs = $jobs | Where-Object { $_.State -eq "Running" }
+			if ($done)
+			{
+				# Receive BEFORE removing: Remove-Job on a finished job discards
+				# its output, which silently dropped these machines' VNC passwords.
+				# -Any returns ONE job per wait, so only the reported jobs are
+				# processed here; everything else stays in the pool for the
+				# final Wait-Job/collect below (filtering by state here also
+				# dropped jobs that finished between waits).
+				$processedIds = @($done | ForEach-Object { $_.Id })
+				foreach ($j in @($done))
+				{
+					$doneResult = Receive-Job $j
+					if ($doneResult -and $doneResult.Machine) { $AllVNCPasswords[$doneResult.Machine] = $doneResult.Password }
+					Remove-Job $j -Force
+				}
+				$jobs = @($jobs | Where-Object { $processedIds -notcontains $_.Id })
+			}
 		}
 		$jobs += Start-Job -Name ("GetAllVNCPasswords_{0}" -f $machineName) -ArgumentList $machineName, $uvncFolders -ScriptBlock {
 			param ($machineName,
@@ -7693,7 +8299,7 @@ function Get_All_VNC_Passwords
 			{
 				try
 				{
-					$iniFiles = Invoke-Command -ComputerName $machineName -ScriptBlock {
+					$iniFiles = Invoke-Command -ComputerName $machineName -TimeoutSec 30 -ScriptBlock {
 						param ($dir)
 						if (Test-Path $dir)
 						{
@@ -7707,7 +8313,7 @@ function Get_All_VNC_Passwords
 					} -ArgumentList ("C:\" + $folder.Substring(3)) -ErrorAction Stop
 					foreach ($iniFile in $iniFiles)
 					{
-						$content = Invoke-Command -ComputerName $machineName -ScriptBlock {
+						$content = Invoke-Command -ComputerName $machineName -TimeoutSec 30 -ScriptBlock {
 							param ($path)
 							if (Test-Path $path)
 							{
@@ -7758,7 +8364,17 @@ function Get_All_VNC_Passwords
 		}
 	}
 	
-	Wait-Job -Job $jobs | Out-Null
+	# Only wait if there is anything to wait for: when the throttle loop above
+	# has already drained all jobs, $jobs is empty/null and Wait-Job throws a
+	# parameter validation error.
+	if (@($jobs).Count -gt 0)
+	{
+		$null = Wait-Job -Job $jobs -Timeout 120
+		foreach ($j in @($jobs))
+		{
+			if ($j.State -ne 'Completed') { Stop-Job -Job $j -ErrorAction SilentlyContinue }
+		}
+	}
 	
 	foreach ($j in $jobs)
 	{
@@ -7833,23 +8449,22 @@ function Get_All_VNC_Passwords
 #                              FUNCTION: Insert_Test_Item
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Inserts a test item (PLU is chosen from 0020077700000, 0020777700000, 0027777700000) into:
-#   - SCL_TAB, OBJ_TAB, POS_TAB, PRICE_TAB, and SCL_TXT_TAB
-#   Logic:
-#     * We DELETE existing rows for the chosen PLU/F267 first to keep the test rows deterministic.
-#     * Then we INSERT fixed values (same semantics as your last working version).
+#   Inserts a deterministic test item into the store database: picks one of three test PLUs,
+#   deletes any existing rows for it, then inserts fixed rows into SCL_TAB, OBJ_TAB, POS_TAB,
+#   PRICE_TAB and SCL_TXT_TAB. Uses Invoke-Sqlcmd with the connection string from
+#   Get_Store_And_Database_Info, falling back to -ServerInstance/-Database.
 #
-# Module/Connectivity Handling (integrated with Get_Store_And_Database_Info):
-#   - Uses $script:FunctionResults['SqlModuleName'] to decide the best path.
-#   - Tries Invoke-Sqlcmd with -ConnectionString if SqlServer module is available and probe succeeds.
-#   - If unsupported or probe fails, FALLS BACK to -ServerInstance/-Database with
-#     $script:FunctionResults['DBSERVER']/['DBNAME'] (older Windows / SQLPS path).
+# Parameters:
+#   - ConnectionString         [string]: defaults to the FunctionResults connection string
+#   - Silent                   [switch]: suppress Write_Log output
+#   - QueryTimeoutSeconds      [int]: SQL query timeout in seconds (default 15)
+#   - ConnectionTimeoutSeconds [int]: SQL connect timeout in seconds (default 5)
 #
-# Notes:
-#   - Write_Log is used for colored status lines.
-#   - If no module provides Invoke-Sqlcmd, we log and abort (keeps behavior predictable).
+# Variables:
+#   - $script:FunctionResults: reads ConnectionString, DBSERVER, DBNAME, SqlModuleName
 #
-# Author: Alex_C.T
+# Writes:
+#   - store database (SCL_TAB, OBJ_TAB, POS_TAB, PRICE_TAB, SCL_TXT_TAB)
 # ===================================================================================================
 
 function Insert_Test_Item
@@ -8229,23 +8844,26 @@ VALUES
 #                              FUNCTION: Get_Remote_Machine_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Windows Form picker -> run concurrent probes -> write per-group text files and expose results.
+#   Collects hardware/software info from selected lanes, scales and backoffices: runs
+#   concurrent WMI/CIM probes (plus an optional registry read via REG.EXE) per node, with an
+#   INI-based fallback for lanes/backoffices. Writes per-group info files and populates
+#   $script:LaneHardwareInfo / $script:ScaleHardwareInfo / $script:BackofficeHardwareInfo.
 #
-# Key behavior (PS 5.1-safe):
-#   • Selection UI is provided by your Show_Node_Selection_Form (not modified here).
-#   • For each selected node:
-#       WMI  →  CIM  →  (optional) PS-Session/Registry  →  REG.EXE (starts RemoteRegistry, then restores it)
-#   • INI-based fallback augments fields when present (for Lanes/BackOffices).
-#   • Writes Info files to Desktop\Lanes|Scales|BackOffices; logs incremental progress.
-#   • Populates:
-#         $script:LaneHardwareInfo, $script:ScaleHardwareInfo, $script:BackofficeHardwareInfo
-#   • Throttles concurrency via $maxConcurrentJobs.
+# Parameters:
+#   - RunInBackground       [switch]: run as a background job
+#   - SilentBackground      [switch]: background mode without box logging
+#   - InternalBackgroundJob [switch]: called from inside the background job itself
+#   - UseAllAvailableNodes  [switch]: probe every discovered node (skip the selection form)
+#   - SelectedLanes / SelectedScales / SelectedBackoffices [object[]]: pre-selected nodes
+#
+# Variables:
+#   - $script:FunctionResults: lane/scale/backoffice maps and StoreNumber (input)
+#
+# Writes:
+#   - Info text files under Desktop\Lanes, Desktop\Scales and Desktop\BackOffices
 #
 # Notes:
-#   - Assumes these script vars already exist elsewhere in your toolchain:
-#       $script:FunctionResults (LaneNumToMachineName, ScaleCodeToIPInfo, BackofficeNumToMachineName, StoreNumber)
-#       $script:DbsPath  (server Office\Dbs path for BackOffice INIs)
-#   - Requires admin rights on remotes for WMI/CIM/REG/SC operations.
+#   - Requires admin rights on the remote machines for WMI/CIM/REG/SC operations.
 # ===================================================================================================
 
 function Get_Remote_Machine_Info
@@ -8870,10 +9488,11 @@ function Get_Remote_Machine_Info
 					$regResult = $null
 					try
 					{
-						$session = New-PSSession -ComputerName $NodeName -ErrorAction SilentlyContinue
+						$sessionOption = New-PSSessionOption -ConnectionTimeout 15000 -OpenTimeout 15000
+						$session = New-PSSession -ComputerName $NodeName -SessionOption $sessionOption -ErrorAction SilentlyContinue
 						if ($session)
 						{
-							$regResult = Invoke-Command -Session $session -ScriptBlock {
+							$regResult = Invoke-Command -Session $session -TimeoutSec 30 -ScriptBlock {
 								$out = [PSCustomObject]@{
 									SystemManufacturer = $null
 									SystemProductName  = $null
@@ -8940,6 +9559,7 @@ function Get_Remote_Machine_Info
 					}
 					catch
 					{
+						if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
 						$regResult = [PSCustomObject]@{
 							SystemManufacturer = $null
 							SystemProductName  = $null
@@ -9295,11 +9915,16 @@ function Get_Remote_Machine_Info
 }
 
 # ===================================================================================================
-#                       FUNCTION: Show_Lane_SQL_VNC_Service_Statuses
+#                              FUNCTION: Show_Lane_SQL_VNC_Service_Statuses
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts for lane selection, then opens a styled popup that checks SQL and VNC services on the
-#   selected lanes in the background and fills the grid as results arrive.
+#   Opens a styled popup that checks the SQL and VNC services on all lanes of the store in
+#   the background and fills a grid as results arrive. Shows a message box when no usable
+#   lanes are found.
+#
+# Variables:
+#   - $script:FunctionResults['StoreNumber']: store header text
+#   - $script:FunctionResults['LaneNumToMachineName']: lane map (input)
 # ===================================================================================================
 
 function Show_Lane_SQL_VNC_Service_Statuses
@@ -10168,14 +10793,19 @@ function Show_Lane_SQL_VNC_Service_Statuses
 }
 
 # ===================================================================================================
-#                                  SECTION: Fix_Journal
+#                              FUNCTION: Fix_Journal
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Processes EJ files within a ZX folder to correct specific lines based on a user-provided date.
-#   - Prompts the user to select a date using a Windows Form.
-#   - Constructs the ZX folder path.
-#   - Identifies related EJ files based on the date/store data.
-#   - Repairs lines in matching EJ files.
+#   Repairs journal (EJ) files in the store ZX folder: prompts for a date in a dialog, finds
+#   the related EJ files for that date/store, corrects the affected lines, backs up each file
+#   and writes the fixed content back in ANSI encoding.
+#
+# Parameters:
+#   - OfficePath   [string]: Storeman Office base path (required)
+#   - StoreNumber  [string]: store number, e.g. 001 (required)
+#
+# Writes:
+#   - ZX folder EJ files (fixed lines) plus a backup file per edited file
 # ===================================================================================================
 
 function Fix_Journal
@@ -10383,12 +11013,20 @@ function Fix_Journal
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Process_Server
+#                              FUNCTION: Process_Server
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Executes the full Server SQL maintenance routine. Reads and parses the specified SQL script
-#   file or variable, prompts for section selection if desired, executes each section with retries,
-#   and logs results to the console and file. Fails gracefully and outputs summary banners at start/end.
+#   Runs the full server (store) SQL maintenance: takes the SQL script from the
+#   $script:ServerSQLScript variable or a file, optionally prompts for section selection,
+#   executes each section with retries and logs a per-section summary at the end.
+#
+# Parameters:
+#   - StoresqlFilePath  [string]: SQL file to run instead of the script variable
+#   - PromptForSections [switch]: show the section selection dialog first
+#
+# Variables:
+#   - $script:ServerSQLScript: default SQL script text
+#   - $script:FunctionResults['DBNAME'] / ['DBSERVER']: target database/server
 # ===================================================================================================
 
 function Process_Server
@@ -10420,8 +11058,18 @@ function Process_Server
 	$server = $script:FunctionResults['DBSERVER']
 	
 	# ------------------------------------------------------------------------------------------------
-	# Load SQL script content (from variable or file)
+	# Load SQL script content. Primary source is the in-memory $script:ServerSQLScript
+	# variable, set by Generate_SQL_Scripts during warmup. If it is not ready yet (the
+	# user acted before the 'Generating SQL scripts' warmup step ran), generate it on
+	# demand - pure CPU (~2 ms) and needs only the already-resolved store/DB info. The
+	# file fallback below is only for an explicitly provided standalone .sqi.
 	# ------------------------------------------------------------------------------------------------
+	if ([string]::IsNullOrWhiteSpace($sqlScript))
+	{
+		try { Generate_SQL_Scripts -StoreNumber $script:StoreNumber | Out-Null } catch { }
+		$sqlScript = $script:ServerSQLScript
+	}
+	
 	if (-not [string]::IsNullOrWhiteSpace($sqlScript))
 	{
 		Write_Log "Executing SQL script from variable..." "blue"
@@ -10571,13 +11219,17 @@ function Process_Server
 #                              FUNCTION: Delete_Files
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Deletes specified files within a directory, supporting wildcards and exclusions.
-#   Can be executed synchronously or as a background job to prevent interruption of the main script.
-#   Parameters:
-#     - Path: The directory path where files will be deleted.
-#     - SpecifiedFiles: Specific file names or patterns to delete. Wildcards are supported.
-#     - Exclusions: File names or patterns to exclude from deletion. Wildcards are supported.
-#     - AsJob: (Optional) Runs the deletion process as a background job.
+#   Deletes files/folders in a directory, supporting wildcards and exclusions. Can run
+#   synchronously or as a background job so the main script is not interrupted.
+#
+# Parameters:
+#   - Path           [string]: directory to delete from (required)
+#   - SpecifiedFiles [string[]]: name/patterns to delete (wildcards supported)
+#   - Exclusions     [string[]]: name/patterns to keep (wildcards supported)
+#   - AsJob          [switch]: run the deletion as a background job
+#
+# Returns:
+#   Number of items deleted.
 # ===================================================================================================
 
 function Delete_Files
@@ -10685,15 +11337,21 @@ function Delete_Files
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Process_Lanes
+#                              FUNCTION: Process_Lanes
 # ---------------------------------------------------------------------------------------------------
-# FIXES APPLIED:
-#   1) Prevents "Format of the initialization string ... index 0" by NEVER overwriting $workingConnStr
-#      with "File" for logging (previously made the protocol path run with Server="File"...)
-#   2) Makes laneInfo robust when returned as PSCustomObject (from JSON cache) vs hashtable:
-#      converts PSCustomObject -> hashtable so $laneInfo['DBName'] etc always work.
-#   3) Guarantees -ServerInstance fallback never receives empty -Database (defaults to LANESQL when missing).
-#   4) Normalizes lane numbers so XF paths and protocol keys always use 3-digit lane numbers.
+# Description:
+#   Runs the per-lane SQL maintenance (LANESQL script) for the lanes of a store. Resolves
+#   each lane's DB server/name from the cached lane info, honors the cached protocol
+#   preference (TCP / Named Pipes / File) and records the processed lanes for the summary.
+#
+# Parameters:
+#   - StoreNumber     [string]: store to process
+#   - ProcessAllLanes [switch]: process every lane of the store
+#
+# Variables:
+#   - $script:FunctionResults: LaneNumToMachineName, MachineNameToLaneNum, SqlModuleName (input)
+#   - $script:ProcessedLanes: lanes processed so far (output)
+#   - $OfficePath: Storeman Office root (XF lane folders)
 # ===================================================================================================
 
 function Process_Lanes
@@ -11138,15 +11796,15 @@ ALTER ROLE db_owner ADD MEMBER [$currentLogin];
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Repair_Windows
+#                              FUNCTION: Repair_Windows
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Performs various system maintenance tasks to repair Windows.
-#   Updates Windows Defender signatures, runs a full scan, executes DISM commands,
-#   runs System File Checker, performs disk cleanup, optimizes all fixed drives by trimming SSDs or defragmenting HDDs,
-#   and schedules a disk check.
-#   Uses Write_Log to provide updates after each command execution.
-#   Author: Alex_C.T
+#   Local Windows repair suite with a confirmation prompt and a checkbox form to pick the
+#   operations: Defender update + full scan, DISM, SFC, disk cleanup, drive optimization
+#   (SSD trim / HDD defrag) and scheduled Check Disk. Logs progress after each step.
+#
+# Writes:
+#   - local system state (Defender, DISM, SFC, cleanup, drive optimization, scheduled chkdsk)
 # ===================================================================================================
 
 function Repair_Windows
@@ -11362,24 +12020,23 @@ function Repair_Windows
 }
 
 # ===================================================================================================
-#                                     FUNCTION: Update_Lane_Config
+#                              FUNCTION: Update_Lane_Config
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Processes SQL load files in the \\localhost\storeman\office\Load directory.
-#   For each XF lane folder corresponding to the specified StoreNumber and selected Lanes,
-#   it copies and/or generates lane-specific .sql files strictly in ANSI (Windows-1252) encoding
-#   with CRLF line endings.
+#   Updates the SQL load files for the selected lanes of a store: for each XF lane folder it
+#   copies run_load.sql and generates lnk_load.sql, sto_load.sql and ter_load.sql, strictly
+#   in ANSI (Windows-1252) encoding with CRLF line endings and no BOM.
 #
-#   The created files are:
-#       - run_load.sql (copied as-is from the script below)
-#       - lnk_load.sql (dynamically generated)
-#       - sto_load.sql (dynamically generated)
-#       - ter_load.sql (dynamically generated)
+# Parameters:
+#   - StoreNumber  [string]: store to process (required)
 #
-#   All files are written with:
-#       - Windows-1252 encoding
-#       - CRLF line endings
-#       - No BOM
+# Variables:
+#   - $LoadPath: Office\Load directory with the source SQL files
+#   - $script:FunctionResults['LaneMachineNames']: all-lane list when "All" is selected
+#   - $script:ProcessedLanes: lanes processed so far
+#
+# Writes:
+#   - run_load.sql / lnk_load.sql / sto_load.sql / ter_load.sql in each selected XF lane folder
 # ===================================================================================================
 
 function Update_Lane_Config
@@ -11622,7 +12279,7 @@ ORDER BY ORDINAL_POSITION
 					Write_Log "Dropped and recreated $table on lane $laneNumber via protocol." "green"
 					
 					# Get column names for the insert
-					$schema = Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$table' ORDER BY ORDINAL_POSITION"
+					$schema = Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$table' ORDER BY ORDINAL_POSITION" -QueryTimeout 30
 					$colNames = $schema | ForEach-Object { $_.COLUMN_NAME }
 					
 					$successfulRows = 0
@@ -11758,12 +12415,21 @@ ORDER BY ORDINAL_POSITION
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Pump_Tables
+#                              FUNCTION: Pump_Tables
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Allows a user to select a subset of tables (from Get_Table_Aliases) to extract from SQL Server
-#   and copy to the specified lanes or hosts. Uses cached protocol (from $script:LaneProtocols)
-#   for each lane to determine protocol or file copy. Uses LaneNumToMachineName mapping.
+#   Extracts selected tables (from Get_Table_Aliases) from the store SQL Server and copies
+#   the generated .sql files to the selected lanes. Uses the cached per-lane protocol
+#   ($script:LaneProtocols) to push lanes over SQL where possible and falls back to a file
+#   copy for the rest. Each selected table is generated once, then copied to many lanes.
+#
+# Parameters:
+#   - StoreNumber  [string]: store to process (required)
+#
+# Variables:
+#   - $script:FunctionResults: LaneNumToMachineName / MachineNameToLaneNum (input)
+#   - $script:LaneProtocols: cached per-lane protocol (TCP / Named Pipes / File)
+#   - $OfficePath: Storeman Office root (XF lane folders)
 # ===================================================================================================
 
 function Pump_Tables
@@ -12709,12 +13375,23 @@ DROP VIEW $viewName;
 }
 
 # ===================================================================================================
-#                                   FUNCTION: Close_Open_Transactions
+#                              FUNCTION: Close_Open_Transactions
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Monitors the XE folder for error files, extracts data, and closes open transactions on specified
-#   lanes for a given store. Uses the correct SQL module and protocol. Falls back to file if needed.
-#   All lookups use the current FunctionResults mappings. Logging is handled via Write_Log.
+#   Closes open POS transactions on the lanes referenced by recent XE error files: scans the
+#   store XE folder for S*.*.* files (max 30 days old), extracts the lane number from each
+#   file name, marks the lane's open SAL_HDR transactions as CLOSE via SQL (file fallback),
+#   and can send a restart-all-programs command over the mailslot after deployment.
+#
+# Parameters:
+#   - StoreNumber  [string]: store to process (required)
+#
+# Variables:
+#   - $script:FunctionResults: SqlModuleName and the lane maps (input)
+#   - $OfficePath: Storeman Office root (XE folder)
+#
+# Writes:
+#   - lane databases (SAL_HDR F1067 = CLOSE) and Scripts_by_Alex_C.T\Closed_Transactions_LOG.txt
 # ===================================================================================================
 
 function Close_Open_Transactions
@@ -13034,13 +13711,27 @@ function Close_Open_Transactions
 }
 
 # ===================================================================================================
-#               FUNCTION: Send_SMS_Key_to_Lanes  
+#                              FUNCTION: Send_SMS_Key_to_Lanes
 # ---------------------------------------------------------------------------------------------------
-# FIXED BEHAVIOR:
-#   - RUN NOW uses ONLY $script:LaneProtocols (already populated). DEFAULT = File.
-#   - Scheduled Task uses ONLY Protocol_Results.txt at runtime. DEFAULT = File.
-#   - RUN NOW tries WinAuth first, then SQL Auth (Tecnica), THEN SQI fallback.
-#   - Scheduled Task uses SQL Auth for lane DB updates when protocol != File (as required).
+# Description:
+#   Syncs the server SMS key to the lane databases. "Run now" uses the in-memory lane
+#   protocols and tries Windows auth first, then SQL auth (Tecnica), then an SQI file
+#   fallback; the scheduled task variant reads Protocol_Results.txt at runtime and uses
+#   SQL auth for lane DB updates when the protocol is not File.
+#
+# Parameters:
+#   - StoreNumber           [string]: store to process (required)
+#   - LaneNumbers           [string[]]: lanes to target (default: all)
+#   - NonInteractive        [switch]: run without prompts
+#   - SqlTimeoutSeconds     [int]: SQL query timeout in seconds (default 30)
+#   - ConnectTimeoutSeconds [int]: SQL connect timeout in seconds (default 1)
+#
+# Variables:
+#   - $script:LaneProtocols: per-lane protocol cache used by "Run now"
+#   - $script:FunctionResults: lane map and SQL module (input)
+#
+# Writes:
+#   - lane databases (key sync) and a scheduled task for the recurring sync
 # ===================================================================================================
 
 function Send_SMS_Key_to_Lanes
@@ -13901,19 +14592,98 @@ function Send_SMS_Key_to_Lanes
 }
 
 # ===================================================================================================
-#                                  FUNCTION: Ping_All_Nodes
+#                              FUNCTION: Test-Hosts_Parallel
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#    Ping all nodes of a given type (Lanes, Scales, or Backoffices) for a store.
-#    Usage:
-#        Ping_All_Nodes -NodeType "Lane"       -StoreNumber "001"
-#        Ping_All_Nodes -NodeType "Scale"
-#        Ping_All_Nodes -NodeType "Backoffice" -StoreNumber "001"
-#    All context (Lane/Scale/Backoffice lists) are sourced from $script:FunctionResults.
+#   Probes a list of hostnames/IPs in parallel with a per-probe timeout and a concurrency
+#   cap, and returns target -> 'OK' / 'FAIL' / 'ERROR'. Replaces serial Test-Connection
+#   loops that could freeze the UI for minutes when several hosts are down. Falls back to a
+#   serial Test-Connection loop if the parallel path is unavailable.
+#
+# Parameters:
+#   - Targets        [string[]]: hostnames or IPv4 addresses to probe (required, pipeline)
+#   - TimeoutMs      [int]: per-probe timeout in milliseconds (default 400)
+#   - MaxConcurrency [int]: max probes in flight (default 10)
+#
+# Returns:
+#   Hashtable target -> 'OK' (reachable), 'FAIL' (no reply in time) or 'ERROR'.
+# ===================================================================================================
+
+function Test-Hosts_Parallel
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+		[string[]]$Targets,
+		[int]$TimeoutMs = 400,
+		[int]$MaxConcurrency = 10
+	)
+	
+	begin { $all = @() }
+	process { $all += @($Targets) }
+	end
+	{
+		$all = @($all | Where-Object { $_ })
+		$out = @{}
+		if ($all.Count -eq 0) { return $out }
+		
+		$done = $false
+		try
+		{
+			$opts = New-Object System.Threading.Tasks.ParallelOptions
+			$opts.MaxDegreeOfParallelism = [Math]::Min([Math]::Max(1, $MaxConcurrency), $all.Count)
+			[void][System.Threading.Tasks.Parallel]::ForEach($all, $opts, [Action[string]] {
+				param($t)
+				$ping = New-Object System.Net.NetworkInformation.Ping
+				try
+				{
+					$r = $ping.Send($t, $TimeoutMs)
+					if ($r.Status -eq [System.Net.IPStatus]::Success) { $out[$t] = 'OK' } else { $out[$t] = 'FAIL' }
+				}
+				catch { $out[$t] = 'ERROR' }
+				finally { $ping.Dispose() }
+			})
+			$done = $true
+		}
+		catch { $done = $false }
+		
+		if (-not $done)
+		{
+			# Serial fallback (previous behavior)
+			foreach ($t in $all)
+			{
+				try
+				{
+					if (Test-Connection -ComputerName $t -Count 1 -Quiet -ErrorAction Stop) { $out[$t] = 'OK' }
+					else { $out[$t] = 'FAIL' }
+				}
+				catch { $out[$t] = 'ERROR' }
+			}
+		}
+		
+		return $out
+	}
+}
+
+# ===================================================================================================
+#                              FUNCTION: Ping_All_Nodes
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Pings all nodes of one type (Lane / Scale / Backoffice) for a store and reports
+#   per-node reachability in the log box. Uses Test-Hosts_Parallel so a store full of
+#   dead nodes takes about two seconds worst case instead of minutes.
+#
+# Parameters:
+#   - NodeType     [string]: "Lane", "Scale" or "Backoffice" (required)
+#   - StoreNumber  [string]: shown in the summary line (optional)
+#
+# Variables:
+#   - $script:FunctionResults: LaneNumToMachineName / ScaleCodeToIPInfo / BackofficeNumToMachineName
 # ===================================================================================================
 
 function Ping_All_Nodes
 {
+	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $true)]
 		[ValidateSet("Lane", "Scale", "Backoffice")]
@@ -14044,8 +14814,27 @@ function Ping_All_Nodes
 	
 	Write_Log "All $nodeSummary will be pinged." "green"
 	
+	# v2.6.9: probe all valid targets in parallel (capped concurrency, 400ms
+	# timeout) and then log the results in node order. This replaces the old
+	# serial Test-Connection loop, which could block for minutes when several
+	# hosts were down.
+	$probeTargets = @()
+	foreach ($node in $nodesToPing)
+	{
+		if (-not [string]::IsNullOrWhiteSpace($node.Target) -and $node.Target -notin @("Unknown", "Not Found"))
+		{
+			$probeTargets += $node.Target
+		}
+	}
+	$probe = @{}
+	if ($probeTargets.Count -gt 0)
+	{
+		$probe = Test-Hosts_Parallel -Targets $probeTargets
+	}
+	
 	$successCount = 0
 	$failureCount = 0
+	$skippedCount = 0
 	
 	foreach ($node in $nodesToPing)
 	{
@@ -14063,29 +14852,30 @@ function Ping_All_Nodes
 		{
 			# For lanes/backoffices, $labelInfo is always ""
 			Write_Log "$nodeLabel #[$primary]: Target '$target'. Status: Skipped." "yellow"
+			$skippedCount++
 			continue
 		}
-		try
+		
+		$state = 'ERROR'
+		if ($probe.ContainsKey($target)) { $state = $probe[$target] }
+		if ($state -eq 'OK')
 		{
-			$pingResult = Test-Connection -ComputerName $target -Count 1 -Quiet -ErrorAction Stop
-			if ($pingResult)
-			{
-				Write_Log ("$nodeLabel #[$primary]${labelInfo}: Target '$target' is reachable. Status: Success.") "green"
-				$successCount++
-			}
-			else
-			{
-				Write_Log ("$nodeLabel #[$primary]${labelInfo}: Target '$target' is not reachable. Status: Failed.") "red"
-				$failureCount++
-			}
+			Write_Log ("$nodeLabel #[$primary]${labelInfo}: Target '$target' is reachable. Status: Success.") "green"
+			$successCount++
 		}
-		catch
+		elseif ($state -eq 'FAIL')
 		{
-			Write_Log ("$nodeLabel #[$primary]${labelInfo}: Failed to ping target '$target'. Error: $($_.Exception.Message)") "red"
+			Write_Log ("$nodeLabel #[$primary]${labelInfo}: Target '$target' is not reachable. Status: Failed.") "red"
+			$failureCount++
+		}
+		else
+		{
+			Write_Log ("$nodeLabel #[$primary]${labelInfo}: Failed to ping target '$target'. Error: name resolution or probe failed.") "red"
 			$failureCount++
 		}
 	}
 	
+
 	$summaryMsg = "Ping Summary for $nodeSummary"
 	if ($StoreNumber) { $summaryMsg += " (Store Number: $StoreNumber)" }
 	$summaryMsg += " - Success: $successCount, Failed: $failureCount."
@@ -14094,26 +14884,21 @@ function Ping_All_Nodes
 }
 
 # ===================================================================================================
-#                                           FUNCTION: Delete_DBS
+#                              FUNCTION: Delete_DBS
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Enables users to delete specific file types (.txt and .dwr) from selected lanes within a specified
-#   store. Additionally, users are prompted to include or exclude .sus files from the deletion process.
-#   The function leverages pre-stored lane information from the Retrieve_Nodes function to identify 
-#   machine paths associated with each lane. File deletions are handled by the Delete_Files helper function,
-#   and all actions and results are logged using the existing Write_Log function.
-# ---------------------------------------------------------------------------------------------------
-#   -StoreNumber (Mandatory)
-#       The store number for which lanes are to be processed. This must correspond to a valid store in the system.
-# ---------------------------------------------------------------------------------------------------
-# Usage Example:
-#   Delete_DBS -StoreNumber "123"
+#   Deletes specific file types (.txt and .dwr) from the Dbs folders of selected lanes in a
+#   store, with a prompt to also include .sus files. Lane machine paths come from the
+#   Retrieve_Nodes results; the actual deletion is done by Delete_Files per lane.
 #
-# Prerequisites:
-#   - Ensure that the Retrieve_Nodes function has been executed prior to running Delete_DBS.
-#   - Verify that the Show_Lane_Selection_Form, Delete_Files, and Write_Log functions are available in the session.
-#   - Confirm network accessibility to the machines associated with the lanes.
-#   - The user must have the necessary permissions to delete files in the target directories.
+# Parameters:
+#   - StoreNumber  [string]: store whose lanes are processed (required)
+#
+# Variables:
+#   - $script:FunctionResults: LaneMachineNames and LaneNumToMachineName (input)
+#
+# Notes:
+#   - Retrieve_Nodes must have been run first.
 # ===================================================================================================
 
 function Delete_DBS
@@ -14292,25 +15077,16 @@ function Delete_DBS
 }
 
 # ===================================================================================================
-#                                         FUNCTION: Invoke_Secure_Script
+#                              FUNCTION: Invoke_Secure_Script
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts the user for a password via a Windows Form before executing a primary script from a specified
-#   URL. If the primary script fails to execute, the function automatically attempts to run an alternative
-#   script from a backup URL. The password is securely stored in the script using encryption to ensure 
-#   that only authorized users can execute the scripts. All actions, including successes and failures, 
-#   are logged using the existing Write_Log function.
-# ---------------------------------------------------------------------------------------------------
-# Parameters:
-#   None
-# ---------------------------------------------------------------------------------------------------
-# Usage Example:
-#   Invoke_Secure_Script
+#   DISABLED as of v2.6.9: this used to prompt for a hard-coded password and execute a remote
+#   script via Invoke-Expression (irm <url>). The remote execution and the password were
+#   removed for security; the function now logs the disabled state and returns. The
+#   "Activate Windows" menu item stays so the reason is visible in the log.
 #
-# Prerequisites:
-#   - Ensure that the Write_Log function is available in the session.
-#   - The user must have the necessary permissions to execute scripts from the specified URLs.
-#   - Internet connectivity is required to access the script URLs.
+# Notes:
+#   - The old password prompt and URL download code below the disabled check is inert.
 # ===================================================================================================
 
 function Invoke_Secure_Script
@@ -14318,13 +15094,12 @@ function Invoke_Secure_Script
 	[CmdletBinding()]
 	param ()
 	
-	# --- Configuration ---
-	$storedPassword = "112922"
-	$primaryScriptURL = "https://get.activated.win"
-	$fallbackScriptURL = "https://massgrave.dev/get"
-	
-	# --- Log Start ---
+	# --- Security hardening: remote script execution disabled ---
 	Write_Log "`r`n==================== Starting Invoke_Secure_Script Function ====================`r`n" "blue"
+	Write_Log "Invoke_Secure_Script is disabled: remote Invoke-Expression/irm execution was removed for security." "red"
+	Write_Log "If this workflow is required, replace it with a signed local script and hash verification." "yellow"
+	Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "blue"
+	return
 	
 	# --- Password Prompt (GUI) ---
 	Add-Type -AssemblyName System.Windows.Forms
@@ -14387,49 +15162,28 @@ function Invoke_Secure_Script
 	Write_Log "Authentication successful. Proceeding with script execution." "green"
 	
 	# --- Execute Script from URL ---
-	try
-	{
-		Write_Log "Executing primary script from $primaryScriptURL." "blue"
-		Invoke-Expression (irm $primaryScriptURL)
-		Write_Log "Primary script executed successfully." "green"
-	}
-	catch
-	{
-		Write_Log "Primary script execution failed. Attempting to execute fallback script." "red"
-		try
-		{
-			Invoke-Expression (irm $fallbackScriptURL)
-			Write_Log "Fallback script executed successfully." "green"
-		}
-		catch
-		{
-			Write_Log "Fallback script execution also failed. Please check the URLs and your network connection." "red"
-		}
-	}
+	# Remote execution intentionally removed. This block is inert.
+	Write_Log "Remote script execution remains disabled." "gray"
 	
 	# --- Log End ---
 	Write_Log "`r`n==================== Invoke_Secure_Script Function Completed ====================" "blue"
 }
 
 # ===================================================================================================
-#                               FUNCTION: Organize_Desktop_Items
+#                              FUNCTION: Organize_Desktop_Items
 # ---------------------------------------------------------------------------------------------------
-# Purpose:
-#   Moves non-system/non-excluded items from the current user's Desktop into a single folder,
-#   ensuring specified excluded folders exist. Designed to be called independently of other
-#   system tuning steps.
+# Description:
+#   Moves non-system, non-excluded items from the current user's Desktop into a single
+#   "Unorganized Items" folder and makes sure the excluded folders still exist. Skips common
+#   system shortcuts and script launchers, and does not restart Explorer.
 #
 # Parameters:
-#   - UnorganizedFolderName [string]
-#       Target folder name on Desktop where unorganized items will be moved. Default: "Unorganized Items"
-#   - AdditionalExclusions [string[]]
-#       Optional extra file/folder names (case-insensitive) to exclude from moving.
+#   - UnorganizedFolderName [string]: target folder on the Desktop (default "Unorganized Items")
+#   - AdditionalExclusions  [string[]]: extra item names to leave on the Desktop
 #
-# Notes:
-#   - Uses Write_Log for consistent logging.
-#   - Skips common system shortcuts and script launchers.
-#   - Does NOT restart Explorer (kept side-effect free).
-# ---------------------------------------------------------------------------------------------------
+# Writes:
+#   - moves files/folders under the user Desktop into the Unorganized folder
+# ===================================================================================================
 
 function Organize_Desktop_Items
 {
@@ -14529,32 +15283,20 @@ function Organize_Desktop_Items
 
 
 # ===================================================================================================
-#                               FUNCTION: Configure_System_Settings
+#                              FUNCTION: Configure_System_Settings
 # ---------------------------------------------------------------------------------------------------
-# Description (UPDATED - Desktop organizing removed):
-#   Configures power plan, services, and visual settings. No Desktop file moves here.
+# Description:
+#   Tunes the local PC for POS use: High Performance power plan, sleep disabled, minimum
+#   processor performance at 100%, monitor off after 15 minutes on AC, several services set
+#   to Automatic and started, and visual settings (thumbnails, font smoothing, ClearType).
+#   Restarts Explorer so the visual settings apply.
 #
-#   1) Power Settings:
-#       - High Performance plan
-#       - Sleep disabled (AC/DC)
-#       - Minimum processor performance to 100% (AC/DC)
-#       - Monitor off after 15 minutes (AC)
-#
-#   2) Services:
-#       - Sets fdPHost, FDResPub, SSDPSRV, upnphost to Automatic and starts them
-#
-#   3) Visual Settings:
-#       - Show thumbnails instead of icons
-#       - Font smoothing + ClearType
-#       - Restarts Explorer to ensure settings apply
-#
-# Parameters:
-#   (none)
+# Writes:
+#   - local power plan, service startup types and visual settings
 #
 # Notes:
-#   - The prior "Organize Desktop" section has been removed from this function.
-#   - Call Organize_Desktop_Items separately when desired.
-# ---------------------------------------------------------------------------------------------------
+#   - Desktop organizing is a separate function: Organize_Desktop_Items.
+# ===================================================================================================
 
 function Configure_System_Settings
 {
@@ -14711,20 +15453,22 @@ function Configure_System_Settings
 }
 
 # ===================================================================================================
-#                            FUNCTION: Refresh_PIN_Pad_Files
+#                              FUNCTION: Refresh_PIN_Pad_Files
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Refreshes critical EMV PIN pad configuration files (.ini) on selected lanes for a specified store.
-#   It "touches" (updates the LastWriteTime) on each target file, ensuring the system sees them as
-#   modified and refreshes them accordingly.
-#   Mappings are sourced from LaneNumToMachineName (from Retrieve_Nodes).
-# ---------------------------------------------------------------------------------------------------
+#   Refreshes the EMV PIN pad configuration files (PreferredAIDs.ini, EMVCAPKey.ini,
+#   EMVAID.ini) on selected lanes: each target file is touched (LastWriteTime updated) so
+#   the lane sees it as modified and reloads it.
+#
 # Parameters:
-#   - StoreNumber: (Mandatory) The store number in 3-digit string format (e.g., "003")
-# Requirements:
-#   - Retrieve_Nodes must have been executed to populate FunctionResults.
-#   - LaneNumToMachineName mapping must be present in FunctionResults.
-#   - Write_Log and Show_Node_Selection_Form functions must be available.
+#   - StoreNumber  [string]: store to process, 3 digits (required)
+#
+# Variables:
+#   - $script:FunctionResults['LaneNumToMachineName']: lane map (input)
+#   - $OfficePath: Storeman Office root (XF lane folders)
+#
+# Notes:
+#   - Retrieve_Nodes must have been run first.
 # ===================================================================================================
 
 function Refresh_PIN_Pad_Files
@@ -14898,25 +15642,20 @@ function Refresh_PIN_Pad_Files
 }
 
 # ===================================================================================================
-#                                   FUNCTION: Install_FUNCTIONS_Into_SMS
+#                              FUNCTION: Install_FUNCTIONS_Into_SMS
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Always installs BOTH single-function and multi-function deploy artifacts for SMS:
-#     - DEPLOY_SYS.sql            (includes "Multiple Functions" menu entry)
-#     - DEPLOY_MULTI_FCT.sqm      (CSV / ranges like 123,234,300-305)
-#
-# Encoding/format:
-#   - Writes files as ANSI (Windows-1252), CRLF line endings, NO BOM.
+#   Installs the SMS deploy artifacts into the Office folder: DEPLOY_SYS.sql (with the
+#   "Multiple Functions" menu entry) and DEPLOY_MULTI_FCT.sqm (CSV / ranges like 123,234,300-305).
+#   Both files are written as ANSI (Windows-1252), CRLF line endings, no BOM.
 #
 # Parameters:
-#   - StoreNumber  [string] : Optional (kept for signature compatibility; not used in content).
-#   - OfficePath   [string] : Optional; if omitted tries $script:BasePath, then $BasePath.
+#   - StoreNumber  [string]: kept for signature compatibility (not used in content)
+#   - OfficePath   [string]: Office folder (default: $script:BasePath, then $BasePath)
+#   - Silent       [switch]: suppress Write_Log output
 #
-# Changes in this revision:
-#   - CHANGE: Removed nested helper function; write logic is inlined per file (no nested function).
-#   - CHANGE: Always includes "Multiple Functions" option in DEPLOY_SYS.sql.
-#   - CHANGE: Ensures ® macro marker is injected via $($reg) everywhere it must evaluate.
-#   - CHANGE: Normalizes line endings to CRLF before each write.
+# Writes:
+#   - <OfficePath>\DEPLOY_SYS.sql and <OfficePath>\DEPLOY_MULTI_FCT.sqm
 # ===================================================================================================
 
 function Install_FUNCTIONS_Into_SMS
@@ -14942,7 +15681,7 @@ function Install_FUNCTIONS_Into_SMS
 	
 	& $writeLog "`r`n==================== Starting Install_FUNCTIONS_Into_SMS ====================`r`n" "blue"
 	
-	# Registered macro marker (®) as a safe char literal; we always inject via $($reg) to avoid encoding surprises.
+	# Registered macro marker ([?][?]) as a safe char literal; we always inject via $($reg) to avoid encoding surprises.
 	$reg = [char]0x00AE
 	
 	# --------------------------------------------------------------------------------------------------------------
@@ -15128,7 +15867,7 @@ ORDER BY F1000,F1063;
 	
 	# ===============================================================================================================
 	#                                                  WRITE FILES (Always three)
-	#   CHANGE: No nested helper; inline: normalize to CRLF → write ANSI → clear attributes → log.
+	#   CHANGE: No nested helper; inline: normalize to CRLF [?][?][?] write ANSI [?][?][?] clear attributes [?][?][?] log.
 	# ===============================================================================================================
 	
 	# -- DEPLOY_SYS.sql --
@@ -15161,23 +15900,25 @@ ORDER BY F1000,F1063;
 }
 
 # ===================================================================================================
-#                                           FUNCTION: INI_Editor
+#                              FUNCTION: INI_Editor
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Generic INI editor for files under \storeman\<RelativeIniPath>. Pick Server/Lane as source,
-#   load the INI, select/TYPE any section, edit ALL keys (add/edit/delete/reorder), save, then
-#   optionally deploy to other lanes as either:
-#      • Merge only your changes (update just the selected section's keys), or
-#      • Replace the whole INI file.
+#   GUI INI editor for files under \storeman\<RelativeIniPath>: pick Server/Lane as source,
+#   load the INI, select a section, edit all keys (add/edit/delete/reorder) and save. After
+#   saving, the INI can be deployed to other lanes either as a merge of the edited section
+#   or as a full file replacement. Copy stays disabled until a Save.
 #
-# UX changes in this build:
-#   - INI row (label + path + Load INI) is forced onto one line using a FlowLayoutPanel that resizes
-#     the combo so the button never wraps.
-#   - More compact top area (tighter margins/padding), so the grid is larger without enlarging the form.
-#   - Copy-to-lanes is disabled until you Save; any edit/add/delete/reorder marks the form dirty and
-#     re-disables Copy.
-#   - Reordering is smoother; Saved file preserves the on-screen key order; no stray blank line added.
-# ---------------------------------------------------------------------------------------------------
+# Parameters:
+#   - RelativeIniPath    [string]: INI path under the storeman root (default office\Setup.ini)
+#   - PredefinedIniPaths [string[]]: entries for the source combo
+#
+# Variables:
+#   - $script:FunctionResults: LaneMachines / LaneNumToMachineName (known lanes)
+#   - $script:StoremanRoots: candidate local server storeman roots
+#
+# Writes:
+#   - the edited INI (save) and the deployed copy/merge on the selected lanes
+# ===================================================================================================
 
 function INI_Editor
 {
@@ -15381,7 +16122,7 @@ function INI_Editor
 	# ---------- Header (small + tight margins so the grid gains space) ----------
 	$hdr = New-Object System.Windows.Forms.Label
 	$hdr.Text = "Pick Server/Lane, load an INI, choose/TYPE a section, edit keys, Save, then optionally deploy."
-	$hdr.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+	$hdr.Font = New-Object System.Drawing.Font("Segoe UI", [float]9, [System.Drawing.FontStyle]::Bold)
 	$hdr.AutoSize = $true
 	$hdr.Margin = New-Object System.Windows.Forms.Padding(4, 2, 4, 4)
 	$root.Controls.Add($hdr, 0, 0)
@@ -16074,17 +16815,21 @@ function INI_Editor
 }
 
 # ===================================================================================================
-#                                FUNCTION: Copy_Files_Between_Nodes
+#                              FUNCTION: Copy_Files_Between_Nodes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Copy one or more \storeman\ folders/files from a chosen source (Server or Lane) to selected lanes.
-#   • Quick menu is driven by $QuickItems below; add more entries and they'll appear next run.
-#   • Adds the REAL full path (e.g., \\POS001\Storeman\office\System.ini) to the list.
-#   • Validates existence on the selected source before adding (quick or manual).
-#   • Lane root resolution: \\<Lane>\Storeman → fallback \\<Lane>\C$\storeman.
-#   • Files and folders supported. /MIR ignored for single-file operations (safety).
-#   • PS 5.1-friendly. No helpers outside this function.
-# ---------------------------------------------------------------------------------------------------
+#   Copies \storeman\ folders/files from a chosen source (Server or Lane) to selected lanes
+#   through a GUI with a quick-items menu (Htm, BitMaps, Setting.ini, System.ini, ...).
+#   Validates the source path before copying; the lane root is resolved as \\<Lane>\Storeman
+#   with a \\<Lane>\C$\storeman fallback. Files and folders are supported.
+#
+# Variables:
+#   - $script:FunctionResults: LaneMachines / LaneNumToMachineName (known lanes)
+#   - $BasePath: local server storeman root (source)
+#
+# Writes:
+#   - the copied folders/files on the selected lane stores
+# ===================================================================================================
 
 function Copy_Files_Between_Nodes
 {
@@ -16154,7 +16899,7 @@ function Copy_Files_Between_Nodes
 	# Header
 	$lbl = New-Object System.Windows.Forms.Label
 	$lbl.Text = "Choose the source and which folder(s)/file(s) to copy to the selected lanes:"
-	$lbl.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+	$lbl.Font = New-Object System.Drawing.Font("Segoe UI", [float]11, [System.Drawing.FontStyle]::Bold)
 	$lbl.AutoSize = $true
 	$lbl.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
 	$layoutMain.Controls.Add($lbl, 0, 0)
@@ -16770,13 +17515,23 @@ function Copy_Files_Between_Nodes
 }
 
 # ===================================================================================================
-#                                   FUNCTION: Schedule_Lane_DB_Maintenance
+#                              FUNCTION: Schedule_Lane_DB_Maintenance
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Deploys a lane DB repair SQL/SQI script to the selected lane's Office folder,
-#   and creates a scheduler macro in the local XF folder to run the repair weekly.
-#   All files are written in ANSI (Windows-1252) encoding with CRLF line endings and no BOM.
-#   Ensures destination directories exist and removes the archive bit after writing.
+#   Deploys the lane DB maintenance script to the selected lanes: writes the Lane SQL script
+#   to each lane's Office folder and a scheduler macro in the local XF folder so the repair
+#   runs on the chosen repeat interval. Files are written as ANSI (Windows-1252), CRLF, no BOM,
+#   and the archive bit is cleared after writing.
+#
+# Parameters:
+#   - StoreNumber  [string]: store to process (required)
+#
+# Variables:
+#   - $LaneSQLScript: lane maintenance SQL text (must be generated first)
+#   - $script:FunctionResults['LaneNumToMachineName']: lane map (input, auto-refreshed)
+#
+# Writes:
+#   - Lane maintenance script + scheduler macro on the selected lanes and in the local XF folder
 # ===================================================================================================
 
 function Schedule_Lane_DB_Maintenance
@@ -16975,13 +17730,23 @@ function Schedule_Lane_DB_Maintenance
 }
 
 # ===================================================================================================
-#                                   FUNCTION: Schedule_Server_DB_Maintenance
+#                              FUNCTION: Schedule_Server_DB_Maintenance
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Schedules a DB repair task on the server by writing the repair SQL/SQI script and scheduler macro
-#   to the local server XF folder.
-#   Files are written in ANSI (Windows-1252) encoding with CRLF line endings and no BOM.
-#   XF folder must already exist; if not, the operation is skipped and logged.
+#   Schedules the server (store) DB maintenance on the local server: writes the server SQL
+#   script and the scheduler macro into the server XF folder for the chosen repeat interval.
+#   Files are written as ANSI (Windows-1252), CRLF, no BOM; if the XF folder is missing the
+#   operation is skipped and logged.
+#
+# Parameters:
+#   - StoreNumber   [string]: store to process (required)
+#   - ServerNumber  [string]: server number (default 901)
+#
+# Variables:
+#   - $script:ScheduleServerScript: server maintenance SQL text (must be generated first)
+#
+# Writes:
+#   - Server maintenance script + scheduler macro in the local XF folder
 # ===================================================================================================
 
 function Schedule_Server_DB_Maintenance
@@ -17139,24 +17904,19 @@ function Schedule_Server_DB_Maintenance
 }
 
 # ===================================================================================================
-#                                 FUNCTION: Edit_TBS_SCL_ver520_Table
+#                              FUNCTION: Edit_TBS_SCL_ver520_Table
 # ---------------------------------------------------------------------------------------------------
-# Interactive editor for [TBS_SCL_ver520] WITHOUT DRAGGING and WITHOUT SAVE CHECKBOX.
-#   • Auto Sort: BIZERBA first (by numeric IP), then ISHIDA; renumbers BIZERBA from 10,
-#                ISHIDA from (last BIZERBA)+10 (or 20 if none). Applies naming/BufferTime
-#                template and SAVES immediately.
-#   • Save: validates and writes EXACTLY the values visible in the grid (no auto renumber).
-#   • Refresh: reloads from DB.
-#   • Close/Cancel buttons provided.
-#   • IPNetwork shown before IPDevice. All visible columns editable.
-#   • Hidden Orig* columns anchor UPDATEs so edits to visible keys are safe.
-#   • Auto Sort uses deep snapshots to avoid detached DataRow issues.
-#   • Active must be Y/N (uppercased on save). IPNetwork must match local /24 (when detectable).
-#   • FIX: All SQL-escape replacements use -replace "'", "''" to avoid parser errors.
+# Description:
+#   Interactive grid editor for the TBS_SCL_ver520 scale table (no row dragging). Auto Sort
+#   orders BIZERBA first (by numeric IP) then ISHIDA, renumbers them, applies the naming and
+#   BufferTime templates and saves. Save validates and writes exactly what is visible in the
+#   grid; Refresh reloads from the DB. IPNetwork must end with a trailing period.
 #
-# CHANGE: No nested helper functions or helper scriptblock variables. All logic is inline.
-#         Unavoidable scriptblocks remain only for WinForms event handlers and Sort-Object expressions.
-#         NEW RULE: IPNetwork must ALWAYS end with a trailing period (e.g., 192.168.5.)
+# Variables:
+#   - $script:FunctionResults: DBSERVER, DBNAME, ConnectionString, SQL_UserID/SQL_UserPwd, SqlModuleName
+#
+# Writes:
+#   - store database table TBS_SCL_ver520
 # ===================================================================================================
 
 function Edit_TBS_SCL_ver520_Table
@@ -17544,7 +18304,7 @@ ORDER BY ScaleCode ASC;
 	if ($allowedPrefix)
 	{
 		# CHANGE: Reflect the enforced trailing period examples only.
-		$lbl.Text = "Edit directly • Auto-Sort renumbers & saves • Active: Y/N • IPNetwork → '$allowedPrefix.' (accepts $allowedPrefix, $allowedPrefix.0/*/x/.)"
+		$lbl.Text = "Edit directly [?][?][?] Auto-Sort renumbers & saves [?][?][?] Active: Y/N [?][?][?] IPNetwork [?][?][?] '$allowedPrefix.' (accepts $allowedPrefix, $allowedPrefix.0/*/x/.)"
 	}
 	else
 	{
@@ -18200,38 +18960,29 @@ END CATCH;
 }
 
 # ===================================================================================================
-#                               FUNCTION: Troubleshoot_ScaleCommApp
+#                              FUNCTION: Troubleshoot_ScaleCommApp
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Audits & (optionally) repairs ScaleCommApp *.exe.config files:
-#     - StoreName                  => script's store name (NOW READ FROM system.ini NAME= when not passed)
-#     - FistScaleIP                => FIRST active scale full IP from IPNetwork + IPDevice
-#                                     (robust parser + table/active-NIC fallbacks)
-#     - SQL_InstanceName           => script's SQL instance
-#     - SQL_databaseName           => script's DB name
-#     - Recs_BatchSendFull         => "10000"
+#   Audits and optionally repairs the ScaleCommApp *.exe.config files: sets StoreName (read
+#   from system.ini NAME= when not passed), FistScaleIP (first active scale full IP),
+#   SQL_InstanceName, SQL_databaseName and Recs_BatchSendFull; restores the deploy line in
+#   Office\DEPLOY_CHG.sql and removes the "Update_Scales_Specials_Task_Minutes" task if present.
 #
-#   NEW (integrated from Fix_Deploy_CHG):
-#     - Restores the deploy line in Office\DEPLOY_CHG.sql to point at
-#         C:\ScaleCommApp\ScaleManagementApp_FastDEPLOY.exe   (preferred)  OR
-#         C:\ScaleCommApp\ScaleManagementApp.exe
-#       (Also checks D:\ScaleCommApp\... as fallback if C:\ is missing.)
-#     - Removes any existing matching @EXEC lines before appending the correct one.
-#     - Deletes the "Update_Scales_Specials_Task_Minutes" scheduled task if present.
+# Parameters:
+#   - ConfigPath          [string]: specific config file to target
+#   - ScaleCommRoots      [string[]]: candidate ScaleCommApp install roots (default $script:ScaleCommRoots)
+#   - AllMatches          [switch]: fix every matching config (default: first only)
+#   - NoAutoFix           [switch]: audit only, do not save
+#   - Force               [switch]: overwrite without confirmation
+#   - ExpectedStoreName   [string]: expected StoreName (default: system.ini / FunctionResults)
+#   - ExpectedSqlInstance / ExpectedDatabase [string]: expected SQL instance (DBSERVER) / database (DBNAME)
+#   - OfficePath          [string]: Office folder for DEPLOY_CHG.sql (default $script:OfficePath)
 #
-# Logging policy (consolidated):
-#   - Start/End banners.
-#   - DB/NIC discovery logged ONCE.
-#   - One "Desired Settings" block and ONE "Existing (first file)" snapshot.
-#   - No per-file OK/mismatch spam; only a final summary and list of saved files.
+# Variables:
+#   - $script:FunctionResults: DBNAME, DBSERVER, ConnectionString, SqlModuleName, StoreName; $script:ScaleCommRoots
 #
-# Implementation:
-#   - Uses Invoke-Sqlcmd (if available) or .NET SqlClient.
-#   - Saves UTF-8 (no BOM) for XML configs; DEPLOY_CHG.sql saved with Default encoding (matches prior).
-#   - Timestamped .bak for XML configs, respects -Force and -WhatIf.
-#   - Honors -AllMatches (else only first file), -NoAutoFix to audit-only.
-#   - **NO TERNARY / NO '??'** - PS 5.1 compatible.
-#   - **NO NESTED FUNCTIONS** (all logic inline).
+# Writes:
+#   - ScaleCommApp *.exe.config files (UTF-8 no BOM, .bak backups) and Office\DEPLOY_CHG.sql
 # ===================================================================================================
 
 function Troubleshoot_ScaleCommApp
@@ -19064,26 +19815,26 @@ ORDER BY
 }
 
 # ===================================================================================================
-#                                 FUNCTION: Repair_BMS (All-in-one, PS5.1-safe)
+#                              FUNCTION: Repair_BMS
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Forces "BMS" to stop with escalating actions, then repairs it:
-#     - Disable service (prevent recovery auto-restart while working)
-#     - Stop-Service -Force  ->  sc stop  ->  net stop /y  ->  WMI StopService()
-#     - Kill by Service PID (WMI/sc queryex), by service association (taskkill /FI "SERVICES eq BMS"),
-#       and by known process names (ScaleManagementApp.exe, BMSSrv.exe, BMS.exe)
-#     - Clean toBizerba, delete service, re-register (BMSSrv.exe -reg), start service
+#   Repairs the Bizerba BMS service on the local machine: disables the service, stops it with
+#   escalating actions (Stop-Service, sc stop, net stop /y, WMI, taskkill by PID/service/image),
+#   cleans the toBizerba staging and terminals cache folders, deletes and re-registers the
+#   service (BMSSrv.exe -reg) and starts it. Requires elevation.
 #
-# Notes:
-#   - Uses Write_Log for colored output.
-#   - Includes waits and verification loops to avoid timing issues.
-#   - PS5.1-compatible: no nested/local helper functions; everything is inline.
-# ---------------------------------------------------------------------------------------------------
 # Parameters:
-#   - BMSSrvPath (Optional): Full path to BMSSrv.exe (default: C:\Bizerba\RetailConnect\BMS\BMSSrv.exe)
-#   - UpdateSpecialsPath (Optional): Full path to ScaleManagementAppUpdateSpecials.exe
-#                                    (default: C:\ScaleCommApp\ScaleManagementAppUpdateSpecials.exe)
-# ---------------------------------------------------------------------------------------------------
+#   - BMSSrvPath         [string]: path to BMSSrv.exe (default $script:BmssrvExePath)
+#   - CleanToBizerba     [bool]: purge the toBizerba staging folder (default $true)
+#   - RemoveTerminalsCache [bool]: remove the terminals cache folder (default $true)
+#
+# Variables:
+#   - $script:BmssrvExePath: default BMSSrv.exe location
+#   - $script:BmsRootPath: BMS install root (toBizerba/terminals folders)
+#
+# Writes:
+#   - local BMS service state, toBizerba and terminals folders
+# ===================================================================================================
 
 function Repair_BMS
 {
@@ -19375,41 +20126,20 @@ function Repair_BMS
 }
 
 # ===================================================================================================
-#                               FUNCTION: Send_Restart_All_Programs
+#                              FUNCTION: Send_Restart_All_Programs
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   The `Send_Restart_All_Programs` function automates sending a restart command to selected lanes
-#   within a specified store. It retrieves lane-to-machine mappings using the `Retrieve_Nodes` 
-#   function, prompts the user to select lanes via the `Show_Lane_Selection_Form` function, and
-#   then constructs and sends a mailslot command to each selected lane using the correct 
-#   machine address.
+#   Sends a restart-all-programs command to the selected lanes of a store: retrieves the
+#   lane-to-machine mappings via Retrieve_Nodes, picks lanes (or uses the passed list) and
+#   sends "@exec(RESTART_ALL=PROGRAMS)." to each lane's SMSStart mailslot.
 #
 # Parameters:
-#   - [string]$StoreNumber
-#         A 3-digit identifier for the store (SSS). This parameter is mandatory and is used
-#         to retrieve node details, select lanes, and construct mailslot addresses.
+#   - StoreNumber  [string]: store to process, 3 digits (required)
+#   - LaneNumbers  [array]: lanes to target (default: selection form)
+#   - Silent       [switch]: suppress Write_Log output
 #
-# Workflow:
-#   1. Retrieve node information for the specified store using `Retrieve_Nodes`, which
-#      provides a mapping between lanes and their corresponding machine names.
-#   2. Launch `Show_Lane_Selection_Form` in 'Store' mode to allow the user to select one
-#      or more lanes (TTT).
-#   3. For each selected lane:
-#         - Look up the machine name from the lane-to-machine mapping.
-#         - Construct the mailslot address using the machine name, store number, and lane number.
-#         - Send the restart command via `[MailslotSender]::SendMailslotCommand`.
-#         - Report success or failure for each command sent.
-#
-# Returns:
-#   None. Outputs success or failure messages to the console for each lane processed.
-#
-# Example Usage:
-#   Send_Restart_All_Programs -StoreNumber "123"
-#
-# Notes:
-#   - Ensure that the helper functions (`Retrieve_Nodes`, `Show_Lane_Selection_Form`) and the 
-#     `[MailslotSender]::SendMailslotCommand` method are defined and accessible in the 
-#     session before invoking this function.
+# Variables:
+#   - $script:FunctionResults: LaneNumToMachineName (input via Retrieve_Nodes)
 # ===================================================================================================
 
 function Send_Restart_All_Programs
@@ -19508,102 +20238,42 @@ function Send_Restart_All_Programs
 }
 
 # ===================================================================================================
-#                               FUNCTION: Send_SERVER_time_to_Lanes
+#                              FUNCTION: Send_TIME_Sync_Lanes_Worker
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   The `Send_SERVER_time_to_Lanes` function automates sending a time synchronization command to 
-#   selected lanes within a specified store using the server's local date and time. It retrieves 
-#   lane-to-machine mappings using the `Retrieve_Nodes` function, prompts the user to select lanes 
-#   via the `Show_Lane_Selection_Form` function, and then constructs and sends a mailslot command to each 
-#   selected lane with the server's current date and time in the appropriate format.
+#   The per-lane time-sync work behind Send_SERVER_time_to_Lanes (v2.6.9): builds a fresh
+#   WIZRPL date/time string at start and pushes a time sync (remote schtasks net time task)
+#   to each selected lane. Split out of the wizard so it can run in a background job via
+#   Start_Background_Function_Job; running it inline is still supported as a fallback.
 #
 # Parameters:
-#   - [string]$StoreNumber
-#         A 3-digit identifier for the store (SSS). This parameter is mandatory and is used to 
-#         retrieve node details, select lanes, and construct mailslot addresses.
+#   - StoreNumber     [string]: store to process (required)
+#   - SelectedLanes   [any]: lanes to sync, numbers or lane objects (required)
+#   - IsScheduling    [switch]: create a recurring task instead of a one-shot sync
+#   - IntervalMinutes [int]: schedule interval when -IsScheduling (default 0)
 #
-# Workflow:
-#   1. Retrieve node information for the specified store using `Retrieve_Nodes`, which provides a 
-#      mapping between lanes and their corresponding machine names.
-#   2. Launch `Show_Lane_Selection_Form` in 'Store' mode to allow the user to select one or more lanes (TTT).
-#   3. Retrieve the server's local date and time using PowerShell's Get-Date, formatting the date as 
-#      "MM/dd/yyyy" and the time as "HHmmss".
-#   4. Construct a command string in the format:
-#         "@WIZRPL(DATE=MM/DD/YYYY)@WIZRPL(TIME=HHMMSS)"
-#   5. For each selected lane:
-#         - Look up the machine name from the lane-to-machine mapping.
-#         - Construct the mailslot address using the machine name.
-#         - Send the time synchronization command via `[MailslotSender]::SendMailslotCommand`.
-#         - Report success or failure for each command sent.
+# Variables:
+#   - $script:FunctionResults['LaneNumToMachineName']: lane map (input)
 #
-# Returns:
-#   None. Outputs success or failure messages to the console for each lane processed.
-#
-# Example Usage:
-#   Send_SERVER_time_to_Lanes -StoreNumber "123"
-#
-# Notes:
-#   - Ensure that the helper functions (`Retrieve_Nodes`, `Show_Lane_Selection_Form`) and the 
-#     `[MailslotSender]::SendMailslotCommand` method are defined and accessible in the session 
-#     before invoking this function.
+# Writes:
+#   - remote scheduled time-sync tasks on the selected lanes
 # ===================================================================================================
 
-function Send_SERVER_time_to_Lanes
+function Send_TIME_Sync_Lanes_Worker
 {
+	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $true)]
 		[string]$StoreNumber,
-		[switch]$Schedule # Optional: enables scheduling mode (prompt for interval)
+		[Parameter(Mandatory = $true)]
+		$SelectedLanes,
+		[switch]$IsScheduling,
+		[int]$IntervalMinutes = 0
 	)
 	
-	Write_Log "`r`n==================== Starting Time Sync ====================`r`n" "blue"
-	
-	# 1. Unified Lane Picker
-	$laneSelection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
-	if (-not $laneSelection -or -not $laneSelection.Lanes -or $laneSelection.Lanes.Count -eq 0)
-	{
-		Write_Log "No lanes selected for time sync." "yellow"
-		Write_Log "`r`n==================== Time Sync Aborted ====================`r`n" "blue"
-		return
-	}
-	$selectedLanes = $laneSelection.Lanes
-	
-	# 2. Scheduling Mode Prompt (Optional)
-	$isScheduling = $false
-	$intervalMinutes = 0
-	if ($Schedule)
-	{
-		Add-Type -AssemblyName System.Windows.Forms
-		$formInterval = New-Object System.Windows.Forms.Form
-		$formInterval.Text = "Set Sync Interval"
-		$formInterval.Size = New-Object System.Drawing.Size(300, 150)
-		$formInterval.StartPosition = "CenterScreen"
-		$label = New-Object System.Windows.Forms.Label
-		$label.Text = "Enter interval in minutes:"
-		$label.Location = New-Object System.Drawing.Point(20, 20)
-		$formInterval.Controls.Add($label)
-		$textBox = New-Object System.Windows.Forms.TextBox
-		$textBox.Location = New-Object System.Drawing.Point(20, 50)
-		$textBox.Size = New-Object System.Drawing.Size(240, 20)
-		$formInterval.Controls.Add($textBox)
-		$okButton = New-Object System.Windows.Forms.Button
-		$okButton.Text = "OK"
-		$okButton.Location = New-Object System.Drawing.Point(100, 80)
-		$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-		$formInterval.Controls.Add($okButton)
-		$result = $formInterval.ShowDialog()
-		if ($result -ne [System.Windows.Forms.DialogResult]::OK)
-		{
-			Write_Log "Scheduling canceled." "yellow"
-			return
-		}
-		if (-not [int]::TryParse($textBox.Text, [ref]$intervalMinutes) -or $intervalMinutes -le 0)
-		{
-			Write_Log "Invalid interval. Must be a positive integer." "red"
-			return
-		}
-		$isScheduling = $true
-	}
+	# The mailslot type does not exist in a job runspace; this is a
+	# no-op where it is already loaded.
+	try { Ensure_MailslotSender_Type } catch { }
 	
 	# 3. Build Time String
 	$now = Get-Date
@@ -19792,23 +20462,121 @@ function Send_SERVER_time_to_Lanes
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Drawer_Control
+#                              FUNCTION: Send_SERVER_time_to_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Deploys a drawer control SQI command to selected lanes for a specified store.
-#   The function first presents a GUI for the user to select the desired drawer state 
-#   (Enable = 1, Disable = 0) and then uses the Show_Lane_Selection_Form GUI (in "Store" mode) to 
-#   allow selection of one or more lanes. For each selected lane, the function writes an SQI file 
-#   (in ANSI PC format with CRLF line endings) with the embedded drawer state and sends a restart 
-#   command to the corresponding machine.
-# ---------------------------------------------------------------------------------------------------
+#   Time-sync wizard: shows the lane selection form, then hands the per-lane work to
+#   Send_TIME_Sync_Lanes_Worker, running it as a background job via
+#   Start_Background_Function_Job (inline fallback if the job cannot start).
+#
 # Parameters:
-#   - StoreNumber: The store number to process. (Mandatory)
+#   - StoreNumber  [string]: store to process, 3 digits (required)
+#   - Schedule     [switch]: prompt for an interval (minutes) for repeated syncs
+#
+# Variables:
+#   - $script:PrimaryStoremanRoot: storeman root (seeded to the worker job)
+#   - $OfficePath: office path (seeded to the worker job)
+#
+# Notes:
+#   - Per-lane work lives in Send_TIME_Sync_Lanes_Worker (v2.6.9 split for background jobs).
+# ===================================================================================================
+
+function Send_SERVER_time_to_Lanes
+{
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[switch]$Schedule # Optional: enables scheduling mode (prompt for interval)
+	)
+	
+	Write_Log "`r`n==================== Starting Time Sync ====================`r`n" "blue"
+	
+	# 1. Unified Lane Picker
+	$laneSelection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
+	if (-not $laneSelection -or -not $laneSelection.Lanes -or $laneSelection.Lanes.Count -eq 0)
+	{
+		Write_Log "No lanes selected for time sync." "yellow"
+		Write_Log "`r`n==================== Time Sync Aborted ====================`r`n" "blue"
+		return
+	}
+	$selectedLanes = $laneSelection.Lanes
+	
+	# 2. Scheduling Mode Prompt (Optional)
+	$isScheduling = $false
+	$intervalMinutes = 0
+	if ($Schedule)
+	{
+		Add-Type -AssemblyName System.Windows.Forms
+		$formInterval = New-Object System.Windows.Forms.Form
+		$formInterval.Text = "Set Sync Interval"
+		$formInterval.Size = New-Object System.Drawing.Size(300, 150)
+		$formInterval.StartPosition = "CenterScreen"
+		$label = New-Object System.Windows.Forms.Label
+		$label.Text = "Enter interval in minutes:"
+		$label.Location = New-Object System.Drawing.Point(20, 20)
+		$formInterval.Controls.Add($label)
+		$textBox = New-Object System.Windows.Forms.TextBox
+		$textBox.Location = New-Object System.Drawing.Point(20, 50)
+		$textBox.Size = New-Object System.Drawing.Size(240, 20)
+		$formInterval.Controls.Add($textBox)
+		$okButton = New-Object System.Windows.Forms.Button
+		$okButton.Text = "OK"
+		$okButton.Location = New-Object System.Drawing.Point(100, 80)
+		$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+		$formInterval.Controls.Add($okButton)
+		$result = $formInterval.ShowDialog()
+		if ($result -ne [System.Windows.Forms.DialogResult]::OK)
+		{
+			Write_Log "Scheduling canceled." "yellow"
+			return
+		}
+		if (-not [int]::TryParse($textBox.Text, [ref]$intervalMinutes) -or $intervalMinutes -le 0)
+		{
+			Write_Log "Invalid interval. Must be a positive integer." "red"
+			return
+		}
+		$isScheduling = $true
+	}
+	
+	# 3. (v2.6.9) the per-lane work runs as a BACKGROUND job so the
+	#    UI thread never blocks. Per-lane details go to the file log as
+	#    the job progresses; the shared job reaper logs the one-line
+	#    completion notice to the log window.
+	$bgJob = Start_Background_Function_Job `
+		-FunctionName 'Send_TIME_Sync_Lanes_Worker' `
+		-Label ('Time sync to ' + @($selectedLanes).Count + ' lane(s)') `
+		-CallArgs @{ StoreNumber = $StoreNumber; SelectedLanes = $selectedLanes; IsScheduling = $isScheduling; IntervalMinutes = $intervalMinutes } `
+		-SeedVars @{ OfficePath = $OfficePath; PrimaryStoremanRoot = $script:PrimaryStoremanRoot } `
+		-DependentBodies @{ Ensure_MailslotSender_Type = (Get-Command Ensure_MailslotSender_Type -CommandType Function).ScriptBlock.ToString() } `
+		-NotifyOnComplete
+	if ($bgJob)
+	{
+		Write_Log ("Time sync to {0} lane(s) is running in the background - per-lane details go to the file log." -f @($selectedLanes).Count) "green"
+	}
+	else
+	{
+		Write_Log "Could not start the background time-sync job - running inline." "yellow"
+		Send_TIME_Sync_Lanes_Worker -StoreNumber $StoreNumber -SelectedLanes $selectedLanes -IsScheduling:$isScheduling -IntervalMinutes $intervalMinutes
+	}
+}
+
+# ===================================================================================================
+#                              FUNCTION: Drawer_Control
 # ---------------------------------------------------------------------------------------------------
-# Requirements:
-#   - The Show_Lane_Selection_Form function must be available.
-#   - Variables such as $OfficePath must be defined.
-#   - Helper functions like Write_Log, Retrieve_Nodes, and the class [MailslotSender] must be available.
+# Description:
+#   Deploys a drawer control command to the selected lanes: pick Enable/Disable in a dialog,
+#   select lanes, then for each lane write Drawer_Control.sqi (ANSI, CRLF) with the chosen
+#   state into the lane XF folder and send a restart command to the machine.
+#
+# Parameters:
+#   - StoreNumber  [string]: store to process (required)
+#
+# Variables:
+#   - $script:FunctionResults: LaneNumToMachineName (input)
+#   - $OfficePath: Storeman Office root (XF lane folders)
+#
+# Writes:
+#   - Drawer_Control.sqi in each selected lane XF folder
 # ===================================================================================================
 
 function Drawer_Control
@@ -19967,26 +20735,23 @@ DROP TABLE Fct_Load;
 }
 
 # ===================================================================================================
-#                                       FUNCTION: Refresh_Database
+#                              FUNCTION: Refresh_Database
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Deploys a database refresh SQI command to selected registers for a specified store.
-#   The function uses the Show_Lane_Selection_Form GUI (in "Store" mode) to allow selection of one or 
-#   more registers. For each selected register, it writes an SQI file (in ANSI PC format with CRLF 
-#   line endings) containing:
+#   Deploys a database refresh command to the selected registers: for each selected lane it
+#   writes Refresh_Database.sqi (ANSI, CRLF) containing @WIZSET(TARGET=@TER) and
+#   @EXEC(SQM=exe_activate_accept_sys) into the lane XF folder, then sends a restart
+#   command to the machine.
 #
-#       @WIZSET(TARGET=@TER);
-#       @EXEC(SQM=exe_activate_accept_sys);
-#
-#   Then, it sends a restart command to the corresponding machine.
-# ---------------------------------------------------------------------------------------------------
 # Parameters:
-#   - StoreNumber: The store number to process. (Mandatory)
-# ---------------------------------------------------------------------------------------------------
-# Requirements:
-#   - The Show_Lane_Selection_Form function must be available.
-#   - Variables such as $OfficePath must be defined.
-#   - Helper functions like Write_Log, Retrieve_Nodes, and the class [MailslotSender] must be available.
+#   - StoreNumber  [string]: store to process (required)
+#
+# Variables:
+#   - $script:FunctionResults: LaneNumToMachineName (input)
+#   - $OfficePath: Storeman Office root (XF lane folders)
+#
+# Writes:
+#   - Refresh_Database.sqi in each selected lane XF folder
 # ===================================================================================================
 
 function Refresh_Database
@@ -20062,19 +20827,20 @@ function Refresh_Database
 }
 
 # ===================================================================================================
-#                                  FUNCTION: Reboot_Nodes
+#                              FUNCTION: Reboot_Nodes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Presents a tabbed dialog for rebooting Lanes (with mailslot), Scales, and/or Backoffices.
-#   - For Lanes: tries SMSStart mailslot, then shutdown.exe, then Restart-Computer.
-#   - For Scales and Backoffices: tries shutdown.exe, then Restart-Computer.
-#   - Tabs are dynamically shown depending on -NodeTypes.
-# Usage:
-#   Reboot_Nodes -StoreNumber "001" -NodeTypes Lane
-#   Reboot_Nodes -StoreNumber "001" -NodeTypes Scale
-#   Reboot_Nodes -StoreNumber "001" -NodeTypes Lane,Scale
-#   Reboot_Nodes -StoreNumber "001" -NodeTypes Backoffice
-#   Reboot_Nodes -StoreNumber "001" -NodeTypes Lane,Scale,Backoffice
+#   Reboots selected nodes through a tabbed dialog (Lanes / Scales / Backoffices). Lanes try
+#   the SMSStart mailslot first, then shutdown.exe, then Restart-Computer; scales and
+#   backoffices try shutdown.exe, then Restart-Computer.
+#
+# Parameters:
+#   - StoreNumber  [string]: store to process (required)
+#   - Selection    [any]: pre-made selection object (default: Show_Node_Selection_Form)
+#   - NodeTypes    [string[]]: tabs to show - Lane, Scale, Backoffice
+#
+# Variables:
+#   - $script:FunctionResults: LaneNumToMachineName, ScaleCodeToIPInfo, BackofficeNumToMachineName
 # ===================================================================================================
 
 function Reboot_Nodes
@@ -20248,27 +21014,22 @@ function Reboot_Nodes
 }
 
 # ===================================================================================================
-#                         FUNCTION: Remove_Archive_Bit
+#                              FUNCTION: Remove_Archive_Bit
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   - Run Now: one-time attrib clear (recursive) using lane map if available, else Ter_Load.sql parsing
-#              (LOCAL paths only; never \\POS###)
-#   - Service: REAL-TIME mode (FileSystemWatcher), ALWAYS reads Ter_Load.sql
-#              - Full cleanup at startup
-#              - Watches lane roots & server roots for changes and clears archive bit on touched items
-#              - Watches Ter_Load.sql; on change, rebuilds watchers and runs full cleanup
-#              - Uses LOCAL OfficePath + LOCAL Ter_Load path (no UNC dependency)
-#   - Adds "Uninstall Service" button
+#   Clears the file archive bit so the Storeman load process re-copies changed files. Run Now
+#   does a one-time recursive clear using the lane map (or Ter_Load.sql parsing, local paths
+#   only). Service mode installs an NSSM service with a FileSystemWatcher that does a full
+#   cleanup at startup and clears the bit on touched items in real time, rebuilding watchers
+#   when Ter_Load.sql changes. Includes an Uninstall Service button.
 #
-# IMPORTANT (per your request):
-#   - NO helper functions
-#   - NO nested functions
-#   - EVERYTHING inline inside this one function (service PS1 content is generated inline too)
+# Variables:
+#   - $OfficePath / $StartupIniPath: local Office root and Startup.ini (input)
+#   - $script:ScriptsFolder: folder for the generated service PS1
+#   - $script:FunctionResults['StoreNumber']: store number for the logs
 #
-# NSSM RULE (per your request):
-#   - This function does NOT download NSSM.
-#   - It ONLY uses an already-downloaded nssm.exe.
-#   - If nssm.exe is missing when needed (install/uninstall fallback), it errors and stops that action.
+# Notes:
+#   - Uses an already-downloaded nssm.exe; it never downloads NSSM itself.
 # ===================================================================================================
 
 function Remove_Archive_Bit
@@ -21078,30 +21839,25 @@ while (`$true)
 }
 
 # ===================================================================================================
-#                      FUNCTION: Enable_SQL_Protocols_On_Selected_Lanes  (Runspaces, No Nested Funcs)
+#                              FUNCTION: Enable_SQL_Protocols_On_Selected_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Enables TCP/IP, Named Pipes, and Shared Memory protocols for all SQL Server instances
-#   on the selected remote lane machines. Sets static TCP port (default: 1433), disables dynamic ports,
-#   restarts the SQL service when needed, and optionally creates & live-tests a Linked Server
-#   to determine working transport. Works in parallel using a runspace pool (NOT background jobs).
+#   Enables TCP/IP, Named Pipes and Shared Memory protocols on the SQL Server instances of
+#   the selected lanes: sets a static TCP port (default 1433), disables dynamic ports,
+#   restarts the SQL service when needed, and optionally live-tests a Linked Server to pick
+#   the working transport. Runs in parallel through a runspace pool (not background jobs)
+#   and restarts the programs on lanes that needed a service restart.
 #
 # Parameters:
-#   - [string]$StoreNumber            3-digit store, e.g. "123"
-#   - [string]$tcpPort                static TCP port (default "1433")
-#   - [switch]$CreateLinkedServers    on by default; pass -CreateLinkedServers:$false to skip
+#   - StoreNumber         [string]: store to process (required)
+#   - tcpPort             [string]: static TCP port (default "1433")
+#   - CreateLinkedServers [switch]: on by default; pass :$false to skip
 #
-# Requirements:
-#   - RemoteRegistry reachable on lanes (function will start it demand-mode)
-#   - $script:FunctionResults['LaneNumToMachineName'] populated (lane -> machine)
-#   - $script:FunctionResults['DBSERVER'] local SQL instance for linked-server management
-#   - Write_Log, Show_Node_Selection_Form, Send_Restart_All_Programs provided by your script
+# Variables:
+#   - $script:FunctionResults: LaneNumToMachineName, DBSERVER (input)
 #
-# Implementation notes (important):
-#   - NO nested functions anywhere. The runspace payload is a single script block with param().
-#   - Concurrency uses RunspacePool (MTA). Degree of parallelism auto-throttled.
-#   - Logs are buffered per-lane inside the runspace and emitted when that lane completes.
-#     (Simple + robust; avoids cross-thread UI/update issues.)
+# Writes:
+#   - SQL Server protocol registry settings + Linked Servers on the selected lanes
 # ===================================================================================================
 
 function Enable_SQL_Protocols_On_Selected_Lanes
@@ -21645,11 +22401,21 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 					
 					if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($res.Machine))
 					{
+						# Menu action: report the scheduling outcome in the log box.
+						# (Failures log their own red line from inside the function.)
+						$schedOk = $false
 						try
 						{
-							Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $laneStr -MachineName $res.Machine | Out-Null
+							$schedOk = [bool](Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $laneStr -MachineName $res.Machine)
 						}
 						catch { }
+						if ($schedOk)
+						{
+							$schedState = $null
+							try { $schedState = $script:LaneSqlProtocolEnableTaskState[$laneStr] } catch { }
+							$whenText = if ($schedState -and $schedState.ScheduledFor) { [string]$schedState.ScheduledFor.ToString('MM/dd/yyyy HH:mm') } else { 'next 4:15 AM' }
+							Write_Log ("Scheduled SQL enable for {0} (Lane {1}) for {2}" -f $res.Machine, $laneStr, $whenText) 'green'
+						}
 					}
 					elseif ($script:LaneSqlProtocolEnableTaskState.ContainsKey($laneStr))
 					{
@@ -21691,12 +22457,29 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 }
 
 # ===================================================================================================
-#             FUNCTION: Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
+#                              FUNCTION: Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   For lanes currently stuck on File protocol, writes a one-shot PowerShell worker to the lane and
-#   schedules it for 4:15 AM. The worker enables SQL protocols locally, restarts SQL if needed,
-#   deletes its scheduled task, and then deletes itself.
+#   For a lane stuck on the SQL File protocol, writes a self-deleting one-shot PowerShell
+#   worker to the lane's Storeman Temp share and schedules it for 4:15 AM (next occurrence).
+#   The worker enables TCP (static port), Named Pipes and Shared Memory, restarts SQL when
+#   changed, then deletes its scheduled task and itself. Every failure path (no writable
+#   Temp share, worker write error, schtasks /Create error) is logged red with the detail.
+#
+# Parameters:
+#   - LaneNumber  [string]: lane to schedule (required)
+#   - MachineName [string]: lane machine name (required)
+#   - TcpPort     [string]: static TCP port to enable (default '1433')
+#   - StartTime   [string]: task start time (default '04:15')
+#
+# Variables:
+#   - $script:LaneSqlProtocolEnableTaskState: per-lane scheduling state
+#
+# Returns:
+#   $true when the task was (re)scheduled successfully, $false otherwise.
+#
+# Writes:
+#   - Enable_SQL_Protocols_Lane_<n>.ps1 on the lane Storeman Temp share + one-shot task
 # ===================================================================================================
 
 function Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
@@ -21946,6 +22729,7 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 	
 	if ([string]::IsNullOrWhiteSpace($remoteScriptSharePath) -or [string]::IsNullOrWhiteSpace($localScriptPath))
 	{
+		try { Write_Log ("Could not schedule SQL enable task for lane {0}: no writable Storeman Temp share found on {1}" -f $laneKey, $MachineName) 'red' | Out-Null } catch { }
 		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
 			TaskPresent  = $false
 			LastChecked  = Get-Date
@@ -21954,8 +22738,6 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 		}
 		return $false
 	}
-	
-	$existingState = $script:LaneSqlProtocolEnableTaskState[$laneKey]
 	
 	$null = & schtasks.exe /Query /S $MachineName /TN $taskName 2>$null
 	$taskExists = ($LASTEXITCODE -eq 0)
@@ -21984,6 +22766,7 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 	}
 	catch
 	{
+		try { Write_Log ("Could not schedule SQL enable task for lane {0}: failed to write worker script to {1}" -f $laneKey, $remoteScriptSharePath) 'red' | Out-Null } catch { }
 		$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
 			TaskPresent  = $false
 			LastChecked  = Get-Date
@@ -22010,6 +22793,8 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 	catch { }
 	$createOutputText = [string]($createOutput | Out-String)
 	$createOutputText = $createOutputText.Trim()
+	# Previously this output was computed and silently dropped - the failure was invisible.
+	try { Write_Log ("Could not schedule SQL enable task for lane {0} on {1}: {2}" -f $laneKey, $MachineName, $createOutputText) 'red' | Out-Null } catch { }
 	$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
 		TaskPresent  = $false
 		LastChecked  = Get-Date
@@ -22038,16 +22823,19 @@ if ($script:LaneSqlEnableWorkerMode)
 }
 
 # ===================================================================================================
-#                 FUNCTION: Open_Selected_Node_C_Path (Unified, uses tabbed picker)
+#                              FUNCTION: Open_Selected_Node_C_Path
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts user with Show_Node_Selection_Form for Lanes and/or Bizerba Scales,
-#   then opens \\MACHINE\c$ or \\SCALEIP\c$ accordingly.
-#   - For scales: tries bizuser/bizerba, then bizuser/biyerba if needed.
-# Usage:
-#   Open_Selected_Node_C_Path -StoreNumber "001" -NodeTypes Lane
-#   Open_Selected_Node_C_Path -StoreNumber "001" -NodeTypes Scale
-#   Open_Selected_Node_C_Path -StoreNumber "001" -NodeTypes Lane,Scale
+#   Opens the C: drive of selected nodes in Explorer: pick lanes and/or Bizerba scales in
+#   the tabbed selection form, then open \\<MACHINE>\c$ (lanes) or \\<SCALEIP>\c$ (scales,
+#   trying bizuser/bizerba then bizuser/biyerba credentials).
+#
+# Parameters:
+#   - StoreNumber  [string]: store to process (required)
+#   - NodeTypes    [string[]]: node types to show - Lane, Scale
+#
+# Variables:
+#   - $script:FunctionResults: LaneNumToMachineName, ScaleCodeToIPInfo (input)
 # ===================================================================================================
 
 function Open_Selected_Node_C_Path
@@ -22161,18 +22949,26 @@ function Open_Selected_Node_C_Path
 	Write_Log "`r`n==================== Open_Selected_Node_C_Path Function Completed ====================" "blue"
 }
 
-# =========================================================================================
-# FUNCTION: Add_Scale_Credentials  (fast, parallel, silent; PS 5.1 compatible)
-# -----------------------------------------------------------------------------------------
-# - Gathers unique scale IPs from ScaleCodeToIPInfo (uses .FullIP or IPNetwork+IPDevice).
-# - For each IP, in parallel:
-#     * Quick preflight: TCP 445 reachable? If not, skip.
-#     * If \\IP\c$ already accessible, skip (no creds needed).
-#     * Try creds in order: bizuser/bizerba, then bizuser/biyerba using "net use".
-#       On success: remove that mapping and persist creds with CMDKEY.
-# - No output, no logging, returns immediately (background runspaces).
-# - Keeps handles in $script:ScaleCredTasks so they don't get GC'd; you can clean them later.
-# =========================================================================================
+# ===================================================================================================
+#                              FUNCTION: Add_Scale_Credentials
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Pre-seeds Windows credentials for every scale IP so \\<scaleIP>\c$ is accessible later.
+#   For each unique scale IP (in parallel runspaces): skips if the share is already
+#   accessible or TCP 445 is unreachable, otherwise tries the stored credentials in order
+#   with "net use" and persists the working one with cmdkey. Silent - no logging.
+#
+# Parameters:
+#   - ScaleCodeToIPInfo [hashtable]: scale code -> info with FullIP / IPNetwork+IPDevice (required)
+#   - MaxParallel       [int]: max parallel credential tasks (default 16)
+#
+# Variables:
+#   - $script:credBizerba / $script:credBiyerba: PSCredential objects tried in order
+#   - $script:ScaleCredTasks: running task handles (kept so they are not GC'd)
+#
+# Writes:
+#   - stored Windows credentials (cmdkey) for the working scale login
+# ===================================================================================================
 
 function Add_Scale_Credentials
 {
@@ -22487,20 +23283,25 @@ function Add_Scale_Credentials
 }
 
 # ===================================================================================================
-#                      FUNCTION: Remove_Duplicate_Files_From_toBizerba
+#                              FUNCTION: Remove_Duplicate_Files_From_toBizerba
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts the user to either run the Duplicate File Monitor now (as a background job, controllable via the GUI) or
-#   install it as a Windows service (runs at startup, always-on).
-#   Monitors: C:\Bizerba\RetailConnect\BMS\toBizerba
-#     - Removes duplicates by CONTENT hash (keeps oldest by CreationTime)
-#     - Also removes files whose non-empty lines are fully contained in another file
-#   Writes the watcher PowerShell script to disk under ProgramData, and manages the Windows service.
+#   Duplicate File Monitor for C:\Bizerba\RetailConnect\BMS\toBizerba: prompt to run it now
+#   (background job, controllable from the GUI) or install it as an always-on Windows service.
+#   Removes duplicates by content hash (keeps the oldest by CreationTime) and also removes
+#   files whose non-empty lines are fully contained in another file.
 #
-# NSSM RULE (per your request):
-#   - This function does NOT download NSSM.
-#   - It ONLY uses an already-downloaded nssm.exe.
-#   - If nssm.exe is missing when needed (install, or uninstall fallback), it errors and stops that action.
+# Parameters:
+#   (none)
+#
+# Variables:
+#   - $script:BmsToBizerbaPath: folder being monitored
+#   - $script:DuplicateFileMonitorServiceRoot: service root (ProgramData); watcher script goes in its Scripts subfolder
+#   - $script:ScriptsLog: single combined log (service script + NSSM stdout/stderr)
+#   - $script:FunctionResults['NssmExe'] / $script:NssmExe / $script:NssmDefaultPath: NSSM candidates
+#
+# Notes:
+#   - Never downloads NSSM; if nssm.exe is missing, install/uninstall errors out and stops.
 # ===================================================================================================
 
 function Remove_Duplicate_Files_From_toBizerba
@@ -23019,16 +23820,25 @@ while ($true)
 }
 
 # ===================================================================================================
-#                                FUNCTION: Update_Scales_Specials_Interactive
+#                              FUNCTION: Update_Scales_Specials_Interactive
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts the user to either run the "Update Scales Specials" action now or schedule it as a daily task.
-#   If scheduled, writes a batch file to disk and creates a Windows scheduled task.
-#   If run immediately, performs the action directly from PowerShell.
-#   Uses Write_Log for progress and error reporting.
-# ---------------------------------------------------------------------------------------------------
+#   "Update Scales Specials" wizard: run now, or schedule as a daily 5 AM task or a repeating
+#   minutes task. Scheduling writes the batch file to the scripts folder and creates the
+#   Windows scheduled task (Update_Scales_Specials_Task / ..._Minutes).
+#
 # Parameters:
 #   (none - uses script context)
+#
+# Variables:
+#   - $script:ScriptsFolder: where the batch files are written
+#   - $OfficePath: office root holding DEPLOY_CHG.sql
+#   - $script:ScaleManagementApp*PathCandidates: FastDEPLOY / regular / UpdateSpecials exe lookup
+#   - $script:BmsToBizerbaPath / $script:BmsTerminalsPath: BMS folders used by the batch files
+#   - $script:minutesValue: interval for the minutes task
+#
+# Notes:
+#   - Schedule buttons enable/disable based on whether the required files exist.
 # ===================================================================================================
 
 function Update_Scales_Specials_Interactive
@@ -23402,17 +24212,20 @@ exit
 }
 
 # ===================================================================================================
-#                                   FUNCTION: Fix_Deploy_CHG
+#                              FUNCTION: Fix_Deploy_CHG
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Restores the deploy line to DEPLOY_CHG.sql for scale management.
-#   Checks for FastDEPLOY or regular ScaleManagementApp.exe and constructs the appropriate @EXEC line.
-#   Removes any existing matching deploy lines from the file, then appends the new line.
-#   Deletes the minutes scheduled task if it exists.
-#   Uses Write_Log for progress and error reporting.
-# ---------------------------------------------------------------------------------------------------
+#   Restores the deploy line in DEPLOY_CHG.sql: builds the @EXEC line from the FastDEPLOY
+#   (preferred) or regular ScaleManagementApp.exe path, strips the existing deploy lines
+#   (matched via the configured regex), then appends the new line. Also deletes the
+#   Update_Scales_Specials_Task_Minutes scheduled task if it exists.
+#
 # Parameters:
-#   - OfficePath: Path to the Office folder containing DEPLOY_CHG.sql (defaults to script's $OfficePath).
+#   - OfficePath  [string]: folder holding DEPLOY_CHG.sql (default: $script:OfficePath)
+#
+# Variables:
+#   - $script:ScaleManagementApp*PathCandidates: FastDEPLOY / regular exe lookup
+#   - $script:ScaleCommDeployExecRegex: regex matching the @EXEC lines to strip
 # ===================================================================================================
 
 function Fix_Deploy_CHG
@@ -23499,20 +24312,21 @@ function Fix_Deploy_CHG
 }
 
 # ===================================================================================================
-#                                 FUNCTION: Manage_Sa_Account
+#                              FUNCTION: Manage_Sa_Account
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Displays a Windows Form with buttons to enable or disable the 'sa' account on the local SQL Server.
-#   Sets the password to 'TB$upp0rT' when enabling. Buttons are enabled/disabled based on the current
-#   state of the 'sa' account. Uses integrated security for connection. Assumes default SQL instance.
-#   Logs actions and errors using Write_Log. Closes the form after a successful enable or disable action.
+#   Form with Enable/Disable buttons for the 'sa' login on the local SQL Server. Enable sets
+#   the sa password to 'TB$upp0rT'; button states reflect the current sa state (queried from
+#   sys.sql_logins). Closes after a successful action.
 #
-# Assumptions:
-#   - Script runs with sufficient privileges (sysadmin on SQL).
-#   - Local SQL Server default instance ('.').
-#   - Write_Log function is available for logging.
+# Parameters:
+#   (none)
 #
-# Author: Alex_C.T
+# Variables:
+#   - $script:FunctionResults: SqlModuleName, ConnectionString, DBSERVER (from SQL detection)
+#
+# Notes:
+#   - Assumes the default SQL instance and sysadmin privileges.
 # ===================================================================================================
 
 function Manage_Sa_Account
@@ -23690,33 +24504,23 @@ function Manage_Sa_Account
 }
 
 # ===================================================================================================
-#                        FUNCTION: Export-VNCFiles-ForAllNodes
+#                              FUNCTION: Export_VNC_Files_For_All_Nodes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Generates UltraVNC (.vnc) connection files for all lanes, scales, and backoffices discovered in
-#   the current store environment. Each node receives its own preconfigured .vnc file (with fixed password
-#   or lane-specific password) and is saved to Desktop\Lanes, Desktop\Scales, or Desktop\Backoffices accordingly.
-#   Designed for rapid remote support and streamlined access.
+#   Generates UltraVNC (.vnc) connection files for every lane, scale, and backoffice discovered
+#   in the store, saved under Desktop\Lanes, Desktop\Scales, Desktop\Backoffices. Default VNC
+#   password is 4330df922eb03b6e (UltraVNC encrypted form) unless a per-machine password is
+#   available; Ishida scales also get an Ishida_Wrapper_#.vnc. Scales with missing IP info are
+#   skipped and logged.
 #
 # Parameters:
-#   - LaneNumToMachineName      [hashtable]: LaneNumber => MachineName mapping.
-#   - ScaleCodeToIPInfo   [hashtable]: ScaleCode => Scale Object (includes IP).
-#   - BackofficeNumToMachineName[hashtable]: BackofficeTerminal => MachineName mapping.
-#   - LaneVNCPasswords  [hashtable] (optional): MachineName => Password mapping.
-#
-# Details:
-#   - Password is set to: 4330df922eb03b6e (UltraVNC encrypted format) by default.
-#   - Per-lane password is used if available in LaneVNCPasswords.
-#   - Files are written with clear, descriptive names.
-#   - Uses Write_Log for all status and progress messages.
-#   - Ensures all required folders exist.
-#   - Skips scales with missing IP/network info and logs them.
-#   - Creates Ishida_Wrapper_#.vnc for each Ishida scale found.
-#
-# Usage:
-#   Export-VNCFiles-ForAllNodes -LaneNumToMachineName $... -ScaleCodeToIPInfo $... -BackofficeNumToMachineName $... [-LaneVNCPasswords $...]
-#
-# Author: Alex_C.T
+#   - LaneNumToMachineName       [hashtable] (required): LaneNumber => MachineName
+#   - ScaleCodeToIPInfo          [hashtable] (required): ScaleCode => scale object (with IP)
+#   - BackofficeNumToMachineName [hashtable] (required): BackofficeTerminal => MachineName
+#   - AllVNCPasswords            [hashtable]: MachineName => VNC password
+#   - RunInBackground            [switch]: run as a background job
+#   - SilentBackground           [switch]: suppress log window output
+#   - InternalBackgroundJob      [switch]: internal flag - already inside a background job
 # ===================================================================================================
 
 function Export_VNC_Files_For_All_Nodes
@@ -24275,24 +25079,60 @@ PreemptiveUpdates=0
 }
 
 # ===================================================================================================
-#                           FUNCTION: Schedule_LocalDB_Backup
+#                              FUNCTION: Select-FolderOrDefault
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Interactive GUI tool to configure, schedule, and maintain automated SQL Server database backups
-#   for the local store server. Prompts user for preferred time, frequency, and retention policy.
-#   Generates and schedules a PowerShell script that:
-#     - Backs up the local database to a dated .bak file
-#     - Deletes oldest backups, keeping only the specified number
-#     - Uses Write_Log for all logging and status messages
-#   Schedules as a SYSTEM task for maximum reliability.
+#   Opens a folder picker (FolderBrowserDialog) pre-set to a starting folder and returns the
+#   folder the user chose; if the user cancels it returns $null so the caller keeps its default.
+#   Shared helper for the Local DB / Storeman ZIP / Lane DB backup schedulers' "Backup folder"
+#   option, so the backup can be saved to the default location or a location of choice.
 #
 # Parameters:
-#   None (uses environment and $script:FunctionResults for database info)
+#   - initialPath: folder the picker opens at (usually the default backup root)
+#   - description: prompt text shown at the top of the picker
 #
-# Usage:
-#   Schedule_LocalDB_Backup
+# Returns:
+#   The chosen folder path, or $null if the user cancelled.
+# ===================================================================================================
+
+function Select-FolderOrDefault
+{
+	param
+	(
+		[string]$initialPath = "",
+		[string]$description = "Choose a folder"
+	)
+
+	Add-Type -AssemblyName System.Windows.Forms
+	$fd = New-Object System.Windows.Forms.FolderBrowserDialog
+	$fd.Description = $description
+	$fd.ShowNewFolderButton = $true
+	if ($initialPath -and (Test-Path -LiteralPath $initialPath)) { $fd.SelectedPath = $initialPath }
+
+	$res = $fd.ShowDialog()
+	if ($res -eq [System.Windows.Forms.DialogResult]::OK -and $fd.SelectedPath)
+	{
+		return $fd.SelectedPath
+	}
+	return $null
+}
+
+# ===================================================================================================
+#                              FUNCTION: Schedule_LocalDB_Backup
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   GUI to configure, schedule, and maintain the automated backup of the local store SQL
+#   database: prompts for time, frequency, and retention, then generates and schedules a
+#   SYSTEM task running a PowerShell script that writes a dated .bak and deletes oldest
+#   backups, keeping only the configured count.
 #
-# Author: Alex_C.T
+# Parameters:
+#   (none - uses $script:FunctionResults for database info)
+#
+# Variables:
+#   - $script:FunctionResults: DBNAME, DBSERVER
+#   - $script:BackupRoot: backup destination (per-host subfolder)
+#   - $script:ScriptsFolder: where the backup script is written
 # ===================================================================================================
 
 function Schedule_LocalDB_Backup
@@ -24319,7 +25159,7 @@ function Schedule_LocalDB_Backup
 		
 		$form = New-Object System.Windows.Forms.Form
 		$form.Text = "Configure Local DB Backup Scheduler"
-		$form.Size = New-Object System.Drawing.Size(375, 245)
+		$form.Size = New-Object System.Drawing.Size(375, 280)
 		$form.StartPosition = "CenterScreen"
 		$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 		$form.MaximizeBox = $false
@@ -24366,9 +25206,32 @@ function Schedule_LocalDB_Backup
 		$numKeep.Size = New-Object System.Drawing.Size(60, 20)
 		$form.Controls.Add($numKeep)
 		
+		$lblDir = New-Object System.Windows.Forms.Label
+		$lblDir.Text = "Backup folder:"
+		$lblDir.Location = New-Object System.Drawing.Point(10, 138)
+		$lblDir.Size = New-Object System.Drawing.Size(95, 20)
+		$form.Controls.Add($lblDir)
+		
+		$txtDir = New-Object System.Windows.Forms.TextBox
+		$txtDir.ReadOnly = $true
+		$txtDir.Text = $backupDir.TrimEnd('\')
+		$txtDir.Location = New-Object System.Drawing.Point(108, 136)
+		$txtDir.Size = New-Object System.Drawing.Size(150, 20)
+		$form.Controls.Add($txtDir)
+		
+		$btnBrowse = New-Object System.Windows.Forms.Button
+		$btnBrowse.Text = "Browse..."
+		$btnBrowse.Location = New-Object System.Drawing.Point(262, 134)
+		$btnBrowse.Size = New-Object System.Drawing.Size(75, 24)
+		$btnBrowse.Add_Click({
+			$p = Select-FolderOrDefault -initialPath $txtDir.Text -description "Choose where to store the local DB backup (a <host> subfolder is created inside it)."
+			if ($p) { $txtDir.Text = $p }
+		})
+		$form.Controls.Add($btnBrowse)
+		
 		$btnOK = New-Object System.Windows.Forms.Button
 		$btnOK.Text = "OK"
-		$btnOK.Location = New-Object System.Drawing.Point(70, 150)
+		$btnOK.Location = New-Object System.Drawing.Point(70, 190)
 		$btnOK.Size = New-Object System.Drawing.Size(90, 30)
 		$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 		$form.AcceptButton = $btnOK
@@ -24376,7 +25239,7 @@ function Schedule_LocalDB_Backup
 		
 		$btnCancel = New-Object System.Windows.Forms.Button
 		$btnCancel.Text = "Cancel"
-		$btnCancel.Location = New-Object System.Drawing.Point(185, 150)
+		$btnCancel.Location = New-Object System.Drawing.Point(185, 190)
 		$btnCancel.Size = New-Object System.Drawing.Size(90, 30)
 		$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 		$form.CancelButton = $btnCancel
@@ -24389,6 +25252,12 @@ function Schedule_LocalDB_Backup
 			Write_Log "`r`n==================== Schedule_LocalDB_Backup Completed ====================" "blue"
 			return
 		}
+		
+		# Backup location: the folder the user picked (default if unchanged) + <host> subfolder
+		$chosenParent = $txtDir.Text.Trim()
+		if (-not $chosenParent) { $chosenParent = $backupDir.TrimEnd('\') }
+		$serverFolder = Join-Path $chosenParent $LocalHost
+		Write_Log "Local DB backup destination: $serverFolder" "gray"
 		
 		$timeInput = $txtTime.Text
 		$freqInput = [int]$numFreq.Value
@@ -24435,7 +25304,7 @@ while (`$bakFiles.Count -ge `$MaxBackups) {
 
 # Run the backup
 `$tsql = "BACKUP DATABASE [`$Database] TO DISK = N'`$backupFile' WITH NOFORMAT, NOINIT, NAME = N'`$Database-FullBackup-`$timestamp', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
-& sqlcmd -S `"$dbServer`" -Q `$tsql -b
+`$sqlOut = & sqlcmd -S `"$dbServer`" -Q `$tsql -b 2>&1
 `$exitCode = `$LASTEXITCODE
 
 if (`$exitCode -eq 0) {
@@ -24443,8 +25312,14 @@ if (`$exitCode -eq 0) {
     "[`$(Get-Date)] Backup complete: `$backupFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
 }
 else {
-    # Failure log 
+    # Failure log - capture the real sqlcmd error so it is diagnosable on the store
+    `$errMsg = (`$sqlOut | Out-String).Trim()
+    if (-not `$errMsg) { `$errMsg = "(sqlcmd produced no output)" }
     "[`$(Get-Date)] Backup FAILED for [`$Database] on [`$SqlInstance] (exit code: `$exitCode)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+    "[`$(Get-Date)]   sqlcmd output: `$errMsg" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+    if (`$errMsg -match 'Msg 916|Msg 3013|Msg 3201|not able to access the database') {
+        "[`$(Get-Date)]   ACCESS problem: backup ran as an account with no access to [`$Database]. Re-run 'Schedule DB Backup' (it now runs as the logged-in user) or set the task to an account that can open the database." | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+    }
 }
 "@
 		
@@ -24467,23 +25342,27 @@ else {
 		{
 			$freqArg = "/SC DAILY /MO $freqInput"
 		}
-		
 		$taskName = "${LocalHost}_DB_Backup_Schedule"
 		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$backupScriptPath`"`""
 		
 		# --- Remove existing task if present ---
 		schtasks.exe /Delete /TN "$taskName" /F 2>$null | Out-Null
 		
+		
 		# --- Create scheduled task ---
-		$cmd = "schtasks.exe /Create /RU SYSTEM /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
-		Write_Log "Creating scheduled task with command:" "yellow"
+		# Run as the CURRENT (logged-in) user, not SYSTEM: on the store the SQL
+		# login that can open the database is the interactive account, so the
+		# backup must run under it (interactive, /IT). SYSTEM has no DB access.
+		$backupTaskUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+		$cmd = "schtasks.exe /Create /RU `"$backupTaskUser`" /IT /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
+		Write_Log "Creating backup task as '$backupTaskUser' (interactive /IT) with command:" "yellow"
 		Write_Log $cmd "gray"
 		Invoke-Expression $cmd
 		
 		if ($LASTEXITCODE -eq 0)
 		{
-			Write_Log "Backup task scheduled successfully (`"$taskName`") at $startTime every $freqInput day(s)." "green"
-			[System.Windows.Forms.MessageBox]::Show("Backup task scheduled successfully.`nScript: $backupScriptPath", "Scheduled!", 0, 64)
+			Write_Log "Backup task scheduled successfully (`"$taskName`") as '$backupTaskUser' at $startTime every $freqInput day(s)." "green"
+			[System.Windows.Forms.MessageBox]::Show("Backup task scheduled successfully as '$backupTaskUser'.`nScript: $backupScriptPath", "Scheduled!", 0, 64)
 		}
 		else
 		{
@@ -24500,24 +25379,21 @@ else {
 }
 
 # ===================================================================================================
-#                           FUNCTION: Schedule_Storeman_Zip_Backup
+#                              FUNCTION: Schedule_Storeman_Zip_Backup
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Interactive GUI tool to configure, schedule, and maintain automated ZIP backups of the Storeman
-#   folder. Prompts user for preferred time, frequency, and retention policy.
-#   Generates and schedules a PowerShell script that:
-#     - Zips the Storeman folder to a dated .zip file
-#     - Deletes oldest backups, keeping only the specified number
-#     - Uses Write_Log for all logging and status messages
-#   Schedules as a SYSTEM task for maximum reliability.
+#   GUI to configure, schedule, and maintain the automated ZIP backup of the Storeman folder
+#   (weekly by default): prompts for time, frequency, and retention, writes
+#   Run_<host>_Storeman_Zip_Backup.ps1, and schedules the <host>_Storeman_Zip_Backup SYSTEM
+#   task; the script zips to a dated .zip and keeps only the configured number of backups.
 #
 # Parameters:
-#   None (uses $BasePath as detected Storeman folder)
+#   (none - uses $BasePath as the detected Storeman folder)
 #
-# Usage:
-#   Schedule_Storeman_Zip_Backup
-#
-# Author: Alex_C.T
+# Variables:
+#   - $BasePath: detected Storeman folder
+#   - $script:BackupRoot: backup destination (per-host subfolder)
+#   - $script:ScriptsFolder: where the backup script is written
 # ===================================================================================================
 
 function Schedule_Storeman_Zip_Backup
@@ -24545,7 +25421,7 @@ function Schedule_Storeman_Zip_Backup
 		
 		$form = New-Object System.Windows.Forms.Form
 		$form.Text = "Configure Storeman ZIP Backup Scheduler"
-		$form.Size = New-Object System.Drawing.Size(385, 245)
+		$form.Size = New-Object System.Drawing.Size(385, 280)
 		$form.StartPosition = "CenterScreen"
 		$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 		$form.MaximizeBox = $false
@@ -24592,9 +25468,32 @@ function Schedule_Storeman_Zip_Backup
 		$numKeep.Size = New-Object System.Drawing.Size(60, 20)
 		$form.Controls.Add($numKeep)
 		
+		$lblDir = New-Object System.Windows.Forms.Label
+		$lblDir.Text = "Backup folder:"
+		$lblDir.Location = New-Object System.Drawing.Point(10, 138)
+		$lblDir.Size = New-Object System.Drawing.Size(95, 20)
+		$form.Controls.Add($lblDir)
+		
+		$txtDir = New-Object System.Windows.Forms.TextBox
+		$txtDir.ReadOnly = $true
+		$txtDir.Text = $script:BackupRoot.TrimEnd('\')
+		$txtDir.Location = New-Object System.Drawing.Point(108, 136)
+		$txtDir.Size = New-Object System.Drawing.Size(150, 20)
+		$form.Controls.Add($txtDir)
+		
+		$btnBrowse = New-Object System.Windows.Forms.Button
+		$btnBrowse.Text = "Browse..."
+		$btnBrowse.Location = New-Object System.Drawing.Point(262, 134)
+		$btnBrowse.Size = New-Object System.Drawing.Size(75, 24)
+		$btnBrowse.Add_Click({
+			$p = Select-FolderOrDefault -initialPath $txtDir.Text -description "Choose where to store the Storeman ZIP backup (a <host> subfolder is created inside it)."
+			if ($p) { $txtDir.Text = $p }
+		})
+		$form.Controls.Add($btnBrowse)
+		
 		$btnOK = New-Object System.Windows.Forms.Button
 		$btnOK.Text = "OK"
-		$btnOK.Location = New-Object System.Drawing.Point(80, 150)
+		$btnOK.Location = New-Object System.Drawing.Point(80, 190)
 		$btnOK.Size = New-Object System.Drawing.Size(90, 30)
 		$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 		$form.AcceptButton = $btnOK
@@ -24602,7 +25501,7 @@ function Schedule_Storeman_Zip_Backup
 		
 		$btnCancel = New-Object System.Windows.Forms.Button
 		$btnCancel.Text = "Cancel"
-		$btnCancel.Location = New-Object System.Drawing.Point(195, 150)
+		$btnCancel.Location = New-Object System.Drawing.Point(195, 190)
 		$btnCancel.Size = New-Object System.Drawing.Size(90, 30)
 		$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 		$form.CancelButton = $btnCancel
@@ -24615,6 +25514,12 @@ function Schedule_Storeman_Zip_Backup
 			Write_Log "`r`n==================== Schedule_Storeman_Zip_Backup Completed ====================" "blue"
 			return
 		}
+		
+		# Backup location: the folder the user picked (default if unchanged) + <host> subfolder
+		$chosenParent = $txtDir.Text.Trim()
+		if (-not $chosenParent) { $chosenParent = $script:BackupRoot.TrimEnd('\') }
+		$backupRoot = Join-Path $chosenParent $LocalHost
+		Write_Log "Storeman ZIP backup destination: $backupRoot" "gray"
 		
 		$timeInput = $txtTime.Text
 		$freqInput = [int]$numFreq.Value
@@ -24774,18 +25679,21 @@ catch {
 }
 
 # ===================================================================================================
-#                      FUNCTION: Schedule_LaneDB_Backup
+#                              FUNCTION: Schedule_LaneDB_Backup
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Lets the user select one or more lanes (via Show_Node_Selection_Form in Lane mode).
-#   Only lanes with valid ProtocolResults are allowed.
-#   Prompts user for backup schedule details (time, frequency, retention).
-#   For each lane, creates a backup script at $ScriptsFolder\$MachineName\Run_${MachineName}DB_Backup.ps1.
-#   Schedules a task for each lane using that script.
-#   Each backup goes to $BackupRoot\$MachineName\STORESQL_{timestamp}.bak (etc).
-#   Always uses the detected protocol (TCP/Named Pipes) for sqlcmd.
-
-# Author: Alex_C.T
+#   Lane DB backup wizard: pick lanes (only those with a valid TCP/Named Pipes protocol),
+#   prompt for schedule details, then per lane create Run_<machine>DB_Backup.ps1 under the
+#   per-machine scripts folder and schedule a task that backs up to
+#   $BackupRoot\<machine>\STORESQL_<timestamp>.bak using the detected protocol.
+#
+# Parameters:
+#   (none)
+#
+# Variables:
+#   - $script:FunctionResults: StoreNumber, node mappings
+#   - $script:LaneProtocols: per-lane protocol (TCP / Named Pipes / File)
+#   - $ScriptsFolder / $BackupRoot: per-machine script and backup locations
 # ===================================================================================================
 
 function Schedule_LaneDB_Backup
@@ -24821,7 +25729,7 @@ function Schedule_LaneDB_Backup
 	
 	$form = New-Object Windows.Forms.Form
 	$form.Text = "Configure Lane DB Backup Scheduler"
-	$form.Size = [Drawing.Size]::new(500, 380) # Larger form
+	$form.Size = [Drawing.Size]::new(500, 425) # Larger form
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = 'FixedDialog'
 	$form.MaximizeBox = $false
@@ -24831,7 +25739,7 @@ function Schedule_LaneDB_Backup
 	$grpBackup = New-Object Windows.Forms.GroupBox
 	$grpBackup.Text = "Backup Settings"
 	$grpBackup.Location = [Drawing.Point]::new(20, 15)
-	$grpBackup.Size = [Drawing.Size]::new(450, 140)
+	$grpBackup.Size = [Drawing.Size]::new(450, 180)
 	$form.Controls.Add($grpBackup)
 	
 	# Time
@@ -24875,10 +25783,32 @@ function Schedule_LaneDB_Backup
 	$numKeep.Size = [Drawing.Size]::new(80, 24)
 	$grpBackup.Controls.Add($numKeep)
 	
+	# Backup folder (local copy) - picker opens at the default; accept it or switch
+	$lblDir = New-Object Windows.Forms.Label
+	$lblDir.Text = "Backup folder (local copy):"
+	$lblDir.Location = [Drawing.Point]::new(25, 140)
+	$lblDir.Size = [Drawing.Size]::new(145, 18)
+	$grpBackup.Controls.Add($lblDir)
+	$txtDir = New-Object Windows.Forms.TextBox
+	$txtDir.ReadOnly = $true
+	$txtDir.Text = $script:BackupRoot.TrimEnd('\')
+	$txtDir.Location = [Drawing.Point]::new(175, 138)
+	$txtDir.Size = [Drawing.Size]::new(165, 22)
+	$grpBackup.Controls.Add($txtDir)
+	$btnBrowse = New-Object Windows.Forms.Button
+	$btnBrowse.Text = "Browse..."
+	$btnBrowse.Location = [Drawing.Point]::new(346, 136)
+	$btnBrowse.Size = [Drawing.Size]::new(78, 24)
+	$btnBrowse.Add_Click({
+		$p = Select-FolderOrDefault -initialPath $txtDir.Text -description "Choose where to keep the LOCAL copy of the lane DB backup (a <machine> subfolder is created inside it)."
+		if ($p) { $txtDir.Text = $p }
+	})
+	$grpBackup.Controls.Add($btnBrowse)
+	
 	# -- Task User/Password GroupBox --
 	$grpUser = New-Object Windows.Forms.GroupBox
 	$grpUser.Text = "Scheduled Task Credentials"
-	$grpUser.Location = [Drawing.Point]::new(20, 165)
+	$grpUser.Location = [Drawing.Point]::new(20, 205)
 	$grpUser.Size = [Drawing.Size]::new(450, 100)
 	$form.Controls.Add($grpUser)
 	
@@ -24889,7 +25819,7 @@ function Schedule_LaneDB_Backup
 	$lblUser.Size = [Drawing.Size]::new(200, 18)
 	$grpUser.Controls.Add($lblUser)
 	$txtUser = New-Object Windows.Forms.TextBox
-	$txtUser.Text = "Administrator"
+	$txtUser.Text = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 	$txtUser.Location = [Drawing.Point]::new(260, 33)
 	$txtUser.Size = [Drawing.Size]::new(130, 24)
 	$grpUser.Controls.Add($txtUser)
@@ -24910,7 +25840,7 @@ function Schedule_LaneDB_Backup
 	# OK/Cancel
 	$btnOK = New-Object Windows.Forms.Button
 	$btnOK.Text = "OK"
-	$btnOK.Location = [Drawing.Point]::new(120, 285)
+	$btnOK.Location = [Drawing.Point]::new(120, 325)
 	$btnOK.Size = [Drawing.Size]::new(110, 38)
 	$btnOK.Font = [System.Drawing.Font]::new("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
@@ -24919,7 +25849,7 @@ function Schedule_LaneDB_Backup
 	
 	$btnCancel = New-Object Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = [Drawing.Point]::new(260, 285)
+	$btnCancel.Location = [Drawing.Point]::new(260, 325)
 	$btnCancel.Size = [Drawing.Size]::new(110, 38)
 	$btnCancel.Font = [System.Drawing.Font]::new("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
 	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -24933,11 +25863,15 @@ function Schedule_LaneDB_Backup
 		Write_Log "Lane backup scheduling cancelled by user." "yellow"
 		return
 	}
+	# Local-copy location: the folder the user picked (default if unchanged)
+	$chosenParent = $txtDir.Text.Trim()
+	if (-not $chosenParent) { $chosenParent = $script:BackupRoot.TrimEnd('\') }
+	Write_Log "Lane DB local-copy destination root: $chosenParent" "gray"
 	$timeInput = $txtTime.Text
 	$freqInput = [int]$numFreq.Value
 	$keepInput = [int]$numKeep.Value
 	$taskUser = $txtUser.Text.Trim()
-	if (-not $taskUser) { $taskUser = "Administrator" }
+	if (-not $taskUser) { $taskUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name }
 	$taskPwd = $txtPwd.Text
 	
 	# Validate time
@@ -24981,10 +25915,9 @@ function Schedule_LaneDB_Backup
 			default       { Write_Log "Unknown/unsupported protocol for $machine, skipping." "yellow"; continue }
 		}
 		
-		# Set backup and script directories (per-lane)
-		$backupDir = $script:BackupRoot
+		# Set backup and script directories (per-lane); local-copy root from the user's choice
 		$scriptsDir = $script:ScriptsFolder
-		$machineFolder = Join-Path $backupDir $machine
+		$machineFolder = Join-Path $chosenParent $machine
 		
 		# ----> KEY: name backup script exactly as Run_${MachineName}_DB_Backup.ps1
 		$scriptName = "Run_${machine}_DB_Backup.ps1"
@@ -25032,7 +25965,7 @@ try {
 
 # Run the backup on the lane via UNC SQL backup path
 `$tsql = "BACKUP DATABASE [`$Database] TO DISK = N'`$remoteBakFile' WITH NOFORMAT, NOINIT, NAME = N'`$Database-FullBackup-`$timestamp', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
-& sqlcmd -S `"$SqlcmdS`" -Q `$tsql -b
+`$sqlOut = & sqlcmd -S `"$SqlcmdS`" -Q `$tsql -b 2>&1
 `$exitCode = `$LASTEXITCODE
 
 if (`$exitCode -eq 0) {
@@ -25063,7 +25996,10 @@ if (`$exitCode -eq 0) {
 } else {
     # Remove failed/partial file from lane backup folder if exists
     if (Test-Path `$remoteBakFile) { Remove-Item -Path `$remoteBakFile -Force }
+    `$errMsg = (`$sqlOut | Out-String).Trim()
+    if (-not `$errMsg) { `$errMsg = "(sqlcmd produced no output)" }
     "[`$(Get-Date)] Backup FAILED for [`$Database] on [`$SqlcmdS] (exit code: `$exitCode)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+    "[`$(Get-Date)]   sqlcmd output: `$errMsg" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
 }
 "@
 		
@@ -25114,30 +26050,25 @@ if (`$exitCode -eq 0) {
 }
 
 # ===================================================================================================
-#                               FUNCTION: Update_ScaleConfig_And_DB
+#                              FUNCTION: Update_ScaleConfig_And_DB
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts the user to choose the weighted item marking logic (SCL or POS).
-#   Updates all ScaleCommApp XML config files (ProdType_F272) robustly using XML.
-#   If the setting doesn't exist, it is inserted; if it exists, it is updated.
-#   Runs the correct SQL update/merge using your item key (default F01) for SCL_TAB and POS_TAB.
-#   When reverting to Default/POS mode, clears only F272 in SCL_TAB:
-#     - If the F272 field allows NULL, sets F272 to NULL.
-#     - If the F272 field does not allow NULL, sets F272 to a blank string ('').
-#     - Fields like F.1000 (NOT NULL) are **not** touched or updated in any way.
-#   Uses Write_Log for all progress, result, and error reporting.
-# ---------------------------------------------------------------------------------------------------
+#   Weighted-item marking wizard: choose SCL mode or Default/POS mode, updates the
+#   ProdType_F272 setting in all ScaleCommApp XML config files (insert or update), then runs
+#   the SQL update/merge over SCL_TAB and POS_TAB keyed on the item key (default F01).
+#   Reverting to POS clears F272 only (NULL if nullable, blank string otherwise); NOT NULL
+#   fields are never touched.
+#
 # Parameters:
-#   Folder                  Directory containing ScaleCommApp config files.       (default: C:\ScaleCommApp)
-#   MinItem                 Lower bound of item code range.                       (default: 0020000100000)
-#   MaxItem                 Upper bound of item code range.                       (default: 0029999900000)
-#   POS_Field               Field in POS_TAB for weighted flag.                   (default: F82)
-#   POS_Value               Value in POS_TAB.$POS_Field to trigger update.        (default: 0)
-#   SCL_Field               Field in SCL_TAB to set (usually F272).               (default: F272)
-#   SCL_Value               Value to set in SCL_TAB when in SCL mode.             (default: 3)
-#   SCL_Clear_As_Blank      Set to $true to use blank string ('') instead of NULL for F272 when reverting to POS mode.
-#   ItemKey                 Column name for unique item code in both tables.      (default: F01)
-# ---------------------------------------------------------------------------------------------------
+#   (none - defaults set inline at the top of the function)
+#
+# Variables:
+#   - $script:ScaleCommRoots / $script:PrimaryScaleCommRoot: config XML location
+#   - $script:FunctionResults: SQL module and connection info
+#
+# Notes:
+#   - Range/field defaults (MinItem, MaxItem, POS_Field/Value, SCL_Field/Value, ItemKey) are inline.
+# ===================================================================================================
 
 function Update_ScaleConfig_And_DB
 {
@@ -25346,19 +26277,22 @@ SELECT @@ROWCOUNT AS RowsAffected;
 }
 
 # ===================================================================================================
-# FUNCTION: Configure_Scale_Sub-Departments
+#                              FUNCTION: Configure_Scale_Sub-Departments
 # ---------------------------------------------------------------------------------------------------
-# UI/UX:
-#   - Professional WinForms dialog, Segoe UI, group box, descriptive subtitles.
-#   - Fixed, DPI-aware size to avoid clipping (no PreferredSize math).
-#   - ASCII-only labels (FAM > RPC > CAT).
-# Behavior:
-#   - Auto picks first EMPTY table in order: FAM_TAB > RPC_TAB > CAT_TAB; shows which was used.
-#   - Individual choices prompt to Back Out or Overwrite (exact 7 rows).
-#   - Updates SdpDefault to OBJ.F16 / OBJ.F18 / OBJ.F17 or restores to "1" (no DB change).
-#   - Schema-aware, transactional SQL; PS 5.1 safe (no ternary, no ??, no nested funcs).
-# Logging:
-#   - Start banner (per your requirement) and the requested completion banner at ALL exits.
+# Description:
+#   WinForms dialog to configure scale sub-department tables: auto-picks the first EMPTY table
+#   in order FAM_TAB > RPC_TAB > CAT_TAB (shows which was used), individual choices prompt to
+#   Back Out or Overwrite (exact 7 rows), and SdpDefault is updated to OBJ.F16 / OBJ.F18 /
+#   OBJ.F17 or restored to "1" (no DB change).
+#
+# Parameters:
+#   - ServerInstance  [string]: SQL server (fallback: FunctionResults, else localhost\SQLEXPRESS)
+#   - Database        [string]: database (fallback: FunctionResults, else STORESQL)
+#   - ConfigFolder    [string]: ScaleComm config folder (default $script:PrimaryScaleCommRoot)
+#
+# Notes:
+#   - Schema-aware, transactional SQL; PS 5.1 safe (no ternary, no nested functions).
+#   - Start and completion banners are written at all exits.
 # ===================================================================================================
 
 function Configure_Scale_Sub-Departments
@@ -25717,7 +26651,7 @@ END CATCH;
 	# Title
 	$title = New-Object System.Windows.Forms.Label
 	$title.Text = "Choose how to configure Sub-Deparments for the scales"
-	$title.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 11, [System.Drawing.FontStyle]::Bold)
+	$title.Font = New-Object System.Drawing.Font("Segoe UI", [float]11, [System.Drawing.FontStyle]::Bold)
 	$title.AutoSize = $true
 	$title.Margin = New-Object System.Windows.Forms.Padding(4, 0, 4, 8)
 	$root.Controls.Add($title)
@@ -26134,16 +27068,23 @@ END CATCH;
 }
 
 # ===================================================================================================
-#                          FUNCTION: Deploy_Scale_Currency_Files
+#                              FUNCTION: Deploy_Scale_Currency_Files
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Prompts the user to select one or more scales (via Show_Node_Selection_Form).
-#   Prompts for the currency symbol to be used in the currency text files (defaults to "$").
-#   Copies the required .txt and .properties files (with correct currency) to each selected scale:
+#   Currency deployment for Bizerba scales: pick scales in the node selector, enter the
+#   currency symbol (default "$", common symbols in a combo), then copy the .txt/.properties
+#   currency files (all contents written inline, no external dependencies) to each scale:
 #     \\<ScaleIP>\c$\bizstorecard\bizerba\_fileIO\generic_data\in
-#   Uses shared mappings and writes all file contents inline (no external dependencies).
-#   Reports detailed status per scale.
-#   CHANGE: Writes files as UTF-8 **without BOM** to prevent a leading ï»¿ (or similar) before the currency.
+#
+# Parameters:
+#   (none)
+#
+# Variables:
+#   - $script:FunctionResults: StoreNumber (node lookup)
+#
+# Notes:
+#   - Files are written UTF-8 without BOM so no BOM appears before the currency symbol.
+#   - Offers to reboot the successfully deployed scales (via Reboot_Nodes).
 # ===================================================================================================
 
 function Deploy_Scale_Currency_Files
@@ -26177,7 +27118,7 @@ function Deploy_Scale_Currency_Files
 	# ---- Centered, bold, wrapped label ----
 	$lbl = New-Object Windows.Forms.Label
 	$lbl.Text = "Please enter the currency symbol to use`nfor all scale price files:"
-	$lbl.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+	$lbl.Font = New-Object System.Drawing.Font("Segoe UI", [float]11, [System.Drawing.FontStyle]::Bold)
 	$lbl.Width = $form.ClientSize.Width - 40
 	$lbl.Height = 50
 	$lbl.Location = New-Object System.Drawing.Point(20, 20)
@@ -26190,7 +27131,7 @@ function Deploy_Scale_Currency_Files
 	$cmbCurrency = New-Object Windows.Forms.ComboBox
 	$cmbCurrency.Items.AddRange(@('$', [char]0x20AC, [char]0x00A3, [char]0x00A5, [char]0x20B9, [char]0x20BD, [char]0x20A9, [char]0x20BA, [char]0x20AA))
 	$cmbCurrency.Text = '$'
-	$cmbCurrency.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Regular)
+	$cmbCurrency.Font = New-Object System.Drawing.Font("Segoe UI", [float]13, [System.Drawing.FontStyle]::Regular)
 	$cmbCurrency.DropDownStyle = 'DropDown'
 	$cmbCurrency.MaxLength = 3
 	$cmbCurrency.Width = 100
@@ -26206,7 +27147,7 @@ function Deploy_Scale_Currency_Files
 	# ---- Preview Label ----
 	$previewLabel = New-Object Windows.Forms.Label
 	$previewLabel.Text = "Preview: $1.99"
-	$previewLabel.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Italic)
+	$previewLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]12, [System.Drawing.FontStyle]::Italic)
 	$previewLabel.Width = $form.ClientSize.Width - 40
 	$previewLabel.Height = 30
 	$previewLabel.Location = New-Object System.Drawing.Point(20, 120)
@@ -26237,7 +27178,7 @@ function Deploy_Scale_Currency_Files
 	$btnOK.Text = "OK"
 	$btnOK.Size = [System.Drawing.Size]::new($btnWidth, $btnHeight)
 	$btnOK.Location = [System.Drawing.Point]::new($startX, $btnY)
-	$btnOK.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+	$btnOK.Font = New-Object System.Drawing.Font("Segoe UI", [float]10, [System.Drawing.FontStyle]::Bold)
 	$btnOK.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
 	$btnOK.ForeColor = [System.Drawing.Color]::White
 	$btnOK.FlatStyle = 'Flat'
@@ -26436,21 +27377,28 @@ function Deploy_Scale_Currency_Files
 }
 
 # ===================================================================================================
-# 								FUNCTION: Pick_And_Update_IshidaSDPs
+#                              FUNCTION: Pick_And_Update_IshidaSDPs
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   One-shot picker + writer for IshidaSDPs based on SDP_TAB.
-#   - Uses F04 as SDP number and F1022 as SDP name.
-#   - Shows a GUI to pick which SDPs go into the config.
-#   - Pre-checks those already present in IshidaSDPs.
-#   - Saves back to <add key="IshidaSDPs" value="..."> as a comma-separated list of numbers,
-#     or "Null" when none are selected (per request).
+#   One-shot picker + writer for the IshidaSDPs config entry based on SDP_TAB (F04 = SDP
+#   number, F1022 = name): a GUI to pick which SDPs go into the config, pre-checking those
+#   already present, then saves <add key="IshidaSDPs" value="..."> as a comma-separated list
+#   of numbers, or "Null" when none are selected.
+#
+# Parameters:
+#   - ConfigPath      [string]: Ishida config file (resolved from roots if empty)
+#   - ScaleCommRoots  [string[]]: config roots to search (default $script:ScaleCommRoots)
+#   - AllMatches      [switch]: accept all matching config files
+#   - IncludeInactive [switch]: include inactive SDPs in the picker
+#   - Force           [switch]: reserved for future use
+#
+# Variables:
+#   - $script:FunctionResults: DBNAME, DBSERVER, ConnectionString, SqlModuleName
+#                              (falls back to Get_Store_And_Database_Info)
 #
 # Notes:
-#   - Handles missing ConnectionString by building one (SQL Auth preferred, else Integrated).
-#   - PS 5.1 compatible WinForms UI.
-#   - Logging via Write_Log when available; falls back to Write-Host.
-#   - Saves UTF-8 without BOM and creates a timestamped .bak next to the config.
+#   - Builds a ConnectionString when missing (SQL Auth preferred, else Integrated).
+#   - Saves UTF-8 without BOM and writes a timestamped .bak next to the config.
 # ===================================================================================================
 
 function Pick_And_Update_IshidaSDPs
@@ -26856,22 +27804,25 @@ ORDER BY CAST([F04] AS int);
 }
 
 # ===================================================================================================
-#                                FUNCTION: Sync_Selected_Node_Hosts
+#                              FUNCTION: Sync_Selected_Node_Hosts
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Lets the user pick any subset of lanes/backoffices (via node selector), resolves their IP/hostname
-#   mapping, ensures the local hosts file is updated (replacing old entries if IPs have changed),
-#   and then copies the finished hosts file to all selected nodes.
-#   - Always includes the current machine.
-#   - Custom node mappings are appended after a blank line (for clarity/compatibility).
-#   - Shows a final Write_Log output as a table, sorted by IP, coloring changed rows yellow.
-#   - Ensures each IP is mapped to only one hostname (last selected wins if dupe).
-#   - Local IP selection is robust: ignores VPN/virtual/tunnel adapters, prefers Ethernet/Wi-Fi with a gateway.
-# Usage:
-#   Sync_Selected_Node_Hosts -StoreNumber "001"
-# Prerequisites:
-#   - Retrieve_Nodes and Show_Node_Selection_Form must be available and run.
-#   - The script must run as admin for hosts file writes/copies.
+#   Pick any subset of lanes/backoffices, resolve their IP/hostname mapping, update the local
+#   hosts file (replacing old entries when IPs changed), and copy the finished file to all
+#   selected nodes. Always includes the current machine; custom mappings are appended after a
+#   blank line; each IP maps to one hostname (last selected wins).
+#
+# Parameters:
+#   - StoreNumber  [string]: store to process (required)
+#
+# Variables:
+#   - $script:FunctionResults: LaneNumToMachineName, BackofficeNumToMachineName
+#                              (run Retrieve_Nodes first)
+#
+# Notes:
+#   - Local IPv4 selection ignores VPN/virtual/tunnel adapters and prefers
+#     Ethernet/Wi-Fi with a gateway.
+#   - Requires admin for hosts file writes and copies.
 # ===================================================================================================
 
 function Sync_Selected_Node_Hosts
@@ -27122,20 +28073,21 @@ function Sync_Selected_Node_Hosts
 }
 
 # ===================================================================================================
-#                             FUNCTION: Show_Node_Selection_Form
+#                              FUNCTION: Show_Node_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Shows a node selector dialog for Lanes, Scales, Backoffices, or any combination.
-#   Usage:
-#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
-#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale"
-#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes @("Lane","Scale","Backoffice")
-#      $sel = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Scale" -OnlyBizerbaScales
-#   Returns: hashtable with keys matching selected node types (Lanes, Scales, Backoffices)
-#   Extras:
-#      -ExcludedNodes         : hide specific nodes (machine names like POS001 and/or 3-digit lane numbers like 001)
-#      -SingleLaneOnly        : limit lane selection to exactly one (not required; just a cap)
-#      -LaneSelectionLimit <n>: limit lane selection to at most n (not required; just a cap)
+#   The shared node picker: tabbed WinForms dialog for Lanes, Scales, Backoffices, or any
+#   combination. Returns a hashtable with keys matching the selected node types (Lanes,
+#   Scales, Backoffices), or $null when the user cancels or selects nothing.
+#
+# Parameters:
+#   - StoreNumber        [string] (required): store to look up
+#   - NodeTypes          [string[]]: "Lane" / "Scale" / "Backoffice" (default: all three)
+#   - OnlyBizerbaScales  [switch]: limit the Scales tab to Bizerba scales
+#   - Title              [string]: dialog title (default "Select Nodes to Process")
+#   - ExcludedNodes      [string[]]: machine names and/or 3-digit lane numbers to hide
+#   - SingleLaneOnly     [switch]: cap lane selection at 1
+#   - LaneSelectionLimit [int]: cap lane selection at N (0 = unlimited)
 # ===================================================================================================
 
 function Show_Node_Selection_Form
@@ -27716,11 +28668,17 @@ function Show_Node_Selection_Form
 }
 
 # ===================================================================================================
-#                                FUNCTION: Show_Table_Selection_Form
+#                              FUNCTION: Show_Table_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Displays a GUI dialog listing all discovered tables from Get_Table_Aliases in a checked list box,
-#   with buttons to Select All or Deselect All. Returns the list of checked table names (with _TAB).
+#   Dialog listing all tables discovered by Get_Table_Aliases in a check list box, with
+#   Select All / Deselect All buttons; returns the checked table names (with _TAB).
+#
+# Parameters:
+#   - AliasResults  [System.Collections.ArrayList] (required): rows from Get_Table_Aliases
+#
+# Returns:
+#   - Array of checked table names ($null when canceled)
 # ===================================================================================================
 
 function Show_Table_Selection_Form
@@ -27902,11 +28860,17 @@ function Show_Table_Selection_Form
 }
 
 # ===================================================================================================
-#                                FUNCTION: Show_Section_Selection_Form
+#                              FUNCTION: Show_Section_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Helper function that creates a form with checkboxes for each section. Returns an array of the 
-#   selected section names or $null if canceled.#   
+#   Dialog with a check list box of SQL sections (Select All / Deselect All); returns the
+#   array of checked section names, or $null when canceled.
+#
+# Parameters:
+#   - SectionNames  [string[]] (required): section names to list
+#
+# Returns:
+#   - Array of checked section names ($null when canceled)
 # ===================================================================================================
 
 function Show_Section_Selection_Form
@@ -28091,20 +29055,24 @@ function Show_Section_Selection_Form
 }
 
 # ===================================================================================================
-#                                	FUNCTION: Start_Lane_Protocol_Jobs
+#                              FUNCTION: Start_Lane_Protocol_Jobs
 # ---------------------------------------------------------------------------------------------------
-# Behavior:
-#   - Call ONCE from your main script
-#   - Returns immediately (non-blocking)
-#   - Continuously rescans lane SQL protocol every 1 minute:
-#       TCP -> Named Pipes -> else File
+# Description:
+#   Starts the lane SQL protocol background loop: a timer rescans every lane's SQL protocol
+#   (TCP -> Named Pipes -> else File) every minute. Call once from the main script; it
+#   returns immediately, and a second call updates the lane map and keeps the existing loop.
 #
-# Writes:
-#   - $script:LaneProtocols  (SYNCHRONIZED hashtable, safe cross-runspace)
-#   - C:\Tecnica_Systems\Alex_C.T\Setup_Files\Protocol_Results.txt  (UTF8 no BOM)
+# Parameters:
+#   - LaneNumToMachineName  [hashtable] (required): LaneNumber => MachineName
+#   - SqlModuleName         [string] (required): detected SQL module (Invoke-Sqlcmd)
+#
+# Variables:
+#   - $script:LaneProtocols: synchronized hashtable LaneNum => protocol (read by all consumers)
+#   - $script:SetupFiles: directory for Protocol_Results.txt (UTF8 no BOM)
+#   - $script:LaneProtocolJobs / $script:LaneSqlProtocolEnableJobs: per-lane job and task state
 #
 # Notes:
-#   - If called again, it updates the lane map and keeps the existing background loop.
+#   - Double-start guarded via $script:protocolTimer.
 # ===================================================================================================
 
 function Start_Lane_Protocol_Jobs
@@ -28755,39 +29723,29 @@ if (`$ok) { exit 0 } else { exit 1 }
 }
 
 # ===================================================================================================
-#                        FUNCTION: Manage_Bizerba_Scales_Alex_Profile
+#                              FUNCTION: Manage_Bizerba_Scales_Alex_Profile
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   All-in-one interactive function to manage Bizerba scales by modifying ONLY the dynamic config,
-#   while keeping BMS.xml untouched.
+#   All-in-one Bizerba scale manager that modifies ONLY the dynamic config (BMS.xml stays
+#   untouched): BMS gets ONE EventProcess per event (SEND/DEL+SEND/STATUS/SALES) with one
+#   InputPath (shared deployment folder) and Terminals = only the selected scales.
 #
-# Key behavior (FIXED):
-#   - BMS gets ONE EventProcess per event (SEND/DEL+SEND/STATUS/SALES).
-#   - That single EventProcess has ONE InputPath (our shared deployment folder) and a Terminals list
-#     containing ONLY the selected scales.
-#   - This avoids the "only first scale gets items, others show 0" behavior.
+# Parameters:
+#   - StoreNumber                         [string] (required): store to process
+#   - BmsRootPath                         [string]: BMS root (default $script:BmsRootPath)
+#   - BmsConfigName / BmsExeName          [string]: defaults "BMS.xml" / "BMS.exe"
+#   - AlexDynamicConfigName               [string]: default "dynamic_config_Alex_C.T.xml"
+#   - ScaleManagementAppPath              [string]: default $script:ScaleManagementAppExePath
+#   - ScaleManagementAppUpdateSpecialsPath [string]: default $script:ScaleManagementAppUpdateSpecialsPath
 #
-# Export capture:
-#   - ScaleManagementApp / UpdateSpecials export to GLOBAL toBizerba:
-#       C:\Bizerba\RetailConnect\BMS\toBizerba\
-#   - We capture ATST/PLST into memory ASAP and delete the export files immediately from GLOBAL so the
-#     normal service doesn't act on them.
+# Variables:
+#   - $script:FunctionResults['ScaleCodeToIPInfo']: scale IPs (from Retrieve_Nodes)
 #
-# Targeted deploy:
-#   - We deploy SCL files once into:
-#       C:\Bizerba\RetailConnect\BMS\Scales_Deployment\toBizerba\
-#   - We create triggers (NO EXTENSION) in ORIGINAL toBizerba (tight control):
-#       BatchSendFull / BatchScl / DBatch / DBatchScl / Status / Sales (etc)
-#   - We run:
-#       BMS.exe -config .\BMS.xml -dynamic .\dynamic_config_Alex_C.T.xml
-#
-# Dependencies:
-#   - Write_Log
-#   - Show_Node_Selection_Form
-#   - $script:FunctionResults['ScaleCodeToIPInfo'] (from Retrieve_Nodes)
-#
-# Usage:
-#   Manage_Bizerba_Scales_Alex_Profile -StoreNumber 003
+# Notes:
+#   - Captures ATST/PLST exports from GLOBAL toBizerba into memory and deletes them immediately.
+#   - Deploys SCL files once to Scales_Deployment\toBizerba; creates extensionless triggers
+#     (BatchSendFull, BatchScl, DBatch, DBatchScl, Status, Sales) in the original toBizerba.
+#   - Runs: BMS.exe -config .\BMS.xml -dynamic .\dynamic_config_Alex_C.T.xml
 # ===================================================================================================
 
 function Manage_Bizerba_Scales_Alex_Profile
@@ -29961,6 +30919,22 @@ if (-not $form)
 	[System.Windows.Forms.Application]::EnableVisualStyles()
 	[System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
 	
+	# Make the process DPI-aware BEFORE any window is created so the UI renders
+	# crisply on high-DPI displays (no-op on 100% scaling).
+	try
+	{
+		$tbsDpiCode = @'
+[DllImport("user32.dll")]
+public static extern bool SetProcessDPIAware();
+'@
+		if (-not ('TbsDpiHelper' -as [type]))
+		{
+			Add-Type -Namespace Tbs -Name DpiHelper -MemberDefinition $tbsDpiCode -ErrorAction SilentlyContinue
+		}
+		if ('TbsDpiHelper' -as [type]) { [void][Tbs.DpiHelper]::SetProcessDPIAware() }
+	}
+	catch { }
+	
 	# ---- UI constants (kept as simple variables so other layout blocks can reuse them) -------------
 	# NOTE: Your other layout code (like $layoutBottom) often assumes $padSide exists.
 	if (-not $padSide) { $padSide = 50 } # left/right margin (keeps your original feel)
@@ -29969,11 +30943,32 @@ if (-not $form)
 	$gapCards = 10 # vertical gap between cards
 	$logInnerPad = 10 # padding inside the log frame
 	$minLogH = 220 # minimum log height (used by other layout)
-	$uiAccent = [System.Drawing.Color]::DodgerBlue
-	$uiBg = [System.Drawing.Color]::FromArgb(245, 247, 250) # modern light background
+	# ===================================================================================================
+	# ENHANCED COLOR SCHEME (TBS Maintenance Script v2.6.7+ - Modern UI Theme)
+	# ===================================================================================================
+	$uiAccent = [System.Drawing.Color]::FromArgb(0, 122, 204)          # Windows 11 accent blue
+	$uiAccentLight = [System.Drawing.Color]::FromArgb(230, 243, 255)   # Light blue hover
+	$uiAccentDark = [System.Drawing.Color]::FromArgb(0, 90, 158)       # Dark blue for pressed
+	
+	$uiBg = [System.Drawing.Color]::FromArgb(242, 242, 242)            # Windows 11 light gray bg
 	$uiCardBg = [System.Drawing.Color]::White
-	$uiCardBorder = [System.Drawing.Color]::FromArgb(220, 225, 232)
+	$uiCardBorder = [System.Drawing.Color]::FromArgb(229, 229, 229)    # Subtle border
 	$uiHeaderText = [System.Drawing.Color]::White
+	$uiTextPrimary = [System.Drawing.Color]::FromArgb(32, 32, 32)      # Dark primary text
+	$uiTextSecondary = [System.Drawing.Color]::FromArgb(102, 102, 102) # Secondary text
+	$uiTextMuted = [System.Drawing.Color]::FromArgb(153, 153, 153)     # Muted text
+	
+	# Status colors
+	$uiStatusSuccess = [System.Drawing.Color]::FromArgb(16, 124, 64)    # Green
+	$uiStatusWarning = [System.Drawing.Color]::FromArgb(184, 134, 11)   # Amber
+	$uiStatusError = [System.Drawing.Color]::FromArgb(200, 40, 40)      # Red
+	$uiStatusInfo = [System.Drawing.Color]::FromArgb(0, 122, 204)       # Blue
+	
+	# Tool category colors (visual distinction)
+	$uiCategoryServer = [System.Drawing.Color]::FromArgb(76, 175, 80)    # Green
+	$uiCategoryLane = [System.Drawing.Color]::FromArgb(33, 150, 243)     # Blue
+	$uiCategoryScale = [System.Drawing.Color]::FromArgb(156, 39, 176)    # Purple
+	$uiCategoryGeneral = [System.Drawing.Color]::FromArgb(255, 152, 0)   # Orange
 	
 	# ------------------------------------------------------------------------------------------------
 	# Legacy full-form refresh timer is left disabled by default because it can
@@ -29998,7 +30993,7 @@ if (-not $form)
 	$toolTip.InitialDelay = 300
 	$toolTip.ReshowDelay = 200
 	$toolTip.ShowAlways = $true
-	$toolTip.BackColor = [System.Drawing.Color]::LightYellow
+	$toolTip.BackColor = [System.Drawing.Color]::White
 	
 	# ------------------------------------------------------------------------------------------------
 	# Main Form (modern palette + DPI scaling)
@@ -30017,6 +31012,45 @@ if (-not $form)
 	{
 		$prop = $form.GetType().GetProperty("DoubleBuffered", [System.Reflection.BindingFlags] "Instance,NonPublic")
 		if ($prop) { $prop.SetValue($form, $true, $null) }
+	}
+	catch { }
+	
+	# ----------------------------------------------------------------------------------------------
+	# Runtime-generated app icon (blue disc + hex nut) for the title bar / taskbar
+	# ----------------------------------------------------------------------------------------------
+	try
+	{
+		$__iconBmp = New-Object System.Drawing.Bitmap(32, 32)
+		$__g = [System.Drawing.Graphics]::FromImage($__iconBmp)
+		$__g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+		$__disc = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
+			(New-Object System.Drawing.Rectangle(1, 1, 30, 30)),
+			[System.Drawing.Color]::FromArgb(0, 160, 235),
+			[System.Drawing.Color]::FromArgb(0, 105, 190), 0.0)
+		$__g.FillEllipse($__disc, 1, 1, 30, 30)
+		$__disc.Dispose()
+		$__cx = 16.0; $__cy = 16.0; $__r = 8.0
+		$__hex = New-Object System.Drawing.Drawing2D.GraphicsPath
+		$__hex.AddPolygon(@(
+			(New-Object System.Drawing.PointF($__cx + $__r, $__cy)),
+			(New-Object System.Drawing.PointF($__cx + $__r / 2, $__cy + ($__r * 0.866))),
+			(New-Object System.Drawing.PointF($__cx - $__r / 2, $__cy + ($__r * 0.866))),
+			(New-Object System.Drawing.PointF($__cx - $__r, $__cy)),
+			(New-Object System.Drawing.PointF($__cx - $__r / 2, $__cy - ($__r * 0.866))),
+			(New-Object System.Drawing.PointF($__cx + $__r / 2, $__cy - ($__r * 0.866)))
+		))
+		$__white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+		$__g.FillPath($__white, $__hex)
+		$__hex.Close()
+		$__hex.Dispose()
+		$__punch = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 122, 204))
+		$__g.FillEllipse($__punch, $__cx - 3.4, $__cy - 3.4, 6.8, 6.8)
+		$__white.Dispose()
+		$__punch.Dispose()
+		$__g.Dispose()
+		$form.Icon = [System.Drawing.Icon]::FromHandle($__iconBmp.GetHicon())
+		$script:TbsAppIcon = [System.Drawing.Icon]::Clone($form.Icon)
+		$__iconBmp.Dispose()
 	}
 	catch { }
 	
@@ -30043,34 +31077,46 @@ if (-not $form)
 	try { $form.KeyPreview = $true }
 	catch { }
 	
-	# ------------------------------------------------------------------------------------------------
-	# Header (modern gradient bar) + centered clickable title (text only)
-	# ------------------------------------------------------------------------------------------------
+	# ===================================================================================================
+	# ENHANCED HEADER - Modern app bar with version, logo area, and status indicators
+	# ===================================================================================================
 	$bannerPanel = New-Object System.Windows.Forms.Panel
 	$bannerPanel.Dock = 'Top'
-	$bannerPanel.Height = 44
-	$bannerPanel.BackColor = [System.Drawing.Color]::FromArgb(32, 33, 36) # fallback if Paint fails
+	$bannerPanel.Height = 56
+	$bannerPanel.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 	$bannerPanel.Padding = New-Object System.Windows.Forms.Padding(0)
 	
-	# Gradient paint (modern app-bar look)
+	# Gradient paint (sleek dark gradient with accent stripe)
 	$bannerPanel.add_Paint({
-			param ($s,
-				$e)
+			param ($s, $e)
 			try
 			{
 				$rect = New-Object System.Drawing.Rectangle(0, 0, $s.Width, $s.Height)
+				
+				# Main gradient
 				$brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
 					$rect,
-					[System.Drawing.Color]::FromArgb(35, 38, 47),
-					[System.Drawing.Color]::FromArgb(55, 71, 79),
+					[System.Drawing.Color]::FromArgb(25, 25, 30),
+					[System.Drawing.Color]::FromArgb(45, 45, 55),
 					[System.Drawing.Drawing2D.LinearGradientMode]::Horizontal
 				)
 				$e.Graphics.FillRectangle($brush, $rect)
 				$brush.Dispose()
 				
-				# Subtle bottom divider line
-				$pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(20, 0, 0, 0))
-				$e.Graphics.DrawLine($pen, 0, $s.Height - 1, $s.Width, $s.Height - 1)
+				# Left accent stripe (colorful indicator)
+				$accentRect = New-Object System.Drawing.Rectangle(0, 0, 4, $s.Height)
+				$accentBrush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
+					$accentRect,
+					[System.Drawing.Color]::FromArgb(0, 122, 204),
+					[System.Drawing.Color]::FromArgb(0, 180, 255),
+					[System.Drawing.Drawing2D.LinearGradientMode]::Vertical
+				)
+				$e.Graphics.FillRectangle($accentBrush, $accentRect)
+				$accentBrush.Dispose()
+				
+				# Subtle bottom line
+				$pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(60, 60, 60))
+				$e.Graphics.DrawLine($pen, 4, $s.Height - 1, $s.Width, $s.Height - 1)
 				$pen.Dispose()
 			}
 			catch { }
@@ -30078,132 +31124,107 @@ if (-not $form)
 	
 	$form.Controls.Add($bannerPanel)
 	
-	######################################################################################################################
-	#
-	# Banner (Header) - FIX: ensure the clickable LinkLabel is ALWAYS on top + link is real
-	#
-	######################################################################################################################
+	# ===================================================================================================
+	# Banner Left Section - App Icon + Title
+	# ===================================================================================================
+	# App icon circle
+	$appIconPanel = New-Object System.Windows.Forms.Panel
+	$appIconPanel.Location = New-Object System.Drawing.Point(12, 12)
+	$appIconPanel.Size = New-Object System.Drawing.Size(32, 32)
+	$appIconPanel.BackColor = [System.Drawing.Color]::Transparent
+	$appIconPanel.add_Paint({
+			param ($s, $e)
+			try
+			{
+				$e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+				$cx = $s.Width / 2.0
+				$cy = $s.Height / 2.0
+				
+				# Blue disc (vertical gradient for a little depth)
+				$disc = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
+					(New-Object System.Drawing.Rectangle(1, 1, $s.Width - 2, $s.Height - 2)),
+					[System.Drawing.Color]::FromArgb(0, 160, 235),
+					[System.Drawing.Color]::FromArgb(0, 105, 190),
+					0.0)
+				$e.Graphics.FillEllipse($disc, 1, 1, $s.Width - 2, $s.Height - 2)
+				$disc.Dispose()
+				
+				# White hex nut (flat-top hexagon)
+				$r = 7.5
+				$hex = New-Object System.Drawing.Drawing2D.GraphicsPath
+				$hex.AddPolygon(@(
+					(New-Object System.Drawing.PointF($cx + $r, $cy)),
+					(New-Object System.Drawing.PointF($cx + $r / 2, $cy + ($r * 0.866))),
+					(New-Object System.Drawing.PointF($cx - $r / 2, $cy + ($r * 0.866))),
+					(New-Object System.Drawing.PointF($cx - $r, $cy)),
+					(New-Object System.Drawing.PointF($cx - $r / 2, $cy - ($r * 0.866))),
+					(New-Object System.Drawing.PointF($cx + $r / 2, $cy - ($r * 0.866)))
+				))
+				$white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+				$e.Graphics.FillPath($white, $hex)
+				$hex.Close()
+				$hex.Dispose()
+				
+				# Punch out the center so it reads as a nut
+				$punch = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 122, 204))
+				$e.Graphics.FillEllipse($punch, $cx - 3.2, $cy - 3.2, 6.4, 6.4)
+				$white.Dispose()
+				$punch.Dispose()
+			}
+			catch { }
+		})
+	$bannerPanel.Controls.Add($appIconPanel)
 	
-	# Banner "label" (kept variable name for compatibility)
+	# Title label
 	$bannerLabel = New-Object System.Windows.Forms.Label
-	$bannerLabel.Text = "PowerShell Script - TBS_Maintenance_Script"
-	$bannerLabel.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 13, [System.Drawing.FontStyle]::Regular)
-	$bannerLabel.ForeColor = $uiHeaderText
+	$bannerLabel.Name = "BannerTitle"
+	$bannerLabel.Text = "TBS Maintenance Script"
+	$bannerLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]13, [System.Drawing.FontStyle]::Bold)
+	$bannerLabel.ForeColor = [System.Drawing.Color]::White
 	$bannerLabel.BackColor = [System.Drawing.Color]::Transparent
 	$bannerLabel.AutoSize = $true
-	$bannerLabel.Cursor = [System.Windows.Forms.Cursors]::Default # label itself is not clickable
-	$bannerPanel.Controls.Add($bannerLabel) | Out-Null
+	$bannerLabel.Location = New-Object System.Drawing.Point(54, 16)
+	$bannerPanel.Controls.Add($bannerLabel)
 	
-	# Clickable overlay (text-only clickable)
-	$bannerLink = New-Object System.Windows.Forms.LinkLabel
-	$bannerLink.Text = $bannerLabel.Text
-	$bannerLink.Font = $bannerLabel.Font
-	$bannerLink.AutoSize = $true
-	$bannerLink.BackColor = [System.Drawing.Color]::Transparent
-	$bannerLink.Cursor = [System.Windows.Forms.Cursors]::Hand
-	$bannerLink.LinkBehavior = [System.Windows.Forms.LinkBehavior]::HoverUnderline
-	$bannerLink.LinkColor = $bannerLabel.ForeColor
-	$bannerLink.ActiveLinkColor = $uiAccent
-	$bannerLink.VisitedLinkColor = $bannerLabel.ForeColor
-	$bannerLink.DisabledLinkColor = [System.Drawing.Color]::Gray
-	$bannerLink.TabStop = $false # keeps tab navigation clean
+	# ===================================================================================================
+	# Banner Right Section - Help Button (right-aligned)
+	# ===================================================================================================
+	$helpButton = New-Object System.Windows.Forms.Button
+	$helpButton.Name = "HelpButton"
+	$helpButton.Text = "?"
+	$helpButton.Font = New-Object System.Drawing.Font("Segoe UI", 12)
+	$helpButton.Size = New-Object System.Drawing.Size(32, 28)
+	$helpButton.Location = New-Object System.Drawing.Point(($bannerPanel.Width - 60), 14)
+	$helpButton.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 60)
+	$helpButton.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180)
+	$helpButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+	$helpButton.FlatAppearance.BorderSize = 0
+	$helpButton.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$helpButton.Margin = New-Object System.Windows.Forms.Padding(0)
+	$helpButton.UseVisualStyleBackColor = $false
+	$helpButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(0, 122, 204)
+	$helpButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(0, 90, 150)
+	$helpButton.Add_MouseEnter({ $helpButton.ForeColor = [System.Drawing.Color]::White })
+	$helpButton.Add_MouseLeave({ $helpButton.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180) })
+	$toolTip.SetToolTip($helpButton, "Open TBS Helpdesk (helpdesk.tecnicasystems.com)")
 	
-	# IMPORTANT: add the LinkLabel to the banner panel explicitly (prevents parent/z-order weirdness)
-	$bannerPanel.Controls.Add($bannerLink) | Out-Null
-	
-	# Make the link "real" (more reliable than LinkArea alone)
-	$url = "https://helpdesk.tecnicasystems.com"
-	try
-	{
-		$bannerLink.Links.Clear()
-		[void]$bannerLink.Links.Add(0, $bannerLink.Text.Length, $url)
-	}
-	catch { }
-	
-	# Tooltip for the link itself
-	$toolTip.SetToolTip($bannerLink, "Open TBS Helpdesk (helpdesk.tecnicasystems.com)")
-	
-	# Store original link color so we can restore after hover
-	$bannerLink.Tag = [pscustomobject]@{ LinkColor = $bannerLink.LinkColor }
-	
-	# Hover color change
-	$bannerLink.Add_MouseEnter({
-			param ($s,
-				$e)
-			try { $s.LinkColor = $uiAccent }
+	# Hover effect
+	$helpButton.add_MouseEnter({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::FromArgb(0, 122, 204) }
 			catch { }
 		})
-	$bannerLink.Add_MouseLeave({
-			param ($s,
-				$e)
-			try { if ($s.Tag -and $s.Tag.LinkColor) { $s.LinkColor = $s.Tag.LinkColor } }
+	$helpButton.add_MouseLeave({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 60) }
 			catch { }
 		})
-	
-	# Center the header text (initial + on resize + on text/font changes)
-	$centerBannerLink = {
-		try
-		{
-			if (-not $bannerPanel -or $bannerPanel.IsDisposed) { return }
-			$x = [math]::Max(0, ($bannerPanel.ClientSize.Width - $bannerLink.Width) / 2)
-			$y = [math]::Max(0, ($bannerPanel.ClientSize.Height - $bannerLink.Height) / 2)
-			
-			# Keep both aligned (label is visual "mirror"; link is the clickable layer)
-			$bannerLabel.Location = New-Object System.Drawing.Point([int]$x, [int]$y)
-			$bannerLink.Location = $bannerLabel.Location
-			
-			# CRITICAL: ensure link is on top; label can easily steal clicks otherwise
-			try { $bannerLabel.SendToBack() }
-			catch { }
-			try { $bannerLink.BringToFront() }
-			catch { }
-		}
-		catch { }
-	}
-	& $centerBannerLink
-	$form.add_Resize({ & $centerBannerLink })
-	
-	# Keep banner label + link synced if changed later
-	$bannerLabel.add_TextChanged({
-			try
-			{
-				$bannerLink.Text = $bannerLabel.Text
-				$bannerLink.AutoSize = $true
-				try
-				{
-					$bannerLink.Links.Clear()
-					[void]$bannerLink.Links.Add(0, $bannerLink.Text.Length, "https://helpdesk.tecnicasystems.com")
-				}
-				catch { }
-				& $centerBannerLink
-			}
-			catch { }
-		})
-	$bannerLabel.add_FontChanged({
-			try
-			{
-				$bannerLink.Font = $bannerLabel.Font
-				$bannerLink.AutoSize = $true
-				& $centerBannerLink
-			}
-			catch { }
-		})
-	
-	# Click handler (opens Helpdesk)
-	$bannerLink.Add_LinkClicked({
-			param ($s,
-				$e)
+	$helpButton.add_Click({
 			$script:LastActivity = Get-Date
-			try
-			{
-				$u = $e.Link.LinkData
-				if (-not $u) { $u = "https://helpdesk.tecnicasystems.com" }
-				Start-Process $u
-			}
-			catch
-			{
+			try { Start-Process "https://helpdesk.tecnicasystems.com" }
+			catch {
 				[System.Windows.Forms.MessageBox]::Show(
-					"Couldn't open https://helpdesk.tecnicasystems.com`r`n$($_.Exception.Message)",
+					"Couldn't open helpdesk.tecnicasystems.com`r`n$($_.Exception.Message)",
 					"Open Link",
 					[System.Windows.Forms.MessageBoxButtons]::OK,
 					[System.Windows.Forms.MessageBoxIcon]::Error
@@ -30211,43 +31232,282 @@ if (-not $form)
 			}
 		})
 	
-	# ------------------------------------------------------------------------------------------------
-	# Status bar (NEW modern touch): shows Busy + Idle countdown (does not change behavior)
-	# ------------------------------------------------------------------------------------------------
+	$bannerPanel.Controls.Add($helpButton)
+	
+	# ===================================================================================================
+	# Banner Right - Live Clock
+	# ===================================================================================================
+	$clockLabel = New-Object System.Windows.Forms.Label
+	$clockLabel.Name = "BannerClock"
+	$clockLabel.Text = (Get-Date -Format "h:mm:ss tt")
+	$clockLabel.Font = New-Object System.Drawing.Font("Consolas", [float]9, [System.Drawing.FontStyle]::Regular)
+	$clockLabel.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+	$clockLabel.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 55)
+	$clockLabel.AutoSize = $true
+	$clockLabel.Padding = New-Object System.Windows.Forms.Padding(8, 2, 8, 2)
+	$clockLabel.Location = New-Object System.Drawing.Point(($bannerPanel.Width - 180), 16)
+	$clockLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$bannerPanel.Controls.Add($clockLabel)
+	
+	# Clock update timer
+	$clockTimer = New-Object System.Windows.Forms.Timer
+	$clockTimer.Interval = 1000
+	$clockTimer.add_Tick({
+			try
+			{
+				if ($clockLabel -and -not $clockLabel.IsDisposed)
+				{
+					$clockLabel.Text = (Get-Date -Format "h:mm:ss tt")
+				}
+			}
+			catch { }
+		})
+	$clockTimer.Start()
+	
+	# ===================================================================================================
+	# Banner Center - Version + Status
+	# ===================================================================================================
+	$bannerStatusPanel = New-Object System.Windows.Forms.Panel
+	$bannerStatusPanel.Location = New-Object System.Drawing.Point(350, 10)
+	$bannerStatusPanel.Size = New-Object System.Drawing.Size(250, 36)
+	$bannerStatusPanel.BackColor = [System.Drawing.Color]::Transparent
+	
+	# Single clean line: version + build date (the old layout stacked a tiny
+	# 7pt "Build: <date>" line under the version, which looked out of place)
+	$bannerDateLabel = New-Object System.Windows.Forms.Label
+	$bannerDateLabel.Name = "BannerDate"
+	# Store identity (the version + build date are shown in the status bar at
+	# the bottom - the banner shows which store this console manages instead).
+	# Get_Store_And_Database_Info updates this label once the store data resolves.
+	$bannerDateLabel.Text = "Store Maintenance Console"
+	try
+	{
+		$bn0 = $script:FunctionResults['StoreNumber']
+		if ($bn0 -and "$bn0" -ne 'N/A') { $bannerDateLabel.Text = "Store $bn0" }
+	}
+	catch { }
+	$bannerDateLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]9, [System.Drawing.FontStyle]::Bold)
+	$bannerDateLabel.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
+	$bannerDateLabel.BackColor = [System.Drawing.Color]::Transparent
+	$bannerDateLabel.AutoSize = $true
+	$bannerDateLabel.Location = New-Object System.Drawing.Point(0, 10)
+	$bannerStatusPanel.Controls.Add($bannerDateLabel)
+	
+	# Environment badge - visible when the production storeman share was NOT used
+	# with a fresh key. Two states (see the "Locate Base Path" detection block at
+	# the top of the script):
+	#   KEY EXPIRED (red)  - store data present, key older than 14 days, re-key needed
+	#   TEST      (orange) - plain test/fallback environment
+	$bannerTestBadge = New-Object System.Windows.Forms.Label
+	$bannerTestBadge.Name = "BannerTestBadge"
+	if ($script:StoremanKeyStale)
+	{
+		$bannerTestBadge.Text = " KEY EXPIRED "
+		$bannerTestBadge.ForeColor = [System.Drawing.Color]::White
+		$bannerTestBadge.BackColor = [System.Drawing.Color]::FromArgb(178, 44, 34)
+	}
+	else
+	{
+		$bannerTestBadge.Text = " TEST "
+		$bannerTestBadge.ForeColor = [System.Drawing.Color]::FromArgb(40, 25, 0)
+		$bannerTestBadge.BackColor = [System.Drawing.Color]::FromArgb(255, 165, 0)
+	}
+	$bannerTestBadge.Font = New-Object System.Drawing.Font("Segoe UI", [float]8, [System.Drawing.FontStyle]::Bold)
+	$bannerTestBadge.AutoSize = $true
+	$bannerTestBadge.Padding = New-Object System.Windows.Forms.Padding(6, 0, 6, 0)
+	$bannerTestBadge.Visible = [bool]$script:IsTestEnvironment
+	$toolTip.SetToolTip($bannerTestBadge, $(if ($script:StoremanKeyStale) { "KEY EXPIRED - " + $script:StoremanSourceReason + ". Using: $BasePath" } elseif ($script:IsTestEnvironment) { "TEST ENVIRONMENT - " + $script:StoremanSourceReason + ". Using: $BasePath" } else { "Production storeman share in use." }))
+	$toolTip.SetToolTip($bannerDateLabel, "Storeman source: " + $script:StoremanSource + " - " + $script:StoremanSourceReason)
+	$bannerStatusPanel.Controls.Add($bannerTestBadge)
+	
+	$bannerPanel.Controls.Add($bannerStatusPanel)
+	
+	# ===================================================================================================
+	# Banner layout helper
+	#   The right-side banner controls (clock, help button) are created before the docked banner
+	#   has its final width, so their creation-time positions were wrong (help button ended up
+	#   over the title, clock over the icon). This helper pins them to the banner's real width
+	#   and vertically centers EVERY banner element (icon, title, version, clock, help) on the
+	#   banner's center line so they all sit on the same plane. Runs again on every resize.
+	# ===================================================================================================
+	$layoutBanner = {
+		if (-not $form -or $form.IsDisposed) { return }
+		if (-not $bannerPanel -or $bannerPanel.IsDisposed) { return }
+		try
+		{
+			$w = [Math]::Max($bannerPanel.Width, $form.ClientSize.Width)
+			$h = $bannerPanel.Height
+			# y-offset that centers a control on the banner's center line
+			$centerY = {
+					param ($ctrl)
+					$ch = $ctrl.Height
+					if ($ch -lt 1) { $ch = [System.Windows.Forms.TextRenderer]::MeasureText($ctrl.Text, $ctrl.Font).Height }
+					[Math]::Max(0, [int](($h - $ch) / 2))
+				}
+			$bannerLabel.Location = New-Object System.Drawing.Point(54, (& $centerY $bannerLabel))
+			$helpButton.SetBounds($w - 48, (& $centerY $helpButton), 32, $helpButton.Height)
+			$clockLabel.Location = New-Object System.Drawing.Point(($w - 158), (& $centerY $clockLabel))
+			# Keep the version block right next to the title
+			$bannerStatusPanel.Location = New-Object System.Drawing.Point(($bannerLabel.Right + 16), 0)
+			$bannerStatusPanel.Height = $h
+			$bannerDateLabel.Location = New-Object System.Drawing.Point(0, (& $centerY $bannerDateLabel))
+			# Always position the TEST badge next to the version (its visibility
+			# is controlled separately; before the form is shown, .Visible
+			# misreports False, so it must not gate positioning)
+			$bannerTestBadge.Location = New-Object System.Drawing.Point(($bannerDateLabel.Right + 8), (& $centerY $bannerTestBadge))
+			$appIconPanel.Location = New-Object System.Drawing.Point(12, (& $centerY $appIconPanel))
+		}
+		catch { }
+	}
+	$form.add_Resize({ & $layoutBanner })
+	# Re-apply once the form is actually visible (control states like .Visible
+	# and measured sizes are only reliable after the first Show)
+	$form.add_Shown({ & $layoutBanner })
+	
+	# Apply the banner layout now (force the form's layout pass first so the docked
+	# banner already has its real width)
+	try { $form.PerformLayout() } catch { }
+	& $layoutBanner
+	
+	# ===================================================================================================
+	# ENHANCED STATUS BAR - Modern flat design with more information
+	# ===================================================================================================
 	$statusStrip = New-Object System.Windows.Forms.StatusStrip
 	$statusStrip.SizingGrip = $false
-	$statusStrip.BackColor = [System.Drawing.Color]::FromArgb(250, 251, 252)
+	$statusStrip.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+	$statusStrip.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Regular)
+	$statusStrip.Padding = New-Object System.Windows.Forms.Padding(10, 2, 10, 2)
 	
+	# Left: Status indicator with icon area
 	$stLeft = New-Object System.Windows.Forms.ToolStripStatusLabel
 	$stLeft.Text = "Ready"
-	$stLeft.Spring = $true
+	$stLeft.Spring = $false
+	$stLeft.AutoSize = $true
+	$stLeft.ForeColor = $uiStatusSuccess
+	$stLeft.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Regular)
+	$stLeft.Padding = New-Object System.Windows.Forms.Padding(0, 0, 20, 0)
 	
+	# Center: Current operation
+	$stOperation = New-Object System.Windows.Forms.ToolStripStatusLabel
+	$stOperation.Name = "StatusOperation"
+	$stOperation.Text = "Waiting for action..."
+	$stOperation.ForeColor = $uiTextSecondary
+	$stOperation.Padding = New-Object System.Windows.Forms.Padding(0, 0, 20, 0)
+	$stOperation.AutoSize = $true
+	
+	# Right: Busy indicator
 	$stBusy = New-Object System.Windows.Forms.ToolStripStatusLabel
-	$stBusy.TextAlign = 'MiddleRight'
+	$stBusy.Name = "StatusBusy"
 	$stBusy.Text = ""
+	$stBusy.ForeColor = $uiStatusWarning
+	$stBusy.Padding = New-Object System.Windows.Forms.Padding(0, 0, 20, 0)
+	$stBusy.Visible = $false
 	
+	# Far Right: Idle timer
 	$stIdle = New-Object System.Windows.Forms.ToolStripStatusLabel
-	$stIdle.TextAlign = 'MiddleRight'
+	$stIdle.Name = "StatusIdle"
 	$stIdle.Text = ""
+	$stIdle.ForeColor = $uiTextMuted
+	$stIdle.Padding = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
+	$stIdle.Visible = $false
+	
+	# Spacer (spring) keeps the status on the left and the info items on the right
+	$stSpacer = New-Object System.Windows.Forms.ToolStripStatusLabel
+	$stSpacer.Spring = $true
+	$stSpacer.Text = ""
+	
+	# Version info gets its own slot so the busy scanner's status updates never wipe it out
+	$stVersion = New-Object System.Windows.Forms.ToolStripStatusLabel
+	$stVersion.Name = "StatusVersion"
+	# NOTE: separator is ASCII '|' on purpose - this file is UTF-8 without BOM and
+	# Windows PowerShell 5.1 reads BOM-less .ps1 files as ANSI (Windows-1252), which
+	# rendered the old UTF-8 middle-dot separator as a garbled two-char sequence.
+	# "Created by" credit restored (exact original wording) - this item is protected
+	# from the busy scanner, so it stays on screen permanently.
+	$stVersion.Text = "Created by: Alex_C.T   |   Version: $VersionNumber   |   Revised: $VersionDate   |   PowerShell: $PowerShellVersion"
+	$stVersion.ForeColor = $uiTextMuted
+	$stVersion.AutoSize = $true
+	$stVersion.Padding = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+	
+	# Environment indicator (left, next to the status) - only visible when the
+	# production storeman share was not used with a fresh key.
+	# KEY EXPIRED (red) when the key is stale; TEST MODE (orange) otherwise.
+	$stMode = New-Object System.Windows.Forms.ToolStripStatusLabel
+	$stMode.Name = "StatusMode"
+	if ($script:StoremanKeyStale)
+	{
+		$stMode.Text = "KEY EXPIRED"
+		$stMode.ForeColor = [System.Drawing.Color]::FromArgb(220, 60, 45)
+	}
+	else
+	{
+		$stMode.Text = "TEST MODE"
+		$stMode.ForeColor = [System.Drawing.Color]::FromArgb(255, 140, 0)
+	}
+	$stMode.Font = New-Object System.Drawing.Font("Segoe UI", [float]8.5, [System.Drawing.FontStyle]::Bold)
+	$stMode.Padding = New-Object System.Windows.Forms.Padding(8, 0, 20, 0)
+	$stMode.AutoSize = $true
+	$stMode.Visible = [bool]$script:IsTestEnvironment
+	# NOTE: ToolStripStatusLabel is a ToolStripItem (not a Control), so it uses
+	# its own ToolTipText property instead of the shared ToolTip object
+	$stModePrefix = if ($script:StoremanKeyStale) { "KEY EXPIRED" } else { "TEST ENVIRONMENT" }
+	$stMode.ToolTipText = "$stModePrefix - " + $script:StoremanSourceReason + ". Using storeman root: $BasePath"
 	
 	[void]$statusStrip.Items.Add($stLeft)
+	[void]$statusStrip.Items.Add($stMode)
+	[void]$statusStrip.Items.Add($stSpacer)
+	[void]$statusStrip.Items.Add($stOperation)
 	[void]$statusStrip.Items.Add($stBusy)
 	[void]$statusStrip.Items.Add($stIdle)
+	[void]$statusStrip.Items.Add($stVersion)
 	$form.Controls.Add($statusStrip)
 	
-	# ------------------------------------------------------------------------------------------------
-	# Top strip "card" (modern container for your clickable labels)
-	# ------------------------------------------------------------------------------------------------
+	# Helper function to update status bar
+	$updateStatusBar = {
+		param(
+			[string]$Status = "Ready",
+			[System.Drawing.Color]$StatusColor = $uiStatusSuccess,
+			[string]$Operation = "",
+			[string]$BusyInfo = ""
+		)
+		try
+		{
+			if ($stLeft -and -not $stLeft.IsDisposed) { $stLeft.Text = $Status; $stLeft.ForeColor = $StatusColor }
+			if ($stOperation -and -not $stOperation.IsDisposed) { $stOperation.Text = $Operation }
+			if ($stBusy -and -not $stBusy.IsDisposed) {
+				if ($BusyInfo) { $stBusy.Text = $BusyInfo; $stBusy.Visible = $true; $stBusy.ForeColor = $uiStatusWarning }
+				else { $stBusy.Visible = $false }
+			}
+		}
+		catch { }
+	}
+	
+	# ===================================================================================================
+	# ENHANCED INFO STRIP - Modern card with visual status indicators
+	# ===================================================================================================
 	$topStripCard = New-Object System.Windows.Forms.Panel
 	$topStripCard.BackColor = $uiCardBg
 	$topStripCard.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-	$topStripCard.Height = 66 # enough for two label rows with padding
+	$topStripCard.Height = 82  # Slightly taller for better spacing
+	$topStripCard.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 	$form.Controls.Add($topStripCard)
 	
-	# Modern inner layout: TableLayoutPanel (replaces manual non-overlap math; behavior preserved)
+	# Subtle shadow effect (bottom line)
+	$topStripCard.add_Paint({
+			param ($s, $e)
+			try
+			{
+				$pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(220, 220, 220))
+				$e.Graphics.DrawLine($pen, 1, $s.Height - 1, $s.Width - 1, $s.Height - 1)
+				$pen.Dispose()
+			}
+			catch { }
+		})
+	
+	# Modern inner layout: TableLayoutPanel
 	$topStripTable = New-Object System.Windows.Forms.TableLayoutPanel
 	$topStripTable.Dock = 'Fill'
-	$topStripTable.Padding = New-Object System.Windows.Forms.Padding($cardPad, 10, $cardPad, 10)
+	$topStripTable.Padding = New-Object System.Windows.Forms.Padding(16, 10, 16, 10)
 	$topStripTable.ColumnCount = 3
 	$topStripTable.RowCount = 2
 	$topStripTable.BackColor = [System.Drawing.Color]::Transparent
@@ -30264,7 +31524,7 @@ if (-not $form)
 	$topStripCard.Controls.Add($topStripTable)
 	
 	# ------------------------------------------------------------------------------------------------
-	# Shared tooltip (create once)  ────────────────────────────────────────────────────────────────────
+	# Shared tooltip (create once)  [?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?]
 	# ------------------------------------------------------------------------------------------------
 	if (-not $toolTip)
 	{
@@ -30306,18 +31566,54 @@ if (-not $form)
 	# Labels (same functionality, modern font + positioned via table layout)
 	# ------------------------------------------------------------------------------------------------
 	
-	# SMS Version (left, row 1) - clickable text only
+	# ===================================================================================================
+	# ENHANCED INFO LABELS - Modern typography with status indicators
+	# ===================================================================================================
+	
+	# Helper for info label styling
+	$applyInfoLabelStyle = {
+		param ([System.Windows.Forms.Label]$Label)
+		$Label.Cursor = [System.Windows.Forms.Cursors]::Hand
+		$Label.Font = New-Object System.Drawing.Font("Segoe UI", [float]10, [System.Drawing.FontStyle]::Bold)
+		$Label.ForeColor = $uiTextPrimary
+		if (-not $Label.Tag) { $Label.Tag = [pscustomobject]@{ Color = $Label.ForeColor; Font = $Label.Font } }
+		
+		$Label.add_MouseEnter({
+				param ($s, $e)
+				try { $s.ForeColor = $uiAccent; $s.Font = New-Object System.Drawing.Font($s.Font, ($s.Font.Style -bor [System.Drawing.FontStyle]::Underline)) }
+				catch { }
+			})
+		$Label.add_MouseLeave({
+				param ($s, $e)
+				try
+				{
+					if ($s.Tag -and $s.Tag.Font) { $s.Font = $s.Tag.Font }
+					if ($s.Tag -and $s.Tag.Color) { $s.ForeColor = $s.Tag.Color }
+				}
+				catch { }
+			})
+	}
+	
+	# SMS Version (left, row 1)
 	$smsVersionLabel = New-Object System.Windows.Forms.Label
+	$smsVersionLabel.Name = "SMSVersionLabel"
 	$smsVersionLabel.Text = "SMS Version: N/A"
 	$smsVersionLabel.AutoSize = $true
-	$smsVersionLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$smsVersionLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]10, [System.Drawing.FontStyle]::Bold)
+	$smsVersionLabel.ForeColor = $uiTextPrimary
 	$smsVersionLabel.Margin = New-Object System.Windows.Forms.Padding(0)
 	$smsVersionLabel.Anchor = 'Left'
 	$topStripTable.Controls.Add($smsVersionLabel, 0, 0) | Out-Null
+	# Vertically center in the 30px cell: Dock=Fill + TextAlign.
+	# (The old ControlAlignment line used [System.Windows.Forms.TableLayoutPanelCellAlignment],
+	#  a type that does not exist in .NET, so it silently failed on every run.)
+	$smsVersionLabel.AutoSize = $false
+	$smsVersionLabel.Dock = 'Fill'
+	$smsVersionLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
 	$toolTip.SetToolTip($smsVersionLabel, "Shows current SMS version. Click to bring SMSStart to front (or launch it).")
-	& $applyLinkStyle $smsVersionLabel
+	& $applyInfoLabelStyle $smsVersionLabel
 	
-	# Click: bring SMSStart to front or launch it (inline, no functions)
+	# Click: bring SMSStart to front or launch it
 	$smsVersionLabel.Add_Click({
 			$script:LastActivity = Get-Date
 			$orig = $smsVersionLabel.ForeColor
@@ -30384,53 +31680,77 @@ public static class NativeWin {
 			}
 		})
 	
-	# Store Name (centered, row 1) - clickable text only
+	# Store Name (centered, row 1)
 	$storeNameLabel = New-Object System.Windows.Forms.Label
+	$storeNameLabel.Name = "StoreNameLabel"
 	$storeNameLabel.Text = "Store Name: N/A"
 	$storeNameLabel.AutoSize = $true
-	$storeNameLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$storeNameLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]10, [System.Drawing.FontStyle]::Bold)
+	$storeNameLabel.ForeColor = $uiTextPrimary
 	$storeNameLabel.Margin = New-Object System.Windows.Forms.Padding(0)
 	$storeNameLabel.Anchor = 'None'
 	$topStripTable.Controls.Add($storeNameLabel, 1, 0) | Out-Null
+	# Vertically center in the cell (real fix - see note at smsVersionLabel above)
+	$storeNameLabel.AutoSize = $false
+	$storeNameLabel.Dock = 'Fill'
+	$storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	$toolTip.SetToolTip($storeNameLabel, "Shows store name. Click to ping all nodes (Lanes > Scales > Backoffices).")
-	& $applyLinkStyle $storeNameLabel
+	& $applyInfoLabelStyle $storeNameLabel
+	
+	# Click: ping all nodes
 	$storeNameLabel.Add_Click({
 			$script:LastActivity = Get-Date
+			$orig = $storeNameLabel.ForeColor
 			$storeNameLabel.ForeColor = $uiAccent
 			try
 			{
+				$storeNameLabel.Text = "Store Name: Pinging..."
+				[System.Windows.Forms.Application]::DoEvents()
 				Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber
 				Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber
 				Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber
 			}
 			finally
 			{
-				$storeNameLabel.ForeColor = 'Black'
+				$storeNameLabel.ForeColor = $orig
 			}
 		})
 	
-	# Store Number (right, row 1) - clickable text only
+	# Store Number (right, row 1)
 	$storeNumberLabel = New-Object System.Windows.Forms.Label
+	$storeNumberLabel.Name = "StoreNumberLabel"
 	$storeNumberLabel.Text = "Store Number: N/A"
 	$storeNumberLabel.AutoSize = $true
-	$storeNumberLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$storeNumberLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]10, [System.Drawing.FontStyle]::Bold)
+	$storeNumberLabel.ForeColor = $uiTextPrimary
 	$storeNumberLabel.Margin = New-Object System.Windows.Forms.Padding(0)
 	$storeNumberLabel.Anchor = 'Right'
 	$topStripTable.Controls.Add($storeNumberLabel, 2, 0) | Out-Null
+	# Vertically center in the cell (real fix - see note at smsVersionLabel above)
+	$storeNumberLabel.AutoSize = $false
+	$storeNumberLabel.Dock = 'Fill'
+	$storeNumberLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
 	
 	# keep your original script-scoped reference for other code
 	$script:storeNumberLabel = $storeNumberLabel
 	
-	$toolTip.SetToolTip($storeNumberLabel, "Click to open the Storeman folder.")
-	& $applyLinkStyle $storeNumberLabel
-	
-	# Hover: refresh tooltip with actual BasePath
+	# Hover: refresh tooltip with actual BasePath (+ test-environment context)
 	$storeNumberLabel.Add_MouseHover({
 			$p = if ($script:BasePath) { $script:BasePath }
 			elseif ($BasePath) { $BasePath }
 			else { $null }
-			$toolTip.SetToolTip($storeNumberLabel, $(if ($p) { "Open Storeman folder: $p" }
-					else { "Storeman folder not detected yet." }))
+			if ($script:IsTestEnvironment)
+			{
+				$modePrefix = if ($script:StoremanKeyStale) { "KEY EXPIRED" } else { "TEST ENVIRONMENT" }
+				$folderWord = if ($script:StoremanKeyStale) { "storeman folder" } else { "test storeman folder" }
+				# NOTE: ${} delimiters - a bare '$folderWord:' would parse as a scope reference
+				$toolTip.SetToolTip($storeNumberLabel, "${modePrefix} - $($script:StoremanSourceReason). Open ${folderWord}: ${p}")
+			}
+			else
+			{
+				$toolTip.SetToolTip($storeNumberLabel, $(if ($p) { "Open Storeman folder: $p" }
+						else { "Storeman folder not detected yet." }))
+			}
 		})
 	
 	# Click: open Storeman folder (inline)
@@ -30463,62 +31783,89 @@ public static class NativeWin {
 			}
 		})
 	
+	# ===================================================================================================
+	# SECOND ROW - Node counts with modern badges
+	# ===================================================================================================
+	
 	# Number of Lanes (left, row 2)
 	$NodesStore = New-Object System.Windows.Forms.Label
-	$NodesStore.Text = "Number of Lanes: $($Counts.NumberOfLanes)"
+	$NodesStore.Name = "NodesStoreLabel"
+	$NodesStore.Text = "Lanes: N/A"
 	$NodesStore.AutoSize = $true
-	$NodesStore.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$NodesStore.Font = New-Object System.Drawing.Font("Segoe UI", [float]10, [System.Drawing.FontStyle]::Bold)
+	$NodesStore.ForeColor = $uiCategoryLane
 	$NodesStore.Margin = New-Object System.Windows.Forms.Padding(0)
 	$NodesStore.Anchor = 'Left'
 	$topStripTable.Controls.Add($NodesStore, 0, 1) | Out-Null
+	# Vertically center in the cell (real fix - see note at smsVersionLabel above)
+	$NodesStore.AutoSize = $false
+	$NodesStore.Dock = 'Fill'
+	$NodesStore.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
 	
 	# keep your original script-scoped reference for other code
 	$script:NodesStore = $NodesStore
 	
 	$toolTip.SetToolTip($NodesStore, "Shows count of Lanes. Click to ping Lane nodes.")
-	& $applyLinkStyle $NodesStore
+	& $applyInfoLabelStyle $NodesStore
 	$NodesStore.Add_Click({
 			$script:LastActivity = Get-Date
+			$orig = $NodesStore.ForeColor
 			$NodesStore.ForeColor = $uiAccent
 			try { Ping_All_Nodes -NodeType "Lane" -StoreNumber $StoreNumber }
-			finally { $NodesStore.ForeColor = 'Black' }
+			finally { $NodesStore.ForeColor = $uiCategoryLane }
 		})
 	
 	# Number of Scales (center, row 2)
 	$scalesLabel = New-Object System.Windows.Forms.Label
-	$scalesLabel.Text = "Number of Scales: $($Counts.NumberOfScales)"
+	$scalesLabel.Name = "ScalesLabel"
+	$scalesLabel.Text = "Scales: N/A"
 	$scalesLabel.AutoSize = $true
-	$scalesLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$scalesLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]10, [System.Drawing.FontStyle]::Bold)
+	$scalesLabel.ForeColor = $uiCategoryScale
 	$scalesLabel.Margin = New-Object System.Windows.Forms.Padding(0)
 	$scalesLabel.Anchor = 'None'
 	$topStripTable.Controls.Add($scalesLabel, 1, 1) | Out-Null
+	# Vertically center in the cell (real fix - see note at smsVersionLabel above)
+	$scalesLabel.AutoSize = $false
+	$scalesLabel.Dock = 'Fill'
+	$scalesLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 	
 	# keep your original script-scoped reference for other code
 	$script:scalesLabel = $scalesLabel
 	
 	$toolTip.SetToolTip($scalesLabel, "Shows count of Scales. Click to ping Scale nodes.")
-	& $applyLinkStyle $scalesLabel
+	& $applyInfoLabelStyle $scalesLabel
 	$scalesLabel.Add_Click({
 			$script:LastActivity = Get-Date
+			$orig = $scalesLabel.ForeColor
+			$scalesLabel.ForeColor = $uiAccent
 			try { Ping_All_Nodes -NodeType "Scale" -StoreNumber $StoreNumber }
-			catch { }
+			finally { $scalesLabel.ForeColor = $uiCategoryScale }
 		})
 	
 	# Number of Backoffices (right, row 2)
 	$NodesBackoffices = New-Object System.Windows.Forms.Label
-	$NodesBackoffices.Text = "Number of Backoffices: N/A"
+	$NodesBackoffices.Name = "BackofficesLabel"
+	$NodesBackoffices.Text = "Backoffices: N/A"
 	$NodesBackoffices.AutoSize = $true
-	$NodesBackoffices.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+	$NodesBackoffices.Font = New-Object System.Drawing.Font("Segoe UI", [float]10, [System.Drawing.FontStyle]::Bold)
+	$NodesBackoffices.ForeColor = $uiTextSecondary
 	$NodesBackoffices.Margin = New-Object System.Windows.Forms.Padding(0)
 	$NodesBackoffices.Anchor = 'Right'
 	$topStripTable.Controls.Add($NodesBackoffices, 2, 1) | Out-Null
+	# Vertically center in the cell (real fix - see note at smsVersionLabel above)
+	$NodesBackoffices.AutoSize = $false
+	$NodesBackoffices.Dock = 'Fill'
+	$NodesBackoffices.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
 	
 	$toolTip.SetToolTip($NodesBackoffices, "Shows count of Backoffices. Click to ping Backoffice nodes.")
-	& $applyLinkStyle $NodesBackoffices
+	& $applyInfoLabelStyle $NodesBackoffices
 	$NodesBackoffices.Add_Click({
 			$script:LastActivity = Get-Date
+			$orig = $NodesBackoffices.ForeColor
+			$NodesBackoffices.ForeColor = $uiAccent
 			try { Ping_All_Nodes -NodeType "Backoffice" -StoreNumber $StoreNumber }
-			catch { }
+			finally { $NodesBackoffices.ForeColor = $uiTextSecondary }
 		})
 	
 	# ------------------------------------------------------------------------------------------------
@@ -30542,50 +31889,83 @@ public static class NativeWin {
 	& $layoutTopStrip
 	$form.add_Resize({ & $layoutTopStrip })
 	
-	# ------------------------------------------------------------------------------------------------
-	# Log "frame" (card border) + RichTextBox (kept variable name $logBox)
-	#   - We keep $logBox on the form so your other layout code that uses $logBox.Left/$logBox.Width still works.
-	#   - The frame is purely visual polish (modern look).
-	# ------------------------------------------------------------------------------------------------
+	# ===================================================================================================
+	# ENHANCED LOG AREA - Modern card with header bar
+	# ===================================================================================================
 	$logFrame = New-Object System.Windows.Forms.Panel
-	$logFrame.BackColor = $uiCardBg
+	$logFrame.Name = "LogFrame"
+	$logFrame.BackColor = [System.Drawing.Color]::White
 	$logFrame.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+	$logFrame.Padding = New-Object System.Windows.Forms.Padding(0)
+	$logFrame.Margin = New-Object System.Windows.Forms.Padding(0)
 	$form.Controls.Add($logFrame) | Out-Null
 	
+	# Log frame header (colored top bar with "LOG" text)
+	$logFrameHeader = New-Object System.Windows.Forms.Panel
+	$logFrameHeader.Name = "LogFrameHeader"
+	$logFrameHeader.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+	$logFrameHeader.Height = 28
+	$logFrameHeader.Dock = [System.Windows.Forms.DockStyle]::Top
+	$logFrame.Controls.Add($logFrameHeader)
+	
+	# Header text
+	$logHeaderLabel = New-Object System.Windows.Forms.Label
+	$logHeaderLabel.Name = "LogHeaderLabel"
+	$logHeaderLabel.Text = "LOG OUTPUT"
+	$logHeaderLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]9, [System.Drawing.FontStyle]::Regular)
+	$logHeaderLabel.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+	$logHeaderLabel.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+	$logHeaderLabel.AutoSize = $false
+	$logHeaderLabel.Width = 120
+	$logHeaderLabel.Height = 28
+	$logHeaderLabel.Location = New-Object System.Drawing.Point(12, 4)
+	$logFrameHeader.Controls.Add($logHeaderLabel)
+	
+	# Clear button in header
+	$logClearButton = New-Object System.Windows.Forms.Button
+	$logClearButton.Name = "LogClearButton"
+	$logClearButton.Text = "X"
+	$logClearButton.Font = New-Object System.Drawing.Font("Segoe UI", [float]8, [System.Drawing.FontStyle]::Regular)
+	$logClearButton.Size = New-Object System.Drawing.Size(24, 20)
+	$logClearButton.Location = New-Object System.Drawing.Point(($logFrameHeader.Width - 32), 4)
+	$logClearButton.BackColor = [System.Drawing.Color]::Transparent
+	$logClearButton.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 150)
+	$logClearButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+	$logClearButton.FlatAppearance.BorderSize = 0
+	$logClearButton.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$logClearButton.UseVisualStyleBackColor = $false
+	$logClearButton.Margin = New-Object System.Windows.Forms.Padding(0)
+	# Follow the right edge of the log header when the frame resizes
+	$logClearButton.Anchor = 'Top,Right'
+	$toolTip.SetToolTip($logClearButton, "Clear log")
+	$logClearButton.Add_MouseEnter({ $logClearButton.ForeColor = [System.Drawing.Color]::Red })
+	$logClearButton.Add_MouseLeave({ $logClearButton.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 150) })
+	$logClearButton.Add_Click({
+			$logBox.Clear()
+			if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Log Cleared" }
+		})
+	$logFrameHeader.Controls.Add($logClearButton)
+	
+	# Actual log box (RichTextBox)
 	$logBox = New-Object System.Windows.Forms.RichTextBox
+	$logBox.Name = "LogBox"
 	$logBox.ReadOnly = $true
 	$logBox.Font = New-Object System.Drawing.Font("Consolas", 10)
 	$logBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
-	$logBox.BackColor = $uiCardBg
-	$form.Controls.Add($logBox) | Out-Null
+	$logBox.BackColor = [System.Drawing.Color]::White
+	$logBox.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+	$logBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+	$logBox.Padding = New-Object System.Windows.Forms.Padding(12, 8, 12, 12)
+	$logBox.Margin = New-Object System.Windows.Forms.Padding(0)
+	$logFrame.Controls.Add($logBox) | Out-Null
 	
-	######################################################################################################################
-	#
-	# Log Box - CRITICAL FIXES:
-	#   1) Ensure the RichTextBox is on top of the frame (frame must NEVER block clicks/text)
-	#   2) Bind THIS live logBox instance to common script/global references used by Write_Log
-	#      (prevents logging into an old/disposed control after UI refactors)
-	#
-	######################################################################################################################
+	# Reference binding for logger
+	try { $script:logBox = $logBox } catch { }
+	try { $script:LogBox = $logBox } catch { }
+	try { $global:logBox = $logBox } catch { }
+	try { $global:LogBox = $logBox } catch { }
 	
-	# --- Z-ORDER SAFETY: frame behind, log on top ---
-	try { $logFrame.SendToBack() }
-	catch { }
-	try { $logBox.BringToFront() }
-	catch { }
-	
-	# --- REFERENCE BINDING: cover the most common logger targets ---
-	# NOTE: Your Write_Log (or other functions) may reference any of these names.
-	try { $script:logBox = $logBox }
-	catch { }
-	try { $script:LogBox = $logBox }
-	catch { }
-	try { $global:logBox = $logBox }
-	catch { }
-	try { $global:LogBox = $logBox }
-	catch { }
-	
-	# OPTIONAL: if you store UI handles in FunctionResults, publish it there too
+	# Publish to FunctionResults
 	try
 	{
 		if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
@@ -30593,13 +31973,130 @@ public static class NativeWin {
 	}
 	catch { }
 	
-	# OPTIONAL: quick sanity test (comment out after confirming you see it)
-	#try { $logBox.AppendText("Log initialized.`r`n"); $logBox.ScrollToCaret() } catch { }
+	# Announce the storeman environment in the log.
+	# Detection happens before the GUI, so the original message was console-only.
+	# It must be written AFTER the form is shown: before that the RichTextBox has
+	# no window handle and the colored append is silently dropped. Shown fires
+	# exactly once, right when the handle exists.
+	$form.add_Shown({
+			try
+			{
+				# Startup summary block (v2.6.8): one calm, scannable overview of
+				# the environment, placed ABOVE the individual startup lines.
+				# Detection happens before the GUI, so this is where the user
+				# gets the plain-language explanation of what this machine has
+				# (and doesn't have) available.
+				$rule = '--------------------------------------------------'
+				$modeTag = if ($script:StoremanKeyStale) { '[ KEY  ]' } elseif ($script:IsTestEnvironment) { '[ TEST ]' } else { '[ LIVE ]' }
+				
+				# Snapshot the lines already in the log (text + color) so the
+				# summary can be written on top of them, in order.
+				$oldLines = @()
+				try
+				{
+					$t = $logBox.Text
+					$i = 0
+					while ($i -lt $t.Length)
+					{
+						$nl = $t.IndexOf("`n", $i)
+						if ($nl -lt 0) { $nl = $t.Length }
+						$lineText = $t.Substring($i, $nl - $i)
+						$lineColor = [System.Drawing.Color]::Black
+						try { $lineColor = $logBox.GetCharColor($i) } catch { }
+						$oldLines += ,@($lineText, $lineColor)
+						$i = $nl + 1
+					}
+				}
+				catch { $oldLines = @() }
+				
+				try { $logBox.Clear() } catch { }
+				
+				$storeNum = ''
+				$storeName = ''
+				$smsVer = ''
+				try
+				{
+					if ($script:FunctionResults)
+					{
+						$storeNum  = [string]$script:FunctionResults['StoreNumber']
+						$storeName = [string]$script:FunctionResults['StoreName']
+						$smsVer    = [string]$script:FunctionResults['SMSVersionFull']
+					}
+				}
+				catch { }
+				
+				Write_Log $rule -FileOnly -IncludeTimestamp:$false -Raw
+				Write_Log (" TBS MAINTENANCE SCRIPT   v{0} ({1})   {2}" -f $VersionNumber, $VersionDate, $modeTag) -FileOnly -IncludeTimestamp:$false -Raw
+				Write_Log $rule -FileOnly -IncludeTimestamp:$false -Raw
+				
+				if ($script:StoremanKeyStale)
+				{
+					$staleKeyDate = if ($script:StoremanKeyDate) { $script:StoremanKeyDate.ToString('MM/dd/yyyy') } else { 'unknown' }
+					$storeDataUsable = $false
+					try { $storeDataUsable = Test-Path (Join-Path $BasePath 'Office\Dbs') } catch { }
+					Write_Log ("[WARN] KEY EXPIRED - storeman key is older than 14 days (KeyValidDate: {0}). Re-key required." -f $staleKeyDate) "orange" -FileOnly -IncludeTimestamp:$false -Raw
+					if ($storeDataUsable)
+					{
+						Write_Log "       Store data (storeman folder + store database) IS available and in use: $BasePath" "orange" -FileOnly -IncludeTimestamp:$false -Raw
+						Write_Log "       Only the key needs refreshing - every other task works normally." "orange" -FileOnly -IncludeTimestamp:$false -Raw
+					}
+					else
+					{
+						Write_Log "       Tasks that need the storeman folder or the store database are unavailable." "orange" -FileOnly -IncludeTimestamp:$false -Raw
+						Write_Log ("       To enable them: run on a store PC, or create the local test folder ({0}\Office\Dbs)." -f $BasePath) -FileOnly -IncludeTimestamp:$false -Raw
+					}
+				}
+				elseif ($script:IsTestEnvironment)
+				{
+					Write_Log "[WARN] TEST ENVIRONMENT - $($script:StoremanSourceReason)" "orange" -FileOnly -IncludeTimestamp:$false -Raw
+					Write_Log "       Tasks that need the storeman folder or the store database are unavailable." -FileOnly -IncludeTimestamp:$false -Raw
+					Write_Log "       Everything else works normally." -FileOnly -IncludeTimestamp:$false -Raw
+					Write_Log ("       To enable them: run on a store PC, or create the local test folder ({0}\Office\Dbs)." -f $BasePath) -FileOnly -IncludeTimestamp:$false -Raw
+				}
+				else
+				{
+					Write_Log "[ OK ] PRODUCTION - storeman share 'storeman' in use" "green" -FileOnly -IncludeTimestamp:$false -Raw
+					Write_Log "       Path: $BasePath" -FileOnly -IncludeTimestamp:$false -Raw
+					if ($storeNum -and $storeNum -ne 'N/A')
+					{
+						$storeLine = "       Store: $storeNum"
+						if ($storeName -and $storeName -ne 'N/A') { $storeLine += " `"$storeName`"" }
+						if ($smsVer -and $smsVer -ne 'N/A') { $storeLine += "   (SMS $smsVer)" }
+						Write_Log $storeLine -FileOnly -IncludeTimestamp:$false -Raw
+					}
+				}
+				
+				Write_Log $rule -FileOnly -IncludeTimestamp:$false -Raw
+				
+				# Re-append the original startup lines with their colors
+				foreach ($old in $oldLines)
+				{
+					try
+					{
+						if ($old[0] -and $old[0].Trim())
+						{
+							$logBox.SelectionStart = $logBox.TextLength
+							$logBox.SelectionLength = 0
+							$logBox.SelectionColor = $old[1]
+							$logBox.AppendText($old[0] + "`r`n")
+							$logBox.SelectionColor = $logBox.ForeColor
+						}
+					}
+					catch { }
+				}
+				try
+				{
+					$logBox.SelectionStart = $logBox.TextLength
+					[void]$logBox.ScrollToCaret()
+				}
+				catch { }
+			}
+			catch { }
+		})
 	
 	$toolTip.SetToolTip($logBox, "Log output. Right-click to clear.")
 	$logBox.Add_MouseUp({
-			param ($sender,
-				$eventArgs)
+			param ($sender, $eventArgs)
 			if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Right)
 			{
 				$logBox.Clear()
@@ -30607,7 +32104,7 @@ public static class NativeWin {
 			}
 		})
 	
-	# Layout that also positions the log frame + log box (kept as part of top-strip layout so it stays consistent)
+	# Layout that also positions the log frame + log box
 	$layoutLogArea = {
 		if (-not $form -or $form.IsDisposed) { return }
 		
@@ -30633,11 +32130,11 @@ public static class NativeWin {
 			$logFrame.Width = $rowW
 			$logFrame.Height = $logH
 			
-			# Log box inset (padding inside frame)
+			# Log box inset (padding inside frame) - account for header
 			$logBox.Left = $logFrame.Left + $logInnerPad
-			$logBox.Top = $logFrame.Top + $logInnerPad
+			$logBox.Top = 28 + $logInnerPad # Account for header height
 			$logBox.Width = [math]::Max(50, $logFrame.Width - (2 * $logInnerPad))
-			$logBox.Height = [math]::Max(50, $logFrame.Height - (2 * $logInnerPad))
+			$logBox.Height = [math]::Max(50, $logFrame.Height - 28 - (2 * $logInnerPad))
 			
 			# Keep top strip aligned
 			& $layoutTopStrip
@@ -30817,17 +32314,18 @@ public static class NativeWin {
 			# ---- Status strip update (modern) ----
 			try
 			{
+				# Use the status helper function
 				if (-not [string]::IsNullOrWhiteSpace($script:StartupWarmupStatus))
 				{
-					$stBusy.Text = [string]$script:StartupWarmupStatus
+					& $updateStatusBar -Status "Warmup" -StatusColor $uiStatusInfo -Operation $script:StartupWarmupStatus
 				}
 				elseif ($script:IsBusy)
 				{
-					$stBusy.Text = "Busy: $($script:BusyReason)"
+					& $updateStatusBar -Status "Running" -StatusColor $uiStatusWarning -Operation $script:BusyReason -BusyInfo "Working..."
 				}
 				else
 				{
-					$stBusy.Text = ""
+					& $updateStatusBar -Status "Ready" -StatusColor $uiStatusSuccess -Operation "Waiting for action..."
 				}
 			}
 			catch { }
@@ -31404,6 +32902,7 @@ if (($result.Status -ne 'Ready') -and
 		$global:ProtocolForm.Topmost = $true
 		$global:ProtocolForm.BackColor = $uiBg
 		$global:ProtocolForm.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+		if ($script:TbsAppIcon) { try { $global:ProtocolForm.Icon = $script:TbsAppIcon } catch { } }
 		
 		# No minimize/maximize
 		$global:ProtocolForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
@@ -31415,7 +32914,8 @@ if (($result.Status -ne 'Ready') -and
 		
 		$global:ProtocolGrid = New-Object System.Windows.Forms.DataGridView
 		$global:ProtocolGrid.Location = New-Object System.Drawing.Point(12, 12)
-		$global:ProtocolGrid.Size = New-Object System.Drawing.Size(460, 420)
+		$global:ProtocolGrid.Size = New-Object System.Drawing.Size(460, 396)
+		$global:ProtocolGrid.RowTemplate.Height = 22
 		$global:ProtocolGrid.ColumnCount = 4
 		$global:ProtocolGrid.Columns[0].Name = "Lane"
 		$global:ProtocolGrid.Columns[1].Name = "Protocol"
@@ -31453,19 +32953,41 @@ if (($result.Status -ne 'Ready') -and
 			$global:ProtocolGrid.EnableHeadersVisualStyles = $false
 			$global:ProtocolGrid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(238, 242, 247)
 			$global:ProtocolGrid.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
-			$global:ProtocolGrid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5)
+			$global:ProtocolGrid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 			$global:ProtocolGrid.DefaultCellStyle.BackColor = $uiCardBg
 			$global:ProtocolGrid.DefaultCellStyle.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+			$global:ProtocolGrid.GridColor = [System.Drawing.Color]::FromArgb(235, 238, 242)
+			$global:ProtocolGrid.AlternatingRowsDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(248, 250, 253)
+			$global:ProtocolGrid.AlternatingRowsDefaultCellStyle.ForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+			$global:ProtocolGrid.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(216, 236, 255)
+			$global:ProtocolGrid.DefaultCellStyle.SelectionForeColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 		}
 		catch { }
 		
 		$global:ProtocolForm.Controls.Add($global:ProtocolGrid)
 		
+		# Hint line under the grid
+		$protocolHint = New-Object System.Windows.Forms.Label
+		$protocolHint.Text = "Double-click a row to open its database folder."
+		$protocolHint.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+		$protocolHint.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 125)
+		$protocolHint.AutoSize = $true
+		$protocolHint.Location = New-Object System.Drawing.Point(14, 412)
+		$global:ProtocolForm.Controls.Add($protocolHint)
+		
 		$closeBtn = New-Object System.Windows.Forms.Button
 		$closeBtn.Text = "Hide"
-		$closeBtn.Location = New-Object System.Drawing.Point(176, 445)
+		$closeBtn.Location = New-Object System.Drawing.Point(176, 438)
 		$closeBtn.Size = New-Object System.Drawing.Size(120, 32)
 		$closeBtn.FlatStyle = 'Flat'
+		$closeBtn.UseVisualStyleBackColor = $false
+		$closeBtn.BackColor = [System.Drawing.Color]::White
+		$closeBtn.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+		$closeBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+		$closeBtn.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(200, 205, 212)
+		$closeBtn.FlatAppearance.BorderSize = 1
+		$closeBtn.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(245, 248, 252)
+		$closeBtn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(235, 242, 252)
 		$closeBtn.Add_Click({ $global:ProtocolForm.Hide() })
 		$global:ProtocolForm.Controls.Add($closeBtn)
 		
@@ -32192,15 +33714,8 @@ if (($result.Status -ne 'Ready') -and
 			catch { }
 		})
 	
-	# ------------------------------------------------------------------------------------------------
-	# Put detailed version info somewhere visible (modern): add it to the left side of the status bar.
-	# (This preserves your original "form.Text had everything" concept, but looks cleaner.)
-	# ------------------------------------------------------------------------------------------------
-	try
-	{
-		$stLeft.Text = "Created by: Alex_C.T   |   Version: $VersionNumber   |   Revised: $VersionDate   |   PowerShell: $PowerShellVersion"
-	}
-	catch { }
+	# NOTE: version info now lives in the dedicated $stVersion status-bar item, so the
+	# busy scanner's status updates no longer wipe it out after the first tick.
 	
 	# Final layout pass so everything starts aligned
 	& $layoutTopStrip
@@ -32231,48 +33746,82 @@ if (($result.Status -ne 'Ready') -and
 		
 		try
 		{
-			# Base look
+			# Base look - modern flat design with subtle elevation
 			$Btn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 			$Btn.UseVisualStyleBackColor = $false
 			$Btn.BackColor = $script:UiCardBg
 			$Btn.ForeColor = $script:UiTextDark
-			$Btn.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 10, [System.Drawing.FontStyle]::Regular)
+			$Btn.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
 			$Btn.Cursor = [System.Windows.Forms.Cursors]::Hand
+			$Btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+			$Btn.Padding = New-Object System.Windows.Forms.Padding(10, 4, 10, 4)
 			
-			# Border + hover states (subtle)
-			$Btn.FlatAppearance.BorderSize = 1
-			$Btn.FlatAppearance.BorderColor = $script:UiCardBorder
-			$Btn.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(245, 248, 252)
-			$Btn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(235, 242, 252)
+			# Border + hover states (elevated card feel)
+			$Btn.FlatAppearance.BorderSize = 0
+			$Btn.FlatAppearance.MouseOverBackColor = $script:UiAccentLight
+			$Btn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(220, 235, 250)
 			
-			# Store original colors for restore (don't overwrite if Tag already used for something else)
+			# Subtle shadow effect (bottom border)
+			$Btn.add_Paint({
+					param ($s, $e)
+					try
+					{
+						# Bottom shadow line
+						$pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(200, 200, 200))
+						$e.Graphics.DrawLine($pen, 2, $s.Height - 1, $s.Width - 2, $s.Height - 1)
+						$pen.Dispose()
+					}
+					catch { }
+				})
+			
+			# Store original colors for restore
 			if (-not $Btn.Tag -or ($Btn.Tag -isnot [pscustomobject]))
 			{
 				$Btn.Tag = [pscustomobject]@{
 					OrigBack = $Btn.BackColor
 					OrigFore = $Btn.ForeColor
-					OrigBord = $Btn.FlatAppearance.BorderColor
 				}
 			}
 			
-			# Hover accent (border + text)
+			# Hover effects (lift + accent)
 			$Btn.add_MouseEnter({
-					param ($s,
-						$e)
+					param ($s, $e)
 					try
 					{
-						$s.ForeColor = $script:UiAccent
-						$s.FlatAppearance.BorderColor = $script:UiAccent
+						$s.ForeColor = $script:UiAccentDark
+						$s.BackColor = $script:UiAccentLight
+						# Subtle elevation effect
+						$s.Padding = New-Object System.Windows.Forms.Padding(10, 2, 10, 6)
 					}
 					catch { }
 				})
 			$Btn.add_MouseLeave({
-					param ($s,
-						$e)
+					param ($s, $e)
 					try
 					{
 						if ($s.Tag -and $s.Tag.OrigFore) { $s.ForeColor = $s.Tag.OrigFore }
-						if ($s.Tag -and $s.Tag.OrigBord) { $s.FlatAppearance.BorderColor = $s.Tag.OrigBord }
+						if ($s.Tag -and $s.Tag.OrigBack) { $s.BackColor = $s.Tag.OrigBack }
+						# Restore padding
+						$s.Padding = New-Object System.Windows.Forms.Padding(10, 4, 10, 4)
+					}
+					catch { }
+				})
+			$Btn.add_MouseDown({
+					param ($s, $e)
+					try
+					{
+						$s.BackColor = [System.Drawing.Color]::FromArgb(230, 242, 255)
+					}
+					catch { }
+				})
+			$Btn.add_MouseUp({
+					param ($s, $e)
+					try
+					{
+						if ($s.Bounds.Contains($s.PointToClient([System.Windows.Forms.Cursor]::Position)))
+						{
+							$s.BackColor = $script:UiAccentLight
+						}
 					}
 					catch { }
 				})
@@ -32280,9 +33829,9 @@ if (($result.Status -ne 'Ready') -and
 		catch { }
 	}
 	
-	# ----------------------------------------------------------------------------
-	# Apply modern context menu styling (clean font, no icon gutter)
-	# ----------------------------------------------------------------------------
+	# ===================================================================================================
+	# ENHANCED MODERN CONTEXT MENU STYLING - Clean, modern look with icons
+	# ===================================================================================================
 	$Apply_Modern_Menu_Style = {
 		param ([System.Windows.Forms.ContextMenuStrip]$Menu)
 		
@@ -32293,15 +33842,106 @@ if (($result.Status -ne 'Ready') -and
 			$Menu.ShowImageMargin = $false
 			$Menu.ShowCheckMargin = $false
 			$Menu.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Regular)
-			$Menu.BackColor = $script:UiCardBg
-			$Menu.ForeColor = $script:UiTextDark
-			$Menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::System
+			$Menu.BackColor = [System.Drawing.Color]::White
+			$Menu.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+			$Menu.RenderMode = [System.Windows.Forms.ToolStripRenderMode]::Professional
 			$Menu.Padding = New-Object System.Windows.Forms.Padding(2)
+			$Menu.GripMargin = New-Object System.Windows.Forms.Padding(0)
+			$Menu.ItemMargin = New-Object System.Windows.Forms.Padding(2)
+			
+			# Custom renderer for modern menu
+			# (NOTE: do NOT assign a ProfessionalColorTable to $Menu.Renderer here -
+			#  it throws and the custom renderer below would silently never be applied)
+			if (-not ('ModernToolStripRenderer' -as [type])) {
+			function global:CreateModernMenuRenderer {
+				Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+				$rendererCode = @'
+using System;
+using System.Windows.Forms;
+using System.Windows.Forms.VisualStyles;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+
+public class ModernMenuRenderer : ProfessionalColorTable, IRenderer {
+    public Color MenuBorder { get { return Color.FromArgb(229, 229, 229); } }
+    public Color MenuItemBorder { get { return Color.Transparent; } }
+}
+
+public interface IRenderer { }
+
+public class ModernToolStripRenderer : ToolStripProfessionalRenderer {
+    public ModernToolStripRenderer() : base(new ModernColorTable()) { }
+    
+    protected override void OnRenderItemBackground(ToolStripItemRenderEventArgs e) {
+        if (e.Item.Selected) {
+            using (var brush = new SolidBrush(Color.FromArgb(230, 243, 255))) {
+                e.Graphics.FillRectangle(brush, new Rectangle(0, 0, e.Item.Width - 1, e.Item.Height - 1));
+            }
+        }
+        else {
+            base.OnRenderItemBackground(e);
+        }
+    }
+    
+    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e) {
+        if (e.Item.Selected) {
+            using (var brush = new SolidBrush(Color.FromArgb(230, 243, 255))) {
+                e.Graphics.FillRectangle(brush, new Rectangle(0, 0, e.Item.Width - 1, e.Item.Height - 1));
+            }
+            using (var pen = new Pen(Color.FromArgb(0, 122, 204), 1)) {
+                e.Graphics.DrawLine(pen, 0, 0, 0, e.Item.Height - 1);
+            }
+        }
+        else {
+            base.OnRenderMenuItemBackground(e);
+        }
+    }
+    
+    protected override void OnRenderImageMargin(ToolStripRenderEventArgs e) { }
+    
+    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e) {
+        using (var pen = new Pen(Color.FromArgb(229, 229, 229))) {
+            e.Graphics.DrawLine(pen, 0, e.Item.Height / 2, e.Item.Width, e.Item.Height / 2);
+        }
+    }
+}
+
+public class ModernColorTable : ProfessionalColorTable {
+    public override Color MenuBorder { get { return Color.FromArgb(229, 229, 229); } }
+    public override Color MenuItemBorder { get { return Color.Transparent; } }
+    public override Color ToolStripBorder { get { return Color.FromArgb(229, 229, 229); } }
+}
+'@
+				Add-Type -TypeDefinition $rendererCode -ErrorAction SilentlyContinue
+			}
+			CreateModernMenuRenderer
+			}
+			if ('ModernToolStripRenderer' -as [type]) {
+				$Menu.Renderer = [ModernToolStripRenderer]::new()
+			}
 		}
 		catch { }
 	}
 	
 	# ----------------------------------------------------------------------------
+	# Style a submenu dropdown to match the modern menu theme (the function
+	# above is typed for ContextMenuStrip, so submenus are styled separately)
+	$Style_SubMenu = {
+		param ($Sub)
+		try
+		{
+			$dd = $Sub.DropDown
+			$dd.BackColor = [System.Drawing.Color]::White
+			$dd.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+			$dd.Padding = New-Object System.Windows.Forms.Padding(2)
+			$dd.ShowImageMargin = $false
+			$dd.ShowCheckMargin = $false
+			$dd.GripMargin = New-Object System.Windows.Forms.Padding(0)
+			if ('ModernToolStripRenderer' -as [type]) { $dd.Renderer = [ModernToolStripRenderer]::new() }
+		}
+		catch { }
+	}
+
 	# Apply modern styling to popup forms so older dialogs match the main app.
 	# ----------------------------------------------------------------------------
 	$Apply_Modern_Popup_Style = {
@@ -32319,7 +33959,7 @@ if (($result.Status -ne 'Ready') -and
 			{
 				if ($Control -is [System.Windows.Forms.Button])
 				{
-					$measured = [System.Windows.Forms.TextRenderer]::MeasureText($Control.Text, (New-Object System.Drawing.Font("Segoe UI Semibold", 9.5, [System.Drawing.FontStyle]::Regular)))
+					$measured = [System.Windows.Forms.TextRenderer]::MeasureText($Control.Text, (New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Regular)))
 					$minWidth = [Math]::Max([int]$Control.Width, [int]($measured.Width + 22))
 					$minHeight = [Math]::Max([int]$Control.Height, [int]($measured.Height + 12), 32)
 					$preserveAccentBack = ($Control.BackColor -eq [System.Drawing.Color]::Yellow -or $Control.BackColor -eq [System.Drawing.Color]::LightGreen)
@@ -32331,7 +33971,7 @@ if (($result.Status -ne 'Ready') -and
 						$Control.BackColor = $script:UiCardBg
 					}
 					$Control.ForeColor = $script:UiTextDark
-					$Control.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5, [System.Drawing.FontStyle]::Regular)
+					$Control.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Regular)
 					$Control.Cursor = [System.Windows.Forms.Cursors]::Hand
 					$Control.FlatAppearance.BorderSize = 1
 					$Control.FlatAppearance.BorderColor = $script:UiCardBorder
@@ -32385,7 +34025,7 @@ if (($result.Status -ne 'Ready') -and
 				{
 					$Control.ForeColor = $script:UiTextDark
 					$Control.BackColor = $script:UiCardBg
-					$Control.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5)
+					$Control.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 				}
 				elseif ($Control -is [System.Windows.Forms.Panel] -or
 					$Control -is [System.Windows.Forms.TabPage] -or
@@ -32413,7 +34053,7 @@ if (($result.Status -ne 'Ready') -and
 					$Control.EnableHeadersVisualStyles = $false
 					$Control.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
 					$Control.ColumnHeadersDefaultCellStyle.ForeColor = $script:UiTextDark
-					$Control.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5)
+					$Control.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 					$Control.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
 					$Control.DefaultCellStyle.ForeColor = $script:UiTextDark
 					$Control.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(221, 235, 255)
@@ -32507,22 +34147,165 @@ if (($result.Status -ne 'Ready') -and
 	#
 	######################################################################################################################
 	
-	############################################################################
-	# Server Tools Anchor Button
-	############################################################################
-	$ServerToolsButton = New-Object System.Windows.Forms.Button
-	$ServerToolsButton.Text = "Server Tools"
-	$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 475) # seed; layoutBottom will set final bounds
-	$ServerToolsButton.Size = New-Object System.Drawing.Size(200, 50)
+	# ===================================================================================================
+	# ENHANCED TOOL BUTTONS - Category-colored buttons with icons and better hover effects
+	# ===================================================================================================
 	
-	# Modern style
-	& $Apply_Modern_Button_Style $ServerToolsButton
+	# Helper function to create category-colored tool button
+	$Create_CategoryButton = {
+		param(
+			[string]$ButtonText,
+			[string]$Icon,
+			[string]$CategoryColor,
+			[int]$X,
+			[int]$Y,
+			[System.Windows.Forms.ContextMenuStrip]$ContextMenu
+		)
+		
+		$Btn = New-Object System.Windows.Forms.Button
+		$Btn.Text = "$Icon $ButtonText"
+		$Btn.Location = New-Object System.Drawing.Point($X, $Y)
+		$Btn.Size = New-Object System.Drawing.Size(200, 52)
+		$Btn.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
+		$Btn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+		$Btn.UseVisualStyleBackColor = $false
+		$Btn.BackColor = [System.Drawing.Color]::White
+		$Btn.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+		$Btn.Cursor = [System.Windows.Forms.Cursors]::Hand
+		$Btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+		$Btn.Padding = New-Object System.Windows.Forms.Padding(12, 6, 12, 6)
+		$Btn.FlatAppearance.BorderSize = 0
+		$Btn.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(240, 245, 250)
+		$Btn.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(225, 238, 250)
+		
+		# Store category color for hover
+		$Btn.Tag = [pscustomobject]@{
+			CategoryColor = $CategoryColor
+			OrigFore = $Btn.ForeColor
+			OrigBack = $Btn.BackColor
+		}
+		
+		# Bottom accent line
+		$Btn.add_Paint({
+				param ($s, $e)
+				try
+				{
+					# Bottom colored accent
+					$pen = New-Object System.Drawing.Pen($s.Tag.CategoryColor, 3)
+					$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
+					$pen.Dispose()
+					
+					# Subtle bottom shadow
+					$pen2 = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(200, 200, 200))
+					$e.Graphics.DrawLine($pen2, 2, $s.Height - 1, $s.Width - 2, $s.Height - 1)
+					$pen2.Dispose()
+				}
+				catch { }
+			})
+		
+		# Hover effect
+		$Btn.add_MouseEnter({
+				param ($s, $e)
+				try
+				{
+					$s.BackColor = [System.Drawing.Color]::FromArgb(245, 248, 252)
+					$s.ForeColor = $s.Tag.CategoryColor
+				}
+				catch { }
+			})
+		$Btn.add_MouseLeave({
+				param ($s, $e)
+				try
+				{
+					$s.BackColor = $s.Tag.OrigBack
+					$s.ForeColor = $s.Tag.OrigFore
+				}
+				catch { }
+			})
+		
+		# Show context menu on click
+		$Btn.add_Click({
+				param ($s, $e)
+				$script:LastActivity = Get-Date
+				$ContextMenu.Show($s, 0, $s.Height)
+			})
+		
+		return $Btn
+	}
 	
+	############################################################################
+	# Server Tools Button (Green)
+	############################################################################
+	
+	# Server Context Menu
 	$ContextMenuServer = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuServer.ShowItemToolTips = $true
-	
-	# Modern style for menu
 	& $Apply_Modern_Menu_Style $ContextMenuServer
+
+	# Submenu containers (the assembled layout is at the bottom of this menu section)
+	$SubServerSchedule = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule")
+	$SubServerSchedule.ToolTipText = "Scheduled maintenance and backup tasks"
+	$SubServerSystem = New-Object System.Windows.Forms.ToolStripMenuItem("System Care")
+	$SubServerSystem.ToolTipText = "Windows and system-level maintenance"
+	
+	& $script:Create_CategoryButton "Server Tools" "Server" $uiCategoryServer 0 0 $ContextMenuServer | Out-Null
+	$ServerToolsButton = New-Object System.Windows.Forms.Button
+	$ServerToolsButton.Name = "ServerToolsButton"
+	$ServerToolsButton.Text = "Server Tools"
+	$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 475)
+	$ServerToolsButton.Size = New-Object System.Drawing.Size(200, 52)
+	$ServerToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
+	$ServerToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+	$ServerToolsButton.UseVisualStyleBackColor = $false
+	$ServerToolsButton.BackColor = [System.Drawing.Color]::White
+	$ServerToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+	$ServerToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$ServerToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$ServerToolsButton.FlatAppearance.BorderSize = 0
+	$ServerToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(235, 248, 235)
+	$ServerToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(220, 240, 220)
+	$ServerToolsButton.Tag = [pscustomobject]@{
+		CategoryColor = $uiCategoryServer
+	}
+	
+	# Bottom accent bar
+	$ServerToolsButton.add_Paint({
+			param ($s, $e)
+			try
+			{
+				$pen = New-Object System.Drawing.Pen($uiCategoryServer, 3)
+				$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
+				$pen.Dispose()
+			}
+			catch { }
+		})
+	
+	# Hover effects
+	$ServerToolsButton.add_MouseEnter({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::FromArgb(235, 248, 235); $s.ForeColor = $uiCategoryServer }
+			catch { }
+		})
+	$ServerToolsButton.add_MouseLeave({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
+			catch { }
+		})
+	$ServerToolsButton.add_Click({
+			$script:LastActivity = Get-Date
+			$ContextMenuServer.Show($ServerToolsButton, 0, $ServerToolsButton.Height)
+		})
+	$ServerToolsButton.add_MouseDown({
+			param ($sender, $e)
+			if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
+			{
+				$script:ProtocolPopupMode = 'Server'
+				$global:ProtocolForm.Show()
+				$global:ProtocolForm.BringToFront()
+			}
+		})
+	$toolTip.SetToolTip($ServerToolsButton, "Click for server-related tools. Right-click for server DB info.")
+	$form.Controls.Add($ServerToolsButton)
 	
 	############################################################################
 	# 1) Server DB Maintenance 
@@ -32562,7 +34345,7 @@ if (($result.Status -ne 'Ready') -and
 			$script:LastActivity = Get-Date
 			Schedule_Server_DB_Maintenance -StoreNumber $StoreNumber
 		})
-	[void]$ContextMenuServer.Items.Add($ServerScheduleRepairItem)
+	[void]$SubServerSchedule.DropDownItems.Add($ServerScheduleRepairItem)
 	
 	############################################################################
 	# 3) Schedule the local DB backup on the server
@@ -32573,7 +34356,7 @@ if (($result.Status -ne 'Ready') -and
 			$script:LastActivity = Get-Date
 			Schedule_LocalDB_Backup
 		})
-	[void]$ContextMenuServer.Items.Add($ServerScheduleBackupItem)
+	[void]$SubServerSchedule.DropDownItems.Add($ServerScheduleBackupItem)
 	
 	############################################################################
 	# 4) Schedule the Storeman ZIP backup on the server
@@ -32584,7 +34367,7 @@ if (($result.Status -ne 'Ready') -and
 			$script:LastActivity = Get-Date
 			Schedule_Storeman_Zip_Backup
 		})
-	[void]$ContextMenuServer.Items.Add($ServerScheduleStoremanZipBackupItem)
+	[void]$SubServerSchedule.DropDownItems.Add($ServerScheduleStoremanZipBackupItem)
 	
 	############################################################################
 	# 5) Manage SQL 'sa' Account Menu Item
@@ -32606,7 +34389,7 @@ if (($result.Status -ne 'Ready') -and
 			$script:LastActivity = Get-Date
 			Repair_Windows
 		})
-	[void]$ContextMenuServer.Items.Add($RepairWindowsItem)
+	[void]$SubServerSystem.DropDownItems.Add($RepairWindowsItem)
 	
 	############################################################################
 	# 7) Configure System Settings Menu Item
@@ -32643,7 +34426,7 @@ if (($result.Status -ne 'Ready') -and
 					[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 			}
 		})
-	[void]$ContextMenuServer.Items.Add($ConfigureSystemSettingsItem)
+	[void]$SubServerSystem.DropDownItems.Add($ConfigureSystemSettingsItem)
 	
 	############################################################################
 	# 8) Organize Desktop Items Menu Item
@@ -32694,24 +34477,22 @@ if (($result.Status -ne 'Ready') -and
 				}
 			}
 		})
-	[void]$ContextMenuServer.Items.Add($OrganizeDesktopItemsItem)
+	[void]$SubServerSystem.DropDownItems.Add($OrganizeDesktopItemsItem)
 	
 	############################################################################
-	# Show the context menu when the Server Tools button is clicked
+	# NOTE: the click / right-click handlers and the control registration for
+	# $ServerToolsButton were already done when the button was created above -
+	# do NOT add them again (it opened the menu twice per click).
 	############################################################################
-	$ServerToolsButton.Add_Click({ $ContextMenuServer.Show($ServerToolsButton, 0, $ServerToolsButton.Height) })
-	$ServerToolsButton.Add_MouseDown({
-			param ($sender,
-				$e)
-			if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
-			{
-				$script:ProtocolPopupMode = 'Server'
-				$global:ProtocolForm.Show()
-				$global:ProtocolForm.BringToFront()
-			}
-		})
-	$toolTip.SetToolTip($ServerToolsButton, "Click to see Server-related tools. Right-click shows server DB info.")
-	$form.Controls.Add($ServerToolsButton)
+
+	# --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
+	[void]$ContextMenuServer.Items.Clear()
+	[void]$ContextMenuServer.Items.Add($ServerDBMaintenanceItem)
+	[void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
+	[void]$ContextMenuServer.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+	[void]$ContextMenuServer.Items.Add($SubServerSchedule)
+	[void]$ContextMenuServer.Items.Add($SubServerSystem)
+	foreach ($sub in @($SubServerSchedule, $SubServerSystem)) { & $Style_SubMenu $sub }
 	
 	######################################################################################################################
 	# 
@@ -32720,27 +34501,70 @@ if (($result.Status -ne 'Ready') -and
 	######################################################################################################################
 	
 	############################################################################
-	# Lane Tools Anchor Button
+	# Lane Tools Anchor Button (Blue)
 	############################################################################
-	$LaneToolsButton = New-Object System.Windows.Forms.Button
-	$LaneToolsButton.Text = "Lane Tools"
-	$LaneToolsButton.Location = New-Object System.Drawing.Point(275, 475) # seed; layoutBottom will set final bounds
-	$LaneToolsButton.Size = New-Object System.Drawing.Size(200, 50)
 	
-	# Modern style
-	& $Apply_Modern_Button_Style $LaneToolsButton
-	
+	# Lane Context Menu
 	$ContextMenuLane = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuLane.ShowItemToolTips = $true
-	
-	# Modern style for menu
 	& $Apply_Modern_Menu_Style $ContextMenuLane
+
+	# Submenu containers (the assembled layout is at the bottom of this menu section)
+	$SubLaneMaintenance = New-Object System.Windows.Forms.ToolStripMenuItem("Maintenance")
+	$SubLaneMaintenance.ToolTipText = "Lane database and program maintenance tasks"
+	$SubLaneSchedule = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule")
+	$SubLaneSchedule.ToolTipText = "Scheduled maintenance and backup tasks"
+	$SubLaneFiles = New-Object System.Windows.Forms.ToolStripMenuItem("Files & Data")
+	$SubLaneFiles.ToolTipText = "Lane files, shares and data retrieval"
+	$SubLanePower = New-Object System.Windows.Forms.ToolStripMenuItem("Power & Services")
+	$SubLanePower.ToolTipText = "Reboots, restarts, time sync and service tasks"
 	
-	# Left-click shows menu; Right-click shows Protocol popup
-	$LaneToolsButton.Add_Click({ $ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height) })
-	$LaneToolsButton.Add_MouseDown({
-			param ($sender,
-				$e)
+	$LaneToolsButton = New-Object System.Windows.Forms.Button
+	$LaneToolsButton.Name = "LaneToolsButton"
+	$LaneToolsButton.Text = "Lane Tools"
+	$LaneToolsButton.Location = New-Object System.Drawing.Point(275, 475)
+	$LaneToolsButton.Size = New-Object System.Drawing.Size(200, 52)
+	$LaneToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
+	$LaneToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+	$LaneToolsButton.UseVisualStyleBackColor = $false
+	$LaneToolsButton.BackColor = [System.Drawing.Color]::White
+	$LaneToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+	$LaneToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$LaneToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$LaneToolsButton.FlatAppearance.BorderSize = 0
+	$LaneToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(230, 243, 255)
+	$LaneToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(215, 235, 250)
+	$LaneToolsButton.Tag = [pscustomobject]@{ CategoryColor = $uiCategoryLane }
+	
+	# Bottom accent bar
+	$LaneToolsButton.add_Paint({
+			param ($s, $e)
+			try
+			{
+				$pen = New-Object System.Drawing.Pen($uiCategoryLane, 3)
+				$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
+				$pen.Dispose()
+			}
+			catch { }
+		})
+	
+	# Hover effects
+	$LaneToolsButton.add_MouseEnter({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::FromArgb(230, 243, 255); $s.ForeColor = $uiCategoryLane }
+			catch { }
+		})
+	$LaneToolsButton.add_MouseLeave({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
+			catch { }
+		})
+	$LaneToolsButton.add_Click({
+			$script:LastActivity = Get-Date
+			$ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height)
+		})
+	$LaneToolsButton.add_MouseDown({
+			param ($sender, $e)
 			if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
 			{
 				$script:ProtocolPopupMode = 'Lane'
@@ -32748,6 +34572,8 @@ if (($result.Status -ne 'Ready') -and
 				$global:ProtocolForm.BringToFront()
 			}
 		})
+	$toolTip.SetToolTip($LaneToolsButton, "Click for lane-related tools. Right-click for lane protocol window.")
+	$form.Controls.Add($LaneToolsButton)
 	
 	############################################################################
 	# 1) Lane DB Maintenance Button
@@ -32769,7 +34595,7 @@ if (($result.Status -ne 'Ready') -and
 			$script:LastActivity = Get-Date
 			Schedule_Lane_DB_Maintenance -StoreNumber "$StoreNumber"
 		})
-	[void]$ContextMenuLane.Items.Add($LaneScheduleMaintenanceItem)
+	[void]$SubLaneSchedule.DropDownItems.Add($LaneScheduleMaintenanceItem)
 	
 	############################################################################
 	# 3) Schedule DB backup of the lanes
@@ -32780,7 +34606,7 @@ if (($result.Status -ne 'Ready') -and
 			$script:LastActivity = Get-Date
 			Schedule_LaneDB_Backup
 		})
-	[void]$ContextMenuLane.Items.Add($LaneScheduleBackupItem)
+	[void]$SubLaneSchedule.DropDownItems.Add($LaneScheduleBackupItem)
 	
 	############################################################################
 	#  X) Install/Check LOC Options (Lanes) - lane picker + options picker  (kept disabled)
@@ -32804,7 +34630,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Repair_LOC_Databases_On_Lanes -StoreNumber "$StoreNumber"
 		})
-	[void]$ContextMenuLane.Items.Add($RepairLaneDatabasesItem)
+	[void]$SubLaneMaintenance.DropDownItems.Add($RepairLaneDatabasesItem)
 	
 	############################################################################
 	# 4) Pump Table to Lane Menu Item
@@ -32815,7 +34641,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Pump_Tables -StoreNumber $StoreNumber
 		})
-	[void]$ContextMenuLane.Items.Add($PumpTableToLaneItem)
+	[void]$SubLaneMaintenance.DropDownItems.Add($PumpTableToLaneItem)
 	
 	############################################################################
 	# 5) Update Lane Configuration Menu Item
@@ -32826,7 +34652,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Update_Lane_Config -StoreNumber $StoreNumber
 		})
-	[void]$ContextMenuLane.Items.Add($UpdateLaneConfigItem)
+	[void]$SubLaneMaintenance.DropDownItems.Add($UpdateLaneConfigItem)
 	
 	############################################################################
 	# 6) Close Open Transactions Menu Item
@@ -32837,7 +34663,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Close_Open_Transactions -StoreNumber $StoreNumber
 		})
-	[void]$ContextMenuLane.Items.Add($CloseOpenTransItem)
+	[void]$SubLaneMaintenance.DropDownItems.Add($CloseOpenTransItem)
 	
 	############################################################################
 	# 7) Open Lane C$ Share(s)
@@ -32848,7 +34674,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Open_Selected_Node_C_Path -StoreNumber $StoreNumber -NodeTypes Lane
 		})
-	[void]$ContextMenuLane.Items.Add($OpenLaneCShareItem)
+	[void]$SubLaneFiles.DropDownItems.Add($OpenLaneCShareItem)
 	
 	############################################################################
 	# 8) Delete DBS Menu Item
@@ -32859,7 +34685,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Delete_DBS -StoreNumber "$StoreNumber"
 		})
-	[void]$ContextMenuLane.Items.Add($DeleteDBSItem)
+	[void]$SubLaneFiles.DropDownItems.Add($DeleteDBSItem)
 	
 	############################################################################
 	# 9) Refresh PIN Pad Files Menu Item
@@ -32870,7 +34696,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Refresh_PIN_Pad_Files -StoreNumber "$StoreNumber"
 		})
-	[void]$ContextMenuLane.Items.Add($RefreshPinPadFilesItem)
+	[void]$SubLaneFiles.DropDownItems.Add($RefreshPinPadFilesItem)
 	
 	############################################################################
 	# 10) Drawer Control Item
@@ -32881,7 +34707,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Drawer_Control -StoreNumber $StoreNumber
 		})
-	[void]$ContextMenuLane.Items.Add($DrawerControlItem)
+	[void]$SubLanePower.DropDownItems.Add($DrawerControlItem)
 	
 	############################################################################
 	# 11) Refresh Database
@@ -32903,7 +34729,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Send_Restart_All_Programs -StoreNumber "$StoreNumber"
 		})
-	[void]$ContextMenuLane.Items.Add($SendRestartCommandItem)
+	[void]$SubLanePower.DropDownItems.Add($SendRestartCommandItem)
 	
 	############################################################################
 	# 13) Enable SQL Protocols Menu Item
@@ -32914,7 +34740,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Enable_SQL_Protocols_On_Selected_Lanes -StoreNumber $StoreNumber
 		})
-	[void]$ContextMenuLane.Items.Add($EnableSQLProtocolsItem)
+	[void]$SubLaneMaintenance.DropDownItems.Add($EnableSQLProtocolsItem)
 	
 	############################################################################
 	# 14) Check Lane SQL / VNC Services
@@ -32943,7 +34769,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$isSchedule = ($modeResult -eq [System.Windows.Forms.DialogResult]::Yes)
 			Send_SERVER_time_to_Lanes -StoreNumber $StoreNumber -Schedule:$isSchedule
 		})
-	[void]$ContextMenuLane.Items.Add($SetLaneTimeFromLocalItem)
+	[void]$SubLanePower.DropDownItems.Add($SetLaneTimeFromLocalItem)
 	
 	############################################################################
 	# 16) Sync Server Key (SYS_TAB.F1243) + Optional Scheduled Task
@@ -32963,18 +34789,18 @@ $InstallCheckLOCOptionsItem.Add_Click({
 				catch { }
 			}
 		})
-	[void]$ContextMenuLane.Items.Add($SyncServerKeyItem)
+	[void]$SubLanePower.DropDownItems.Add($SyncServerKeyItem)
 	
 	############################################################################
 	# 17) TRS CLT Reprocess (Build SAL_HDR_SUS@TER) Menu Item
 	############################################################################
-	$TrsCltReprocessItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrive Transactions from Lnaes")
+	$TrsCltReprocessItem = New-Object System.Windows.Forms.ToolStripMenuItem("Retrieve Transactions from Lanes")
 	$TrsCltReprocessItem.ToolTipText = "Creates/refreshes SAL_HDR_SUS@TER (per lane) from SAL_HDR CLOSED by date + tran range, using NP/TCP/File protocol logic."
 	$TrsCltReprocessItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Retrive_Transactions -StoreNumber $StoreNumber
 		})
-	[void]$ContextMenuLane.Items.Add($TrsCltReprocessItem)
+	[void]$SubLaneFiles.DropDownItems.Add($TrsCltReprocessItem)
 	
 	############################################################################
 	# 18) Reboot Lane Menu Item
@@ -32985,13 +34811,24 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Reboot_Nodes -StoreNumber "$StoreNumber" -NodeTypes Lane
 		})
-	[void]$ContextMenuLane.Items.Add($RebootLaneItem)
+	[void]$SubLanePower.DropDownItems.Add($RebootLaneItem)
 	
 	############################################################################
 	# NOTE: Click handler already assigned above. Avoid duplicate Add_Click.
 	############################################################################
+
+	# --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
+	[void]$ContextMenuLane.Items.Clear()
+	[void]$ContextMenuLane.Items.Add($LaneDBMaintenanceItem)
+	[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
+	[void]$ContextMenuLane.Items.Add($LaneServiceStatusItem)
+	[void]$ContextMenuLane.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+	[void]$ContextMenuLane.Items.Add($SubLaneMaintenance)
+	[void]$ContextMenuLane.Items.Add($SubLaneSchedule)
+	[void]$ContextMenuLane.Items.Add($SubLaneFiles)
+	[void]$ContextMenuLane.Items.Add($SubLanePower)
+	foreach ($sub in @($SubLaneMaintenance, $SubLaneSchedule, $SubLaneFiles, $SubLanePower)) { & $Style_SubMenu $sub }
 	$toolTip.SetToolTip($LaneToolsButton, "Click to see Lane-related tools. Right-click shows lane protocol window.")
-	$form.Controls.Add($LaneToolsButton)
 	
 	######################################################################################################################
 	# 
@@ -33000,21 +34837,66 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	######################################################################################################################
 	
 	############################################################################
-	# Scales Tools Anchor Button
+	# Scales Tools Anchor Button (Purple)
 	############################################################################
 	$ScaleToolsButton = New-Object System.Windows.Forms.Button
+	$ScaleToolsButton.Name = "ScaleToolsButton"
 	$ScaleToolsButton.Text = "Scale Tools"
-	$ScaleToolsButton.Location = New-Object System.Drawing.Point(525, 475) # seed; layoutBottom will set final bounds
-	$ScaleToolsButton.Size = New-Object System.Drawing.Size(200, 50)
+	$ScaleToolsButton.Location = New-Object System.Drawing.Point(525, 475)
+	$ScaleToolsButton.Size = New-Object System.Drawing.Size(200, 52)
+	$ScaleToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
+	$ScaleToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+	$ScaleToolsButton.UseVisualStyleBackColor = $false
+	$ScaleToolsButton.BackColor = [System.Drawing.Color]::White
+	$ScaleToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+	$ScaleToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$ScaleToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$ScaleToolsButton.FlatAppearance.BorderSize = 0
+	$ScaleToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(245, 230, 250)
+	$ScaleToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(230, 215, 240)
+	$ScaleToolsButton.Tag = [pscustomobject]@{ CategoryColor = $uiCategoryScale }
 	
-	# Modern style
-	& $Apply_Modern_Button_Style $ScaleToolsButton
+	# Bottom accent bar
+	$ScaleToolsButton.add_Paint({
+			param ($s, $e)
+			try
+			{
+				$pen = New-Object System.Drawing.Pen($uiCategoryScale, 3)
+				$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
+				$pen.Dispose()
+			}
+			catch { }
+		})
 	
+	# Hover effects
+	$ScaleToolsButton.add_MouseEnter({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::FromArgb(245, 230, 250); $s.ForeColor = $uiCategoryScale }
+			catch { }
+		})
+	$ScaleToolsButton.add_MouseLeave({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
+			catch { }
+		})
+	$ScaleToolsButton.add_Click({
+			$script:LastActivity = Get-Date
+			$ContextMenuScale.Show($ScaleToolsButton, 0, $ScaleToolsButton.Height)
+		})
+	$form.Controls.Add($ScaleToolsButton)
+	
+	# Scale Context Menu
 	$ContextMenuScale = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuScale.ShowItemToolTips = $true
-	
-	# Modern style for menu
 	& $Apply_Modern_Menu_Style $ContextMenuScale
+
+	# Submenu containers (the assembled layout is at the bottom of this menu section)
+	$SubScaleServices = New-Object System.Windows.Forms.ToolStripMenuItem("Services")
+	$SubScaleServices.ToolTipText = "BMS / ScaleCommApp services and reboot"
+	$SubScaleConfig = New-Object System.Windows.Forms.ToolStripMenuItem("Configuration")
+	$SubScaleConfig.ToolTipText = "Scale configuration and database tables"
+	$SubScaleFiles = New-Object System.Windows.Forms.ToolStripMenuItem("Files & Shares")
+	$SubScaleFiles.ToolTipText = "Scale file deployment and C$ shares"
 	
 	############################################################################
 	# 1) Repair BMS Service
@@ -33025,7 +34907,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Repair_BMS
 		})
-	[void]$ContextMenuScale.Items.Add($repairBMSItem)
+	[void]$SubScaleServices.DropDownItems.Add($repairBMSItem)
 	
 	############################################################################
 	# 2) Troubleshoot ScaleCommApp
@@ -33036,7 +34918,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Troubleshoot_ScaleCommApp -AllMatches -Force
 		})
-	[void]$ContextMenuScale.Items.Add($troubleshootItem)
+	[void]$SubScaleServices.DropDownItems.Add($troubleshootItem)
 	
 	############################################################################
 	# 3) Reboot Scales
@@ -33047,7 +34929,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Reboot_Nodes -StoreNumber "$StoreNumber" -NodeTypes Scale
 		})
-	[void]$ContextMenuScale.Items.Add($Reboot_ScalesItem)
+	[void]$SubScaleServices.DropDownItems.Add($Reboot_ScalesItem)
 	
 	############################################################################
 	# 4) Open Scale C$ Share(s)
@@ -33058,7 +34940,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Open_Selected_Node_C_Path -StoreNumber $StoreNumber -NodeTypes Scale
 		})
-	[void]$ContextMenuScale.Items.Add($OpenScaleCShareItem)
+	[void]$SubScaleFiles.DropDownItems.Add($OpenScaleCShareItem)
 	
 	############################################################################
 	# 5) Edit_TBS_SCL_ver520_Table Menu Item
@@ -33069,7 +34951,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Edit_TBS_SCL_ver520_Table
 		})
-	[void]$ContextMenuScale.Items.Add($OrganizeScaleTableItem)
+	[void]$SubScaleConfig.DropDownItems.Add($OrganizeScaleTableItem)
 	
 	############################################################################
 	# 6) Deploy Scale Currency Files
@@ -33080,7 +34962,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Deploy_Scale_Currency_Files
 		})
-	[void]$ContextMenuScale.Items.Add($DeployScaleCurrencyFilesItem)
+	[void]$SubScaleFiles.DropDownItems.Add($DeployScaleCurrencyFilesItem)
 	
 	############################################################################
 	# 7) Edit Ishida SDPs (ALL configs)
@@ -33091,7 +34973,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Pick_And_Update_IshidaSDPs -AllMatches
 		})
-	[void]$ContextMenuScale.Items.Add($editIshidaSDPsItem)
+	[void]$SubScaleConfig.DropDownItems.Add($editIshidaSDPsItem)
 	
 	############################################################################
 	# 8) Update Scales Specials
@@ -33102,12 +34984,12 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Update_Scales_Specials_Interactive
 		})
-	[void]$ContextMenuScale.Items.Add($UpdateScalesSpecialsItem)
+	[void]$SubScaleConfig.DropDownItems.Add($UpdateScalesSpecialsItem)
 	
 	############################################################################
 	# 9) Update Scale Config and DB (F272 Upsert)
 	############################################################################
-	$UpdateScaleConfigAndDBItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scale Config && DB (F272 Upsert)")
+	$UpdateScaleConfigAndDBItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scale Config & DB (F272 Upsert)")
 	$UpdateScaleConfigAndDBItem.ToolTipText = "Updates ScaleCommApp configs and upserts F272 in SCL_TAB for POS_TAB F82=1 in item range."
 	$UpdateScaleConfigAndDBItem.Add_Click({
 			$script:LastActivity = Get-Date
@@ -33126,7 +35008,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Configure_Scale_Sub-Departments
 		})
-	[void]$ContextMenuScale.Items.Add($ConfigureSdpDefaultItem)
+	[void]$SubScaleConfig.DropDownItems.Add($ConfigureSdpDefaultItem)
 	
 	############################################################################
 	# 11) Schedule Duplicate File Monitor
@@ -33137,7 +35019,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Remove_Duplicate_Files_From_toBizerba
 		})
-	[void]$ContextMenuScale.Items.Add($ScheduleRemoveDupesItem)
+	[void]$SubScaleConfig.DropDownItems.Add($ScheduleRemoveDupesItem)
 	
 	############################################################################
 	# 12) Deploy Scale Files (Per-Scale S00 / Alex Profile BMS)
@@ -33151,11 +35033,20 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	[void]$ContextMenuScale.Items.Add($DeployScaleFilesItem)
 	
 	############################################################################
-	# Show the context menu when the Scale Tools button is clicked
+	# NOTE: the click handler and the control registration for $ScaleToolsButton
+	# already happened above - do NOT re-add the button.
 	############################################################################
-	$ScaleToolsButton.Add_Click({ $ContextMenuScale.Show($ScaleToolsButton, 0, $ScaleToolsButton.Height) })
-	$toolTip.SetToolTip($ScaleToolsButton, "Click to see Scale-related tools.")
-	$form.Controls.Add($ScaleToolsButton)
+
+	# --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
+	[void]$ContextMenuScale.Items.Clear()
+	[void]$ContextMenuScale.Items.Add($UpdateScaleConfigAndDBItem)
+	[void]$ContextMenuScale.Items.Add($DeployScaleFilesItem)
+	[void]$ContextMenuScale.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+	[void]$ContextMenuScale.Items.Add($SubScaleServices)
+	[void]$ContextMenuScale.Items.Add($SubScaleConfig)
+	[void]$ContextMenuScale.Items.Add($SubScaleFiles)
+	foreach ($sub in @($SubScaleServices, $SubScaleConfig, $SubScaleFiles)) { & $Style_SubMenu $sub }
+	$toolTip.SetToolTip($ScaleToolsButton, "Click for scale-related tools.")
 	
 	######################################################################################################################
 	# 
@@ -33164,32 +35055,76 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	######################################################################################################################
 	
 	############################################################################
-	# General Tools Anchor Button
+	# General Tools Anchor Button (Orange)
 	############################################################################
 	$GeneralToolsButton = New-Object System.Windows.Forms.Button
+	$GeneralToolsButton.Name = "GeneralToolsButton"
 	$GeneralToolsButton.Text = "General Tools"
-	$GeneralToolsButton.Location = New-Object System.Drawing.Point(750, 475) # seed; layoutBottom will set final bounds
-	$GeneralToolsButton.Size = New-Object System.Drawing.Size(200, 50)
+	$GeneralToolsButton.Location = New-Object System.Drawing.Point(775, 475)
+	$GeneralToolsButton.Size = New-Object System.Drawing.Size(200, 52)
+	$GeneralToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
+	$GeneralToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+	$GeneralToolsButton.UseVisualStyleBackColor = $false
+	$GeneralToolsButton.BackColor = [System.Drawing.Color]::White
+	$GeneralToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+	$GeneralToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$GeneralToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$GeneralToolsButton.FlatAppearance.BorderSize = 0
+	$GeneralToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(255, 243, 224)
+	$GeneralToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(250, 228, 195)
+	$GeneralToolsButton.Tag = [pscustomobject]@{ CategoryColor = $uiCategoryGeneral }
 	
-	# Modern style
-	& $Apply_Modern_Button_Style $GeneralToolsButton
+	# Bottom accent bar
+	$GeneralToolsButton.add_Paint({
+			param ($s, $e)
+			try
+			{
+				$pen = New-Object System.Drawing.Pen($uiCategoryGeneral, 3)
+				$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
+				$pen.Dispose()
+			}
+			catch { }
+		})
 	
+	# Hover effects
+	$GeneralToolsButton.add_MouseEnter({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::FromArgb(255, 243, 224); $s.ForeColor = [System.Drawing.Color]::FromArgb(200, 100, 0) }
+			catch { }
+		})
+	$GeneralToolsButton.add_MouseLeave({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
+			catch { }
+		})
+	$GeneralToolsButton.add_Click({
+			$script:LastActivity = Get-Date
+			$ContextMenuGeneral.Show($GeneralToolsButton, 0, $GeneralToolsButton.Height)
+		})
+	$toolTip.SetToolTip($GeneralToolsButton, "Click for general maintenance tools.")
+	$form.Controls.Add($GeneralToolsButton)
+	
+	# General Context Menu
 	$ContextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
 	$ContextMenuGeneral.ShowItemToolTips = $true
-	
-	# Modern style for menu
 	& $Apply_Modern_Menu_Style $ContextMenuGeneral
+
+	# Submenu containers (the assembled layout is at the bottom of this menu section)
+	$SubGenDiagnostics = New-Object System.Windows.Forms.ToolStripMenuItem("Diagnostics & Repair")
+	$SubGenDiagnostics.ToolTipText = "Journal, hosts, archive bit and node repairs"
+	$SubGenTools = New-Object System.Windows.Forms.ToolStripMenuItem("Tools")
+	$SubGenTools.ToolTipText = "INI editor and activation"
 	
 	############################################################################
 	# 1) Activate Windows ("Alex_C.T")
 	############################################################################
-	$activateItem = New-Object System.Windows.Forms.ToolStripMenuItem("Alex_C.T")
+	$activateItem = New-Object System.Windows.Forms.ToolStripMenuItem("Activate Windows")
 	$activateItem.ToolTipText = "Activate Windows using Alex_C.T's method."
 	$activateItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Invoke_Secure_Script
 		})
-	[void]$ContextMenuGeneral.Items.Add($activateItem)
+	[void]$SubGenTools.DropDownItems.Add($activateItem)
 	
 	############################################################################
 	# 2) Reboot System
@@ -33234,7 +35169,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			INI_Editor
 		})
-	[void]$ContextMenuGeneral.Items.Add($INI_EditorItem)
+	[void]$SubGenTools.DropDownItems.Add($INI_EditorItem)
 	
 	############################################################################
 	# 5) Fix Journal
@@ -33245,7 +35180,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Fix_Journal -StoreNumber $StoreNumber -OfficePath $OfficePath
 		})
-	[void]$ContextMenuGeneral.Items.Add($fixJournalItem)
+	[void]$SubGenDiagnostics.DropDownItems.Add($fixJournalItem)
 	
 	############################################################################
 	# 6) Reboot selected Backoffices
@@ -33256,7 +35191,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Reboot_Nodes -StoreNumber $StoreNumber -NodeTypes Backoffice
 		})
-	[void]$ContextMenuGeneral.Items.Add($RebootBackofficesItem)
+	[void]$SubGenDiagnostics.DropDownItems.Add($RebootBackofficesItem)
 	
 	############################################################################
 	# 7) Remove Archive Bit
@@ -33267,7 +35202,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Remove_Archive_Bit
 		})
-	[void]$ContextMenuGeneral.Items.Add($RemoveArchiveBitItem)
+	[void]$SubGenDiagnostics.DropDownItems.Add($RemoveArchiveBitItem)
 	
 	############################################################################
 	# 8) Sync Hosts File for Selected Nodes
@@ -33278,7 +35213,7 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Sync_Selected_Node_Hosts -StoreNumber $StoreNumber
 		})
-	[void]$ContextMenuGeneral.Items.Add($SyncHostsItem)
+	[void]$SubGenDiagnostics.DropDownItems.Add($SyncHostsItem)
 	
 	############################################################################
 	# 9) Fix Deploy CHG
@@ -33289,14 +35224,23 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$script:LastActivity = Get-Date
 			Fix_Deploy_CHG
 		})
-	[void]$ContextMenuGeneral.Items.Add($FixDeployCHGItem)
+	[void]$SubGenDiagnostics.DropDownItems.Add($FixDeployCHGItem)
 	
 	############################################################################
-	# Show the context menu when the General Tools button is clicked
+	# NOTE: the click handler and the control registration for $GeneralToolsButton
+	# already happened above - a second Add_Click would open the menu twice.
 	############################################################################
-	$GeneralToolsButton.Add_Click({ $ContextMenuGeneral.Show($GeneralToolsButton, 0, $GeneralToolsButton.Height) })
-	$toolTip.SetToolTip($GeneralToolsButton, "Click to see some tools created for SMS.")
-	$form.Controls.Add($GeneralToolsButton)
+
+	# --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
+	[void]$ContextMenuGeneral.Items.Clear()
+	[void]$ContextMenuGeneral.Items.Add($rebootItem)
+	[void]$ContextMenuGeneral.Items.Add($Copy_Files_Between_NodesItem)
+	[void]$ContextMenuGeneral.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+	[void]$ContextMenuGeneral.Items.Add($SubGenDiagnostics)
+	[void]$ContextMenuGeneral.Items.Add($SubGenTools)
+	foreach ($sub in @($SubGenDiagnostics, $SubGenTools)) { & $Style_SubMenu $sub }
+	$toolTip.SetToolTip($GeneralToolsButton, "Click for general maintenance tools.")
+	# Duplicate registration removed; button already added above
 	
 	######################################################################################################################
 	#
@@ -33321,9 +35265,12 @@ $InstallCheckLOCOptionsItem.Add_Click({
 	$ScaleToolsButton.Anchor = 'Bottom,Left'
 	$GeneralToolsButton.Anchor = 'Bottom,Left'
 	
+	# Log frame resizes with window
+	if ($logFrame) { $logFrame.Anchor = 'Top,Left,Right,Bottom' }
+	
 	# If you have a log frame panel in your newer UI, it will be resized too.
 	# If not, we will just resize $logBox directly.
-	if ($logBox) { $logBox.Anchor = 'Top,Left' }
+	if ($logBox) { $logBox.Anchor = 'Top,Left,Right,Bottom' }
 	
 	$layoutBottom = {
 		if (-not $form -or $form.IsDisposed) { return }
@@ -33339,8 +35286,8 @@ $InstallCheckLOCOptionsItem.Add_Click({
 		}
 		catch { $bottomReserve = 0 }
 		
-		# --- Determine log top dynamically (so it respects your modern top strip) --
-		$logTop = 70
+		# --- Determine log top dynamically (banner + card + margin) -------------
+		$logTop = $bannerPanel.Bottom + $topStripCard.Height + 10
 		try
 		{
 			if ($topStripCard -and -not $topStripCard.IsDisposed)
@@ -33353,10 +35300,14 @@ $InstallCheckLOCOptionsItem.Add_Click({
 		# --- Button row Y (above status strip) ------------------------------------
 		$btnY = $form.ClientSize.Height - $bottomReserve - $btnH - $padBottom
 		
-		# --- Lay out log area (support both plain logBox OR logFrame+logBox) -------
+		# --- Lay out log area (with header) ---------------------------------------
 		$hasLogFrame = $false
 		try { $hasLogFrame = ($logFrame -and -not $logFrame.IsDisposed) }
 		catch { $hasLogFrame = $false }
+		
+		# Header height
+		$lgHeaderH = 28
+		$lgPadding = 10
 		
 		if ($hasLogFrame)
 		{
@@ -33365,14 +35316,14 @@ $InstallCheckLOCOptionsItem.Add_Click({
 			$logFrame.Top = $logTop
 			$logFrame.Width = $rowW
 			
-			# Height ensures a constant gap above buttons
+			# Height ensures a constant gap above buttons (accounting for header)
 			$logFrame.Height = [math]::Max($minLogH, $btnY - $logFrame.Top - $gapAboveButtons)
 			
-			# Inner logBox inset for clean "card" look
-			$logBox.Left = $logFrame.Left + $logInnerPad
-			$logBox.Top = $logFrame.Top + $logInnerPad
-			$logBox.Width = [math]::Max(50, $logFrame.Width - (2 * $logInnerPad))
-			$logBox.Height = [math]::Max(50, $logFrame.Height - (2 * $logInnerPad))
+			# Inner logBox inset for clean "card" look (accounting for header + padding)
+			$logBox.Left = $lgPadding
+			$logBox.Top = $lgHeaderH + $lgPadding
+			$logBox.Width = [math]::Max(50, $logFrame.Width - (2 * $lgPadding))
+			$logBox.Height = [math]::Max(50, $logFrame.Height - $lgHeaderH - (2 * $lgPadding))
 		}
 		else
 		{
@@ -33440,7 +35391,9 @@ $InstallCheckLOCOptionsItem.Add_Click({
 		$storeNameLabel, $NodesBackoffices, $NodesStore, $scalesLabel, $smsVersionLabel, $bannerLabel,
 		$ContextMenuServer, $ContextMenuLane, $ContextMenuScale, $ContextMenuGeneral,
 		$global:ProtocolForm, $global:ProtocolGrid
-	) | Where-Object { $_ }
+	) | Where-Object { $_ -ne $null }
+	# NOTE: the old filter also compared against [System.Windows.Forms.Control]::Empty,
+	#       but that static member does not exist in .NET, so it could never match anything.
 	
 	foreach ($__c in $__activityControls)
 	{
@@ -33474,30 +35427,30 @@ Download_NSSM -Background | Out-Null
 $script:UseCachedCoreStartup = $__isInlineLikeLaunch
 
 # Get SQL Connection String
-if ($script:UseCachedCoreStartup)
+# v2.6.9: in EVERY launch mode this only reads the local cache before the
+# window is shown (fast). The -RefreshCache network round trip runs as the
+# first post-Show warmup step below, so the window always appears first.
+# (No cache at all? The function does its full fetch here, exactly as before.)
+Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
+$script:StoreNumber = [string]$script:FunctionResults['StoreNumber']
+if ($script:StoreNumber)
 {
-	Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
+	$storeDigits = ($script:StoreNumber -replace '[^\d]', '')
+	if ($storeDigits)
+	{
+		if ($storeDigits.Length -le 3) { $script:StoreNumber = ([int]$storeDigits).ToString('000') }
+		else { $script:StoreNumber = ([int]$storeDigits).ToString('0000') }
+	}
 }
-else
-{
-	Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath -RefreshCache
-}
-$script:StoreNumber = $script:FunctionResults['StoreNumber']
 $script:StoreName = $script:FunctionResults['StoreName']
 $script:SqlModuleName = $script:FunctionResults['SqlModuleName']
 $StoreNumber = $script:StoreNumber
 $StoreName = $script:StoreName
 $SqlModuleName = $script:SqlModuleName
 
-# Count Nodes based on mode
-if ($script:UseCachedCoreStartup)
-{
-	$Nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-}
-else
-{
-	$Nodes = Retrieve_Nodes -StoreNumber $StoreNumber -RefreshCache
-}
+# Count Nodes (cache first in every launch mode - same reasoning as the store
+# info call above; the fresh refresh is the second warmup step)
+$Nodes = Retrieve_Nodes -StoreNumber $StoreNumber
 $script:Nodes = $script:FunctionResults['Nodes']
 $Nodes = $script:Nodes
 
@@ -33505,8 +35458,10 @@ $Nodes = $script:Nodes
 $script:LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 $LaneNumToMachineName = $script:LaneNumToMachineName
 
-# Get the Lanes protocol info if it doesnt exist
-Start_Lane_Protocol_Jobs -LaneNumToMachineName $LaneNumToMachineName -SqlModuleName $SqlModuleName
+# Lane protocol info: started by the 'Refreshing node discovery...' warmup
+# step (post-Show, every launch mode) so it always runs against the fresh
+# node list instead of blocking the first paint.
+try { Write_Log ("Startup: pre-window data ready in {0:N1}s - store '{1}', {2} node(s)" -f ((Get-Date) - $script:StartupT0).TotalSeconds, $StoreNumber, @($Nodes).Count) 'blue' -FileOnly } catch { }
 
 $form.Add_Shown({
 		if ($script:StartupWarmupStarted) { return }
@@ -33514,6 +35469,9 @@ $form.Add_Shown({
 		$script:StartupWarmupIndex = 0
 		$script:StartupWarmupSteps = @()
 		$script:StartupScaleCredStarted = $false
+		
+		# Startup milestone (file log): the moment the window first appears
+		try { Write_Log ("Startup: window shown {0:N1}s after script start" -f ((Get-Date) - $script:StartupT0).TotalSeconds) 'green' -FileOnly } catch { }
 		
 		try
 		{
@@ -33556,60 +35514,81 @@ $form.Add_Shown({
 		try { $script:StartupScaleCredTimer.Start() }
 		catch { }
 		
-		if ($script:UseCachedCoreStartup)
-		{
-			$script:StartupWarmupSteps += [pscustomobject]@{
-				Label  = 'Refreshing store info...'
-				Action = {
-					try
-					{
-						Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath -RefreshCache
-						$script:StoreNumber = $script:FunctionResults['StoreNumber']
-						$script:StoreName = $script:FunctionResults['StoreName']
-						$script:SqlModuleName = $script:FunctionResults['SqlModuleName']
-						$StoreNumber = $script:StoreNumber
-						$StoreName = $script:StoreName
-						$SqlModuleName = $script:SqlModuleName
-					}
-					catch { }
+		# v2.6.9: these steps run as BACKGROUND JOBS (Mode = 'Job'). The tick
+		# handler below starts each one and polls it, so no step can freeze the
+		# UI thread. Every job refreshes the function's FILE cache; OnComplete
+		# then re-runs the same call WITHOUT -RefreshCache on the UI thread,
+		# which reads the warm cache, hydrates FunctionResults and updates the
+		# GUI labels (a few ms of local work). 'Installing SMS functions' writes
+		# no shared cache and returns nothing, so it just runs in the job.
+		# EXCEPTION: 'Generating SQL scripts' is INLINE (Action), not a job -
+		# it is pure CPU (5 here-strings + 2 regex passes, no I/O, ~2 ms) so it
+		# is safe on the UI thread, and running it inline sets the $script: SQL
+		# variables directly (no job-scope handoff / ReturnVarNames wait).
+		# NOTE: CallArgs on 'Job' steps is a SCRIPTBLOCK evaluated at start time,
+		# so every job receives the current values of the variables it depends on.
+		$script:StartupWarmupSteps += [pscustomobject]@{
+			Label        = 'Refreshing store info...'
+			Mode         = 'Job'
+			FunctionName = 'Get_Store_And_Database_Info'
+			CallArgs     = { @{ WinIniPath = $WinIniPath; SmsStartIniPath = $SmsStartIniPath; StartupIniPath = $StartupIniPath; SystemIniPath = $SystemIniPath; RefreshCache = $true } }
+			SeedVars     = @{ SetupFiles = $script:SetupFiles; StoremanOfficeDbsFallbacks = $script:StoremanOfficeDbsFallbacks }
+			OnComplete   = {
+				try
+				{
+					Get_Store_And_Database_Info -WinIniPath $WinIniPath -SmsStartIniPath $SmsStartIniPath -StartupIniPath $StartupIniPath -SystemIniPath $SystemIniPath
+					$script:StoreNumber = $script:FunctionResults['StoreNumber']
+					$script:StoreName = $script:FunctionResults['StoreName']
+					$script:SqlModuleName = $script:FunctionResults['SqlModuleName']
 				}
+				catch { }
 			}
-			$script:StartupWarmupSteps += [pscustomobject]@{
-				Label  = 'Refreshing node discovery...'
-				Action = {
-					try
-					{
-						Retrieve_Nodes -StoreNumber $script:StoreNumber -RefreshCache | Out-Null
-						$script:Nodes = $script:FunctionResults['Nodes']
-						$script:LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
-						$Nodes = $script:Nodes
-						$LaneNumToMachineName = $script:LaneNumToMachineName
-						Start_Lane_Protocol_Jobs -LaneNumToMachineName $script:LaneNumToMachineName -SqlModuleName $script:SqlModuleName
-					}
-					catch { }
+		}
+		$script:StartupWarmupSteps += [pscustomobject]@{
+			Label        = 'Refreshing node discovery...'
+			Mode         = 'Job'
+			FunctionName = 'Retrieve_Nodes'
+			CallArgs     = { @{ StoreNumber = $script:StoreNumber; RefreshCache = $true } }
+			SeedVars     = @{ SetupFiles = $script:SetupFiles; BasePath = $script:BasePath }
+			DependentBodies = @{ Normalize_Sql_ConnectionString = ${function:Normalize_Sql_ConnectionString}.ToString() }
+			OnComplete   = {
+				try
+				{
+					Retrieve_Nodes -StoreNumber $script:StoreNumber | Out-Null
+					$script:Nodes = $script:FunctionResults['Nodes']
+					$script:LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
+					Start_Lane_Protocol_Jobs -LaneNumToMachineName $script:LaneNumToMachineName -SqlModuleName $script:SqlModuleName
 				}
+				catch { }
 			}
 		}
 		$script:StartupWarmupSteps += @(
 			[pscustomobject]@{
-				Label  = 'Loading lane DB cache...'
-				Action = { try { Get_All_Lanes_Database_Info -RefreshCache | Out-Null }
-					catch { } }
+				Label        = 'Loading lane DB cache...'
+				Mode         = 'Job'
+				FunctionName = 'Get_All_Lanes_Database_Info'
+				CallArgs     = @{ RefreshCache = $true }
+				SeedVars     = @{ SetupFiles = $script:SetupFiles }
+				OnComplete   = { try { Get_All_Lanes_Database_Info | Out-Null } catch { } }
 			},
 			[pscustomobject]@{
-				Label  = 'Loading table aliases...'
-				Action = { try { $script:AliasToTable = Get_Table_Aliases -RefreshCache }
-					catch { } }
+				Label        = 'Loading table aliases...'
+				Mode         = 'Job'
+				FunctionName = 'Get_Table_Aliases'
+				CallArgs     = @{ RefreshCache = $true }
+				SeedVars     = @{ SetupFiles = $script:SetupFiles }
+				OnComplete   = { try { $script:AliasToTable = Get_Table_Aliases } catch { } }
 			},
 			[pscustomobject]@{
 				Label  = 'Generating SQL scripts...'
-				Action = { try { Generate_SQL_Scripts -StoreNumber $StoreNumber }
-					catch { } }
+				Action = { try { Generate_SQL_Scripts -StoreNumber $script:StoreNumber | Out-Null } catch { } }
 			},
 			[pscustomobject]@{
-				Label  = 'Installing SMS functions...'
-				Action = { try { Install_FUNCTIONS_Into_SMS -StoreNumber $StoreNumber -OfficePath $OfficePath -Silent }
-					catch { } }
+				Label        = 'Installing SMS functions...'
+				Mode         = 'Job'
+				FunctionName = 'Install_FUNCTIONS_Into_SMS'
+				CallArgs     = { @{ StoreNumber = $script:StoreNumber; OfficePath = $OfficePath; Silent = $true } }
+				SeedVars     = @{ BasePath = $script:BasePath }
 			},
 			[pscustomobject]@{
 				Label  = 'Starting test item job...'
@@ -33748,14 +35727,64 @@ $form.Add_Shown({
 				}
 				
 				$step = $script:StartupWarmupSteps[$script:StartupWarmupIndex]
-				$script:StartupWarmupIndex++
 				
 				try { $script:StartupWarmupStatus = if ($step -and $step.Label) { [string]$step.Label }
 					else { $null } }
 				catch { $script:StartupWarmupStatus = $null }
 				
-				try { if ($step -and $step.Action) { & $step.Action } }
+				# v2.6.9: 'Job' steps run in a background job - this tick only
+				# starts or polls them, so the UI thread never waits on them.
+				if ($step -and $step.Mode -eq 'Job')
+				{
+				if (-not $step.Job)
+				{
+						# CallArgs is a scriptblock that is evaluated at START time,
+						# so the job always receives the current values (e.g. a
+						# StoreNumber that step 1 just refreshed).
+						$callArgs = @{}
+						try
+						{
+							if ($step.CallArgs -is [scriptblock]) { $callArgs = & $step.CallArgs }
+							elseif ($step.CallArgs) { $callArgs = $step.CallArgs }
+						}
+						catch { }
+						$newJob = Start_Background_Function_Job -FunctionName $step.FunctionName -Label $step.Label -CallArgs $callArgs -SeedVars $step.SeedVars -ReturnVarNames $step.ReturnVarNames -DependentBodies $step.DependentBodies -OnComplete $step.OnComplete
+						if ($newJob)
+						{
+							$step | Add-Member -NotePropertyName 'Job' -NotePropertyValue $newJob -Force
+						}
+						else
+						{
+							Write_Log ("Startup: warmup step '{0}' could not be started as a job" -f $step.Label) 'red'
+							$script:StartupWarmupIndex++
+						}
+					}
+					elseif ($script:BgfJobs -and $script:BgfJobs.ContainsKey($step.Job.Id))
+					{
+						# Job still registered: still running. The shared reaper
+						# will merge the result and fire OnComplete for us.
+					}
+					else
+					{
+						# Job completed (reaper handled merge + OnComplete) - advance.
+						$script:StartupWarmupIndex++
+					}
+					return
+				}
+				
+				# Sync steps run inline - each one takes a few hundred ms at most.
+				try
+				{
+					if ($step -and $step.Action)
+					{
+						$__warmupSw = [System.Diagnostics.Stopwatch]::StartNew()
+						& $step.Action
+						$__warmupSw.Stop()
+						Write_Log ("Startup: warmup step '{0}' finished in {1:N1}s" -f $step.Label, $__warmupSw.Elapsed.TotalSeconds) 'blue' -FileOnly
+					}
+				}
 				catch { }
+				$script:StartupWarmupIndex++
 			})
 		$script:StartupWarmupTimer.Start()
 	})
@@ -33847,3 +35876,328 @@ if ($script:ShowConsole) { Write-Host "Script closing..." -ForegroundColor Yello
 
 # Close the console to avoid duplicate logging to the richbox
 exit
+
+#######################################################################################################
+#
+#                                     CHANGELOG
+#
+#######################################################################################################
+
+# ===================================================================================================
+#  v2.6.9  -  2026-09-01
+#  Drive-scan fallback, activation hardening, timeout + job hygiene
+# ===================================================================================================
+#
+#  [NEW]  Third-level storeman fallback: drive scan (ported from MiniGhost). When there is
+#         no 'storeman' SMB share and none of the configured test roots (C:\Storeman /
+#         D:\Storeman) exist, the script now scans the top level of every fixed drive for a
+#         *storeman* folder that contains a Startup.ini, preferring the one actually
+#         published as an SMB share. If nothing is found, the primary test root is kept and
+#         the reason says both the test root and the drive scan came up empty.
+#  [NEW]  Startup: show first. In every launch mode the window now appears before
+#         the store-network SQL round trips: pre-Show only reads the local cache
+#         (a first run with no cache still does its full fetch there, as before),
+#         and the -RefreshCache refreshes run as the first two post-Show warmup
+#         steps. Startup milestones (pre-window data, window shown, and each
+#         warmup step's duration) are logged to the Tecnica_Systems log folder.
+#  [NEW]  File log: every line written to the log window is also appended to
+#         C:\Tecnica_Systems\Alex_C.T\Log\TBS_Maintenance_<date>.log (one file per day,
+#         same 120-second repeat suppression as the window). Safe by design - a missing
+#         log folder or disk problem never surfaces in the UI or blocks any work.
+#  [NEW]  TBS_Maintenance_SelfTest.ps1: standalone regression test for the script (parse,
+#         ASCII, security, store detection, store numbers, security hardening, 445 probe,
+#         VNC job throttle, file log). Lives in c:\storeman\Scripts_by_Alex_C.T and can be
+#         pointed at any copy with -ScriptPath.
+#  [NEW]  Background job engine: Start_Background_Function_Job +
+#         Get_Background_Function_Job_Result. One shared builder runs any script
+#         function in a background job without blocking the UI thread: the job
+#         receives the function code (plus Write_Log and any dependent functions),
+#         a COPY of the FunctionResults bag, and named seed variables; it returns
+#         its results bag plus named extra variables, which are merged back when
+#         the poller picks the job up. CallArgs can be a scriptblock so the job
+#         always receives the current values at start time.
+#  [NEW]  Startup warmup is now non-blocking: the six store-data steps (store info,
+#         node discovery, lane DB cache, table aliases, SQL scripts, SMS functions)
+#         run as background jobs (Mode = 'Job') instead of on the UI thread. Each
+#         job refreshes the function's file cache; a short OnComplete closure then
+#         re-runs the same call on the UI thread, which reads the warm cache and
+#         updates the GUI labels (a few ms). The remaining steps (test item, scale
+#         credentials, XE, VNC, hardware, quarterly) stay inline - scale
+#         credentials in particular must stay on the UI thread because it owns a
+#         WinForms reaper timer.
+#  [NEW]  Shared background-job reaper: one WinForms timer (inside the job
+#         engine) now polls every registered background job on the UI thread,
+#         merges finished results and either fires the job's OnComplete callback
+#         or logs a one-line "finished in Xs" / "failed" notice. Jobs can also
+#         opt into the completion notice (-NotifyOnComplete) for menu actions.
+#         In hosts without a message pump the reaper simply never ticks and
+#         callers may poll Get_Background_Function_Job_Result directly.
+#  [UI]   Calm startup log: the reaper's "finished in Xs" success notices now
+#         use the new Write_Log -FileOnly switch, so they go to the FILE LOG
+#         only. The status bar at the bottom already shows what the app is
+#         working on in the background, and the log box only sees a job line
+#         when the job FAILED (user preference). Write_Log -FileOnly skips the
+#         box and the console; the file log still gets the line.
+#  [FIX]  Lane SQL enable scheduling is no longer silent on failure: the
+#         Ensure_SQL_Enable_Scheduled_Task_For_File_Lane paths that used to
+#         return $false with no trace (no writable Storeman Temp share, worker
+#         script write error) and the one that computed the schtasks /Create
+#         error text and then dropped it now all log red lines with the detail.
+#         The manual "Enable SQL Protocols" menu action additionally logs a
+#         green "Scheduled SQL enable for <lane> for <date 04:15>" line on
+#         success, so a menu action always reports its outcome.
+#  [ROB]  Lane SQL enable scheduling cleanup: a dead variable
+#         ($existingState) was removed from
+#         Ensure_SQL_Enable_Scheduled_Task_For_File_Lane. The duplicated
+#         "next 4:15 AM" date math intentionally stays inlined in both
+#         places (the function and the background monitor's closure): this
+#         script is one file, maintained by reading it top to bottom, and
+#         shared logic is deliberately not split into extra helper
+#         functions.
+#  [NEW]  "Set/Schedule Time on Lanes" no longer blocks the UI: the per-lane
+#         schtasks / file-drop / mailslot work moved out of the wizard into
+#         Send_TIME_Sync_Lanes_Worker and runs as a background job. The wizard
+#         still shows its dialogs on the UI thread; per-lane details go to the
+#         file log as the job progresses and the shared reaper logs the
+#         completion notice. If the job cannot start, the worker runs inline
+#         exactly as before.
+#  [ROB]  The MailslotSender C# type is now loaded through
+#         Ensure_MailslotSender_Type (an idempotent function) instead of a bare
+#         top-level block, so background jobs can load it too.
+#  [NEW]  Test-Hosts_Parallel helper: probes a list of hosts in parallel
+#         (.NET Ping, 400ms per-probe cap, max 10 in flight) and returns
+#         target -> OK/FAIL/ERROR. Falls back to the old serial
+#         Test-Connection loop if the parallel path is unavailable.
+#  [PERF] "Ping Lanes / Scales / Backoffices" (and the Ping All Nodes button)
+#         now probe all targets with Test-Hosts_Parallel instead of a serial
+#         Test-Connection loop, which could freeze the UI for minutes when
+#         several hosts were down. The per-node results still show in the
+#         log box exactly as before; a full store now takes about two
+#         seconds worst case (10 probes in flight, 400ms cap).
+#  [PERF] The node pre-flight in Get_All_VNC_Passwords (VNC export step)
+#         uses the same parallel probe, so a store with dead nodes no longer
+#         stalls the startup warmup.
+#  [SEC]  Invoke_Secure_Script ("Activate Windows"): remote script execution removed. The
+#         function used to run Invoke-Expression (irm <url>) against get.activated.win
+#         (primary) and massgrave.dev (fallback) behind a hard-coded password. The remote
+#         execution and the password are gone; the function now logs the disabled state and
+#         returns. The menu item stays so the reason shows up in the log.
+#  [ROB]  Bounded waits where things could previously hang until the OS gave up:
+#           - PsExec download job: Invoke-WebRequest -TimeoutSec 20.
+#           - Get_All_Lanes_Database_Info: a 1.5s TCP-445 probe now precedes the Test-Path
+#             on \\<lane>\storeman\Startup.ini, so a powered-off lane PC no longer stalls
+#             lane discovery for the full SMB timeout.
+#           - Get_All_VNC_Passwords: Invoke-Command -TimeoutSec 30; the final
+#             Wait-Job is capped at 120s, only runs while jobs are still pending
+#             (an empty job set made Wait-Job throw a parameter validation error
+#             and abort the function), and jobs still running are stopped before
+#             results are read.
+#           - Get_Remote_Machine_Info: New-PSSession gets 15s connect/open timeouts,
+#             Invoke-Command -TimeoutSec 30, and the session is now released in the error
+#             path too (previously it leaked when the command timed out).
+#           - Transaction replay and protocol schema queries: Invoke-Sqlcmd
+#             -QueryTimeout 120 / -QueryTimeout 30.
+#  [FIX]  Store number normalization: the store number is reduced to digits and zero-padded
+#         to 3 or 4 places both at startup ($script:StoreNumber) and in the TER_TAB query
+#         (WHERE F1056 = ...), so "1", "01" and "001" all resolve to the same store and
+#         non-numeric junk can no longer reach the SQL.
+#  [FIX]  Get_All_VNC_Passwords job throttling: results were being lost two
+#         ways. Finished jobs were removed before their output was read, and
+#         the pool filter dropped any job that finished between
+#         Wait-Job -Any waits (-Any reports only one job at a time). Jobs are
+#         now received before removal, and the pool keeps every job that has
+#         not been explicitly processed.
+#  [FILE] Script file renamed from TBS_Maintenance_Script_V2.6.8.ps1 to
+#         TBS_Maintenance_Script_V2.6.9.ps1 to match the new version number.
+#  [CLEAN] (2026-09-10) Generate_SQL_Scripts no longer writes the
+#         Setup_Files\SQL_Scripts\*.sql files: they were never read. Every consumer
+#         (Process_Server, the lane & server DB-maintenance schedulers) uses the in-memory
+#         $script: SQL variables directly, and Process_Server's file fallback reads a
+#         different file (%temp%\Server_Database_Maintenance.sqi). Removed the folder
+#         creation, the 30-day staleness rewrite, the five path variables, the five unused
+#         *SqlScriptPath FunctionResults keys, and the whole write loop; the function now
+#         only builds the five $script: variables. Audit: no other function writes a file
+#         nobody reads (the staleness-regenerate block was unique to it). Parse clean.
+#  [NOTE] (2026-09-10) Embeddings endpoint is 10.11.11.200 - the knowledge-base embed
+#         had been failing against a stale 192.168.0.151 host.
+#  [PERF] (2026-09-10) 'Generating SQL scripts' warmup step is now INLINE (Action)
+#         instead of a background job: Generate_SQL_Scripts is pure CPU (~2 ms, no I/O
+#         after the SQL_Scripts file writes were removed), so it is safe on the UI thread
+#         and sets the five $script: SQL variables directly - no job-scope handoff /
+#         ReturnVarNames wait. The other warmup jobs (store info, node discovery, lane
+#         DB cache, table aliases, SMS functions) stay background jobs.
+#  [FIX] (2026-09-10) 'Server Database Maintenance' (Process_Server) no longer
+#         fails with "SQL file not found: %temp%\Server_Database_Maintenance.sqi" when
+#         the user clicks it before the 'Generating SQL scripts' warmup step has run.
+#         That file was never written anywhere, so the file-fallback branch was dead -
+#         the in-memory $script:ServerSQLScript variable is the only real source.
+#         Process_Server now regenerates the script on demand (Generate_SQL_Scripts,
+#         ~2 ms pure CPU, only needs the already-resolved store/DB info) if the variable
+#         is empty, so the action works regardless of warmup timing. The file fallback
+#         remains only for a genuinely provided standalone .sqi.
+#
+# ===================================================================================================
+#  v2.6.8  -  2026-08-26
+#  GUI fixes + polish (behavior preserved, no logic changes)
+# ===================================================================================================
+#
+#  [FIX]  Header banner: help button and clock were positioned from the banner panel's
+#         default (200px) width, so on launch the help button sat ON the title and the
+#         clock sat ON the app icon. They are now pinned to the banner's real width via a
+#         new $layoutBanner helper that also runs on every window resize.
+#  [FIX]  Status bar: the "Created by / Version / PowerShell" text was wiped 1.5s after
+#         launch because the busy scanner overwrote the same status item. Status now stays
+#         on the left; a spring spacer + dedicated version item keep version info visible
+#         on the right at all times.
+#  [FIX]  Modern context-menu renderer was never applied: assigning a ProfessionalColorTable
+#         to Menu.Renderer threw an exception and silently skipped the rest of the styling
+#         block. The bad assignment is removed so the custom renderer now takes effect.
+#  [FIX]  Tool buttons were each added to the form TWICE, and the Server / General buttons
+#         had duplicate Click/MouseDown handlers registered (menu could flash open twice).
+#         Duplicates removed; tooltips kept.
+#  [FIX]  Log "Clear" (X) button no longer stays mid-frame when the log area resizes - it
+#         now follows the right edge of the log header.
+#  [FIX]  Initial "Lanes: " / "Scales: " labels were blank (they referenced an undefined
+#         $Counts variable) - now show "N/A" until node discovery fills them in.
+#  [FIX]  Menu label typos: "Retrive Transactions from Lnaes" -> "Retrieve Transactions
+#         from Lanes"; "Update Scale Config && DB" -> "Update Scale Config & DB".
+#  [FIX]  Clock label had both AutoSize=true and a hard-coded Size (ignored) - removed.
+#  [FIX]  Help button hover/leave colors no longer drift between two different grays.
+#  [FIX]  Banner title: [System.Drawing.FontStyle]::SemiBold is not a valid enum value
+#         (only Regular/Bold/Italic/Underline/Strikeout exist), so the 13pt title font
+#         silently failed on every run and the title rendered in the default font. Now 13pt Bold.
+#  [FIX]  Activity-hook filter referenced [System.Windows.Forms.Control]::Empty, a static
+#         member that does not exist in .NET. Replaced with a plain null check.
+#  [FIX]  Status bar version text showed a garbled two-character sequence instead of the
+#         middle-dot separator. Cause: the file is UTF-8 without BOM, and Windows
+#         PowerShell 5.1 reads BOM-less .ps1 files as ANSI (Windows-1252). Replaced the
+#         separator with ASCII '|' so the line is encoding-proof. The file now contains
+#         no non-ASCII characters at all.
+#  [UI]   Banner: the version number and build date were shown as a small two-line stack
+#         ("v2.6.8" over a tiny 7pt "Build: 2026-08-26"), which looked out of place.
+#         They are now one clean line: "v2.6.8 (2026-08-26)".
+#  [UI]   Banner: icon, title, version, clock and help button were each hard-coded at
+#         slightly different heights (title center ~26px, clock ~22px, version ~28px) so
+#         they did not sit on the same horizontal plane. The banner layout helper now
+#         measures each control and centers it on the banner's center line (re-run on
+#         every resize, DPI-safe).
+#  [UI]   Status bar: restored the "Created by: Alex_C.T" credit (original wording) in
+#         the dedicated version item on the right, which the busy scanner no longer
+#         overwrites: "Created by: Alex_C.T | Version: 2.6.8 | Revised: 2026-08-26 |
+#         PowerShell: <version>".
+#  [FILE] Script file renamed from TBS_Maintenance_Script_V2.6.7.ps1 to
+#         TBS_Maintenance_Script_V2.6.8.ps1 to match the new version number.
+#
+#  [NEW]  Test-environment awareness. The storeman detection block already fell back
+#         to the test roots (C:\Storeman, D:\Storeman) when the production 'storeman'
+#         SMB share was missing or its key was expired, but that was only a console
+#         warning (invisible with the console hidden). Now the script remembers the
+#         outcome ($script:IsTestEnvironment, $script:StoremanSource,
+#         $script:StoremanSourceReason) and the GUI shows it in three places:
+#           - an orange "TEST" badge next to the version in the banner
+#           - an orange "TEST MODE" item in the status bar (hover = full reason)
+#           - a log line at GUI start: "TEST ENVIRONMENT: <reason>. Using storeman
+#             root: <path>" (orange) or "PRODUCTION: storeman share 'storeman' in
+#             use. Path: <path>" (green)
+#         The Store Number label's tooltip also prefixes "TEST ENVIRONMENT - ...".
+#         If the test root itself does not exist, the reason says so explicitly.
+#  [NEW]  KEY EXPIRED state (distinct from TEST mode). When the storeman share
+#         and the store data exist but the storeman key (KeyValidDate in the
+#         store info file) is older than 14 days, the script now reports a
+#         dedicated state instead of plain test mode - because the store data
+#         IS available and in use, so only the key needs refreshing:
+#           - banner: red " KEY EXPIRED " badge (tooltip = full reason + path)
+#           - status bar: red "KEY EXPIRED" item (hover = reason); the Store
+#             Number tooltip is prefixed "KEY EXPIRED - ..."
+#           - startup header: [ KEY  ] tag, a [WARN] KEY EXPIRED line with the
+#             stored KeyValidDate, and a summary noting that the store data is
+#             available and in use and that only the key needs refreshing -
+#             every other task works normally
+#         Detection: $script:StoremanKeyStale, set in the storeman detection
+#         block alongside $script:IsTestEnvironment / $script:StoremanSource.
+#
+#  [UI]   Banner: the "v2.6.8 (2026-08-26)" version + build date line was removed
+#         (it already shows in the status bar at the bottom) and replaced with
+#         the live store identity - "Store 001 - <store name>" once the store
+#         data resolves, "Store Maintenance Console" until then (tooltip shows
+#         the storeman source + reason, long names are truncated so the badge
+#         and clock stay clear).
+#  [UI]   Tool menus (Server / Lane / Scale / General) reorganized into a tight,
+#         grouped layout: the most-used actions stay on top, the rest moved into
+#         submenus - Server: Schedule, System Care; Lane: Maintenance, Schedule,
+#         Files & Data, Power & Services; Scale: Services, Configuration, Files &
+#         Shares; General: Diagnostics & Repair, Tools - with separators between
+#         groups and the modern theme applied to the submenus. Every action and
+#         its handler is unchanged; the "Alex_C.T" item is now "Activate Windows".
+#  [PERF] The modern menu renderer (Add-Type) is now compiled once per session
+#         instead of being re-attempted for every menu that gets styled.
+#
+#  [UI]   Log output lines no longer carry the (yyyy-MM-dd HH:mm:ss) timestamp prefix
+#         (removed at user request) - the log reads cleaner and the banner clock already
+#         shows the current time. Write_Log still accepts -IncludeTimestamp for any
+#         caller that wants it back.
+#  [UI]   Banner clock now shows 12-hour time with AM/PM (h:mm:ss tt) instead of
+#         24-hour (HH:mm:ss).
+#  [NEW]  App icon generated at runtime (blue disc + hex nut) for the title bar and taskbar,
+#         and the banner icon now draws the same hex-nut design instead of a plain "+".
+#  [NEW]  Process is made DPI-aware before window creation so the UI renders crisply on
+#         high-DPI displays (no-op at 100% scaling).
+#  [NEW]  Protocol popup (Lane Protocols / DB Sizes): app icon, taller rows, alternating
+#         row colors, cleaner selection colors, hint line ("Double-click a row to open
+#         its database folder.") and a styled Hide button.
+#  [FIX]  Info-strip labels (SMS Version / Store Name / Store Number / Lanes / Scales /
+#         Backoffices): the "vertically center in cell" lines used the type
+#         [System.Windows.Forms.TableLayoutPanelCellAlignment], which does not exist in
+#         .NET, so they failed silently on every run. Replaced with Dock=Fill +
+#         TextAlign=Middle*, which actually centers the text in the cell.
+#  [NEW]  Tooltips now use a white background to match the modern theme.
+#  [PERF] Startup time reduced from ~17s to ~2s on machines without the storeman
+#         folder / store database (profiled per phase on a test box):
+#           - Normalize_Sql_ConnectionString treated the 'N/A' placeholder as a
+#             real server name, so Retrieve_Nodes opened a live connection to a
+#             SQL server literally named "N/A" and paid ~15s of DNS/connect
+#             timeouts for a query that could never return lanes. 'N/A' (and
+#             'System.Collections.Hashtable') are now treated as empty, which
+#             also protects every other caller of the normalizer.
+#           - Retrieve_Nodes now skips the startup database lookup when the store
+#             number is unknown (TER_TAB WHERE F1056 = store number can never
+#             match) and notes it in the log; the local-file fallbacks run
+#             instead.
+#         Behavior on real store PCs (known store number, reachable database)
+#         is unchanged - the DB is still queried first, exactly as before.
+#  [NEW]  More user-friendly log output (a presentation layer inside Write_Log,
+#         applied to every line - caller code and colors are unchanged):
+#           - Severity tag prefixed by color: [ OK ] / [WARN] / [FAIL] / [INFO],
+#             so the log is scannable at a glance.
+#           - Raw .NET exception dumps (e.g. the SQL "Named Pipes Provider,
+#             error: 40" block) are squashed to a short first sentence.
+#           - Identical lines are suppressed for 120 seconds, so per-lane startup
+#             jobs no longer flood the log with the same error over and over.
+#           - Test mode: conditions that are EXPECTED when the storeman folder /
+#             store database is missing (no Startup.ini / WIN.INI / INFO_*_WIN.INI,
+#             unreachable store database, missing Urgent Messages folder, no SQL
+#             module) are reworded into calm explanations marked [WARN] instead of
+#             red errors. In production the original wording is kept, because
+#             these ARE real problems there.
+#           - The confusing empty-path message "No INFO_*_WIN.INI found at " now
+#             reads "No store info file (INFO_*_WIN.INI) found - no storeman folder
+#             detected on this machine."
+#  [NEW]  Startup summary block: when the window opens, a calm header is inserted
+#         ABOVE the individual startup lines (their colors are preserved):
+#             --------------------------------------------------
+#              TBS MAINTENANCE SCRIPT   v2.6.8 (2026-08-26)   [ TEST ] / [ LIVE ]
+#             --------------------------------------------------
+#             [WARN] TEST ENVIRONMENT - <reason>
+#                    Tasks that need the storeman folder or the store database are
+#                    unavailable. Everything else works normally.
+#                    To enable them: run on a store PC, or create the local test
+#                    folder (C:\Storeman\Office\Dbs).
+#             ... or, in production:
+#             [ OK ] PRODUCTION - storeman share 'storeman' in use
+#                    Path: <path>
+#                    Store: <num> "<name>"   (SMS <version>)
+#
+# ===================================================================================================
+#  v2.6.7  -  2026-04-18
+#  Previous build (see file header).
+# ===================================================================================================
