@@ -378,6 +378,44 @@ function Get_Remote_Machine_Info
 		$jobs = @()
 		$pending = @{ }
 
+		# Turn one finished node job into its info-file line + results entry, then drop the job
+		# (dot-sourced: updates this function's variables)
+		$collectNodeJob = {
+			param ($j)
+			$remoteName = $pending[$j.Id]
+			$result = Receive-Job $j 2>$null
+			$info = $result.Info
+
+			$line = "Machine Name: $remoteName |"
+			if ($info.Success)
+			{
+				$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
+				if ($null -ne $info.RAM) { $line += " | RAM: $($info.RAM) GB" }
+				if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
+				& $log "Processed $remoteName ($($section.Name)): Success [$($info.Method)]" "green"
+			}
+			elseif ($info.Error)
+			{
+				$line += " [Hardware info unavailable] Error: $($info.Error)"
+				& $log "Processed $remoteName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
+			}
+			else
+			{
+				$line += " [No hardware info found]"
+				& $log "Processed $remoteName ($($section.Name)): No info [$($info.Method)]" "yellow"
+			}
+			$biosText = if ($info.BIOS) { $info.BIOS } else { "Unknown" }
+			$line += " | BIOS: $biosText | Method: $($info.Method)"
+
+			Set-Variable -Name $section.InfoLinesVar -Value (@(Get-Variable -Name $section.InfoLinesVar -ValueOnly) + $line)
+			(Get-Variable -Name $section.ResultsVar -ValueOnly)[$remoteName] = $info
+
+			Stop-Job $j -ErrorAction SilentlyContinue
+			Remove-Job $j -Force -ErrorAction SilentlyContinue
+			$jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
+			[void]$pending.Remove($j.Id)
+		}
+
 		foreach ($sel in $section.Selected)
 		{
 			# -------- Canonical per-node identity: $NodeNumber (code) + $NodeName (machine/IP) --------
@@ -450,16 +488,6 @@ function Get_Remote_Machine_Info
 					Error			    = $null
 					MachineNameOverride = $null
 				}
-
-				# --- 0.1) Remember RemoteRegistry state up-front (so we can restore) ---
-				$originalState = $null
-				try
-				{
-					$stateLine = sc.exe "\\$NodeName" query RemoteRegistry 2>$null | Select-String "STATE" | ForEach-Object { $_.Line }
-					$startTypeLine = sc.exe "\\$NodeName" qc    RemoteRegistry 2>$null | Select-String "START_TYPE" | ForEach-Object { $_.Line }
-					$originalState = @{ StateLine = $stateLine; StartTypeLine = $startTypeLine }
-				}
-				catch { }
 
 				# --- 1) WMI (fast) ---
 				if (-not (Test-Connection -ComputerName $NodeName -Count 1 -Quiet -ErrorAction SilentlyContinue))
@@ -920,68 +948,15 @@ function Get_Remote_Machine_Info
 				return $returnInfo
 			}
 
-			$jobs += $job
+			$jobs = @($jobs) + $job
 			$pending[$job.Id] = $NodeName
 
-			# Throttle
+			# Throttle: wait for a slot (a job that does not finish within 60 s is collected in the drain below)
 			while ($jobs.Count -ge $maxConcurrentJobs)
 			{
 				$done = Wait-Job -Job $jobs -Any -Timeout 60
-				if ($done)
-				{
-					foreach ($j in $done)
-					{
-						$result = Receive-Job $j 2>$null
-						$remoteName = $pending[$j.Id]
-						$info = $result.Info
-
-						# Build display line
-						$line = "Machine Name: $remoteName |"
-						if ($info.Success)
-						{
-							$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
-							if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
-							if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
-							$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-							$line += " | BIOS: $biosText"
-							$line += " | Method: $($info.Method)"
-							& $log "Processed $remoteName ($($section.Name)): Success [$($info.Method)]" "green"
-						}
-						elseif ($info.Error)
-						{
-							$line += " [Hardware info unavailable] Error: $($info.Error)"
-							$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-							$line += " | BIOS: $biosText"
-							$line += " | Method: $($info.Method)"
-							& $log "Processed $remoteName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
-						}
-						else
-						{
-							$line += " [No hardware info found]"
-							$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-							$line += " | BIOS: $biosText"
-							$line += " | Method: $($info.Method)"
-							& $log "Processed $remoteName ($($section.Name)): No info [$($info.Method)]" "yellow"
-						}
-
-						# Append to info-lines
-						$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-						$infolines += $line
-						Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
-
-						# Store rich info for programmatic use
-						$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
-						$results[$remoteName] = $info
-						Set-Variable -Name $($section.ResultsVar) -Value $results
-
-						# Cleanup
-						Stop-Job $j -ErrorAction SilentlyContinue
-						Remove-Job $j -Force -ErrorAction SilentlyContinue
-						$jobs = $jobs | Where-Object { $_.Id -ne $j.Id }
-						$pending.Remove($j.Id)
-					}
-				}
-				else { break }
+				if (-not $done) { break }
+				foreach ($j in @($done)) { . $collectNodeJob $j }
 			}
 		} # end foreach selected
 
@@ -989,51 +964,7 @@ function Get_Remote_Machine_Info
 		if ($jobs.Count -gt 0)
 		{
 			Wait-Job -Job $jobs -Timeout 60 | Out-Null
-			foreach ($j in $jobs)
-			{
-				$remoteName = $pending[$j.Id]
-				$result = Receive-Job $j 2>$null
-				$info = $result.Info
-
-				$line = "Machine Name: $remoteName |"
-				if ($info.Success)
-				{
-					$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
-					if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
-					if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
-					$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-					$line += " | BIOS: $biosText"
-					$line += " | Method: $($info.Method)"
-					& $log "Processed $remoteName ($($section.Name)): Success [$($info.Method)]" "green"
-				}
-				elseif ($info.Error)
-				{
-					$line += " [Hardware info unavailable] Error: $($info.Error)"
-					$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-					$line += " | BIOS: $biosText"
-					$line += " | Method: $($info.Method)"
-					& $log "Processed $remoteName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
-				}
-				else
-				{
-					$line += " [No hardware info found]"
-					$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-					$line += " | BIOS: $biosText"
-					$line += " | Method: $($info.Method)"
-					& $log "Processed $remoteName ($($section.Name)): No info [$($info.Method)]" "yellow"
-				}
-
-				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-				$infolines += $line
-				Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
-
-				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
-				$results[$remoteName] = $info
-				Set-Variable -Name $($section.ResultsVar) -Value $results
-
-				Stop-Job $j -ErrorAction SilentlyContinue
-				Remove-Job $j -Force -ErrorAction SilentlyContinue
-			}
+			foreach ($j in @($jobs)) { . $collectNodeJob $j }
 		}
 
 		# Write file (stable sorting: IPs zero-padded; otherwise lexical)

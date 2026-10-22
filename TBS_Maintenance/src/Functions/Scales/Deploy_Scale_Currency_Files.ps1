@@ -119,7 +119,7 @@ function Deploy_Scale_Currency_Files
 	$btnOK.Add_Click({
 			if ([string]::IsNullOrWhiteSpace($cmbCurrency.Text))
 			{
-				[System.Windows.Forms.MessageBox]::Show("Please enter a currency symbol.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+				[void][System.Windows.Forms.MessageBox]::Show("Please enter a currency symbol.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
 				return
 			}
 			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK; $form.Close()

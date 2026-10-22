@@ -102,15 +102,20 @@ function Show_Node_Selection_Form
 			if ($laneFolders) { $allLanes = $laneFolders | ForEach-Object { $_.Name.Substring($_.Name.Length - 3, 3) } }
 		}
 
-		$sortedLanes = $allLanes | Sort-Object
-		foreach ($laneMachine in $sortedLanes)
+		# machine -> 3-digit lane number (first match, as before)
+		$machineToLaneNum = @{ }
+		if ($LaneNumToMachineName)
 		{
-			# Find numeric lane (if possible)
-			$laneNum = $null
-			foreach ($key in $LaneNumToMachineName.Keys)
+			foreach ($key in @($LaneNumToMachineName.Keys | Sort-Object))
 			{
-				if ($LaneNumToMachineName[$key] -eq $laneMachine -and $key -match '^\d{3}$') { $laneNum = $key; break }
+				$m = [string]$LaneNumToMachineName[$key]
+				if ($key -match '^\d{3}$' -and $m -and -not $machineToLaneNum.ContainsKey($m)) { $machineToLaneNum[$m] = $key }
 			}
+		}
+
+		foreach ($laneMachine in ($allLanes | Sort-Object))
+		{
+			$laneNum = $machineToLaneNum[[string]$laneMachine]
 
 			# Skip excluded by machine name or lane number
 			$__skip = $false
@@ -179,7 +184,8 @@ function Show_Node_Selection_Form
 			$allScales = $script:FunctionResults['ScaleCodeToIPInfo'].Values
 			if ($OnlyBizerbaScales) { $allScales = $allScales | Where-Object { $_.ScaleBrand -match 'bizerba' } }
 		}
-		$sortedScales = $allScales | Sort-Object { [int]($_.ScaleCode) }
+		# numeric order; non-numeric TBS codes (e.g. 801_TBS2) sort by their digits
+		$sortedScales = $allScales | Sort-Object { [double](([string]$_.ScaleCode -replace '[^\d]', '0')) }, { [string]$_.ScaleCode }
 
 		$uniqueScaleIPs = @{ }
 		$dedupedScales = @()
@@ -200,7 +206,7 @@ function Show_Node_Selection_Form
 			# Skip excluded by name/code
 			$__skip = $false
 			if ($scale.ScaleName -and ($__ex_names -contains ($scale.ScaleName.ToLower()))) { $__skip = $true }
-			elseif ($scale.ScaleCode -and ($__ex_lanes -contains ('{0:D3}' -f ([int]$scale.ScaleCode)))) { $__skip = $true }
+			elseif ([string]$scale.ScaleCode -match '^\d+$' -and ($__ex_lanes -contains ('{0:D3}' -f ([int]$scale.ScaleCode)))) { $__skip = $true }
 			if ($__skip) { continue }
 
 			$ip = if ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
@@ -324,10 +330,11 @@ function Show_Node_Selection_Form
 				& $setBtnColor $btnSelectAll 0
 				& $setBtnColor $btnDeselectAll 0
 			})
-		foreach ($event in @("Add_ItemCheck", "Add_MouseUp", "Add_KeyUp"))
+		# (MouseUp / KeyUp only: ItemCheck fires before the state changes, and a sleep in it made
+		#  Select All stall ~30 ms per item)
+		foreach ($event in @("Add_MouseUp", "Add_KeyUp"))
 		{
 			$clb.$event.Invoke({
-					Start-Sleep -Milliseconds 30
 					$allChecked = & $isAllChecked
 					$anyChecked = & $isAnyChecked
 					if ($allChecked) { & $setBtnColor $btnSelectAll 2 }
@@ -428,24 +435,6 @@ function Show_Node_Selection_Form
 			})
 		foreach ($clb in $tabControls.Values)
 		{
-			$clb.Add_ItemCheck({
-					Start-Sleep -Milliseconds 50
-					$allTabsChecked = $true
-					foreach ($clbTest in $tabControls.Values)
-					{
-						for ($i = 0; $i -lt $clbTest.Items.Count; $i++) { if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break } }
-					}
-					if ($allTabsChecked) { & $setBtnColor $btnSelectAll 2; $selectAllYellowTabIndex = $null }
-					else
-					{
-						$tabIndex = $tabs.SelectedIndex
-						$clbLocal = $tabControls[$tabs.SelectedTab.Text]
-						$allChecked = $true
-						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++) { if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break } }
-						if ($allChecked -and $clbLocal.Items.Count -gt 0) { & $setBtnColor $btnSelectAll 1; $selectAllYellowTabIndex = $tabIndex }
-						else { & $setBtnColor $btnSelectAll 0; $selectAllYellowTabIndex = $null }
-					}
-				})
 			$clb.Add_MouseUp({
 					$allTabsChecked = $true
 					foreach ($clbTest in $tabControls.Values)
@@ -583,7 +572,8 @@ function Show_Node_Selection_Form
 	# Basic validation
 	if ($result.Keys.Count -eq 0 -or ($result.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum -eq 0)
 	{
-		[System.Windows.Forms.MessageBox]::Show("No nodes selected.", "Information",
+		# [void]: the MessageBox result ('OK') must not become this function's return value
+		[void][System.Windows.Forms.MessageBox]::Show("No nodes selected.", "Information",
 			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 		Remove-Variable -Name __laneLimitWarned -Scope Script -ErrorAction SilentlyContinue
 		return $null

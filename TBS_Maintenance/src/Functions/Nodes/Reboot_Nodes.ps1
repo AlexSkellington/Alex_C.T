@@ -181,6 +181,6 @@ function Reboot_Nodes
 	}
 
 	Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
-	[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected nodes.", "Reboot",
+	[void][System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected nodes.", "Reboot",
 		[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 }

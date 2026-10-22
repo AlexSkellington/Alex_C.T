@@ -5547,77 +5547,51 @@ function Clear_XE_Folder
 
 	# ------------------------------------------------------------------------------------------------
 	# 1) STARTUP CLEANUP
-	#    - Deletes EVERYTHING except valid S*.??? health files
-	#    - ALSO deletes FATAL* (clear old errors)
+	#    - Deletes EVERYTHING except valid S*.??? health files (FATAL* old errors too)
 	# ------------------------------------------------------------------------------------------------
+	# A file worth keeping: a current lane health report ("This application is not running")
+	# for this store, S*.<lane> named after the lane in its From: line, newer than HealthMaxAgeDays.
+	# Shared by the startup cleanup and the watcher job (passed to it as text).
+	$isHealthFile = {
+		param ($Item, [string]$StoreNumber, [int]$HealthMaxAgeDays)
+		if ($Item.PSIsContainer -or $Item.Name -notmatch '^S.*\.\w{3}$') { return $false }
+		if (((Get-Date) - $Item.LastWriteTime).TotalDays -gt $HealthMaxAgeDays) { return $false }
+		$content = $null
+		try { $content = Get-Content -LiteralPath $Item.FullName -ErrorAction Stop }
+		catch { return $false }
+		if (-not $content) { return $false }
+		$fromLine = $content | Where-Object { $_ -like 'From:*' } | Select-Object -First 1
+		$subjectLine = $content | Where-Object { $_ -like 'Subject:*' } | Select-Object -First 1
+		$msgLine = $content | Where-Object { $_ -like 'MSG:*' } | Select-Object -First 1
+		$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' } | Select-Object -First 1
+		if ($fromLine -notmatch 'From:\s*(\d{3})(\d{3})') { return $false }
+		$fileStoreNumber = $Matches[1]
+		$fileLaneNumber = $Matches[2]
+		return ($fileStoreNumber -eq $StoreNumber -and
+			$Item.Name -match '^S.*\.(\d{3})$' -and $fileLaneNumber -eq $Matches[1] -and
+			$subjectLine -match 'Subject:\s*Health' -and
+			$msgLine -match 'MSG:\s*This application is not running\.' -and
+			$lastStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
+	}
+
 	try
 	{
-		$now = Get-Date
-
 		$items = Get-ChildItem -LiteralPath $FolderPath -Recurse -Force -ErrorAction SilentlyContinue |
 		Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 }
 
 		foreach ($item in $items)
 		{
-			$keep = $false
-
-			# Startup mode: delete FATAL*
-			if ($item.Name -like 'FATAL*')
+			# Startup mode: FATAL* (old errors) and folders go too
+			$keep = ($item.Name -notlike 'FATAL*') -and (& $isHealthFile $item $StoreNumber $HealthMaxAgeDays)
+			if ($keep) { continue }
+			for ($i = 0; $i -lt 8; $i++)
 			{
-				$keep = $false
-			}
-			elseif ($item.PSIsContainer)
-			{
-				$keep = $false
-			}
-			elseif ($item.Name -match '^S.*\.\w{3}$')
-			{
-				if (($now - $item.LastWriteTime).TotalDays -le $HealthMaxAgeDays)
+				try
 				{
-					$content = $null
-					try { $content = Get-Content -LiteralPath $item.FullName -ErrorAction Stop }
-					catch { $content = $null }
-
-					if ($content)
-					{
-						$fromLine = $content | Where-Object { $_ -like 'From:*' } | Select-Object -First 1
-						$subjectLine = $content | Where-Object { $_ -like 'Subject:*' } | Select-Object -First 1
-						$msgLine = $content | Where-Object { $_ -like 'MSG:*' } | Select-Object -First 1
-						$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' } | Select-Object -First 1
-
-						if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
-						{
-							$fileStoreNumber = $Matches[1]
-							$fileLaneNumber = $Matches[2]
-
-							if ($fileStoreNumber -eq $StoreNumber -and
-								$item.Name -match '^S.*\.(\d{3})$' -and
-								$fileLaneNumber -eq $Matches[1] -and
-								$subjectLine -match 'Subject:\s*Health' -and
-								$msgLine -match 'MSG:\s*This application is not running\.' -and
-								$lastStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
-							{
-								$keep = $true
-							}
-						}
-					}
+					if (Test-Path -LiteralPath $item.FullName) { Remove-Item -LiteralPath $item.FullName -Force -Recurse -ErrorAction Stop }
+					break
 				}
-			}
-
-			if (-not $keep)
-			{
-				for ($i = 0; $i -lt 8; $i++)
-				{
-					try
-					{
-						if (Test-Path -LiteralPath $item.FullName)
-						{
-							Remove-Item -LiteralPath $item.FullName -Force -Recurse -ErrorAction Stop
-						}
-						break
-					}
-					catch { Start-Sleep -Milliseconds 150 }
-				}
+				catch { Start-Sleep -Milliseconds 150 }
 			}
 		}
 	}
@@ -5625,7 +5599,6 @@ function Clear_XE_Folder
 	{
 		Write_Log "An error occurred during startup cleaning of '$FolderPath': $_" "red"
 	}
-
 	# ------------------------------------------------------------------------------------------------
 	# 2) MONITOR (FileSystemWatcher in a background job)
 	#    - Keeps NEW FATAL* while running
@@ -5645,13 +5618,15 @@ function Clear_XE_Folder
 			catch { }
 		}
 
-		$job = Start-Job -Name $jobName -ArgumentList $FolderPath, $StoreNumber, $HealthMaxAgeDays, $SweepIntervalSeconds -ScriptBlock {
+		$job = Start-Job -Name $jobName -ArgumentList $FolderPath, $StoreNumber, $HealthMaxAgeDays, $SweepIntervalSeconds, $isHealthFile.ToString() -ScriptBlock {
 			param (
 				[string]$FolderPath,
 				[string]$StoreNumber,
 				[int]$HealthMaxAgeDays,
-				[int]$SweepIntervalSeconds
+				[int]$SweepIntervalSeconds,
+				[string]$IsHealthFileText
 			)
+			$IsHealthFile = [scriptblock]::Create($IsHealthFileText)
 
 			$ErrorActionPreference = 'SilentlyContinue'
 
@@ -5687,46 +5662,7 @@ function Clear_XE_Folder
 				# Skip reparse points
 				if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return }
 
-				$now = Get-Date
-				$keep = $false
-
-				if ($item.PSIsContainer)
-				{
-					$keep = $false
-				}
-				elseif ($item.Name -match '^S.*\.\w{3}$')
-				{
-					if (($now - $item.LastWriteTime).TotalDays -le $HealthMaxAgeDays)
-					{
-						$content = $null
-						try { $content = Get-Content -LiteralPath $item.FullName -ErrorAction Stop }
-						catch { $content = $null }
-
-						if ($content)
-						{
-							$fromLine = $content | Where-Object { $_ -like 'From:*' } | Select-Object -First 1
-							$subjectLine = $content | Where-Object { $_ -like 'Subject:*' } | Select-Object -First 1
-							$msgLine = $content | Where-Object { $_ -like 'MSG:*' } | Select-Object -First 1
-							$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' } | Select-Object -First 1
-
-							if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
-							{
-								$fileStoreNumber = $Matches[1]
-								$fileLaneNumber = $Matches[2]
-
-								if ($fileStoreNumber -eq $StoreNumber -and
-									$item.Name -match '^S.*\.(\d{3})$' -and
-									$fileLaneNumber -eq $Matches[1] -and
-									$subjectLine -match 'Subject:\s*Health' -and
-									$msgLine -match 'MSG:\s*This application is not running\.' -and
-									$lastStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
-								{
-									$keep = $true
-								}
-							}
-						}
-					}
-				}
+				$keep = & $IsHealthFile $item $StoreNumber $HealthMaxAgeDays
 
 				if (-not $keep)
 				{
@@ -5815,7 +5751,6 @@ function Clear_XE_Folder
 			}
 		}
 
-		# Write_Log "XE watcher job started: $jobName" "green"
 		return $job
 	}
 	catch
@@ -5961,12 +5896,16 @@ function Export_VNC_Files_For_All_Nodes
 			$writeLogDefinition = 'param([string]$Message, $Color, [switch]$IncludeTimestamp)'
 			$getAllVncPasswordsDefinition = ${function:Get_All_VNC_Passwords}.ToString()
 			$exportVncDefinition = ${function:Export_VNC_Files_For_All_Nodes}.ToString()
+			# Get_All_VNC_Passwords probes the nodes with Test-Hosts_Parallel - the job needs it too
+			# (missing before v2.7.0: the background export failed whenever it had to look up passwords)
+			$testHostsDefinition = ${function:Test-Hosts_Parallel}.ToString()
 
 			$job = Start-Job -Name 'VNCExportJob' -ScriptBlock {
 				param (
 					[string]$WriteLogDefinition,
 					[string]$GetAllVncPasswordsDefinition,
 					[string]$ExportVncDefinition,
+					[string]$TestHostsDefinition,
 					[hashtable]$LaneMap,
 					[hashtable]$ScaleMap,
 					[hashtable]$BackofficeMap,
@@ -5981,6 +5920,7 @@ function Export_VNC_Files_For_All_Nodes
 				Set-Item -Path function:Write_Log -Value ([scriptblock]::Create($WriteLogDefinition))
 				Set-Item -Path function:Get_All_VNC_Passwords -Value ([scriptblock]::Create($GetAllVncPasswordsDefinition))
 				Set-Item -Path function:Export_VNC_Files_For_All_Nodes -Value ([scriptblock]::Create($ExportVncDefinition))
+				Set-Item -Path function:Test-Hosts_Parallel -Value ([scriptblock]::Create($TestHostsDefinition))
 
 				$script:UltraVncFolder = $UltraVncFolder
 				$script:ansiPcEncoding = [System.Text.Encoding]::GetEncoding($AnsiCodePage)
@@ -6020,6 +5960,7 @@ function Export_VNC_Files_For_All_Nodes
 				$writeLogDefinition,
 				$getAllVncPasswordsDefinition,
 				$exportVncDefinition,
+				$testHostsDefinition,
 				$LaneNumToMachineName,
 				$ScaleCodeToIPInfo,
 				$BackofficeNumToMachineName,
@@ -7088,6 +7029,44 @@ function Get_Remote_Machine_Info
 		$jobs = @()
 		$pending = @{ }
 
+		# Turn one finished node job into its info-file line + results entry, then drop the job
+		# (dot-sourced: updates this function's variables)
+		$collectNodeJob = {
+			param ($j)
+			$remoteName = $pending[$j.Id]
+			$result = Receive-Job $j 2>$null
+			$info = $result.Info
+
+			$line = "Machine Name: $remoteName |"
+			if ($info.Success)
+			{
+				$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
+				if ($null -ne $info.RAM) { $line += " | RAM: $($info.RAM) GB" }
+				if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
+				& $log "Processed $remoteName ($($section.Name)): Success [$($info.Method)]" "green"
+			}
+			elseif ($info.Error)
+			{
+				$line += " [Hardware info unavailable] Error: $($info.Error)"
+				& $log "Processed $remoteName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
+			}
+			else
+			{
+				$line += " [No hardware info found]"
+				& $log "Processed $remoteName ($($section.Name)): No info [$($info.Method)]" "yellow"
+			}
+			$biosText = if ($info.BIOS) { $info.BIOS } else { "Unknown" }
+			$line += " | BIOS: $biosText | Method: $($info.Method)"
+
+			Set-Variable -Name $section.InfoLinesVar -Value (@(Get-Variable -Name $section.InfoLinesVar -ValueOnly) + $line)
+			(Get-Variable -Name $section.ResultsVar -ValueOnly)[$remoteName] = $info
+
+			Stop-Job $j -ErrorAction SilentlyContinue
+			Remove-Job $j -Force -ErrorAction SilentlyContinue
+			$jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
+			[void]$pending.Remove($j.Id)
+		}
+
 		foreach ($sel in $section.Selected)
 		{
 			# -------- Canonical per-node identity: $NodeNumber (code) + $NodeName (machine/IP) --------
@@ -7160,16 +7139,6 @@ function Get_Remote_Machine_Info
 					Error			    = $null
 					MachineNameOverride = $null
 				}
-
-				# --- 0.1) Remember RemoteRegistry state up-front (so we can restore) ---
-				$originalState = $null
-				try
-				{
-					$stateLine = sc.exe "\\$NodeName" query RemoteRegistry 2>$null | Select-String "STATE" | ForEach-Object { $_.Line }
-					$startTypeLine = sc.exe "\\$NodeName" qc    RemoteRegistry 2>$null | Select-String "START_TYPE" | ForEach-Object { $_.Line }
-					$originalState = @{ StateLine = $stateLine; StartTypeLine = $startTypeLine }
-				}
-				catch { }
 
 				# --- 1) WMI (fast) ---
 				if (-not (Test-Connection -ComputerName $NodeName -Count 1 -Quiet -ErrorAction SilentlyContinue))
@@ -7630,68 +7599,15 @@ function Get_Remote_Machine_Info
 				return $returnInfo
 			}
 
-			$jobs += $job
+			$jobs = @($jobs) + $job
 			$pending[$job.Id] = $NodeName
 
-			# Throttle
+			# Throttle: wait for a slot (a job that does not finish within 60 s is collected in the drain below)
 			while ($jobs.Count -ge $maxConcurrentJobs)
 			{
 				$done = Wait-Job -Job $jobs -Any -Timeout 60
-				if ($done)
-				{
-					foreach ($j in $done)
-					{
-						$result = Receive-Job $j 2>$null
-						$remoteName = $pending[$j.Id]
-						$info = $result.Info
-
-						# Build display line
-						$line = "Machine Name: $remoteName |"
-						if ($info.Success)
-						{
-							$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
-							if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
-							if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
-							$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-							$line += " | BIOS: $biosText"
-							$line += " | Method: $($info.Method)"
-							& $log "Processed $remoteName ($($section.Name)): Success [$($info.Method)]" "green"
-						}
-						elseif ($info.Error)
-						{
-							$line += " [Hardware info unavailable] Error: $($info.Error)"
-							$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-							$line += " | BIOS: $biosText"
-							$line += " | Method: $($info.Method)"
-							& $log "Processed $remoteName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
-						}
-						else
-						{
-							$line += " [No hardware info found]"
-							$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-							$line += " | BIOS: $biosText"
-							$line += " | Method: $($info.Method)"
-							& $log "Processed $remoteName ($($section.Name)): No info [$($info.Method)]" "yellow"
-						}
-
-						# Append to info-lines
-						$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-						$infolines += $line
-						Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
-
-						# Store rich info for programmatic use
-						$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
-						$results[$remoteName] = $info
-						Set-Variable -Name $($section.ResultsVar) -Value $results
-
-						# Cleanup
-						Stop-Job $j -ErrorAction SilentlyContinue
-						Remove-Job $j -Force -ErrorAction SilentlyContinue
-						$jobs = $jobs | Where-Object { $_.Id -ne $j.Id }
-						$pending.Remove($j.Id)
-					}
-				}
-				else { break }
+				if (-not $done) { break }
+				foreach ($j in @($done)) { . $collectNodeJob $j }
 			}
 		} # end foreach selected
 
@@ -7699,51 +7615,7 @@ function Get_Remote_Machine_Info
 		if ($jobs.Count -gt 0)
 		{
 			Wait-Job -Job $jobs -Timeout 60 | Out-Null
-			foreach ($j in $jobs)
-			{
-				$remoteName = $pending[$j.Id]
-				$result = Receive-Job $j 2>$null
-				$info = $result.Info
-
-				$line = "Machine Name: $remoteName |"
-				if ($info.Success)
-				{
-					$line += " Manufacturer: $($info.SystemManufacturer) | Model: $($info.SystemProductName) | CPU: $($info.CPU)"
-					if ($info.RAM -ne $null) { $line += " | RAM: $($info.RAM) GB" }
-					if ($info.OSInfo) { $line += " | OS: $($info.OSInfo)" }
-					$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-					$line += " | BIOS: $biosText"
-					$line += " | Method: $($info.Method)"
-					& $log "Processed $remoteName ($($section.Name)): Success [$($info.Method)]" "green"
-				}
-				elseif ($info.Error)
-				{
-					$line += " [Hardware info unavailable] Error: $($info.Error)"
-					$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-					$line += " | BIOS: $biosText"
-					$line += " | Method: $($info.Method)"
-					& $log "Processed $remoteName ($($section.Name)): Error [$($info.Method)] - $($info.Error)" "red"
-				}
-				else
-				{
-					$line += " [No hardware info found]"
-					$biosText = $info.BIOS; if (-not $biosText) { $biosText = "Unknown" }
-					$line += " | BIOS: $biosText"
-					$line += " | Method: $($info.Method)"
-					& $log "Processed $remoteName ($($section.Name)): No info [$($info.Method)]" "yellow"
-				}
-
-				$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-				$infolines += $line
-				Set-Variable -Name $($section.InfoLinesVar) -Value $infolines
-
-				$results = Get-Variable -Name $($section.ResultsVar) -ValueOnly
-				$results[$remoteName] = $info
-				Set-Variable -Name $($section.ResultsVar) -Value $results
-
-				Stop-Job $j -ErrorAction SilentlyContinue
-				Remove-Job $j -Force -ErrorAction SilentlyContinue
-			}
+			foreach ($j in @($jobs)) { . $collectNodeJob $j }
 		}
 
 		# Write file (stable sorting: IPs zero-padded; otherwise lexical)
@@ -7825,6 +7697,19 @@ function Start_Quarterly_System_Health_Maintenance
 	$nowUtc = [DateTime]::UtcNow
 	$state = $null
 
+	# DISM and SFC refuse to run without elevation (exit 740 / 1). Without this check a
+	# non-elevated launch (e.g. irm | iex from a normal console) recorded a 'completed' run that
+	# did nothing and postponed the real one by a full interval.
+	$isAdmin = $false
+	try { $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+	catch { }
+	if (-not $isAdmin)
+	{
+		try { Write_Log "Quarterly system health maintenance skipped - not running as administrator." "gray" -FileOnly }
+		catch { }
+		return @{ Started = $false; Running = $false; Due = $null; Skipped = 'NotElevated' }
+	}
+
 	try
 	{
 		if (-not (Test-Path -LiteralPath $logFolder)) { New-Item -Path $logFolder -ItemType Directory -Force | Out-Null }
@@ -7850,6 +7735,13 @@ function Start_Quarterly_System_Health_Maintenance
 	}
 
 	$workerScriptText = @'
+# ---------------------------------------------------------------------------------------------------
+# Quarterly system health worker - embedded at build time into Start_Quarterly_System_Health_Maintenance
+#   and written to Scripts\Quarterly_System_Health_Maintenance_Worker.ps1, then run detached as
+#   powershell.exe -File (elevated parent required: DISM / SFC need admin).
+#   DISM RestoreHealth -> DISM StartComponentCleanup -> SFC /SCANNOW, with a lock file, a state JSON,
+#   a per-run log (rotated to RetentionCount) and one summary line per run.
+# ---------------------------------------------------------------------------------------------------
 param (
 	[string]$StatePath,
 	[string]$LockPath,
@@ -7882,7 +7774,7 @@ $writeState = {
 		[int]$StartComponentCleanupExitCode,
 		[int]$SfcExitCode
 	)
-	
+
 	$stateObj = [pscustomobject]@{
 		Status						 = $Status
 		Pid							 = $WorkerPid
@@ -7896,7 +7788,7 @@ $writeState = {
 		SfcExitCode					 = $SfcExitCode
 		RunLogPath					 = $RunLogPath
 	}
-	
+
 	($stateObj | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $StatePath -Encoding UTF8 -Force
 }
 
@@ -7920,34 +7812,34 @@ try
 		RunLogPath = $RunLogPath
 	}
 	($lockObj | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $LockPath -Encoding UTF8 -Force
-	
+
 	& $writeState 'Running' $PID $runStartUtc.ToString('o') $null $null $null $restoreHealthExit $startCleanupExit $sfcExit
-	
+
 	& $appendLog ('=' * 100)
 	& $appendLog ('Quarterly system health maintenance started: {0}' -f $runStartLocal.ToString('yyyy-MM-dd HH:mm:ss'))
 	& $appendLog ('RunId: {0}' -f $RunId)
 	& $appendLog ('PID: {0}' -f $PID)
 	& $appendLog ('=' * 100)
 	& $appendLog ''
-	
+
 	& $appendLog '>>> DISM /Online /Cleanup-Image /RestoreHealth /Source:WindowsUpdate'
 	& dism.exe /Online /Cleanup-Image /RestoreHealth /Source:WindowsUpdate *>&1 | Tee-Object -FilePath $RunLogPath -Append | Out-Null
 	$restoreHealthExit = $LASTEXITCODE
 	& $appendLog ('DISM RestoreHealth exit code: {0}' -f $restoreHealthExit)
 	& $appendLog ''
-	
+
 	& $appendLog '>>> DISM /Online /Cleanup-Image /StartComponentCleanup'
 	& dism.exe /Online /Cleanup-Image /StartComponentCleanup *>&1 | Tee-Object -FilePath $RunLogPath -Append | Out-Null
 	$startCleanupExit = $LASTEXITCODE
 	& $appendLog ('DISM StartComponentCleanup exit code: {0}' -f $startCleanupExit)
 	& $appendLog ''
-	
+
 	& $appendLog '>>> SFC /SCANNOW'
 	& sfc.exe /SCANNOW *>&1 | Tee-Object -FilePath $RunLogPath -Append | Out-Null
 	$sfcExit = $LASTEXITCODE
 	& $appendLog ('SFC exit code: {0}' -f $sfcExit)
 	& $appendLog ''
-	
+
 	if ($restoreHealthExit -eq 0 -and $startCleanupExit -eq 0 -and $sfcExit -eq 0)
 	{
 		$overall = 'Success'
@@ -7978,13 +7870,13 @@ finally
 		$sfcExit, `
 		$duration, `
 		$RunLogPath
-	
+
 	try
 	{
 		Add-Content -LiteralPath $SummaryLogPath -Value $summaryLine -Encoding UTF8
 	}
 	catch { }
-	
+
 	try
 	{
 		if (Test-Path -LiteralPath $SummaryLogPath)
@@ -7997,7 +7889,7 @@ finally
 		}
 	}
 	catch { }
-	
+
 	try
 	{
 		$oldLogs = @(Get-ChildItem -LiteralPath $runLogFolder -Filter $RunLogPattern -File -ErrorAction SilentlyContinue |
@@ -8010,13 +7902,13 @@ finally
 		}
 	}
 	catch { }
-	
+
 	try
 	{
 		& $writeState 'Idle' $null $runStartUtc.ToString('o') $runEndUtc.ToString('o') $overall $summaryLine $restoreHealthExit $startCleanupExit $sfcExit
 	}
 	catch { }
-	
+
 	try { Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue }
 	catch { }
 }
@@ -8106,20 +7998,21 @@ finally
 	$runId = [guid]::NewGuid().ToString()
 	$runLogName = '{0}{1}.log' -f $runLogPrefix, (Get-Date -Format 'yyyyMMdd_HHmmss')
 	$runLogPath = Join-Path $logFolder $runLogName
-	$psExe = $null
-	try { $psExe = (Get-Process -Id $PID -ErrorAction Stop).Path }
-	catch { $psExe = $null }
-	if ([string]::IsNullOrWhiteSpace($psExe)) { $psExe = 'powershell.exe' }
+	# Always Windows PowerShell itself: for a packaged .exe launch the current process path is the
+	# TBS exe, which would just start a second (hidden) copy of the app instead of the worker.
+	$psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+	if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }
+	$q = { param ([string]$v) '"' + $v + '"' }   # Start-Process does not quote arguments
 
 	$argList = @(
 		'-NoProfile',
 		'-ExecutionPolicy', 'Bypass',
-		'-File', $workerPath,
-		'-StatePath', $statePath,
-		'-LockPath', $lockPath,
-		'-SummaryLogPath', $summaryLogPath,
-		'-RunLogPath', $runLogPath,
-		'-RunLogPattern', $runLogPattern,
+		'-File', (& $q $workerPath),
+		'-StatePath', (& $q $statePath),
+		'-LockPath', (& $q $lockPath),
+		'-SummaryLogPath', (& $q $summaryLogPath),
+		'-RunLogPath', (& $q $runLogPath),
+		'-RunLogPattern', (& $q $runLogPattern),
 		'-RetentionCount', [string]$RetentionCount,
 		'-SummaryRetentionLines', [string]$SummaryRetentionLines,
 		'-RunId', $runId
@@ -8151,6 +8044,108 @@ finally
 		catch { }
 		return $false
 	}
+}
+
+# ===================================================================================================
+#                              FUNCTION: Show_CheckList_Form
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Generic modal check-list dialog: a prompt, a CheckedListBox of items, Select All /
+#   Deselect All and OK / Cancel. The Select All button turns yellow when some items are
+#   checked and green when all are. Used by Show_Table_Selection_Form and
+#   Show_Section_Selection_Form.
+#
+# Parameters:
+#   - Title   [string]: window title
+#   - Prompt  [string]: line above the list
+#   - Items   [string[]]: entries to list (in the given order, none checked)
+#   - Width   [int]: list width in pixels (default 410)
+#   - Height  [int]: list height in pixels (default 400)
+#
+# Returns:
+#   Array of the checked items, or $null when cancelled.
+# ===================================================================================================
+
+function Show_CheckList_Form
+{
+	param (
+		[string]$Title = 'Select',
+		[string]$Prompt = '',
+		[string[]]$Items = @(),
+		[int]$Width = 410,
+		[int]$Height = 400
+	)
+	Add-Type -AssemblyName System.Windows.Forms
+	Add-Type -AssemblyName System.Drawing
+
+	$form = New-Object System.Windows.Forms.Form
+	$form.Text = $Title
+	$form.ClientSize = New-Object System.Drawing.Size(($Width + 20), ($Height + 140))
+	$form.StartPosition = "CenterScreen"
+	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+	$form.MaximizeBox = $false
+	$form.MinimizeBox = $false
+
+	$label = New-Object System.Windows.Forms.Label
+	$label.Text = $Prompt
+	$label.Location = New-Object System.Drawing.Point(10, 10)
+	$label.AutoSize = $true
+	$form.Controls.Add($label)
+
+	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
+	$checkedListBox.Location = New-Object System.Drawing.Point(10, 40)
+	$checkedListBox.Size = New-Object System.Drawing.Size($Width, $Height)
+	$checkedListBox.CheckOnClick = $true
+	foreach ($item in $Items) { [void]$checkedListBox.Items.Add($item, $false) }
+	$form.Controls.Add($checkedListBox)
+
+	# Two button rows, centred under the list
+	$rowLeft = [int](($Width + 20 - 380) / 2)
+	$newButton = {
+		param ([string]$Text, [int]$X, [int]$Y, [int]$W)
+		$b = New-Object System.Windows.Forms.Button
+		$b.Text = $Text
+		$b.Location = New-Object System.Drawing.Point($X, $Y)
+		$b.Size = New-Object System.Drawing.Size($W, 32)
+		$b.BackColor = [System.Drawing.SystemColors]::Control
+		$form.Controls.Add($b)
+		return $b
+	}
+	$btnSelectAll = & $newButton 'Select All' $rowLeft ($Height + 60) 180
+	$btnDeselectAll = & $newButton 'Deselect All' ($rowLeft + 200) ($Height + 60) 180
+	$btnOK = & $newButton 'OK' ($rowLeft + 40) ($Height + 100) 140
+	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+	$form.AcceptButton = $btnOK
+	$btnCancel = & $newButton 'Cancel' ($rowLeft + 200) ($Height + 100) 140
+	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+	$form.CancelButton = $btnCancel
+	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $form }
+
+	# Select All colour: control (none) / yellow (some) / green (all)
+	$updateSelectAll = {
+		$checked = $checkedListBox.CheckedItems.Count
+		$btnSelectAll.BackColor = if ($checked -gt 0 -and $checked -eq $checkedListBox.Items.Count) { [System.Drawing.Color]::LightGreen }
+		elseif ($checked -gt 0) { [System.Drawing.Color]::Yellow }
+		else { [System.Drawing.SystemColors]::Control }
+	}
+	$setAll = {
+		param ([bool]$State)
+		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++) { $checkedListBox.SetItemChecked($i, $State) }
+		& $updateSelectAll
+	}
+
+	$btnSelectAll.Add_Click({ & $setAll $true })
+	$btnDeselectAll.Add_Click({ & $setAll $false })
+	# (ItemCheck fires before the state changes - MouseUp / KeyUp see the new state)
+	$checkedListBox.Add_MouseUp({ & $updateSelectAll })
+	$checkedListBox.Add_KeyUp({ & $updateSelectAll })
+
+	try
+	{
+		if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+		return @($checkedListBox.CheckedItems | ForEach-Object { [string]$_ })
+	}
+	finally { $form.Dispose() }
 }
 
 # ===================================================================================================
@@ -8257,15 +8252,20 @@ function Show_Node_Selection_Form
 			if ($laneFolders) { $allLanes = $laneFolders | ForEach-Object { $_.Name.Substring($_.Name.Length - 3, 3) } }
 		}
 
-		$sortedLanes = $allLanes | Sort-Object
-		foreach ($laneMachine in $sortedLanes)
+		# machine -> 3-digit lane number (first match, as before)
+		$machineToLaneNum = @{ }
+		if ($LaneNumToMachineName)
 		{
-			# Find numeric lane (if possible)
-			$laneNum = $null
-			foreach ($key in $LaneNumToMachineName.Keys)
+			foreach ($key in @($LaneNumToMachineName.Keys | Sort-Object))
 			{
-				if ($LaneNumToMachineName[$key] -eq $laneMachine -and $key -match '^\d{3}$') { $laneNum = $key; break }
+				$m = [string]$LaneNumToMachineName[$key]
+				if ($key -match '^\d{3}$' -and $m -and -not $machineToLaneNum.ContainsKey($m)) { $machineToLaneNum[$m] = $key }
 			}
+		}
+
+		foreach ($laneMachine in ($allLanes | Sort-Object))
+		{
+			$laneNum = $machineToLaneNum[[string]$laneMachine]
 
 			# Skip excluded by machine name or lane number
 			$__skip = $false
@@ -8334,7 +8334,8 @@ function Show_Node_Selection_Form
 			$allScales = $script:FunctionResults['ScaleCodeToIPInfo'].Values
 			if ($OnlyBizerbaScales) { $allScales = $allScales | Where-Object { $_.ScaleBrand -match 'bizerba' } }
 		}
-		$sortedScales = $allScales | Sort-Object { [int]($_.ScaleCode) }
+		# numeric order; non-numeric TBS codes (e.g. 801_TBS2) sort by their digits
+		$sortedScales = $allScales | Sort-Object { [double](([string]$_.ScaleCode -replace '[^\d]', '0')) }, { [string]$_.ScaleCode }
 
 		$uniqueScaleIPs = @{ }
 		$dedupedScales = @()
@@ -8355,7 +8356,7 @@ function Show_Node_Selection_Form
 			# Skip excluded by name/code
 			$__skip = $false
 			if ($scale.ScaleName -and ($__ex_names -contains ($scale.ScaleName.ToLower()))) { $__skip = $true }
-			elseif ($scale.ScaleCode -and ($__ex_lanes -contains ('{0:D3}' -f ([int]$scale.ScaleCode)))) { $__skip = $true }
+			elseif ([string]$scale.ScaleCode -match '^\d+$' -and ($__ex_lanes -contains ('{0:D3}' -f ([int]$scale.ScaleCode)))) { $__skip = $true }
 			if ($__skip) { continue }
 
 			$ip = if ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
@@ -8479,10 +8480,11 @@ function Show_Node_Selection_Form
 				& $setBtnColor $btnSelectAll 0
 				& $setBtnColor $btnDeselectAll 0
 			})
-		foreach ($event in @("Add_ItemCheck", "Add_MouseUp", "Add_KeyUp"))
+		# (MouseUp / KeyUp only: ItemCheck fires before the state changes, and a sleep in it made
+		#  Select All stall ~30 ms per item)
+		foreach ($event in @("Add_MouseUp", "Add_KeyUp"))
 		{
 			$clb.$event.Invoke({
-					Start-Sleep -Milliseconds 30
 					$allChecked = & $isAllChecked
 					$anyChecked = & $isAnyChecked
 					if ($allChecked) { & $setBtnColor $btnSelectAll 2 }
@@ -8583,24 +8585,6 @@ function Show_Node_Selection_Form
 			})
 		foreach ($clb in $tabControls.Values)
 		{
-			$clb.Add_ItemCheck({
-					Start-Sleep -Milliseconds 50
-					$allTabsChecked = $true
-					foreach ($clbTest in $tabControls.Values)
-					{
-						for ($i = 0; $i -lt $clbTest.Items.Count; $i++) { if (-not $clbTest.GetItemChecked($i)) { $allTabsChecked = $false; break } }
-					}
-					if ($allTabsChecked) { & $setBtnColor $btnSelectAll 2; $selectAllYellowTabIndex = $null }
-					else
-					{
-						$tabIndex = $tabs.SelectedIndex
-						$clbLocal = $tabControls[$tabs.SelectedTab.Text]
-						$allChecked = $true
-						for ($i = 0; $i -lt $clbLocal.Items.Count; $i++) { if (-not $clbLocal.GetItemChecked($i)) { $allChecked = $false; break } }
-						if ($allChecked -and $clbLocal.Items.Count -gt 0) { & $setBtnColor $btnSelectAll 1; $selectAllYellowTabIndex = $tabIndex }
-						else { & $setBtnColor $btnSelectAll 0; $selectAllYellowTabIndex = $null }
-					}
-				})
 			$clb.Add_MouseUp({
 					$allTabsChecked = $true
 					foreach ($clbTest in $tabControls.Values)
@@ -8738,7 +8722,8 @@ function Show_Node_Selection_Form
 	# Basic validation
 	if ($result.Keys.Count -eq 0 -or ($result.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum -eq 0)
 	{
-		[System.Windows.Forms.MessageBox]::Show("No nodes selected.", "Information",
+		# [void]: the MessageBox result ('OK') must not become this function's return value
+		[void][System.Windows.Forms.MessageBox]::Show("No nodes selected.", "Information",
 			[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 		Remove-Variable -Name __laneLimitWarned -Scope Script -ErrorAction SilentlyContinue
 		return $null
@@ -8752,14 +8737,14 @@ function Show_Node_Selection_Form
 #                              FUNCTION: Show_Section_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Dialog with a check list box of SQL sections (Select All / Deselect All); returns the
-#   array of checked section names, or $null when canceled.
+#   Dialog with a check list of SQL script sections (Process_Server / lane maintenance);
+#   returns the checked section names. Thin wrapper over Show_CheckList_Form.
 #
 # Parameters:
 #   - SectionNames  [string[]] (required): section names to list
 #
 # Returns:
-#   - Array of checked section names ($null when canceled)
+#   Array of checked section names ($null when cancelled).
 # ===================================================================================================
 
 function Show_Section_Selection_Form
@@ -8768,193 +8753,22 @@ function Show_Section_Selection_Form
 		[Parameter(Mandatory = $true)]
 		[string[]]$SectionNames
 	)
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
 
-	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Select SQL Sections"
-	$form.StartPosition = "CenterScreen"
-	$form.Size = New-Object System.Drawing.Size(550, 440)
-	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-	$form.MaximizeBox = $false
-	$form.MinimizeBox = $false
-
-	$label = New-Object System.Windows.Forms.Label
-	$label.Text = "Check the sections you want to run, then click OK."
-	$label.AutoSize = $true
-	$label.Left = 20
-	$label.Top = 10
-	$form.Controls.Add($label)
-
-	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
-	$checkedListBox.Width = 500
-	$checkedListBox.Height = 280
-	$checkedListBox.Left = 20
-	$checkedListBox.Top = 40
-	$checkedListBox.CheckOnClick = $true
-	$form.Controls.Add($checkedListBox)
-
-	foreach ($name in $SectionNames)
-	{
-		[void]$checkedListBox.Items.Add($name, $false)
-	}
-
-	# Place Select All and Deselect All like the Node dialog (Y=310)
-	$btnSelectAll = New-Object System.Windows.Forms.Button
-	$btnSelectAll.Text = "Select All"
-	$btnSelectAll.Location = New-Object System.Drawing.Point(75, 320)
-	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
-	$btnSelectAll.BackColor = [System.Drawing.SystemColors]::Control
-	$form.Controls.Add($btnSelectAll)
-
-	$btnDeselectAll = New-Object System.Windows.Forms.Button
-	$btnDeselectAll.Text = "Deselect All"
-	$btnDeselectAll.Location = New-Object System.Drawing.Point(275, 320)
-	$btnDeselectAll.Size = New-Object System.Drawing.Size(180, 32)
-	$btnDeselectAll.BackColor = [System.Drawing.SystemColors]::Control
-	$form.Controls.Add($btnDeselectAll)
-
-	# Place OK/Cancel like Node dialog (Y=350)
-	$btnOK = New-Object System.Windows.Forms.Button
-	$btnOK.Text = "OK"
-	$btnOK.Location = New-Object System.Drawing.Point(115, 360)
-	$btnOK.Size = New-Object System.Drawing.Size(140, 32)
-	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$form.AcceptButton = $btnOK
-	$form.Controls.Add($btnOK)
-
-	$btnCancel = New-Object System.Windows.Forms.Button
-	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = New-Object System.Drawing.Point(275, 360)
-	$btnCancel.Size = New-Object System.Drawing.Size(140, 32)
-	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$form.CancelButton = $btnCancel
-	$form.Controls.Add($btnCancel)
-	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $form }
-
-	$setBtnColor = {
-		param ($btn,
-			$state)
-		switch ($state)
-		{
-			1 { $btn.BackColor = [System.Drawing.Color]::Yellow }
-			2 { $btn.BackColor = [System.Drawing.Color]::LightGreen }
-			Default { $btn.BackColor = [System.Drawing.SystemColors]::Control }
-		}
-	}
-
-	$isAllChecked = {
-		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-		{
-			if (-not $checkedListBox.GetItemChecked($i)) { return $false }
-		}
-		return $checkedListBox.Items.Count -gt 0
-	}
-	$isAnyChecked = {
-		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-		{
-			if ($checkedListBox.GetItemChecked($i)) { return $true }
-		}
-		return $false
-	}
-
-	$btnSelectAll.Add_Click({
-			$allChecked = & $isAllChecked
-			if (-not $allChecked)
-			{
-				for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-				{
-					$checkedListBox.SetItemChecked($i, $true)
-				}
-				& $setBtnColor $btnSelectAll 2
-			}
-		})
-	$btnDeselectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $false)
-			}
-			& $setBtnColor $btnSelectAll 0
-		})
-
-	$checkedListBox.Add_ItemCheck({
-			Start-Sleep -Milliseconds 30
-			$allChecked = & $isAllChecked
-			$anyChecked = & $isAnyChecked
-			if ($allChecked)
-			{
-				& $setBtnColor $btnSelectAll 2
-			}
-			elseif ($anyChecked)
-			{
-				& $setBtnColor $btnSelectAll 1
-			}
-			else
-			{
-				& $setBtnColor $btnSelectAll 0
-			}
-		})
-	$checkedListBox.Add_MouseUp({
-			$allChecked = & $isAllChecked
-			$anyChecked = & $isAnyChecked
-			if ($allChecked)
-			{
-				& $setBtnColor $btnSelectAll 2
-			}
-			elseif ($anyChecked)
-			{
-				& $setBtnColor $btnSelectAll 1
-			}
-			else
-			{
-				& $setBtnColor $btnSelectAll 0
-			}
-		})
-	$checkedListBox.Add_KeyUp({
-			$allChecked = & $isAllChecked
-			$anyChecked = & $isAnyChecked
-			if ($allChecked)
-			{
-				& $setBtnColor $btnSelectAll 2
-			}
-			elseif ($anyChecked)
-			{
-				& $setBtnColor $btnSelectAll 1
-			}
-			else
-			{
-				& $setBtnColor $btnSelectAll 0
-			}
-		})
-
-	$dialogResult = $form.ShowDialog()
-	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
-	{
-		$selectedSections = @()
-		foreach ($item in $checkedListBox.CheckedItems)
-		{
-			$selectedSections += $item
-		}
-		return $selectedSections
-	}
-	else
-	{
-		return $null
-	}
+	return Show_CheckList_Form -Title 'Select SQL Sections' -Prompt 'Check the sections you want to run, then click OK.' -Items $SectionNames -Width 500 -Height 280
 }
 
 # ===================================================================================================
 #                              FUNCTION: Show_Table_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Dialog listing all tables discovered by Get_Table_Aliases in a check list box, with
-#   Select All / Deselect All buttons; returns the checked table names (with _TAB).
+#   Dialog listing the distinct tables from Get_Table_Aliases rows (sorted) for Pump_Tables;
+#   returns the checked table names (with _TAB). Thin wrapper over Show_CheckList_Form.
 #
 # Parameters:
-#   - AliasResults  [System.Collections.ArrayList] (required): rows from Get_Table_Aliases
+#   - AliasResults  [System.Collections.ArrayList] (required): rows with a .Table property
 #
 # Returns:
-#   - Array of checked table names ($null when canceled)
+#   Array of checked table names ($null when cancelled).
 # ===================================================================================================
 
 function Show_Table_Selection_Form
@@ -8963,176 +8777,9 @@ function Show_Table_Selection_Form
 		[Parameter(Mandatory = $true)]
 		[System.Collections.ArrayList]$AliasResults
 	)
-	Add-Type -AssemblyName System.Windows.Forms
-	Add-Type -AssemblyName System.Drawing
 
-	$form = New-Object System.Windows.Forms.Form
-	$form.Text = "Select Tables to Process"
-	$form.Size = New-Object System.Drawing.Size(450, 570)
-	$form.StartPosition = "CenterScreen"
-	$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-	$form.MaximizeBox = $false
-	$form.MinimizeBox = $false
-
-	$label = New-Object System.Windows.Forms.Label
-	$label.Text = "Please select the tables you want to pump:"
-	$label.Location = New-Object System.Drawing.Point(10, 10)
-	$label.AutoSize = $true
-	$form.Controls.Add($label)
-
-	$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
-	$checkedListBox.Location = New-Object System.Drawing.Point(10, 40)
-	$checkedListBox.Size = New-Object System.Drawing.Size(410, 400)
-	$checkedListBox.CheckOnClick = $true
-	$form.Controls.Add($checkedListBox)
-
-	$distinctTables = $AliasResults | Select-Object -ExpandProperty Table -Unique | Sort-Object
-	foreach ($tableName in $distinctTables)
-	{
-		[void]$checkedListBox.Items.Add($tableName, $false)
-	}
-
-	# Buttons styled/positioned like Node form (Y=460 and 500 for a 550-height window)
-	$btnSelectAll = New-Object System.Windows.Forms.Button
-	$btnSelectAll.Text = "Select All"
-	$btnSelectAll.Location = New-Object System.Drawing.Point(20, 460)
-	$btnSelectAll.Size = New-Object System.Drawing.Size(180, 32)
-	$btnSelectAll.BackColor = [System.Drawing.SystemColors]::Control
-	$form.Controls.Add($btnSelectAll)
-
-	$btnDeselectAll = New-Object System.Windows.Forms.Button
-	$btnDeselectAll.Text = "Deselect All"
-	$btnDeselectAll.Location = New-Object System.Drawing.Point(220, 460)
-	$btnDeselectAll.Size = New-Object System.Drawing.Size(180, 32)
-	$btnDeselectAll.BackColor = [System.Drawing.SystemColors]::Control
-	$form.Controls.Add($btnDeselectAll)
-
-	$btnOK = New-Object System.Windows.Forms.Button
-	$btnOK.Text = "OK"
-	$btnOK.Location = New-Object System.Drawing.Point(60, 500)
-	$btnOK.Size = New-Object System.Drawing.Size(140, 32)
-	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-	$form.AcceptButton = $btnOK
-	$form.Controls.Add($btnOK)
-
-	$btnCancel = New-Object System.Windows.Forms.Button
-	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = New-Object System.Drawing.Point(220, 500)
-	$btnCancel.Size = New-Object System.Drawing.Size(140, 32)
-	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-	$form.CancelButton = $btnCancel
-	$form.Controls.Add($btnCancel)
-	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $form }
-
-	$setBtnColor = {
-		param ($btn,
-			$state)
-		switch ($state)
-		{
-			1 { $btn.BackColor = [System.Drawing.Color]::Yellow }
-			2 { $btn.BackColor = [System.Drawing.Color]::LightGreen }
-			Default { $btn.BackColor = [System.Drawing.SystemColors]::Control }
-		}
-	}
-
-	$isAllChecked = {
-		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-		{
-			if (-not $checkedListBox.GetItemChecked($i)) { return $false }
-		}
-		return $checkedListBox.Items.Count -gt 0
-	}
-	$isAnyChecked = {
-		for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-		{
-			if ($checkedListBox.GetItemChecked($i)) { return $true }
-		}
-		return $false
-	}
-
-	$btnSelectAll.Add_Click({
-			$allChecked = & $isAllChecked
-			if (-not $allChecked)
-			{
-				for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-				{
-					$checkedListBox.SetItemChecked($i, $true)
-				}
-				& $setBtnColor $btnSelectAll 2
-			}
-		})
-	$btnDeselectAll.Add_Click({
-			for ($i = 0; $i -lt $checkedListBox.Items.Count; $i++)
-			{
-				$checkedListBox.SetItemChecked($i, $false)
-			}
-			& $setBtnColor $btnSelectAll 0
-		})
-
-	$checkedListBox.Add_ItemCheck({
-			Start-Sleep -Milliseconds 30
-			$allChecked = & $isAllChecked
-			$anyChecked = & $isAnyChecked
-			if ($allChecked)
-			{
-				& $setBtnColor $btnSelectAll 2
-			}
-			elseif ($anyChecked)
-			{
-				& $setBtnColor $btnSelectAll 1
-			}
-			else
-			{
-				& $setBtnColor $btnSelectAll 0
-			}
-		})
-	$checkedListBox.Add_MouseUp({
-			$allChecked = & $isAllChecked
-			$anyChecked = & $isAnyChecked
-			if ($allChecked)
-			{
-				& $setBtnColor $btnSelectAll 2
-			}
-			elseif ($anyChecked)
-			{
-				& $setBtnColor $btnSelectAll 1
-			}
-			else
-			{
-				& $setBtnColor $btnSelectAll 0
-			}
-		})
-	$checkedListBox.Add_KeyUp({
-			$allChecked = & $isAllChecked
-			$anyChecked = & $isAnyChecked
-			if ($allChecked)
-			{
-				& $setBtnColor $btnSelectAll 2
-			}
-			elseif ($anyChecked)
-			{
-				& $setBtnColor $btnSelectAll 1
-			}
-			else
-			{
-				& $setBtnColor $btnSelectAll 0
-			}
-		})
-
-	$dialogResult = $form.ShowDialog()
-	if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
-	{
-		$selectedTables = @()
-		foreach ($item in $checkedListBox.CheckedItems)
-		{
-			$selectedTables += $item
-		}
-		return $selectedTables
-	}
-	else
-	{
-		return $null
-	}
+	$tables = @($AliasResults | Select-Object -ExpandProperty Table -Unique | Sort-Object)
+	return Show_CheckList_Form -Title 'Select Tables to Process' -Prompt 'Please select the tables you want to pump:' -Items $tables -Width 410 -Height 400
 }
 
 # ===================================================================================================
@@ -10184,14 +9831,14 @@ function Schedule_LocalDB_Backup
 
 		if ($timeInput -notmatch '^\d{2}:\d{2}$')
 		{
-			[System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
+			[void][System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
 			Write_Log "Invalid time format entered." "red"
 			return
 		}
 		$hours, $minutes = $timeInput.Split(":")
 		if ([int]$hours -gt 23 -or [int]$minutes -gt 59)
 		{
-			[System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
+			[void][System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
 			Write_Log "Invalid time (out of range)." "red"
 			return
 		}
@@ -10281,18 +9928,18 @@ else {
 		if ($LASTEXITCODE -eq 0)
 		{
 			Write_Log "Backup task scheduled successfully (`"$taskName`") as '$backupTaskUser' at $startTime every $freqInput day(s)." "green"
-			[System.Windows.Forms.MessageBox]::Show("Backup task scheduled successfully as '$backupTaskUser'.`nScript: $backupScriptPath", "Scheduled!", 0, 64)
+			[void][System.Windows.Forms.MessageBox]::Show("Backup task scheduled successfully as '$backupTaskUser'.`nScript: $backupScriptPath", "Scheduled!", 0, 64)
 		}
 		else
 		{
 			Write_Log "Failed to schedule backup task. Check permissions or path." "red"
-			[System.Windows.Forms.MessageBox]::Show("Failed to schedule backup task.`nCheck permissions or path.", "Error", 0, 16)
+			[void][System.Windows.Forms.MessageBox]::Show("Failed to schedule backup task.`nCheck permissions or path.", "Error", 0, 16)
 		}
 	}
 	catch
 	{
 		Write_Log "Fatal error in Schedule_LocalDB_Backup: $($_.Exception.Message)" "red"
-		[System.Windows.Forms.MessageBox]::Show("Fatal error: $($_.Exception.Message)", "Error", 0, 16)
+		[void][System.Windows.Forms.MessageBox]::Show("Fatal error: $($_.Exception.Message)", "Error", 0, 16)
 	}
 	Write_Log "`r`n==================== Schedule_LocalDB_Backup Completed ====================" "blue"
 }
@@ -10620,14 +10267,14 @@ function Schedule_Storeman_Zip_Backup
 
 		if ($timeInput -notmatch '^\d{2}:\d{2}$')
 		{
-			[System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
+			[void][System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
 			Write_Log "Invalid time format entered." "red"
 			return
 		}
 		$hours, $minutes = $timeInput.Split(":")
 		if ([int]$hours -gt 23 -or [int]$minutes -gt 59)
 		{
-			[System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
+			[void][System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
 			Write_Log "Invalid time (out of range)." "red"
 			return
 		}
@@ -10755,18 +10402,18 @@ catch {
 		if ($LASTEXITCODE -eq 0)
 		{
 			Write_Log "Storeman ZIP backup task scheduled successfully (`"$taskName`") at $startTime every $freqInput day(s)." "green"
-			[System.Windows.Forms.MessageBox]::Show("Storeman ZIP backup scheduled successfully.`nScript: $backupScriptPath", "Scheduled!", 0, 64)
+			[void][System.Windows.Forms.MessageBox]::Show("Storeman ZIP backup scheduled successfully.`nScript: $backupScriptPath", "Scheduled!", 0, 64)
 		}
 		else
 		{
 			Write_Log "Failed to schedule Storeman ZIP backup task. Check permissions or path." "red"
-			[System.Windows.Forms.MessageBox]::Show("Failed to schedule Storeman ZIP backup task.`nCheck permissions or path.", "Error", 0, 16)
+			[void][System.Windows.Forms.MessageBox]::Show("Failed to schedule Storeman ZIP backup task.`nCheck permissions or path.", "Error", 0, 16)
 		}
 	}
 	catch
 	{
 		Write_Log "Fatal error in Schedule_Storeman_Zip_Backup: $($_.Exception.Message)" "red"
-		[System.Windows.Forms.MessageBox]::Show("Fatal error: $($_.Exception.Message)", "Error", 0, 16)
+		[void][System.Windows.Forms.MessageBox]::Show("Fatal error: $($_.Exception.Message)", "Error", 0, 16)
 	}
 	Write_Log "`r`n==================== Schedule_Storeman_Zip_Backup Completed ====================" "blue"
 }
@@ -16299,14 +15946,14 @@ function Schedule_LaneDB_Backup
 	# Validate time
 	if ($timeInput -notmatch '^\d{2}:\d{2}$')
 	{
-		[System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
+		[void][System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
 		Write_Log "Invalid time format entered." "red"
 		return
 	}
 	$hours, $minutes = $timeInput.Split(":")
 	if ([int]$hours -gt 23 -or [int]$minutes -gt 59)
 	{
-		[System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
+		[void][System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
 		Write_Log "Invalid time (out of range)." "red"
 		return
 	}
@@ -20305,7 +19952,7 @@ function Deploy_Scale_Currency_Files
 	$btnOK.Add_Click({
 			if ([string]::IsNullOrWhiteSpace($cmbCurrency.Text))
 			{
-				[System.Windows.Forms.MessageBox]::Show("Please enter a currency symbol.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+				[void][System.Windows.Forms.MessageBox]::Show("Please enter a currency symbol.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
 				return
 			}
 			$form.DialogResult = [System.Windows.Forms.DialogResult]::OK; $form.Close()
@@ -25335,7 +24982,7 @@ function Update_Scales_Specials_Interactive
 				}
 				else
 				{
-					[System.Windows.Forms.MessageBox]::Show("Please enter a valid number between 1 and 1439.", "Invalid Interval", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+					[void][System.Windows.Forms.MessageBox]::Show("Please enter a valid number between 1 and 1439.", "Invalid Interval", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 				}
 			}
 		})
@@ -26699,7 +26346,7 @@ function Reboot_Nodes
 	}
 
 	Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
-	[System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected nodes.", "Reboot",
+	[void][System.Windows.Forms.MessageBox]::Show("Reboot commands issued for selected nodes.", "Reboot",
 		[System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 }
 

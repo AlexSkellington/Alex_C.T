@@ -146,14 +146,14 @@ function Schedule_LocalDB_Backup
 
 		if ($timeInput -notmatch '^\d{2}:\d{2}$')
 		{
-			[System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
+			[void][System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
 			Write_Log "Invalid time format entered." "red"
 			return
 		}
 		$hours, $minutes = $timeInput.Split(":")
 		if ([int]$hours -gt 23 -or [int]$minutes -gt 59)
 		{
-			[System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
+			[void][System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
 			Write_Log "Invalid time (out of range)." "red"
 			return
 		}
@@ -243,18 +243,18 @@ else {
 		if ($LASTEXITCODE -eq 0)
 		{
 			Write_Log "Backup task scheduled successfully (`"$taskName`") as '$backupTaskUser' at $startTime every $freqInput day(s)." "green"
-			[System.Windows.Forms.MessageBox]::Show("Backup task scheduled successfully as '$backupTaskUser'.`nScript: $backupScriptPath", "Scheduled!", 0, 64)
+			[void][System.Windows.Forms.MessageBox]::Show("Backup task scheduled successfully as '$backupTaskUser'.`nScript: $backupScriptPath", "Scheduled!", 0, 64)
 		}
 		else
 		{
 			Write_Log "Failed to schedule backup task. Check permissions or path." "red"
-			[System.Windows.Forms.MessageBox]::Show("Failed to schedule backup task.`nCheck permissions or path.", "Error", 0, 16)
+			[void][System.Windows.Forms.MessageBox]::Show("Failed to schedule backup task.`nCheck permissions or path.", "Error", 0, 16)
 		}
 	}
 	catch
 	{
 		Write_Log "Fatal error in Schedule_LocalDB_Backup: $($_.Exception.Message)" "red"
-		[System.Windows.Forms.MessageBox]::Show("Fatal error: $($_.Exception.Message)", "Error", 0, 16)
+		[void][System.Windows.Forms.MessageBox]::Show("Fatal error: $($_.Exception.Message)", "Error", 0, 16)
 	}
 	Write_Log "`r`n==================== Schedule_LocalDB_Backup Completed ====================" "blue"
 }

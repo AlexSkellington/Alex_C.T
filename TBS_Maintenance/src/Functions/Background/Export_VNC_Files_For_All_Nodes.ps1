@@ -134,12 +134,16 @@ function Export_VNC_Files_For_All_Nodes
 			$writeLogDefinition = 'param([string]$Message, $Color, [switch]$IncludeTimestamp)'
 			$getAllVncPasswordsDefinition = ${function:Get_All_VNC_Passwords}.ToString()
 			$exportVncDefinition = ${function:Export_VNC_Files_For_All_Nodes}.ToString()
+			# Get_All_VNC_Passwords probes the nodes with Test-Hosts_Parallel - the job needs it too
+			# (missing before v2.7.0: the background export failed whenever it had to look up passwords)
+			$testHostsDefinition = ${function:Test-Hosts_Parallel}.ToString()
 
 			$job = Start-Job -Name 'VNCExportJob' -ScriptBlock {
 				param (
 					[string]$WriteLogDefinition,
 					[string]$GetAllVncPasswordsDefinition,
 					[string]$ExportVncDefinition,
+					[string]$TestHostsDefinition,
 					[hashtable]$LaneMap,
 					[hashtable]$ScaleMap,
 					[hashtable]$BackofficeMap,
@@ -154,6 +158,7 @@ function Export_VNC_Files_For_All_Nodes
 				Set-Item -Path function:Write_Log -Value ([scriptblock]::Create($WriteLogDefinition))
 				Set-Item -Path function:Get_All_VNC_Passwords -Value ([scriptblock]::Create($GetAllVncPasswordsDefinition))
 				Set-Item -Path function:Export_VNC_Files_For_All_Nodes -Value ([scriptblock]::Create($ExportVncDefinition))
+				Set-Item -Path function:Test-Hosts_Parallel -Value ([scriptblock]::Create($TestHostsDefinition))
 
 				$script:UltraVncFolder = $UltraVncFolder
 				$script:ansiPcEncoding = [System.Text.Encoding]::GetEncoding($AnsiCodePage)
@@ -193,6 +198,7 @@ function Export_VNC_Files_For_All_Nodes
 				$writeLogDefinition,
 				$getAllVncPasswordsDefinition,
 				$exportVncDefinition,
+				$testHostsDefinition,
 				$LaneNumToMachineName,
 				$ScaleCodeToIPInfo,
 				$BackofficeNumToMachineName,

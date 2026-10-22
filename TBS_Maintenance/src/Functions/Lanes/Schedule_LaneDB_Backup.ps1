@@ -197,14 +197,14 @@ function Schedule_LaneDB_Backup
 	# Validate time
 	if ($timeInput -notmatch '^\d{2}:\d{2}$')
 	{
-		[System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
+		[void][System.Windows.Forms.MessageBox]::Show("Time must be in HH:mm (24h) format.", "Input Error", 0, 16)
 		Write_Log "Invalid time format entered." "red"
 		return
 	}
 	$hours, $minutes = $timeInput.Split(":")
 	if ([int]$hours -gt 23 -or [int]$minutes -gt 59)
 	{
-		[System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
+		[void][System.Windows.Forms.MessageBox]::Show("Invalid time entered.", "Input Error", 0, 16)
 		Write_Log "Invalid time (out of range)." "red"
 		return
 	}

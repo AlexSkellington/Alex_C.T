@@ -44,77 +44,51 @@ function Clear_XE_Folder
 
 	# ------------------------------------------------------------------------------------------------
 	# 1) STARTUP CLEANUP
-	#    - Deletes EVERYTHING except valid S*.??? health files
-	#    - ALSO deletes FATAL* (clear old errors)
+	#    - Deletes EVERYTHING except valid S*.??? health files (FATAL* old errors too)
 	# ------------------------------------------------------------------------------------------------
+	# A file worth keeping: a current lane health report ("This application is not running")
+	# for this store, S*.<lane> named after the lane in its From: line, newer than HealthMaxAgeDays.
+	# Shared by the startup cleanup and the watcher job (passed to it as text).
+	$isHealthFile = {
+		param ($Item, [string]$StoreNumber, [int]$HealthMaxAgeDays)
+		if ($Item.PSIsContainer -or $Item.Name -notmatch '^S.*\.\w{3}$') { return $false }
+		if (((Get-Date) - $Item.LastWriteTime).TotalDays -gt $HealthMaxAgeDays) { return $false }
+		$content = $null
+		try { $content = Get-Content -LiteralPath $Item.FullName -ErrorAction Stop }
+		catch { return $false }
+		if (-not $content) { return $false }
+		$fromLine = $content | Where-Object { $_ -like 'From:*' } | Select-Object -First 1
+		$subjectLine = $content | Where-Object { $_ -like 'Subject:*' } | Select-Object -First 1
+		$msgLine = $content | Where-Object { $_ -like 'MSG:*' } | Select-Object -First 1
+		$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' } | Select-Object -First 1
+		if ($fromLine -notmatch 'From:\s*(\d{3})(\d{3})') { return $false }
+		$fileStoreNumber = $Matches[1]
+		$fileLaneNumber = $Matches[2]
+		return ($fileStoreNumber -eq $StoreNumber -and
+			$Item.Name -match '^S.*\.(\d{3})$' -and $fileLaneNumber -eq $Matches[1] -and
+			$subjectLine -match 'Subject:\s*Health' -and
+			$msgLine -match 'MSG:\s*This application is not running\.' -and
+			$lastStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
+	}
+
 	try
 	{
-		$now = Get-Date
-
 		$items = Get-ChildItem -LiteralPath $FolderPath -Recurse -Force -ErrorAction SilentlyContinue |
 		Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 }
 
 		foreach ($item in $items)
 		{
-			$keep = $false
-
-			# Startup mode: delete FATAL*
-			if ($item.Name -like 'FATAL*')
+			# Startup mode: FATAL* (old errors) and folders go too
+			$keep = ($item.Name -notlike 'FATAL*') -and (& $isHealthFile $item $StoreNumber $HealthMaxAgeDays)
+			if ($keep) { continue }
+			for ($i = 0; $i -lt 8; $i++)
 			{
-				$keep = $false
-			}
-			elseif ($item.PSIsContainer)
-			{
-				$keep = $false
-			}
-			elseif ($item.Name -match '^S.*\.\w{3}$')
-			{
-				if (($now - $item.LastWriteTime).TotalDays -le $HealthMaxAgeDays)
+				try
 				{
-					$content = $null
-					try { $content = Get-Content -LiteralPath $item.FullName -ErrorAction Stop }
-					catch { $content = $null }
-
-					if ($content)
-					{
-						$fromLine = $content | Where-Object { $_ -like 'From:*' } | Select-Object -First 1
-						$subjectLine = $content | Where-Object { $_ -like 'Subject:*' } | Select-Object -First 1
-						$msgLine = $content | Where-Object { $_ -like 'MSG:*' } | Select-Object -First 1
-						$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' } | Select-Object -First 1
-
-						if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
-						{
-							$fileStoreNumber = $Matches[1]
-							$fileLaneNumber = $Matches[2]
-
-							if ($fileStoreNumber -eq $StoreNumber -and
-								$item.Name -match '^S.*\.(\d{3})$' -and
-								$fileLaneNumber -eq $Matches[1] -and
-								$subjectLine -match 'Subject:\s*Health' -and
-								$msgLine -match 'MSG:\s*This application is not running\.' -and
-								$lastStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
-							{
-								$keep = $true
-							}
-						}
-					}
+					if (Test-Path -LiteralPath $item.FullName) { Remove-Item -LiteralPath $item.FullName -Force -Recurse -ErrorAction Stop }
+					break
 				}
-			}
-
-			if (-not $keep)
-			{
-				for ($i = 0; $i -lt 8; $i++)
-				{
-					try
-					{
-						if (Test-Path -LiteralPath $item.FullName)
-						{
-							Remove-Item -LiteralPath $item.FullName -Force -Recurse -ErrorAction Stop
-						}
-						break
-					}
-					catch { Start-Sleep -Milliseconds 150 }
-				}
+				catch { Start-Sleep -Milliseconds 150 }
 			}
 		}
 	}
@@ -122,7 +96,6 @@ function Clear_XE_Folder
 	{
 		Write_Log "An error occurred during startup cleaning of '$FolderPath': $_" "red"
 	}
-
 	# ------------------------------------------------------------------------------------------------
 	# 2) MONITOR (FileSystemWatcher in a background job)
 	#    - Keeps NEW FATAL* while running
@@ -142,13 +115,15 @@ function Clear_XE_Folder
 			catch { }
 		}
 
-		$job = Start-Job -Name $jobName -ArgumentList $FolderPath, $StoreNumber, $HealthMaxAgeDays, $SweepIntervalSeconds -ScriptBlock {
+		$job = Start-Job -Name $jobName -ArgumentList $FolderPath, $StoreNumber, $HealthMaxAgeDays, $SweepIntervalSeconds, $isHealthFile.ToString() -ScriptBlock {
 			param (
 				[string]$FolderPath,
 				[string]$StoreNumber,
 				[int]$HealthMaxAgeDays,
-				[int]$SweepIntervalSeconds
+				[int]$SweepIntervalSeconds,
+				[string]$IsHealthFileText
 			)
+			$IsHealthFile = [scriptblock]::Create($IsHealthFileText)
 
 			$ErrorActionPreference = 'SilentlyContinue'
 
@@ -184,46 +159,7 @@ function Clear_XE_Folder
 				# Skip reparse points
 				if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return }
 
-				$now = Get-Date
-				$keep = $false
-
-				if ($item.PSIsContainer)
-				{
-					$keep = $false
-				}
-				elseif ($item.Name -match '^S.*\.\w{3}$')
-				{
-					if (($now - $item.LastWriteTime).TotalDays -le $HealthMaxAgeDays)
-					{
-						$content = $null
-						try { $content = Get-Content -LiteralPath $item.FullName -ErrorAction Stop }
-						catch { $content = $null }
-
-						if ($content)
-						{
-							$fromLine = $content | Where-Object { $_ -like 'From:*' } | Select-Object -First 1
-							$subjectLine = $content | Where-Object { $_ -like 'Subject:*' } | Select-Object -First 1
-							$msgLine = $content | Where-Object { $_ -like 'MSG:*' } | Select-Object -First 1
-							$lastStatusLine = $content | Where-Object { $_ -like 'Last recorded status:*' } | Select-Object -First 1
-
-							if ($fromLine -match 'From:\s*(\d{3})(\d{3})')
-							{
-								$fileStoreNumber = $Matches[1]
-								$fileLaneNumber = $Matches[2]
-
-								if ($fileStoreNumber -eq $StoreNumber -and
-									$item.Name -match '^S.*\.(\d{3})$' -and
-									$fileLaneNumber -eq $Matches[1] -and
-									$subjectLine -match 'Subject:\s*Health' -and
-									$msgLine -match 'MSG:\s*This application is not running\.' -and
-									$lastStatusLine -match 'Last recorded status:\s*[\d\s:,-]+TRANS,(\d+)')
-								{
-									$keep = $true
-								}
-							}
-						}
-					}
-				}
+				$keep = & $IsHealthFile $item $StoreNumber $HealthMaxAgeDays
 
 				if (-not $keep)
 				{
@@ -312,7 +248,6 @@ function Clear_XE_Folder
 			}
 		}
 
-		# Write_Log "XE watcher job started: $jobName" "green"
 		return $job
 	}
 	catch
