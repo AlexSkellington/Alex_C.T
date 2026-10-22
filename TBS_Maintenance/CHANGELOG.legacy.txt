@@ -1,0 +1,324 @@
+#######################################################################################################
+#
+#                                     CHANGELOG
+#
+#######################################################################################################
+
+# ===================================================================================================
+#  v2.6.9  -  2026-09-01
+#  Drive-scan fallback, activation hardening, timeout + job hygiene
+# ===================================================================================================
+#
+#  [NEW]  Third-level storeman fallback: drive scan (ported from MiniGhost). When there is
+#         no 'storeman' SMB share and none of the configured test roots (C:\Storeman /
+#         D:\Storeman) exist, the script now scans the top level of every fixed drive for a
+#         *storeman* folder that contains a Startup.ini, preferring the one actually
+#         published as an SMB share. If nothing is found, the primary test root is kept and
+#         the reason says both the test root and the drive scan came up empty.
+#  [NEW]  Startup: show first. In every launch mode the window now appears before
+#         the store-network SQL round trips: pre-Show only reads the local cache
+#         (a first run with no cache still does its full fetch there, as before),
+#         and the -RefreshCache refreshes run as the first two post-Show warmup
+#         steps. Startup milestones (pre-window data, window shown, and each
+#         warmup step's duration) are logged to the Tecnica_Systems log folder.
+#  [NEW]  File log: every line written to the log window is also appended to
+#         C:\Tecnica_Systems\Alex_C.T\Log\TBS_Maintenance_<date>.log (one file per day,
+#         same 120-second repeat suppression as the window). Safe by design - a missing
+#         log folder or disk problem never surfaces in the UI or blocks any work.
+#  [NEW]  TBS_Maintenance_SelfTest.ps1: standalone regression test for the script (parse,
+#         ASCII, security, store detection, store numbers, security hardening, 445 probe,
+#         VNC job throttle, file log). Lives in c:\storeman\Scripts_by_Alex_C.T and can be
+#         pointed at any copy with -ScriptPath.
+#  [NEW]  Background job engine: Start_Background_Function_Job +
+#         Get_Background_Function_Job_Result. One shared builder runs any script
+#         function in a background job without blocking the UI thread: the job
+#         receives the function code (plus Write_Log and any dependent functions),
+#         a COPY of the FunctionResults bag, and named seed variables; it returns
+#         its results bag plus named extra variables, which are merged back when
+#         the poller picks the job up. CallArgs can be a scriptblock so the job
+#         always receives the current values at start time.
+#  [NEW]  Startup warmup is now non-blocking: the six store-data steps (store info,
+#         node discovery, lane DB cache, table aliases, SQL scripts, SMS functions)
+#         run as background jobs (Mode = 'Job') instead of on the UI thread. Each
+#         job refreshes the function's file cache; a short OnComplete closure then
+#         re-runs the same call on the UI thread, which reads the warm cache and
+#         updates the GUI labels (a few ms). The remaining steps (test item, scale
+#         credentials, XE, VNC, hardware, quarterly) stay inline - scale
+#         credentials in particular must stay on the UI thread because it owns a
+#         WinForms reaper timer.
+#  [NEW]  Shared background-job reaper: one WinForms timer (inside the job
+#         engine) now polls every registered background job on the UI thread,
+#         merges finished results and either fires the job's OnComplete callback
+#         or logs a one-line "finished in Xs" / "failed" notice. Jobs can also
+#         opt into the completion notice (-NotifyOnComplete) for menu actions.
+#         In hosts without a message pump the reaper simply never ticks and
+#         callers may poll Get_Background_Function_Job_Result directly.
+#  [UI]   Calm startup log: the reaper's "finished in Xs" success notices now
+#         use the new Write_Log -FileOnly switch, so they go to the FILE LOG
+#         only. The status bar at the bottom already shows what the app is
+#         working on in the background, and the log box only sees a job line
+#         when the job FAILED (user preference). Write_Log -FileOnly skips the
+#         box and the console; the file log still gets the line.
+#  [FIX]  Lane SQL enable scheduling is no longer silent on failure: the
+#         Ensure_SQL_Enable_Scheduled_Task_For_File_Lane paths that used to
+#         return $false with no trace (no writable Storeman Temp share, worker
+#         script write error) and the one that computed the schtasks /Create
+#         error text and then dropped it now all log red lines with the detail.
+#         The manual "Enable SQL Protocols" menu action additionally logs a
+#         green "Scheduled SQL enable for <lane> for <date 04:15>" line on
+#         success, so a menu action always reports its outcome.
+#  [ROB]  Lane SQL enable scheduling cleanup: a dead variable
+#         ($existingState) was removed from
+#         Ensure_SQL_Enable_Scheduled_Task_For_File_Lane. The duplicated
+#         "next 4:15 AM" date math intentionally stays inlined in both
+#         places (the function and the background monitor's closure): this
+#         script is one file, maintained by reading it top to bottom, and
+#         shared logic is deliberately not split into extra helper
+#         functions.
+#  [NEW]  "Set/Schedule Time on Lanes" no longer blocks the UI: the per-lane
+#         schtasks / file-drop / mailslot work moved out of the wizard into
+#         Send_TIME_Sync_Lanes_Worker and runs as a background job. The wizard
+#         still shows its dialogs on the UI thread; per-lane details go to the
+#         file log as the job progresses and the shared reaper logs the
+#         completion notice. If the job cannot start, the worker runs inline
+#         exactly as before.
+#  [ROB]  The MailslotSender C# type is now loaded through
+#         Ensure_MailslotSender_Type (an idempotent function) instead of a bare
+#         top-level block, so background jobs can load it too.
+#  [NEW]  Test-Hosts_Parallel helper: probes a list of hosts in parallel
+#         (.NET Ping, 400ms per-probe cap, max 10 in flight) and returns
+#         target -> OK/FAIL/ERROR. Falls back to the old serial
+#         Test-Connection loop if the parallel path is unavailable.
+#  [PERF] "Ping Lanes / Scales / Backoffices" (and the Ping All Nodes button)
+#         now probe all targets with Test-Hosts_Parallel instead of a serial
+#         Test-Connection loop, which could freeze the UI for minutes when
+#         several hosts were down. The per-node results still show in the
+#         log box exactly as before; a full store now takes about two
+#         seconds worst case (10 probes in flight, 400ms cap).
+#  [PERF] The node pre-flight in Get_All_VNC_Passwords (VNC export step)
+#         uses the same parallel probe, so a store with dead nodes no longer
+#         stalls the startup warmup.
+#  [SEC]  Invoke_Secure_Script ("Activate Windows"): remote script execution removed. The
+#         function used to run Invoke-Expression (irm <url>) against get.activated.win
+#         (primary) and massgrave.dev (fallback) behind a hard-coded password. The remote
+#         execution and the password are gone; the function now logs the disabled state and
+#         returns. The menu item stays so the reason shows up in the log.
+#  [ROB]  Bounded waits where things could previously hang until the OS gave up:
+#           - PsExec download job: Invoke-WebRequest -TimeoutSec 20.
+#           - Get_All_Lanes_Database_Info: a 1.5s TCP-445 probe now precedes the Test-Path
+#             on \\<lane>\storeman\Startup.ini, so a powered-off lane PC no longer stalls
+#             lane discovery for the full SMB timeout.
+#           - Get_All_VNC_Passwords: Invoke-Command -TimeoutSec 30; the final
+#             Wait-Job is capped at 120s, only runs while jobs are still pending
+#             (an empty job set made Wait-Job throw a parameter validation error
+#             and abort the function), and jobs still running are stopped before
+#             results are read.
+#           - Get_Remote_Machine_Info: New-PSSession gets 15s connect/open timeouts,
+#             Invoke-Command -TimeoutSec 30, and the session is now released in the error
+#             path too (previously it leaked when the command timed out).
+#           - Transaction replay and protocol schema queries: Invoke-Sqlcmd
+#             -QueryTimeout 120 / -QueryTimeout 30.
+#  [FIX]  Store number normalization: the store number is reduced to digits and zero-padded
+#         to 3 or 4 places both at startup ($script:StoreNumber) and in the TER_TAB query
+#         (WHERE F1056 = ...), so "1", "01" and "001" all resolve to the same store and
+#         non-numeric junk can no longer reach the SQL.
+#  [FIX]  Get_All_VNC_Passwords job throttling: results were being lost two
+#         ways. Finished jobs were removed before their output was read, and
+#         the pool filter dropped any job that finished between
+#         Wait-Job -Any waits (-Any reports only one job at a time). Jobs are
+#         now received before removal, and the pool keeps every job that has
+#         not been explicitly processed.
+#  [FILE] Script file renamed from TBS_Maintenance_Script_V2.6.8.ps1 to
+#         TBS_Maintenance_Script_V2.6.9.ps1 to match the new version number.
+#  [CLEAN] (2026-09-10) Generate_SQL_Scripts no longer writes the
+#         Setup_Files\SQL_Scripts\*.sql files: they were never read. Every consumer
+#         (Process_Server, the lane & server DB-maintenance schedulers) uses the in-memory
+#         $script: SQL variables directly, and Process_Server's file fallback reads a
+#         different file (%temp%\Server_Database_Maintenance.sqi). Removed the folder
+#         creation, the 30-day staleness rewrite, the five path variables, the five unused
+#         *SqlScriptPath FunctionResults keys, and the whole write loop; the function now
+#         only builds the five $script: variables. Audit: no other function writes a file
+#         nobody reads (the staleness-regenerate block was unique to it). Parse clean.
+#  [NOTE] (2026-09-10) Embeddings endpoint is 10.11.11.200 - the knowledge-base embed
+#         had been failing against a stale 192.168.0.151 host.
+#  [PERF] (2026-09-10) 'Generating SQL scripts' warmup step is now INLINE (Action)
+#         instead of a background job: Generate_SQL_Scripts is pure CPU (~2 ms, no I/O
+#         after the SQL_Scripts file writes were removed), so it is safe on the UI thread
+#         and sets the five $script: SQL variables directly - no job-scope handoff /
+#         ReturnVarNames wait. The other warmup jobs (store info, node discovery, lane
+#         DB cache, table aliases, SMS functions) stay background jobs.
+#  [FIX] (2026-09-10) 'Server Database Maintenance' (Process_Server) no longer
+#         fails with "SQL file not found: %temp%\Server_Database_Maintenance.sqi" when
+#         the user clicks it before the 'Generating SQL scripts' warmup step has run.
+#         That file was never written anywhere, so the file-fallback branch was dead -
+#         the in-memory $script:ServerSQLScript variable is the only real source.
+#         Process_Server now regenerates the script on demand (Generate_SQL_Scripts,
+#         ~2 ms pure CPU, only needs the already-resolved store/DB info) if the variable
+#         is empty, so the action works regardless of warmup timing. The file fallback
+#         remains only for a genuinely provided standalone .sqi.
+#
+# ===================================================================================================
+#  v2.6.8  -  2026-08-26
+#  GUI fixes + polish (behavior preserved, no logic changes)
+# ===================================================================================================
+#
+#  [FIX]  Header banner: help button and clock were positioned from the banner panel's
+#         default (200px) width, so on launch the help button sat ON the title and the
+#         clock sat ON the app icon. They are now pinned to the banner's real width via a
+#         new $layoutBanner helper that also runs on every window resize.
+#  [FIX]  Status bar: the "Created by / Version / PowerShell" text was wiped 1.5s after
+#         launch because the busy scanner overwrote the same status item. Status now stays
+#         on the left; a spring spacer + dedicated version item keep version info visible
+#         on the right at all times.
+#  [FIX]  Modern context-menu renderer was never applied: assigning a ProfessionalColorTable
+#         to Menu.Renderer threw an exception and silently skipped the rest of the styling
+#         block. The bad assignment is removed so the custom renderer now takes effect.
+#  [FIX]  Tool buttons were each added to the form TWICE, and the Server / General buttons
+#         had duplicate Click/MouseDown handlers registered (menu could flash open twice).
+#         Duplicates removed; tooltips kept.
+#  [FIX]  Log "Clear" (X) button no longer stays mid-frame when the log area resizes - it
+#         now follows the right edge of the log header.
+#  [FIX]  Initial "Lanes: " / "Scales: " labels were blank (they referenced an undefined
+#         $Counts variable) - now show "N/A" until node discovery fills them in.
+#  [FIX]  Menu label typos: "Retrive Transactions from Lnaes" -> "Retrieve Transactions
+#         from Lanes"; "Update Scale Config && DB" -> "Update Scale Config & DB".
+#  [FIX]  Clock label had both AutoSize=true and a hard-coded Size (ignored) - removed.
+#  [FIX]  Help button hover/leave colors no longer drift between two different grays.
+#  [FIX]  Banner title: [System.Drawing.FontStyle]::SemiBold is not a valid enum value
+#         (only Regular/Bold/Italic/Underline/Strikeout exist), so the 13pt title font
+#         silently failed on every run and the title rendered in the default font. Now 13pt Bold.
+#  [FIX]  Activity-hook filter referenced [System.Windows.Forms.Control]::Empty, a static
+#         member that does not exist in .NET. Replaced with a plain null check.
+#  [FIX]  Status bar version text showed a garbled two-character sequence instead of the
+#         middle-dot separator. Cause: the file is UTF-8 without BOM, and Windows
+#         PowerShell 5.1 reads BOM-less .ps1 files as ANSI (Windows-1252). Replaced the
+#         separator with ASCII '|' so the line is encoding-proof. The file now contains
+#         no non-ASCII characters at all.
+#  [UI]   Banner: the version number and build date were shown as a small two-line stack
+#         ("v2.6.8" over a tiny 7pt "Build: 2026-08-26"), which looked out of place.
+#         They are now one clean line: "v2.6.8 (2026-08-26)".
+#  [UI]   Banner: icon, title, version, clock and help button were each hard-coded at
+#         slightly different heights (title center ~26px, clock ~22px, version ~28px) so
+#         they did not sit on the same horizontal plane. The banner layout helper now
+#         measures each control and centers it on the banner's center line (re-run on
+#         every resize, DPI-safe).
+#  [UI]   Status bar: restored the "Created by: Alex_C.T" credit (original wording) in
+#         the dedicated version item on the right, which the busy scanner no longer
+#         overwrites: "Created by: Alex_C.T | Version: 2.6.8 | Revised: 2026-08-26 |
+#         PowerShell: <version>".
+#  [FILE] Script file renamed from TBS_Maintenance_Script_V2.6.7.ps1 to
+#         TBS_Maintenance_Script_V2.6.8.ps1 to match the new version number.
+#
+#  [NEW]  Test-environment awareness. The storeman detection block already fell back
+#         to the test roots (C:\Storeman, D:\Storeman) when the production 'storeman'
+#         SMB share was missing or its key was expired, but that was only a console
+#         warning (invisible with the console hidden). Now the script remembers the
+#         outcome ($script:IsTestEnvironment, $script:StoremanSource,
+#         $script:StoremanSourceReason) and the GUI shows it in three places:
+#           - an orange "TEST" badge next to the version in the banner
+#           - an orange "TEST MODE" item in the status bar (hover = full reason)
+#           - a log line at GUI start: "TEST ENVIRONMENT: <reason>. Using storeman
+#             root: <path>" (orange) or "PRODUCTION: storeman share 'storeman' in
+#             use. Path: <path>" (green)
+#         The Store Number label's tooltip also prefixes "TEST ENVIRONMENT - ...".
+#         If the test root itself does not exist, the reason says so explicitly.
+#  [NEW]  KEY EXPIRED state (distinct from TEST mode). When the storeman share
+#         and the store data exist but the storeman key (KeyValidDate in the
+#         store info file) is older than 14 days, the script now reports a
+#         dedicated state instead of plain test mode - because the store data
+#         IS available and in use, so only the key needs refreshing:
+#           - banner: red " KEY EXPIRED " badge (tooltip = full reason + path)
+#           - status bar: red "KEY EXPIRED" item (hover = reason); the Store
+#             Number tooltip is prefixed "KEY EXPIRED - ..."
+#           - startup header: [ KEY  ] tag, a [WARN] KEY EXPIRED line with the
+#             stored KeyValidDate, and a summary noting that the store data is
+#             available and in use and that only the key needs refreshing -
+#             every other task works normally
+#         Detection: $script:StoremanKeyStale, set in the storeman detection
+#         block alongside $script:IsTestEnvironment / $script:StoremanSource.
+#
+#  [UI]   Banner: the "v2.6.8 (2026-08-26)" version + build date line was removed
+#         (it already shows in the status bar at the bottom) and replaced with
+#         the live store identity - "Store 001 - <store name>" once the store
+#         data resolves, "Store Maintenance Console" until then (tooltip shows
+#         the storeman source + reason, long names are truncated so the badge
+#         and clock stay clear).
+#  [UI]   Tool menus (Server / Lane / Scale / General) reorganized into a tight,
+#         grouped layout: the most-used actions stay on top, the rest moved into
+#         submenus - Server: Schedule, System Care; Lane: Maintenance, Schedule,
+#         Files & Data, Power & Services; Scale: Services, Configuration, Files &
+#         Shares; General: Diagnostics & Repair, Tools - with separators between
+#         groups and the modern theme applied to the submenus. Every action and
+#         its handler is unchanged; the "Alex_C.T" item is now "Activate Windows".
+#  [PERF] The modern menu renderer (Add-Type) is now compiled once per session
+#         instead of being re-attempted for every menu that gets styled.
+#
+#  [UI]   Log output lines no longer carry the (yyyy-MM-dd HH:mm:ss) timestamp prefix
+#         (removed at user request) - the log reads cleaner and the banner clock already
+#         shows the current time. Write_Log still accepts -IncludeTimestamp for any
+#         caller that wants it back.
+#  [UI]   Banner clock now shows 12-hour time with AM/PM (h:mm:ss tt) instead of
+#         24-hour (HH:mm:ss).
+#  [NEW]  App icon generated at runtime (blue disc + hex nut) for the title bar and taskbar,
+#         and the banner icon now draws the same hex-nut design instead of a plain "+".
+#  [NEW]  Process is made DPI-aware before window creation so the UI renders crisply on
+#         high-DPI displays (no-op at 100% scaling).
+#  [NEW]  Protocol popup (Lane Protocols / DB Sizes): app icon, taller rows, alternating
+#         row colors, cleaner selection colors, hint line ("Double-click a row to open
+#         its database folder.") and a styled Hide button.
+#  [FIX]  Info-strip labels (SMS Version / Store Name / Store Number / Lanes / Scales /
+#         Backoffices): the "vertically center in cell" lines used the type
+#         [System.Windows.Forms.TableLayoutPanelCellAlignment], which does not exist in
+#         .NET, so they failed silently on every run. Replaced with Dock=Fill +
+#         TextAlign=Middle*, which actually centers the text in the cell.
+#  [NEW]  Tooltips now use a white background to match the modern theme.
+#  [PERF] Startup time reduced from ~17s to ~2s on machines without the storeman
+#         folder / store database (profiled per phase on a test box):
+#           - Normalize_Sql_ConnectionString treated the 'N/A' placeholder as a
+#             real server name, so Retrieve_Nodes opened a live connection to a
+#             SQL server literally named "N/A" and paid ~15s of DNS/connect
+#             timeouts for a query that could never return lanes. 'N/A' (and
+#             'System.Collections.Hashtable') are now treated as empty, which
+#             also protects every other caller of the normalizer.
+#           - Retrieve_Nodes now skips the startup database lookup when the store
+#             number is unknown (TER_TAB WHERE F1056 = store number can never
+#             match) and notes it in the log; the local-file fallbacks run
+#             instead.
+#         Behavior on real store PCs (known store number, reachable database)
+#         is unchanged - the DB is still queried first, exactly as before.
+#  [NEW]  More user-friendly log output (a presentation layer inside Write_Log,
+#         applied to every line - caller code and colors are unchanged):
+#           - Severity tag prefixed by color: [ OK ] / [WARN] / [FAIL] / [INFO],
+#             so the log is scannable at a glance.
+#           - Raw .NET exception dumps (e.g. the SQL "Named Pipes Provider,
+#             error: 40" block) are squashed to a short first sentence.
+#           - Identical lines are suppressed for 120 seconds, so per-lane startup
+#             jobs no longer flood the log with the same error over and over.
+#           - Test mode: conditions that are EXPECTED when the storeman folder /
+#             store database is missing (no Startup.ini / WIN.INI / INFO_*_WIN.INI,
+#             unreachable store database, missing Urgent Messages folder, no SQL
+#             module) are reworded into calm explanations marked [WARN] instead of
+#             red errors. In production the original wording is kept, because
+#             these ARE real problems there.
+#           - The confusing empty-path message "No INFO_*_WIN.INI found at " now
+#             reads "No store info file (INFO_*_WIN.INI) found - no storeman folder
+#             detected on this machine."
+#  [NEW]  Startup summary block: when the window opens, a calm header is inserted
+#         ABOVE the individual startup lines (their colors are preserved):
+#             --------------------------------------------------
+#              TBS MAINTENANCE SCRIPT   v2.6.8 (2026-08-26)   [ TEST ] / [ LIVE ]
+#             --------------------------------------------------
+#             [WARN] TEST ENVIRONMENT - <reason>
+#                    Tasks that need the storeman folder or the store database are
+#                    unavailable. Everything else works normally.
+#                    To enable them: run on a store PC, or create the local test
+#                    folder (C:\Storeman\Office\Dbs).
+#             ... or, in production:
+#             [ OK ] PRODUCTION - storeman share 'storeman' in use
+#                    Path: <path>
+#                    Store: <num> "<name>"   (SMS <version>)
+#
+# ===================================================================================================
+#  v2.6.7  -  2026-04-18
+#  Previous build (see file header).
+# ===================================================================================================

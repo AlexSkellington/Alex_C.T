@@ -1,0 +1,14 @@
+# PowerShell Studio: package output, per-machine package settings, autosave points
+bin/
+*.psbuild
+*.TempPoint.ps1
+*.TempPoint.TempPoint.ps1
+
+# Editor / OS noise
+*.bak
+*.bak_*
+*.orig
+.vs/
+.vscode/
+Thumbs.db
+desktop.ini

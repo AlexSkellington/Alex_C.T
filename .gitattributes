@@ -1,0 +1,10 @@
+# TBS Maintenance Script: Windows line endings in the working copy (PowerShell 5.1 /
+# PowerShell Studio friendly), LF in the repository. Scoped on purpose so the other
+# scripts in this repo keep their current storage.
+TBS_Maintenace_Script_V2.ps1    text eol=crlf
+TBS_Maintenance/**              text eol=crlf
+TBS_Maintenance/**/*.png        binary
+TBS_Maintenance/**/*.ico        binary
+
+# The built script is generated - collapse it in diffs / PR reviews.
+TBS_Maintenace_Script_V2.ps1    linguist-generated=true
