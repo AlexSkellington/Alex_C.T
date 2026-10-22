@@ -1,5 +1,3 @@
-# Duplicate registration removed; button already added above
-
 ######################################################################################################################
 #
 # Bottom buttons + logbox layout  (FIXED for StatusStrip + modern top strip)
@@ -139,30 +137,21 @@ $form.add_Resize({ & $layoutBottom })
 
 ######################################################################################################################
 #
-# Global Activity Hooks (controls & menus)
+# Activity hooks for controls OUTSIDE the main form
+#   06_Busy_Idle_Activity already hooks the form, every child control and any control added to
+#   the form later (ControlAdded). The menus and the protocol window are separate top-level
+#   windows, so they get their own hooks here (the form, log box and buttons used to be hooked
+#   a second and third time from this list).
 #
 ######################################################################################################################
-$__activityControls = @(
-	$form,
-	$logBox,
-	$ServerToolsButton, $LaneToolsButton, $ScaleToolsButton, $GeneralToolsButton,
-	$storeNameLabel, $NodesBackoffices, $NodesStore, $scalesLabel, $smsVersionLabel, $bannerLabel,
-	$ContextMenuServer, $ContextMenuLane, $ContextMenuScale, $ContextMenuGeneral,
-	$global:ProtocolForm, $global:ProtocolGrid
-) | Where-Object { $_ -ne $null }
-# NOTE: the old filter also compared against [System.Windows.Forms.Control]::Empty,
-#       but that static member does not exist in .NET, so it could never match anything.
-
-foreach ($__c in $__activityControls)
+foreach ($__c in @($ContextMenuServer, $ContextMenuLane, $ContextMenuScale, $ContextMenuGeneral, $global:ProtocolForm, $global:ProtocolGrid))
 {
+	if ($__c -isnot [System.Windows.Forms.Control]) { continue }
 	try
 	{
-		if ($__c -is [System.Windows.Forms.Control])
-		{
-			$__c.Add_MouseMove({ $script:LastActivity = Get-Date })
-			$__c.Add_KeyDown({ $script:LastActivity = Get-Date })
-			$__c.Add_Click({ $script:LastActivity = Get-Date })
-		}
+		$__c.Add_MouseMove({ $script:LastActivity = Get-Date })
+		$__c.Add_KeyDown({ $script:LastActivity = Get-Date })
+		$__c.Add_Click({ $script:LastActivity = Get-Date })
 	}
 	catch { }
 }

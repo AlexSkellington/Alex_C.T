@@ -106,7 +106,7 @@ function Clear_XE_Folder
 		$jobName = "XEWatcherJob_$StoreNumber"
 
 		# Replace any existing watcher job
-		$existing = Get-Job -Name $jobName -ErrorAction SilentlyContinue
+		$existing = Get-Job | Where-Object { $_.Name -eq $jobName } # -Name on a missing job records an error
 		if ($existing)
 		{
 			try { Stop-Job -Job $existing -Force -ErrorAction SilentlyContinue | Out-Null }

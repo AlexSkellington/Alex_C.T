@@ -7,57 +7,14 @@
 ############################################################################
 # General Tools Anchor Button (Orange)
 ############################################################################
-$GeneralToolsButton = New-Object System.Windows.Forms.Button
-$GeneralToolsButton.Name = "GeneralToolsButton"
-$GeneralToolsButton.Text = "General Tools"
-$GeneralToolsButton.Location = New-Object System.Drawing.Point(775, 475)
-$GeneralToolsButton.Size = New-Object System.Drawing.Size(200, 52)
-$GeneralToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-$GeneralToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$GeneralToolsButton.UseVisualStyleBackColor = $false
-$GeneralToolsButton.BackColor = [System.Drawing.Color]::White
-$GeneralToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-$GeneralToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-$GeneralToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$GeneralToolsButton.FlatAppearance.BorderSize = 0
-$GeneralToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(255, 243, 224)
-$GeneralToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(250, 228, 195)
-$GeneralToolsButton.Tag = [pscustomobject]@{ CategoryColor = $uiCategoryGeneral }
-
-# Bottom accent bar
-$GeneralToolsButton.add_Paint({
-		param ($s, $e)
-		try
-		{
-			$pen = New-Object System.Drawing.Pen($uiCategoryGeneral, 3)
-			$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
-			$pen.Dispose()
-		}
-		catch { }
-	})
-
-# Hover effects
-$GeneralToolsButton.add_MouseEnter({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::FromArgb(255, 243, 224); $s.ForeColor = [System.Drawing.Color]::FromArgb(200, 100, 0) }
-		catch { }
-	})
-$GeneralToolsButton.add_MouseLeave({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
-		catch { }
-	})
-$GeneralToolsButton.add_Click({
-		$script:LastActivity = Get-Date
-		$ContextMenuGeneral.Show($GeneralToolsButton, 0, $GeneralToolsButton.Height)
-	})
-$toolTip.SetToolTip($GeneralToolsButton, "Click for general maintenance tools.")
-$form.Controls.Add($GeneralToolsButton)
-
 # General Context Menu
 $ContextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
 $ContextMenuGeneral.ShowItemToolTips = $true
 & $Apply_Modern_Menu_Style $ContextMenuGeneral
+
+$GeneralToolsButton = & $New_Category_Button -Name "GeneralToolsButton" -Text "General Tools" -X 775 -Accent $uiCategoryGeneral `
+	-HoverBack ([System.Drawing.Color]::FromArgb(255, 243, 224)) -DownBack ([System.Drawing.Color]::FromArgb(250, 228, 195)) -HoverFore ([System.Drawing.Color]::FromArgb(200, 100, 0)) `
+	-Menu $ContextMenuGeneral -ToolTipText "Click for general maintenance tools."
 
 # Submenu containers (the assembled layout is at the bottom of this menu section)
 $SubGenDiagnostics = New-Object System.Windows.Forms.ToolStripMenuItem("Diagnostics & Repair")
@@ -97,7 +54,6 @@ $rebootItem.Add_Click({
 						 "TBS_Maintenance_Script.ps1"
 		}
 	})
-[void]$ContextMenuGeneral.Items.Add($rebootItem)
 
 ############################################################################
 # 3) Copy Files Between Nodes
@@ -108,7 +64,6 @@ $Copy_Files_Between_NodesItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Copy_Files_Between_Nodes
 	})
-[void]$ContextMenuGeneral.Items.Add($Copy_Files_Between_NodesItem)
 
 ############################################################################
 # 4) Edit INIs (Setup.ini and others)
@@ -182,7 +137,6 @@ $FixDeployCHGItem.Add_Click({
 ############################################################################
 
 # --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
-[void]$ContextMenuGeneral.Items.Clear()
 [void]$ContextMenuGeneral.Items.Add($rebootItem)
 [void]$ContextMenuGeneral.Items.Add($Copy_Files_Between_NodesItem)
 [void]$ContextMenuGeneral.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))

@@ -7,56 +7,14 @@
 ############################################################################
 # Scales Tools Anchor Button (Purple)
 ############################################################################
-$ScaleToolsButton = New-Object System.Windows.Forms.Button
-$ScaleToolsButton.Name = "ScaleToolsButton"
-$ScaleToolsButton.Text = "Scale Tools"
-$ScaleToolsButton.Location = New-Object System.Drawing.Point(525, 475)
-$ScaleToolsButton.Size = New-Object System.Drawing.Size(200, 52)
-$ScaleToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-$ScaleToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$ScaleToolsButton.UseVisualStyleBackColor = $false
-$ScaleToolsButton.BackColor = [System.Drawing.Color]::White
-$ScaleToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-$ScaleToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-$ScaleToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$ScaleToolsButton.FlatAppearance.BorderSize = 0
-$ScaleToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(245, 230, 250)
-$ScaleToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(230, 215, 240)
-$ScaleToolsButton.Tag = [pscustomobject]@{ CategoryColor = $uiCategoryScale }
-
-# Bottom accent bar
-$ScaleToolsButton.add_Paint({
-		param ($s, $e)
-		try
-		{
-			$pen = New-Object System.Drawing.Pen($uiCategoryScale, 3)
-			$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
-			$pen.Dispose()
-		}
-		catch { }
-	})
-
-# Hover effects
-$ScaleToolsButton.add_MouseEnter({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::FromArgb(245, 230, 250); $s.ForeColor = $uiCategoryScale }
-		catch { }
-	})
-$ScaleToolsButton.add_MouseLeave({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
-		catch { }
-	})
-$ScaleToolsButton.add_Click({
-		$script:LastActivity = Get-Date
-		$ContextMenuScale.Show($ScaleToolsButton, 0, $ScaleToolsButton.Height)
-	})
-$form.Controls.Add($ScaleToolsButton)
-
 # Scale Context Menu
 $ContextMenuScale = New-Object System.Windows.Forms.ContextMenuStrip
 $ContextMenuScale.ShowItemToolTips = $true
 & $Apply_Modern_Menu_Style $ContextMenuScale
+
+$ScaleToolsButton = & $New_Category_Button -Name "ScaleToolsButton" -Text "Scale Tools" -X 525 -Accent $uiCategoryScale `
+	-HoverBack ([System.Drawing.Color]::FromArgb(245, 230, 250)) -DownBack ([System.Drawing.Color]::FromArgb(230, 215, 240)) -HoverFore $uiCategoryScale `
+	-Menu $ContextMenuScale -ToolTipText "Click for scale-related tools."
 
 # Submenu containers (the assembled layout is at the bottom of this menu section)
 $SubScaleServices = New-Object System.Windows.Forms.ToolStripMenuItem("Services")
@@ -163,7 +121,6 @@ $UpdateScaleConfigAndDBItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Update_ScaleConfig_And_DB
 	})
-[void]$ContextMenuScale.Items.Add($UpdateScaleConfigAndDBItem)
 
 ############################################################################
 # 10) Configure Subdepartments & SdpDefault (OBJ.F16 / OBJ.F18 / OBJ.F17)
@@ -198,7 +155,6 @@ $DeployScaleFilesItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Manage_Bizerba_Scales_Alex_Profile -StoreNumber $StoreNumber
 	})
-[void]$ContextMenuScale.Items.Add($DeployScaleFilesItem)
 
 ############################################################################
 # NOTE: the click handler and the control registration for $ScaleToolsButton
@@ -206,7 +162,6 @@ $DeployScaleFilesItem.Add_Click({
 ############################################################################
 
 # --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
-[void]$ContextMenuScale.Items.Clear()
 [void]$ContextMenuScale.Items.Add($UpdateScaleConfigAndDBItem)
 [void]$ContextMenuScale.Items.Add($DeployScaleFilesItem)
 [void]$ContextMenuScale.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))

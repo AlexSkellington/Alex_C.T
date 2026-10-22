@@ -19,63 +19,9 @@ $SubServerSchedule.ToolTipText = "Scheduled maintenance and backup tasks"
 $SubServerSystem = New-Object System.Windows.Forms.ToolStripMenuItem("System Care")
 $SubServerSystem.ToolTipText = "Windows and system-level maintenance"
 
-$ServerToolsButton = New-Object System.Windows.Forms.Button
-$ServerToolsButton.Name = "ServerToolsButton"
-$ServerToolsButton.Text = "Server Tools"
-$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 475)
-$ServerToolsButton.Size = New-Object System.Drawing.Size(200, 52)
-$ServerToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-$ServerToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$ServerToolsButton.UseVisualStyleBackColor = $false
-$ServerToolsButton.BackColor = [System.Drawing.Color]::White
-$ServerToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-$ServerToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-$ServerToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$ServerToolsButton.FlatAppearance.BorderSize = 0
-$ServerToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(235, 248, 235)
-$ServerToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(220, 240, 220)
-$ServerToolsButton.Tag = [pscustomobject]@{
-	CategoryColor = $uiCategoryServer
-}
-
-# Bottom accent bar
-$ServerToolsButton.add_Paint({
-		param ($s, $e)
-		try
-		{
-			$pen = New-Object System.Drawing.Pen($uiCategoryServer, 3)
-			$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
-			$pen.Dispose()
-		}
-		catch { }
-	})
-
-# Hover effects
-$ServerToolsButton.add_MouseEnter({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::FromArgb(235, 248, 235); $s.ForeColor = $uiCategoryServer }
-		catch { }
-	})
-$ServerToolsButton.add_MouseLeave({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
-		catch { }
-	})
-$ServerToolsButton.add_Click({
-		$script:LastActivity = Get-Date
-		$ContextMenuServer.Show($ServerToolsButton, 0, $ServerToolsButton.Height)
-	})
-$ServerToolsButton.add_MouseDown({
-		param ($sender, $e)
-		if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
-		{
-			$script:ProtocolPopupMode = 'Server'
-			$global:ProtocolForm.Show()
-			$global:ProtocolForm.BringToFront()
-		}
-	})
-$toolTip.SetToolTip($ServerToolsButton, "Click for server-related tools. Right-click for server DB info.")
-$form.Controls.Add($ServerToolsButton)
+$ServerToolsButton = & $New_Category_Button -Name "ServerToolsButton" -Text "Server Tools" -X 50 -Accent $uiCategoryServer `
+	-HoverBack ([System.Drawing.Color]::FromArgb(235, 248, 235)) -DownBack ([System.Drawing.Color]::FromArgb(220, 240, 220)) -HoverFore $uiCategoryServer `
+	-Menu $ContextMenuServer -ProtocolMode 'Server' -ToolTipText "Click for server-related tools. Right-click for server DB info."
 
 ############################################################################
 # 1) Server DB Maintenance
@@ -104,7 +50,6 @@ $ServerDBMaintenanceItem.Add_Click({
 			) | Out-Null
 		}
 	})
-[void]$ContextMenuServer.Items.Add($ServerDBMaintenanceItem)
 
 ############################################################################
 # 2) Schedule the DB maintenance at the lanes
@@ -148,7 +93,6 @@ $ManageSaAccountItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Manage_Sa_Account
 	})
-[void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
 
 ############################################################################
 # 6) Repair Windows Menu Item
@@ -256,7 +200,6 @@ $OrganizeDesktopItemsItem.Add_Click({
 ############################################################################
 
 # --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
-[void]$ContextMenuServer.Items.Clear()
 [void]$ContextMenuServer.Items.Add($ServerDBMaintenanceItem)
 [void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
 [void]$ContextMenuServer.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))

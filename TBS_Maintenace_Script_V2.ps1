@@ -5620,7 +5620,7 @@ function Clear_XE_Folder
 		$jobName = "XEWatcherJob_$StoreNumber"
 
 		# Replace any existing watcher job
-		$existing = Get-Job -Name $jobName -ErrorAction SilentlyContinue
+		$existing = Get-Job | Where-Object { $_.Name -eq $jobName } # -Name on a missing job records an error
 		if ($existing)
 		{
 			try { Stop-Job -Job $existing -Force -ErrorAction SilentlyContinue | Out-Null }
@@ -28279,7 +28279,7 @@ $BusyTimer.add_Tick({
 			try
 			{
 				# (-Name and -State cannot be combined on Get-Job - filter the state instead)
-				$insertTestJob = Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Running' } | Select-Object -First 1
+				$insertTestJob = Get-Job | Where-Object { $_.Name -eq 'InsertTestItemJob' } | Where-Object { $_.State -eq 'Running' } | Select-Object -First 1
 				if ($insertTestJob)
 				{
 					$script:IsBusy = $true
@@ -29874,6 +29874,92 @@ if (-not $script:PopupThemeTimer)
 	$script:PopupThemeTimer.Start()
 }
 
+# ----------------------------------------------------------------------------
+# Category button (Server / Lane / Scale / General): white flat button with a
+# colored bottom bar. Click opens its menu; right-click opens the protocol
+# window when ProtocolMode is set. Handlers read everything from .Tag (no
+# closures - see CLAUDE.md), so one definition serves all four buttons.
+# ----------------------------------------------------------------------------
+$New_Category_Button = {
+	param (
+		[string]$Name,
+		[string]$Text,
+		[int]$X,
+		[System.Drawing.Color]$Accent,
+		[System.Drawing.Color]$HoverBack,
+		[System.Drawing.Color]$DownBack,
+		[System.Drawing.Color]$HoverFore,
+		[System.Windows.Forms.ContextMenuStrip]$Menu,
+		[string]$ProtocolMode,
+		[string]$ToolTipText
+	)
+
+	$b = New-Object System.Windows.Forms.Button
+	$b.Name = $Name
+	$b.Text = $Text
+	$b.Location = New-Object System.Drawing.Point($X, 475)
+	$b.Size = New-Object System.Drawing.Size(200, 52)
+	$b.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
+	$b.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+	$b.UseVisualStyleBackColor = $false
+	$b.BackColor = [System.Drawing.Color]::White
+	$b.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+	$b.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$b.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$b.FlatAppearance.BorderSize = 0
+	$b.FlatAppearance.MouseOverBackColor = $HoverBack
+	$b.FlatAppearance.MouseDownBackColor = $DownBack
+	$b.Tag = [pscustomobject]@{
+		CategoryColor = $Accent
+		HoverBack	  = $HoverBack
+		HoverFore	  = $HoverFore
+		Menu		  = $Menu
+		ProtocolMode  = $ProtocolMode
+	}
+
+	# Bottom accent bar
+	$b.add_Paint({
+			param ($s, $e)
+			try
+			{
+				$pen = New-Object System.Drawing.Pen($s.Tag.CategoryColor, 3)
+				$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
+				$pen.Dispose()
+			}
+			catch { }
+		})
+	$b.add_MouseEnter({
+			param ($s, $e)
+			try { $s.BackColor = $s.Tag.HoverBack; $s.ForeColor = $s.Tag.HoverFore }
+			catch { }
+		})
+	$b.add_MouseLeave({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
+			catch { }
+		})
+	$b.add_Click({
+			param ($s, $e)
+			$script:LastActivity = Get-Date
+			$s.Tag.Menu.Show($s, 0, $s.Height)
+		})
+	if ($ProtocolMode)
+	{
+		$b.add_MouseDown({
+				param ($s, $e)
+				if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
+				{
+					$script:ProtocolPopupMode = $s.Tag.ProtocolMode
+					$global:ProtocolForm.Show()
+					$global:ProtocolForm.BringToFront()
+				}
+			})
+	}
+	$toolTip.SetToolTip($b, $ToolTipText)
+	$form.Controls.Add($b)
+	$b
+}
+
 ######################################################################################################################
 #
 # Server Tools Button
@@ -29895,63 +29981,9 @@ $SubServerSchedule.ToolTipText = "Scheduled maintenance and backup tasks"
 $SubServerSystem = New-Object System.Windows.Forms.ToolStripMenuItem("System Care")
 $SubServerSystem.ToolTipText = "Windows and system-level maintenance"
 
-$ServerToolsButton = New-Object System.Windows.Forms.Button
-$ServerToolsButton.Name = "ServerToolsButton"
-$ServerToolsButton.Text = "Server Tools"
-$ServerToolsButton.Location = New-Object System.Drawing.Point(50, 475)
-$ServerToolsButton.Size = New-Object System.Drawing.Size(200, 52)
-$ServerToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-$ServerToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$ServerToolsButton.UseVisualStyleBackColor = $false
-$ServerToolsButton.BackColor = [System.Drawing.Color]::White
-$ServerToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-$ServerToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-$ServerToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$ServerToolsButton.FlatAppearance.BorderSize = 0
-$ServerToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(235, 248, 235)
-$ServerToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(220, 240, 220)
-$ServerToolsButton.Tag = [pscustomobject]@{
-	CategoryColor = $uiCategoryServer
-}
-
-# Bottom accent bar
-$ServerToolsButton.add_Paint({
-		param ($s, $e)
-		try
-		{
-			$pen = New-Object System.Drawing.Pen($uiCategoryServer, 3)
-			$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
-			$pen.Dispose()
-		}
-		catch { }
-	})
-
-# Hover effects
-$ServerToolsButton.add_MouseEnter({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::FromArgb(235, 248, 235); $s.ForeColor = $uiCategoryServer }
-		catch { }
-	})
-$ServerToolsButton.add_MouseLeave({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
-		catch { }
-	})
-$ServerToolsButton.add_Click({
-		$script:LastActivity = Get-Date
-		$ContextMenuServer.Show($ServerToolsButton, 0, $ServerToolsButton.Height)
-	})
-$ServerToolsButton.add_MouseDown({
-		param ($sender, $e)
-		if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
-		{
-			$script:ProtocolPopupMode = 'Server'
-			$global:ProtocolForm.Show()
-			$global:ProtocolForm.BringToFront()
-		}
-	})
-$toolTip.SetToolTip($ServerToolsButton, "Click for server-related tools. Right-click for server DB info.")
-$form.Controls.Add($ServerToolsButton)
+$ServerToolsButton = & $New_Category_Button -Name "ServerToolsButton" -Text "Server Tools" -X 50 -Accent $uiCategoryServer `
+	-HoverBack ([System.Drawing.Color]::FromArgb(235, 248, 235)) -DownBack ([System.Drawing.Color]::FromArgb(220, 240, 220)) -HoverFore $uiCategoryServer `
+	-Menu $ContextMenuServer -ProtocolMode 'Server' -ToolTipText "Click for server-related tools. Right-click for server DB info."
 
 ############################################################################
 # 1) Server DB Maintenance
@@ -29980,7 +30012,6 @@ $ServerDBMaintenanceItem.Add_Click({
 			) | Out-Null
 		}
 	})
-[void]$ContextMenuServer.Items.Add($ServerDBMaintenanceItem)
 
 ############################################################################
 # 2) Schedule the DB maintenance at the lanes
@@ -30024,7 +30055,6 @@ $ManageSaAccountItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Manage_Sa_Account
 	})
-[void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
 
 ############################################################################
 # 6) Repair Windows Menu Item
@@ -30132,7 +30162,6 @@ $OrganizeDesktopItemsItem.Add_Click({
 ############################################################################
 
 # --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
-[void]$ContextMenuServer.Items.Clear()
 [void]$ContextMenuServer.Items.Add($ServerDBMaintenanceItem)
 [void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
 [void]$ContextMenuServer.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
@@ -30165,61 +30194,9 @@ $SubLaneFiles.ToolTipText = "Lane files, shares and data retrieval"
 $SubLanePower = New-Object System.Windows.Forms.ToolStripMenuItem("Power & Services")
 $SubLanePower.ToolTipText = "Reboots, restarts, time sync and service tasks"
 
-$LaneToolsButton = New-Object System.Windows.Forms.Button
-$LaneToolsButton.Name = "LaneToolsButton"
-$LaneToolsButton.Text = "Lane Tools"
-$LaneToolsButton.Location = New-Object System.Drawing.Point(275, 475)
-$LaneToolsButton.Size = New-Object System.Drawing.Size(200, 52)
-$LaneToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-$LaneToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$LaneToolsButton.UseVisualStyleBackColor = $false
-$LaneToolsButton.BackColor = [System.Drawing.Color]::White
-$LaneToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-$LaneToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-$LaneToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$LaneToolsButton.FlatAppearance.BorderSize = 0
-$LaneToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(230, 243, 255)
-$LaneToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(215, 235, 250)
-$LaneToolsButton.Tag = [pscustomobject]@{ CategoryColor = $uiCategoryLane }
-
-# Bottom accent bar
-$LaneToolsButton.add_Paint({
-		param ($s, $e)
-		try
-		{
-			$pen = New-Object System.Drawing.Pen($uiCategoryLane, 3)
-			$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
-			$pen.Dispose()
-		}
-		catch { }
-	})
-
-# Hover effects
-$LaneToolsButton.add_MouseEnter({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::FromArgb(230, 243, 255); $s.ForeColor = $uiCategoryLane }
-		catch { }
-	})
-$LaneToolsButton.add_MouseLeave({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
-		catch { }
-	})
-$LaneToolsButton.add_Click({
-		$script:LastActivity = Get-Date
-		$ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height)
-	})
-$LaneToolsButton.add_MouseDown({
-		param ($sender, $e)
-		if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
-		{
-			$script:ProtocolPopupMode = 'Lane'
-			$global:ProtocolForm.Show()
-			$global:ProtocolForm.BringToFront()
-		}
-	})
-$toolTip.SetToolTip($LaneToolsButton, "Click for lane-related tools. Right-click for lane protocol window.")
-$form.Controls.Add($LaneToolsButton)
+$LaneToolsButton = & $New_Category_Button -Name "LaneToolsButton" -Text "Lane Tools" -X 275 -Accent $uiCategoryLane `
+	-HoverBack ([System.Drawing.Color]::FromArgb(230, 243, 255)) -DownBack ([System.Drawing.Color]::FromArgb(215, 235, 250)) -HoverFore $uiCategoryLane `
+	-Menu $ContextMenuLane -ProtocolMode 'Lane' -ToolTipText "Click for lane-related tools. Right-click for lane protocol window."
 
 ############################################################################
 # 1) Lane DB Maintenance Button
@@ -30230,7 +30207,6 @@ $LaneDBMaintenanceItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Process_Lanes -StoreNumber $StoreNumber
 	})
-[void]$ContextMenuLane.Items.Add($LaneDBMaintenanceItem)
 
 ############################################################################
 # 2) Schedule the DB maintenance at the lanes
@@ -30364,7 +30340,6 @@ $RefreshDatabaseItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Refresh_Database -StoreNumber $StoreNumber
 	})
-[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 
 ############################################################################
 # 12) Send Restart Command Menu Item
@@ -30397,7 +30372,6 @@ $LaneServiceStatusItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Show_Lane_SQL_VNC_Service_Statuses
 	})
-[void]$ContextMenuLane.Items.Add($LaneServiceStatusItem)
 
 ############################################################################
 # 15) Set the time on the lanes
@@ -30464,7 +30438,6 @@ $RebootLaneItem.Add_Click({
 ############################################################################
 
 # --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
-[void]$ContextMenuLane.Items.Clear()
 [void]$ContextMenuLane.Items.Add($LaneDBMaintenanceItem)
 [void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 [void]$ContextMenuLane.Items.Add($LaneServiceStatusItem)
@@ -30485,56 +30458,14 @@ $toolTip.SetToolTip($LaneToolsButton, "Click to see Lane-related tools. Right-cl
 ############################################################################
 # Scales Tools Anchor Button (Purple)
 ############################################################################
-$ScaleToolsButton = New-Object System.Windows.Forms.Button
-$ScaleToolsButton.Name = "ScaleToolsButton"
-$ScaleToolsButton.Text = "Scale Tools"
-$ScaleToolsButton.Location = New-Object System.Drawing.Point(525, 475)
-$ScaleToolsButton.Size = New-Object System.Drawing.Size(200, 52)
-$ScaleToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-$ScaleToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$ScaleToolsButton.UseVisualStyleBackColor = $false
-$ScaleToolsButton.BackColor = [System.Drawing.Color]::White
-$ScaleToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-$ScaleToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-$ScaleToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$ScaleToolsButton.FlatAppearance.BorderSize = 0
-$ScaleToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(245, 230, 250)
-$ScaleToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(230, 215, 240)
-$ScaleToolsButton.Tag = [pscustomobject]@{ CategoryColor = $uiCategoryScale }
-
-# Bottom accent bar
-$ScaleToolsButton.add_Paint({
-		param ($s, $e)
-		try
-		{
-			$pen = New-Object System.Drawing.Pen($uiCategoryScale, 3)
-			$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
-			$pen.Dispose()
-		}
-		catch { }
-	})
-
-# Hover effects
-$ScaleToolsButton.add_MouseEnter({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::FromArgb(245, 230, 250); $s.ForeColor = $uiCategoryScale }
-		catch { }
-	})
-$ScaleToolsButton.add_MouseLeave({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
-		catch { }
-	})
-$ScaleToolsButton.add_Click({
-		$script:LastActivity = Get-Date
-		$ContextMenuScale.Show($ScaleToolsButton, 0, $ScaleToolsButton.Height)
-	})
-$form.Controls.Add($ScaleToolsButton)
-
 # Scale Context Menu
 $ContextMenuScale = New-Object System.Windows.Forms.ContextMenuStrip
 $ContextMenuScale.ShowItemToolTips = $true
 & $Apply_Modern_Menu_Style $ContextMenuScale
+
+$ScaleToolsButton = & $New_Category_Button -Name "ScaleToolsButton" -Text "Scale Tools" -X 525 -Accent $uiCategoryScale `
+	-HoverBack ([System.Drawing.Color]::FromArgb(245, 230, 250)) -DownBack ([System.Drawing.Color]::FromArgb(230, 215, 240)) -HoverFore $uiCategoryScale `
+	-Menu $ContextMenuScale -ToolTipText "Click for scale-related tools."
 
 # Submenu containers (the assembled layout is at the bottom of this menu section)
 $SubScaleServices = New-Object System.Windows.Forms.ToolStripMenuItem("Services")
@@ -30641,7 +30572,6 @@ $UpdateScaleConfigAndDBItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Update_ScaleConfig_And_DB
 	})
-[void]$ContextMenuScale.Items.Add($UpdateScaleConfigAndDBItem)
 
 ############################################################################
 # 10) Configure Subdepartments & SdpDefault (OBJ.F16 / OBJ.F18 / OBJ.F17)
@@ -30676,7 +30606,6 @@ $DeployScaleFilesItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Manage_Bizerba_Scales_Alex_Profile -StoreNumber $StoreNumber
 	})
-[void]$ContextMenuScale.Items.Add($DeployScaleFilesItem)
 
 ############################################################################
 # NOTE: the click handler and the control registration for $ScaleToolsButton
@@ -30684,7 +30613,6 @@ $DeployScaleFilesItem.Add_Click({
 ############################################################################
 
 # --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
-[void]$ContextMenuScale.Items.Clear()
 [void]$ContextMenuScale.Items.Add($UpdateScaleConfigAndDBItem)
 [void]$ContextMenuScale.Items.Add($DeployScaleFilesItem)
 [void]$ContextMenuScale.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
@@ -30703,57 +30631,14 @@ $toolTip.SetToolTip($ScaleToolsButton, "Click for scale-related tools.")
 ############################################################################
 # General Tools Anchor Button (Orange)
 ############################################################################
-$GeneralToolsButton = New-Object System.Windows.Forms.Button
-$GeneralToolsButton.Name = "GeneralToolsButton"
-$GeneralToolsButton.Text = "General Tools"
-$GeneralToolsButton.Location = New-Object System.Drawing.Point(775, 475)
-$GeneralToolsButton.Size = New-Object System.Drawing.Size(200, 52)
-$GeneralToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-$GeneralToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$GeneralToolsButton.UseVisualStyleBackColor = $false
-$GeneralToolsButton.BackColor = [System.Drawing.Color]::White
-$GeneralToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-$GeneralToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-$GeneralToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$GeneralToolsButton.FlatAppearance.BorderSize = 0
-$GeneralToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(255, 243, 224)
-$GeneralToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(250, 228, 195)
-$GeneralToolsButton.Tag = [pscustomobject]@{ CategoryColor = $uiCategoryGeneral }
-
-# Bottom accent bar
-$GeneralToolsButton.add_Paint({
-		param ($s, $e)
-		try
-		{
-			$pen = New-Object System.Drawing.Pen($uiCategoryGeneral, 3)
-			$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
-			$pen.Dispose()
-		}
-		catch { }
-	})
-
-# Hover effects
-$GeneralToolsButton.add_MouseEnter({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::FromArgb(255, 243, 224); $s.ForeColor = [System.Drawing.Color]::FromArgb(200, 100, 0) }
-		catch { }
-	})
-$GeneralToolsButton.add_MouseLeave({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
-		catch { }
-	})
-$GeneralToolsButton.add_Click({
-		$script:LastActivity = Get-Date
-		$ContextMenuGeneral.Show($GeneralToolsButton, 0, $GeneralToolsButton.Height)
-	})
-$toolTip.SetToolTip($GeneralToolsButton, "Click for general maintenance tools.")
-$form.Controls.Add($GeneralToolsButton)
-
 # General Context Menu
 $ContextMenuGeneral = New-Object System.Windows.Forms.ContextMenuStrip
 $ContextMenuGeneral.ShowItemToolTips = $true
 & $Apply_Modern_Menu_Style $ContextMenuGeneral
+
+$GeneralToolsButton = & $New_Category_Button -Name "GeneralToolsButton" -Text "General Tools" -X 775 -Accent $uiCategoryGeneral `
+	-HoverBack ([System.Drawing.Color]::FromArgb(255, 243, 224)) -DownBack ([System.Drawing.Color]::FromArgb(250, 228, 195)) -HoverFore ([System.Drawing.Color]::FromArgb(200, 100, 0)) `
+	-Menu $ContextMenuGeneral -ToolTipText "Click for general maintenance tools."
 
 # Submenu containers (the assembled layout is at the bottom of this menu section)
 $SubGenDiagnostics = New-Object System.Windows.Forms.ToolStripMenuItem("Diagnostics & Repair")
@@ -30793,7 +30678,6 @@ $rebootItem.Add_Click({
 						 "TBS_Maintenance_Script.ps1"
 		}
 	})
-[void]$ContextMenuGeneral.Items.Add($rebootItem)
 
 ############################################################################
 # 3) Copy Files Between Nodes
@@ -30804,7 +30688,6 @@ $Copy_Files_Between_NodesItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Copy_Files_Between_Nodes
 	})
-[void]$ContextMenuGeneral.Items.Add($Copy_Files_Between_NodesItem)
 
 ############################################################################
 # 4) Edit INIs (Setup.ini and others)
@@ -30878,7 +30761,6 @@ $FixDeployCHGItem.Add_Click({
 ############################################################################
 
 # --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
-[void]$ContextMenuGeneral.Items.Clear()
 [void]$ContextMenuGeneral.Items.Add($rebootItem)
 [void]$ContextMenuGeneral.Items.Add($Copy_Files_Between_NodesItem)
 [void]$ContextMenuGeneral.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
@@ -30886,8 +30768,6 @@ $FixDeployCHGItem.Add_Click({
 [void]$ContextMenuGeneral.Items.Add($SubGenTools)
 foreach ($sub in @($SubGenDiagnostics, $SubGenTools)) { & $Style_SubMenu $sub }
 $toolTip.SetToolTip($GeneralToolsButton, "Click for general maintenance tools.")
-
-# Duplicate registration removed; button already added above
 
 ######################################################################################################################
 #
@@ -31028,30 +30908,21 @@ $form.add_Resize({ & $layoutBottom })
 
 ######################################################################################################################
 #
-# Global Activity Hooks (controls & menus)
+# Activity hooks for controls OUTSIDE the main form
+#   06_Busy_Idle_Activity already hooks the form, every child control and any control added to
+#   the form later (ControlAdded). The menus and the protocol window are separate top-level
+#   windows, so they get their own hooks here (the form, log box and buttons used to be hooked
+#   a second and third time from this list).
 #
 ######################################################################################################################
-$__activityControls = @(
-	$form,
-	$logBox,
-	$ServerToolsButton, $LaneToolsButton, $ScaleToolsButton, $GeneralToolsButton,
-	$storeNameLabel, $NodesBackoffices, $NodesStore, $scalesLabel, $smsVersionLabel, $bannerLabel,
-	$ContextMenuServer, $ContextMenuLane, $ContextMenuScale, $ContextMenuGeneral,
-	$global:ProtocolForm, $global:ProtocolGrid
-) | Where-Object { $_ -ne $null }
-# NOTE: the old filter also compared against [System.Windows.Forms.Control]::Empty,
-#       but that static member does not exist in .NET, so it could never match anything.
-
-foreach ($__c in $__activityControls)
+foreach ($__c in @($ContextMenuServer, $ContextMenuLane, $ContextMenuScale, $ContextMenuGeneral, $global:ProtocolForm, $global:ProtocolGrid))
 {
+	if ($__c -isnot [System.Windows.Forms.Control]) { continue }
 	try
 	{
-		if ($__c -is [System.Windows.Forms.Control])
-		{
-			$__c.Add_MouseMove({ $script:LastActivity = Get-Date })
-			$__c.Add_KeyDown({ $script:LastActivity = Get-Date })
-			$__c.Add_Click({ $script:LastActivity = Get-Date })
-		}
+		$__c.Add_MouseMove({ $script:LastActivity = Get-Date })
+		$__c.Add_KeyDown({ $script:LastActivity = Get-Date })
+		$__c.Add_Click({ $script:LastActivity = Get-Date })
 	}
 	catch { }
 }
@@ -31231,13 +31102,13 @@ $form.Add_Shown({
 				Action = {
 					try
 					{
-						Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue |
+						Get-Job | Where-Object { $_.Name -eq 'InsertTestItemJob' } |
 						Where-Object { $_.State -in @('Completed', 'Failed', 'Stopped') } |
 						Remove-Job -Force -ErrorAction SilentlyContinue
 
 						# (-Name and -State cannot be combined on Get-Job: that threw before v2.7.0,
 						#  so the test item job never started - filter the state instead)
-						$runningInsertJob = Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Running' } | Select-Object -First 1
+						$runningInsertJob = Get-Job | Where-Object { $_.Name -eq 'InsertTestItemJob' } | Where-Object { $_.State -eq 'Running' } | Select-Object -First 1
 						if (-not $runningInsertJob)
 						{
 							$fnBody = ${function:Insert_Test_Item}.ToString()

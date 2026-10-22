@@ -109,7 +109,7 @@ $BusyTimer.add_Tick({
 			try
 			{
 				# (-Name and -State cannot be combined on Get-Job - filter the state instead)
-				$insertTestJob = Get-Job -Name 'InsertTestItemJob' -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Running' } | Select-Object -First 1
+				$insertTestJob = Get-Job | Where-Object { $_.Name -eq 'InsertTestItemJob' } | Where-Object { $_.State -eq 'Running' } | Select-Object -First 1
 				if ($insertTestJob)
 				{
 					$script:IsBusy = $true

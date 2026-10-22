@@ -278,3 +278,89 @@ if (-not $script:PopupThemeTimer)
 		})
 	$script:PopupThemeTimer.Start()
 }
+
+# ----------------------------------------------------------------------------
+# Category button (Server / Lane / Scale / General): white flat button with a
+# colored bottom bar. Click opens its menu; right-click opens the protocol
+# window when ProtocolMode is set. Handlers read everything from .Tag (no
+# closures - see CLAUDE.md), so one definition serves all four buttons.
+# ----------------------------------------------------------------------------
+$New_Category_Button = {
+	param (
+		[string]$Name,
+		[string]$Text,
+		[int]$X,
+		[System.Drawing.Color]$Accent,
+		[System.Drawing.Color]$HoverBack,
+		[System.Drawing.Color]$DownBack,
+		[System.Drawing.Color]$HoverFore,
+		[System.Windows.Forms.ContextMenuStrip]$Menu,
+		[string]$ProtocolMode,
+		[string]$ToolTipText
+	)
+
+	$b = New-Object System.Windows.Forms.Button
+	$b.Name = $Name
+	$b.Text = $Text
+	$b.Location = New-Object System.Drawing.Point($X, 475)
+	$b.Size = New-Object System.Drawing.Size(200, 52)
+	$b.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
+	$b.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+	$b.UseVisualStyleBackColor = $false
+	$b.BackColor = [System.Drawing.Color]::White
+	$b.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+	$b.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$b.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+	$b.FlatAppearance.BorderSize = 0
+	$b.FlatAppearance.MouseOverBackColor = $HoverBack
+	$b.FlatAppearance.MouseDownBackColor = $DownBack
+	$b.Tag = [pscustomobject]@{
+		CategoryColor = $Accent
+		HoverBack	  = $HoverBack
+		HoverFore	  = $HoverFore
+		Menu		  = $Menu
+		ProtocolMode  = $ProtocolMode
+	}
+
+	# Bottom accent bar
+	$b.add_Paint({
+			param ($s, $e)
+			try
+			{
+				$pen = New-Object System.Drawing.Pen($s.Tag.CategoryColor, 3)
+				$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
+				$pen.Dispose()
+			}
+			catch { }
+		})
+	$b.add_MouseEnter({
+			param ($s, $e)
+			try { $s.BackColor = $s.Tag.HoverBack; $s.ForeColor = $s.Tag.HoverFore }
+			catch { }
+		})
+	$b.add_MouseLeave({
+			param ($s, $e)
+			try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
+			catch { }
+		})
+	$b.add_Click({
+			param ($s, $e)
+			$script:LastActivity = Get-Date
+			$s.Tag.Menu.Show($s, 0, $s.Height)
+		})
+	if ($ProtocolMode)
+	{
+		$b.add_MouseDown({
+				param ($s, $e)
+				if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
+				{
+					$script:ProtocolPopupMode = $s.Tag.ProtocolMode
+					$global:ProtocolForm.Show()
+					$global:ProtocolForm.BringToFront()
+				}
+			})
+	}
+	$toolTip.SetToolTip($b, $ToolTipText)
+	$form.Controls.Add($b)
+	$b
+}

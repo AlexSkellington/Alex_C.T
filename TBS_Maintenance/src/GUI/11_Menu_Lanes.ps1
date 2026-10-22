@@ -23,61 +23,9 @@ $SubLaneFiles.ToolTipText = "Lane files, shares and data retrieval"
 $SubLanePower = New-Object System.Windows.Forms.ToolStripMenuItem("Power & Services")
 $SubLanePower.ToolTipText = "Reboots, restarts, time sync and service tasks"
 
-$LaneToolsButton = New-Object System.Windows.Forms.Button
-$LaneToolsButton.Name = "LaneToolsButton"
-$LaneToolsButton.Text = "Lane Tools"
-$LaneToolsButton.Location = New-Object System.Drawing.Point(275, 475)
-$LaneToolsButton.Size = New-Object System.Drawing.Size(200, 52)
-$LaneToolsButton.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Regular)
-$LaneToolsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$LaneToolsButton.UseVisualStyleBackColor = $false
-$LaneToolsButton.BackColor = [System.Drawing.Color]::White
-$LaneToolsButton.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
-$LaneToolsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
-$LaneToolsButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$LaneToolsButton.FlatAppearance.BorderSize = 0
-$LaneToolsButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(230, 243, 255)
-$LaneToolsButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(215, 235, 250)
-$LaneToolsButton.Tag = [pscustomobject]@{ CategoryColor = $uiCategoryLane }
-
-# Bottom accent bar
-$LaneToolsButton.add_Paint({
-		param ($s, $e)
-		try
-		{
-			$pen = New-Object System.Drawing.Pen($uiCategoryLane, 3)
-			$e.Graphics.DrawLine($pen, 4, $s.Height - 4, $s.Width - 4, $s.Height - 4)
-			$pen.Dispose()
-		}
-		catch { }
-	})
-
-# Hover effects
-$LaneToolsButton.add_MouseEnter({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::FromArgb(230, 243, 255); $s.ForeColor = $uiCategoryLane }
-		catch { }
-	})
-$LaneToolsButton.add_MouseLeave({
-		param ($s, $e)
-		try { $s.BackColor = [System.Drawing.Color]::White; $s.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32) }
-		catch { }
-	})
-$LaneToolsButton.add_Click({
-		$script:LastActivity = Get-Date
-		$ContextMenuLane.Show($LaneToolsButton, 0, $LaneToolsButton.Height)
-	})
-$LaneToolsButton.add_MouseDown({
-		param ($sender, $e)
-		if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right)
-		{
-			$script:ProtocolPopupMode = 'Lane'
-			$global:ProtocolForm.Show()
-			$global:ProtocolForm.BringToFront()
-		}
-	})
-$toolTip.SetToolTip($LaneToolsButton, "Click for lane-related tools. Right-click for lane protocol window.")
-$form.Controls.Add($LaneToolsButton)
+$LaneToolsButton = & $New_Category_Button -Name "LaneToolsButton" -Text "Lane Tools" -X 275 -Accent $uiCategoryLane `
+	-HoverBack ([System.Drawing.Color]::FromArgb(230, 243, 255)) -DownBack ([System.Drawing.Color]::FromArgb(215, 235, 250)) -HoverFore $uiCategoryLane `
+	-Menu $ContextMenuLane -ProtocolMode 'Lane' -ToolTipText "Click for lane-related tools. Right-click for lane protocol window."
 
 ############################################################################
 # 1) Lane DB Maintenance Button
@@ -88,7 +36,6 @@ $LaneDBMaintenanceItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Process_Lanes -StoreNumber $StoreNumber
 	})
-[void]$ContextMenuLane.Items.Add($LaneDBMaintenanceItem)
 
 ############################################################################
 # 2) Schedule the DB maintenance at the lanes
@@ -222,7 +169,6 @@ $RefreshDatabaseItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Refresh_Database -StoreNumber $StoreNumber
 	})
-[void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 
 ############################################################################
 # 12) Send Restart Command Menu Item
@@ -255,7 +201,6 @@ $LaneServiceStatusItem.Add_Click({
 		$script:LastActivity = Get-Date
 		Show_Lane_SQL_VNC_Service_Statuses
 	})
-[void]$ContextMenuLane.Items.Add($LaneServiceStatusItem)
 
 ############################################################################
 # 15) Set the time on the lanes
@@ -322,7 +267,6 @@ $RebootLaneItem.Add_Click({
 ############################################################################
 
 # --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
-[void]$ContextMenuLane.Items.Clear()
 [void]$ContextMenuLane.Items.Add($LaneDBMaintenanceItem)
 [void]$ContextMenuLane.Items.Add($RefreshDatabaseItem)
 [void]$ContextMenuLane.Items.Add($LaneServiceStatusItem)
