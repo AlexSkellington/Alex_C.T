@@ -1,0 +1,56 @@
+# Publishes the TBS Maintenance Script when a version tag is pushed (git push origin v2.7.1).
+#
+# Stores run the asset of the LATEST release (root launcher -> releases/latest/download/
+# TBS_Maintenance_Script.ps1), so this workflow is the only thing that changes what stores run.
+# Any failed step - build, tag/version mismatch, self-test - stops before the release exists.
+name: Release TBS Maintenance Script
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (sources -> one script)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\build\Build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Tag must match $VersionNumber
+        shell: powershell
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $text = [IO.File]::ReadAllText("$PWD\TBS_Maintenance\dist\TBS_Maintenance_Script.ps1")
+          $ver = [regex]::Match($text, '(?m)^\$VersionNumber\s*=\s*"([\d.]+)"').Groups[1].Value
+          if ("v$ver" -ne $tag) { Write-Error "Tag $tag does not match `$VersionNumber $ver in the sources"; exit 1 }
+          "Version $ver matches tag $tag"
+
+      - name: Self-test
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\TBS_Maintenance_SelfTest.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $ver = $tag.TrimStart('v')
+          # Release notes = this version's CHANGELOG.txt entry
+          $log = [IO.File]::ReadAllText("$PWD\TBS_Maintenance\CHANGELOG.txt") -replace "`r`n", "`n"
+          $m = [regex]::Match($log, "(?ms)^#  v$([regex]::Escape($ver))  -.*?(?=^# =+\n#  v\d|\z)")
+          $notes = if ($m.Success) { ($m.Value -split "`n" | ForEach-Object { $_ -replace '^#  ?', '' } | Where-Object { $_ -notmatch '^(#|=+)$' }) -join "`n" } else { "TBS Maintenance Script $tag" }
+          [IO.File]::WriteAllText("$PWD\release-notes.md", $notes)
+          gh release create $tag "TBS_Maintenance\dist\TBS_Maintenance_Script.ps1" --title $tag --notes-file release-notes.md --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

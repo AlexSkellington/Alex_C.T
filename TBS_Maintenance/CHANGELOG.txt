@@ -19,7 +19,8 @@
 #  [REPO] The built script is published as a GitHub Release asset; the root
 #         TBS_Maintenace_Script_V2.ps1 (bit.ly/TBS_Maintenance_Script) is a small launcher for
 #         the latest release. MiniGhost moved to MiniGhost\MiniGhost.ps1 with its own launcher.
-## ===================================================================================================
+#
+# ===================================================================================================
 #  v2.7.0  -  2026-10-22
 #  Modular source tree, build step, and a full review of every function
 # ===================================================================================================
@@ -137,7 +138,8 @@
 #          builder for the four tool buttons; activity hooks registered once; worker scripts
 #          and C# moved to src\Resources; dead code removed (Get_PsExec, unreachable blocks,
 #          unused variables and helpers).
-## ===================================================================================================
+#
+# ===================================================================================================
 #  v2.6.9  -  2026-09-01
 #  Drive-scan fallback, activation hardening, timeout + job hygiene
 # ===================================================================================================
