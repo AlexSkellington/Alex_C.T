@@ -5,8 +5,9 @@
 #   Starts the lane SQL protocol background loop: a UI-thread timer probes every lane's SQL
 #   protocol (TCP -> Named Pipes -> else File, Offline when unreachable) once a minute in a
 #   runspace pool, and keeps the results in $script:LaneProtocols + Protocol_Results.txt.
-#   Lanes that end up on File get a one-shot "enable SQL protocols" task scheduled on the lane
-#   (Ensure_SQL_Enable_Scheduled_Task_For_File_Lane, run in a hidden helper process).
+#   Lanes that end up on File get the 4:15 AM "enable SQL protocols" task on the lane
+#   (Ensure_SQL_Enable_Scheduled_Task_For_File_Lane, run in a hidden helper process), checked
+#   again only after that run (or a day after a run that found nothing to change).
 #   Call once after node discovery; it returns immediately. A second call only updates the
 #   lane map - the running loop picks it up on its next scan.
 #
@@ -23,7 +24,8 @@
 #   - $script:LaneProtocolLaneMap            the lane map the loop scans
 #   - $script:LaneProtocolStop               set by FormClosing to stop the loop
 #   - $script:LaneSqlProtocolEnableJobs      lane => helper process scheduling the SQL enable task
-#   - $script:LaneSqlProtocolEnableTaskState lane => last scheduling result
+#   - $script:LaneSqlProtocolEnableTaskState lane => last check: TaskPresent, LastChecked,
+#                                            ScheduledFor, LastResult (Scheduled / NothingToFix / Failed)
 #   - $script:LaneProtocolHelpers            the loop's helper scriptblocks (see Notes)
 #
 # Notes:
@@ -122,34 +124,40 @@ function Start_Lane_Protocol_Jobs
 			$running = $script:LaneSqlProtocolEnableJobs[$laneKey]
 			if ($running -and $running.Process -and -not $running.Process.HasExited) { return }
 
-			# The lane is rescanned every minute - re-check a lane at most every 15 minutes
+			# The lane is rescanned every minute; check it again only when there can be news:
+			# scheduled -> after the run, nothing to fix -> next day, failed -> after 30 minutes
 			$state = $script:LaneSqlProtocolEnableTaskState[$laneKey]
-			if ($state -and ($state.LastChecked -is [datetime]) -and ((Get-Date) - $state.LastChecked).TotalMinutes -lt 15) { return }
+			if ($state -and ($state.LastChecked -is [datetime]))
+			{
+				$recheckAt = $state.LastChecked.AddMinutes(30)
+				if ($state.LastResult -eq 'NothingToFix') { $recheckAt = $state.LastChecked.AddDays(1) }
+				elseif ($state.TaskPresent -and ($state.ScheduledFor -is [datetime])) { $recheckAt = $state.ScheduledFor.AddMinutes(15) }
+				if ((Get-Date) -lt $recheckAt) { return }
+			}
 
 			$scheduledDate = & $script:LaneProtocolHelpers.NextSqlEnableRun
 			$fnBody = ${function:Ensure_SQL_Enable_Scheduled_Task_For_File_Lane}
 			if (-not $fnBody)
 			{
-				$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{ TaskPresent = $false; LastChecked = Get-Date; ScheduledFor = $scheduledDate; MachineName = $MachineName; LastResult = 'NoFunction' }
+				$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{ TaskPresent = $false; LastChecked = Get-Date; ScheduledFor = $null; MachineName = $MachineName; LastResult = 'NoFunction' }
 				return
 			}
 
 			# The helper process gets the function from memory (works for .ps1, .exe and irm|iex
-			# launches alike) plus a Write_Log shim that prints to stdout, so the reason for a
-			# failure comes back through the redirected output file.
+			# launches alike) and prints its result object as one JSON line, read back by
+			# HarvestSqlEnable through the redirected output file.
 			$launcherScriptPath = Join-Path $script:SetupFiles ("LaneSqlEnableLauncher_{0}.ps1" -f $laneKey)
 			$launcherOutPath = Join-Path $script:SetupFiles ("LaneSqlEnableLauncher_{0}.out.txt" -f $laneKey)
 			$launcherScript = (@(
 					'param([string]$LaneNumber, [string]$MachineName, [string]$TcpPort = ''1433'', [string]$StartTime = ''04:15'')'
-					'function Write_Log { param([string]$Message, $Color = ''Black'') Write-Host $Message }'
 					'function Ensure_SQL_Enable_Scheduled_Task_For_File_Lane'
 					'{'
 					$fnBody.ToString()
 					'}'
-					'$ok = $false'
-					'try { $ok = [bool](Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $LaneNumber -MachineName $MachineName -TcpPort $TcpPort -StartTime $StartTime) }'
-					'catch { Write-Host ("ERROR: " + $_.Exception.Message) }'
-					'if ($ok) { exit 0 } else { exit 1 }'
+					'try { $r = Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $LaneNumber -MachineName $MachineName -TcpPort $TcpPort -StartTime $StartTime }'
+					'catch { $r = [pscustomobject]@{ Status = ''Failed''; Message = (''could not schedule the SQL protocol enable: '' + $_.Exception.Message); Color = ''red''; LastRun = ''''; LastRunColor = ''gray'' } }'
+					'$r | Select-Object Status, Message, Color, LastRun, LastRunColor | ConvertTo-Json -Compress'
+					'if ($r.Status -eq ''Failed'') { exit 1 } else { exit 0 }'
 				) -join "`r`n")
 
 			try
@@ -198,18 +206,24 @@ function Start_Lane_Protocol_Jobs
 					catch { continue }
 				}
 
-				$success = $false
-				try { $success = ($proc -and $proc.ExitCode -eq 0) }
-				catch { $success = $false }
-				$reason = ''
+				# Last non-empty output line = the JSON result; anything else is the failure text
+				$r = $null
+				$lastLine = ''
 				try
 				{
 					if ($st.OutputPath -and (Test-Path -LiteralPath $st.OutputPath))
 					{
-						$reason = [string](@(Get-Content -LiteralPath $st.OutputPath -ErrorAction Stop | Where-Object { $_.Trim() }) | Select-Object -Last 1)
+						$lastLine = [string](@(Get-Content -LiteralPath $st.OutputPath -ErrorAction Stop | Where-Object { $_.Trim() }) | Select-Object -Last 1)
+						$r = $lastLine | ConvertFrom-Json
 					}
 				}
-				catch { }
+				catch { $r = $null }
+				if ($r -and -not $r.Status) { $r = $null }
+				if (-not $r)
+				{
+					$why = if ($lastLine) { $lastLine } else { 'no details' }
+					$r = [pscustomobject]@{ Status = 'Failed'; Message = "could not schedule the SQL protocol enable: $why"; Color = 'red'; LastRun = ''; LastRunColor = 'gray' }
+				}
 				foreach ($tmp in @($st.ScriptPath, $st.OutputPath))
 				{
 					try { if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }
@@ -217,33 +231,26 @@ function Start_Lane_Protocol_Jobs
 				}
 				[void]$script:LaneSqlProtocolEnableJobs.Remove($laneKey)
 
-				$result = if ($success) { 'Scheduled' } else { 'Failed' }
+				# AlreadyScheduled logs like Scheduled: once, not every check
+				$result = if ($r.Status -eq 'AlreadyScheduled') { 'Scheduled' } else { [string]$r.Status }
+				$scheduled = ($result -eq 'Scheduled')
 				$previous = $script:LaneSqlProtocolEnableTaskState[$laneKey]
 				$changedResult = (-not $previous) -or ([string]$previous.LastResult -ne $result)
 				$script:LaneSqlProtocolEnableTaskState[$laneKey] = [pscustomobject]@{
-					TaskPresent  = $success
+					TaskPresent  = $scheduled
 					LastChecked  = Get-Date
-					ScheduledFor = $st.ScheduledFor
+					ScheduledFor = $(if ($scheduled) { $st.ScheduledFor } else { $null })
 					MachineName  = [string]$st.MachineName
 					LastResult   = $result
 				}
 
-				if ($changedResult)
+				try
 				{
-					try
-					{
-						if ($success)
-						{
-							Write_Log ("Lane {0} ({1}) is on the SQL File protocol - SQL protocol enable scheduled for {2:MM/dd/yyyy HH:mm}." -f $laneKey, $st.MachineName, $st.ScheduledFor) 'green'
-						}
-						else
-						{
-							$why = if ($reason) { $reason } else { 'no details' }
-							Write_Log ("Lane {0} ({1}) is on the SQL File protocol - could not schedule the SQL protocol enable: {2}" -f $laneKey, $st.MachineName, $why) 'red'
-						}
-					}
-					catch { }
+					# What the last 4:15 run did is news every time it is read back
+					if ($r.LastRun) { Write_Log ("Lane {0} ({1}): {2}" -f $laneKey, $st.MachineName, $r.LastRun) ([string]$r.LastRunColor) }
+					if ($changedResult) { Write_Log ("Lane {0} ({1}) is on the SQL File protocol - {2}" -f $laneKey, $st.MachineName, $r.Message) ([string]$r.Color) }
 				}
+				catch { }
 			}
 		}
 	}
@@ -333,9 +340,10 @@ function Start_Lane_Protocol_Jobs
 						try { & $h.StartSqlEnable $laneNum ([string]$mn) }
 						catch { }
 					}
-					elseif ($script:LaneSqlProtocolEnableTaskState.ContainsKey($laneNum))
+					elseif ($proto -ne 'Offline' -and $script:LaneSqlProtocolEnableTaskState.ContainsKey($laneNum))
 					{
 						# The lane answers on TCP / Named Pipes now - nothing to schedule any more
+						# (Offline keeps the state: a lane switched off overnight is still a File lane)
 						[void]$script:LaneSqlProtocolEnableTaskState.Remove($laneNum)
 					}
 					$changed = $true

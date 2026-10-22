@@ -16,7 +16,7 @@ together.
 |---|---|
 | `src\Bootstrap` | Runs first: launch detection, version, elevation, globals and paths, storeman detection, store paths |
 | `src\Functions\<Category>` | One function per file - `Core`, `Store`, `Background`, `Dialogs`, `Server`, `Lanes`, `Scales`, `Nodes`, `General` |
-| `src\Init` | Runtime init and the headless `-LaneSqlEnableWorker` mode |
+| `src\Init` | Runtime init (MailslotSender type) |
 | `src\GUI` | The main window, top to bottom: form/theme, banner, status bar, info strip, log, idle/busy, protocol window, closing, styling helpers, the four tool menus, layout |
 | `src\Main` | Load store data, startup warmup, show the window |
 | `src\Resources` | Embedded files (C# renderer, worker scripts) - pulled in by `#TBS:EMBED` lines |

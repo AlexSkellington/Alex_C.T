@@ -22,17 +22,12 @@
 #     Inline - irm https://bit.ly/TBS_Maintenance_Script | iex, a paste, or an ISE selection
 #   and reads the optional command-line switches:
 #     -ShowConsole / -KeepConsole      keep the console window visible (troubleshooting)
-#     -LaneSqlEnableWorker             headless worker mode, with -LaneSqlEnableWorkerLane,
-#                                      -LaneSqlEnableWorkerMachine, -LaneSqlEnableWorkerTcpPort and
-#                                      -LaneSqlEnableWorkerStartTime (used by the scheduled task
-#                                      that Ensure_SQL_Enable_Scheduled_Task_For_File_Lane creates)
 #
 # Variables:
 #   - $script:LaunchSourceType       'Ps1' | 'Exe' | 'Inline'
 #   - $script:LaunchEntryPath        the .ps1 / .exe that was started ($null for Inline)
 #   - $script:IsInlineLaunch         $true for Inline launches
 #   - $script:ShowConsole            -ShowConsole / -KeepConsole was given
-#   - $script:LaneSqlEnableWorker*   worker-mode switch + its four values
 #   - $__scriptPath, $__entryPath, $__launchArgs, $__isSavedPs1Launch, $__isExeLaunch
 #                                    read by the elevation step (03_Elevation)
 # ===================================================================================================
@@ -116,25 +111,6 @@ $script:IsInlineLaunch = ($script:LaunchSourceType -eq 'Inline')
 # Command-line switches
 # ---------------------------------------------------------------------------------------------------
 $script:ShowConsole = [bool](@($__launchArgs | Where-Object { $_ -in @('-ShowConsole', '/ShowConsole', '-KeepConsole', '/KeepConsole') }).Count -gt 0)
-$script:LaneSqlEnableWorkerMode = $false
-$script:LaneSqlEnableWorkerLane = $null
-$script:LaneSqlEnableWorkerMachine = $null
-$script:LaneSqlEnableWorkerTcpPort = '1433'
-$script:LaneSqlEnableWorkerStartTime = '04:15'
-
-for ($__argIndex = 0; $__argIndex -lt $__launchArgs.Count; $__argIndex++)
-{
-	$__argValue = [string]$__launchArgs[$__argIndex]
-	$__hasValue = (($__argIndex + 1) -lt $__launchArgs.Count)
-	switch -Regex ($__argValue)
-	{
-		'^-LaneSqlEnableWorker$' { $script:LaneSqlEnableWorkerMode = $true }
-		'^-LaneSqlEnableWorkerLane$' { if ($__hasValue) { $__argIndex++; $script:LaneSqlEnableWorkerLane = [string]$__launchArgs[$__argIndex] } }
-		'^-LaneSqlEnableWorkerMachine$' { if ($__hasValue) { $__argIndex++; $script:LaneSqlEnableWorkerMachine = [string]$__launchArgs[$__argIndex] } }
-		'^-LaneSqlEnableWorkerTcpPort$' { if ($__hasValue) { $__argIndex++; $script:LaneSqlEnableWorkerTcpPort = [string]$__launchArgs[$__argIndex] } }
-		'^-LaneSqlEnableWorkerStartTime$' { if ($__hasValue) { $__argIndex++; $script:LaneSqlEnableWorkerStartTime = [string]$__launchArgs[$__argIndex] } }
-	}
-}
 
 # ---------------------------------------------------------------------------------------------------
 # Console window helper (the console is hidden once the main window is up - see Main\03_Show_Form)

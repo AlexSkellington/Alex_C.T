@@ -10,9 +10,9 @@ and the script runs top to bottom:
 
 | Step | Files | What happens |
 |---|---|---|
-| 1 | `src/Bootstrap/01..06` | Launch detection (saved .ps1, packaged .exe, `irm \| iex`, worker), version, **elevation** (relaunch with RunAs when possible), globals and paths, **storeman detection** (SMB share with a valid key -> Production; test roots -> Test; drive scan -> fallback; old key -> KEY EXPIRED), store paths |
+| 1 | `src/Bootstrap/01..06` | Launch detection (saved .ps1, packaged .exe, `irm \| iex`), version, **elevation** (relaunch with RunAs when possible), globals and paths, **storeman detection** (SMB share with a valid key -> Production; test roots -> Test; drive scan -> fallback; old key -> KEY EXPIRED), store paths |
 | 2 | `src/Functions/**` | Function definitions only - nothing runs |
-| 3 | `src/Init/01` | MailslotSender type; `-LaneSqlEnableWorker` runs its job and exits (no window) |
+| 3 | `src/Init/01` | MailslotSender type |
 | 4 | `src/GUI/01..14` | Builds the window in script scope: form and theme, banner, status bar, info strip, log box, idle/busy timers, protocol window, closing logic, styling helpers, the four tool buttons and menus, bottom layout |
 | 5 | `src/Main/01` | **Pre-window load**, local reads only (fast): store/DB info read live from the INI files, store number, nodes from cache |
 | 6 | `src/Main/02` | Registers the **warmup**: after the window is shown, network refreshes run as background jobs (nodes, lane DB info, table aliases, SMS functions), then inline steps (SQL scripts, test item, scale credentials, XE watcher, VNC export, hardware info, quarterly maintenance) |
@@ -64,6 +64,12 @@ files and is read live on every launch (a cached copy showed stale values until 
 - **Generated scripts + scheduled tasks / NSSM services** for anything that must outlive the
   window: DB backups, SMS key sync, lane SQL enable, Remove_Archive_Bit and the duplicate-file
   monitor. Their text lives in here-strings inside the function that installs them.
+- **Lane SQL protocol enable**: the settings + restart code is
+  `Resources/Workers/Sql_Protocol_Settings.ps1`, embedded into both the menu action
+  (`Enable_SQL_Protocols_On_Selected_Lanes`, remote registry) and the 4:15 AM task script
+  (`Ensure_SQL_Enable_Scheduled_Task_For_File_Lane` + `Enable_SQL_Protocols_Worker.ps1`, local
+  registry, also opens inbound TCP 1433). The task writes `<task>.result.txt` in the lane's
+  Storeman\Temp; the protocol loop reads it back after the run and logs it.
 
 ## Talking to lanes and scales
 

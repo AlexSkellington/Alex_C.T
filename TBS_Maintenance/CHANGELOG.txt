@@ -5,6 +5,40 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.5  -  2026-10-22
+#  Lane SQL protocol enable: right drive, any date format, results you can see
+# ===================================================================================================
+#
+#  [FIX]  The 4:15 AM "enable SQL protocols" task ran C:\Storeman\Temp\... even when the lane's
+#         Storeman is on D: - the task fired, found no script and failed without a trace, and
+#         was scheduled again the next day. The drive is now found by writing a marker file
+#         through \\lane\Storeman and looking for it on the c$ / d$ / e$ / f$ admin shares; no
+#         Storeman folder is created on a drive that has none.
+#  [FIX]  The task was created with a MM/dd/yyyy start date, which schtasks rejects (or reads as
+#         another day) on lanes set to a dd/MM/yyyy date format. It is a DAILY 04:15 task now -
+#         no date at all - and the script deletes it after its run.
+#  [NEW]  The 4:15 run writes a result file next to itself (what it changed, which SQL service
+#         it restarted, firewall rule, errors). The server reads it back the next time it checks
+#         the lane and logs it.
+#  [NEW]  The 4:15 run also makes sure inbound TCP 1433 is allowed in the lane's Windows
+#         Firewall (rule TBS_SQL_TCP_1433) - the usual reason a lane stays on File after its SQL
+#         protocols are on. The menu action schedules it for lanes that stay on File.
+#  [FIX]  A lane whose run found nothing to change (protocols, port and firewall already set)
+#         is no longer scheduled again every night: the log says to check SQL Server on the lane
+#         and the network instead. A task that ran without leaving a result, or one created by
+#         an older version, is recreated.
+#  [PERF] File lanes were re-checked every 15 minutes all day, each time a hidden PowerShell
+#         process querying the lane's task list over the network. A scheduled lane is checked
+#         again only after its 4:15 run, a failed one after 30 minutes, a "nothing to fix" one
+#         after a day. A lane that is off overnight keeps its state.
+#  [CLEAN] The SQL protocol settings and the SQL restart exist once
+#         (Resources\Workers\Sql_Protocol_Settings.ps1), used by both the menu action (remote
+#         registry) and the 4:15 task (local registry). The restart waits for STOPPED / RUNNING
+#         in both instead of fixed sleeps.
+#  [CLEAN] Removed the unused -LaneSqlEnableWorker startup mode (nothing started it).
+#  [NOTE] Both paths still switch the lane's SQL Server to mixed-mode logins (the Tecnica
+#         SQL-login fallback needs it).
+## ===================================================================================================
 #  v2.7.4  -  2026-10-22
 #  Store info read live, one less startup job
 # ===================================================================================================
@@ -22,7 +56,8 @@
 #  [NOTE] Caches that stay, because their data is slow to get: node list (SQL query), lane
 #         DB info (each lane's Startup.ini over the network), table aliases (every Load file),
 #         lane protocols (network probes, also read by the lanes' scheduled tasks).
-## ===================================================================================================
+#
+# ===================================================================================================
 #  v2.7.3  -  2026-10-22
 #  Store name after a ping, full KEY EXPIRED badge
 # ===================================================================================================
@@ -33,7 +68,8 @@
 #  [FIX]  The banner's store / badge area had a fixed 250 px width: with the store name shown
 #         ("Store 998 - Thrifty Warehouse") the KEY EXPIRED / TEST badge was cut off. The area
 #         now sizes to its contents (never under the clock).
-## ===================================================================================================
+#
+# ===================================================================================================
 #  v2.7.2  -  2026-10-22
 #  Store name read from system.ini first
 # ===================================================================================================
@@ -47,7 +83,8 @@
 #         $script:FunctionResults['StoreName'] (+ 'StoreNameSource'); Troubleshoot_ScaleCommApp
 #         uses it instead of its own system.ini parser. Get_Store_And_Database_Info defaults
 #         its INI paths to the ones found at startup.
-## ===================================================================================================
+#
+# ===================================================================================================
 #  v2.7.1  -  2026-10-22
 #  Main window lost its banner text after any action that opened a dialog
 # ===================================================================================================

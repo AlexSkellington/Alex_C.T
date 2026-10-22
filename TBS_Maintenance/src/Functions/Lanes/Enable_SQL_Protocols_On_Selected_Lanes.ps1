@@ -6,7 +6,10 @@
 #   the selected lanes: sets a static TCP port (default 1433), disables dynamic ports,
 #   restarts the SQL service when needed, and optionally live-tests a Linked Server to pick
 #   the working transport. Runs in parallel through a runspace pool (not background jobs)
-#   and restarts the programs on lanes that needed a service restart.
+#   and restarts the programs on lanes that needed a service restart. The registry settings
+#   and the restart come from Resources\Workers\Sql_Protocol_Settings.ps1 (the same code the
+#   4:15 AM task runs). A lane still on File afterwards gets that task, which also opens the
+#   TCP port in the lane's Windows Firewall.
 #
 # Parameters:
 #   - StoreNumber         [string]: store to process (required)
@@ -83,6 +86,7 @@ function Enable_SQL_Protocols_On_Selected_Lanes
 	# ---- Script that each runspace will execute (NO nested functions; just inline code) ------------
 	$laneWork = @'
 param($machine,$lane,$StoreNumber,$tcpPort,$createLinks,$localInstance)
+#TBS:EMBED Resources/Workers/Sql_Protocol_Settings.ps1
 
 # Per-lane output buffer; we send it back as a single PSCustomObject
 $out = @()
@@ -100,153 +104,25 @@ try {
     sc.exe "\\$machine" config RemoteRegistry start= demand | Out-Null
     sc.exe "\\$machine" start RemoteRegistry | Out-Null
 
-    # --- Open remote HKLM -------------------------------------------------------------------------
+    # --- Open remote HKLM and apply the settings (Sql_Protocol_Settings.ps1, shared with the 4:15 task)
     $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $machine)
+    try { $instanceResults = @(& $SetSqlProtocolSettings $reg $tcpPort) }
+    finally { $reg.Close() }
 
-    # --- Enumerate SQL instances from both 64/32-bit locations -----------------------------------
-    $instances = @{}
-    foreach ($root in @(
-        "SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL",
-        "SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL"
-    )) {
-        $k = $reg.OpenSubKey($root)
-        if ($k) {
-            foreach ($n in $k.GetValueNames()) {
-                $id = $k.GetValue($n)
-                if ($id -and -not $instances.ContainsKey($n)) { $instances[$n] = $id }
-            }
-            $k.Close()
-        }
-    }
-
-    if ($instances.Count -eq 0) {
+    if ($instanceResults.Count -eq 0) {
         $out += [pscustomobject]@{ Text = "No SQL instances found on $machine."; Color = "yellow" }
-        $reg.Close()
     }
-    else {
-        foreach ($instanceName in $instances.Keys) {
-            $instanceID = $instances[$instanceName]
-            $out += [pscustomobject]@{ Text = "Processing SQL Instance: $instanceName (ID: $instanceID)"; Color = "blue" }
-            $needsRestart = $false
-
-            # ---- Enable Mixed Mode (LoginMode=2) -------------------------------------------------
-            foreach ($authPath in @(
-                "SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer",
-                "SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer"
-            )) {
-                $k = $reg.OpenSubKey($authPath, $true)
-                if ($k) {
-                    if ($k.GetValue("LoginMode", 1) -ne 2) {
-                        $k.SetValue("LoginMode", 2, [Microsoft.Win32.RegistryValueKind]::DWord)
-                        $out += [pscustomobject]@{ Text = "Mixed Mode Authentication enabled at $authPath."; Color = "green" }
-                        $needsRestart = $true
-                    } else {
-                        $out += [pscustomobject]@{ Text = "Mixed Mode Authentication already enabled at $authPath."; Color = "gray" }
-                    }
-                    $k.Close(); break
-                }
-            }
-
-            # ---- Enable TCP ----------------------------------------------------------------------
-            foreach ($p in @(
-                "SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp",
-                "SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp"
-            )) {
-                $k = $reg.OpenSubKey($p, $true)
-                if ($k) {
-                    if ($k.GetValue('Enabled', 0) -ne 1) {
-                        $k.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-                        $out += [pscustomobject]@{ Text = "TCP/IP protocol enabled at $p."; Color = "green" }
-                        $needsRestart = $true
-                    } else {
-                        $out += [pscustomobject]@{ Text = "TCP/IP already enabled at $p."; Color = "gray" }
-                    }
-                    $k.Close(); break
-                }
-            }
-
-            # ---- Set static port and clear dynamic -----------------------------------------------
-            foreach ($p in @(
-                "SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll",
-                "SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Tcp\\IPAll"
-            )) {
-                $k = $reg.OpenSubKey($p, $true)
-                if ($k) {
-                    $curPort = $k.GetValue('TcpPort', "")
-                    $curDyn  = $k.GetValue('TcpDynamicPorts', "")
-                    if ($curPort -ne $tcpPort -or $curDyn -ne "") {
-                        $k.SetValue('TcpPort', $tcpPort, [Microsoft.Win32.RegistryValueKind]::String)
-                        $k.SetValue('TcpDynamicPorts', '', [Microsoft.Win32.RegistryValueKind]::String)
-                        $out += [pscustomobject]@{ Text = "Registry port set to $tcpPort at $p."; Color = "green" }
-                        $needsRestart = $true
-                    } else {
-                        $out += [pscustomobject]@{ Text = "TCP port already set to $tcpPort at $p."; Color = "gray" }
-                    }
-                    $k.Close(); break
-                }
-            }
-
-            # ---- Enable Named Pipes --------------------------------------------------------------
-            foreach ($p in @(
-                "SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np",
-                "SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Np"
-            )) {
-                $k = $reg.OpenSubKey($p, $true)
-                if ($k) {
-                    if ($k.GetValue('Enabled', 0) -ne 1) {
-                        $k.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-                        $out += [pscustomobject]@{ Text = "Named Pipes protocol enabled at $p."; Color = "green" }
-                        $needsRestart = $true
-                    } else {
-                        $out += [pscustomobject]@{ Text = "Named Pipes already enabled at $p."; Color = "gray" }
-                    }
-                    $k.Close(); break
-                }
-            }
-
-            # ---- Enable Shared Memory ------------------------------------------------------------
-            foreach ($p in @(
-                "SOFTWARE\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm",
-                "SOFTWARE\\Wow6432Node\\Microsoft\\Microsoft SQL Server\\$instanceID\\MSSQLServer\\SuperSocketNetLib\\Sm"
-            )) {
-                $k = $reg.OpenSubKey($p, $true)
-                if ($k) {
-                    if ($k.GetValue('Enabled', 0) -ne 1) {
-                        $k.SetValue('Enabled', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
-                        $out += [pscustomobject]@{ Text = "Shared Memory protocol enabled at $p."; Color = "green" }
-                        $needsRestart = $true
-                    } else {
-                        $out += [pscustomobject]@{ Text = "Shared Memory already enabled at $p."; Color = "gray" }
-                    }
-                    $k.Close(); break
-                }
-            }
-
-            # ---- Restart SQL service if any change ----------------------------------------------
-            if ($needsRestart) {
-                $svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' } else { "MSSQL`$$instanceName" }
-                $out += [pscustomobject]@{ Text = "Restarting SQL Service $svcName on $machine..."; Color = "gray" }
-                # sc.exe returns at once; wait for STOPPED (1) / RUNNING (4), 60 s each at most
-                sc.exe "\\$machine" stop $svcName | Out-Null
-                for ($i = 0; $i -lt 60; $i++) {
-                    if ((sc.exe "\\$machine" query $svcName | Out-String) -match 'STATE\s+:\s+1\s') { break }
-                    Start-Sleep -Seconds 1
-                }
-                sc.exe "\\$machine" start $svcName | Out-Null
-                $running = $false
-                for ($i = 0; $i -lt 60; $i++) {
-                    if ((sc.exe "\\$machine" query $svcName | Out-String) -match 'STATE\s+:\s+4\s') { $running = $true; break }
-                    Start-Sleep -Seconds 1
-                }
-                if ($running) { $out += [pscustomobject]@{ Text = "SQL Service $svcName restarted successfully on $machine."; Color = "green" } }
-                else { $out += [pscustomobject]@{ Text = "SQL Service $svcName on $machine did not report RUNNING within 60 seconds - check it on the lane."; Color = "red" } }
-                $laneNeedsRestart = $true
-            } else {
-                $out += [pscustomobject]@{ Text = "No protocol/auth changes for $instanceName on $machine. No restart needed."; Color = "green" }
-            }
-        } # foreach instance
-
-        $reg.Close()
+    foreach ($ir in $instanceResults) {
+        $out += [pscustomobject]@{ Text = "Processing SQL Instance: $($ir.Instance)"; Color = "blue" }
+        $out += $ir.Lines
+        if ($ir.Changed) {
+            $out += [pscustomobject]@{ Text = "Restarting SQL Service $($ir.Service) on $machine..."; Color = "gray" }
+            if (& $RestartSqlService $ir.Service $machine) { $out += [pscustomobject]@{ Text = "SQL Service $($ir.Service) restarted successfully on $machine."; Color = "green" } }
+            else { $out += [pscustomobject]@{ Text = "SQL Service $($ir.Service) on $machine did not report RUNNING within 60 seconds - check it on the lane."; Color = "red" } }
+            $laneNeedsRestart = $true
+        } else {
+            $out += [pscustomobject]@{ Text = "No protocol/auth changes for $($ir.Instance) on $machine. No restart needed."; Color = "green" }
+        }
     }
 
     # --- Quick transport probe: TCP then NP --------------------------------------------------------
@@ -567,30 +443,26 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 
 					if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($res.Machine))
 					{
-						# Menu action: report the scheduling outcome in the log box.
-						# (Failures log their own red line from inside the function.)
-						$schedOk = $false
-						try
-						{
-							$schedOk = [bool](Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $laneStr -MachineName $res.Machine)
-						}
-						catch { }
-						if ($schedOk)
-						{
-							$schedState = $null
-							try { $schedState = $script:LaneSqlProtocolEnableTaskState[$laneStr] } catch { }
-							$whenText = if ($schedState -and $schedState.ScheduledFor) { [string]$schedState.ScheduledFor.ToString('MM/dd/yyyy HH:mm') } else { 'next 4:15 AM' }
-							Write_Log ("Scheduled SQL enable for {0} (Lane {1}) for {2}" -f $res.Machine, $laneStr, $whenText) 'green'
+						# Still on File (often the lane firewall blocking TCP): the 4:15 task also opens
+						# the TCP port in the lane's Windows Firewall
+						$sched = $null
+						try { $sched = Ensure_SQL_Enable_Scheduled_Task_For_File_Lane -LaneNumber $laneStr -MachineName $res.Machine -TcpPort $tcpPort }
+						catch { $sched = [pscustomobject]@{ Status = 'Failed'; Message = "could not schedule the SQL protocol enable: $($_.Exception.Message)"; Color = 'red'; ScheduledFor = $null; LastRun = ''; LastRunColor = 'gray' } }
+						if ($sched.LastRun) { Write_Log ("{0} (Lane {1}): {2}" -f $res.Machine, $laneStr, $sched.LastRun) $sched.LastRunColor }
+						Write_Log ("{0} (Lane {1}): {2}" -f $res.Machine, $laneStr, $sched.Message) $sched.Color
+						$schedResult = if ($sched.Status -eq 'AlreadyScheduled') { 'Scheduled' } else { [string]$sched.Status }
+						$script:LaneSqlProtocolEnableTaskState[$laneStr] = [pscustomobject]@{
+							TaskPresent  = ($schedResult -eq 'Scheduled')
+							LastChecked  = Get-Date
+							ScheduledFor = $sched.ScheduledFor
+							MachineName  = $res.Machine
+							LastResult   = $schedResult
 						}
 					}
 					elseif ($script:LaneSqlProtocolEnableTaskState -and $script:LaneSqlProtocolEnableTaskState.ContainsKey($laneStr))
 					{
-						$script:LaneSqlProtocolEnableTaskState[$laneStr] = [pscustomobject]@{
-							TaskPresent  = $false
-							LastChecked  = Get-Date
-							ScheduledFor = $null
-							MachineName  = $res.Machine
-						}
+						# Reachable over TCP / Named Pipes now - nothing to schedule
+						[void]$script:LaneSqlProtocolEnableTaskState.Remove($laneStr)
 					}
 
 					if ($res.Restarted) { $restarted += $res.Lane }

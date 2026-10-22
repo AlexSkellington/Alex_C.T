@@ -22,7 +22,7 @@ try
 }
 catch { $IsAdmin = $false }
 
-if (-not $IsAdmin -and -not $script:LaneSqlEnableWorkerMode -and [Environment]::UserInteractive -and ($__isSavedPs1Launch -or $__isExeLaunch))
+if (-not $IsAdmin -and [Environment]::UserInteractive -and ($__isSavedPs1Launch -or $__isExeLaunch))
 {
 	if ($script:ShowConsole) { Write-Host "Requesting elevated launch..." -ForegroundColor DarkYellow }
 
