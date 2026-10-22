@@ -5,6 +5,20 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.2  -  2026-10-22
+#  Store name read from system.ini first
+# ===================================================================================================
+#
+#  [FIX]  The store name showed SMS's placeholder "Company Name" (from INFO_*_WIN.INI
+#         [STOREDETAIL] Name=, which is never filled in on many stores). The name now comes
+#         from Office\system.ini ([SMS] Name=, else the first NAME= line) and falls back to
+#         the INFO file; "Company Name" counts as empty. Quoted names and "#" are kept, a
+#         " ;" comment is dropped. Hover the store name to see which file it came from.
+#  [CLEAN] The name is resolved once, in Get_Store_And_Database_Info, into
+#         $script:FunctionResults['StoreName'] (+ 'StoreNameSource'); Troubleshoot_ScaleCommApp
+#         uses it instead of its own system.ini parser. Get_Store_And_Database_Info defaults
+#         its INI paths to the ones found at startup.
+## ===================================================================================================
 #  v2.7.1  -  2026-10-22
 #  Main window lost its banner text after any action that opened a dialog
 # ===================================================================================================

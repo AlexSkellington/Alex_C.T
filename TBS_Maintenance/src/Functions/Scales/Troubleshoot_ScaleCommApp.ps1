@@ -2,8 +2,8 @@
 #                              FUNCTION: Troubleshoot_ScaleCommApp
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Audits and optionally repairs the ScaleCommApp *.exe.config files: sets StoreName (read
-#   from system.ini NAME= when not passed), FistScaleIP (first active scale full IP),
+#   Audits and optionally repairs the ScaleCommApp *.exe.config files: sets StoreName (the
+#   store name resolved by Get_Store_And_Database_Info), FistScaleIP (first active scale IP),
 #   SQL_InstanceName, SQL_databaseName and Recs_BatchSendFull; restores the deploy line in
 #   Office\DEPLOY_CHG.sql and removes the "Update_Scales_Specials_Task_Minutes" task if present
 #   (both through Fix_Deploy_CHG).
@@ -14,7 +14,7 @@
 #   - AllMatches          [switch]: fix every matching config (default: first only)
 #   - NoAutoFix           [switch]: audit only, do not save
 #   - Force               [switch]: overwrite without confirmation
-#   - ExpectedStoreName   [string]: expected StoreName (default: system.ini / FunctionResults)
+#   - ExpectedStoreName   [string]: expected StoreName (default: $script:FunctionResults['StoreName'])
 #   - ExpectedSqlInstance / ExpectedDatabase [string]: expected SQL instance (DBSERVER) / database (DBNAME)
 #   - OfficePath          [string]: Office folder for DEPLOY_CHG.sql (default $script:OfficePath)
 #
@@ -35,7 +35,6 @@ function Troubleshoot_ScaleCommApp
 		[switch]$NoAutoFix,
 		[switch]$Force,
 		[string]$ExpectedStoreName,
-		# If not provided, we will try to read NAME= from system.ini (NEW)
 		[string]$ExpectedSqlInstance,
 		[string]$ExpectedDatabase,
 		# NEW: where Office\DEPLOY_CHG.sql lives. If not passed, uses $script:OfficePath when available.
@@ -54,11 +53,8 @@ function Troubleshoot_ScaleCommApp
 
 	if (-not $ExpectedDatabase -and $dbName) { $ExpectedDatabase = $dbName }
 	if (-not $ExpectedSqlInstance -and $server) { $ExpectedSqlInstance = $server }
-	if (-not $ExpectedStoreName)
-	{
-		$ExpectedStoreName = $script:FunctionResults['StoreName']
-		if (-not $ExpectedStoreName) { $ExpectedStoreName = $script:FunctionResults['STORENAME'] }
-	}
+	# Store name: resolved once by Get_Store_And_Database_Info (system.ini first, INFO WIN.INI
+	# fallback) - no second parse here.
 
 	if (-not $connStr -and $server -and $dbName)
 	{
@@ -74,134 +70,6 @@ function Troubleshoot_ScaleCommApp
 			$connStr = "Server=$server;Database=$dbName;Integrated Security=SSPI;TrustServerCertificate=True;"
 		}
 		$script:FunctionResults['ConnectionString'] = $connStr
-	}
-
-	# ------------------------------------------------------------------------------------------------
-	# NEW: Pull StoreName from system.ini (case-insensitive NAME=) if not provided explicitly
-	#       Supports multiple candidate Office paths and robust parsing of NAME= line.
-	# ------------------------------------------------------------------------------------------------
-	$systemIniStoreName = $null
-	try
-	{
-		# Build candidate Office roots to locate system.ini
-		$officeCandidates = @()
-		if ($OfficePath) { $officeCandidates += $OfficePath } # 1) param
-		if ($script:OfficePath -and ($officeCandidates -notcontains $script:OfficePath)) # 2) cached script var
-		{
-			$officeCandidates += $script:OfficePath
-		}
-		# 3) canonical UNC that you use elsewhere
-		if ($officeCandidates -notcontains $script:LocalStoremanOfficePath)
-		{
-			$officeCandidates += $script:LocalStoremanOfficePath
-		}
-		# 4/5) local drive fallbacks
-		foreach ($configuredOffice in $script:StoremanOfficeRoots)
-		{
-			if ($officeCandidates -notcontains $configuredOffice) { $officeCandidates += $configuredOffice }
-		}
-
-		# Try each candidate until we find a system.ini to parse
-		$systemIniPathUsed = $null
-		foreach ($off in $officeCandidates)
-		{
-			if ([string]::IsNullOrWhiteSpace($off)) { continue }
-			$iniCandidate = Join-Path $off "system.ini"
-			if (Test-Path -LiteralPath $iniCandidate)
-			{
-				# Read file raw to preserve all characters; parse NAME= line (case-insensitive)
-				$raw = $null
-				try { $raw = Get-Content -LiteralPath $iniCandidate -Raw -ErrorAction Stop }
-				catch { $raw = $null }
-
-				if ($raw)
-				{
-					# Split and scan lines
-					$lines = $raw -split "`r?`n"
-					foreach ($ln in $lines)
-					{
-						# CHANGE: Robust NAME= parsing that captures the full value after '='
-						#         - Keeps '#' as literal text (so "Supermarket #2" is preserved)
-						#         - Strips ';' comments only when ';' is preceded by whitespace
-						#         - Supports quoted values and keeps everything inside quotes
-
-						$trimLine = $ln.Trim()
-						if ([string]::IsNullOrWhiteSpace($trimLine)) { continue }
-
-						# Look for NAME= at start of line (case-insensitive)
-						if ($trimLine -match '^\s*NAME\s*=')
-						{
-							# Take everything after the FIRST '=' (full capture)
-							$eqIndex = $trimLine.IndexOf('=')
-							if ($eqIndex -ge 0 -and ($eqIndex + 1) -lt $trimLine.Length)
-							{
-								$val = $trimLine.Substring($eqIndex + 1).Trim()
-
-								# If quoted, keep everything inside the outer quotes
-								if ($val.StartsWith('"'))
-								{
-									$lastQuote = $val.LastIndexOf('"')
-									if ($lastQuote -gt 0)
-									{
-										$val = $val.Substring(1, $lastQuote - 1).Trim()
-									}
-									else
-									{
-										# Unbalanced quote fallback
-										$val = $val.Trim('"').Trim()
-									}
-								}
-								else
-								{
-									# CHANGE: Only treat ';' as inline comment (NOT '#')
-									# Strip only when preceded by whitespace: "NAME=My Store ; comment"
-									$mSemi = [regex]::Match($val, '^(.*?)(\s;.*)$')
-									if ($mSemi.Success)
-									{
-										$val = $mSemi.Groups[1].Value.Trim()
-									}
-								}
-
-								if (-not [string]::IsNullOrWhiteSpace($val))
-								{
-									$systemIniStoreName = $val
-									$systemIniPathUsed = $iniCandidate
-									break
-								}
-							}
-						}
-					}
-				}
-			}
-			if ($systemIniStoreName) { break }
-		}
-
-		# If we found a NAME= in system.ini and user did not pass -ExpectedStoreName, adopt it
-		if ($systemIniStoreName -and -not $PSBoundParameters.ContainsKey('ExpectedStoreName'))
-		{
-			$ExpectedStoreName = $systemIniStoreName
-			if ($systemIniPathUsed)
-			{
-				Write_Log "Store name read from system.ini: '$ExpectedStoreName'  (at: $systemIniPathUsed)" "cyan"
-			}
-			else
-			{
-				Write_Log "Store name read from system.ini: '$ExpectedStoreName'" "cyan"
-			}
-		}
-		elseif (-not $systemIniStoreName)
-		{
-			Write_Log "system.ini not found or NAME= missing in all candidate paths; using existing ExpectedStoreName source." "yellow"
-		}
-		else
-		{
-			# User explicitly passed -ExpectedStoreName; keep it, but log discovery for awareness
-			Write_Log "system.ini NAME= found ('$systemIniStoreName') but parameter -ExpectedStoreName was provided; keeping passed value '$ExpectedStoreName'." "yellow"
-		}
-	}
-	catch
-	{
-		Write_Log "Error while reading system.ini for NAME=: $($_.Exception.Message)" "yellow"
 	}
 
 	# ------------------------------------------------------------------------------------------------
@@ -554,7 +422,7 @@ ORDER BY
 		}
 	}
 
-	$dStore = '<unchanged/skip>'; if ($ExpectedStoreName) { $dStore = $ExpectedStoreName } # CHANGE: reflects system.ini-driven name when adopted
+	$dStore = '<unchanged/skip>'; if ($ExpectedStoreName) { $dStore = $ExpectedStoreName }
 	$dIP = '<skip>'; if ($firstScaleIP) { $dIP = $firstScaleIP }
 	$dInst = '<unchanged/skip>'; if ($ExpectedSqlInstance) { $dInst = $ExpectedSqlInstance }
 	$dDb = '<unchanged/skip>'; if ($ExpectedDatabase) { $dDb = $ExpectedDatabase }

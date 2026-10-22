@@ -25,15 +25,19 @@
 #     cached SqlModuleName (Get-Module -ListAvailable is slow).
 #   - Updates the GUI labels even on a cache hit (finally block).
 #   - StoreNumber / Terminal are 3-digit padded when numeric (1 -> 001).
+#   - StoreName is resolved here only: system.ini [SMS] Name= first, INFO_*_WIN.INI
+#     [STOREDETAIL] Name= as fallback ("Company Name" placeholder = empty); StoreNameSource
+#     says which. Other functions read $script:FunctionResults['StoreName'].
 # ===================================================================================================
 
 function Get_Store_And_Database_Info
 {
 	param (
-		[string]$WinIniPath,
-		[string]$SmsStartIniPath,
-		[string]$StartupIniPath,
-		[string]$SystemIniPath,
+		# Default to the store paths resolved at startup (Bootstrap\06_Store_Paths)
+		[string]$WinIniPath = $script:WinIniPath,
+		[string]$SmsStartIniPath = $script:SmsStartIniPath,
+		[string]$StartupIniPath = $script:StartupIniPath,
+		[string]$SystemIniPath = $script:SystemIniPath,
 		[switch]$RefreshCache
 	)
 
@@ -42,7 +46,7 @@ function Get_Store_And_Database_Info
 	# ------------------------------------------------------------------------------------------------
 	$CachePath = Join-Path $script:SetupFiles 'Get_Store_And_Database_Info.txt'
 	$fields = @(
-		'StoreNumber', 'StoreName', 'CompanyName', 'Terminal', 'Address', 'City', 'State',
+		'StoreNumber', 'StoreName', 'StoreNameSource', 'CompanyName', 'Terminal', 'Address', 'City', 'State',
 		'SMSVersionFull', 'StampDate', 'StampTime', 'KeyNumber',
 		'DBSERVER', 'DBNAME', 'ConnectionString', 'ResolvedWinIniPath'
 	)
@@ -304,6 +308,7 @@ function Get_Store_And_Database_Info
 		# ------------------------------------------------------------------------------------------------
 		# Extract Store Info from WIN.INI
 		# ------------------------------------------------------------------------------------------------
+		$winIniStoreName = $null
 		if ($WinIniPath -and (Test-Path $WinIniPath))
 		{
 			$currentSection = ""
@@ -329,7 +334,7 @@ function Get_Store_And_Database_Info
 						if ($key -ieq "Terminal") { $script:FunctionResults['Terminal'] = if ($value -match '^\d+$') { ([int]$value).ToString('000') } else { $value } }
 					}
 					"STOREDETAIL" {
-						if ($key -ieq "Name") { $script:FunctionResults['StoreName'] = $value }
+						if ($key -ieq "Name") { $winIniStoreName = $value } # fallback only - see "Store name" below
 						if ($key -ieq "Address") { $script:FunctionResults['Address'] = $value }
 						if ($key -ieq "City") { $script:FunctionResults['City'] = $value }
 						if ($key -ieq "State") { $script:FunctionResults['State'] = $value }
@@ -356,30 +361,69 @@ function Get_Store_And_Database_Info
 		}
 
 		# ------------------------------------------------------------------------------------------------
-		# Fallback: StoreName from system.ini ([SMS] Name=...)
+		# Store name - resolved ONCE here; everything else reads $script:FunctionResults['StoreName']
+		#   1. Office\system.ini: [SMS] Name=, else the first NAME= line in any section
+		#   2. INFO_*_WIN.INI [STOREDETAIL] Name=  (fallback)
+		#   SMS writes the placeholder "Company Name" when the store details were never filled in;
+		#   it counts as empty. StoreNameSource records where the name came from.
 		# ------------------------------------------------------------------------------------------------
-		if (
-			($script:FunctionResults['StoreName'] -eq 'N/A' -or [string]::IsNullOrWhiteSpace($script:FunctionResults['StoreName'])) -and
-			$SystemIniPath -and (Test-Path $SystemIniPath)
-		)
-		{
-			$inSMSSection = $false
-			foreach ($line in Get-Content -LiteralPath $SystemIniPath)
+		$cleanStoreName = {
+			param ([string]$Value)
+			if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+			$v = $Value.Trim()
+			if ($v.StartsWith('"'))
 			{
-				$trimmed = $line.Trim()
-				if ($trimmed -match '^\[SMS\]$') { $inSMSSection = $true; continue }
-				if ($inSMSSection)
-				{
-					if ($trimmed -match '^\[.+\]$') { break }
-					if ($trimmed -match '^\s*Name\s*=(.*)$')
-					{
-						$storeNameBackup = $Matches[1].Trim()
-						if ($storeNameBackup) { $script:FunctionResults['StoreName'] = $storeNameBackup; break }
-					}
-				}
+				# quoted: everything inside the outer quotes
+				$lastQuote = $v.LastIndexOf('"')
+				$v = if ($lastQuote -gt 0) { $v.Substring(1, $lastQuote - 1).Trim() } else { $v.Trim('"').Trim() }
 			}
+			else
+			{
+				# ' ;' starts an inline comment; '#' stays ("Supermarket #2")
+				$mSemi = [regex]::Match($v, '^(.*?)\s;.*$')
+				if ($mSemi.Success) { $v = $mSemi.Groups[1].Value.Trim() }
+			}
+			if ([string]::IsNullOrWhiteSpace($v) -or $v -ieq 'Company Name' -or $v -ieq 'N/A') { return $null }
+			return $v
 		}
 
+		$systemIniStoreName = $null
+		if ($SystemIniPath -and (Test-Path -LiteralPath $SystemIniPath))
+		{
+			$smsSectionName = $null
+			$firstName = $null
+			$section = ''
+			foreach ($line in Get-Content -LiteralPath $SystemIniPath -ErrorAction SilentlyContinue)
+			{
+				$trimmed = $line.Trim()
+				if ($trimmed -match '^\[(.+)\]$') { $section = $Matches[1].Trim(); continue }
+				if ($trimmed -match '^(?i)NAME\s*=(.*)$')
+				{
+					$candidate = & $cleanStoreName $Matches[1]
+					if (-not $candidate) { continue }
+					if ($section -ieq 'SMS' -and -not $smsSectionName) { $smsSectionName = $candidate }
+					if (-not $firstName) { $firstName = $candidate }
+				}
+			}
+			$systemIniStoreName = if ($smsSectionName) { $smsSectionName } else { $firstName }
+		}
+
+		$winIniName = & $cleanStoreName $winIniStoreName
+		if ($systemIniStoreName)
+		{
+			$script:FunctionResults['StoreName'] = $systemIniStoreName
+			$script:FunctionResults['StoreNameSource'] = "system.ini ($SystemIniPath)"
+		}
+		elseif ($winIniName)
+		{
+			$script:FunctionResults['StoreName'] = $winIniName
+			$script:FunctionResults['StoreNameSource'] = "INFO WIN.INI ($WinIniPath)"
+		}
+		else
+		{
+			$script:FunctionResults['StoreName'] = 'N/A'
+			$script:FunctionResults['StoreNameSource'] = 'not found (system.ini / INFO WIN.INI have no usable Name=)'
+		}
 		# ------------------------------------------------------------------------------------------------
 		# Extract SQL Server/Database from SMSStart INI
 		# ------------------------------------------------------------------------------------------------
@@ -476,6 +520,9 @@ function Get_Store_And_Database_Info
 			if ($null -ne $storeNameLabel)
 			{
 				$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
+				# Hover shows where the name came from (system.ini / INFO WIN.INI)
+				try { if ($toolTip -and $script:FunctionResults['StoreNameSource']) { $toolTip.SetToolTip($storeNameLabel, "Store name from " + $script:FunctionResults['StoreNameSource']) } }
+				catch { }
 				$anyLabelChanged = $true
 			}
 			if ($null -ne $bannerDateLabel)
