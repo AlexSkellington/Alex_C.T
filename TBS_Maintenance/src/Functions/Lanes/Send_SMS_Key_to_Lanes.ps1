@@ -46,25 +46,12 @@ function Send_SMS_Key_to_Lanes
 	# Ensure FunctionResults exists
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 
-	# SQL AUTH creds (used for scheduled; and as fallback for Run Now if WinAuth fails)
-	$SqlAuthUser = "Tecnica"
-	$SqlAuthPass = "TB$upp0rT"
+	# SQL AUTH creds (used for scheduled; and as fallback for Run Now if WinAuth fails).
+	# Was "TB$upp0rT" in double quotes: $upp0rT expanded to nothing and the password sent was "TB".
+	$SqlAuthUser = $script:BackupSqlUser
+	$SqlAuthPass = $script:BackupSqlPass
 
-	# Validate SQL module availability
-	$SqlModule = $script:FunctionResults['SqlModuleName']
-	if ([string]::IsNullOrWhiteSpace($SqlModule) -or $SqlModule -eq "None")
-	{
-		Write_Log "No SQL Server module available (SqlServer or SQLPS). Cannot sync server key." "red"
-		Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
-		return
-	}
-	try { Import-Module $SqlModule -ErrorAction Stop }
-	catch
-	{
-		Write_Log "Failed to import SQL module '$SqlModule'. Error: $_" "red"
-		Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
-		return
-	}
+	# Everything here goes through System.Data.SqlClient, so no SQL module is needed
 
 	# Ensure cached lane map exists (fallback only if missing)
 	if (-not $script:FunctionResults['LaneNumToMachineName'])
@@ -306,7 +293,7 @@ function Send_SMS_Key_to_Lanes
 		$updateSql = "UPDATE SYS_TAB SET F1243 = '$safeServerKey'"
 
 		# SQI fallback file (ANSI 1252, no BOM)
-		$SqiFileName = "UPDATE_SMS_KEY.SQI"
+		$SqiFileName = "UPDATE_SMS_KEY.SQI" # same name as the scheduled task, so a lane never queues two
 		$SqiContent = "@dbEXEC($updateSql)`r`n"
 		$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
 		$TempSqiPath = Join-Path ([System.IO.Path]::GetTempPath()) $SqiFileName
@@ -717,8 +704,8 @@ function Send_SMS_Key_to_Lanes
 			[void]$sb.AppendLine("# AUTO-GENERATED Send_SMS_Key task (self-sufficient, one file)")
 			[void]$sb.AppendLine("`$ErrorActionPreference = 'Stop'")
 			[void]$sb.AppendLine("try { Add-Type -AssemblyName System.Data 2>`$null } catch { }")
-			[void]$sb.AppendLine("`$SqlUser = 'Tecnica'")
-			[void]$sb.AppendLine("`$SqlPass = 'TB`$upp0rT'")
+			[void]$sb.AppendLine("`$SqlUser = '" + $SqlAuthUser.Replace("'", "''") + "'")
+			[void]$sb.AppendLine("`$SqlPass = '" + $SqlAuthPass.Replace("'", "''") + "'")
 			[void]$sb.AppendLine("`$StoreNumber = '$StoreNumber'")
 			[void]$sb.AppendLine("`$OfficePath  = '$OfficePath'")
 			[void]$sb.AppendLine("`$SqlTimeoutSeconds = $SqlTimeoutSeconds")
@@ -765,12 +752,22 @@ function Send_SMS_Key_to_Lanes
 			[void]$sb.AppendLine("} catch { `$rawValues = @() }")
 			[void]$sb.AppendLine("`$serverKey = `$null; `$bestLen = -1")
 			[void]$sb.AppendLine("foreach (`$v in `$rawValues) { if (`$v -eq `$null) { continue }; `$t = ([string]`$v).Trim(); `$stripped = [regex]::Replace(`$t,'[\s\u00A0]+',''); if (-not [string]::IsNullOrWhiteSpace(`$t) -and -not [string]::IsNullOrWhiteSpace(`$stripped)) { if (`$t.Length -gt `$bestLen) { `$bestLen = `$t.Length; `$serverKey = `$t } } }")
-			[void]$sb.AppendLine("if ([string]::IsNullOrWhiteSpace(`$serverKey)) { throw ""Server key empty/null from LOCAL DB."" }")
+			[void]$sb.AppendLine("# SYSTEM usually has no Windows login on the store DB: retry the read with SQL auth")
+			[void]$sb.AppendLine("if ([string]::IsNullOrWhiteSpace(`$serverKey)) {")
+			[void]$sb.AppendLine("  `$sqlEff = [regex]::Replace(`$localEff, '(?i)\b(Integrated\s+Security|Trusted_Connection)\s*=\s*[^;]*;?', '')")
+			[void]$sb.AppendLine("  `$sqlEff = `$sqlEff.TrimEnd(';') + "";User ID=`$SqlUser;Password=`$SqlPass;""")
+			[void]$sb.AppendLine("  try { `$cn = New-Object System.Data.SqlClient.SqlConnection `$sqlEff; try { `$cn.Open(); `$cmd = `$cn.CreateCommand(); `$cmd.CommandText = ""SELECT TOP 1 F1243 FROM SYS_TAB WHERE LEN(LTRIM(RTRIM(F1243))) > 0 ORDER BY LEN(F1243) DESC;""; `$cmd.CommandTimeout = `$SqlTimeoutSeconds; `$v = `$cmd.ExecuteScalar(); if (`$v -ne `$null -and `$v -isnot [DBNull]) { `$serverKey = ([string]`$v).Trim() } } finally { `$cn.Dispose() } } catch { }")
+			[void]$sb.AppendLine("}")
+			[void]$sb.AppendLine("if ([string]::IsNullOrWhiteSpace(`$serverKey)) {")
+			[void]$sb.AppendLine("  `$logDir = [System.IO.Path]::GetDirectoryName(`$LatestLogPath); if (-not (Test-Path `$logDir)) { New-Item -Path `$logDir -ItemType Directory -Force | Out-Null }")
+			[void]$sb.AppendLine("  @((""Timestamp : {0}"" -f (Get-Date -Format ""yyyy-MM-dd HH:mm:ss"")), ""Status    : FAILED"", ""Reason    : server key (SYS_TAB.F1243) could not be read from the local DB"") | Set-Content -Path `$LatestLogPath -Encoding UTF8")
+			[void]$sb.AppendLine("  exit 1")
+			[void]$sb.AppendLine("}")
 			[void]$sb.AppendLine("`$safeServerKey = `$serverKey.Replace(""'"",""''"")")
 			[void]$sb.AppendLine("`$updateSql = ""UPDATE SYS_TAB SET F1243 = '"" + `$safeServerKey + ""'""")
 			[void]$sb.AppendLine("")
 			[void]$sb.AppendLine("# SQI (ANSI/1252)")
-			[void]$sb.AppendLine("`$SqiFileName = ""UPDATE_SERVERKEY.SQI""")
+			[void]$sb.AppendLine("`$SqiFileName = ""UPDATE_SMS_KEY.SQI""")
 			[void]$sb.AppendLine("`$SqiContent  = ""@dbEXEC("" + `$updateSql + "")`r`n""")
 			[void]$sb.AppendLine("`$ansi = [System.Text.Encoding]::GetEncoding(1252)")
 			[void]$sb.AppendLine("`$TempSqiPath = Join-Path ([System.IO.Path]::GetTempPath()) `$SqiFileName")
@@ -851,7 +848,8 @@ function Send_SMS_Key_to_Lanes
 			{
 				$taskName = "Send_SMS_Key - Store $StoreNumber"
 				$psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
-				$tr = "`"$psExe`" -NoProfile -ExecutionPolicy Bypass -File `"$taskScriptPath`""
+				# \" survives 5.1's native argument passing (plain quotes were stripped, so a path with spaces broke)
+				$tr = "\`"$psExe\`" -NoProfile -ExecutionPolicy Bypass -File \`"$taskScriptPath\`""
 
 				$null = schtasks /Delete /TN "$taskName" /F 2>$null
 				$out = schtasks /Create /TN "$taskName" /TR $tr /SC MINUTE /MO $freqMinutes /RL HIGHEST /F /RU "SYSTEM" 2>&1

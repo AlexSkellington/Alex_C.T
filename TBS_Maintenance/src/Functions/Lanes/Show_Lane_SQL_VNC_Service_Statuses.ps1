@@ -3,8 +3,9 @@
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Opens a styled popup that checks the SQL and VNC services on all lanes of the store in
-#   the background and fills a grid as results arrive. Shows a message box when no usable
-#   lanes are found.
+#   the background (runspace pool, up to 8 lanes at a time) and fills a grid as results
+#   arrive. Right-click a lane to refresh it or start / stop / restart its SQL or VNC
+#   service. Shows a message box when no usable lanes are found.
 #
 # Variables:
 #   - $script:FunctionResults['StoreNumber']: store header text
@@ -128,10 +129,199 @@ function Show_Lane_SQL_VNC_Service_Statuses
 
 	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $formSvc }
 
+	# ---- Background work: one runspace pool (Start-Job spawned a powershell.exe per lane) ----------
+	$svcPool = [RunspaceFactory]::CreateRunspacePool(1, [Math]::Min(8, [Math]::Max(2, $selectedLanes.Count)))
+	$svcPool.Open()
 	$svcJobs = @{ }
 	$svcActionJobs = @{ }
 	$rowMap = @{ }
 	$totalRows = $selectedLanes.Count
+
+	# Lane status: reachability (ping, then SMB 445), then the SQL and VNC services.
+	# Text, not a scriptblock: the action script rebuilds it to re-read the status.
+	$statusCheckText = @'
+param ([string]$Lane, [string]$Machine, [string]$ExpectedSqlService)
+
+$result = [pscustomobject][ordered]@{
+	Lane          = $Lane
+	Machine       = $Machine
+	SqlService    = if ([string]::IsNullOrWhiteSpace($ExpectedSqlService)) { 'MSSQLSERVER' } else { $ExpectedSqlService }
+	SqlStatus     = 'Not Found'
+	VncService    = 'Not Found'
+	VncStatus     = 'Not Found'
+	ActionSummary = $null
+}
+
+$reachable = $false
+try { $reachable = ((New-Object System.Net.NetworkInformation.Ping).Send($Machine, 700).Status -eq 'Success') }
+catch { }
+if (-not $reachable)
+{
+	$tcp = New-Object System.Net.Sockets.TcpClient
+	try
+	{
+		$async = $tcp.BeginConnect($Machine, 445, $null, $null)
+		if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected) { $reachable = $true }
+	}
+	catch { }
+	finally { $tcp.Close() }
+}
+if (-not $reachable)
+{
+	$result.SqlStatus = 'Offline'
+	$result.VncService = 'Offline'
+	$result.VncStatus = 'Offline'
+	return $result
+}
+
+$services = $null
+$serviceFetchError = $null
+try { $services = Get-Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, Status }
+catch { $serviceFetchError = $_.Exception.Message }
+if (-not $services)
+{
+	try
+	{
+		$services = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -ErrorAction Stop |
+		Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
+		$serviceFetchError = $null
+	}
+	catch { $serviceFetchError = $_.Exception.Message }
+}
+if (-not $services)
+{
+	$errorText = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' } else { "Error: $serviceFetchError" }
+	$result.SqlStatus = $errorText
+	$result.VncStatus = $errorText
+	$result.VncService = 'Unavailable'
+	return $result
+}
+
+$sqlService = $services | Where-Object { $_.Name -ieq $result.SqlService } | Select-Object -First 1
+if (-not $sqlService)
+{
+	$sqlService = $services | Where-Object { $_.Name -like 'MSSQL*' -or $_.DisplayName -match '(?i)^SQL Server' } | Sort-Object Name | Select-Object -First 1
+}
+if ($sqlService)
+{
+	$result.SqlService = [string]$sqlService.Name
+	$result.SqlStatus = [string]$sqlService.Status
+}
+
+$vncService = $services | Where-Object {
+	([string]$_.Name -match '(?i)^(uvnc_service|winvnc.*|tvnserver|vncserver|tigervnc.*|tightvnc.*)$') -or
+	([string]$_.DisplayName -match '(?i)ultravnc|tightvnc|tigervnc|vnc')
+} | Sort-Object Name | Select-Object -First 1
+if ($vncService)
+{
+	$result.VncService = [string]$vncService.Name
+	$result.VncStatus = [string]$vncService.Status
+}
+
+$result
+'@
+
+	# Start / Stop / Restart one service, then poll the status until it settles (~14 s max)
+	$serviceActionText = @'
+param ([string]$Lane, [string]$Machine, [string]$ExpectedSqlService, [string]$ServiceKind, [string]$ServiceName, [string]$RequestedAction, [string]$StatusCheckText)
+
+$getSnapshot = [scriptblock]::Create($StatusCheckText)
+$actionSummary = "$RequestedAction $ServiceKind on lane $Lane."
+try
+{
+	$filter = "Name='{0}'" -f $ServiceName.Replace("'", "''")
+	if ($RequestedAction -in @('Stop', 'Restart'))
+	{
+		$svcObject = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -Filter $filter -ErrorAction Stop
+		$null = Invoke-CimMethod -InputObject $svcObject -MethodName StopService -ErrorAction Stop
+	}
+	if ($RequestedAction -eq 'Restart') { Start-Sleep -Seconds 2 }
+	if ($RequestedAction -in @('Start', 'Restart'))
+	{
+		$svcObject = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -Filter $filter -ErrorAction Stop
+		$null = Invoke-CimMethod -InputObject $svcObject -MethodName StartService -ErrorAction Stop
+	}
+}
+catch
+{
+	# CIM blocked (firewall / WinRM): the Service Control Manager over SMB usually still works
+	try
+	{
+		if ($RequestedAction -in @('Stop', 'Restart')) { $null = & sc.exe "\\$Machine" stop $ServiceName 2>$null }
+		if ($RequestedAction -eq 'Restart') { Start-Sleep -Seconds 2 }
+		if ($RequestedAction -in @('Start', 'Restart')) { $null = & sc.exe "\\$Machine" start $ServiceName 2>$null }
+		# sc.exe never throws; 1056 = already running, 1062 = not started (already stopped)
+		if ($LASTEXITCODE -notin @(0, 1056, 1062)) { $actionSummary = "Failed to $RequestedAction $ServiceKind on lane $Lane (sc.exe error $LASTEXITCODE)." }
+	}
+	catch { $actionSummary = "Failed to $RequestedAction $ServiceKind on lane ${Lane}: $($_.Exception.Message)" }
+}
+
+$targetStatus = if ($RequestedAction -eq 'Stop') { 'Stopped' } else { 'Running' }
+for ($i = 0; $i -lt 18; $i++)
+{
+	Start-Sleep -Milliseconds 750
+	$snapshot = & $getSnapshot $Lane $Machine $ExpectedSqlService
+	$currentStatus = if ($ServiceKind -eq 'SQL') { [string]$snapshot.SqlStatus } else { [string]$snapshot.VncStatus }
+	if ($currentStatus -eq $targetStatus -or $currentStatus -like 'Error*' -or $currentStatus -in @('Not Found', 'Offline')) { break }
+}
+$snapshot.ActionSummary = $actionSummary
+$snapshot
+'@
+
+	$startPoolWork = {
+		param ([string]$ScriptText, [object[]]$Arguments)
+		$ps = [PowerShell]::Create()
+		$ps.RunspacePool = $svcPool
+		[void]$ps.AddScript($ScriptText)
+		foreach ($a in $Arguments) { [void]$ps.AddArgument($a) }
+		@{ PS = $ps; Handle = $ps.BeginInvoke() }
+	}
+
+	# Finished work item -> its result object (or $null), and the PowerShell instance disposed
+	$collectPoolWork = {
+		param ($Entry)
+		$res = $null
+		try { $res = @($Entry.PS.EndInvoke($Entry.Handle)) | Select-Object -Last 1 }
+		catch { }
+		try { $Entry.PS.Dispose() }
+		catch { }
+		$res
+	}
+
+	$stopPoolWork = {
+		param ($Entry)
+		try { [void]$Entry.PS.BeginStop($null, $null) }
+		catch { }
+	}
+
+	# Service name the lane's SQL instance should have (MSSQLSERVER or MSSQL$<instance>)
+	$getExpectedSqlService = {
+		param ([string]$LaneKey)
+		try
+		{
+			$dbInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneKey
+			$instanceName = if ($dbInfo) { [string]$dbInfo['InstanceName'] }
+			if (-not [string]::IsNullOrWhiteSpace($instanceName) -and $instanceName.ToUpper() -ne 'MSSQLSERVER') { return "MSSQL`$$instanceName" }
+		}
+		catch { }
+		'MSSQLSERVER'
+	}
+
+	$applyResultToRow = {
+		param ([int]$RowIndex, $Result)
+		if ($RowIndex -lt 0 -or $RowIndex -ge $gridSvc.Rows.Count) { return }
+		$row = $gridSvc.Rows[$RowIndex]
+		if (-not $Result)
+		{
+			$row.Cells["SqlStatus"].Value = 'Error'
+			$row.Cells["VncStatus"].Value = 'Error'
+			return
+		}
+		$row.Cells["SqlService"].Value = [string]$Result.SqlService
+		$row.Cells["SqlStatus"].Value = [string]$Result.SqlStatus
+		$row.Cells["VncService"].Value = [string]$Result.VncService
+		$row.Cells["VncStatus"].Value = [string]$Result.VncStatus
+	}
 
 	$startActionJobForSelectedRow = {
 		param (
@@ -141,196 +331,35 @@ function Show_Lane_SQL_VNC_Service_Statuses
 
 		if (-not $gridSvc.SelectedRows -or $gridSvc.SelectedRows.Count -eq 0)
 		{
-			[System.Windows.Forms.MessageBox]::Show(
-				"Select a lane first.",
-				"Lane Services",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Information
-			) | Out-Null
+			[void][System.Windows.Forms.MessageBox]::Show("Select a lane first.", "Lane Services", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			return
 		}
 
 		$row = $gridSvc.SelectedRows[0]
-		if (-not $row) { return }
-
 		$laneKey = [string]$row.Cells["Lane"].Value
 		$machineName = [string]$row.Cells["Machine"].Value
 		$expectedSqlService = [string]$row.Cells["SqlService"].Value
-		$serviceName = if ($ServiceKind -eq 'SQL') { [string]$row.Cells["SqlService"].Value }
-		else { [string]$row.Cells["VncService"].Value }
-		$statusColumn = if ($ServiceKind -eq 'SQL') { 'SqlStatus' }
-		else { 'VncStatus' }
+		$serviceName = if ($ServiceKind -eq 'SQL') { $expectedSqlService } else { [string]$row.Cells["VncService"].Value }
+		$statusColumn = if ($ServiceKind -eq 'SQL') { 'SqlStatus' } else { 'VncStatus' }
 
 		if ([string]::IsNullOrWhiteSpace($laneKey) -or [string]::IsNullOrWhiteSpace($machineName)) { return }
 		if ($svcActionJobs.ContainsKey($laneKey))
 		{
-			[System.Windows.Forms.MessageBox]::Show(
-				"A service action is already running for lane $laneKey.",
-				"Lane Services",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Information
-			) | Out-Null
+			[void][System.Windows.Forms.MessageBox]::Show("A service action is already running for lane $laneKey.", "Lane Services", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			return
 		}
-
-		if ([string]::IsNullOrWhiteSpace($serviceName) -or $serviceName -in @('Checking...', 'Not Found', 'Unavailable'))
+		if ([string]::IsNullOrWhiteSpace($serviceName) -or $serviceName -in @('Checking...', 'Not Found', 'Unavailable', 'Offline'))
 		{
-			[System.Windows.Forms.MessageBox]::Show(
-				("$ServiceKind service was not found for lane $laneKey."),
-				"Lane Services",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Information
-			) | Out-Null
+			[void][System.Windows.Forms.MessageBox]::Show("$ServiceKind service was not found for lane $laneKey.", "Lane Services", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			return
 		}
 
 		$row.Cells[$statusColumn].Value = "$RequestedAction..."
 		$lblSvcStatus.Text = ("{0} {1} on lane {2}..." -f $RequestedAction, $ServiceKind, $laneKey)
 
-		$job = Start-Job -Name ("LaneServiceAction_{0}_{1}_{2}" -f $machineName, $ServiceKind, $RequestedAction) -ArgumentList $laneKey, $machineName, $expectedSqlService, $ServiceKind, $serviceName, $RequestedAction -ScriptBlock {
-			param (
-				[string]$Lane,
-				[string]$Machine,
-				[string]$ExpectedSqlService,
-				[string]$ServiceKind,
-				[string]$ServiceName,
-				[string]$RequestedAction
-			)
-
-			$getServiceSnapshot = {
-				param (
-					[string]$SnapshotLane,
-					[string]$SnapshotMachine,
-					[string]$SnapshotExpectedSqlService
-				)
-
-				$result = [ordered]@{
-					Lane	   = $SnapshotLane
-					Machine    = $SnapshotMachine
-					SqlService = if ([string]::IsNullOrWhiteSpace($SnapshotExpectedSqlService)) { 'MSSQLSERVER' } else { $SnapshotExpectedSqlService }
-					SqlStatus  = 'Not Found'
-					VncService = 'Not Found'
-					VncStatus  = 'Not Found'
-					ActionSummary = $null
-				}
-
-				$services = $null
-				$serviceFetchError = $null
-				try
-				{
-					$services = Get-Service -ComputerName $SnapshotMachine -ErrorAction Stop | Select-Object Name, DisplayName, Status
-				}
-				catch
-				{
-					$serviceFetchError = $_.Exception.Message
-				}
-
-				if (-not $services)
-				{
-					try
-					{
-						$services = Get-CimInstance -ClassName Win32_Service -ComputerName $SnapshotMachine -ErrorAction Stop | Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
-						$serviceFetchError = $null
-					}
-					catch
-					{
-						$serviceFetchError = $_.Exception.Message
-					}
-				}
-
-				if (-not $services)
-				{
-					$result.SqlStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
-					else { "Error: $serviceFetchError" }
-					$result.VncStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
-					else { "Error: $serviceFetchError" }
-					$result.VncService = 'Unavailable'
-					return [pscustomobject]$result
-				}
-
-				$sqlService = $services | Where-Object { $_.Name -ieq $SnapshotExpectedSqlService } | Select-Object -First 1
-				if (-not $sqlService)
-				{
-					$sqlService = $services | Where-Object { $_.Name -like 'MSSQL*' -or $_.DisplayName -match '(?i)^SQL Server' } | Sort-Object Name | Select-Object -First 1
-				}
-				if ($sqlService)
-				{
-					$result.SqlService = [string]$sqlService.Name
-					$result.SqlStatus = [string]$sqlService.Status
-				}
-
-				$vncService = $services | Where-Object {
-					$svcName = [string]$_.Name
-					$svcDisplay = [string]$_.DisplayName
-					($svcName -match '(?i)^(uvnc_service|winvnc.*|tvnserver|vncserver|tigervnc.*|tightvnc.*)$') -or
-					($svcDisplay -match '(?i)ultravnc|tightvnc|tigervnc|vnc')
-				} | Sort-Object Name | Select-Object -First 1
-				if ($vncService)
-				{
-					$result.VncService = [string]$vncService.Name
-					$result.VncStatus = [string]$vncService.Status
-				}
-
-				return [pscustomobject]$result
-			}
-
-			$actionSummary = "$RequestedAction request sent."
-			$serviceEscaped = $ServiceName.Replace("'", "''")
-			try
-			{
-				$svcObject = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -Filter "Name='$serviceEscaped'" -ErrorAction Stop
-				switch ($RequestedAction)
-				{
-					'Start'   { $null = Invoke-CimMethod -InputObject $svcObject -MethodName StartService -ErrorAction Stop }
-					'Stop'    { $null = Invoke-CimMethod -InputObject $svcObject -MethodName StopService -ErrorAction Stop }
-					'Restart' { $null = Invoke-CimMethod -InputObject $svcObject -MethodName StopService -ErrorAction Stop; Start-Sleep -Seconds 2; $svcObject = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -Filter "Name='$serviceEscaped'" -ErrorAction Stop; $null = Invoke-CimMethod -InputObject $svcObject -MethodName StartService -ErrorAction Stop }
-				}
-				$actionSummary = "$RequestedAction $ServiceKind on lane $Lane."
-			}
-			catch
-			{
-				try
-				{
-					switch ($RequestedAction)
-					{
-						'Start'   { $null = & sc.exe "\\$Machine" start $ServiceName 2>$null }
-						'Stop'    { $null = & sc.exe "\\$Machine" stop $ServiceName 2>$null }
-						'Restart' { $null = & sc.exe "\\$Machine" stop $ServiceName 2>$null; Start-Sleep -Seconds 2; $null = & sc.exe "\\$Machine" start $ServiceName 2>$null }
-					}
-					$actionSummary = "$RequestedAction $ServiceKind on lane $Lane."
-				}
-				catch
-				{
-					$actionSummary = "Failed to $RequestedAction $ServiceKind on lane ${Lane}: $($_.Exception.Message)"
-				}
-			}
-
-			$targetStatus = if ($RequestedAction -eq 'Stop') { 'Stopped' }
-			else { 'Running' }
-			for ($i = 0; $i -lt 18; $i++)
-			{
-				Start-Sleep -Milliseconds 750
-				$snapshot = & $getServiceSnapshot $Lane $Machine $ExpectedSqlService
-				$currentStatus = if ($ServiceKind -eq 'SQL') { [string]$snapshot.SqlStatus }
-				else { [string]$snapshot.VncStatus }
-				if ($currentStatus -eq $targetStatus -or $currentStatus -like 'Error:*' -or $currentStatus -eq 'Not Found')
-				{
-					$snapshot.ActionSummary = $actionSummary
-					return $snapshot
-				}
-			}
-
-			$snapshot = & $getServiceSnapshot $Lane $Machine $ExpectedSqlService
-			$snapshot.ActionSummary = $actionSummary
-			return $snapshot
-		}
-
-		$svcActionJobs[$laneKey] = @{
-			Job		    = $job
-			Row		    = $row.Index
-			Action	    = $RequestedAction
-			ServiceKind = $ServiceKind
-		}
+		$work = & $startPoolWork $serviceActionText @($laneKey, $machineName, $expectedSqlService, $ServiceKind, $serviceName, $RequestedAction, $statusCheckText)
+		$work.Row = $row.Index
+		$svcActionJobs[$laneKey] = $work
 	}
 
 	$refreshSvcLanes = {
@@ -340,169 +369,26 @@ function Show_Lane_SQL_VNC_Service_Statuses
 
 		foreach ($laneKey in @($LaneKeysToRefresh))
 		{
-			if (-not $laneMap.ContainsKey($laneKey)) { continue }
+			if (-not $laneMap.ContainsKey($laneKey) -or -not $rowMap.ContainsKey($laneKey)) { continue }
 
+			# A refresh replaces a check still in flight for the lane
 			if ($svcJobs.ContainsKey($laneKey))
 			{
-				try { Stop-Job -Job $svcJobs[$laneKey].Job -ErrorAction SilentlyContinue }
-				catch { }
-				try { Remove-Job -Job $svcJobs[$laneKey].Job -Force -ErrorAction SilentlyContinue }
-				catch { }
+				& $stopPoolWork $svcJobs[$laneKey]
 				[void]$svcJobs.Remove($laneKey)
 			}
 
 			$machineName = [string]$laneMap[$laneKey]
-			$expectedSqlService = 'MSSQLSERVER'
-			try
-			{
-				$dbInfo = Get_All_Lanes_Database_Info -LaneNumber $laneKey
-				if ($dbInfo -and ($dbInfo -isnot [hashtable]))
-				{
-					$tmpDbInfo = @{ }
-					foreach ($p in $dbInfo.PSObject.Properties) { $tmpDbInfo[$p.Name] = $p.Value }
-					$dbInfo = $tmpDbInfo
-				}
-				if ($dbInfo -and $dbInfo.ContainsKey('InstanceName'))
-				{
-					$instanceName = [string]$dbInfo['InstanceName']
-					if (-not [string]::IsNullOrWhiteSpace($instanceName) -and $instanceName.ToUpper() -ne 'MSSQLSERVER')
-					{
-						$expectedSqlService = "MSSQL`$$instanceName"
-					}
-				}
-			}
-			catch { }
-
+			$expectedSqlService = & $getExpectedSqlService $laneKey
 			$rowIndex = [int]$rowMap[$laneKey]
-			if ($rowIndex -lt 0 -or $rowIndex -ge $gridSvc.Rows.Count) { continue }
 			$gridSvc.Rows[$rowIndex].Cells["SqlService"].Value = $expectedSqlService
 			$gridSvc.Rows[$rowIndex].Cells["SqlStatus"].Value = 'Checking...'
 			$gridSvc.Rows[$rowIndex].Cells["VncService"].Value = 'Checking...'
 			$gridSvc.Rows[$rowIndex].Cells["VncStatus"].Value = 'Checking...'
 
-			$job = Start-Job -Name ("LaneServiceStatus_{0}" -f $machineName) -ArgumentList $laneKey, $machineName, $expectedSqlService -ScriptBlock {
-				param (
-					[string]$Lane,
-					[string]$Machine,
-					[string]$ExpectedSqlService
-				)
-
-				$result = [ordered]@{
-					Lane	   = $Lane
-					Machine    = $Machine
-					SqlService = if ([string]::IsNullOrWhiteSpace($ExpectedSqlService)) { 'MSSQLSERVER' } else { $ExpectedSqlService }
-					SqlStatus  = 'Not Found'
-					VncService = 'Not Found'
-					VncStatus  = 'Not Found'
-				}
-
-				$reachable = $false
-				try
-				{
-					$ping = New-Object System.Net.NetworkInformation.Ping
-					$reply = $ping.Send($Machine, 700)
-					if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
-				}
-				catch { }
-
-				if (-not $reachable)
-				{
-					$tcp = $null
-					$async = $null
-					try
-					{
-						$tcp = New-Object System.Net.Sockets.TcpClient
-						$async = $tcp.BeginConnect($Machine, 445, $null, $null)
-						if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
-						{
-							try { $tcp.EndConnect($async) }
-							catch { }
-							$reachable = $true
-						}
-					}
-					catch { }
-					finally
-					{
-						try { if ($async) { $async.AsyncWaitHandle.Close() } }
-						catch { }
-						try { if ($tcp) { $tcp.Close() } }
-						catch { }
-					}
-				}
-
-				if (-not $reachable)
-				{
-					$result.SqlStatus = 'Offline'
-					$result.VncStatus = 'Offline'
-					$result.VncService = 'Offline'
-					return [pscustomobject]$result
-				}
-
-				$services = $null
-				$serviceFetchError = $null
-				try
-				{
-					$services = Get-Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, Status
-				}
-				catch
-				{
-					$serviceFetchError = $_.Exception.Message
-				}
-
-				if (-not $services)
-				{
-					try
-					{
-						$services = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
-						$serviceFetchError = $null
-					}
-					catch
-					{
-						$serviceFetchError = $_.Exception.Message
-					}
-				}
-
-				if (-not $services)
-				{
-					$result.SqlStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
-					else { "Error: $serviceFetchError" }
-					$result.VncStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
-					else { "Error: $serviceFetchError" }
-					$result.VncService = 'Unavailable'
-					return [pscustomobject]$result
-				}
-
-				$sqlService = $services | Where-Object { $_.Name -ieq $ExpectedSqlService } | Select-Object -First 1
-				if (-not $sqlService)
-				{
-					$sqlService = $services | Where-Object { $_.Name -like 'MSSQL*' -or $_.DisplayName -match '(?i)^SQL Server' } | Sort-Object Name | Select-Object -First 1
-				}
-				if ($sqlService)
-				{
-					$result.SqlService = [string]$sqlService.Name
-					$result.SqlStatus = [string]$sqlService.Status
-				}
-
-				$vncService = $services | Where-Object {
-					$svcName = [string]$_.Name
-					$svcDisplay = [string]$_.DisplayName
-					($svcName -match '(?i)^(uvnc_service|winvnc.*|tvnserver|vncserver|tigervnc.*|tightvnc.*)$') -or
-					($svcDisplay -match '(?i)ultravnc|tightvnc|tigervnc|vnc')
-				} | Sort-Object Name | Select-Object -First 1
-				if ($vncService)
-				{
-					$result.VncService = [string]$vncService.Name
-					$result.VncStatus = [string]$vncService.Status
-				}
-
-				return [pscustomobject]$result
-			}
-
-			$svcJobs[$laneKey] = @{
-				Job	    = $job
-				Row	    = $rowIndex
-				Machine = $machineName
-			}
+			$work = & $startPoolWork $statusCheckText @($laneKey, $machineName, $expectedSqlService)
+			$work.Row = $rowIndex
+			$svcJobs[$laneKey] = $work
 		}
 	}
 
@@ -522,26 +408,23 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			}
 		})
 	[void]$svcRowMenu.Items.Add($miSvcRefreshLane)
-	[void]$svcRowMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-	$miSvcStartSql = New-Object System.Windows.Forms.ToolStripMenuItem("Start SQL")
-	$miSvcStartSql.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'SQL' 'Start' })
-	[void]$svcRowMenu.Items.Add($miSvcStartSql)
-	$miSvcStopSql = New-Object System.Windows.Forms.ToolStripMenuItem("Stop SQL")
-	$miSvcStopSql.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'SQL' 'Stop' })
-	[void]$svcRowMenu.Items.Add($miSvcStopSql)
-	$miSvcRestartSql = New-Object System.Windows.Forms.ToolStripMenuItem("Restart SQL")
-	$miSvcRestartSql.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'SQL' 'Restart' })
-	[void]$svcRowMenu.Items.Add($miSvcRestartSql)
-	[void]$svcRowMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-	$miSvcStartVnc = New-Object System.Windows.Forms.ToolStripMenuItem("Start VNC")
-	$miSvcStartVnc.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'VNC' 'Start' })
-	[void]$svcRowMenu.Items.Add($miSvcStartVnc)
-	$miSvcStopVnc = New-Object System.Windows.Forms.ToolStripMenuItem("Stop VNC")
-	$miSvcStopVnc.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'VNC' 'Stop' })
-	[void]$svcRowMenu.Items.Add($miSvcStopVnc)
-	$miSvcRestartVnc = New-Object System.Windows.Forms.ToolStripMenuItem("Restart VNC")
-	$miSvcRestartVnc.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'VNC' 'Restart' })
-	[void]$svcRowMenu.Items.Add($miSvcRestartVnc)
+
+	# Start / Stop / Restart for SQL and VNC; the menu item's Tag carries kind + action
+	foreach ($kind in @('SQL', 'VNC'))
+	{
+		[void]$svcRowMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+		foreach ($action in @('Start', 'Stop', 'Restart'))
+		{
+			$mi = New-Object System.Windows.Forms.ToolStripMenuItem("$action $kind")
+			$mi.Tag = @($kind, $action)
+			$mi.Add_Click({
+					param ($sender, $e)
+					$script:LastActivity = Get-Date
+					& $startActionJobForSelectedRow $sender.Tag[0] $sender.Tag[1]
+				})
+			[void]$svcRowMenu.Items.Add($mi)
+		}
+	}
 	$gridSvc.ContextMenuStrip = $svcRowMenu
 	$gridSvc.Add_MouseDown({
 			param ($sender,
@@ -558,169 +441,13 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			catch { }
 		})
 
+	# One row per lane, then the first check for all of them
 	foreach ($lane in $selectedLanes)
 	{
 		$laneKey = [string]$lane
-		$machineName = [string]$laneMap[$laneKey]
-		$expectedSqlService = 'MSSQLSERVER'
-
-		try
-		{
-			$dbInfo = Get_All_Lanes_Database_Info -LaneNumber $laneKey
-			if ($dbInfo -and ($dbInfo -isnot [hashtable]))
-			{
-				$tmpDbInfo = @{ }
-				foreach ($p in $dbInfo.PSObject.Properties) { $tmpDbInfo[$p.Name] = $p.Value }
-				$dbInfo = $tmpDbInfo
-			}
-
-			if ($dbInfo -and $dbInfo.ContainsKey('InstanceName'))
-			{
-				$instanceName = [string]$dbInfo['InstanceName']
-				if (-not [string]::IsNullOrWhiteSpace($instanceName) -and $instanceName.ToUpper() -ne 'MSSQLSERVER')
-				{
-					$expectedSqlService = "MSSQL`$$instanceName"
-				}
-			}
-		}
-		catch { }
-
-		$rowIndex = $gridSvc.Rows.Add($laneKey, $machineName, $expectedSqlService, 'Checking...', 'Checking...', 'Checking...')
-		$rowMap[$laneKey] = $rowIndex
-
-		$job = Start-Job -Name ("LaneServiceStatus_{0}" -f $machineName) -ArgumentList $laneKey, $machineName, $expectedSqlService -ScriptBlock {
-			param (
-				[string]$Lane,
-				[string]$Machine,
-				[string]$ExpectedSqlService
-			)
-
-			$result = [ordered]@{
-				Lane	   = $Lane
-				Machine    = $Machine
-				SqlService = if ([string]::IsNullOrWhiteSpace($ExpectedSqlService)) { 'MSSQLSERVER' } else { $ExpectedSqlService }
-				SqlStatus  = 'Not Found'
-				VncService = 'Not Found'
-				VncStatus  = 'Not Found'
-			}
-
-			$reachable = $false
-			try
-			{
-				$ping = New-Object System.Net.NetworkInformation.Ping
-				$reply = $ping.Send($Machine, 700)
-				if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
-			}
-			catch { }
-
-			if (-not $reachable)
-			{
-				$tcp = $null
-				$async = $null
-				try
-				{
-					$tcp = New-Object System.Net.Sockets.TcpClient
-					$async = $tcp.BeginConnect($Machine, 445, $null, $null)
-					if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
-					{
-						try { $tcp.EndConnect($async) }
-						catch { }
-						$reachable = $true
-					}
-				}
-				catch { }
-				finally
-				{
-					try { if ($async) { $async.AsyncWaitHandle.Close() } }
-					catch { }
-					try { if ($tcp) { $tcp.Close() } }
-					catch { }
-				}
-			}
-
-			if (-not $reachable)
-			{
-				$result.SqlStatus = 'Offline'
-				$result.VncStatus = 'Offline'
-				$result.VncService = 'Offline'
-				return [pscustomobject]$result
-			}
-
-			$services = $null
-			$serviceFetchError = $null
-
-			try
-			{
-				$services = Get-Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, Status
-			}
-			catch
-			{
-				$serviceFetchError = $_.Exception.Message
-			}
-
-			if (-not $services)
-			{
-				try
-				{
-					$services = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
-					$serviceFetchError = $null
-				}
-				catch
-				{
-					$serviceFetchError = $_.Exception.Message
-				}
-			}
-
-			if (-not $services)
-			{
-				$result.SqlStatus = 'Error'
-				$result.VncStatus = 'Error'
-				$result.SqlService = if ($ExpectedSqlService) { $ExpectedSqlService }
-				else { 'Unavailable' }
-				$result.VncService = 'Unavailable'
-				if (-not [string]::IsNullOrWhiteSpace($serviceFetchError))
-				{
-					$result.SqlStatus = "Error: $serviceFetchError"
-					$result.VncStatus = "Error: $serviceFetchError"
-				}
-				return [pscustomobject]$result
-			}
-
-			$sqlService = $services | Where-Object { $_.Name -ieq $ExpectedSqlService } | Select-Object -First 1
-			if (-not $sqlService)
-			{
-				$sqlService = $services | Where-Object {
-					$_.Name -like 'MSSQL*' -or
-					$_.DisplayName -match '(?i)^SQL Server'
-				} | Sort-Object Name | Select-Object -First 1
-			}
-			if ($sqlService)
-			{
-				$result.SqlService = [string]$sqlService.Name
-				$result.SqlStatus = [string]$sqlService.Status
-			}
-
-			$vncService = $services | Where-Object {
-				$svcName = [string]$_.Name
-				$svcDisplay = [string]$_.DisplayName
-				($svcName -match '(?i)^(uvnc_service|winvnc.*|tvnserver|vncserver|tigervnc.*|tightvnc.*)$') -or
-				($svcDisplay -match '(?i)ultravnc|tightvnc|tigervnc|vnc')
-			} | Sort-Object Name | Select-Object -First 1
-			if ($vncService)
-			{
-				$result.VncService = [string]$vncService.Name
-				$result.VncStatus = [string]$vncService.Status
-			}
-
-			return [pscustomobject]$result
-		}
-
-		$svcJobs[$laneKey] = @{
-			Job	    = $job
-			Row	    = $rowIndex
-			Machine = $machineName
-		}
+		$rowMap[$laneKey] = $gridSvc.Rows.Add($laneKey, [string]$laneMap[$laneKey], 'MSSQLSERVER', 'Checking...', 'Checking...', 'Checking...')
 	}
+	& $refreshSvcLanes @($selectedLanes | ForEach-Object { [string]$_ })
 
 	$btnSvcRefresh.Add_Click({
 			$script:LastActivity = Get-Date
@@ -734,91 +461,19 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			foreach ($laneKey in @($svcJobs.Keys))
 			{
 				$entry = $svcJobs[$laneKey]
-				if (-not $entry) { continue }
-
-				$job = $entry.Job
-				if (-not $job)
-				{
-					$doneCount++
-					continue
-				}
-
-				if ($job.State -in @('Completed', 'Failed', 'Stopped'))
-				{
-					$result = $null
-					try { $result = Receive-Job -Job $job -ErrorAction SilentlyContinue }
-					catch { }
-
-					$rowIndex = [int]$entry.Row
-					if ($rowIndex -ge 0 -and $rowIndex -lt $gridSvc.Rows.Count)
-					{
-						$row = $gridSvc.Rows[$rowIndex]
-						if ($result)
-						{
-							$row.Cells["SqlService"].Value = [string]$result.SqlService
-							$row.Cells["SqlStatus"].Value = [string]$result.SqlStatus
-							$row.Cells["VncService"].Value = [string]$result.VncService
-							$row.Cells["VncStatus"].Value = [string]$result.VncStatus
-							$row.Tag = @{
-								Lane = [string]$result.Lane
-								Machine = [string]$result.Machine
-								SqlService = [string]$result.SqlService
-								SqlStatus = [string]$result.SqlStatus
-								VncService = [string]$result.VncService
-								VncStatus = [string]$result.VncStatus
-							}
-						}
-						else
-						{
-							$row.Cells["SqlStatus"].Value = 'Error'
-							$row.Cells["VncStatus"].Value = 'Error'
-						}
-					}
-
-					try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
-					catch { }
-					[void]$svcJobs.Remove($laneKey)
-				}
+				if (-not $entry.Handle.IsCompleted) { continue }
+				& $applyResultToRow ([int]$entry.Row) (& $collectPoolWork $entry)
+				[void]$svcJobs.Remove($laneKey)
 			}
 
 			foreach ($laneKey in @($svcActionJobs.Keys))
 			{
 				$entry = $svcActionJobs[$laneKey]
-				if (-not $entry -or -not $entry.Job) { continue }
-
-				if ($entry.Job.State -in @('Completed', 'Failed', 'Stopped'))
-				{
-					$result = $null
-					try { $result = Receive-Job -Job $entry.Job -ErrorAction SilentlyContinue }
-					catch { }
-
-					$rowIndex = [int]$entry.Row
-					if ($rowIndex -ge 0 -and $rowIndex -lt $gridSvc.Rows.Count -and $result)
-					{
-						$row = $gridSvc.Rows[$rowIndex]
-						$row.Cells["SqlService"].Value = [string]$result.SqlService
-						$row.Cells["SqlStatus"].Value = [string]$result.SqlStatus
-						$row.Cells["VncService"].Value = [string]$result.VncService
-						$row.Cells["VncStatus"].Value = [string]$result.VncStatus
-						$row.Tag = @{
-							Lane = [string]$result.Lane
-							Machine = [string]$result.Machine
-							SqlService = [string]$result.SqlService
-							SqlStatus = [string]$result.SqlStatus
-							VncService = [string]$result.VncService
-							VncStatus = [string]$result.VncStatus
-						}
-					}
-
-					if ($result -and -not [string]::IsNullOrWhiteSpace([string]$result.ActionSummary))
-					{
-						$lblSvcStatus.Text = [string]$result.ActionSummary
-					}
-
-					try { Remove-Job -Job $entry.Job -Force -ErrorAction SilentlyContinue }
-					catch { }
-					[void]$svcActionJobs.Remove($laneKey)
-				}
+				if (-not $entry.Handle.IsCompleted) { continue }
+				$result = & $collectPoolWork $entry
+				if ($result) { & $applyResultToRow ([int]$entry.Row) $result }
+				if ($result -and -not [string]::IsNullOrWhiteSpace([string]$result.ActionSummary)) { $lblSvcStatus.Text = [string]$result.ActionSummary }
+				[void]$svcActionJobs.Remove($laneKey)
 			}
 
 			$pendingStatusCount = $svcJobs.Count
@@ -829,8 +484,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			}
 			elseif ($pendingStatusCount -gt 0)
 			{
-				$doneCount = $totalRows - $pendingStatusCount
-				$lblSvcStatus.Text = ("Checking all lanes... {0}/{1} complete" -f $doneCount, $totalRows)
+				$lblSvcStatus.Text = ("Checking all lanes... {0}/{1} complete" -f ($totalRows - $pendingStatusCount), $totalRows)
 			}
 			elseif ($lblSvcStatus.Text -match '^(Checking|Refreshing|Working)')
 			{
@@ -840,37 +494,14 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	$svcTimer.Start()
 
 	$formSvc.Add_FormClosing({
-			try
-			{
-				if ($svcTimer)
-				{
-					$svcTimer.Stop()
-					$svcTimer.Dispose()
-				}
-			}
+			try { $svcTimer.Stop(); $svcTimer.Dispose() }
 			catch { }
-
-			foreach ($laneKey in @($svcJobs.Keys))
-			{
-				$entry = $svcJobs[$laneKey]
-				if (-not $entry -or -not $entry.Job) { continue }
-				try { Stop-Job -Job $entry.Job -ErrorAction SilentlyContinue }
-				catch { }
-				try { Remove-Job -Job $entry.Job -Force -ErrorAction SilentlyContinue }
-				catch { }
-			}
+			# Ask running checks to stop and close the pool without waiting on slow remote calls
+			foreach ($entry in @($svcJobs.Values) + @($svcActionJobs.Values)) { & $stopPoolWork $entry }
 			$svcJobs.Clear()
-
-			foreach ($laneKey in @($svcActionJobs.Keys))
-			{
-				$entry = $svcActionJobs[$laneKey]
-				if (-not $entry -or -not $entry.Job) { continue }
-				try { Stop-Job -Job $entry.Job -ErrorAction SilentlyContinue }
-				catch { }
-				try { Remove-Job -Job $entry.Job -Force -ErrorAction SilentlyContinue }
-				catch { }
-			}
 			$svcActionJobs.Clear()
+			try { [void]$svcPool.BeginClose($null, $null) }
+			catch { }
 		})
 
 	[void]$formSvc.ShowDialog()

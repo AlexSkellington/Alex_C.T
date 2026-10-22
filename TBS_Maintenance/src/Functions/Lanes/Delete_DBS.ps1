@@ -114,16 +114,10 @@ function Delete_DBS
 		return
 	}
 
-	# Accept all supported forms (lane number, machine name, POSxxx, etc)
-	$selectedLanes = $selection.Lanes | ForEach-Object {
-		if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber }
-		elseif ($_ -match '^\d{3}$') { $_ }
-		elseif ($LaneMachineNames.ContainsKey($_)) { $_ }
-		elseif ($LaneNumToMachineName.ContainsKey($_)) { $_ }
-		else { $_ }
-	}
-	# Make sure only valid 3-digit lane numbers that are in the mapping
-	$selectedLanes = $selectedLanes | Where-Object { $LaneNumToMachineName.ContainsKey($_) }
+	# Lane numbers (the picker returns 3-digit strings; lane objects are accepted too), mapped lanes only
+	$selectedLanes = @($selection.Lanes | ForEach-Object {
+			if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber } else { [string]$_ }
+		} | Where-Object { $LaneNumToMachineName.ContainsKey($_) })
 
 	if (-not $selectedLanes -or $selectedLanes.Count -eq 0)
 	{
@@ -143,7 +137,7 @@ function Delete_DBS
 
 			if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
 			{
-				Write_Log "Lane #{$lane}: Machine name is invalid or unknown. Skipping deletion." "Yellow"
+				Write_Log "Lane #${lane}: Machine name is invalid or unknown. Skipping deletion." "Yellow"
 				continue
 			}
 

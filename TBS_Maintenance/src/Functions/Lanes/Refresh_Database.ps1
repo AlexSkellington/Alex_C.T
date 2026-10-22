@@ -4,8 +4,8 @@
 # Description:
 #   Deploys a database refresh command to the selected registers: for each selected lane it
 #   writes Refresh_Database.sqi (ANSI, CRLF) containing @WIZSET(TARGET=@TER) and
-#   @EXEC(SQM=exe_activate_accept_sys) into the lane XF folder, then sends a restart
-#   command to the machine.
+#   @EXEC(SQM=exe_activate_accept_sys) into the lane XF folder; the lane picks it up from
+#   there (no restart is sent).
 #
 # Parameters:
 #   - StoreNumber  [string]: store to process (required)

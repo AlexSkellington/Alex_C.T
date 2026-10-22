@@ -33,8 +33,8 @@ function Schedule_LaneDB_Backup
 	$goodLanes = @()
 	foreach ($lane in $selection.Lanes)
 	{
-		$protocol = $script:LaneProtocols[$lane]
-		if ($protocol -and $protocol -in @("TCP", "Named Pipes")) { $goodLanes += $lane }
+		$protocol = if ($script:LaneProtocols) { $script:LaneProtocols[$lane] }
+		if ($protocol -in @("TCP", "Named Pipes")) { $goodLanes += $lane }
 		else { Write_Log "Lane $lane not available in ProtocolResults or protocol not valid. Skipping." "yellow" }
 	}
 	if (-not $goodLanes -or $goodLanes.Count -eq 0)
@@ -212,28 +212,18 @@ function Schedule_LaneDB_Backup
 	# 4. Loop over each lane and schedule backup
 	foreach ($lane in $goodLanes)
 	{
-		$laneInfo = $script:FunctionResults['LaneDatabaseInfo'][$lane]
+		# Memory first, then the cache file, then the lane itself
+		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $lane
 		if (-not $laneInfo)
 		{
-			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $lane
-			if ($laneInfo) { $script:FunctionResults['LaneDatabaseInfo'][$lane] = $laneInfo }
-			else
-			{
-				Write_Log "Could not get DB info for lane $lane. Skipping." "yellow"
-				continue
-			}
+			Write_Log "Could not get DB info for lane $lane. Skipping." "yellow"
+			continue
 		}
-		$machine = $laneInfo.MachineName
-		$dbName = $laneInfo.DBName
+		$machine = $laneInfo['MachineName']
+		$dbName = $laneInfo['DBName']
 
-		# Determine protocol and sqlcmd -S string
-		$protocol = $script:LaneProtocols[$lane]
-		switch ($protocol)
-		{
-			"TCP"         { $sqlcmdS = $laneInfo.TcpServer }
-			"Named Pipes" { $sqlcmdS = $laneInfo.NamedPipes }
-			default       { Write_Log "Unknown/unsupported protocol for $machine, skipping." "yellow"; continue }
-		}
+		# sqlcmd -S string for the lane's protocol (only TCP / Named Pipes lanes got this far)
+		$sqlcmdS = if ($script:LaneProtocols[$lane] -eq 'Named Pipes') { $laneInfo['NamedPipes'] } else { $laneInfo['TcpServer'] }
 
 		# Set backup and script directories (per-lane); local-copy root from the user's choice
 		$scriptsDir = $script:ScriptsFolder
@@ -265,25 +255,13 @@ if (-not (Test-Path `$BackupRoot)) { New-Item -Path `$BackupRoot -ItemType Direc
 # Ensure backup root exists (remote/lane)
 if (-not (Test-Path `$RemoteBackupFolder)) { New-Item -Path `$RemoteBackupFolder -ItemType Directory -Force | Out-Null }
 
-# Clean up old remote lane backups (always keep 3)
-try {
-    `$remoteBakFiles = Get-ChildItem -Path `$RemoteBackupFolder -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-    while (`$remoteBakFiles.Count -ge `$MaxRemoteBackups) {
-        Remove-Item -Path `$remoteBakFiles[0].FullName -Force
-        `$remoteBakFiles = Get-ChildItem -Path `$RemoteBackupFolder -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-    }
-} catch { }
+# Keep only the newest N backups in a folder (called only after a good backup)
+function Remove-OldBackups([string]`$Folder, [int]`$Keep) {
+    @(Get-ChildItem -Path `$Folder -Filter "`$Database`_*.bak" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip `$Keep) |
+        ForEach-Object { Remove-Item -LiteralPath `$_.FullName -Force -ErrorAction SilentlyContinue }
+}
 
-# Clean up old local server backups (per user)
-try {
-    `$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-    while (`$bakFiles.Count -ge `$MaxBackups) {
-        Remove-Item -Path `$bakFiles[0].FullName -Force
-        `$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-    }
-} catch { }
-
-# Run the backup on the lane via UNC SQL backup path
+# Run the backup on the lane via UNC SQL backup path (old backups are only rotated out AFTER a good one)
 `$tsql = "BACKUP DATABASE [`$Database] TO DISK = N'`$remoteBakFile' WITH NOFORMAT, NOINIT, NAME = N'`$Database-FullBackup-`$timestamp', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
 `$sqlOut = & sqlcmd -S `"$SqlcmdS`" -Q `$tsql -b 2>&1
 `$exitCode = `$LASTEXITCODE
@@ -307,9 +285,11 @@ if (`$exitCode -eq 0) {
         try {
             Copy-Item -Path `$remoteBakFile -Destination `$localBakFile -Force
             "[`$(Get-Date)] Backup complete: `$localBakFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+            Remove-OldBackups `$BackupRoot `$MaxBackups
         } catch {
-            "[`$(Get-Date)] Backup succeeded but copy failed: $($_.Exception.Message)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+            "[`$(Get-Date)] Backup succeeded but copy failed: `$(`$_.Exception.Message)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
         }
+        Remove-OldBackups `$RemoteBackupFolder `$MaxRemoteBackups
     } else {
         "[`$(Get-Date)] Backup file not found or not ready for copy after backup." | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
     }
@@ -332,37 +312,27 @@ if (`$exitCode -eq 0) {
 		$hour = "{0:D2}" -f [int]$hours
 		$min = "{0:D2}" -f [int]$minutes
 		$startTime = "$hour`:$min"
-		$freqArg = "/SC DAILY"
-		if ($freqInput -gt 1) { $freqArg = "/SC DAILY /MO $freqInput" }
 		$taskName = "${machine}_DB_Backup_Schedule"
-		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$backupScriptPath`"`""
+		# \" survives 5.1's native argument passing, so a path with spaces stays one -File argument
+		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \`"$backupScriptPath\`""
+		$createArgs = @('/Create', '/TN', $taskName, '/TR', $action, '/SC', 'DAILY', '/ST', $startTime, '/RL', 'HIGHEST', '/F')
+		if ($freqInput -gt 1) { $createArgs += @('/MO', [string]$freqInput) }
 
-		# Task Scheduler command: Default is Administrator, with /IT if no password (interactive, user logged in required)
-		if ($taskUser -eq "" -or $taskUser -eq "SYSTEM")
-		{
-			# Run as SYSTEM
-			$cmd = "schtasks.exe /Create /RU SYSTEM /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
-		}
-		elseif ($taskPwd -eq "")
-		{
-			# Run as Administrator (or user) INTERACTIVE only (must be logged in), use /IT
-			$cmd = "schtasks.exe /Create /RU `"$taskUser`" /IT /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
-		}
-		else
-		{
-			# Run as user with password (runs in background even if user not logged in)
-			$cmd = "schtasks.exe /Create /RU `"$taskUser`" /RP `"$taskPwd`" /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
-		}
+		# SYSTEM; a user with no password runs interactive only (/IT, must be logged in);
+		# with a password the task also runs when nobody is logged in
+		if ($taskUser -eq "SYSTEM") { $createArgs += @('/RU', 'SYSTEM'); $runAs = 'SYSTEM' }
+		elseif ($taskPwd -eq "") { $createArgs += @('/RU', $taskUser, '/IT'); $runAs = "$taskUser (interactive)" }
+		else { $createArgs += @('/RU', $taskUser, '/RP', $taskPwd); $runAs = "$taskUser (with password)" }
 
-		Write_Log "Scheduling Lane $lane ($machine): $cmd" "cyan"
-		Invoke-Expression $cmd
+		Write_Log "Scheduling lane $lane ($machine) as $runAs`: $action" "cyan"
+		$schtasksOut = & schtasks.exe @createArgs 2>&1
 		if ($LASTEXITCODE -eq 0)
 		{
 			Write_Log "Backup task scheduled for $machine ($dbName) at $startTime every $freqInput day(s)." "green"
 		}
 		else
 		{
-			Write_Log "Failed to schedule backup for $machine." "red"
+			Write_Log "Failed to schedule backup for $machine`: $(($schtasksOut | Out-String).Trim())" "red"
 		}
 	}
 

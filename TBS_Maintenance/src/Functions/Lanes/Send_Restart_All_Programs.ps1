@@ -2,9 +2,9 @@
 #                              FUNCTION: Send_Restart_All_Programs
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Sends a restart-all-programs command to the selected lanes of a store: retrieves the
-#   lane-to-machine mappings via Retrieve_Nodes, picks lanes (or uses the passed list) and
-#   sends "@exec(RESTART_ALL=PROGRAMS)." to each lane's SMSStart mailslot.
+#   Sends a restart-all-programs command to the selected lanes of a store: uses the cached
+#   lane-to-machine map (Retrieve_Nodes when it is missing), picks lanes (or uses the passed
+#   list) and sends "@exec(RESTART_ALL=PROGRAMS)." to each lane's SMSStart mailslot.
 #
 # Parameters:
 #   - StoreNumber  [string]: store to process, 3 digits (required)
@@ -30,9 +30,14 @@ function Send_Restart_All_Programs
 		Write_Log "`r`n==================== Starting Send_Restart_All_Programs Function ====================`r`n" "blue"
 	}
 
-	# Retrieve lane mappings using Retrieve_Nodes (guaranteed current)
-	$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-	if (-not $nodes -or -not $nodes.LaneNumToMachineName)
+	# Lane map from the startup Retrieve_Nodes run; only re-run it when the map is missing
+	$laneMap = $script:FunctionResults['LaneNumToMachineName']
+	if (-not $laneMap -or $laneMap.Count -eq 0)
+	{
+		$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
+		if ($nodes) { $laneMap = $nodes.LaneNumToMachineName }
+	}
+	if (-not $laneMap)
 	{
 		Write_Log "Failed to retrieve node information for store $StoreNumber." "red"
 		return
@@ -67,7 +72,7 @@ function Send_Restart_All_Programs
 
 	foreach ($lane in $lanes)
 	{
-		$machineName = $nodes.LaneNumToMachineName[$lane]
+		$machineName = $laneMap[$lane]
 		if (-not $machineName)
 		{
 			Write_Log "No machine found for lane $lane. Skipping." "yellow"

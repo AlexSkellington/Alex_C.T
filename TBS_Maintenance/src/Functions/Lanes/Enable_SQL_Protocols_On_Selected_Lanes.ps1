@@ -226,11 +226,20 @@ try {
             if ($needsRestart) {
                 $svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' } else { "MSSQL`$$instanceName" }
                 $out += [pscustomobject]@{ Text = "Restarting SQL Service $svcName on $machine..."; Color = "gray" }
+                # sc.exe returns at once; wait for STOPPED (1) / RUNNING (4), 60 s each at most
                 sc.exe "\\$machine" stop $svcName | Out-Null
-                Start-Sleep -Seconds 10
+                for ($i = 0; $i -lt 60; $i++) {
+                    if ((sc.exe "\\$machine" query $svcName | Out-String) -match 'STATE\s+:\s+1\s') { break }
+                    Start-Sleep -Seconds 1
+                }
                 sc.exe "\\$machine" start $svcName | Out-Null
-                Start-Sleep -Seconds 5
-                $out += [pscustomobject]@{ Text = "SQL Service $svcName restarted successfully on $machine."; Color = "green" }
+                $running = $false
+                for ($i = 0; $i -lt 60; $i++) {
+                    if ((sc.exe "\\$machine" query $svcName | Out-String) -match 'STATE\s+:\s+4\s') { $running = $true; break }
+                    Start-Sleep -Seconds 1
+                }
+                if ($running) { $out += [pscustomobject]@{ Text = "SQL Service $svcName restarted successfully on $machine."; Color = "green" } }
+                else { $out += [pscustomobject]@{ Text = "SQL Service $svcName on $machine did not report RUNNING within 60 seconds - check it on the lane."; Color = "red" } }
                 $laneNeedsRestart = $true
             } else {
                 $out += [pscustomobject]@{ Text = "No protocol/auth changes for $instanceName on $machine. No restart needed."; Color = "green" }
@@ -249,7 +258,7 @@ try {
             $protocol = "TCP"
         }
         else {
-            $npCs = "Server=np:\\\\$machine\\pipe\\sql\\query;Database=master;Integrated Security=True;Encrypt=True;TrustServerCertificate=True;Connection Timeout=5"
+            $npCs = "Server=np:\\$machine\pipe\sql\query;Database=master;Integrated Security=True;Encrypt=True;TrustServerCertificate=True;Connection Timeout=5"
             $cn = New-Object System.Data.SqlClient.SqlConnection $npCs
             try {
                 $cn.Open()
@@ -340,7 +349,7 @@ IF NOT EXISTS (SELECT 1 FROM sys.linked_logins ll JOIN sys.servers s ON s.server
                     }
                     else {
                         $creationTransport = 'Named Pipes'
-                        $npServer = "np:\\\\$machine\\pipe\\sql\\query"
+                        $npServer = "np:\\$machine\pipe\sql\query"
                         $provstr18 = "Driver={ODBC Driver 18 for SQL Server};Server=$npServer;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
                         $provstr17 = "Driver={ODBC Driver 17 for SQL Server};Server=$npServer;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
                     }
@@ -539,7 +548,7 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 
 					# Persist in-memory protocol maps
 					$script:LaneProtocols[$res.Lane] = $res.Protocol
-					$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $res.Lane }
+					$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $res.Lane })
 					$script:ProtocolResults += [PSCustomObject]@{ Lane = $res.Lane; Protocol = $res.Protocol }
 
 					# Persist to file (dedup by lane)
@@ -549,14 +558,11 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 					$dir = [System.IO.Path]::GetDirectoryName($protocolResultsFile)
 					if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
 					if (-not (Test-Path $protocolResultsFile)) { New-Item -Path $protocolResultsFile -ItemType File -Force | Out-Null }
-					$all = @()
-					if (Test-Path $protocolResultsFile)
-					{
-						$all = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' }
-					}
-					$all = $all | Where-Object { -not ($_ -match "^\s*0*${laneStr}\s*,") }
+					# Keep every other lane's line, replace this lane's (arrays stay arrays: a single
+					# remaining line used to collapse to a string and += glued two lines together)
+					$all = @(Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' -and $_ -notmatch "^\s*0*${laneStr}\s*," })
 					$all += "$laneStr,$proto"
-					$sorted = $all | Sort-Object { ($_ -split ',')[0] -as [int] }
+					$sorted = [string[]]@($all | Sort-Object { ($_ -split ',')[0] -as [int] })
 					[System.IO.File]::WriteAllLines($protocolResultsFile, $sorted, [System.Text.Encoding]::UTF8)
 
 					if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($res.Machine))
@@ -577,7 +583,7 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 							Write_Log ("Scheduled SQL enable for {0} (Lane {1}) for {2}" -f $res.Machine, $laneStr, $whenText) 'green'
 						}
 					}
-					elseif ($script:LaneSqlProtocolEnableTaskState.ContainsKey($laneStr))
+					elseif ($script:LaneSqlProtocolEnableTaskState -and $script:LaneSqlProtocolEnableTaskState.ContainsKey($laneStr))
 					{
 						$script:LaneSqlProtocolEnableTaskState[$laneStr] = [pscustomobject]@{
 							TaskPresent  = $false

@@ -13,10 +13,10 @@
 #
 # Variables:
 #   - $script:FunctionResults['LaneNumToMachineName']: required input (lane map)
-#   - $script:FunctionResults['SqlModuleName']: required input (SQL module)
 #
 # Notes:
-#   - Falls back to .NET SqlClient when Invoke-Sqlcmd lacks -ConnectionString.
+#   - All SQL goes through System.Data.SqlClient (no SQL module needed); a Quick / Deep repair
+#     runs SINGLE_USER, DBCC and MULTI_USER on one connection.
 #   - If tempdb is not ONLINE it offers to restart the lane SQL service, then re-checks.
 # ===================================================================================================
 
@@ -52,57 +52,15 @@ function Repair_LOC_Databases_On_Lanes
 	}
 
 	# ----------------------------------------
-	# Import SQL module and capture Invoke-Sqlcmd
+	# SQL helpers: System.Data.SqlClient only (always present, so no SQL module is needed;
+	# DBCC errors surface as exceptions the same way Invoke-Sqlcmd -ErrorAction Stop did)
 	# ----------------------------------------
-	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-	if (-not $SqlModuleName -or $SqlModuleName -eq "None")
-	{
-		Write_Log "No valid SQL module available for SQL operations!" "red"
-		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
-		return
-	}
-
-	$invokeSqlcmdCmd = $null
-	try
-	{
-		Import-Module $SqlModuleName -ErrorAction Stop
-		$invokeSqlcmdCmd = Get-Command Invoke-Sqlcmd -ErrorAction Stop
-	}
-	catch
-	{
-		Write_Log "Failed to import SQL module or find Invoke-Sqlcmd: $_" "red"
-		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
-		return
-	}
-
-	# Detect whether Invoke-Sqlcmd supports -ConnectionString
-	$InvokeSupportsConnString = $false
-	try
-	{
-		if ($invokeSqlcmdCmd -and $invokeSqlcmdCmd.Parameters -and $invokeSqlcmdCmd.Parameters.ContainsKey('ConnectionString'))
-		{
-			$InvokeSupportsConnString = $true
-		}
-	}
-	catch { $InvokeSupportsConnString = $false }
-
-	# Ensure SqlClient types are available for fallback mode
-	try { Add-Type -AssemblyName System.Data 2>$null }
-	catch { }
-
 	$invokeSqlTable = {
 		param (
 			[string]$ConnectionString,
 			[string]$Query,
 			[int]$Timeout = 30
 		)
-
-		if ($InvokeSupportsConnString)
-		{
-			$rows = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $Query -QueryTimeout $Timeout -ErrorAction Stop
-			if ($null -eq $rows) { return @() }
-			return @($rows)
-		}
 
 		$dt = New-Object System.Data.DataTable
 		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
@@ -112,17 +70,11 @@ function Repair_LOC_Databases_On_Lanes
 			$cmd = $cn.CreateCommand()
 			$cmd.CommandText = $Query
 			$cmd.CommandTimeout = $Timeout
-			$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
-			[void]$da.Fill($dt)
+			[void](New-Object System.Data.SqlClient.SqlDataAdapter $cmd).Fill($dt)
 		}
-		finally
-		{
-			try { $cn.Close() }
-			catch { }
-			try { $cn.Dispose() }
-			catch { }
-		}
+		finally { $cn.Dispose() }
 
+		# DataTable is not enumerable, so it comes back whole
 		return $dt
 	}
 
@@ -133,12 +85,6 @@ function Repair_LOC_Databases_On_Lanes
 			[int]$Timeout = 30
 		)
 
-		if ($InvokeSupportsConnString)
-		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $Query -QueryTimeout $Timeout -ErrorAction Stop | Out-Null
-			return
-		}
-
 		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
 		try
 		{
@@ -148,15 +94,8 @@ function Repair_LOC_Databases_On_Lanes
 			$cmd.CommandTimeout = $Timeout
 			[void]$cmd.ExecuteNonQuery()
 		}
-		finally
-		{
-			try { $cn.Close() }
-			catch { }
-			try { $cn.Dispose() }
-			catch { }
-		}
+		finally { $cn.Dispose() }
 	}
-
 	$getRowCount = {
 		param ($Rows)
 
@@ -599,11 +538,9 @@ function Repair_LOC_Databases_On_Lanes
 		$dbNameQuoted = $dbName.Replace("'", "''")
 
 		# ----------------------------------------
-		# Unified query execution (Invoke-Sqlcmd if possible; else SqlClient)
+		# Probe: connection + DB existence/state
 		# ----------------------------------------
 		$ExecError = $null
-
-		# Probe: connection + DB existence/state
 		$probeRows = $null
 		$probeTsql = @"
 SELECT name, state_desc
@@ -611,41 +548,8 @@ FROM sys.databases
 WHERE name = N'$dbNameQuoted';
 "@
 
-		try
-		{
-			if ($InvokeSupportsConnString)
-			{
-				$probeRows = Invoke-Sqlcmd -ConnectionString $connStr -Query $probeTsql -QueryTimeout 8 -ErrorAction Stop
-			}
-			else
-			{
-				# SqlClient fallback
-				$dt = New-Object System.Data.DataTable
-				$cn = New-Object System.Data.SqlClient.SqlConnection $connStr
-				try
-				{
-					$cn.Open()
-					$cmd = $cn.CreateCommand()
-					$cmd.CommandText = $probeTsql
-					$cmd.CommandTimeout = 8
-					$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
-					[void]$da.Fill($dt)
-				}
-				finally
-				{
-					try { $cn.Close() }
-					catch { }
-					try { $cn.Dispose() }
-					catch { }
-				}
-				$probeRows = $dt
-			}
-		}
-		catch
-		{
-			$ExecError = $_
-		}
-
+		try { $probeRows = & $invokeSqlTable $connStr $probeTsql 8 }
+		catch { $ExecError = $_ }
 		if ($ExecError)
 		{
 			Write_Log ("Lane {0} ({1}): Probe failed using {2}. Skipping. Error: {3}" -f $laneKeyP, $machineName, $proto, $ExecError.Exception.Message) "yellow"
@@ -773,37 +677,13 @@ WHERE name = N'$dbNameQuoted';
 					if ($running) { Write_Log "Service started." "green" }
 					else { Write_Log "ERROR: Service did not report RUNNING in time." "red" }
 
-					# Re-probe system DBs after restart (simple loop)
+					# Re-connect after the restart (up to ~2 minutes)
 					$reprobeOK = $false
 					for ($t = 1; $t -le 60; $t++)
 					{
-						try
-						{
-							if ($InvokeSupportsConnString)
-							{
-								Invoke-Sqlcmd -ConnectionString $connStr -Query "SELECT 1 AS ok;" -QueryTimeout 5 -ErrorAction Stop | Out-Null
-							}
-							else
-							{
-								$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
-								try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = "SELECT 1"; $cmdx.CommandTimeout = 5; [void]$cmdx.ExecuteScalar() }
-								finally
-								{
-									try { $cnx.Close() }
-									catch { }
-									try { $cnx.Dispose() }
-									catch { }
-								}
-							}
-							$reprobeOK = $true
-							break
-						}
-						catch
-						{
-							Start-Sleep -Milliseconds 2000
-						}
+						if (& $testSqlConnectivity $connStr) { $reprobeOK = $true; break }
+						Start-Sleep -Milliseconds 2000
 					}
-
 					if (-not $reprobeOK)
 					{
 						Write_Log "ERROR: Could not reconnect after service restart; skipping lane." "red"
@@ -973,6 +853,10 @@ WHERE name = N'$dbNameQuoted';
 		$didSingleUser = $false
 		$didEmergency = $false
 
+		# Quick / Deep run on ONE connection: with separate connections the lane's POS app could
+		# take the single-user slot between SINGLE_USER and DBCC, and the repair then failed
+		$repairConn = $null
+
 		try
 		{
 			if ($Level -eq 'Audit')
@@ -990,131 +874,38 @@ WHERE name = N'$dbNameQuoted';
 					Write_Log "Audit completed. DBCC reported no issues." "green"
 				}
 			}
-			elseif ($Level -eq 'Quick')
+			else
 			{
-				Write_Log ("{0}: Quick repair (REPAIR_REBUILD)..." -f $dbName) "gray"
-
-				# SINGLE_USER
-				try
-				{
-					$tsSU = "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
-					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsSU -QueryTimeout 60 -ErrorAction Stop | Out-Null }
-					else
-					{
-						$cnQ = New-Object System.Data.SqlClient.SqlConnection $connStr
-						try { $cnQ.Open(); $cmdQ = $cnQ.CreateCommand(); $cmdQ.CommandText = $tsSU; $cmdQ.CommandTimeout = 60; [void]$cmdQ.ExecuteNonQuery() }
-						finally
-						{
-							try { $cnQ.Close() }
-							catch { }
-							try { $cnQ.Dispose() }
-							catch { }
-						}
-					}
-					$didSingleUser = $true
-				}
-				catch
-				{
-					Write_Log ("WARN: SINGLE_USER failed: {0}" -f $_.Exception.Message) "yellow"
+				$repairConn = New-Object System.Data.SqlClient.SqlConnection $connStr
+				$repairConn.Open()
+				$runRepair = {
+					param ([string]$Sql, [int]$Timeout)
+					$c = $repairConn.CreateCommand()
+					$c.CommandText = $Sql
+					$c.CommandTimeout = $Timeout
+					[void]$c.ExecuteNonQuery()
 				}
 
-				# DBCC repair
-				$ts = "DBCC CHECKDB ($qDb, REPAIR_REBUILD) WITH ALL_ERRORMSGS, TABLERESULTS;"
-				if ($InvokeSupportsConnString)
+				if ($Level -eq 'Deep')
 				{
-					Invoke-Sqlcmd -ConnectionString $connStr -Query $ts -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+					Write_Log ("{0}: Deep repair (EMERGENCY + REPAIR_ALLOW_DATA_LOSS)..." -f $dbName) "gray"
+					try { & $runRepair "ALTER DATABASE $qDb SET EMERGENCY;" 60; $didEmergency = $true }
+					catch { Write_Log ("WARN: EMERGENCY failed: {0}" -f $_.Exception.Message) "yellow" }
 				}
 				else
 				{
-					$cnQ2 = New-Object System.Data.SqlClient.SqlConnection $connStr
-					try { $cnQ2.Open(); $cmdQ2 = $cnQ2.CreateCommand(); $cmdQ2.CommandText = $ts; $cmdQ2.CommandTimeout = $CommandTimeout; [void]$cmdQ2.ExecuteNonQuery() }
-					finally
-					{
-						try { $cnQ2.Close() }
-						catch { }
-						try { $cnQ2.Dispose() }
-						catch { }
-					}
+					Write_Log ("{0}: Quick repair (REPAIR_REBUILD)..." -f $dbName) "gray"
 				}
+
+				try { & $runRepair "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;" 60; $didSingleUser = $true }
+				catch { Write_Log ("WARN: SINGLE_USER failed: {0}" -f $_.Exception.Message) "yellow" }
+
+				$repairOption = if ($Level -eq 'Deep') { 'REPAIR_ALLOW_DATA_LOSS' } else { 'REPAIR_REBUILD' }
+				& $runRepair "DBCC CHECKDB ($qDb, $repairOption) WITH ALL_ERRORMSGS, TABLERESULTS;" $CommandTimeout
 
 				$ok = $true
-				$usedQuick = $true
-				Write_Log "Quick repair completed." "green"
-			}
-			elseif ($Level -eq 'Deep')
-			{
-				Write_Log ("{0}: Deep repair (EMERGENCY + REPAIR_ALLOW_DATA_LOSS)..." -f $dbName) "gray"
-
-				# EMERGENCY
-				try
-				{
-					$tsE = "ALTER DATABASE $qDb SET EMERGENCY;"
-					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsE -QueryTimeout 60 -ErrorAction Stop | Out-Null }
-					else
-					{
-						$cnD = New-Object System.Data.SqlClient.SqlConnection $connStr
-						try { $cnD.Open(); $cmdD = $cnD.CreateCommand(); $cmdD.CommandText = $tsE; $cmdD.CommandTimeout = 60; [void]$cmdD.ExecuteNonQuery() }
-						finally
-						{
-							try { $cnD.Close() }
-							catch { }
-							try { $cnD.Dispose() }
-							catch { }
-						}
-					}
-					$didEmergency = $true
-				}
-				catch
-				{
-					Write_Log ("WARN: EMERGENCY failed: {0}" -f $_.Exception.Message) "yellow"
-				}
-
-				# SINGLE_USER
-				try
-				{
-					$tsSU = "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
-					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsSU -QueryTimeout 60 -ErrorAction Stop | Out-Null }
-					else
-					{
-						$cnD2 = New-Object System.Data.SqlClient.SqlConnection $connStr
-						try { $cnD2.Open(); $cmdD2 = $cnD2.CreateCommand(); $cmdD2.CommandText = $tsSU; $cmdD2.CommandTimeout = 60; [void]$cmdD2.ExecuteNonQuery() }
-						finally
-						{
-							try { $cnD2.Close() }
-							catch { }
-							try { $cnD2.Dispose() }
-							catch { }
-						}
-					}
-					$didSingleUser = $true
-				}
-				catch
-				{
-					Write_Log ("WARN: SINGLE_USER failed: {0}" -f $_.Exception.Message) "yellow"
-				}
-
-				# DBCC deep repair
-				$ts = "DBCC CHECKDB ($qDb, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS, TABLERESULTS;"
-				if ($InvokeSupportsConnString)
-				{
-					Invoke-Sqlcmd -ConnectionString $connStr -Query $ts -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
-				}
-				else
-				{
-					$cnD3 = New-Object System.Data.SqlClient.SqlConnection $connStr
-					try { $cnD3.Open(); $cmdD3 = $cnD3.CreateCommand(); $cmdD3.CommandText = $ts; $cmdD3.CommandTimeout = $CommandTimeout; [void]$cmdD3.ExecuteNonQuery() }
-					finally
-					{
-						try { $cnD3.Close() }
-						catch { }
-						try { $cnD3.Dispose() }
-						catch { }
-					}
-				}
-
-				$ok = $true
-				$usedDeep = $true
-				Write_Log "Deep repair completed." "green"
+				if ($Level -eq 'Deep') { $usedDeep = $true; Write_Log "Deep repair completed." "green" }
+				else { $usedQuick = $true; Write_Log "Quick repair completed." "green" }
 			}
 		}
 		catch
@@ -1131,60 +922,28 @@ WHERE name = N'$dbNameQuoted';
 		}
 		finally
 		{
-			# ALWAYS attempt to restore MULTI_USER if we toggled SINGLE_USER
-			if ($didSingleUser)
+			# ALWAYS put the DB back: MULTI_USER if we took SINGLE_USER, ONLINE if we set EMERGENCY.
+			# Same connection when it is still open, a fresh one otherwise.
+			$restoreSteps = @()
+			if ($didSingleUser) { $restoreSteps += , @("ALTER DATABASE $qDb SET MULTI_USER;", 'MULTI_USER restore') }
+			if ($didEmergency) { $restoreSteps += , @("ALTER DATABASE $qDb SET ONLINE;", 'ONLINE restore after EMERGENCY') }
+			foreach ($step in $restoreSteps)
 			{
 				try
 				{
-					$tsMU = "ALTER DATABASE $qDb SET MULTI_USER;"
-					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsMU -QueryTimeout 60 -ErrorAction Stop | Out-Null }
-					else
+					if ($repairConn -and $repairConn.State -eq 'Open')
 					{
-						$cnF = New-Object System.Data.SqlClient.SqlConnection $connStr
-						try { $cnF.Open(); $cmdF = $cnF.CreateCommand(); $cmdF.CommandText = $tsMU; $cmdF.CommandTimeout = 60; [void]$cmdF.ExecuteNonQuery() }
-						finally
-						{
-							try { $cnF.Close() }
-							catch { }
-							try { $cnF.Dispose() }
-							catch { }
-						}
+						$c = $repairConn.CreateCommand()
+						$c.CommandText = $step[0]
+						$c.CommandTimeout = 60
+						[void]$c.ExecuteNonQuery()
 					}
+					else { & $invokeSqlNonQuery $connStr $step[0] 60 }
 				}
-				catch
-				{
-					Write_Log ("WARN: MULTI_USER restore failed: {0}" -f $_.Exception.Message) "yellow"
-				}
+				catch { Write_Log ("WARN: {0} failed: {1}" -f $step[1], $_.Exception.Message) "yellow" }
 			}
-
-			# Best-effort: if we set EMERGENCY, try to clear it by setting ONLINE
-			if ($didEmergency)
-			{
-				try
-				{
-					$tsOn = "ALTER DATABASE $qDb SET ONLINE;"
-					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsOn -QueryTimeout 60 -ErrorAction Stop | Out-Null }
-					else
-					{
-						$cnF2 = New-Object System.Data.SqlClient.SqlConnection $connStr
-						try { $cnF2.Open(); $cmdF2 = $cnF2.CreateCommand(); $cmdF2.CommandText = $tsOn; $cmdF2.CommandTimeout = 60; [void]$cmdF2.ExecuteNonQuery() }
-						finally
-						{
-							try { $cnF2.Close() }
-							catch { }
-							try { $cnF2.Dispose() }
-							catch { }
-						}
-					}
-				}
-				catch
-				{
-					# Not fatal; just log
-					Write_Log ("WARN: ONLINE restore after EMERGENCY failed: {0}" -f $_.Exception.Message) "yellow"
-				}
-			}
+			if ($repairConn) { $repairConn.Dispose() }
 		}
-
 		# ----------------------------------------
 		# Snapshot state AFTER repair
 		# ----------------------------------------

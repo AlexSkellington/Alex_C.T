@@ -42,7 +42,13 @@ function Send_TIME_Sync_Lanes_Worker
 	$timeStr = $now.ToString("HHmmss")
 	$wizCommand = "@WIZRPL(DATE=$dateStr)@WIZRPL(TIME=$timeStr)"
 
-	foreach ($lane in $selectedLanes)
+	# This server's IP for 'net time' (resolved once, not per lane)
+	$serverIP = $env:COMPUTERNAME
+	try { $serverIP = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1 -ErrorAction Stop).IPv4Address.IPAddressToString }
+	catch { }
+	$netTimeCommand = "net time \\$serverIP /set /yes"
+
+	foreach ($lane in $SelectedLanes)
 	{
 		# Lane number normalization
 		$laneNum = if ($lane -is [pscustomobject] -and $lane.LaneNumber) { $lane.LaneNumber }
@@ -59,76 +65,47 @@ function Send_TIME_Sync_Lanes_Worker
 
 		$success = $false
 
-		# -------- PRIMARY: REMOTE SCHTASKS --------
+		# -------- PRIMARY: REMOTE SCHTASKS (SYSTEM task running net time against this server) --------
 		try
 		{
-			# Use the server's IP for net time
-			try
+			$taskName = if ($IsScheduling) { "ScheduledTimeSync" } else { "SyncTime" }
+			$createArgs = @('/create', '/s', $machine, '/tn', $taskName, '/tr', $netTimeCommand, '/ru', 'SYSTEM', '/f', '/rl', 'HIGHEST')
+			if ($IsScheduling) { $createArgs += @('/sc', 'minute', '/mo', [string]$IntervalMinutes) }
+			else
 			{
-				$serverIP = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1 -ErrorAction Stop).IPv4Address.IPAddressToString
+				# /ST is mandatory for /SC ONCE (without it the create always failed before v2.7.0);
+				# the task is started right away with /run, the time only satisfies schtasks
+				$createArgs += @('/sc', 'once', '/st', (Get-Date).AddMinutes(1).ToString('HH:mm'))
 			}
-			catch
-			{
-				$serverIP = $env:COMPUTERNAME
-			}
-			$command = "net time \\$serverIP /set /yes"
-
-			$taskName = if ($isScheduling) { "ScheduledTimeSync" }
-			else { "SyncTime" }
-			$scheduleSc = if ($isScheduling) { "/sc minute" }
-			else { "/sc once" }
-			$scheduleMo = if ($isScheduling) { "/mo $intervalMinutes" }
-			else { "" }
-			$scheduleSt = if ($isScheduling) { "" }
-			else { "" } # Omit /st for immediate run
-			$logMessage = if ($isScheduling) { "Scheduled time sync every $intervalMinutes minutes on lane" }
-			else { "Executed time sync on lane" }
-
-			$createCmd = "schtasks /create /s $machine /tn $taskName /tr `"$command`" $scheduleSc $scheduleMo $scheduleSt /ru SYSTEM /f /rl HIGHEST"
-			$createOutput = Invoke-Expression $createCmd 2>&1
+			$createOutput = & schtasks.exe @createArgs 2>&1
 			if ($LASTEXITCODE -eq 0)
 			{
-				if (-not $isScheduling)
+				if ($IsScheduling)
 				{
-					$runCmd = "schtasks /run /s $machine /tn $taskName"
-					$runOutput = Invoke-Expression $runCmd 2>&1
-					if ($LASTEXITCODE -eq 0)
-					{
-						Write_Log "$logMessage $laneNum." "green"
-						$success = $true
-					}
-					else
-					{
-						Write_Log "Run output for [$machine]: $runOutput" "yellow"
-					}
+					Write_Log "Scheduled time sync every $IntervalMinutes minutes on lane $laneNum." "green"
+					$success = $true
 				}
 				else
 				{
-					Write_Log "$logMessage $laneNum." "green"
-					$success = $true
-				}
-				# Clean up (delete task after one-shot run)
-				if ($success -and -not $isScheduling)
-				{
-					Start-Sleep -Seconds 5
-					$deleteCmd = "schtasks /delete /s $machine /tn $taskName /f"
-					$deleteOutput = Invoke-Expression $deleteCmd 2>&1
-					if ($LASTEXITCODE -ne 0)
+					$runOutput = & schtasks.exe /run /s $machine /tn $taskName 2>&1
+					if ($LASTEXITCODE -eq 0)
 					{
-						Write_Log "Delete output for [$machine]: $deleteOutput" "yellow"
+						Write_Log "Executed time sync on lane $laneNum." "green"
+						$success = $true
+						# one-shot: remove the task once it had time to run
+						Start-Sleep -Seconds 5
+						$deleteOutput = & schtasks.exe /delete /s $machine /tn $taskName /f 2>&1
+						if ($LASTEXITCODE -ne 0) { Write_Log "Delete output for [$machine]: $deleteOutput" "yellow" }
 					}
+					else { Write_Log "Run output for [$machine]: $runOutput" "yellow" }
 				}
 			}
-			else
-			{
-				Write_Log "Create output for [$machine]: $createOutput" "yellow"
-			}
+			else { Write_Log "Create output for [$machine]: $createOutput" "yellow" }
 		}
 		catch
 		{
 			Write_Log "Exception during schtasks create/run: $_" "yellow"
 		}
-
 		# -------- SECONDARY: FILE-DROP WITH @EXEC --------
 		if (-not $success)
 		{
@@ -142,10 +119,6 @@ function Send_TIME_Sync_Lanes_Worker
 					Write_Log "XF folder for lane $laneNum does not exist: $xfFolder" "red"
 					continue
 				}
-
-				# Use the server's IP for net time
-				try { $serverIP = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1 -ErrorAction Stop).IPv4Address.IPAddressToString }
-				catch { $serverIP = $env:COMPUTERNAME }
 
 				# Always-available lane path
 				$remoteShareRoot = "\\$machine\Storeman\Temp"

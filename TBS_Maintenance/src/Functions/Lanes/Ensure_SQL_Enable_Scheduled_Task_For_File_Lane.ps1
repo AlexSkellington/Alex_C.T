@@ -50,17 +50,12 @@ function Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
 		[pscustomobject]@{ Share = "\\$MachineName\e$\Storeman\Temp"; Local = "E:\Storeman\Temp" }
 	)
 
-	$scheduledDate = Get-Date
-	try
-	{
-		$today415 = Get-Date -Hour 4 -Minute 15 -Second 0
-		$scheduledDate = if ((Get-Date) -lt $today415) { $today415 }
-		else { $today415.AddDays(1) }
-	}
-	catch
-	{
-		$scheduledDate = (Get-Date).AddDays(1).Date.AddHours(4).AddMinutes(15)
-	}
+	# Next occurrence of StartTime (HH:mm, default 04:15) - the /SD date must match /ST
+	$startSpan = [TimeSpan]::FromMinutes(255)
+	$parsedSpan = [TimeSpan]::Zero
+	if ([TimeSpan]::TryParse($StartTime, [ref]$parsedSpan)) { $startSpan = $parsedSpan }
+	$scheduledDate = (Get-Date).Date.Add($startSpan)
+	if ((Get-Date) -ge $scheduledDate) { $scheduledDate = $scheduledDate.AddDays(1) }
 	$scheduledDateText = $scheduledDate.ToString('MM/dd/yyyy')
 
 	$workerScript = @'

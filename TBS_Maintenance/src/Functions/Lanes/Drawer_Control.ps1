@@ -3,8 +3,8 @@
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deploys a drawer control command to the selected lanes: pick Enable/Disable in a dialog,
-#   select lanes, then for each lane write Drawer_Control.sqi (ANSI, CRLF) with the chosen
-#   state into the lane XF folder and send a restart command to the machine.
+#   select lanes, then for each lane write DrawerControl.sqi (ANSI, CRLF) with the chosen
+#   state into the lane XF folder; the SQI activates the change itself (exe_activate_accept_sys).
 #
 # Parameters:
 #   - StoreNumber  [string]: store to process (required)
@@ -14,7 +14,7 @@
 #   - $OfficePath: Storeman Office root (XF lane folders)
 #
 # Writes:
-#   - Drawer_Control.sqi in each selected lane XF folder
+#   - DrawerControl.sqi in each selected lane XF folder
 # ===================================================================================================
 
 function Drawer_Control
@@ -167,7 +167,7 @@ DROP TABLE Fct_Load;
 
 		# Remove the Archive attribute (set file attributes to Normal)
 		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Deployed Drawer_Control.sqi command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
+		Write_Log "Deployed DrawerControl.sqi command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
 	}
 	Write_Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 }

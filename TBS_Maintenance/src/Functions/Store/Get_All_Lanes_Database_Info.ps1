@@ -82,7 +82,16 @@ function Get_All_Lanes_Database_Info
 						{
 							if (-not $LaneDatabaseInfo.ContainsKey($p.Name))
 							{
-								$LaneDatabaseInfo[$p.Name] = $p.Value
+								# Same shape as a fresh lookup (hashtable): callers index it as
+								# $info['TcpConnStr'], which returns nothing on a PSCustomObject
+								$laneHash = @{ }
+								if ($p.Value -and $p.Value.PSObject) { foreach ($q in $p.Value.PSObject.Properties) { $laneHash[$q.Name] = $q.Value } }
+								# Caches written before v2.7.0 lack TrustServerCertificate
+								foreach ($k in @('ConnectionString', 'NamedPipesConnStr', 'TcpConnStr'))
+								{
+									if ($laneHash[$k] -and $laneHash[$k] -notmatch '(?i)TrustServerCertificate') { $laneHash[$k] = ([string]$laneHash[$k]).TrimEnd(';') + ';TrustServerCertificate=True;' }
+								}
+								$LaneDatabaseInfo[$p.Name] = $laneHash
 							}
 						}
 					}
@@ -248,9 +257,11 @@ function Get_All_Lanes_Database_Info
 			$tcpServer = $serverName
 		}
 
-		$tcpConnStr = "Server=$tcpServer;Database=$dbName;Integrated Security=True;"
-		$namedPipesConnStr = "Server=$namedPipes;Database=$dbName;Integrated Security=True;"
-		$simpleConnStr = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
+		# TrustServerCertificate: SqlServer module 22+ encrypts by default and the lanes use
+		# self-signed certificates, so without it every Invoke-Sqlcmd to a lane is refused
+		$tcpConnStr = "Server=$tcpServer;Database=$dbName;Integrated Security=True;TrustServerCertificate=True;"
+		$namedPipesConnStr = "Server=$namedPipes;Database=$dbName;Integrated Security=True;TrustServerCertificate=True;"
+		$simpleConnStr = "Server=$dbServer;Database=$dbName;Integrated Security=True;TrustServerCertificate=True;"
 
 		$laneInfo = @{
 			'MachineName'	    = $machineName

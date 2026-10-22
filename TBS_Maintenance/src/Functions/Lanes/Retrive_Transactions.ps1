@@ -5,7 +5,7 @@
 #   PowerShell port of trs_clt_reprocess.sqi: rebuilds the per-lane transaction list table
 #   (SAL_HDR_SUS@TER) from SAL_HDR for a chosen date range and transaction range. Connects
 #   per the Start_Lane_Protocol_Jobs preference (TCP / Named Pipes / File); lanes on File
-#   protocol or any SQL failure fall back to writing trs_clt_reprocess.sqi to the lane XE folder.
+#   protocol or any SQL failure fall back to writing trs_clt_reprocess.sqi to the lane XF folder.
 #
 # Parameters:
 #   - StoreNumber  [string]: store to process (required)
@@ -82,11 +82,15 @@ function Retrive_Transactions
 			catch { }
 		}
 	}
-	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
+	$invokeSql = Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue
+	if (-not $invokeSql)
 	{
 		$canUseSql = $false
 		& $log "Invoke-Sqlcmd not available. SQI mode will be used for all selected lanes." "yellow"
 	}
+	# SqlServer 22+ encrypts by default; lanes use self-signed certificates
+	$sqlExtra = @{ }
+	if ($invokeSql -and $invokeSql.Parameters.ContainsKey('TrustServerCertificate')) { $sqlExtra['TrustServerCertificate'] = $true }
 
 	if (-not (Get-Command Get_All_Lanes_Database_Info -ErrorAction SilentlyContinue))
 	{
@@ -282,7 +286,7 @@ function Retrive_Transactions
 
 		$useSql = $canUseSql
 		if ($ForceSQI) { $useSql = $false }
-		elseif ($protoNorm -eq 'file') { $useSql = $false }
+		elseif ($protoNorm -in @('file', 'offline')) { $useSql = $false }
 		elseif ([string]::IsNullOrWhiteSpace($dbName)) { $useSql = $false }
 
 		$transListTable = "SAL_HDR_SUS$lane"
@@ -359,7 +363,7 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 
 				try
 				{
-					$res = Invoke-Sqlcmd -ServerInstance $a.Server -Database $dbName -Query $sql -QueryTimeout 120 -ErrorAction Stop
+					$res = Invoke-Sqlcmd -ServerInstance $a.Server -Database $dbName -Query $sql -QueryTimeout 120 -ErrorAction Stop @sqlExtra
 
 					# Robust parse
 					$row = $null

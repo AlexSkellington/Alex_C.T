@@ -80,7 +80,7 @@ function Pump_Tables
 		elseif ($_ -match '(\d{1,3})$') { $Matches[1].PadLeft(3, '0') }
 		else { $_ }
 	}
-	$Lanes = $Lanes | Where-Object { $LaneNumToMachineName.ContainsKey($_) } | Select-Object -Unique
+	$Lanes = @($Lanes | Where-Object { $LaneNumToMachineName.ContainsKey($_) } | Select-Object -Unique)
 
 	if (-not $Lanes -or $Lanes.Count -eq 0)
 	{
@@ -367,6 +367,7 @@ function Pump_Tables
 							}
 
 							Write_Log "Pumping table '$table' to lane $laneNum ($machineName) via SQL (SqlBulkCopy)..." "blue"
+							$laneTx = $null
 
 							try
 							{
@@ -437,7 +438,11 @@ ORDER BY c.column_id;
 								#    - If exists: TRUNCATE (fallback to DELETE)
 								#    - If missing: CREATE from source columns (computed columns cannot be created here -> fail)
 								# -----------------------------
+								# Empty + reload in ONE lane transaction: a failed copy rolls back and the
+								# lane keeps its old rows instead of an empty / half-filled table
+								$laneTx = $laneSqlConn.BeginTransaction()
 								$existsCmd = $laneSqlConn.CreateCommand()
+								$existsCmd.Transaction = $laneTx
 								$existsCmd.CommandTimeout = 30
 								$existsCmd.CommandText = "SELECT OBJECT_ID(N'[dbo].[$table]', N'U')"
 								$destObjId = $existsCmd.ExecuteScalar()
@@ -449,6 +454,7 @@ ORDER BY c.column_id;
 									try
 									{
 										$emptyCmd = $laneSqlConn.CreateCommand()
+										$emptyCmd.Transaction = $laneTx
 										$emptyCmd.CommandTimeout = 60
 										$emptyCmd.CommandText = "TRUNCATE TABLE [dbo].[$table]"
 										$emptyCmd.ExecuteNonQuery() | Out-Null
@@ -457,6 +463,7 @@ ORDER BY c.column_id;
 									{
 										# TRUNCATE can fail (FKs). Fallback to DELETE.
 										$emptyCmd2 = $laneSqlConn.CreateCommand()
+										$emptyCmd2.Transaction = $laneTx
 										$emptyCmd2.CommandTimeout = 120
 										$emptyCmd2.CommandText = "DELETE FROM [dbo].[$table]"
 										$emptyCmd2.ExecuteNonQuery() | Out-Null
@@ -552,6 +559,7 @@ ORDER BY c.column_id;
 
 									$createSql = "CREATE TABLE [dbo].[$table] (" + ($colDefs -join ', ') + ")"
 									$createCmd = $laneSqlConn.CreateCommand()
+									$createCmd.Transaction = $laneTx
 									$createCmd.CommandTimeout = 120
 									$createCmd.CommandText = "IF OBJECT_ID(N'[dbo].[$table]', N'U') IS NOT NULL DROP TABLE [dbo].[$table]; $createSql;"
 									$createCmd.ExecuteNonQuery() | Out-Null
@@ -567,6 +575,7 @@ ORDER BY c.column_id;
 									try
 									{
 										$identOn = $laneSqlConn.CreateCommand()
+										$identOn.Transaction = $laneTx
 										$identOn.CommandTimeout = 30
 										$identOn.CommandText = "SET IDENTITY_INSERT [dbo].[$table] ON"
 										$identOn.ExecuteNonQuery() | Out-Null
@@ -595,7 +604,7 @@ ORDER BY c.column_id;
 									$bulkOptions = [System.Data.SqlClient.SqlBulkCopyOptions]::TableLock
 									if ($identityInsertEnabled) { $bulkOptions = $bulkOptions -bor [System.Data.SqlClient.SqlBulkCopyOptions]::KeepIdentity }
 
-									$bulk = New-Object System.Data.SqlClient.SqlBulkCopy($laneSqlConn, $bulkOptions, $null)
+									$bulk = New-Object System.Data.SqlClient.SqlBulkCopy($laneSqlConn, $bulkOptions, $laneTx)
 									$bulk.DestinationTableName = "[dbo].[$table]"
 									$bulk.BatchSize = 5000
 									$bulk.BulkCopyTimeout = 0
@@ -620,6 +629,7 @@ ORDER BY c.column_id;
 									try
 									{
 										$identOff = $laneSqlConn.CreateCommand()
+										$identOff.Transaction = $laneTx
 										$identOff.CommandTimeout = 30
 										$identOff.CommandText = "SET IDENTITY_INSERT [dbo].[$table] OFF"
 										$identOff.ExecuteNonQuery() | Out-Null
@@ -627,12 +637,21 @@ ORDER BY c.column_id;
 									catch { }
 								}
 
+								$laneTx.Commit()
+								$laneTx = $null
 								$rowCountCopied = $tableRowCounts[$table]
 								Write_Log "Copied $rowCountCopied rows to '$table' on lane $laneNum ($machineName) (SQL protocol)." "green"
 							}
 							catch
 							{
-								Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL: $_" "red"
+								if ($laneTx)
+								{
+									try { $laneTx.Rollback() }
+									catch { }
+									$laneTx = $null
+									Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL - lane table left unchanged: $_" "red"
+								}
+								else { Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL: $_" "red" }
 							}
 						}
 
@@ -787,10 +806,7 @@ CREATE VIEW $viewName AS SELECT $columnList FROM $table;
 
 INSERT INTO $viewName VALUES
 "@
-							$header = $header -replace "(
-|
-|
-)", "`r`n"
+							$header = $header -replace "(`r`n|`n|`r)", "`r`n"
 							$streamWriter.WriteLine($header.TrimEnd())
 
 							$dataQuery = "SELECT $columnList FROM [dbo].[$table]"
@@ -816,10 +832,7 @@ INSERT INTO $viewName VALUES
 									{
 										{ $_ -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext') } {
 											$escapedVal = $val.ToString().Replace("'", "''")
-											$escapedVal = $escapedVal -replace "(
-|
-|
-)", " "
+											$escapedVal = $escapedVal -replace "(`r`n|`n|`r)", " "
 											$values += "'$escapedVal'"
 											break
 										}
@@ -845,20 +858,14 @@ INSERT INTO $viewName VALUES
 										}
 										default {
 											$escapedVal = $val.ToString().Replace("'", "''")
-											$escapedVal = $escapedVal -replace "(
-|
-|
-)", " "
+											$escapedVal = $escapedVal -replace "(`r`n|`n|`r)", " "
 											$values += "'$escapedVal'"
 											break
 										}
 									}
 								}
 								$insertStatement = "(" + ($values -join ",") + ")"
-								$insertStatement = $insertStatement -replace "(
-|
-|
-)", " "
+								$insertStatement = $insertStatement -replace "(`r`n|`n|`r)", " "
 								$streamWriter.Write($insertStatement)
 							}
 							$readerData.Close()
@@ -876,10 +883,7 @@ DROP VIEW $viewName;
 
 @WIZCLR(DBASE_TIMEOUT);
 "@
-							$footer = $footer -replace "(
-|
-|
-)", "`r`n"
+							$footer = $footer -replace "(`r`n|`n|`r)", "`r`n"
 							$streamWriter.WriteLine($footer.TrimEnd())
 							$streamWriter.WriteLine()
 							$streamWriter.Flush()

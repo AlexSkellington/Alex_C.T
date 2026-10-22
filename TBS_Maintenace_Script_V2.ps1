@@ -2527,7 +2527,16 @@ function Get_All_Lanes_Database_Info
 						{
 							if (-not $LaneDatabaseInfo.ContainsKey($p.Name))
 							{
-								$LaneDatabaseInfo[$p.Name] = $p.Value
+								# Same shape as a fresh lookup (hashtable): callers index it as
+								# $info['TcpConnStr'], which returns nothing on a PSCustomObject
+								$laneHash = @{ }
+								if ($p.Value -and $p.Value.PSObject) { foreach ($q in $p.Value.PSObject.Properties) { $laneHash[$q.Name] = $q.Value } }
+								# Caches written before v2.7.0 lack TrustServerCertificate
+								foreach ($k in @('ConnectionString', 'NamedPipesConnStr', 'TcpConnStr'))
+								{
+									if ($laneHash[$k] -and $laneHash[$k] -notmatch '(?i)TrustServerCertificate') { $laneHash[$k] = ([string]$laneHash[$k]).TrimEnd(';') + ';TrustServerCertificate=True;' }
+								}
+								$LaneDatabaseInfo[$p.Name] = $laneHash
 							}
 						}
 					}
@@ -2693,9 +2702,11 @@ function Get_All_Lanes_Database_Info
 			$tcpServer = $serverName
 		}
 
-		$tcpConnStr = "Server=$tcpServer;Database=$dbName;Integrated Security=True;"
-		$namedPipesConnStr = "Server=$namedPipes;Database=$dbName;Integrated Security=True;"
-		$simpleConnStr = "Server=$dbServer;Database=$dbName;Integrated Security=True;"
+		# TrustServerCertificate: SqlServer module 22+ encrypts by default and the lanes use
+		# self-signed certificates, so without it every Invoke-Sqlcmd to a lane is refused
+		$tcpConnStr = "Server=$tcpServer;Database=$dbName;Integrated Security=True;TrustServerCertificate=True;"
+		$namedPipesConnStr = "Server=$namedPipes;Database=$dbName;Integrated Security=True;TrustServerCertificate=True;"
+		$simpleConnStr = "Server=$dbServer;Database=$dbName;Integrated Security=True;TrustServerCertificate=True;"
 
 		$laneInfo = @{
 			'MachineName'	    = $machineName
@@ -10385,11 +10396,40 @@ function Close_Open_Transactions
 	}
 
 	# ==================== Validate SQL module availability ====================
+	# Invoke-Sqlcmd for the direct close over the lane's protocol; without a SQL module the
+	# close goes out as a Close_Transaction.sqi file drop instead
+	$invokeSql = $null
+	$supportsConnStr = $false
 	$SqlModule = $script:FunctionResults['SqlModuleName']
-	if (-not $SqlModule -or $SqlModule -eq "None")
+	if ($SqlModule -and $SqlModule -ne "None")
 	{
-		Write_Log "No SQL Server module available (SqlServer or SQLPS). Cannot close transactions." "red"
-		return
+		try
+		{
+			Import-Module $SqlModule -ErrorAction Stop
+			$invokeSql = Get-Command Invoke-Sqlcmd -ErrorAction Stop
+			$supportsConnStr = $invokeSql.Parameters.ContainsKey('ConnectionString')
+		}
+		catch { $invokeSql = $null }
+	}
+	if (-not $invokeSql) { Write_Log "No SQL module available - transactions are closed through a file drop to the lane." "yellow" }
+
+	# Close over the lane's SQL protocol (Named Pipes / TCP); $true when it worked
+	$closeViaProtocol = {
+		param ([string]$Lane, [string]$Protocol, $LaneInfo, [string]$Sql, [string]$What)
+		if (-not $invokeSql -or $Protocol -notin @('Named Pipes', 'TCP') -or -not $LaneInfo) { return $false }
+		$connStr = if ($Protocol -eq 'Named Pipes') { $LaneInfo['NamedPipesConnStr'] } else { $LaneInfo['TcpConnStr'] }
+		try
+		{
+			if ($supportsConnStr) { $null = & $invokeSql -ConnectionString $connStr -Query $Sql -QueryTimeout 30 -ErrorAction Stop }
+			else { $null = & $invokeSql -ServerInstance $LaneInfo['TcpServer'] -Database $LaneInfo['DBName'] -Query $Sql -QueryTimeout 30 -ErrorAction Stop }
+			Write_Log "Closed $What via SQL protocol ($Protocol) on lane $Lane." "green"
+			return $true
+		}
+		catch
+		{
+			Write_Log "$Protocol failed for lane $Lane." "yellow"
+			return $false
+		}
 	}
 
 	# SQL string for closing all open transactions (manual fallback)
@@ -10410,9 +10450,9 @@ function Close_Open_Transactions
 	{
 		$currentTime = Get-Date
 		# Only process XE files less than 30 days old and starting with S (SMSStart)
-		$files = Get-ChildItem -Path $XEFolderPath -Filter "S*.???" | Where-Object {
+		$files = @(Get-ChildItem -Path $XEFolderPath -Filter "S*.???" -ErrorAction SilentlyContinue | Where-Object {
 			($currentTime - $_.LastWriteTime).TotalDays -le 30
-		}
+		})
 
 		# ==================== PROCESS EACH XE ERROR FILE FOUND ====================
 		if ($files -and $files.Count -gt 0)
@@ -10450,7 +10490,7 @@ function Close_Open_Transactions
 									{
 										$transactionNumber = $Matches[1]
 										$laneKey = $LaneNumber.PadLeft(3, '0')
-										$protocolType = if ($script:LaneProtocols.ContainsKey($laneKey)) { $script:LaneProtocols[$laneKey] }
+										$protocolType = if ($script:LaneProtocols -and $script:LaneProtocols.ContainsKey($laneKey)) { $script:LaneProtocols[$laneKey] }
 										else { "File" }
 										if ($protocolType -eq 'Offline')
 										{
@@ -10460,53 +10500,8 @@ function Close_Open_Transactions
 
 										# Get full DB connection info for this lane
 										$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
-										$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-										$tcpConnStr = $laneInfo['TcpConnStr']
-										$tcpServer = $laneInfo['TcpServer']
-										$dbName = $laneInfo['DBName']
 										$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber"
-										$protocolWorked = $false
-
-										# Try protocol (Named Pipes/TCP), otherwise fallback to file
-										Import-Module $SqlModule -ErrorAction Stop
-										$supportsConnStr = (Get-Command Invoke-Sqlcmd).Parameters.ContainsKey('ConnectionString')
-
-										# ----------- Try Named Pipes protocol first -----------
-										if ($protocolType -eq "Named Pipes")
-										{
-											try
-											{
-												if ($supportsConnStr)
-												{
-													Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-												}
-												else
-												{
-													Invoke-Sqlcmd -ServerInstance $tcpServer -Database $dbName -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-												}
-												$protocolWorked = $true
-												Write_Log "Closed transaction $transactionNumber via SQL protocol (Named Pipes) on lane $LaneNumber." "green"
-											}
-											catch { Write_Log "Named Pipes failed for lane $LaneNumber." "yellow" }
-										}
-										# ----------- Try TCP protocol -----------
-										elseif ($protocolType -eq "TCP")
-										{
-											try
-											{
-												if ($supportsConnStr)
-												{
-													Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-												}
-												else
-												{
-													Invoke-Sqlcmd -ServerInstance $tcpServer -Database $dbName -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-												}
-												$protocolWorked = $true
-												Write_Log "Closed transaction $transactionNumber via SQL protocol (TCP) on lane $LaneNumber." "green"
-											}
-											catch { Write_Log "TCP failed for lane $LaneNumber." "yellow" }
-										}
+										$protocolWorked = & $closeViaProtocol $LaneNumber $protocolType $laneInfo $closeSQL "transaction $transactionNumber"
 
 										# ----------- Fallback: File-based SQI if protocol failed -----------
 										if (-not $protocolWorked)
@@ -10538,10 +10533,10 @@ function Close_Open_Transactions
 
 										# ----------- Optionally restart all programs on the lane -----------
 										Start-Sleep -Seconds 3
-										$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-										if ($nodes)
+										$laneMap = $script:FunctionResults['LaneNumToMachineName']
+										if ($laneMap)
 										{
-											$machineName = $nodes.LaneNumToMachineName[$LaneNumber]
+											$machineName = $laneMap[$LaneNumber]
 											if ($machineName)
 											{
 												$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
@@ -10586,7 +10581,7 @@ function Close_Open_Transactions
 				else { $LaneNumber }
 				$LaneNumber = $LaneNumber.PadLeft(3, '0')
 				$laneKey = $LaneNumber
-				$protocolType = if ($script:LaneProtocols.ContainsKey($laneKey)) { $script:LaneProtocols[$laneKey] }
+				$protocolType = if ($script:LaneProtocols -and $script:LaneProtocols.ContainsKey($laneKey)) { $script:LaneProtocols[$laneKey] }
 				else { "File" }
 				if ($protocolType -eq 'Offline')
 				{
@@ -10594,50 +10589,8 @@ function Close_Open_Transactions
 					continue
 				}
 				$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
-				$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-				$tcpConnStr = $laneInfo['TcpConnStr']
-				$tcpServer = $laneInfo['TcpServer']
-				$dbName = $laneInfo['DBName']
 				$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE'"
-				$protocolWorked = $false
-
-				Import-Module $SqlModule -ErrorAction Stop
-				$supportsConnStr = (Get-Command Invoke-Sqlcmd).Parameters.ContainsKey('ConnectionString')
-
-				if ($protocolType -eq "Named Pipes")
-				{
-					try
-					{
-						if ($supportsConnStr)
-						{
-							Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-						}
-						else
-						{
-							Invoke-Sqlcmd -ServerInstance $tcpServer -Database $dbName -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-						}
-						$protocolWorked = $true
-						Write_Log "Closed all open transactions via SQL protocol (Named Pipes) on lane $LaneNumber." "green"
-					}
-					catch { Write_Log "Named Pipes failed for lane $LaneNumber." "yellow" }
-				}
-				elseif ($protocolType -eq "TCP")
-				{
-					try
-					{
-						if ($supportsConnStr)
-						{
-							Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-						}
-						else
-						{
-							Invoke-Sqlcmd -ServerInstance $tcpServer -Database $dbName -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-						}
-						$protocolWorked = $true
-						Write_Log "Closed all open transactions via SQL protocol (TCP) on lane $LaneNumber." "green"
-					}
-					catch { Write_Log "TCP failed for lane $LaneNumber." "yellow" }
-				}
+				$protocolWorked = & $closeViaProtocol $LaneNumber $protocolType $laneInfo $closeSQL "all open transactions"
 
 				if (-not $protocolWorked)
 				{
@@ -10656,12 +10609,10 @@ function Close_Open_Transactions
 				}
 				$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - User deployed Close_Transaction to lane $LaneNumber"
 				Add-Content -Path $LogFilePath -Value $logMessage
-				# Clean up XE folder, except FATALs
-				Get-ChildItem -Path $XEFolderPath -File | Where-Object { $_.Name -notlike "*FATAL*" } | Remove-Item -Force
-				$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-				if ($nodes)
+				$laneMap = $script:FunctionResults['LaneNumToMachineName']
+				if ($laneMap)
 				{
-					$machineName = $nodes.LaneNumToMachineName[$LaneNumber]
+					$machineName = $laneMap[$LaneNumber]
 					if ($machineName)
 					{
 						$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
@@ -10673,6 +10624,8 @@ function Close_Open_Transactions
 				}
 				Write_Log "Prompt deployment process completed." "yellow"
 			}
+			# Clean up the XE folder, except FATALs
+			Get-ChildItem -Path $XEFolderPath -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike "*FATAL*" } | Remove-Item -Force -ErrorAction SilentlyContinue
 		}
 	}
 	catch
@@ -10799,16 +10752,10 @@ function Delete_DBS
 		return
 	}
 
-	# Accept all supported forms (lane number, machine name, POSxxx, etc)
-	$selectedLanes = $selection.Lanes | ForEach-Object {
-		if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber }
-		elseif ($_ -match '^\d{3}$') { $_ }
-		elseif ($LaneMachineNames.ContainsKey($_)) { $_ }
-		elseif ($LaneNumToMachineName.ContainsKey($_)) { $_ }
-		else { $_ }
-	}
-	# Make sure only valid 3-digit lane numbers that are in the mapping
-	$selectedLanes = $selectedLanes | Where-Object { $LaneNumToMachineName.ContainsKey($_) }
+	# Lane numbers (the picker returns 3-digit strings; lane objects are accepted too), mapped lanes only
+	$selectedLanes = @($selection.Lanes | ForEach-Object {
+			if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber } else { [string]$_ }
+		} | Where-Object { $LaneNumToMachineName.ContainsKey($_) })
 
 	if (-not $selectedLanes -or $selectedLanes.Count -eq 0)
 	{
@@ -10828,7 +10775,7 @@ function Delete_DBS
 
 			if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
 			{
-				Write_Log "Lane #{$lane}: Machine name is invalid or unknown. Skipping deletion." "Yellow"
+				Write_Log "Lane #${lane}: Machine name is invalid or unknown. Skipping deletion." "Yellow"
 				continue
 			}
 
@@ -10881,8 +10828,8 @@ function Delete_DBS
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deploys a drawer control command to the selected lanes: pick Enable/Disable in a dialog,
-#   select lanes, then for each lane write Drawer_Control.sqi (ANSI, CRLF) with the chosen
-#   state into the lane XF folder and send a restart command to the machine.
+#   select lanes, then for each lane write DrawerControl.sqi (ANSI, CRLF) with the chosen
+#   state into the lane XF folder; the SQI activates the change itself (exe_activate_accept_sys).
 #
 # Parameters:
 #   - StoreNumber  [string]: store to process (required)
@@ -10892,7 +10839,7 @@ function Delete_DBS
 #   - $OfficePath: Storeman Office root (XF lane folders)
 #
 # Writes:
-#   - Drawer_Control.sqi in each selected lane XF folder
+#   - DrawerControl.sqi in each selected lane XF folder
 # ===================================================================================================
 
 function Drawer_Control
@@ -11045,7 +10992,7 @@ DROP TABLE Fct_Load;
 
 		# Remove the Archive attribute (set file attributes to Normal)
 		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Deployed Drawer_Control.sqi command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
+		Write_Log "Deployed DrawerControl.sqi command to lane $lane with state '$DrawerState' in directory $LaneDirectory." "green"
 	}
 	Write_Log "`r`n==================== Drawer_Control Function Completed ====================" "blue"
 }
@@ -11278,11 +11225,20 @@ try {
             if ($needsRestart) {
                 $svcName = if ($instanceName -eq 'MSSQLSERVER') { 'MSSQLSERVER' } else { "MSSQL`$$instanceName" }
                 $out += [pscustomobject]@{ Text = "Restarting SQL Service $svcName on $machine..."; Color = "gray" }
+                # sc.exe returns at once; wait for STOPPED (1) / RUNNING (4), 60 s each at most
                 sc.exe "\\$machine" stop $svcName | Out-Null
-                Start-Sleep -Seconds 10
+                for ($i = 0; $i -lt 60; $i++) {
+                    if ((sc.exe "\\$machine" query $svcName | Out-String) -match 'STATE\s+:\s+1\s') { break }
+                    Start-Sleep -Seconds 1
+                }
                 sc.exe "\\$machine" start $svcName | Out-Null
-                Start-Sleep -Seconds 5
-                $out += [pscustomobject]@{ Text = "SQL Service $svcName restarted successfully on $machine."; Color = "green" }
+                $running = $false
+                for ($i = 0; $i -lt 60; $i++) {
+                    if ((sc.exe "\\$machine" query $svcName | Out-String) -match 'STATE\s+:\s+4\s') { $running = $true; break }
+                    Start-Sleep -Seconds 1
+                }
+                if ($running) { $out += [pscustomobject]@{ Text = "SQL Service $svcName restarted successfully on $machine."; Color = "green" } }
+                else { $out += [pscustomobject]@{ Text = "SQL Service $svcName on $machine did not report RUNNING within 60 seconds - check it on the lane."; Color = "red" } }
                 $laneNeedsRestart = $true
             } else {
                 $out += [pscustomobject]@{ Text = "No protocol/auth changes for $instanceName on $machine. No restart needed."; Color = "green" }
@@ -11301,7 +11257,7 @@ try {
             $protocol = "TCP"
         }
         else {
-            $npCs = "Server=np:\\\\$machine\\pipe\\sql\\query;Database=master;Integrated Security=True;Encrypt=True;TrustServerCertificate=True;Connection Timeout=5"
+            $npCs = "Server=np:\\$machine\pipe\sql\query;Database=master;Integrated Security=True;Encrypt=True;TrustServerCertificate=True;Connection Timeout=5"
             $cn = New-Object System.Data.SqlClient.SqlConnection $npCs
             try {
                 $cn.Open()
@@ -11392,7 +11348,7 @@ IF NOT EXISTS (SELECT 1 FROM sys.linked_logins ll JOIN sys.servers s ON s.server
                     }
                     else {
                         $creationTransport = 'Named Pipes'
-                        $npServer = "np:\\\\$machine\\pipe\\sql\\query"
+                        $npServer = "np:\\$machine\pipe\sql\query"
                         $provstr18 = "Driver={ODBC Driver 18 for SQL Server};Server=$npServer;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
                         $provstr17 = "Driver={ODBC Driver 17 for SQL Server};Server=$npServer;Trusted_Connection=Yes;TrustServerCertificate=Yes;"
                     }
@@ -11591,7 +11547,7 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 
 					# Persist in-memory protocol maps
 					$script:LaneProtocols[$res.Lane] = $res.Protocol
-					$script:ProtocolResults = $script:ProtocolResults | Where-Object { $_.Lane -ne $res.Lane }
+					$script:ProtocolResults = @($script:ProtocolResults | Where-Object { $_.Lane -ne $res.Lane })
 					$script:ProtocolResults += [PSCustomObject]@{ Lane = $res.Lane; Protocol = $res.Protocol }
 
 					# Persist to file (dedup by lane)
@@ -11601,14 +11557,11 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 					$dir = [System.IO.Path]::GetDirectoryName($protocolResultsFile)
 					if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
 					if (-not (Test-Path $protocolResultsFile)) { New-Item -Path $protocolResultsFile -ItemType File -Force | Out-Null }
-					$all = @()
-					if (Test-Path $protocolResultsFile)
-					{
-						$all = Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' }
-					}
-					$all = $all | Where-Object { -not ($_ -match "^\s*0*${laneStr}\s*,") }
+					# Keep every other lane's line, replace this lane's (arrays stay arrays: a single
+					# remaining line used to collapse to a string and += glued two lines together)
+					$all = @(Get-Content -LiteralPath $protocolResultsFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' -and $_ -notmatch "^\s*0*${laneStr}\s*," })
 					$all += "$laneStr,$proto"
-					$sorted = $all | Sort-Object { ($_ -split ',')[0] -as [int] }
+					$sorted = [string[]]@($all | Sort-Object { ($_ -split ',')[0] -as [int] })
 					[System.IO.File]::WriteAllLines($protocolResultsFile, $sorted, [System.Text.Encoding]::UTF8)
 
 					if ($proto -eq 'File' -and -not [string]::IsNullOrWhiteSpace($res.Machine))
@@ -11629,7 +11582,7 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 							Write_Log ("Scheduled SQL enable for {0} (Lane {1}) for {2}" -f $res.Machine, $laneStr, $whenText) 'green'
 						}
 					}
-					elseif ($script:LaneSqlProtocolEnableTaskState.ContainsKey($laneStr))
+					elseif ($script:LaneSqlProtocolEnableTaskState -and $script:LaneSqlProtocolEnableTaskState.ContainsKey($laneStr))
 					{
 						$script:LaneSqlProtocolEnableTaskState[$laneStr] = [pscustomobject]@{
 							TaskPresent  = $false
@@ -11720,17 +11673,12 @@ function Ensure_SQL_Enable_Scheduled_Task_For_File_Lane
 		[pscustomobject]@{ Share = "\\$MachineName\e$\Storeman\Temp"; Local = "E:\Storeman\Temp" }
 	)
 
-	$scheduledDate = Get-Date
-	try
-	{
-		$today415 = Get-Date -Hour 4 -Minute 15 -Second 0
-		$scheduledDate = if ((Get-Date) -lt $today415) { $today415 }
-		else { $today415.AddDays(1) }
-	}
-	catch
-	{
-		$scheduledDate = (Get-Date).AddDays(1).Date.AddHours(4).AddMinutes(15)
-	}
+	# Next occurrence of StartTime (HH:mm, default 04:15) - the /SD date must match /ST
+	$startSpan = [TimeSpan]::FromMinutes(255)
+	$parsedSpan = [TimeSpan]::Zero
+	if ([TimeSpan]::TryParse($StartTime, [ref]$parsedSpan)) { $startSpan = $parsedSpan }
+	$scheduledDate = (Get-Date).Date.Add($startSpan)
+	if ((Get-Date) -ge $scheduledDate) { $scheduledDate = $scheduledDate.AddDays(1) }
 	$scheduledDateText = $scheduledDate.ToString('MM/dd/yyyy')
 
 	$workerScript = @'
@@ -12020,17 +11968,22 @@ try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3
 #                              FUNCTION: Process_Lanes
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Runs the per-lane SQL maintenance (LANESQL script) for the lanes of a store. Resolves
-#   each lane's DB server/name from the cached lane info, honors the cached protocol
-#   preference (TCP / Named Pipes / File) and records the processed lanes for the summary.
+#   Runs the lane SQL maintenance (sections of the generated lane script) on the lanes the user
+#   picks. Several lanes: the selected sections are dropped as Lane_Database_Maintenance.sqi
+#   into each lane's XF folder. One lane: runs the sections directly over the lane's detected
+#   SQL protocol (TCP / Named Pipes; on 'Login failed' it maps the current Windows login as
+#   db_owner and retries once), falling back to the file drop when the lane is on File, the
+#   protocol is not known yet, no SQL module is installed, or the direct run fails.
 #
 # Parameters:
 #   - StoreNumber     [string]: store to process
-#   - ProcessAllLanes [switch]: process every lane of the store
+#   - ProcessAllLanes [switch]: (not used - the lane picker decides)
 #
 # Variables:
-#   - $script:FunctionResults: LaneNumToMachineName, MachineNameToLaneNum, SqlModuleName (input)
-#   - $script:ProcessedLanes: lanes processed so far (output)
+#   - $script:FunctionResults: LaneNumToMachineName, MachineNameToLaneNum, SqlModuleName
+#   - $script:LaneSQLScript / $script:LaneSQLFiltered: generated by Generate_SQL_Scripts
+#   - $script:LaneProtocols: per-lane protocol from Start_Lane_Protocol_Jobs
+#   - $script:ProcessedLanes: every lane processed this session (output)
 #   - $OfficePath: Storeman Office root (XF lane folders)
 # ===================================================================================================
 
@@ -12042,20 +11995,19 @@ function Process_Lanes
 	)
 
 	Write_Log "`r`n==================== Starting Process_Lanes Function ====================`r`n" "blue"
+	$done = { Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue" }
 
-	if (-not (Test-Path $OfficePath))
+	if (-not (Test-Path -LiteralPath $OfficePath))
 	{
 		Write_Log "XF Base Path not found: $OfficePath" "yellow"
-		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
+		& $done
 		return
 	}
-
-	# Make sure ProcessedLanes exists
 	if (-not $script:ProcessedLanes) { $script:ProcessedLanes = @() }
 
-	# ----------------------------------------
-	# Import detected SQL module for Invoke-Sqlcmd usage
-	# ----------------------------------------
+	# Invoke-Sqlcmd is only needed for the direct (single-lane) run; without it every lane
+	# gets the file drop
+	$InvokeSqlCmd = $null
 	$SqlModuleName = $script:FunctionResults['SqlModuleName']
 	if ($SqlModuleName -and $SqlModuleName -ne "None")
 	{
@@ -12064,415 +12016,264 @@ function Process_Lanes
 			Import-Module $SqlModuleName -ErrorAction Stop
 			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
 		}
-		catch
-		{
-			Write_Log "Failed to import SQL module '$SqlModuleName' or find Invoke-Sqlcmd: $_" "red"
-			return
-		}
+		catch { Write_Log "SQL module '$SqlModuleName' could not be loaded ($($_.Exception.Message)) - lanes get the file drop." "yellow" }
 	}
 	else
 	{
-		Write_Log "No valid SQL module available for SQL operations!" "red"
-		return
+		Write_Log "No SQL PowerShell module - lanes get the file drop." "yellow"
 	}
 
-	# ----------------------------------------
-	# Check for available Lane Machines
-	# ----------------------------------------
 	$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 	if (-not $LaneNumToMachineName -or $LaneNumToMachineName.Count -eq 0)
 	{
 		Write_Log "No lanes available. Please retrieve nodes first." "red"
-		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
+		& $done
 		return
 	}
-
 	$MachineNameToLaneNum = $script:FunctionResults['MachineNameToLaneNum']
 	if (-not $MachineNameToLaneNum) { $MachineNameToLaneNum = @{ } }
 
 	# ----------------------------------------
-	# Get user's lane selection
+	# Lanes
 	# ----------------------------------------
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
-	if ($selection -eq $null)
+	if ($null -eq $selection)
 	{
 		Write_Log "Lane processing canceled by user." "yellow"
-		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
+		& $done
 		return
 	}
-
-	# Support both string and object selections for lanes
-	if ($selection.Lanes -and $selection.Lanes.Count -gt 0)
-	{
-		if ($selection.Lanes[0] -is [PSCustomObject] -and $selection.Lanes[0].PSObject.Properties.Name -contains 'LaneNumber')
-		{
-			$Lanes = $selection.Lanes | ForEach-Object { $_.LaneNumber }
-		}
-		else
-		{
-			$Lanes = $selection.Lanes
-		}
-	}
-	else
+	$Lanes = @($selection.Lanes | ForEach-Object { if ($_ -is [pscustomobject] -and $_.LaneNumber) { $_.LaneNumber } else { $_ } })
+	if ($Lanes.Count -eq 0)
 	{
 		Write_Log "No lanes selected." "yellow"
-		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
+		& $done
 		return
 	}
 
 	# ----------------------------------------
-	# Parse Lane SQL script sections for processing
+	# Sections (the long-timeout wrapper sections are always added)
 	# ----------------------------------------
+	if (-not $script:LaneSQLScript)
+	{
+		try { Generate_SQL_Scripts -StoreNumber $StoreNumber | Out-Null }
+		catch { }
+	}
 	$sectionPattern = '(?s)/\*\s*(?<SectionName>[^*/]+?)\s*\*/\s*(?<SQLCommands>(?:.(?!/\*)|.)*?)(?=(/\*|$))'
-	$matches = [regex]::Matches($script:LaneSQLScript, $sectionPattern)
-	if ($matches.Count -eq 0)
+	$sectionMatches = @([regex]::Matches([string]$script:LaneSQLScript, $sectionPattern))
+	if ($sectionMatches.Count -eq 0)
 	{
 		Write_Log "No sections found in Lane SQL script." "red"
-		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
+		& $done
 		return
 	}
 
-	$fixedSections = @(
-		"Set a long timeout so the entire script runs",
-		"Clear the long database timeout"
-	)
-
-	$allSectionNames = $matches |
-	ForEach-Object { $_.Groups['SectionName'].Value.Trim() } |
-	Where-Object { $fixedSections -notcontains $_ }
-
+	$fixedSections = @("Set a long timeout so the entire script runs", "Clear the long database timeout")
+	$allSectionNames = @($sectionMatches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() } | Where-Object { $fixedSections -notcontains $_ })
 	$SectionsToSend = Show_Section_Selection_Form -SectionNames $allSectionNames
-	if (-not $SectionsToSend -or $SectionsToSend.Count -eq 0)
+	if (-not $SectionsToSend -or @($SectionsToSend).Count -eq 0)
 	{
 		Write_Log "No sections selected for lanes." "yellow"
-		Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
+		& $done
 		return
 	}
 
-	# ----------------------------------------
-	# Pre-build the SQI script for fallback (same for all lanes)
-	# ----------------------------------------
-	$topBlock = "/* Set a long timeout so the entire script runs */`r`n@WIZRPL(DBASE_TIMEOUT=E);`r`n" +
-	"--------------------------------------------------------------------------------`r`n"
-	$bottomBlock = "--------------------------------------------------------------------------------`r`n" +
+	# File-drop script (same for all lanes)
+	$middleBlock = ($sectionMatches | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() } | ForEach-Object {
+			"/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())"
+		}) | Out-String
+	$finalScript = "/* Set a long timeout so the entire script runs */`r`n@WIZRPL(DBASE_TIMEOUT=E);`r`n" +
+	"--------------------------------------------------------------------------------`r`n" +
+	$middleBlock +
+	"--------------------------------------------------------------------------------`r`n" +
 	"/* Clear the long database timeout */`r`n@WIZCLR(DBASE_TIMEOUT);"
 
-	$middleBlock = ($matches | Where-Object {
-			$SectionsToSend -contains $_.Groups['SectionName'].Value.Trim()
-		}) | ForEach-Object {
-		"/* $($_.Groups['SectionName'].Value.Trim()) */`r`n$($_.Groups['SQLCommands'].Value.Trim())"
-	} | Out-String
-
-	$finalScript = $topBlock + $middleBlock + $bottomBlock
-
-	# ----------------------------------------
-	# MULTIPLE lanes: Always file fallback
-	# ----------------------------------------
-	if ($Lanes.Count -gt 1)
-	{
-		Write_Log "Multiple lanes selected, using file-based fallback for all lanes." "yellow"
-
-		foreach ($LaneNumber in $Lanes)
-		{
-			# Normalize lane number (accept "001" or "POS001" etc)
-			$laneNumCandidate = $LaneNumber
-			if ($MachineNameToLaneNum.ContainsKey($LaneNumber)) { $laneNumCandidate = $MachineNameToLaneNum[$LaneNumber] }
-			elseif ($LaneNumber -match '(\d{1,3})$') { $laneNumCandidate = $Matches[1] }
-
-			if ($laneNumCandidate -match '^\d+$') { $laneNum = $laneNumCandidate.PadLeft(3, '0') }
-			else { $laneNum = $LaneNumber }
-
-			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
-			if (-not $laneInfo)
-			{
-				Write_Log "Could not get DB info for lane $laneNum. Skipping." "yellow"
-				continue
-			}
-
-			# Convert PSCustomObject -> hashtable (important when loaded from JSON cache)
-			if ($laneInfo -and ($laneInfo -isnot [System.Collections.IDictionary]))
-			{
-				$tmp = @{ }
-				foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
-				$laneInfo = $tmp
-			}
-
-			$machineName = $laneInfo['MachineName']
-			if (-not $machineName) { $machineName = $LaneNumToMachineName[$laneNum] }
-
-			$LaneLocalPath = Join-Path $OfficePath ("XF" + $StoreNumber + $laneNum)
-
-			if (Test-Path $LaneLocalPath)
-			{
-				Write_Log "Writing Lane_Database_Maintenance.sqi to Lane $laneNum ($machineName)..." "blue"
-				try
-				{
-					Set-Content -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Value $finalScript -Encoding Ascii
-					Set-ItemProperty -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-					Write_Log "Created and wrote to file at Lane #$laneNum ($machineName) successfully. (file copy)" "green"
-
-					if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
-				}
-				catch
-				{
-					Write_Log "Failed to write to [$machineName]: $_" "red"
-				}
-			}
-			else
-			{
-				Write_Log "Lane #$laneNum not found at path: $LaneLocalPath" "yellow"
-			}
-		}
+	$processedThisRun = New-Object System.Collections.Generic.List[string]
+	$markProcessed = {
+		param ([string]$Lane)
+		if (-not $processedThisRun.Contains($Lane)) { $processedThisRun.Add($Lane) }
+		if ($script:ProcessedLanes -notcontains $Lane) { $script:ProcessedLanes += $Lane }
 	}
-	else
-	{
-		# SINGLE lane: Try protocol, fallback to file
-		foreach ($LaneNumber in $Lanes)
+
+	# Drop the SQI into the lane's XF folder
+	$dropFile = {
+		param ([string]$Lane, [string]$Machine, [string]$How)
+		$laneLocalPath = Join-Path $OfficePath ("XF" + $StoreNumber + $Lane)
+		if (-not (Test-Path -LiteralPath $laneLocalPath))
 		{
-			# Normalize lane number (accept "001" or "POS001" etc)
-			$laneNumCandidate = $LaneNumber
-			if ($MachineNameToLaneNum.ContainsKey($LaneNumber)) { $laneNumCandidate = $MachineNameToLaneNum[$LaneNumber] }
-			elseif ($LaneNumber -match '(\d{1,3})$') { $laneNumCandidate = $Matches[1] }
+			Write_Log "Lane #$Lane not found at path: $laneLocalPath" "yellow"
+			return
+		}
+		Write_Log "Writing Lane_Database_Maintenance.sqi to Lane $Lane ($Machine)$How..." "blue"
+		try
+		{
+			$sqiPath = Join-Path $laneLocalPath "Lane_Database_Maintenance.sqi"
+			Set-Content -Path $sqiPath -Value $finalScript -Encoding Ascii
+			Set-ItemProperty -Path $sqiPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+			Write_Log "Created and wrote to file at Lane #$Lane ($Machine) successfully. (file copy)" "green"
+			& $markProcessed $Lane
+		}
+		catch { Write_Log "Failed to write to [$Machine]: $_" "red" }
+	}
 
-			if ($laneNumCandidate -match '^\d+$') { $laneNum = $laneNumCandidate.PadLeft(3, '0') }
-			else { $laneNum = $LaneNumber }
+	$multipleLanes = ($Lanes.Count -gt 1)
+	if ($multipleLanes) { Write_Log "Multiple lanes selected, using file-based fallback for all lanes." "yellow" }
 
-			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
-			if (-not $laneInfo)
+	foreach ($LaneNumber in $Lanes)
+	{
+		# "001", "1" or a machine name -> 3-digit lane number
+		$laneNumCandidate = [string]$LaneNumber
+		if ($MachineNameToLaneNum.ContainsKey($laneNumCandidate)) { $laneNumCandidate = [string]$MachineNameToLaneNum[$laneNumCandidate] }
+		elseif ($laneNumCandidate -match '(\d{1,3})$') { $laneNumCandidate = $Matches[1] }
+		$laneNum = if ($laneNumCandidate -match '^\d+$') { $laneNumCandidate.PadLeft(3, '0') } else { [string]$LaneNumber }
+
+		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
+		if (-not $laneInfo)
+		{
+			Write_Log "Could not get DB info for lane $laneNum. Skipping." "yellow"
+			continue
+		}
+		# PSCustomObject (JSON cache) -> hashtable
+		if ($laneInfo -isnot [System.Collections.IDictionary])
+		{
+			$tmp = @{ }
+			foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
+			$laneInfo = $tmp
+		}
+		$machineName = $laneInfo['MachineName']
+		if (-not $machineName) { $machineName = $LaneNumToMachineName[$laneNum] }
+
+		if ($multipleLanes)
+		{
+			& $dropFile $laneNum $machineName ''
+			continue
+		}
+
+		# ---------------- single lane: direct run over the lane's protocol ----------------
+		$protocolType = $null
+		if ($script:LaneProtocols) { $protocolType = $script:LaneProtocols[$laneNum] }
+		$workingConnStr = $null
+		if ($protocolType -eq "Named Pipes") { $workingConnStr = $laneInfo['NamedPipesConnStr'] }
+		elseif ($protocolType -eq "TCP") { $workingConnStr = $laneInfo['TcpConnStr'] }
+		$workingConnStrIsValid = (-not [string]::IsNullOrWhiteSpace($workingConnStr)) -and ($workingConnStr -match '^\s*Server\s*=') -and ($workingConnStr -match 'Database\s*=')
+
+		Write_Log "Lane $laneNum uses protocol: $(if ([string]::IsNullOrWhiteSpace($protocolType)) { 'File' } else { $protocolType })" "gray"
+		Write_Log "Lane $laneNum connection string: $(if ($workingConnStrIsValid) { $workingConnStr } else { '<file>' })" "gray"
+
+		if ($protocolType -eq 'Offline')
+		{
+			Write_Log "Lane $laneNum ($machineName) is offline. Skipping." "yellow"
+			continue
+		}
+		if (-not $InvokeSqlCmd -or -not $protocolType -or $protocolType -eq "File" -or -not $workingConnStrIsValid)
+		{
+			Write_Log "Protocol not ready/unavailable for $machineName. Skipping protocol and using file copy." "yellow"
+			& $dropFile $laneNum $machineName ' using file fallback'
+			continue
+		}
+
+		# For the -ServerInstance fallback and the login mapping
+		$server = $laneInfo['TcpServer']
+		$database = $laneInfo['DBName']
+		if ([string]::IsNullOrWhiteSpace($database)) { $database = "LANESQL" }
+		if ([string]::IsNullOrWhiteSpace($server) -and $workingConnStr -match 'Server\s*=\s*([^;]+)') { $server = $Matches[1].Trim() }
+		$currentLogin = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+
+		$protocolWorked = $false
+		try
+		{
+			$filteredMatches = @([regex]::Matches([string]$script:LaneSQLFiltered, $sectionPattern) | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() })
+			foreach ($match in $filteredMatches)
 			{
-				Write_Log "Could not get DB info for lane $laneNum. Skipping." "yellow"
-				continue
-			}
+				$sectionName = $match.Groups['SectionName'].Value.Trim()
+				$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
 
-			# Convert PSCustomObject -> hashtable (important when loaded from JSON cache)
-			if ($laneInfo -and ($laneInfo -isnot [System.Collections.IDictionary]))
-			{
-				$tmp = @{ }
-				foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
-				$laneInfo = $tmp
-			}
+				Write_Log "Executing section: '$sectionName' on $machineName" "blue"
+				Write_Log "--------------------------------------------------------------------------------"
+				Write_Log "$sqlCommands" "orange"
+				Write_Log "--------------------------------------------------------------------------------"
 
-			$machineName = $laneInfo['MachineName']
-			$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-			$tcpConnStr = $laneInfo['TcpConnStr']
-
-			$LaneLocalPath = Join-Path $OfficePath ("XF" + $StoreNumber + $laneNum)
-
-			# Get protocol for this lane
-			$laneKey = $laneNum.PadLeft(3, '0')
-			$protocolType = $null
-			if ($script:LaneProtocols) { $protocolType = $script:LaneProtocols[$laneKey] }
-
-			$workingConnStr = $null
-			if ($protocolType -eq "Named Pipes") { $workingConnStr = $namedPipesConnStr }
-			elseif ($protocolType -eq "TCP") { $workingConnStr = $tcpConnStr }
-
-			# Validate connection string (DO NOT replace it with "File")
-			$workingConnStrIsValid =
-			(-not [string]::IsNullOrWhiteSpace($workingConnStr)) -and
-			($workingConnStr -match '^\s*Server\s*=') -and
-			($workingConnStr -match 'Database\s*=')
-
-			$displayProtocol = if ([string]::IsNullOrWhiteSpace($protocolType)) { "File" }
-			else { $protocolType }
-			$displayConnStr = if ($workingConnStrIsValid) { $workingConnStr }
-			else { "<file>" }
-
-			Write_Log "Lane $laneNum uses protocol: $displayProtocol" "gray"
-			Write_Log "Lane $laneNum connection string: $displayConnStr" "gray"
-
-			if ($protocolType -eq 'Offline')
-			{
-				Write_Log "Lane $laneNum ($machineName) is offline. Skipping." "yellow"
-				continue
-			}
-
-			# If protocol not ready / invalid conn string, fallback to file
-			if (-not $protocolType -or $protocolType -eq "File" -or -not $workingConnStrIsValid)
-			{
-				Write_Log "Protocol not ready/unavailable for $machineName. Skipping protocol and using file copy." "yellow"
-
-				if (Test-Path $LaneLocalPath)
+				$querySucceeded = $false
+				$retriedForMapping = $false
+				for ($try = 1; $try -le 2; $try++)
 				{
-					Write_Log "`r`nProcessing $machineName using file fallback..." "blue"
-					Write_Log "Lane path found: $LaneLocalPath" "blue"
-					Write_Log "Writing Lane_Database_Maintenance.sqi to Lane..." "blue"
 					try
 					{
-						Set-Content -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Value $finalScript -Encoding Ascii
-						Set-ItemProperty -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-						Write_Log "Created and wrote to file at Lane #$laneNum ($machineName) successfully. (file copy)" "green"
-
-						if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
+						$null = & $InvokeSqlCmd -ConnectionString $workingConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
+						Write_Log "Section '$sectionName' executed successfully on $machineName using ($protocolType)." "green"
+						$protocolWorked = $true
+						$querySucceeded = $true
+						break
 					}
 					catch
 					{
-						Write_Log "Failed to write to [$machineName]: $_" "red"
-					}
-				}
-				else
-				{
-					Write_Log "Lane #$laneNum not found at path: $LaneLocalPath" "yellow"
-				}
-				continue
-			}
-
-			# ----------------------------------------
-			# Protocol execution: Try SQL via protocol
-			# ----------------------------------------
-			$protocolWorked = $false
-
-			# These MUST be valid for ServerInstance fallback
-			$server = $laneInfo['TcpServer']
-			$database = $laneInfo['DBName']
-			if ([string]::IsNullOrWhiteSpace($database)) { $database = "LANESQL" } # critical fix
-			if ([string]::IsNullOrWhiteSpace($server) -and $workingConnStr -match 'Server\s*=\s*([^;]+)') { $server = $Matches[1].Trim() }
-
-			$currentLogin = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-
-			try
-			{
-				$matchesFiltered = [regex]::Matches($script:LaneSQLFiltered, $sectionPattern)
-				$sections = ($matchesFiltered | Where-Object { $SectionsToSend -contains $_.Groups['SectionName'].Value.Trim() })
-
-				foreach ($match in $sections)
-				{
-					$sectionName = $match.Groups['SectionName'].Value.Trim()
-					$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
-
-					Write_Log "Executing section: '$sectionName' on $machineName" "blue"
-					Write_Log "--------------------------------------------------------------------------------"
-					Write_Log "$sqlCommands" "orange"
-					Write_Log "--------------------------------------------------------------------------------"
-
-					$querySucceeded = $false
-					$retriedForMapping = $false
-
-					for ($try = 1; $try -le 2; $try++)
-					{
-						try
+						$errorMsg = $_.Exception.Message
+						if ($errorMsg -match 'Login failed for user' -and -not $retriedForMapping)
 						{
-							& $InvokeSqlCmd -ConnectionString $workingConnStr -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
-							Write_Log "Section '$sectionName' executed successfully on $machineName using ($protocolType)." "green"
-							$protocolWorked = $true
-							$querySucceeded = $true
-							break
-						}
-						catch
-						{
-							$errorMsg = $_.Exception.Message
-
-							if ($errorMsg -match 'Login failed for user' -and -not $retriedForMapping)
+							# Map the current Windows login as db_owner, then retry once
+							Write_Log "Login failed for $currentLogin on $machineName. Attempting to map user and retry..." "yellow"
+							$userExists = 0
+							try { $userExists = (& $InvokeSqlCmd -ServerInstance $server -Database $database -Query "SELECT COUNT(*) AS UserExists FROM sys.database_principals WHERE name = '$currentLogin'" -ErrorAction Stop).UserExists }
+							catch { $userExists = 0 }
+							if ($userExists -eq 0)
 							{
-								Write_Log "Login failed for $currentLogin on $machineName. Attempting to map user and retry..." "yellow"
-								$checkUserQuery = "SELECT COUNT(*) AS UserExists FROM sys.database_principals WHERE name = '$currentLogin'"
-
 								try
 								{
-									$userExists = (& $InvokeSqlCmd -ServerInstance $server -Database $database -Query $checkUserQuery -ErrorAction Stop).UserExists
+									$null = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query "USE [$database];`r`nCREATE USER [$currentLogin] FOR LOGIN [$currentLogin];`r`nALTER ROLE db_owner ADD MEMBER [$currentLogin];" -ErrorAction Stop
+									Write_Log "Mapped and granted db_owner to $currentLogin in [$database]." "blue"
 								}
-								catch { $userExists = 0 }
-
-								if ($userExists -eq 0)
-								{
-									$createUserSql = @"
-USE [$database];
-CREATE USER [$currentLogin] FOR LOGIN [$currentLogin];
-ALTER ROLE db_owner ADD MEMBER [$currentLogin];
-"@
-									try
-									{
-										& $InvokeSqlCmd -ServerInstance $server -Database $database -Query $createUserSql -ErrorAction Stop
-										Write_Log "Mapped and granted db_owner to $currentLogin in [$database]." "blue"
-									}
-									catch
-									{
-										Write_Log "Failed to map $currentLogin in [$database]: $_" "yellow"
-									}
-								}
-								else
-								{
-									try { & $InvokeSqlCmd -ServerInstance $server -Database $database -Query "ALTER ROLE db_owner ADD MEMBER [$currentLogin];" -ErrorAction SilentlyContinue }
-									catch { }
-									Write_Log "$currentLogin already mapped in [$database]." "gray"
-								}
-
-								$retriedForMapping = $true
-								continue
-							}
-							elseif ($errorMsg -match 'Login failed for user')
-							{
-								Write_Log "Login failed for $currentLogin on $machineName. ServerInstance fallback will NOT be attempted (would repeat login failure)..." "yellow"
-								$protocolWorked = $false
-								break
+								catch { Write_Log "Failed to map $currentLogin in [$database]: $_" "yellow" }
 							}
 							else
 							{
-								Write_Log "ConnectionString method failed for section '$sectionName' on [$machineName]: $_. Trying ServerInstance fallback..." "yellow"
-								try
-								{
-									& $InvokeSqlCmd -ServerInstance $server -Database $database -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
-									Write_Log "Section '$sectionName' executed successfully on $machineName using ($protocolType, ServerInstance fallback)." "green"
-									$protocolWorked = $true
-									$querySucceeded = $true
-								}
-								catch
-								{
-									Write_Log "ServerInstance method also failed for section '$sectionName' on [$machineName]: $_" "red"
-									$protocolWorked = $false
-								}
-								break
+								try { $null = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query "ALTER ROLE db_owner ADD MEMBER [$currentLogin];" -ErrorAction SilentlyContinue }
+								catch { }
+								Write_Log "$currentLogin already mapped in [$database]." "gray"
 							}
+							$retriedForMapping = $true
+							continue
+						}
+						elseif ($errorMsg -match 'Login failed for user')
+						{
+							Write_Log "Login failed for $currentLogin on $machineName. ServerInstance fallback will NOT be attempted (would repeat login failure)..." "yellow"
+							$protocolWorked = $false
+							break
+						}
+						else
+						{
+							Write_Log "ConnectionString method failed for section '$sectionName' on [$machineName]: $_. Trying ServerInstance fallback..." "yellow"
+							try
+							{
+								$null = & $InvokeSqlCmd -ServerInstance $server -Database $database -Query $sqlCommands -QueryTimeout 0 -ErrorAction Stop
+								Write_Log "Section '$sectionName' executed successfully on $machineName using ($protocolType, ServerInstance fallback)." "green"
+								$protocolWorked = $true
+								$querySucceeded = $true
+							}
+							catch
+							{
+								Write_Log "ServerInstance method also failed for section '$sectionName' on [$machineName]: $_" "red"
+								$protocolWorked = $false
+							}
+							break
 						}
 					}
-
-					if (-not $querySucceeded) { break }
 				}
-			}
-			catch
-			{
-				Write_Log "Failed to execute a section on $machineName via protocol: $_. Falling back to file." "yellow"
-				$protocolWorked = $false
-			}
-
-			if ($protocolWorked)
-			{
-				if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
-				continue
-			}
-
-			# Fallback: Classic file-based method
-			if (Test-Path $LaneLocalPath)
-			{
-				Write_Log "`r`nProcessing $machineName using file copy..." "blue"
-				Write_Log "Lane path found: $LaneLocalPath" "blue"
-				Write_Log "Writing Lane_Database_Maintenance.sqi to Lane..." "blue"
-				try
-				{
-					Set-Content -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Value $finalScript -Encoding Ascii
-					Set-ItemProperty -Path (Join-Path $LaneLocalPath "Lane_Database_Maintenance.sqi") -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-					Write_Log "Created and wrote to file at Lane #$laneNum ($machineName) successfully. (file copy)" "green"
-
-					if (-not ($script:ProcessedLanes -contains $laneNum)) { $script:ProcessedLanes += $laneNum }
-				}
-				catch
-				{
-					Write_Log "Failed to write to [$machineName]: $_" "red"
-				}
-			}
-			else
-			{
-				Write_Log "Lane #$laneNum not found at path: $LaneLocalPath" "yellow"
+				if (-not $querySucceeded) { break }
 			}
 		}
+		catch
+		{
+			Write_Log "Failed to execute a section on $machineName via protocol: $_. Falling back to file." "yellow"
+			$protocolWorked = $false
+		}
+
+		if ($protocolWorked) { & $markProcessed $laneNum }
+		else { & $dropFile $laneNum $machineName ' using file copy' }
 	}
 
-	Write_Log "`r`nTotal Lanes processed: $($script:ProcessedLanes.Count)" "green"
-	if ($script:ProcessedLanes.Count -gt 0)
-	{
-		Write_Log "Processed Lanes: $($script:ProcessedLanes -join ', ')" "green"
-	}
-	Write_Log "`r`n==================== Process_Lanes Function Completed ====================" "blue"
+	Write_Log "`r`nTotal Lanes processed: $($processedThisRun.Count)" "green"
+	if ($processedThisRun.Count -gt 0) { Write_Log "Processed Lanes: $($processedThisRun -join ', ')" "green" }
+	& $done
 }
 
 # ===================================================================================================
@@ -12557,7 +12358,7 @@ function Pump_Tables
 		elseif ($_ -match '(\d{1,3})$') { $Matches[1].PadLeft(3, '0') }
 		else { $_ }
 	}
-	$Lanes = $Lanes | Where-Object { $LaneNumToMachineName.ContainsKey($_) } | Select-Object -Unique
+	$Lanes = @($Lanes | Where-Object { $LaneNumToMachineName.ContainsKey($_) } | Select-Object -Unique)
 
 	if (-not $Lanes -or $Lanes.Count -eq 0)
 	{
@@ -12844,6 +12645,7 @@ function Pump_Tables
 							}
 
 							Write_Log "Pumping table '$table' to lane $laneNum ($machineName) via SQL (SqlBulkCopy)..." "blue"
+							$laneTx = $null
 
 							try
 							{
@@ -12914,7 +12716,11 @@ ORDER BY c.column_id;
 								#    - If exists: TRUNCATE (fallback to DELETE)
 								#    - If missing: CREATE from source columns (computed columns cannot be created here -> fail)
 								# -----------------------------
+								# Empty + reload in ONE lane transaction: a failed copy rolls back and the
+								# lane keeps its old rows instead of an empty / half-filled table
+								$laneTx = $laneSqlConn.BeginTransaction()
 								$existsCmd = $laneSqlConn.CreateCommand()
+								$existsCmd.Transaction = $laneTx
 								$existsCmd.CommandTimeout = 30
 								$existsCmd.CommandText = "SELECT OBJECT_ID(N'[dbo].[$table]', N'U')"
 								$destObjId = $existsCmd.ExecuteScalar()
@@ -12926,6 +12732,7 @@ ORDER BY c.column_id;
 									try
 									{
 										$emptyCmd = $laneSqlConn.CreateCommand()
+										$emptyCmd.Transaction = $laneTx
 										$emptyCmd.CommandTimeout = 60
 										$emptyCmd.CommandText = "TRUNCATE TABLE [dbo].[$table]"
 										$emptyCmd.ExecuteNonQuery() | Out-Null
@@ -12934,6 +12741,7 @@ ORDER BY c.column_id;
 									{
 										# TRUNCATE can fail (FKs). Fallback to DELETE.
 										$emptyCmd2 = $laneSqlConn.CreateCommand()
+										$emptyCmd2.Transaction = $laneTx
 										$emptyCmd2.CommandTimeout = 120
 										$emptyCmd2.CommandText = "DELETE FROM [dbo].[$table]"
 										$emptyCmd2.ExecuteNonQuery() | Out-Null
@@ -13029,6 +12837,7 @@ ORDER BY c.column_id;
 
 									$createSql = "CREATE TABLE [dbo].[$table] (" + ($colDefs -join ', ') + ")"
 									$createCmd = $laneSqlConn.CreateCommand()
+									$createCmd.Transaction = $laneTx
 									$createCmd.CommandTimeout = 120
 									$createCmd.CommandText = "IF OBJECT_ID(N'[dbo].[$table]', N'U') IS NOT NULL DROP TABLE [dbo].[$table]; $createSql;"
 									$createCmd.ExecuteNonQuery() | Out-Null
@@ -13044,6 +12853,7 @@ ORDER BY c.column_id;
 									try
 									{
 										$identOn = $laneSqlConn.CreateCommand()
+										$identOn.Transaction = $laneTx
 										$identOn.CommandTimeout = 30
 										$identOn.CommandText = "SET IDENTITY_INSERT [dbo].[$table] ON"
 										$identOn.ExecuteNonQuery() | Out-Null
@@ -13072,7 +12882,7 @@ ORDER BY c.column_id;
 									$bulkOptions = [System.Data.SqlClient.SqlBulkCopyOptions]::TableLock
 									if ($identityInsertEnabled) { $bulkOptions = $bulkOptions -bor [System.Data.SqlClient.SqlBulkCopyOptions]::KeepIdentity }
 
-									$bulk = New-Object System.Data.SqlClient.SqlBulkCopy($laneSqlConn, $bulkOptions, $null)
+									$bulk = New-Object System.Data.SqlClient.SqlBulkCopy($laneSqlConn, $bulkOptions, $laneTx)
 									$bulk.DestinationTableName = "[dbo].[$table]"
 									$bulk.BatchSize = 5000
 									$bulk.BulkCopyTimeout = 0
@@ -13097,6 +12907,7 @@ ORDER BY c.column_id;
 									try
 									{
 										$identOff = $laneSqlConn.CreateCommand()
+										$identOff.Transaction = $laneTx
 										$identOff.CommandTimeout = 30
 										$identOff.CommandText = "SET IDENTITY_INSERT [dbo].[$table] OFF"
 										$identOff.ExecuteNonQuery() | Out-Null
@@ -13104,12 +12915,21 @@ ORDER BY c.column_id;
 									catch { }
 								}
 
+								$laneTx.Commit()
+								$laneTx = $null
 								$rowCountCopied = $tableRowCounts[$table]
 								Write_Log "Copied $rowCountCopied rows to '$table' on lane $laneNum ($machineName) (SQL protocol)." "green"
 							}
 							catch
 							{
-								Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL: $_" "red"
+								if ($laneTx)
+								{
+									try { $laneTx.Rollback() }
+									catch { }
+									$laneTx = $null
+									Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL - lane table left unchanged: $_" "red"
+								}
+								else { Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL: $_" "red" }
 							}
 						}
 
@@ -13264,10 +13084,7 @@ CREATE VIEW $viewName AS SELECT $columnList FROM $table;
 
 INSERT INTO $viewName VALUES
 "@
-							$header = $header -replace "(
-|
-|
-)", "`r`n"
+							$header = $header -replace "(`r`n|`n|`r)", "`r`n"
 							$streamWriter.WriteLine($header.TrimEnd())
 
 							$dataQuery = "SELECT $columnList FROM [dbo].[$table]"
@@ -13293,10 +13110,7 @@ INSERT INTO $viewName VALUES
 									{
 										{ $_ -in @('char', 'nchar', 'varchar', 'nvarchar', 'text', 'ntext') } {
 											$escapedVal = $val.ToString().Replace("'", "''")
-											$escapedVal = $escapedVal -replace "(
-|
-|
-)", " "
+											$escapedVal = $escapedVal -replace "(`r`n|`n|`r)", " "
 											$values += "'$escapedVal'"
 											break
 										}
@@ -13322,20 +13136,14 @@ INSERT INTO $viewName VALUES
 										}
 										default {
 											$escapedVal = $val.ToString().Replace("'", "''")
-											$escapedVal = $escapedVal -replace "(
-|
-|
-)", " "
+											$escapedVal = $escapedVal -replace "(`r`n|`n|`r)", " "
 											$values += "'$escapedVal'"
 											break
 										}
 									}
 								}
 								$insertStatement = "(" + ($values -join ",") + ")"
-								$insertStatement = $insertStatement -replace "(
-|
-|
-)", " "
+								$insertStatement = $insertStatement -replace "(`r`n|`n|`r)", " "
 								$streamWriter.Write($insertStatement)
 							}
 							$readerData.Close()
@@ -13353,10 +13161,7 @@ DROP VIEW $viewName;
 
 @WIZCLR(DBASE_TIMEOUT);
 "@
-							$footer = $footer -replace "(
-|
-|
-)", "`r`n"
+							$footer = $footer -replace "(`r`n|`n|`r)", "`r`n"
 							$streamWriter.WriteLine($footer.TrimEnd())
 							$streamWriter.WriteLine()
 							$streamWriter.Flush()
@@ -13441,8 +13246,8 @@ DROP VIEW $viewName;
 # Description:
 #   Deploys a database refresh command to the selected registers: for each selected lane it
 #   writes Refresh_Database.sqi (ANSI, CRLF) containing @WIZSET(TARGET=@TER) and
-#   @EXEC(SQM=exe_activate_accept_sys) into the lane XF folder, then sends a restart
-#   command to the machine.
+#   @EXEC(SQM=exe_activate_accept_sys) into the lane XF folder; the lane picks it up from
+#   there (no restart is sent).
 #
 # Parameters:
 #   - StoreNumber  [string]: store to process (required)
@@ -13605,6 +13410,7 @@ function Refresh_PIN_Pad_Files
 	# ============================= Main Processing Loop =============================
 	$totalRefreshed = 0
 	$totalFailed = 0
+	$refreshedLanes = New-Object System.Collections.Generic.List[string]
 
 	foreach ($laneObj in $Lanes)
 	{
@@ -13646,6 +13452,7 @@ function Refresh_PIN_Pad_Files
 						(Get-Item -Path $filePath).LastWriteTime = Get-Date
 						Write_Log "Lane #${laneNum}: Refreshed file '$filePath'." "green"
 						$totalRefreshed++
+						if (-not $refreshedLanes.Contains($laneNum)) { $refreshedLanes.Add($laneNum) }
 					}
 					catch
 					{
@@ -13669,33 +13476,7 @@ function Refresh_PIN_Pad_Files
 	# ==== Prompt to Restart All Programs on successful lanes ====
 	if ($totalRefreshed -gt 0)
 	{
-		# Build $refreshedLanes (only add a lane if any file was actually refreshed)
-		$refreshedLanes = @()
-		foreach ($laneObj in $Lanes)
-		{
-			$laneNum = if ($laneObj -is [pscustomobject] -and $laneObj.LaneNumber) { $laneObj.LaneNumber }
-			else { $laneObj }
-			$laneNum = $laneNum.PadLeft(3, '0')
-			if ($LaneNumToMachineName.ContainsKey($laneNum))
-			{
-				$machineName = $LaneNumToMachineName[$laneNum]
-				$targetPath = "\\$machineName\Storeman\XchDev\EMVConfig\"
-				foreach ($file in $fileExtensions)
-				{
-					$filePath = Join-Path -Path $targetPath -ChildPath $file
-					if (Test-Path -Path $filePath)
-					{
-						$lastWrite = (Get-Item -Path $filePath).LastWriteTime
-						if ($lastWrite -ge (Get-Date).AddMinutes(-5))
-						{
-							$refreshedLanes += $laneNum
-							break
-						}
-					}
-				}
-			}
-		}
-		$refreshedLanes = $refreshedLanes | Select-Object -Unique
+		# ($refreshedLanes is collected in the loop above - lanes where at least one file was touched)
 		if ($refreshedLanes.Count -gt 0)
 		{
 			Add-Type -AssemblyName System.Windows.Forms
@@ -13731,10 +13512,10 @@ function Refresh_PIN_Pad_Files
 #
 # Variables:
 #   - $script:FunctionResults['LaneNumToMachineName']: required input (lane map)
-#   - $script:FunctionResults['SqlModuleName']: required input (SQL module)
 #
 # Notes:
-#   - Falls back to .NET SqlClient when Invoke-Sqlcmd lacks -ConnectionString.
+#   - All SQL goes through System.Data.SqlClient (no SQL module needed); a Quick / Deep repair
+#     runs SINGLE_USER, DBCC and MULTI_USER on one connection.
 #   - If tempdb is not ONLINE it offers to restart the lane SQL service, then re-checks.
 # ===================================================================================================
 
@@ -13770,57 +13551,15 @@ function Repair_LOC_Databases_On_Lanes
 	}
 
 	# ----------------------------------------
-	# Import SQL module and capture Invoke-Sqlcmd
+	# SQL helpers: System.Data.SqlClient only (always present, so no SQL module is needed;
+	# DBCC errors surface as exceptions the same way Invoke-Sqlcmd -ErrorAction Stop did)
 	# ----------------------------------------
-	$SqlModuleName = $script:FunctionResults['SqlModuleName']
-	if (-not $SqlModuleName -or $SqlModuleName -eq "None")
-	{
-		Write_Log "No valid SQL module available for SQL operations!" "red"
-		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
-		return
-	}
-
-	$invokeSqlcmdCmd = $null
-	try
-	{
-		Import-Module $SqlModuleName -ErrorAction Stop
-		$invokeSqlcmdCmd = Get-Command Invoke-Sqlcmd -ErrorAction Stop
-	}
-	catch
-	{
-		Write_Log "Failed to import SQL module or find Invoke-Sqlcmd: $_" "red"
-		Write_Log "`r`n==================== Repair_LOC_Databases_On_Lanes Function Completed ====================" "blue"
-		return
-	}
-
-	# Detect whether Invoke-Sqlcmd supports -ConnectionString
-	$InvokeSupportsConnString = $false
-	try
-	{
-		if ($invokeSqlcmdCmd -and $invokeSqlcmdCmd.Parameters -and $invokeSqlcmdCmd.Parameters.ContainsKey('ConnectionString'))
-		{
-			$InvokeSupportsConnString = $true
-		}
-	}
-	catch { $InvokeSupportsConnString = $false }
-
-	# Ensure SqlClient types are available for fallback mode
-	try { Add-Type -AssemblyName System.Data 2>$null }
-	catch { }
-
 	$invokeSqlTable = {
 		param (
 			[string]$ConnectionString,
 			[string]$Query,
 			[int]$Timeout = 30
 		)
-
-		if ($InvokeSupportsConnString)
-		{
-			$rows = Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $Query -QueryTimeout $Timeout -ErrorAction Stop
-			if ($null -eq $rows) { return @() }
-			return @($rows)
-		}
 
 		$dt = New-Object System.Data.DataTable
 		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
@@ -13830,17 +13569,11 @@ function Repair_LOC_Databases_On_Lanes
 			$cmd = $cn.CreateCommand()
 			$cmd.CommandText = $Query
 			$cmd.CommandTimeout = $Timeout
-			$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
-			[void]$da.Fill($dt)
+			[void](New-Object System.Data.SqlClient.SqlDataAdapter $cmd).Fill($dt)
 		}
-		finally
-		{
-			try { $cn.Close() }
-			catch { }
-			try { $cn.Dispose() }
-			catch { }
-		}
+		finally { $cn.Dispose() }
 
+		# DataTable is not enumerable, so it comes back whole
 		return $dt
 	}
 
@@ -13851,12 +13584,6 @@ function Repair_LOC_Databases_On_Lanes
 			[int]$Timeout = 30
 		)
 
-		if ($InvokeSupportsConnString)
-		{
-			Invoke-Sqlcmd -ConnectionString $ConnectionString -Query $Query -QueryTimeout $Timeout -ErrorAction Stop | Out-Null
-			return
-		}
-
 		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
 		try
 		{
@@ -13866,15 +13593,8 @@ function Repair_LOC_Databases_On_Lanes
 			$cmd.CommandTimeout = $Timeout
 			[void]$cmd.ExecuteNonQuery()
 		}
-		finally
-		{
-			try { $cn.Close() }
-			catch { }
-			try { $cn.Dispose() }
-			catch { }
-		}
+		finally { $cn.Dispose() }
 	}
-
 	$getRowCount = {
 		param ($Rows)
 
@@ -14317,11 +14037,9 @@ function Repair_LOC_Databases_On_Lanes
 		$dbNameQuoted = $dbName.Replace("'", "''")
 
 		# ----------------------------------------
-		# Unified query execution (Invoke-Sqlcmd if possible; else SqlClient)
+		# Probe: connection + DB existence/state
 		# ----------------------------------------
 		$ExecError = $null
-
-		# Probe: connection + DB existence/state
 		$probeRows = $null
 		$probeTsql = @"
 SELECT name, state_desc
@@ -14329,41 +14047,8 @@ FROM sys.databases
 WHERE name = N'$dbNameQuoted';
 "@
 
-		try
-		{
-			if ($InvokeSupportsConnString)
-			{
-				$probeRows = Invoke-Sqlcmd -ConnectionString $connStr -Query $probeTsql -QueryTimeout 8 -ErrorAction Stop
-			}
-			else
-			{
-				# SqlClient fallback
-				$dt = New-Object System.Data.DataTable
-				$cn = New-Object System.Data.SqlClient.SqlConnection $connStr
-				try
-				{
-					$cn.Open()
-					$cmd = $cn.CreateCommand()
-					$cmd.CommandText = $probeTsql
-					$cmd.CommandTimeout = 8
-					$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
-					[void]$da.Fill($dt)
-				}
-				finally
-				{
-					try { $cn.Close() }
-					catch { }
-					try { $cn.Dispose() }
-					catch { }
-				}
-				$probeRows = $dt
-			}
-		}
-		catch
-		{
-			$ExecError = $_
-		}
-
+		try { $probeRows = & $invokeSqlTable $connStr $probeTsql 8 }
+		catch { $ExecError = $_ }
 		if ($ExecError)
 		{
 			Write_Log ("Lane {0} ({1}): Probe failed using {2}. Skipping. Error: {3}" -f $laneKeyP, $machineName, $proto, $ExecError.Exception.Message) "yellow"
@@ -14491,37 +14176,13 @@ WHERE name = N'$dbNameQuoted';
 					if ($running) { Write_Log "Service started." "green" }
 					else { Write_Log "ERROR: Service did not report RUNNING in time." "red" }
 
-					# Re-probe system DBs after restart (simple loop)
+					# Re-connect after the restart (up to ~2 minutes)
 					$reprobeOK = $false
 					for ($t = 1; $t -le 60; $t++)
 					{
-						try
-						{
-							if ($InvokeSupportsConnString)
-							{
-								Invoke-Sqlcmd -ConnectionString $connStr -Query "SELECT 1 AS ok;" -QueryTimeout 5 -ErrorAction Stop | Out-Null
-							}
-							else
-							{
-								$cnx = New-Object System.Data.SqlClient.SqlConnection $connStr
-								try { $cnx.Open(); $cmdx = $cnx.CreateCommand(); $cmdx.CommandText = "SELECT 1"; $cmdx.CommandTimeout = 5; [void]$cmdx.ExecuteScalar() }
-								finally
-								{
-									try { $cnx.Close() }
-									catch { }
-									try { $cnx.Dispose() }
-									catch { }
-								}
-							}
-							$reprobeOK = $true
-							break
-						}
-						catch
-						{
-							Start-Sleep -Milliseconds 2000
-						}
+						if (& $testSqlConnectivity $connStr) { $reprobeOK = $true; break }
+						Start-Sleep -Milliseconds 2000
 					}
-
 					if (-not $reprobeOK)
 					{
 						Write_Log "ERROR: Could not reconnect after service restart; skipping lane." "red"
@@ -14691,6 +14352,10 @@ WHERE name = N'$dbNameQuoted';
 		$didSingleUser = $false
 		$didEmergency = $false
 
+		# Quick / Deep run on ONE connection: with separate connections the lane's POS app could
+		# take the single-user slot between SINGLE_USER and DBCC, and the repair then failed
+		$repairConn = $null
+
 		try
 		{
 			if ($Level -eq 'Audit')
@@ -14708,131 +14373,38 @@ WHERE name = N'$dbNameQuoted';
 					Write_Log "Audit completed. DBCC reported no issues." "green"
 				}
 			}
-			elseif ($Level -eq 'Quick')
+			else
 			{
-				Write_Log ("{0}: Quick repair (REPAIR_REBUILD)..." -f $dbName) "gray"
-
-				# SINGLE_USER
-				try
-				{
-					$tsSU = "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
-					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsSU -QueryTimeout 60 -ErrorAction Stop | Out-Null }
-					else
-					{
-						$cnQ = New-Object System.Data.SqlClient.SqlConnection $connStr
-						try { $cnQ.Open(); $cmdQ = $cnQ.CreateCommand(); $cmdQ.CommandText = $tsSU; $cmdQ.CommandTimeout = 60; [void]$cmdQ.ExecuteNonQuery() }
-						finally
-						{
-							try { $cnQ.Close() }
-							catch { }
-							try { $cnQ.Dispose() }
-							catch { }
-						}
-					}
-					$didSingleUser = $true
-				}
-				catch
-				{
-					Write_Log ("WARN: SINGLE_USER failed: {0}" -f $_.Exception.Message) "yellow"
+				$repairConn = New-Object System.Data.SqlClient.SqlConnection $connStr
+				$repairConn.Open()
+				$runRepair = {
+					param ([string]$Sql, [int]$Timeout)
+					$c = $repairConn.CreateCommand()
+					$c.CommandText = $Sql
+					$c.CommandTimeout = $Timeout
+					[void]$c.ExecuteNonQuery()
 				}
 
-				# DBCC repair
-				$ts = "DBCC CHECKDB ($qDb, REPAIR_REBUILD) WITH ALL_ERRORMSGS, TABLERESULTS;"
-				if ($InvokeSupportsConnString)
+				if ($Level -eq 'Deep')
 				{
-					Invoke-Sqlcmd -ConnectionString $connStr -Query $ts -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
+					Write_Log ("{0}: Deep repair (EMERGENCY + REPAIR_ALLOW_DATA_LOSS)..." -f $dbName) "gray"
+					try { & $runRepair "ALTER DATABASE $qDb SET EMERGENCY;" 60; $didEmergency = $true }
+					catch { Write_Log ("WARN: EMERGENCY failed: {0}" -f $_.Exception.Message) "yellow" }
 				}
 				else
 				{
-					$cnQ2 = New-Object System.Data.SqlClient.SqlConnection $connStr
-					try { $cnQ2.Open(); $cmdQ2 = $cnQ2.CreateCommand(); $cmdQ2.CommandText = $ts; $cmdQ2.CommandTimeout = $CommandTimeout; [void]$cmdQ2.ExecuteNonQuery() }
-					finally
-					{
-						try { $cnQ2.Close() }
-						catch { }
-						try { $cnQ2.Dispose() }
-						catch { }
-					}
+					Write_Log ("{0}: Quick repair (REPAIR_REBUILD)..." -f $dbName) "gray"
 				}
+
+				try { & $runRepair "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;" 60; $didSingleUser = $true }
+				catch { Write_Log ("WARN: SINGLE_USER failed: {0}" -f $_.Exception.Message) "yellow" }
+
+				$repairOption = if ($Level -eq 'Deep') { 'REPAIR_ALLOW_DATA_LOSS' } else { 'REPAIR_REBUILD' }
+				& $runRepair "DBCC CHECKDB ($qDb, $repairOption) WITH ALL_ERRORMSGS, TABLERESULTS;" $CommandTimeout
 
 				$ok = $true
-				$usedQuick = $true
-				Write_Log "Quick repair completed." "green"
-			}
-			elseif ($Level -eq 'Deep')
-			{
-				Write_Log ("{0}: Deep repair (EMERGENCY + REPAIR_ALLOW_DATA_LOSS)..." -f $dbName) "gray"
-
-				# EMERGENCY
-				try
-				{
-					$tsE = "ALTER DATABASE $qDb SET EMERGENCY;"
-					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsE -QueryTimeout 60 -ErrorAction Stop | Out-Null }
-					else
-					{
-						$cnD = New-Object System.Data.SqlClient.SqlConnection $connStr
-						try { $cnD.Open(); $cmdD = $cnD.CreateCommand(); $cmdD.CommandText = $tsE; $cmdD.CommandTimeout = 60; [void]$cmdD.ExecuteNonQuery() }
-						finally
-						{
-							try { $cnD.Close() }
-							catch { }
-							try { $cnD.Dispose() }
-							catch { }
-						}
-					}
-					$didEmergency = $true
-				}
-				catch
-				{
-					Write_Log ("WARN: EMERGENCY failed: {0}" -f $_.Exception.Message) "yellow"
-				}
-
-				# SINGLE_USER
-				try
-				{
-					$tsSU = "ALTER DATABASE $qDb SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
-					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsSU -QueryTimeout 60 -ErrorAction Stop | Out-Null }
-					else
-					{
-						$cnD2 = New-Object System.Data.SqlClient.SqlConnection $connStr
-						try { $cnD2.Open(); $cmdD2 = $cnD2.CreateCommand(); $cmdD2.CommandText = $tsSU; $cmdD2.CommandTimeout = 60; [void]$cmdD2.ExecuteNonQuery() }
-						finally
-						{
-							try { $cnD2.Close() }
-							catch { }
-							try { $cnD2.Dispose() }
-							catch { }
-						}
-					}
-					$didSingleUser = $true
-				}
-				catch
-				{
-					Write_Log ("WARN: SINGLE_USER failed: {0}" -f $_.Exception.Message) "yellow"
-				}
-
-				# DBCC deep repair
-				$ts = "DBCC CHECKDB ($qDb, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS, TABLERESULTS;"
-				if ($InvokeSupportsConnString)
-				{
-					Invoke-Sqlcmd -ConnectionString $connStr -Query $ts -QueryTimeout $CommandTimeout -ErrorAction Stop | Out-Null
-				}
-				else
-				{
-					$cnD3 = New-Object System.Data.SqlClient.SqlConnection $connStr
-					try { $cnD3.Open(); $cmdD3 = $cnD3.CreateCommand(); $cmdD3.CommandText = $ts; $cmdD3.CommandTimeout = $CommandTimeout; [void]$cmdD3.ExecuteNonQuery() }
-					finally
-					{
-						try { $cnD3.Close() }
-						catch { }
-						try { $cnD3.Dispose() }
-						catch { }
-					}
-				}
-
-				$ok = $true
-				$usedDeep = $true
-				Write_Log "Deep repair completed." "green"
+				if ($Level -eq 'Deep') { $usedDeep = $true; Write_Log "Deep repair completed." "green" }
+				else { $usedQuick = $true; Write_Log "Quick repair completed." "green" }
 			}
 		}
 		catch
@@ -14849,60 +14421,28 @@ WHERE name = N'$dbNameQuoted';
 		}
 		finally
 		{
-			# ALWAYS attempt to restore MULTI_USER if we toggled SINGLE_USER
-			if ($didSingleUser)
+			# ALWAYS put the DB back: MULTI_USER if we took SINGLE_USER, ONLINE if we set EMERGENCY.
+			# Same connection when it is still open, a fresh one otherwise.
+			$restoreSteps = @()
+			if ($didSingleUser) { $restoreSteps += , @("ALTER DATABASE $qDb SET MULTI_USER;", 'MULTI_USER restore') }
+			if ($didEmergency) { $restoreSteps += , @("ALTER DATABASE $qDb SET ONLINE;", 'ONLINE restore after EMERGENCY') }
+			foreach ($step in $restoreSteps)
 			{
 				try
 				{
-					$tsMU = "ALTER DATABASE $qDb SET MULTI_USER;"
-					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsMU -QueryTimeout 60 -ErrorAction Stop | Out-Null }
-					else
+					if ($repairConn -and $repairConn.State -eq 'Open')
 					{
-						$cnF = New-Object System.Data.SqlClient.SqlConnection $connStr
-						try { $cnF.Open(); $cmdF = $cnF.CreateCommand(); $cmdF.CommandText = $tsMU; $cmdF.CommandTimeout = 60; [void]$cmdF.ExecuteNonQuery() }
-						finally
-						{
-							try { $cnF.Close() }
-							catch { }
-							try { $cnF.Dispose() }
-							catch { }
-						}
+						$c = $repairConn.CreateCommand()
+						$c.CommandText = $step[0]
+						$c.CommandTimeout = 60
+						[void]$c.ExecuteNonQuery()
 					}
+					else { & $invokeSqlNonQuery $connStr $step[0] 60 }
 				}
-				catch
-				{
-					Write_Log ("WARN: MULTI_USER restore failed: {0}" -f $_.Exception.Message) "yellow"
-				}
+				catch { Write_Log ("WARN: {0} failed: {1}" -f $step[1], $_.Exception.Message) "yellow" }
 			}
-
-			# Best-effort: if we set EMERGENCY, try to clear it by setting ONLINE
-			if ($didEmergency)
-			{
-				try
-				{
-					$tsOn = "ALTER DATABASE $qDb SET ONLINE;"
-					if ($InvokeSupportsConnString) { Invoke-Sqlcmd -ConnectionString $connStr -Query $tsOn -QueryTimeout 60 -ErrorAction Stop | Out-Null }
-					else
-					{
-						$cnF2 = New-Object System.Data.SqlClient.SqlConnection $connStr
-						try { $cnF2.Open(); $cmdF2 = $cnF2.CreateCommand(); $cmdF2.CommandText = $tsOn; $cmdF2.CommandTimeout = 60; [void]$cmdF2.ExecuteNonQuery() }
-						finally
-						{
-							try { $cnF2.Close() }
-							catch { }
-							try { $cnF2.Dispose() }
-							catch { }
-						}
-					}
-				}
-				catch
-				{
-					# Not fatal; just log
-					Write_Log ("WARN: ONLINE restore after EMERGENCY failed: {0}" -f $_.Exception.Message) "yellow"
-				}
-			}
+			if ($repairConn) { $repairConn.Dispose() }
 		}
-
 		# ----------------------------------------
 		# Snapshot state AFTER repair
 		# ----------------------------------------
@@ -14978,7 +14518,7 @@ WHERE name = N'$dbNameQuoted';
 #   PowerShell port of trs_clt_reprocess.sqi: rebuilds the per-lane transaction list table
 #   (SAL_HDR_SUS@TER) from SAL_HDR for a chosen date range and transaction range. Connects
 #   per the Start_Lane_Protocol_Jobs preference (TCP / Named Pipes / File); lanes on File
-#   protocol or any SQL failure fall back to writing trs_clt_reprocess.sqi to the lane XE folder.
+#   protocol or any SQL failure fall back to writing trs_clt_reprocess.sqi to the lane XF folder.
 #
 # Parameters:
 #   - StoreNumber  [string]: store to process (required)
@@ -15055,11 +14595,15 @@ function Retrive_Transactions
 			catch { }
 		}
 	}
-	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
+	$invokeSql = Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue
+	if (-not $invokeSql)
 	{
 		$canUseSql = $false
 		& $log "Invoke-Sqlcmd not available. SQI mode will be used for all selected lanes." "yellow"
 	}
+	# SqlServer 22+ encrypts by default; lanes use self-signed certificates
+	$sqlExtra = @{ }
+	if ($invokeSql -and $invokeSql.Parameters.ContainsKey('TrustServerCertificate')) { $sqlExtra['TrustServerCertificate'] = $true }
 
 	if (-not (Get-Command Get_All_Lanes_Database_Info -ErrorAction SilentlyContinue))
 	{
@@ -15255,7 +14799,7 @@ function Retrive_Transactions
 
 		$useSql = $canUseSql
 		if ($ForceSQI) { $useSql = $false }
-		elseif ($protoNorm -eq 'file') { $useSql = $false }
+		elseif ($protoNorm -in @('file', 'offline')) { $useSql = $false }
 		elseif ([string]::IsNullOrWhiteSpace($dbName)) { $useSql = $false }
 
 		$transListTable = "SAL_HDR_SUS$lane"
@@ -15332,7 +14876,7 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 
 				try
 				{
-					$res = Invoke-Sqlcmd -ServerInstance $a.Server -Database $dbName -Query $sql -QueryTimeout 120 -ErrorAction Stop
+					$res = Invoke-Sqlcmd -ServerInstance $a.Server -Database $dbName -Query $sql -QueryTimeout 120 -ErrorAction Stop @sqlExtra
 
 					# Robust parse
 					$row = $null
@@ -15489,6 +15033,13 @@ function Schedule_Lane_DB_Maintenance
 	)
 	Write_Log "`r`n==================== Starting Schedule_Lane_DB_Maintenance ====================`r`n" "blue"
 
+	# Normally generated by the startup warmup; generate it now if the menu was used before that
+	if (-not $script:LaneSQLScript)
+	{
+		try { Generate_SQL_Scripts -StoreNumber $StoreNumber | Out-Null }
+		catch { }
+	}
+	$LaneSQLScript = $script:LaneSQLScript
 	if (-not $LaneSQLScript)
 	{
 		Write_Log "Lane SQL script content variable (`\$LaneSQLScript`) is empty or not defined." "red"
@@ -15711,8 +15262,8 @@ function Schedule_LaneDB_Backup
 	$goodLanes = @()
 	foreach ($lane in $selection.Lanes)
 	{
-		$protocol = $script:LaneProtocols[$lane]
-		if ($protocol -and $protocol -in @("TCP", "Named Pipes")) { $goodLanes += $lane }
+		$protocol = if ($script:LaneProtocols) { $script:LaneProtocols[$lane] }
+		if ($protocol -in @("TCP", "Named Pipes")) { $goodLanes += $lane }
 		else { Write_Log "Lane $lane not available in ProtocolResults or protocol not valid. Skipping." "yellow" }
 	}
 	if (-not $goodLanes -or $goodLanes.Count -eq 0)
@@ -15890,28 +15441,18 @@ function Schedule_LaneDB_Backup
 	# 4. Loop over each lane and schedule backup
 	foreach ($lane in $goodLanes)
 	{
-		$laneInfo = $script:FunctionResults['LaneDatabaseInfo'][$lane]
+		# Memory first, then the cache file, then the lane itself
+		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $lane
 		if (-not $laneInfo)
 		{
-			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $lane
-			if ($laneInfo) { $script:FunctionResults['LaneDatabaseInfo'][$lane] = $laneInfo }
-			else
-			{
-				Write_Log "Could not get DB info for lane $lane. Skipping." "yellow"
-				continue
-			}
+			Write_Log "Could not get DB info for lane $lane. Skipping." "yellow"
+			continue
 		}
-		$machine = $laneInfo.MachineName
-		$dbName = $laneInfo.DBName
+		$machine = $laneInfo['MachineName']
+		$dbName = $laneInfo['DBName']
 
-		# Determine protocol and sqlcmd -S string
-		$protocol = $script:LaneProtocols[$lane]
-		switch ($protocol)
-		{
-			"TCP"         { $sqlcmdS = $laneInfo.TcpServer }
-			"Named Pipes" { $sqlcmdS = $laneInfo.NamedPipes }
-			default       { Write_Log "Unknown/unsupported protocol for $machine, skipping." "yellow"; continue }
-		}
+		# sqlcmd -S string for the lane's protocol (only TCP / Named Pipes lanes got this far)
+		$sqlcmdS = if ($script:LaneProtocols[$lane] -eq 'Named Pipes') { $laneInfo['NamedPipes'] } else { $laneInfo['TcpServer'] }
 
 		# Set backup and script directories (per-lane); local-copy root from the user's choice
 		$scriptsDir = $script:ScriptsFolder
@@ -15943,25 +15484,13 @@ if (-not (Test-Path `$BackupRoot)) { New-Item -Path `$BackupRoot -ItemType Direc
 # Ensure backup root exists (remote/lane)
 if (-not (Test-Path `$RemoteBackupFolder)) { New-Item -Path `$RemoteBackupFolder -ItemType Directory -Force | Out-Null }
 
-# Clean up old remote lane backups (always keep 3)
-try {
-    `$remoteBakFiles = Get-ChildItem -Path `$RemoteBackupFolder -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-    while (`$remoteBakFiles.Count -ge `$MaxRemoteBackups) {
-        Remove-Item -Path `$remoteBakFiles[0].FullName -Force
-        `$remoteBakFiles = Get-ChildItem -Path `$RemoteBackupFolder -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-    }
-} catch { }
+# Keep only the newest N backups in a folder (called only after a good backup)
+function Remove-OldBackups([string]`$Folder, [int]`$Keep) {
+    @(Get-ChildItem -Path `$Folder -Filter "`$Database`_*.bak" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip `$Keep) |
+        ForEach-Object { Remove-Item -LiteralPath `$_.FullName -Force -ErrorAction SilentlyContinue }
+}
 
-# Clean up old local server backups (per user)
-try {
-    `$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-    while (`$bakFiles.Count -ge `$MaxBackups) {
-        Remove-Item -Path `$bakFiles[0].FullName -Force
-        `$bakFiles = Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime
-    }
-} catch { }
-
-# Run the backup on the lane via UNC SQL backup path
+# Run the backup on the lane via UNC SQL backup path (old backups are only rotated out AFTER a good one)
 `$tsql = "BACKUP DATABASE [`$Database] TO DISK = N'`$remoteBakFile' WITH NOFORMAT, NOINIT, NAME = N'`$Database-FullBackup-`$timestamp', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
 `$sqlOut = & sqlcmd -S `"$SqlcmdS`" -Q `$tsql -b 2>&1
 `$exitCode = `$LASTEXITCODE
@@ -15985,9 +15514,11 @@ if (`$exitCode -eq 0) {
         try {
             Copy-Item -Path `$remoteBakFile -Destination `$localBakFile -Force
             "[`$(Get-Date)] Backup complete: `$localBakFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+            Remove-OldBackups `$BackupRoot `$MaxBackups
         } catch {
-            "[`$(Get-Date)] Backup succeeded but copy failed: $($_.Exception.Message)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
+            "[`$(Get-Date)] Backup succeeded but copy failed: `$(`$_.Exception.Message)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
         }
+        Remove-OldBackups `$RemoteBackupFolder `$MaxRemoteBackups
     } else {
         "[`$(Get-Date)] Backup file not found or not ready for copy after backup." | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
     }
@@ -16010,37 +15541,27 @@ if (`$exitCode -eq 0) {
 		$hour = "{0:D2}" -f [int]$hours
 		$min = "{0:D2}" -f [int]$minutes
 		$startTime = "$hour`:$min"
-		$freqArg = "/SC DAILY"
-		if ($freqInput -gt 1) { $freqArg = "/SC DAILY /MO $freqInput" }
 		$taskName = "${machine}_DB_Backup_Schedule"
-		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$backupScriptPath`"`""
+		# \" survives 5.1's native argument passing, so a path with spaces stays one -File argument
+		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \`"$backupScriptPath\`""
+		$createArgs = @('/Create', '/TN', $taskName, '/TR', $action, '/SC', 'DAILY', '/ST', $startTime, '/RL', 'HIGHEST', '/F')
+		if ($freqInput -gt 1) { $createArgs += @('/MO', [string]$freqInput) }
 
-		# Task Scheduler command: Default is Administrator, with /IT if no password (interactive, user logged in required)
-		if ($taskUser -eq "" -or $taskUser -eq "SYSTEM")
-		{
-			# Run as SYSTEM
-			$cmd = "schtasks.exe /Create /RU SYSTEM /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
-		}
-		elseif ($taskPwd -eq "")
-		{
-			# Run as Administrator (or user) INTERACTIVE only (must be logged in), use /IT
-			$cmd = "schtasks.exe /Create /RU `"$taskUser`" /IT /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
-		}
-		else
-		{
-			# Run as user with password (runs in background even if user not logged in)
-			$cmd = "schtasks.exe /Create /RU `"$taskUser`" /RP `"$taskPwd`" /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
-		}
+		# SYSTEM; a user with no password runs interactive only (/IT, must be logged in);
+		# with a password the task also runs when nobody is logged in
+		if ($taskUser -eq "SYSTEM") { $createArgs += @('/RU', 'SYSTEM'); $runAs = 'SYSTEM' }
+		elseif ($taskPwd -eq "") { $createArgs += @('/RU', $taskUser, '/IT'); $runAs = "$taskUser (interactive)" }
+		else { $createArgs += @('/RU', $taskUser, '/RP', $taskPwd); $runAs = "$taskUser (with password)" }
 
-		Write_Log "Scheduling Lane $lane ($machine): $cmd" "cyan"
-		Invoke-Expression $cmd
+		Write_Log "Scheduling lane $lane ($machine) as $runAs`: $action" "cyan"
+		$schtasksOut = & schtasks.exe @createArgs 2>&1
 		if ($LASTEXITCODE -eq 0)
 		{
 			Write_Log "Backup task scheduled for $machine ($dbName) at $startTime every $freqInput day(s)." "green"
 		}
 		else
 		{
-			Write_Log "Failed to schedule backup for $machine." "red"
+			Write_Log "Failed to schedule backup for $machine`: $(($schtasksOut | Out-String).Trim())" "red"
 		}
 	}
 
@@ -16051,9 +15572,9 @@ if (`$exitCode -eq 0) {
 #                              FUNCTION: Send_Restart_All_Programs
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Sends a restart-all-programs command to the selected lanes of a store: retrieves the
-#   lane-to-machine mappings via Retrieve_Nodes, picks lanes (or uses the passed list) and
-#   sends "@exec(RESTART_ALL=PROGRAMS)." to each lane's SMSStart mailslot.
+#   Sends a restart-all-programs command to the selected lanes of a store: uses the cached
+#   lane-to-machine map (Retrieve_Nodes when it is missing), picks lanes (or uses the passed
+#   list) and sends "@exec(RESTART_ALL=PROGRAMS)." to each lane's SMSStart mailslot.
 #
 # Parameters:
 #   - StoreNumber  [string]: store to process, 3 digits (required)
@@ -16079,9 +15600,14 @@ function Send_Restart_All_Programs
 		Write_Log "`r`n==================== Starting Send_Restart_All_Programs Function ====================`r`n" "blue"
 	}
 
-	# Retrieve lane mappings using Retrieve_Nodes (guaranteed current)
-	$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-	if (-not $nodes -or -not $nodes.LaneNumToMachineName)
+	# Lane map from the startup Retrieve_Nodes run; only re-run it when the map is missing
+	$laneMap = $script:FunctionResults['LaneNumToMachineName']
+	if (-not $laneMap -or $laneMap.Count -eq 0)
+	{
+		$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
+		if ($nodes) { $laneMap = $nodes.LaneNumToMachineName }
+	}
+	if (-not $laneMap)
 	{
 		Write_Log "Failed to retrieve node information for store $StoreNumber." "red"
 		return
@@ -16116,7 +15642,7 @@ function Send_Restart_All_Programs
 
 	foreach ($lane in $lanes)
 	{
-		$machineName = $nodes.LaneNumToMachineName[$lane]
+		$machineName = $laneMap[$lane]
 		if (-not $machineName)
 		{
 			Write_Log "No machine found for lane $lane. Skipping." "yellow"
@@ -16306,25 +15832,12 @@ function Send_SMS_Key_to_Lanes
 	# Ensure FunctionResults exists
 	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 
-	# SQL AUTH creds (used for scheduled; and as fallback for Run Now if WinAuth fails)
-	$SqlAuthUser = "Tecnica"
-	$SqlAuthPass = "TB$upp0rT"
+	# SQL AUTH creds (used for scheduled; and as fallback for Run Now if WinAuth fails).
+	# Was "TB$upp0rT" in double quotes: $upp0rT expanded to nothing and the password sent was "TB".
+	$SqlAuthUser = $script:BackupSqlUser
+	$SqlAuthPass = $script:BackupSqlPass
 
-	# Validate SQL module availability
-	$SqlModule = $script:FunctionResults['SqlModuleName']
-	if ([string]::IsNullOrWhiteSpace($SqlModule) -or $SqlModule -eq "None")
-	{
-		Write_Log "No SQL Server module available (SqlServer or SQLPS). Cannot sync server key." "red"
-		Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
-		return
-	}
-	try { Import-Module $SqlModule -ErrorAction Stop }
-	catch
-	{
-		Write_Log "Failed to import SQL module '$SqlModule'. Error: $_" "red"
-		Write_Log "`r`n==================== Send_SMS_Key_to_Lanes Completed ====================" "blue"
-		return
-	}
+	# Everything here goes through System.Data.SqlClient, so no SQL module is needed
 
 	# Ensure cached lane map exists (fallback only if missing)
 	if (-not $script:FunctionResults['LaneNumToMachineName'])
@@ -16566,7 +16079,7 @@ function Send_SMS_Key_to_Lanes
 		$updateSql = "UPDATE SYS_TAB SET F1243 = '$safeServerKey'"
 
 		# SQI fallback file (ANSI 1252, no BOM)
-		$SqiFileName = "UPDATE_SMS_KEY.SQI"
+		$SqiFileName = "UPDATE_SMS_KEY.SQI" # same name as the scheduled task, so a lane never queues two
 		$SqiContent = "@dbEXEC($updateSql)`r`n"
 		$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
 		$TempSqiPath = Join-Path ([System.IO.Path]::GetTempPath()) $SqiFileName
@@ -16977,8 +16490,8 @@ function Send_SMS_Key_to_Lanes
 			[void]$sb.AppendLine("# AUTO-GENERATED Send_SMS_Key task (self-sufficient, one file)")
 			[void]$sb.AppendLine("`$ErrorActionPreference = 'Stop'")
 			[void]$sb.AppendLine("try { Add-Type -AssemblyName System.Data 2>`$null } catch { }")
-			[void]$sb.AppendLine("`$SqlUser = 'Tecnica'")
-			[void]$sb.AppendLine("`$SqlPass = 'TB`$upp0rT'")
+			[void]$sb.AppendLine("`$SqlUser = '" + $SqlAuthUser.Replace("'", "''") + "'")
+			[void]$sb.AppendLine("`$SqlPass = '" + $SqlAuthPass.Replace("'", "''") + "'")
 			[void]$sb.AppendLine("`$StoreNumber = '$StoreNumber'")
 			[void]$sb.AppendLine("`$OfficePath  = '$OfficePath'")
 			[void]$sb.AppendLine("`$SqlTimeoutSeconds = $SqlTimeoutSeconds")
@@ -17025,12 +16538,22 @@ function Send_SMS_Key_to_Lanes
 			[void]$sb.AppendLine("} catch { `$rawValues = @() }")
 			[void]$sb.AppendLine("`$serverKey = `$null; `$bestLen = -1")
 			[void]$sb.AppendLine("foreach (`$v in `$rawValues) { if (`$v -eq `$null) { continue }; `$t = ([string]`$v).Trim(); `$stripped = [regex]::Replace(`$t,'[\s\u00A0]+',''); if (-not [string]::IsNullOrWhiteSpace(`$t) -and -not [string]::IsNullOrWhiteSpace(`$stripped)) { if (`$t.Length -gt `$bestLen) { `$bestLen = `$t.Length; `$serverKey = `$t } } }")
-			[void]$sb.AppendLine("if ([string]::IsNullOrWhiteSpace(`$serverKey)) { throw ""Server key empty/null from LOCAL DB."" }")
+			[void]$sb.AppendLine("# SYSTEM usually has no Windows login on the store DB: retry the read with SQL auth")
+			[void]$sb.AppendLine("if ([string]::IsNullOrWhiteSpace(`$serverKey)) {")
+			[void]$sb.AppendLine("  `$sqlEff = [regex]::Replace(`$localEff, '(?i)\b(Integrated\s+Security|Trusted_Connection)\s*=\s*[^;]*;?', '')")
+			[void]$sb.AppendLine("  `$sqlEff = `$sqlEff.TrimEnd(';') + "";User ID=`$SqlUser;Password=`$SqlPass;""")
+			[void]$sb.AppendLine("  try { `$cn = New-Object System.Data.SqlClient.SqlConnection `$sqlEff; try { `$cn.Open(); `$cmd = `$cn.CreateCommand(); `$cmd.CommandText = ""SELECT TOP 1 F1243 FROM SYS_TAB WHERE LEN(LTRIM(RTRIM(F1243))) > 0 ORDER BY LEN(F1243) DESC;""; `$cmd.CommandTimeout = `$SqlTimeoutSeconds; `$v = `$cmd.ExecuteScalar(); if (`$v -ne `$null -and `$v -isnot [DBNull]) { `$serverKey = ([string]`$v).Trim() } } finally { `$cn.Dispose() } } catch { }")
+			[void]$sb.AppendLine("}")
+			[void]$sb.AppendLine("if ([string]::IsNullOrWhiteSpace(`$serverKey)) {")
+			[void]$sb.AppendLine("  `$logDir = [System.IO.Path]::GetDirectoryName(`$LatestLogPath); if (-not (Test-Path `$logDir)) { New-Item -Path `$logDir -ItemType Directory -Force | Out-Null }")
+			[void]$sb.AppendLine("  @((""Timestamp : {0}"" -f (Get-Date -Format ""yyyy-MM-dd HH:mm:ss"")), ""Status    : FAILED"", ""Reason    : server key (SYS_TAB.F1243) could not be read from the local DB"") | Set-Content -Path `$LatestLogPath -Encoding UTF8")
+			[void]$sb.AppendLine("  exit 1")
+			[void]$sb.AppendLine("}")
 			[void]$sb.AppendLine("`$safeServerKey = `$serverKey.Replace(""'"",""''"")")
 			[void]$sb.AppendLine("`$updateSql = ""UPDATE SYS_TAB SET F1243 = '"" + `$safeServerKey + ""'""")
 			[void]$sb.AppendLine("")
 			[void]$sb.AppendLine("# SQI (ANSI/1252)")
-			[void]$sb.AppendLine("`$SqiFileName = ""UPDATE_SERVERKEY.SQI""")
+			[void]$sb.AppendLine("`$SqiFileName = ""UPDATE_SMS_KEY.SQI""")
 			[void]$sb.AppendLine("`$SqiContent  = ""@dbEXEC("" + `$updateSql + "")`r`n""")
 			[void]$sb.AppendLine("`$ansi = [System.Text.Encoding]::GetEncoding(1252)")
 			[void]$sb.AppendLine("`$TempSqiPath = Join-Path ([System.IO.Path]::GetTempPath()) `$SqiFileName")
@@ -17111,7 +16634,8 @@ function Send_SMS_Key_to_Lanes
 			{
 				$taskName = "Send_SMS_Key - Store $StoreNumber"
 				$psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
-				$tr = "`"$psExe`" -NoProfile -ExecutionPolicy Bypass -File `"$taskScriptPath`""
+				# \" survives 5.1's native argument passing (plain quotes were stripped, so a path with spaces broke)
+				$tr = "\`"$psExe\`" -NoProfile -ExecutionPolicy Bypass -File \`"$taskScriptPath\`""
 
 				$null = schtasks /Delete /TN "$taskName" /F 2>$null
 				$out = schtasks /Create /TN "$taskName" /TR $tr /SC MINUTE /MO $freqMinutes /RL HIGHEST /F /RU "SYSTEM" 2>&1
@@ -17183,7 +16707,13 @@ function Send_TIME_Sync_Lanes_Worker
 	$timeStr = $now.ToString("HHmmss")
 	$wizCommand = "@WIZRPL(DATE=$dateStr)@WIZRPL(TIME=$timeStr)"
 
-	foreach ($lane in $selectedLanes)
+	# This server's IP for 'net time' (resolved once, not per lane)
+	$serverIP = $env:COMPUTERNAME
+	try { $serverIP = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1 -ErrorAction Stop).IPv4Address.IPAddressToString }
+	catch { }
+	$netTimeCommand = "net time \\$serverIP /set /yes"
+
+	foreach ($lane in $SelectedLanes)
 	{
 		# Lane number normalization
 		$laneNum = if ($lane -is [pscustomobject] -and $lane.LaneNumber) { $lane.LaneNumber }
@@ -17200,76 +16730,47 @@ function Send_TIME_Sync_Lanes_Worker
 
 		$success = $false
 
-		# -------- PRIMARY: REMOTE SCHTASKS --------
+		# -------- PRIMARY: REMOTE SCHTASKS (SYSTEM task running net time against this server) --------
 		try
 		{
-			# Use the server's IP for net time
-			try
+			$taskName = if ($IsScheduling) { "ScheduledTimeSync" } else { "SyncTime" }
+			$createArgs = @('/create', '/s', $machine, '/tn', $taskName, '/tr', $netTimeCommand, '/ru', 'SYSTEM', '/f', '/rl', 'HIGHEST')
+			if ($IsScheduling) { $createArgs += @('/sc', 'minute', '/mo', [string]$IntervalMinutes) }
+			else
 			{
-				$serverIP = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1 -ErrorAction Stop).IPv4Address.IPAddressToString
+				# /ST is mandatory for /SC ONCE (without it the create always failed before v2.7.0);
+				# the task is started right away with /run, the time only satisfies schtasks
+				$createArgs += @('/sc', 'once', '/st', (Get-Date).AddMinutes(1).ToString('HH:mm'))
 			}
-			catch
-			{
-				$serverIP = $env:COMPUTERNAME
-			}
-			$command = "net time \\$serverIP /set /yes"
-
-			$taskName = if ($isScheduling) { "ScheduledTimeSync" }
-			else { "SyncTime" }
-			$scheduleSc = if ($isScheduling) { "/sc minute" }
-			else { "/sc once" }
-			$scheduleMo = if ($isScheduling) { "/mo $intervalMinutes" }
-			else { "" }
-			$scheduleSt = if ($isScheduling) { "" }
-			else { "" } # Omit /st for immediate run
-			$logMessage = if ($isScheduling) { "Scheduled time sync every $intervalMinutes minutes on lane" }
-			else { "Executed time sync on lane" }
-
-			$createCmd = "schtasks /create /s $machine /tn $taskName /tr `"$command`" $scheduleSc $scheduleMo $scheduleSt /ru SYSTEM /f /rl HIGHEST"
-			$createOutput = Invoke-Expression $createCmd 2>&1
+			$createOutput = & schtasks.exe @createArgs 2>&1
 			if ($LASTEXITCODE -eq 0)
 			{
-				if (-not $isScheduling)
+				if ($IsScheduling)
 				{
-					$runCmd = "schtasks /run /s $machine /tn $taskName"
-					$runOutput = Invoke-Expression $runCmd 2>&1
-					if ($LASTEXITCODE -eq 0)
-					{
-						Write_Log "$logMessage $laneNum." "green"
-						$success = $true
-					}
-					else
-					{
-						Write_Log "Run output for [$machine]: $runOutput" "yellow"
-					}
+					Write_Log "Scheduled time sync every $IntervalMinutes minutes on lane $laneNum." "green"
+					$success = $true
 				}
 				else
 				{
-					Write_Log "$logMessage $laneNum." "green"
-					$success = $true
-				}
-				# Clean up (delete task after one-shot run)
-				if ($success -and -not $isScheduling)
-				{
-					Start-Sleep -Seconds 5
-					$deleteCmd = "schtasks /delete /s $machine /tn $taskName /f"
-					$deleteOutput = Invoke-Expression $deleteCmd 2>&1
-					if ($LASTEXITCODE -ne 0)
+					$runOutput = & schtasks.exe /run /s $machine /tn $taskName 2>&1
+					if ($LASTEXITCODE -eq 0)
 					{
-						Write_Log "Delete output for [$machine]: $deleteOutput" "yellow"
+						Write_Log "Executed time sync on lane $laneNum." "green"
+						$success = $true
+						# one-shot: remove the task once it had time to run
+						Start-Sleep -Seconds 5
+						$deleteOutput = & schtasks.exe /delete /s $machine /tn $taskName /f 2>&1
+						if ($LASTEXITCODE -ne 0) { Write_Log "Delete output for [$machine]: $deleteOutput" "yellow" }
 					}
+					else { Write_Log "Run output for [$machine]: $runOutput" "yellow" }
 				}
 			}
-			else
-			{
-				Write_Log "Create output for [$machine]: $createOutput" "yellow"
-			}
+			else { Write_Log "Create output for [$machine]: $createOutput" "yellow" }
 		}
 		catch
 		{
 			Write_Log "Exception during schtasks create/run: $_" "yellow"
 		}
-
 		# -------- SECONDARY: FILE-DROP WITH @EXEC --------
 		if (-not $success)
 		{
@@ -17283,10 +16784,6 @@ function Send_TIME_Sync_Lanes_Worker
 					Write_Log "XF folder for lane $laneNum does not exist: $xfFolder" "red"
 					continue
 				}
-
-				# Use the server's IP for net time
-				try { $serverIP = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1 -ErrorAction Stop).IPv4Address.IPAddressToString }
-				catch { $serverIP = $env:COMPUTERNAME }
 
 				# Always-available lane path
 				$remoteShareRoot = "\\$machine\Storeman\Temp"
@@ -17368,8 +16865,9 @@ function Send_TIME_Sync_Lanes_Worker
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Opens a styled popup that checks the SQL and VNC services on all lanes of the store in
-#   the background and fills a grid as results arrive. Shows a message box when no usable
-#   lanes are found.
+#   the background (runspace pool, up to 8 lanes at a time) and fills a grid as results
+#   arrive. Right-click a lane to refresh it or start / stop / restart its SQL or VNC
+#   service. Shows a message box when no usable lanes are found.
 #
 # Variables:
 #   - $script:FunctionResults['StoreNumber']: store header text
@@ -17493,10 +16991,199 @@ function Show_Lane_SQL_VNC_Service_Statuses
 
 	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $formSvc }
 
+	# ---- Background work: one runspace pool (Start-Job spawned a powershell.exe per lane) ----------
+	$svcPool = [RunspaceFactory]::CreateRunspacePool(1, [Math]::Min(8, [Math]::Max(2, $selectedLanes.Count)))
+	$svcPool.Open()
 	$svcJobs = @{ }
 	$svcActionJobs = @{ }
 	$rowMap = @{ }
 	$totalRows = $selectedLanes.Count
+
+	# Lane status: reachability (ping, then SMB 445), then the SQL and VNC services.
+	# Text, not a scriptblock: the action script rebuilds it to re-read the status.
+	$statusCheckText = @'
+param ([string]$Lane, [string]$Machine, [string]$ExpectedSqlService)
+
+$result = [pscustomobject][ordered]@{
+	Lane          = $Lane
+	Machine       = $Machine
+	SqlService    = if ([string]::IsNullOrWhiteSpace($ExpectedSqlService)) { 'MSSQLSERVER' } else { $ExpectedSqlService }
+	SqlStatus     = 'Not Found'
+	VncService    = 'Not Found'
+	VncStatus     = 'Not Found'
+	ActionSummary = $null
+}
+
+$reachable = $false
+try { $reachable = ((New-Object System.Net.NetworkInformation.Ping).Send($Machine, 700).Status -eq 'Success') }
+catch { }
+if (-not $reachable)
+{
+	$tcp = New-Object System.Net.Sockets.TcpClient
+	try
+	{
+		$async = $tcp.BeginConnect($Machine, 445, $null, $null)
+		if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected) { $reachable = $true }
+	}
+	catch { }
+	finally { $tcp.Close() }
+}
+if (-not $reachable)
+{
+	$result.SqlStatus = 'Offline'
+	$result.VncService = 'Offline'
+	$result.VncStatus = 'Offline'
+	return $result
+}
+
+$services = $null
+$serviceFetchError = $null
+try { $services = Get-Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, Status }
+catch { $serviceFetchError = $_.Exception.Message }
+if (-not $services)
+{
+	try
+	{
+		$services = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -ErrorAction Stop |
+		Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
+		$serviceFetchError = $null
+	}
+	catch { $serviceFetchError = $_.Exception.Message }
+}
+if (-not $services)
+{
+	$errorText = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' } else { "Error: $serviceFetchError" }
+	$result.SqlStatus = $errorText
+	$result.VncStatus = $errorText
+	$result.VncService = 'Unavailable'
+	return $result
+}
+
+$sqlService = $services | Where-Object { $_.Name -ieq $result.SqlService } | Select-Object -First 1
+if (-not $sqlService)
+{
+	$sqlService = $services | Where-Object { $_.Name -like 'MSSQL*' -or $_.DisplayName -match '(?i)^SQL Server' } | Sort-Object Name | Select-Object -First 1
+}
+if ($sqlService)
+{
+	$result.SqlService = [string]$sqlService.Name
+	$result.SqlStatus = [string]$sqlService.Status
+}
+
+$vncService = $services | Where-Object {
+	([string]$_.Name -match '(?i)^(uvnc_service|winvnc.*|tvnserver|vncserver|tigervnc.*|tightvnc.*)$') -or
+	([string]$_.DisplayName -match '(?i)ultravnc|tightvnc|tigervnc|vnc')
+} | Sort-Object Name | Select-Object -First 1
+if ($vncService)
+{
+	$result.VncService = [string]$vncService.Name
+	$result.VncStatus = [string]$vncService.Status
+}
+
+$result
+'@
+
+	# Start / Stop / Restart one service, then poll the status until it settles (~14 s max)
+	$serviceActionText = @'
+param ([string]$Lane, [string]$Machine, [string]$ExpectedSqlService, [string]$ServiceKind, [string]$ServiceName, [string]$RequestedAction, [string]$StatusCheckText)
+
+$getSnapshot = [scriptblock]::Create($StatusCheckText)
+$actionSummary = "$RequestedAction $ServiceKind on lane $Lane."
+try
+{
+	$filter = "Name='{0}'" -f $ServiceName.Replace("'", "''")
+	if ($RequestedAction -in @('Stop', 'Restart'))
+	{
+		$svcObject = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -Filter $filter -ErrorAction Stop
+		$null = Invoke-CimMethod -InputObject $svcObject -MethodName StopService -ErrorAction Stop
+	}
+	if ($RequestedAction -eq 'Restart') { Start-Sleep -Seconds 2 }
+	if ($RequestedAction -in @('Start', 'Restart'))
+	{
+		$svcObject = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -Filter $filter -ErrorAction Stop
+		$null = Invoke-CimMethod -InputObject $svcObject -MethodName StartService -ErrorAction Stop
+	}
+}
+catch
+{
+	# CIM blocked (firewall / WinRM): the Service Control Manager over SMB usually still works
+	try
+	{
+		if ($RequestedAction -in @('Stop', 'Restart')) { $null = & sc.exe "\\$Machine" stop $ServiceName 2>$null }
+		if ($RequestedAction -eq 'Restart') { Start-Sleep -Seconds 2 }
+		if ($RequestedAction -in @('Start', 'Restart')) { $null = & sc.exe "\\$Machine" start $ServiceName 2>$null }
+		# sc.exe never throws; 1056 = already running, 1062 = not started (already stopped)
+		if ($LASTEXITCODE -notin @(0, 1056, 1062)) { $actionSummary = "Failed to $RequestedAction $ServiceKind on lane $Lane (sc.exe error $LASTEXITCODE)." }
+	}
+	catch { $actionSummary = "Failed to $RequestedAction $ServiceKind on lane ${Lane}: $($_.Exception.Message)" }
+}
+
+$targetStatus = if ($RequestedAction -eq 'Stop') { 'Stopped' } else { 'Running' }
+for ($i = 0; $i -lt 18; $i++)
+{
+	Start-Sleep -Milliseconds 750
+	$snapshot = & $getSnapshot $Lane $Machine $ExpectedSqlService
+	$currentStatus = if ($ServiceKind -eq 'SQL') { [string]$snapshot.SqlStatus } else { [string]$snapshot.VncStatus }
+	if ($currentStatus -eq $targetStatus -or $currentStatus -like 'Error*' -or $currentStatus -in @('Not Found', 'Offline')) { break }
+}
+$snapshot.ActionSummary = $actionSummary
+$snapshot
+'@
+
+	$startPoolWork = {
+		param ([string]$ScriptText, [object[]]$Arguments)
+		$ps = [PowerShell]::Create()
+		$ps.RunspacePool = $svcPool
+		[void]$ps.AddScript($ScriptText)
+		foreach ($a in $Arguments) { [void]$ps.AddArgument($a) }
+		@{ PS = $ps; Handle = $ps.BeginInvoke() }
+	}
+
+	# Finished work item -> its result object (or $null), and the PowerShell instance disposed
+	$collectPoolWork = {
+		param ($Entry)
+		$res = $null
+		try { $res = @($Entry.PS.EndInvoke($Entry.Handle)) | Select-Object -Last 1 }
+		catch { }
+		try { $Entry.PS.Dispose() }
+		catch { }
+		$res
+	}
+
+	$stopPoolWork = {
+		param ($Entry)
+		try { [void]$Entry.PS.BeginStop($null, $null) }
+		catch { }
+	}
+
+	# Service name the lane's SQL instance should have (MSSQLSERVER or MSSQL$<instance>)
+	$getExpectedSqlService = {
+		param ([string]$LaneKey)
+		try
+		{
+			$dbInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneKey
+			$instanceName = if ($dbInfo) { [string]$dbInfo['InstanceName'] }
+			if (-not [string]::IsNullOrWhiteSpace($instanceName) -and $instanceName.ToUpper() -ne 'MSSQLSERVER') { return "MSSQL`$$instanceName" }
+		}
+		catch { }
+		'MSSQLSERVER'
+	}
+
+	$applyResultToRow = {
+		param ([int]$RowIndex, $Result)
+		if ($RowIndex -lt 0 -or $RowIndex -ge $gridSvc.Rows.Count) { return }
+		$row = $gridSvc.Rows[$RowIndex]
+		if (-not $Result)
+		{
+			$row.Cells["SqlStatus"].Value = 'Error'
+			$row.Cells["VncStatus"].Value = 'Error'
+			return
+		}
+		$row.Cells["SqlService"].Value = [string]$Result.SqlService
+		$row.Cells["SqlStatus"].Value = [string]$Result.SqlStatus
+		$row.Cells["VncService"].Value = [string]$Result.VncService
+		$row.Cells["VncStatus"].Value = [string]$Result.VncStatus
+	}
 
 	$startActionJobForSelectedRow = {
 		param (
@@ -17506,196 +17193,35 @@ function Show_Lane_SQL_VNC_Service_Statuses
 
 		if (-not $gridSvc.SelectedRows -or $gridSvc.SelectedRows.Count -eq 0)
 		{
-			[System.Windows.Forms.MessageBox]::Show(
-				"Select a lane first.",
-				"Lane Services",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Information
-			) | Out-Null
+			[void][System.Windows.Forms.MessageBox]::Show("Select a lane first.", "Lane Services", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			return
 		}
 
 		$row = $gridSvc.SelectedRows[0]
-		if (-not $row) { return }
-
 		$laneKey = [string]$row.Cells["Lane"].Value
 		$machineName = [string]$row.Cells["Machine"].Value
 		$expectedSqlService = [string]$row.Cells["SqlService"].Value
-		$serviceName = if ($ServiceKind -eq 'SQL') { [string]$row.Cells["SqlService"].Value }
-		else { [string]$row.Cells["VncService"].Value }
-		$statusColumn = if ($ServiceKind -eq 'SQL') { 'SqlStatus' }
-		else { 'VncStatus' }
+		$serviceName = if ($ServiceKind -eq 'SQL') { $expectedSqlService } else { [string]$row.Cells["VncService"].Value }
+		$statusColumn = if ($ServiceKind -eq 'SQL') { 'SqlStatus' } else { 'VncStatus' }
 
 		if ([string]::IsNullOrWhiteSpace($laneKey) -or [string]::IsNullOrWhiteSpace($machineName)) { return }
 		if ($svcActionJobs.ContainsKey($laneKey))
 		{
-			[System.Windows.Forms.MessageBox]::Show(
-				"A service action is already running for lane $laneKey.",
-				"Lane Services",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Information
-			) | Out-Null
+			[void][System.Windows.Forms.MessageBox]::Show("A service action is already running for lane $laneKey.", "Lane Services", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			return
 		}
-
-		if ([string]::IsNullOrWhiteSpace($serviceName) -or $serviceName -in @('Checking...', 'Not Found', 'Unavailable'))
+		if ([string]::IsNullOrWhiteSpace($serviceName) -or $serviceName -in @('Checking...', 'Not Found', 'Unavailable', 'Offline'))
 		{
-			[System.Windows.Forms.MessageBox]::Show(
-				("$ServiceKind service was not found for lane $laneKey."),
-				"Lane Services",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Information
-			) | Out-Null
+			[void][System.Windows.Forms.MessageBox]::Show("$ServiceKind service was not found for lane $laneKey.", "Lane Services", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 			return
 		}
 
 		$row.Cells[$statusColumn].Value = "$RequestedAction..."
 		$lblSvcStatus.Text = ("{0} {1} on lane {2}..." -f $RequestedAction, $ServiceKind, $laneKey)
 
-		$job = Start-Job -Name ("LaneServiceAction_{0}_{1}_{2}" -f $machineName, $ServiceKind, $RequestedAction) -ArgumentList $laneKey, $machineName, $expectedSqlService, $ServiceKind, $serviceName, $RequestedAction -ScriptBlock {
-			param (
-				[string]$Lane,
-				[string]$Machine,
-				[string]$ExpectedSqlService,
-				[string]$ServiceKind,
-				[string]$ServiceName,
-				[string]$RequestedAction
-			)
-
-			$getServiceSnapshot = {
-				param (
-					[string]$SnapshotLane,
-					[string]$SnapshotMachine,
-					[string]$SnapshotExpectedSqlService
-				)
-
-				$result = [ordered]@{
-					Lane	   = $SnapshotLane
-					Machine    = $SnapshotMachine
-					SqlService = if ([string]::IsNullOrWhiteSpace($SnapshotExpectedSqlService)) { 'MSSQLSERVER' } else { $SnapshotExpectedSqlService }
-					SqlStatus  = 'Not Found'
-					VncService = 'Not Found'
-					VncStatus  = 'Not Found'
-					ActionSummary = $null
-				}
-
-				$services = $null
-				$serviceFetchError = $null
-				try
-				{
-					$services = Get-Service -ComputerName $SnapshotMachine -ErrorAction Stop | Select-Object Name, DisplayName, Status
-				}
-				catch
-				{
-					$serviceFetchError = $_.Exception.Message
-				}
-
-				if (-not $services)
-				{
-					try
-					{
-						$services = Get-CimInstance -ClassName Win32_Service -ComputerName $SnapshotMachine -ErrorAction Stop | Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
-						$serviceFetchError = $null
-					}
-					catch
-					{
-						$serviceFetchError = $_.Exception.Message
-					}
-				}
-
-				if (-not $services)
-				{
-					$result.SqlStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
-					else { "Error: $serviceFetchError" }
-					$result.VncStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
-					else { "Error: $serviceFetchError" }
-					$result.VncService = 'Unavailable'
-					return [pscustomobject]$result
-				}
-
-				$sqlService = $services | Where-Object { $_.Name -ieq $SnapshotExpectedSqlService } | Select-Object -First 1
-				if (-not $sqlService)
-				{
-					$sqlService = $services | Where-Object { $_.Name -like 'MSSQL*' -or $_.DisplayName -match '(?i)^SQL Server' } | Sort-Object Name | Select-Object -First 1
-				}
-				if ($sqlService)
-				{
-					$result.SqlService = [string]$sqlService.Name
-					$result.SqlStatus = [string]$sqlService.Status
-				}
-
-				$vncService = $services | Where-Object {
-					$svcName = [string]$_.Name
-					$svcDisplay = [string]$_.DisplayName
-					($svcName -match '(?i)^(uvnc_service|winvnc.*|tvnserver|vncserver|tigervnc.*|tightvnc.*)$') -or
-					($svcDisplay -match '(?i)ultravnc|tightvnc|tigervnc|vnc')
-				} | Sort-Object Name | Select-Object -First 1
-				if ($vncService)
-				{
-					$result.VncService = [string]$vncService.Name
-					$result.VncStatus = [string]$vncService.Status
-				}
-
-				return [pscustomobject]$result
-			}
-
-			$actionSummary = "$RequestedAction request sent."
-			$serviceEscaped = $ServiceName.Replace("'", "''")
-			try
-			{
-				$svcObject = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -Filter "Name='$serviceEscaped'" -ErrorAction Stop
-				switch ($RequestedAction)
-				{
-					'Start'   { $null = Invoke-CimMethod -InputObject $svcObject -MethodName StartService -ErrorAction Stop }
-					'Stop'    { $null = Invoke-CimMethod -InputObject $svcObject -MethodName StopService -ErrorAction Stop }
-					'Restart' { $null = Invoke-CimMethod -InputObject $svcObject -MethodName StopService -ErrorAction Stop; Start-Sleep -Seconds 2; $svcObject = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -Filter "Name='$serviceEscaped'" -ErrorAction Stop; $null = Invoke-CimMethod -InputObject $svcObject -MethodName StartService -ErrorAction Stop }
-				}
-				$actionSummary = "$RequestedAction $ServiceKind on lane $Lane."
-			}
-			catch
-			{
-				try
-				{
-					switch ($RequestedAction)
-					{
-						'Start'   { $null = & sc.exe "\\$Machine" start $ServiceName 2>$null }
-						'Stop'    { $null = & sc.exe "\\$Machine" stop $ServiceName 2>$null }
-						'Restart' { $null = & sc.exe "\\$Machine" stop $ServiceName 2>$null; Start-Sleep -Seconds 2; $null = & sc.exe "\\$Machine" start $ServiceName 2>$null }
-					}
-					$actionSummary = "$RequestedAction $ServiceKind on lane $Lane."
-				}
-				catch
-				{
-					$actionSummary = "Failed to $RequestedAction $ServiceKind on lane ${Lane}: $($_.Exception.Message)"
-				}
-			}
-
-			$targetStatus = if ($RequestedAction -eq 'Stop') { 'Stopped' }
-			else { 'Running' }
-			for ($i = 0; $i -lt 18; $i++)
-			{
-				Start-Sleep -Milliseconds 750
-				$snapshot = & $getServiceSnapshot $Lane $Machine $ExpectedSqlService
-				$currentStatus = if ($ServiceKind -eq 'SQL') { [string]$snapshot.SqlStatus }
-				else { [string]$snapshot.VncStatus }
-				if ($currentStatus -eq $targetStatus -or $currentStatus -like 'Error:*' -or $currentStatus -eq 'Not Found')
-				{
-					$snapshot.ActionSummary = $actionSummary
-					return $snapshot
-				}
-			}
-
-			$snapshot = & $getServiceSnapshot $Lane $Machine $ExpectedSqlService
-			$snapshot.ActionSummary = $actionSummary
-			return $snapshot
-		}
-
-		$svcActionJobs[$laneKey] = @{
-			Job		    = $job
-			Row		    = $row.Index
-			Action	    = $RequestedAction
-			ServiceKind = $ServiceKind
-		}
+		$work = & $startPoolWork $serviceActionText @($laneKey, $machineName, $expectedSqlService, $ServiceKind, $serviceName, $RequestedAction, $statusCheckText)
+		$work.Row = $row.Index
+		$svcActionJobs[$laneKey] = $work
 	}
 
 	$refreshSvcLanes = {
@@ -17705,169 +17231,26 @@ function Show_Lane_SQL_VNC_Service_Statuses
 
 		foreach ($laneKey in @($LaneKeysToRefresh))
 		{
-			if (-not $laneMap.ContainsKey($laneKey)) { continue }
+			if (-not $laneMap.ContainsKey($laneKey) -or -not $rowMap.ContainsKey($laneKey)) { continue }
 
+			# A refresh replaces a check still in flight for the lane
 			if ($svcJobs.ContainsKey($laneKey))
 			{
-				try { Stop-Job -Job $svcJobs[$laneKey].Job -ErrorAction SilentlyContinue }
-				catch { }
-				try { Remove-Job -Job $svcJobs[$laneKey].Job -Force -ErrorAction SilentlyContinue }
-				catch { }
+				& $stopPoolWork $svcJobs[$laneKey]
 				[void]$svcJobs.Remove($laneKey)
 			}
 
 			$machineName = [string]$laneMap[$laneKey]
-			$expectedSqlService = 'MSSQLSERVER'
-			try
-			{
-				$dbInfo = Get_All_Lanes_Database_Info -LaneNumber $laneKey
-				if ($dbInfo -and ($dbInfo -isnot [hashtable]))
-				{
-					$tmpDbInfo = @{ }
-					foreach ($p in $dbInfo.PSObject.Properties) { $tmpDbInfo[$p.Name] = $p.Value }
-					$dbInfo = $tmpDbInfo
-				}
-				if ($dbInfo -and $dbInfo.ContainsKey('InstanceName'))
-				{
-					$instanceName = [string]$dbInfo['InstanceName']
-					if (-not [string]::IsNullOrWhiteSpace($instanceName) -and $instanceName.ToUpper() -ne 'MSSQLSERVER')
-					{
-						$expectedSqlService = "MSSQL`$$instanceName"
-					}
-				}
-			}
-			catch { }
-
+			$expectedSqlService = & $getExpectedSqlService $laneKey
 			$rowIndex = [int]$rowMap[$laneKey]
-			if ($rowIndex -lt 0 -or $rowIndex -ge $gridSvc.Rows.Count) { continue }
 			$gridSvc.Rows[$rowIndex].Cells["SqlService"].Value = $expectedSqlService
 			$gridSvc.Rows[$rowIndex].Cells["SqlStatus"].Value = 'Checking...'
 			$gridSvc.Rows[$rowIndex].Cells["VncService"].Value = 'Checking...'
 			$gridSvc.Rows[$rowIndex].Cells["VncStatus"].Value = 'Checking...'
 
-			$job = Start-Job -Name ("LaneServiceStatus_{0}" -f $machineName) -ArgumentList $laneKey, $machineName, $expectedSqlService -ScriptBlock {
-				param (
-					[string]$Lane,
-					[string]$Machine,
-					[string]$ExpectedSqlService
-				)
-
-				$result = [ordered]@{
-					Lane	   = $Lane
-					Machine    = $Machine
-					SqlService = if ([string]::IsNullOrWhiteSpace($ExpectedSqlService)) { 'MSSQLSERVER' } else { $ExpectedSqlService }
-					SqlStatus  = 'Not Found'
-					VncService = 'Not Found'
-					VncStatus  = 'Not Found'
-				}
-
-				$reachable = $false
-				try
-				{
-					$ping = New-Object System.Net.NetworkInformation.Ping
-					$reply = $ping.Send($Machine, 700)
-					if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
-				}
-				catch { }
-
-				if (-not $reachable)
-				{
-					$tcp = $null
-					$async = $null
-					try
-					{
-						$tcp = New-Object System.Net.Sockets.TcpClient
-						$async = $tcp.BeginConnect($Machine, 445, $null, $null)
-						if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
-						{
-							try { $tcp.EndConnect($async) }
-							catch { }
-							$reachable = $true
-						}
-					}
-					catch { }
-					finally
-					{
-						try { if ($async) { $async.AsyncWaitHandle.Close() } }
-						catch { }
-						try { if ($tcp) { $tcp.Close() } }
-						catch { }
-					}
-				}
-
-				if (-not $reachable)
-				{
-					$result.SqlStatus = 'Offline'
-					$result.VncStatus = 'Offline'
-					$result.VncService = 'Offline'
-					return [pscustomobject]$result
-				}
-
-				$services = $null
-				$serviceFetchError = $null
-				try
-				{
-					$services = Get-Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, Status
-				}
-				catch
-				{
-					$serviceFetchError = $_.Exception.Message
-				}
-
-				if (-not $services)
-				{
-					try
-					{
-						$services = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
-						$serviceFetchError = $null
-					}
-					catch
-					{
-						$serviceFetchError = $_.Exception.Message
-					}
-				}
-
-				if (-not $services)
-				{
-					$result.SqlStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
-					else { "Error: $serviceFetchError" }
-					$result.VncStatus = if ([string]::IsNullOrWhiteSpace($serviceFetchError)) { 'Error' }
-					else { "Error: $serviceFetchError" }
-					$result.VncService = 'Unavailable'
-					return [pscustomobject]$result
-				}
-
-				$sqlService = $services | Where-Object { $_.Name -ieq $ExpectedSqlService } | Select-Object -First 1
-				if (-not $sqlService)
-				{
-					$sqlService = $services | Where-Object { $_.Name -like 'MSSQL*' -or $_.DisplayName -match '(?i)^SQL Server' } | Sort-Object Name | Select-Object -First 1
-				}
-				if ($sqlService)
-				{
-					$result.SqlService = [string]$sqlService.Name
-					$result.SqlStatus = [string]$sqlService.Status
-				}
-
-				$vncService = $services | Where-Object {
-					$svcName = [string]$_.Name
-					$svcDisplay = [string]$_.DisplayName
-					($svcName -match '(?i)^(uvnc_service|winvnc.*|tvnserver|vncserver|tigervnc.*|tightvnc.*)$') -or
-					($svcDisplay -match '(?i)ultravnc|tightvnc|tigervnc|vnc')
-				} | Sort-Object Name | Select-Object -First 1
-				if ($vncService)
-				{
-					$result.VncService = [string]$vncService.Name
-					$result.VncStatus = [string]$vncService.Status
-				}
-
-				return [pscustomobject]$result
-			}
-
-			$svcJobs[$laneKey] = @{
-				Job	    = $job
-				Row	    = $rowIndex
-				Machine = $machineName
-			}
+			$work = & $startPoolWork $statusCheckText @($laneKey, $machineName, $expectedSqlService)
+			$work.Row = $rowIndex
+			$svcJobs[$laneKey] = $work
 		}
 	}
 
@@ -17887,26 +17270,23 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			}
 		})
 	[void]$svcRowMenu.Items.Add($miSvcRefreshLane)
-	[void]$svcRowMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-	$miSvcStartSql = New-Object System.Windows.Forms.ToolStripMenuItem("Start SQL")
-	$miSvcStartSql.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'SQL' 'Start' })
-	[void]$svcRowMenu.Items.Add($miSvcStartSql)
-	$miSvcStopSql = New-Object System.Windows.Forms.ToolStripMenuItem("Stop SQL")
-	$miSvcStopSql.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'SQL' 'Stop' })
-	[void]$svcRowMenu.Items.Add($miSvcStopSql)
-	$miSvcRestartSql = New-Object System.Windows.Forms.ToolStripMenuItem("Restart SQL")
-	$miSvcRestartSql.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'SQL' 'Restart' })
-	[void]$svcRowMenu.Items.Add($miSvcRestartSql)
-	[void]$svcRowMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-	$miSvcStartVnc = New-Object System.Windows.Forms.ToolStripMenuItem("Start VNC")
-	$miSvcStartVnc.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'VNC' 'Start' })
-	[void]$svcRowMenu.Items.Add($miSvcStartVnc)
-	$miSvcStopVnc = New-Object System.Windows.Forms.ToolStripMenuItem("Stop VNC")
-	$miSvcStopVnc.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'VNC' 'Stop' })
-	[void]$svcRowMenu.Items.Add($miSvcStopVnc)
-	$miSvcRestartVnc = New-Object System.Windows.Forms.ToolStripMenuItem("Restart VNC")
-	$miSvcRestartVnc.Add_Click({ $script:LastActivity = Get-Date; & $startActionJobForSelectedRow 'VNC' 'Restart' })
-	[void]$svcRowMenu.Items.Add($miSvcRestartVnc)
+
+	# Start / Stop / Restart for SQL and VNC; the menu item's Tag carries kind + action
+	foreach ($kind in @('SQL', 'VNC'))
+	{
+		[void]$svcRowMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+		foreach ($action in @('Start', 'Stop', 'Restart'))
+		{
+			$mi = New-Object System.Windows.Forms.ToolStripMenuItem("$action $kind")
+			$mi.Tag = @($kind, $action)
+			$mi.Add_Click({
+					param ($sender, $e)
+					$script:LastActivity = Get-Date
+					& $startActionJobForSelectedRow $sender.Tag[0] $sender.Tag[1]
+				})
+			[void]$svcRowMenu.Items.Add($mi)
+		}
+	}
 	$gridSvc.ContextMenuStrip = $svcRowMenu
 	$gridSvc.Add_MouseDown({
 			param ($sender,
@@ -17923,169 +17303,13 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			catch { }
 		})
 
+	# One row per lane, then the first check for all of them
 	foreach ($lane in $selectedLanes)
 	{
 		$laneKey = [string]$lane
-		$machineName = [string]$laneMap[$laneKey]
-		$expectedSqlService = 'MSSQLSERVER'
-
-		try
-		{
-			$dbInfo = Get_All_Lanes_Database_Info -LaneNumber $laneKey
-			if ($dbInfo -and ($dbInfo -isnot [hashtable]))
-			{
-				$tmpDbInfo = @{ }
-				foreach ($p in $dbInfo.PSObject.Properties) { $tmpDbInfo[$p.Name] = $p.Value }
-				$dbInfo = $tmpDbInfo
-			}
-
-			if ($dbInfo -and $dbInfo.ContainsKey('InstanceName'))
-			{
-				$instanceName = [string]$dbInfo['InstanceName']
-				if (-not [string]::IsNullOrWhiteSpace($instanceName) -and $instanceName.ToUpper() -ne 'MSSQLSERVER')
-				{
-					$expectedSqlService = "MSSQL`$$instanceName"
-				}
-			}
-		}
-		catch { }
-
-		$rowIndex = $gridSvc.Rows.Add($laneKey, $machineName, $expectedSqlService, 'Checking...', 'Checking...', 'Checking...')
-		$rowMap[$laneKey] = $rowIndex
-
-		$job = Start-Job -Name ("LaneServiceStatus_{0}" -f $machineName) -ArgumentList $laneKey, $machineName, $expectedSqlService -ScriptBlock {
-			param (
-				[string]$Lane,
-				[string]$Machine,
-				[string]$ExpectedSqlService
-			)
-
-			$result = [ordered]@{
-				Lane	   = $Lane
-				Machine    = $Machine
-				SqlService = if ([string]::IsNullOrWhiteSpace($ExpectedSqlService)) { 'MSSQLSERVER' } else { $ExpectedSqlService }
-				SqlStatus  = 'Not Found'
-				VncService = 'Not Found'
-				VncStatus  = 'Not Found'
-			}
-
-			$reachable = $false
-			try
-			{
-				$ping = New-Object System.Net.NetworkInformation.Ping
-				$reply = $ping.Send($Machine, 700)
-				if ($reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reachable = $true }
-			}
-			catch { }
-
-			if (-not $reachable)
-			{
-				$tcp = $null
-				$async = $null
-				try
-				{
-					$tcp = New-Object System.Net.Sockets.TcpClient
-					$async = $tcp.BeginConnect($Machine, 445, $null, $null)
-					if ($async.AsyncWaitHandle.WaitOne(700, $false) -and $tcp.Connected)
-					{
-						try { $tcp.EndConnect($async) }
-						catch { }
-						$reachable = $true
-					}
-				}
-				catch { }
-				finally
-				{
-					try { if ($async) { $async.AsyncWaitHandle.Close() } }
-					catch { }
-					try { if ($tcp) { $tcp.Close() } }
-					catch { }
-				}
-			}
-
-			if (-not $reachable)
-			{
-				$result.SqlStatus = 'Offline'
-				$result.VncStatus = 'Offline'
-				$result.VncService = 'Offline'
-				return [pscustomobject]$result
-			}
-
-			$services = $null
-			$serviceFetchError = $null
-
-			try
-			{
-				$services = Get-Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, Status
-			}
-			catch
-			{
-				$serviceFetchError = $_.Exception.Message
-			}
-
-			if (-not $services)
-			{
-				try
-				{
-					$services = Get-CimInstance -ClassName Win32_Service -ComputerName $Machine -ErrorAction Stop | Select-Object Name, DisplayName, @{ Name = 'Status'; Expression = { $_.State } }
-					$serviceFetchError = $null
-				}
-				catch
-				{
-					$serviceFetchError = $_.Exception.Message
-				}
-			}
-
-			if (-not $services)
-			{
-				$result.SqlStatus = 'Error'
-				$result.VncStatus = 'Error'
-				$result.SqlService = if ($ExpectedSqlService) { $ExpectedSqlService }
-				else { 'Unavailable' }
-				$result.VncService = 'Unavailable'
-				if (-not [string]::IsNullOrWhiteSpace($serviceFetchError))
-				{
-					$result.SqlStatus = "Error: $serviceFetchError"
-					$result.VncStatus = "Error: $serviceFetchError"
-				}
-				return [pscustomobject]$result
-			}
-
-			$sqlService = $services | Where-Object { $_.Name -ieq $ExpectedSqlService } | Select-Object -First 1
-			if (-not $sqlService)
-			{
-				$sqlService = $services | Where-Object {
-					$_.Name -like 'MSSQL*' -or
-					$_.DisplayName -match '(?i)^SQL Server'
-				} | Sort-Object Name | Select-Object -First 1
-			}
-			if ($sqlService)
-			{
-				$result.SqlService = [string]$sqlService.Name
-				$result.SqlStatus = [string]$sqlService.Status
-			}
-
-			$vncService = $services | Where-Object {
-				$svcName = [string]$_.Name
-				$svcDisplay = [string]$_.DisplayName
-				($svcName -match '(?i)^(uvnc_service|winvnc.*|tvnserver|vncserver|tigervnc.*|tightvnc.*)$') -or
-				($svcDisplay -match '(?i)ultravnc|tightvnc|tigervnc|vnc')
-			} | Sort-Object Name | Select-Object -First 1
-			if ($vncService)
-			{
-				$result.VncService = [string]$vncService.Name
-				$result.VncStatus = [string]$vncService.Status
-			}
-
-			return [pscustomobject]$result
-		}
-
-		$svcJobs[$laneKey] = @{
-			Job	    = $job
-			Row	    = $rowIndex
-			Machine = $machineName
-		}
+		$rowMap[$laneKey] = $gridSvc.Rows.Add($laneKey, [string]$laneMap[$laneKey], 'MSSQLSERVER', 'Checking...', 'Checking...', 'Checking...')
 	}
+	& $refreshSvcLanes @($selectedLanes | ForEach-Object { [string]$_ })
 
 	$btnSvcRefresh.Add_Click({
 			$script:LastActivity = Get-Date
@@ -18099,91 +17323,19 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			foreach ($laneKey in @($svcJobs.Keys))
 			{
 				$entry = $svcJobs[$laneKey]
-				if (-not $entry) { continue }
-
-				$job = $entry.Job
-				if (-not $job)
-				{
-					$doneCount++
-					continue
-				}
-
-				if ($job.State -in @('Completed', 'Failed', 'Stopped'))
-				{
-					$result = $null
-					try { $result = Receive-Job -Job $job -ErrorAction SilentlyContinue }
-					catch { }
-
-					$rowIndex = [int]$entry.Row
-					if ($rowIndex -ge 0 -and $rowIndex -lt $gridSvc.Rows.Count)
-					{
-						$row = $gridSvc.Rows[$rowIndex]
-						if ($result)
-						{
-							$row.Cells["SqlService"].Value = [string]$result.SqlService
-							$row.Cells["SqlStatus"].Value = [string]$result.SqlStatus
-							$row.Cells["VncService"].Value = [string]$result.VncService
-							$row.Cells["VncStatus"].Value = [string]$result.VncStatus
-							$row.Tag = @{
-								Lane = [string]$result.Lane
-								Machine = [string]$result.Machine
-								SqlService = [string]$result.SqlService
-								SqlStatus = [string]$result.SqlStatus
-								VncService = [string]$result.VncService
-								VncStatus = [string]$result.VncStatus
-							}
-						}
-						else
-						{
-							$row.Cells["SqlStatus"].Value = 'Error'
-							$row.Cells["VncStatus"].Value = 'Error'
-						}
-					}
-
-					try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
-					catch { }
-					[void]$svcJobs.Remove($laneKey)
-				}
+				if (-not $entry.Handle.IsCompleted) { continue }
+				& $applyResultToRow ([int]$entry.Row) (& $collectPoolWork $entry)
+				[void]$svcJobs.Remove($laneKey)
 			}
 
 			foreach ($laneKey in @($svcActionJobs.Keys))
 			{
 				$entry = $svcActionJobs[$laneKey]
-				if (-not $entry -or -not $entry.Job) { continue }
-
-				if ($entry.Job.State -in @('Completed', 'Failed', 'Stopped'))
-				{
-					$result = $null
-					try { $result = Receive-Job -Job $entry.Job -ErrorAction SilentlyContinue }
-					catch { }
-
-					$rowIndex = [int]$entry.Row
-					if ($rowIndex -ge 0 -and $rowIndex -lt $gridSvc.Rows.Count -and $result)
-					{
-						$row = $gridSvc.Rows[$rowIndex]
-						$row.Cells["SqlService"].Value = [string]$result.SqlService
-						$row.Cells["SqlStatus"].Value = [string]$result.SqlStatus
-						$row.Cells["VncService"].Value = [string]$result.VncService
-						$row.Cells["VncStatus"].Value = [string]$result.VncStatus
-						$row.Tag = @{
-							Lane = [string]$result.Lane
-							Machine = [string]$result.Machine
-							SqlService = [string]$result.SqlService
-							SqlStatus = [string]$result.SqlStatus
-							VncService = [string]$result.VncService
-							VncStatus = [string]$result.VncStatus
-						}
-					}
-
-					if ($result -and -not [string]::IsNullOrWhiteSpace([string]$result.ActionSummary))
-					{
-						$lblSvcStatus.Text = [string]$result.ActionSummary
-					}
-
-					try { Remove-Job -Job $entry.Job -Force -ErrorAction SilentlyContinue }
-					catch { }
-					[void]$svcActionJobs.Remove($laneKey)
-				}
+				if (-not $entry.Handle.IsCompleted) { continue }
+				$result = & $collectPoolWork $entry
+				if ($result) { & $applyResultToRow ([int]$entry.Row) $result }
+				if ($result -and -not [string]::IsNullOrWhiteSpace([string]$result.ActionSummary)) { $lblSvcStatus.Text = [string]$result.ActionSummary }
+				[void]$svcActionJobs.Remove($laneKey)
 			}
 
 			$pendingStatusCount = $svcJobs.Count
@@ -18194,8 +17346,7 @@ function Show_Lane_SQL_VNC_Service_Statuses
 			}
 			elseif ($pendingStatusCount -gt 0)
 			{
-				$doneCount = $totalRows - $pendingStatusCount
-				$lblSvcStatus.Text = ("Checking all lanes... {0}/{1} complete" -f $doneCount, $totalRows)
+				$lblSvcStatus.Text = ("Checking all lanes... {0}/{1} complete" -f ($totalRows - $pendingStatusCount), $totalRows)
 			}
 			elseif ($lblSvcStatus.Text -match '^(Checking|Refreshing|Working)')
 			{
@@ -18205,37 +17356,14 @@ function Show_Lane_SQL_VNC_Service_Statuses
 	$svcTimer.Start()
 
 	$formSvc.Add_FormClosing({
-			try
-			{
-				if ($svcTimer)
-				{
-					$svcTimer.Stop()
-					$svcTimer.Dispose()
-				}
-			}
+			try { $svcTimer.Stop(); $svcTimer.Dispose() }
 			catch { }
-
-			foreach ($laneKey in @($svcJobs.Keys))
-			{
-				$entry = $svcJobs[$laneKey]
-				if (-not $entry -or -not $entry.Job) { continue }
-				try { Stop-Job -Job $entry.Job -ErrorAction SilentlyContinue }
-				catch { }
-				try { Remove-Job -Job $entry.Job -Force -ErrorAction SilentlyContinue }
-				catch { }
-			}
+			# Ask running checks to stop and close the pool without waiting on slow remote calls
+			foreach ($entry in @($svcJobs.Values) + @($svcActionJobs.Values)) { & $stopPoolWork $entry }
 			$svcJobs.Clear()
-
-			foreach ($laneKey in @($svcActionJobs.Keys))
-			{
-				$entry = $svcActionJobs[$laneKey]
-				if (-not $entry -or -not $entry.Job) { continue }
-				try { Stop-Job -Job $entry.Job -ErrorAction SilentlyContinue }
-				catch { }
-				try { Remove-Job -Job $entry.Job -Force -ErrorAction SilentlyContinue }
-				catch { }
-			}
 			$svcActionJobs.Clear()
+			try { [void]$svcPool.BeginClose($null, $null) }
+			catch { }
 		})
 
 	[void]$formSvc.ShowDialog()
@@ -18245,20 +17373,22 @@ function Show_Lane_SQL_VNC_Service_Statuses
 #                              FUNCTION: Update_Lane_Config
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Updates the SQL load files for the selected lanes of a store: for each XF lane folder it
-#   copies run_load.sql and generates lnk_load.sql, sto_load.sql and ter_load.sql, strictly
-#   in ANSI (Windows-1252) encoding with CRLF line endings and no BOM.
+#   Loads the standard lane configuration (RUN_TAB, LNK_TAB, STO_TAB, TER_TAB rows) on the
+#   selected lanes. Each table is written straight into the lane database over its SQL
+#   protocol (keyed delete + insert in one transaction, the same add/replace the load file
+#   does); tables that cannot go over SQL are dropped as run_load.sql / lnk_load.sql /
+#   sto_load.sql / ter_load.sql in the lane's XF folder, ANSI (Windows-1252), CRLF, no BOM.
 #
 # Parameters:
 #   - StoreNumber  [string]: store to process (required)
 #
 # Variables:
-#   - $LoadPath: Office\Load directory with the source SQL files
-#   - $script:FunctionResults['LaneMachineNames']: all-lane list when "All" is selected
+#   - $LoadPath: Office\Load directory (must exist)
+#   - $script:LaneProtocols: per-lane protocol (TCP / Named Pipes / File / Offline)
 #   - $script:ProcessedLanes: lanes processed so far
 #
 # Writes:
-#   - run_load.sql / lnk_load.sql / sto_load.sql / ter_load.sql in each selected XF lane folder
+#   - lane RUN_TAB / LNK_TAB / STO_TAB / TER_TAB, or the matching *_load.sql in each XF lane folder
 # ===================================================================================================
 
 function Update_Lane_Config
@@ -18277,360 +17407,207 @@ function Update_Lane_Config
 	}
 
 	$selection = Show_Node_Selection_Form -StoreNumber $StoreNumber -NodeTypes "Lane"
-	if ($selection -eq $null)
+	if (-not $selection -or -not $selection.Lanes)
 	{
 		Write_Log "`r`nLane processing canceled by user." "yellow"
 		return
 	}
 
-	$Type = $selection.Type
-	$Lanes = $selection.Lanes
-	$processAllLanes = $false
-	if ($Type -eq "All") { $processAllLanes = $true }
+	$ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
 
-	if ($processAllLanes)
-	{
-		try
-		{
-			$LaneMachineNames = $script:FunctionResults['LaneMachineNames']
-			if ($LaneMachineNames -and $LaneMachineNames.Count -gt 0)
-			{
-				$Lanes = $LaneMachineNames
+	# Rows per table, with the lane values filled in. One definition feeds both the SQL load
+	# and the load file, so the two paths always write the same data.
+	$getTableJobs = {
+		param ([string]$Lane, [string]$Machine)
+		@(
+			@{
+				Table    = 'RUN_TAB'; Alias = 'RUN'; View = 'Run_Load'; Filename = 'run_load.sql'
+				Columns  = @('F1102', 'F1000', 'F1103', 'F1104', 'F1105', 'F1106', 'F1107', 'F1108', 'F1109', 'F1110', 'F1111', 'F1112', 'F1113', 'F1114', 'F1115', 'F1116', 'F1117')
+				Keys     = @('F1102', 'F1000')
+				Rows     = @(
+					"(60,'@TER','sql=BACKUP_ALL','@TER','@DSSF',,'@DSS+001',1,'Backup programs',,0,,'',1,,,)",
+					"(62,'@TER','sql=BACKUP_DEVICE','@TER',,,,1,'Backup programs on device',,0,,'',1,,,)",
+					"(68,'@TER','sqi=BACKUP_RESELLER','@TER',,,,1,'Backup for reseller',,0,,'',1,,,)",
+					"(70,'@TER','sql=DBASE_MAINTENANCE','@TER',,,,1,'Database maintenance',,0,,'',1,,,)",
+					"(90,'@TER','sql=PURGE_ALL','@TER','@DSW-008',,'@DSW-001',0,'Purge all report data',,0,,'',7,,,)",
+					"(95,'@TER','sqi=PURGE_CLIENT','@TER',,,,0,'Purge customer sensitive data',,0,,'',1,,,)",
+					"(120,'@TER','sql=UPDATE_DOWNLOAD','@TER',,,,1,'Automatic update download',,0,,'',1,,,)",
+					"(125,'@TER','sql=UPDATE_AUTOMATIC','@TER',,,,1,'Automatic update execution',,0,,'',1,,,)",
+					"(250,'SMS','sqi=TRS_POS_BANK_EOS_PUP OUTPUT=RECEIPT','901',,,,1,'Automatic bank close',,,,,1,,,)"
+				)
 			}
-			else
-			{
-				throw "LaneMachineNames is empty or not available."
+			@{
+				Table    = 'LNK_TAB'; Alias = 'LNK'; View = 'Lnk_Load'; Filename = 'lnk_load.sql'
+				Columns  = @('F1000', 'F1056', 'F1057')
+				Keys     = @('F1000', 'F1056', 'F1057')
+				Rows     = @(
+					"('$Lane','$StoreNumber','$Lane')",
+					"('DSM','$StoreNumber','$Lane')",
+					"('PAL','$StoreNumber','$Lane')",
+					"('RAL','$StoreNumber','$Lane')",
+					"('XAL','$StoreNumber','$Lane')"
+				)
 			}
-		}
-		catch
+			@{
+				Table    = 'STO_TAB'; Alias = 'STO'; View = 'Sto_Load'; Filename = 'sto_load.sql'
+				Columns  = @('F1000', 'F1018', 'F1180', 'F1181', 'F1182', 'F1937', 'F1965', 'F1966', 'F2691')
+				Keys     = @('F1000')
+				Rows     = @(
+					"('$Lane','Terminal $Lane',1,1,1,,,,)",
+					"('DSM','Deploy SMS',1,1,1,,,,)",
+					"('PAL','Program all',0,0,1,1,,,)",
+					"('RAL','Report all',1,0,0,,,,)",
+					"('XAL','Exchange all',0,1,0,,,,)"
+				)
+			}
+			@{
+				Table    = 'TER_TAB'; Alias = 'TER'; View = 'Ter_Load'; Filename = 'ter_load.sql'
+				Columns  = @('F1056', 'F1057', 'F1058', 'F1125', 'F1169')
+				Keys     = @('F1056', 'F1057')
+				Rows     = @(
+					"('$StoreNumber','$Lane','Terminal $Lane','\\$Machine\storeman\office\XF$StoreNumber$Lane\','\\$Machine\storeman\office\XF${StoreNumber}901\')",
+					"('$StoreNumber','901','Server','','')"
+				)
+			}
+		)
+	}
+
+	# Load file in the SMS format (@CREATE / view / INSERT / @UPDATE_BATCH ADDRPL / DROP)
+	$buildLoadFile = {
+		param ($Job)
+		$keyText = ($Job.Keys | ForEach-Object { "$_=:$_" }) -join ' AND '
+		$lines = @(
+			"@CREATE($($Job.Table),$($Job.Alias));"
+			"CREATE VIEW $($Job.View) AS SELECT $($Job.Columns -join ',') FROM $($Job.Table);"
+			""
+			"INSERT INTO $($Job.View) VALUES"
+			(($Job.Rows -join ",`r`n") + ";")
+			""
+			"@UPDATE_BATCH(JOB=ADDRPL,TAR=$($Job.Table),"
+			"KEY=$keyText,"
+			"SRC=SELECT * FROM $($Job.View));"
+			""
+			"DROP TABLE $($Job.View);"
+		)
+		($lines -join "`r`n") + "`r`n"
+	}
+
+	# One load row -> SQL literals, with the SMS macros the lane would expand resolved here
+	$splitRegex = ',(?=(?:[^'']*''[^'']*'')*[^'']*$)'
+	$rowToSqlValues = {
+		param ([string]$Row, [string]$Lane)
+		$inner = $Row.Trim()
+		if ($inner.StartsWith('(') -and $inner.EndsWith(')')) { $inner = $inner.Substring(1, $inner.Length - 2) }
+		$now = Get-Date
+		foreach ($v in [regex]::Split($inner, $splitRegex))
 		{
-			Write_Log "Failed to retrieve LaneMachineNames: $_. Falling back to user-selected lanes." "yellow"
-			$processAllLanes = $false
+			$v = $v.Trim()
+			if ($v -eq '') { 'NULL'; continue }
+			if (-not ($v.StartsWith("'") -and $v.EndsWith("'"))) { $v; continue }
+			$res = $v.Substring(1, $v.Length - 2)
+			$res = $res -replace '@STORE', $StoreNumber.PadLeft(3, '0')
+			$res = $res -replace '@TER', $Lane
+			$res = $res -replace '@USERNAME', $env:USERNAME
+			$res = $res -replace '@USER', $env:USERNAME
+			$res = $res -replace '@RUN', $script:BasePath
+			$res = $res -replace '@OFFICE', $script:OfficePath
+			$res = $res -replace '@TIME', $now.ToString('HHmm')
+			$res = $res -replace '@NOW', $now.ToString('HHmmss')
+			$res = $res -replace '@DSSF', $now.ToString('yyyyMMdd')
+			$res = $res -replace '@DSW-001', $now.AddDays(-1).ToString('yyyyMMdd')
+			$res = $res -replace '@DSW-008', $now.AddDays(-8).ToString('yyyyMMdd')
+			$res = $res -replace '@DSS\+001', $now.AddDays(1).ToString('yyyyMMdd')
+			$res = $res -replace '@DSS', $now.ToString('yyyyMMdd')
+			"'" + $res.Replace("'", "''") + "'"
 		}
 	}
 
-	$ansiPcEncoding = [System.Text.Encoding]::GetEncoding(1252)
-	$runLoadFilename = "run_load.sql"
-	$lnkLoadFilename = "lnk_load.sql"
-	$stoLoadFilename = "sto_load.sql"
-	$terLoadFilename = "ter_load.sql"
+	# Add/replace a table's rows by key in one transaction; returns the row count
+	$loadTableViaSql = {
+		param ([string]$ConnStr, $Job, [string]$Lane)
+		$sb = New-Object System.Text.StringBuilder
+		[void]$sb.AppendLine('SET XACT_ABORT ON; BEGIN TRAN;')
+		$colList = '[' + ($Job.Columns -join '],[') + ']'
+		foreach ($row in $Job.Rows)
+		{
+			$values = @(& $rowToSqlValues $row $Lane)
+			if ($values.Count -ne $Job.Columns.Count) { throw "$($Job.Table): row has $($values.Count) values for $($Job.Columns.Count) columns: $row" }
+			$where = ($Job.Keys | ForEach-Object { "[$_] = " + $values[[array]::IndexOf($Job.Columns, $_)] }) -join ' AND '
+			[void]$sb.AppendLine("DELETE FROM [$($Job.Table)] WHERE $where;")
+			[void]$sb.AppendLine("INSERT INTO [$($Job.Table)] ($colList) VALUES ($($values -join ', '));")
+		}
+		[void]$sb.AppendLine('COMMIT;')
 
-	# Original SQL data (unchanged for file copy)
-	$runLoadScript = @"
-@CREATE(RUN_TAB,RUN);
-CREATE VIEW Run_Load AS SELECT F1102,F1000,F1103,F1104,F1105,F1106,F1107,F1108,F1109,F1110,F1111,F1112,F1113,F1114,F1115,F1116,F1117 FROM RUN_TAB;
+		$conn = New-Object System.Data.SqlClient.SqlConnection($ConnStr)
+		try
+		{
+			$conn.Open()
+			$cmd = $conn.CreateCommand()
+			$cmd.CommandText = $sb.ToString()
+			$cmd.CommandTimeout = 30
+			[void]$cmd.ExecuteNonQuery()
+		}
+		finally { $conn.Dispose() }
+		$Job.Rows.Count
+	}
 
-INSERT INTO Run_Load VALUES
-(60,'@TER','sql=BACKUP_ALL','@TER','@DSSF',,'@DSS+001',1,'Backup programs',,0,,'',1,,,),
-(62,'@TER','sql=BACKUP_DEVICE','@TER',,,,1,'Backup programs on device',,0,,'',1,,,),
-(68,'@TER','sqi=BACKUP_RESELLER','@TER',,,,1,'Backup for reseller',,0,,'',1,,,),
-(70,'@TER','sql=DBASE_MAINTENANCE','@TER',,,,1,'Database maintenance',,0,,'',1,,,),
-(90,'@TER','sql=PURGE_ALL','@TER','@DSW-008',,'@DSW-001',0,'Purge all report data',,0,,'',7,,,),
-(95,'@TER','sqi=PURGE_CLIENT','@TER',,,,0,'Purge customer sensitive data',,0,,'',1,,,),
-(120,'@TER','sql=UPDATE_DOWNLOAD','@TER',,,,1,'Automatic update download',,0,,'',1,,,),
-(125,'@TER','sql=UPDATE_AUTOMATIC','@TER',,,,1,'Automatic update execution',,0,,'',1,,,),
-(250,'SMS','sqi=TRS_POS_BANK_EOS_PUP OUTPUT=RECEIPT','901',,,,1,'Automatic bank close',,,,,1,,,);
-
-@UPDATE_BATCH(JOB=ADDRPL,TAR=RUN_TAB,
-KEY=F1102=:F1102 AND F1000=:F1000,
-SRC=SELECT * FROM Run_Load);
-
-DROP TABLE Run_Load;
-"@
-	$lnkLoadHeader = @"
-@CREATE(LNK_TAB,LNK);
-CREATE VIEW Lnk_Load AS SELECT F1000,F1056,F1057 FROM LNK_TAB;
-
-INSERT INTO Lnk_Load VALUES
-"@
-	$lnkLoadFooter = @"
-
-@UPDATE_BATCH(JOB=ADDRPL,TAR=LNK_TAB,
-KEY=F1000=:F1000 AND F1056=:F1056 AND F1057=:F1057,
-SRC=SELECT * FROM Lnk_Load);
-
-DROP TABLE Lnk_Load;
-"@
-	$stoLoadHeader = @"
-@CREATE(STO_TAB,STO);
-CREATE VIEW Sto_Load AS SELECT F1000,F1018,F1180,F1181,F1182,F1937,F1965,F1966,F2691 FROM STO_TAB;
-
-INSERT INTO Sto_Load VALUES
-"@
-	$stoLoadFooter = @"
-
-@UPDATE_BATCH(JOB=ADDRPL,TAR=STO_TAB,
-KEY=F1000=:F1000,
-SRC=SELECT * FROM Sto_Load);
-
-DROP TABLE Sto_Load;
-"@
-	$terLoadHeader = @"
-@CREATE(TER_TAB,TER); 
-CREATE VIEW Ter_Load AS SELECT F1056,F1057,F1058,F1125,F1169 FROM TER_TAB;
-
-INSERT INTO Ter_Load VALUES
-"@
-	$terLoadFooter = @"
-
-@UPDATE_BATCH(JOB=ADDRPL,TAR=TER_TAB,
-KEY=F1056=:F1056 AND F1057=:F1057,
-SRC=SELECT * FROM Ter_Load);
-
-DROP TABLE Ter_Load;
-"@
-
-	foreach ($laneNumber in $Lanes)
+	foreach ($laneNumber in @($selection.Lanes))
 	{
-		$protocolWorked = @{ }
-		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNumber
-		$MachineName = $null
-		$namedPipesConnStr = $null
-		if ($laneInfo)
-		{
-			$MachineName = $laneInfo['MachineName']
-			$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-			Write_Log "Lane #${laneNumber}: Connection info found. Machine: $MachineName" "green"
-		}
-		else
-		{
-			$MachineName = $script:FunctionResults['LaneNumToMachineName'][$laneNumber]
-			if (-not $MachineName) { $MachineName = "POS${laneNumber}" }
-			Write_Log "Lane #${laneNumber}: Fallback machine name '$MachineName'" "yellow"
-		}
-
-		$laneFolderName = "XF${StoreNumber}${laneNumber}"
-		$laneFolderPath = Join-Path -Path $OfficePath -ChildPath $laneFolderName
+		$laneNumber = ([string]$laneNumber).PadLeft(3, '0')
+		$laneFolderPath = Join-Path -Path $OfficePath -ChildPath "XF${StoreNumber}${laneNumber}"
 		if (-not (Test-Path $laneFolderPath))
 		{
 			Write_Log "`r`nLane #$laneNumber not found at path: $laneFolderPath" "yellow"
 			continue
 		}
-		$laneFolder = Get-Item -Path $laneFolderPath
 		Write_Log "`r`nProcessing Lane #$laneNumber" "blue"
-		$actionSummaries = @()
-		$fileCopyNeeded = @()
 
-		# --- FIX: Parse run_load rows ahead of time ---
-		$runRows =
-		$runLoadScript -split "INSERT INTO Run_Load VALUES", 2 |
-		Select-Object -Last 1 |
-		ForEach-Object { ($_ -replace "(?ms);.*", "") -split "`r?`n" } |
-		Where-Object { $_ -match "^\s*\(" }
+		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNumber
+		$MachineName = if ($laneInfo) { $laneInfo['MachineName'] } else { $script:FunctionResults['LaneNumToMachineName'][$laneNumber] }
+		if (-not $MachineName) { $MachineName = "POS${laneNumber}" }
 
-		if ($namedPipesConnStr -and (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
+		# Lane connection for its protocol; unknown protocol tries Named Pipes (as before)
+		$protocol = if ($script:LaneProtocols) { $script:LaneProtocols[$laneNumber] }
+		$connStr = $null
+		if ($laneInfo -and $protocol -notin @('File', 'Offline'))
 		{
-			foreach ($tableJob in @(
-					@{
-						Table    = 'RUN_TAB'
-						Filename = $runLoadFilename
-						Rows	 = $runRows
-					}
-					@{
-						Table																																																										     = 'LNK_TAB'
-						Filename																																																										 = $lnkLoadFilename
-						Rows																																																											 = @(
-							"('${laneNumber}','${StoreNumber}','${laneNumber}')",
-							"('DSM','${StoreNumber}','${laneNumber}')",
-							"('PAL','${StoreNumber}','${laneNumber}')",
-							"('RAL','${StoreNumber}','${laneNumber}')",
-							"('XAL','${StoreNumber}','${laneNumber}')"
-						)
-					}
-					@{
-						Table																																																		   = 'STO_TAB'
-						Filename																																																	   = $stoLoadFilename
-						Rows																																																		   = @(
-							"('${laneNumber}','Terminal ${laneNumber}',1,1,1,,,,)",
-							"('DSM','Deploy SMS',1,1,1,,,,)",
-							"('PAL','Program all',0,0,1,1,,,)",
-							"('RAL','Report all',1,0,0,,,,)",
-							"('XAL','Exchange all',0,1,0,,,,)"
-						)
-					}
-					@{
-						Table																																																				     = 'TER_TAB'
-						Filename																																																				 = $terLoadFilename
-						Rows																																																					 = @(
-							"('${StoreNumber}','${laneNumber}','Terminal ${laneNumber}','\\${MachineName}\storeman\office\XF${StoreNumber}${laneNumber}\','\\${MachineName}\storeman\office\XF${StoreNumber}901\')",
-							"('${StoreNumber}','901','Server','','')"
-						)
-					}
-				))
-			{
-				$table = $tableJob.Table
-				$rows = $tableJob.Rows
+			$raw = if ($protocol -eq 'TCP') { $laneInfo['TcpConnStr'] } else { $laneInfo['NamedPipesConnStr'] }
+			$connStr = Normalize_Sql_ConnectionString -RawConnectionString $raw
+		}
 
+		$actionSummaries = @()
+		foreach ($job in (& $getTableJobs $laneNumber $MachineName))
+		{
+			if ($connStr)
+			{
 				try
 				{
-					$srcConn = $script:FunctionResults['ConnectionString']
-					$srcSqlConn = New-Object System.Data.SqlClient.SqlConnection($srcConn)
-					$srcSqlConn.Open()
-					$cmd = $srcSqlConn.CreateCommand()
-					$cmd.CommandText = @"
-SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE
-FROM INFORMATION_SCHEMA.COLUMNS
-WHERE TABLE_NAME = '$table'
-ORDER BY ORDINAL_POSITION
-"@
-					$rdr = $cmd.ExecuteReader()
-					$colDefs = @()
-					while ($rdr.Read())
-					{
-						$col = $rdr["COLUMN_NAME"]
-						$type = $rdr["DATA_TYPE"]
-						$nullText = if ($rdr["IS_NULLABLE"] -eq "NO") { "NOT NULL" }
-						else { "NULL" }
-						switch ($type)
-						{
-							'nvarchar' { $typeText = "nvarchar($($rdr["CHARACTER_MAXIMUM_LENGTH"]))" }
-							'varchar'  { $typeText = "varchar($($rdr["CHARACTER_MAXIMUM_LENGTH"]))" }
-							'char'     { $typeText = "char($($rdr["CHARACTER_MAXIMUM_LENGTH"]))" }
-							'nchar'    { $typeText = "nchar($($rdr["CHARACTER_MAXIMUM_LENGTH"]))" }
-							'decimal'  { $typeText = "decimal($($rdr["NUMERIC_PRECISION"]),$($rdr["NUMERIC_SCALE"]))" }
-							'numeric'  { $typeText = "numeric($($rdr["NUMERIC_PRECISION"]),$($rdr["NUMERIC_SCALE"]))" }
-							default    { $typeText = $type }
-						}
-						$colDefs += "[$col] $typeText $nullText"
-					}
-					$rdr.Close()
-					$srcSqlConn.Close()
-					$colDefsText = $colDefs -join ", "
-					$dropCreate = "IF OBJECT_ID(N'[$table]', N'U') IS NOT NULL DROP TABLE [$table]; CREATE TABLE [$table] ($colDefsText);"
-					Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $dropCreate -QueryTimeout 30 -ErrorAction Stop
-					Write_Log "Dropped and recreated $table on lane $laneNumber via protocol." "green"
-
-					# Get column names for the insert
-					$schema = Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$table' ORDER BY ORDINAL_POSITION" -QueryTimeout 30
-					$colNames = $schema | ForEach-Object { $_.COLUMN_NAME }
-
-					$successfulRows = 0
-					foreach ($row in $rows)
-					{
-						$cleanRow = $row.Trim().TrimEnd(',', ';')
-						if ($cleanRow.StartsWith("(") -and $cleanRow.EndsWith(")"))
-						{
-							$cleanRow = $cleanRow.Substring(1, $cleanRow.Length - 2)
-						}
-						$splitRegex = ',(?=(?:[^'']*''[^'']*'')*[^'']*$)'
-						$values = [regex]::Split($cleanRow, $splitRegex) | ForEach-Object {
-							$v = $_.Trim()
-							if ($v -eq "" -or $v -eq "' '") { "NULL" }
-							else
-							{
-								if ($v.StartsWith("'") -and $v.EndsWith("'"))
-								{
-									$unquoted = $v.Trim("'")
-									$res = $unquoted
-									$res = $res -replace "@STORE", $StoreNumber.PadLeft(3, "0")
-									$res = $res -replace "@TER", $laneNumber.PadLeft(3, "0")
-									$res = $res -replace "@USER", $env:USERNAME
-									$res = $res -replace "@USERNAME", $env:USERNAME
-									$res = $res -replace "@RUN", $script:BasePath
-									$res = $res -replace "@OFFICE", $script:OfficePath
-									$now = Get-Date
-									$res = $res -replace "@TIME", $now.ToString("HHmm")
-									$res = $res -replace "@NOW", $now.ToString("HHmmss")
-									$res = $res -replace "@DSSF", $now.ToString("yyyyMMdd")
-									$res = $res -replace "@DSW-001", $now.AddDays(-1).ToString("yyyyMMdd")
-									$res = $res -replace "@DSW-008", $now.AddDays(-8).ToString("yyyyMMdd")
-									$res = $res -replace "@DSS\+001", $now.AddDays(1).ToString("yyyyMMdd")
-									$res = $res -replace "@DSS", $now.ToString("yyyyMMdd")
-									"'" + $res + "'"
-								}
-								else { $v }
-							}
-						}
-						# Fill with NULLs or trim
-						if ($values.Count -lt $colNames.Count)
-						{
-							$values += @("NULL") * ($colNames.Count - $values.Count)
-						}
-						elseif ($values.Count -gt $colNames.Count)
-						{
-							$values = $values[0 .. ($colNames.Count - 1)]
-						}
-						$sql = "INSERT INTO $table ([{0}]) VALUES ({1})" -f ($colNames -join "],["), ($values -join ", ")
-						try
-						{
-							Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $sql -QueryTimeout 30 -ErrorAction Stop
-							$successfulRows++
-						}
-						catch
-						{
-							Write_Log "$table row insert failed: $sql; Error: $_" "red"
-						}
-					}
-					if ($successfulRows -gt 0)
-					{
-						Write_Log "Inserted $successfulRows rows into $table on lane $laneNumber via Named Pipes protocol." "green"
-						$protocolWorked[$table] = $true
-						$actionSummaries += "Protocol loaded $($tableJob.Filename)"
-					}
-					else
-					{
-						Write_Log "No data inserted to $table on lane $laneNumber." "yellow"
-						$fileCopyNeeded += $tableJob.Filename
-						$protocolWorked[$table] = $false
-					}
+					$rowCount = & $loadTableViaSql $connStr $job $laneNumber
+					Write_Log "Loaded $rowCount rows into $($job.Table) on lane $laneNumber over SQL." "green"
+					$actionSummaries += "SQL loaded $($job.Table)"
+					continue
 				}
 				catch
 				{
-					Write_Log "Protocol copy failed for $table on lane [$laneNumber]: $_" "red"
-					$fileCopyNeeded += $tableJob.Filename
-					$protocolWorked[$table] = $false
+					Write_Log "SQL load of $($job.Table) failed on lane $laneNumber, dropping $($job.Filename) instead: $($_.Exception.Message)" "yellow"
 				}
 			}
-		}
-		else
-		{
-			# No protocol possible at all, mark all as needing fallback
-			$fileCopyNeeded += $runLoadFilename, $lnkLoadFilename, $stoLoadFilename, $terLoadFilename
-		}
 
-		# --- Fallback file copy for only failed tables (preserving original format) ---
-		$tableFileData = @{
-			$runLoadFilename = $runLoadScript
-			$lnkLoadFilename = $lnkLoadHeader + "`r`n" +
-			"('${laneNumber}','${StoreNumber}','${laneNumber}'),`r`n" +
-			"('DSM','${StoreNumber}','${laneNumber}'),`r`n" +
-			"('PAL','${StoreNumber}','${laneNumber}'),`r`n" +
-			"('RAL','${StoreNumber}','${laneNumber}'),`r`n" +
-			"('XAL','${StoreNumber}','${laneNumber}');`r`n" +
-			"`r`n" + $lnkLoadFooter.TrimStart() + "`r`n"
-			$stoLoadFilename = $stoLoadHeader + "`r`n" +
-			"('${laneNumber}','Terminal ${laneNumber}',1,1,1,,,,),`r`n" +
-			"('DSM','Deploy SMS',1,1,1,,,,),`r`n" +
-			"('PAL','Program all',0,0,1,1,,,),`r`n" +
-			"('RAL','Report all',1,0,0,,,,),`r`n" +
-			"('XAL','Exchange all',0,1,0,,,,);`r`n" +
-			"`r`n" + $stoLoadFooter.TrimStart() + "`r`n"
-			$terLoadFilename = $terLoadHeader + "`r`n" +
-			"('${StoreNumber}','${laneNumber}','Terminal ${laneNumber}','\\${MachineName}\storeman\office\XF${StoreNumber}${laneNumber}\','\\${MachineName}\storeman\office\XF${StoreNumber}901\'),`r`n" +
-			"('${StoreNumber}','901','Server','','');`r`n" +
-			"`r`n" + $terLoadFooter.TrimStart() + "`r`n"
-		}
-		foreach ($file in $fileCopyNeeded | Select-Object -Unique)
-		{
 			try
 			{
-				$dest = Join-Path -Path $laneFolder.FullName -ChildPath $file
-				[System.IO.File]::WriteAllText($dest, $tableFileData[$file], $ansiPcEncoding)
+				$dest = Join-Path -Path $laneFolderPath -ChildPath $job.Filename
+				[System.IO.File]::WriteAllText($dest, (& $buildLoadFile $job), $ansiPcEncoding)
 				Set-ItemProperty -Path $dest -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-				$actionSummaries += "Copied $file"
+				$actionSummaries += "Copied $($job.Filename)"
 			}
 			catch
 			{
-				$actionSummaries += "Failed to copy $file"
+				$actionSummaries += "Failed to copy $($job.Filename)"
 			}
 		}
 
-		$summaryMessage = "Lane ${laneNumber} (Machine: ${MachineName}): " + ($actionSummaries -join "; ")
-		Write_Log $summaryMessage "green"
-		if (-not ($script:ProcessedLanes -contains $laneNumber))
-		{
-			$script:ProcessedLanes += $laneNumber
-		}
+		Write_Log ("Lane ${laneNumber} (Machine: ${MachineName}): " + ($actionSummaries -join "; ")) "green"
+		if ($script:ProcessedLanes -notcontains $laneNumber) { $script:ProcessedLanes += $laneNumber }
 	}
 
 	Write_Log "`r`n==================== Update_Lane_Config Function Completed ====================" "blue"

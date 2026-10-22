@@ -76,6 +76,7 @@ function Refresh_PIN_Pad_Files
 	# ============================= Main Processing Loop =============================
 	$totalRefreshed = 0
 	$totalFailed = 0
+	$refreshedLanes = New-Object System.Collections.Generic.List[string]
 
 	foreach ($laneObj in $Lanes)
 	{
@@ -117,6 +118,7 @@ function Refresh_PIN_Pad_Files
 						(Get-Item -Path $filePath).LastWriteTime = Get-Date
 						Write_Log "Lane #${laneNum}: Refreshed file '$filePath'." "green"
 						$totalRefreshed++
+						if (-not $refreshedLanes.Contains($laneNum)) { $refreshedLanes.Add($laneNum) }
 					}
 					catch
 					{
@@ -140,33 +142,7 @@ function Refresh_PIN_Pad_Files
 	# ==== Prompt to Restart All Programs on successful lanes ====
 	if ($totalRefreshed -gt 0)
 	{
-		# Build $refreshedLanes (only add a lane if any file was actually refreshed)
-		$refreshedLanes = @()
-		foreach ($laneObj in $Lanes)
-		{
-			$laneNum = if ($laneObj -is [pscustomobject] -and $laneObj.LaneNumber) { $laneObj.LaneNumber }
-			else { $laneObj }
-			$laneNum = $laneNum.PadLeft(3, '0')
-			if ($LaneNumToMachineName.ContainsKey($laneNum))
-			{
-				$machineName = $LaneNumToMachineName[$laneNum]
-				$targetPath = "\\$machineName\Storeman\XchDev\EMVConfig\"
-				foreach ($file in $fileExtensions)
-				{
-					$filePath = Join-Path -Path $targetPath -ChildPath $file
-					if (Test-Path -Path $filePath)
-					{
-						$lastWrite = (Get-Item -Path $filePath).LastWriteTime
-						if ($lastWrite -ge (Get-Date).AddMinutes(-5))
-						{
-							$refreshedLanes += $laneNum
-							break
-						}
-					}
-				}
-			}
-		}
-		$refreshedLanes = $refreshedLanes | Select-Object -Unique
+		# ($refreshedLanes is collected in the loop above - lanes where at least one file was touched)
 		if ($refreshedLanes.Count -gt 0)
 		{
 			Add-Type -AssemblyName System.Windows.Forms

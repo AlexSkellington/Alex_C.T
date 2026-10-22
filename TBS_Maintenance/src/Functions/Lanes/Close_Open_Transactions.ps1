@@ -36,11 +36,40 @@ function Close_Open_Transactions
 	}
 
 	# ==================== Validate SQL module availability ====================
+	# Invoke-Sqlcmd for the direct close over the lane's protocol; without a SQL module the
+	# close goes out as a Close_Transaction.sqi file drop instead
+	$invokeSql = $null
+	$supportsConnStr = $false
 	$SqlModule = $script:FunctionResults['SqlModuleName']
-	if (-not $SqlModule -or $SqlModule -eq "None")
+	if ($SqlModule -and $SqlModule -ne "None")
 	{
-		Write_Log "No SQL Server module available (SqlServer or SQLPS). Cannot close transactions." "red"
-		return
+		try
+		{
+			Import-Module $SqlModule -ErrorAction Stop
+			$invokeSql = Get-Command Invoke-Sqlcmd -ErrorAction Stop
+			$supportsConnStr = $invokeSql.Parameters.ContainsKey('ConnectionString')
+		}
+		catch { $invokeSql = $null }
+	}
+	if (-not $invokeSql) { Write_Log "No SQL module available - transactions are closed through a file drop to the lane." "yellow" }
+
+	# Close over the lane's SQL protocol (Named Pipes / TCP); $true when it worked
+	$closeViaProtocol = {
+		param ([string]$Lane, [string]$Protocol, $LaneInfo, [string]$Sql, [string]$What)
+		if (-not $invokeSql -or $Protocol -notin @('Named Pipes', 'TCP') -or -not $LaneInfo) { return $false }
+		$connStr = if ($Protocol -eq 'Named Pipes') { $LaneInfo['NamedPipesConnStr'] } else { $LaneInfo['TcpConnStr'] }
+		try
+		{
+			if ($supportsConnStr) { $null = & $invokeSql -ConnectionString $connStr -Query $Sql -QueryTimeout 30 -ErrorAction Stop }
+			else { $null = & $invokeSql -ServerInstance $LaneInfo['TcpServer'] -Database $LaneInfo['DBName'] -Query $Sql -QueryTimeout 30 -ErrorAction Stop }
+			Write_Log "Closed $What via SQL protocol ($Protocol) on lane $Lane." "green"
+			return $true
+		}
+		catch
+		{
+			Write_Log "$Protocol failed for lane $Lane." "yellow"
+			return $false
+		}
 	}
 
 	# SQL string for closing all open transactions (manual fallback)
@@ -61,9 +90,9 @@ function Close_Open_Transactions
 	{
 		$currentTime = Get-Date
 		# Only process XE files less than 30 days old and starting with S (SMSStart)
-		$files = Get-ChildItem -Path $XEFolderPath -Filter "S*.???" | Where-Object {
+		$files = @(Get-ChildItem -Path $XEFolderPath -Filter "S*.???" -ErrorAction SilentlyContinue | Where-Object {
 			($currentTime - $_.LastWriteTime).TotalDays -le 30
-		}
+		})
 
 		# ==================== PROCESS EACH XE ERROR FILE FOUND ====================
 		if ($files -and $files.Count -gt 0)
@@ -101,7 +130,7 @@ function Close_Open_Transactions
 									{
 										$transactionNumber = $Matches[1]
 										$laneKey = $LaneNumber.PadLeft(3, '0')
-										$protocolType = if ($script:LaneProtocols.ContainsKey($laneKey)) { $script:LaneProtocols[$laneKey] }
+										$protocolType = if ($script:LaneProtocols -and $script:LaneProtocols.ContainsKey($laneKey)) { $script:LaneProtocols[$laneKey] }
 										else { "File" }
 										if ($protocolType -eq 'Offline')
 										{
@@ -111,53 +140,8 @@ function Close_Open_Transactions
 
 										# Get full DB connection info for this lane
 										$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
-										$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-										$tcpConnStr = $laneInfo['TcpConnStr']
-										$tcpServer = $laneInfo['TcpServer']
-										$dbName = $laneInfo['DBName']
 										$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber"
-										$protocolWorked = $false
-
-										# Try protocol (Named Pipes/TCP), otherwise fallback to file
-										Import-Module $SqlModule -ErrorAction Stop
-										$supportsConnStr = (Get-Command Invoke-Sqlcmd).Parameters.ContainsKey('ConnectionString')
-
-										# ----------- Try Named Pipes protocol first -----------
-										if ($protocolType -eq "Named Pipes")
-										{
-											try
-											{
-												if ($supportsConnStr)
-												{
-													Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-												}
-												else
-												{
-													Invoke-Sqlcmd -ServerInstance $tcpServer -Database $dbName -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-												}
-												$protocolWorked = $true
-												Write_Log "Closed transaction $transactionNumber via SQL protocol (Named Pipes) on lane $LaneNumber." "green"
-											}
-											catch { Write_Log "Named Pipes failed for lane $LaneNumber." "yellow" }
-										}
-										# ----------- Try TCP protocol -----------
-										elseif ($protocolType -eq "TCP")
-										{
-											try
-											{
-												if ($supportsConnStr)
-												{
-													Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-												}
-												else
-												{
-													Invoke-Sqlcmd -ServerInstance $tcpServer -Database $dbName -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-												}
-												$protocolWorked = $true
-												Write_Log "Closed transaction $transactionNumber via SQL protocol (TCP) on lane $LaneNumber." "green"
-											}
-											catch { Write_Log "TCP failed for lane $LaneNumber." "yellow" }
-										}
+										$protocolWorked = & $closeViaProtocol $LaneNumber $protocolType $laneInfo $closeSQL "transaction $transactionNumber"
 
 										# ----------- Fallback: File-based SQI if protocol failed -----------
 										if (-not $protocolWorked)
@@ -189,10 +173,10 @@ function Close_Open_Transactions
 
 										# ----------- Optionally restart all programs on the lane -----------
 										Start-Sleep -Seconds 3
-										$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-										if ($nodes)
+										$laneMap = $script:FunctionResults['LaneNumToMachineName']
+										if ($laneMap)
 										{
-											$machineName = $nodes.LaneNumToMachineName[$LaneNumber]
+											$machineName = $laneMap[$LaneNumber]
 											if ($machineName)
 											{
 												$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
@@ -237,7 +221,7 @@ function Close_Open_Transactions
 				else { $LaneNumber }
 				$LaneNumber = $LaneNumber.PadLeft(3, '0')
 				$laneKey = $LaneNumber
-				$protocolType = if ($script:LaneProtocols.ContainsKey($laneKey)) { $script:LaneProtocols[$laneKey] }
+				$protocolType = if ($script:LaneProtocols -and $script:LaneProtocols.ContainsKey($laneKey)) { $script:LaneProtocols[$laneKey] }
 				else { "File" }
 				if ($protocolType -eq 'Offline')
 				{
@@ -245,50 +229,8 @@ function Close_Open_Transactions
 					continue
 				}
 				$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $LaneNumber
-				$namedPipesConnStr = $laneInfo['NamedPipesConnStr']
-				$tcpConnStr = $laneInfo['TcpConnStr']
-				$tcpServer = $laneInfo['TcpServer']
-				$dbName = $laneInfo['DBName']
 				$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE'"
-				$protocolWorked = $false
-
-				Import-Module $SqlModule -ErrorAction Stop
-				$supportsConnStr = (Get-Command Invoke-Sqlcmd).Parameters.ContainsKey('ConnectionString')
-
-				if ($protocolType -eq "Named Pipes")
-				{
-					try
-					{
-						if ($supportsConnStr)
-						{
-							Invoke-Sqlcmd -ConnectionString $namedPipesConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-						}
-						else
-						{
-							Invoke-Sqlcmd -ServerInstance $tcpServer -Database $dbName -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-						}
-						$protocolWorked = $true
-						Write_Log "Closed all open transactions via SQL protocol (Named Pipes) on lane $LaneNumber." "green"
-					}
-					catch { Write_Log "Named Pipes failed for lane $LaneNumber." "yellow" }
-				}
-				elseif ($protocolType -eq "TCP")
-				{
-					try
-					{
-						if ($supportsConnStr)
-						{
-							Invoke-Sqlcmd -ConnectionString $tcpConnStr -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-						}
-						else
-						{
-							Invoke-Sqlcmd -ServerInstance $tcpServer -Database $dbName -Query $closeSQL -QueryTimeout 30 -ErrorAction Stop
-						}
-						$protocolWorked = $true
-						Write_Log "Closed all open transactions via SQL protocol (TCP) on lane $LaneNumber." "green"
-					}
-					catch { Write_Log "TCP failed for lane $LaneNumber." "yellow" }
-				}
+				$protocolWorked = & $closeViaProtocol $LaneNumber $protocolType $laneInfo $closeSQL "all open transactions"
 
 				if (-not $protocolWorked)
 				{
@@ -307,12 +249,10 @@ function Close_Open_Transactions
 				}
 				$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - User deployed Close_Transaction to lane $LaneNumber"
 				Add-Content -Path $LogFilePath -Value $logMessage
-				# Clean up XE folder, except FATALs
-				Get-ChildItem -Path $XEFolderPath -File | Where-Object { $_.Name -notlike "*FATAL*" } | Remove-Item -Force
-				$nodes = Retrieve_Nodes -StoreNumber $StoreNumber
-				if ($nodes)
+				$laneMap = $script:FunctionResults['LaneNumToMachineName']
+				if ($laneMap)
 				{
-					$machineName = $nodes.LaneNumToMachineName[$LaneNumber]
+					$machineName = $laneMap[$LaneNumber]
 					if ($machineName)
 					{
 						$mailslotAddress = "\\$machineName\mailslot\SMSStart_${StoreNumber}${LaneNumber}"
@@ -324,6 +264,8 @@ function Close_Open_Transactions
 				}
 				Write_Log "Prompt deployment process completed." "yellow"
 			}
+			# Clean up the XE folder, except FATALs
+			Get-ChildItem -Path $XEFolderPath -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike "*FATAL*" } | Remove-Item -Force -ErrorAction SilentlyContinue
 		}
 	}
 	catch
