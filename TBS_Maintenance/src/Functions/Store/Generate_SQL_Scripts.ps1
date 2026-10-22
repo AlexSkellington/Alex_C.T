@@ -188,9 +188,10 @@ RECONFIGURE;
 	)
 
 	$LaneSQLFiltered = ""
-	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
+	# (not $matches - that is PowerShell's automatic -match result variable)
+	$sectionMatches = [regex]::Matches($LaneSQLScript, $sectionPattern)
 
-	foreach ($match in $matches)
+	foreach ($match in $sectionMatches)
 	{
 		$sectionName = $match.Groups['SectionName'].Value.Trim()
 		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()

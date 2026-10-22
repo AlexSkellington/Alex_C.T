@@ -10,14 +10,17 @@
 #   - RefreshCache  [switch]: ignore in-memory/file cache and rebuild
 #
 # Variables:
-#   - $script:FunctionResults: stores the alias/table hashes (Get_Table_Aliases bucket)
+#   - $script:FunctionResults['Get_Table_Aliases']: @{ Aliases; AliasHash; TableHash }
+#   - $script:FunctionResults['SMSVersionFull']: decides static vs dynamic mode
 #   - $LoadPath / $OfficePath: location of the Load SQL files (dynamic mode)
 #
 # Returns:
 #   Hashtable alias -> table name.
 #
 # Writes:
-#   - Setup_Files\Get_Table_Aliases.txt (JSON cache: AliasHash + TableHash only)
+#   - Setup_Files\Get_Table_Aliases.txt (JSON cache: mode, SMS version, Load-file signature,
+#     AliasHash + TableHash). The file cache is reused only while the SMS version and (dynamic
+#     mode) the *_Load.sql signature still match.
 # ===================================================================================================
 
 function Get_Table_Aliases
@@ -26,248 +29,208 @@ function Get_Table_Aliases
 		[switch]$RefreshCache
 	)
 
-	# ------------------------------------------------------------------------------------------------
-	# Per-function cache
-	# ------------------------------------------------------------------------------------------------
 	$CachePath = Join-Path $script:SetupFiles 'Get_Table_Aliases.txt'
 
-	# Reuse in-memory alias map first
+	# PSCustomObject (from JSON) -> hashtable, so .ContainsKey() works for the callers
+	$toHash = {
+		param ($o)
+		$h = @{ }
+		if ($o -is [hashtable]) { return $o }
+		if ($o -and $o.PSObject -and $o.PSObject.Properties) { foreach ($p in $o.PSObject.Properties) { $h[$p.Name] = $p.Value } }
+		return $h
+	}
+	$publish = {
+		param ($AliasHash, $TableHash)
+		$script:FunctionResults['Get_Table_Aliases'] = @{ Aliases = @(); AliasHash = $AliasHash; TableHash = $TableHash }
+		return $AliasHash
+	}
+
+	# ------------------------------------------------------------------------------------------------
+	# 1. In-memory (this launch)
+	# ------------------------------------------------------------------------------------------------
 	if (-not $RefreshCache)
 	{
 		try
 		{
-			if ($script:FunctionResults.ContainsKey('Get_Table_Aliases') -and $script:FunctionResults['Get_Table_Aliases'])
+			$aliasData = $script:FunctionResults['Get_Table_Aliases']
+			if ($aliasData -and $aliasData.AliasHash)
 			{
-				$aliasData = $script:FunctionResults['Get_Table_Aliases']
 				if ($aliasData.AliasHash -is [hashtable]) { return $aliasData.AliasHash }
-				if ($aliasData.AliasHash -and $aliasData.AliasHash.PSObject -and $aliasData.AliasHash.PSObject.Properties)
-				{
-					$aliasHash = @{ }
-					foreach ($p in $aliasData.AliasHash.PSObject.Properties) { $aliasHash[$p.Name] = $p.Value }
-					$tableHash = @{ }
-					if ($aliasData.TableHash -and $aliasData.TableHash.PSObject -and $aliasData.TableHash.PSObject.Properties)
-					{
-						foreach ($p in $aliasData.TableHash.PSObject.Properties) { $tableHash[$p.Name] = $p.Value }
-					}
-					$script:FunctionResults['Get_Table_Aliases'] = @{
-						Aliases   = @()
-						AliasHash = $aliasHash
-						TableHash = $tableHash
-					}
-					return $aliasHash
-				}
+				return (& $publish (& $toHash $aliasData.AliasHash) (& $toHash $aliasData.TableHash))
 			}
 		}
 		catch { }
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# Version detection (relies on Get_Store_And_Database_Info setting SMSVersionFull)
+	# SMS version -> static (supported range) or dynamic mode
 	# ------------------------------------------------------------------------------------------------
 	$MinSupportedSMSVersion = "3.3.0.0"
 	$MaxSupportedSMSVersion = "3.6.1.8"
 
-	$SMSVersionRaw = $script:FunctionResults['SMSVersionFull']
-	$SMSVersion = $SMSVersionRaw
-	if ($SMSVersion -match '([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)')
-	{
-		$SMSVersion = $Matches[1]
-	}
-	else
-	{
-		$SMSVersion = "0.0.0.0"
-	}
+	$SMSVersion = "0.0.0.0"
+	if ([string]$script:FunctionResults['SMSVersionFull'] -match '([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)') { $SMSVersion = $Matches[1] }
+	$versionKnown = ($SMSVersion -ne "0.0.0.0")
 
-	# Version range check
 	$versionInRange = $false
 	try
 	{
 		$vTest = [version]$SMSVersion
-		$vMin = [version]$MinSupportedSMSVersion
-		$vMax = [version]$MaxSupportedSMSVersion
-		if ($vTest -ge $vMin -and $vTest -le $vMax) { $versionInRange = $true }
+		$versionInRange = ($vTest -ge [version]$MinSupportedSMSVersion -and $vTest -le [version]$MaxSupportedSMSVersion)
 	}
 	catch { $versionInRange = $false }
 
-	# ------------------------------------------------------------------------------------------------
-	# Ensure LoadPath exists (dynamic mode only)
-	# ------------------------------------------------------------------------------------------------
-	if (-not $LoadPath -or [string]::IsNullOrWhiteSpace($LoadPath))
+	if ([string]::IsNullOrWhiteSpace($LoadPath))
 	{
-		try
-		{
-			if ($OfficePath -and (Test-Path $OfficePath)) { $LoadPath = Join-Path $OfficePath 'Load' }
-		}
+		try { if ($OfficePath -and (Test-Path -LiteralPath $OfficePath)) { $LoadPath = Join-Path $OfficePath 'Load' } }
 		catch { }
 	}
 
+	# Signature of the *_Load.sql files (dynamic mode cache validation)
+	$getLoadSignature = {
+		try
+		{
+			if (-not $LoadPath -or -not (Test-Path -LiteralPath $LoadPath)) { return $null }
+			$files = @(Get-ChildItem -LiteralPath $LoadPath -Recurse -Filter '*_Load.sql' -File -ErrorAction SilentlyContinue)
+			$newest = $null
+			$total = [int64]0
+			foreach ($f in $files)
+			{
+				if (-not $newest -or $f.LastWriteTimeUtc -gt $newest) { $newest = $f.LastWriteTimeUtc }
+				$total += $f.Length
+			}
+			return [pscustomobject]@{
+				Root       = [string]$LoadPath
+				FileCount  = [int]$files.Count
+				NewestUtc  = if ($newest) { $newest.ToString('o') } else { "" }
+				TotalBytes = [int64]$total
+			}
+		}
+		catch { return $null }
+	}
+
 	# ------------------------------------------------------------------------------------------------
+	# 2. File cache (only while it still describes this store's SMS version / Load files)
 	# ------------------------------------------------------------------------------------------------
-	# Try load cache file (small)
-	# ------------------------------------------------------------------------------------------------
-	if ((-not $RefreshCache) -and $CachePath -and (Test-Path $CachePath))
+	if ((-not $RefreshCache) -and (Test-Path -LiteralPath $CachePath))
 	{
 		try
 		{
 			$raw = Get-Content -LiteralPath $CachePath -Raw -ErrorAction Stop
-			if (-not [string]::IsNullOrWhiteSpace($raw))
+			$cacheObj = $null
+			if (-not [string]::IsNullOrWhiteSpace($raw)) { $cacheObj = $raw | ConvertFrom-Json -ErrorAction Stop }
+			if ($cacheObj -and $cacheObj.Results)
 			{
-				$cacheObj = $raw | ConvertFrom-Json -ErrorAction Stop
-				if ($cacheObj -and $cacheObj.Results)
+				$cacheValid = $true
+				# A known SMS version that differs from the cached one means an upgrade: rebuild
+				if ($versionKnown -and $cacheObj.SMSVersion -and ([string]$cacheObj.SMSVersion -ne $SMSVersion)) { $cacheValid = $false }
+				if ($cacheValid -and [string]$cacheObj.Mode -eq 'Dynamic' -and $cacheObj.LoadSignature)
 				{
-					# Rebuild AliasHash hashtable (so .ContainsKey() works)
-					$AliasHash = @{ }
-					if ($cacheObj.Results.AliasHash -and $cacheObj.Results.AliasHash.PSObject -and $cacheObj.Results.AliasHash.PSObject.Properties)
+					$sig = & $getLoadSignature
+					if ($sig -and (
+							[int]$cacheObj.LoadSignature.FileCount -ne $sig.FileCount -or
+							[string]$cacheObj.LoadSignature.NewestUtc -ne $sig.NewestUtc -or
+							[int64]$cacheObj.LoadSignature.TotalBytes -ne $sig.TotalBytes))
 					{
-						foreach ($p in $cacheObj.Results.AliasHash.PSObject.Properties) { $AliasHash[$p.Name] = $p.Value }
+						$cacheValid = $false
 					}
-
-					# Rebuild TableHash hashtable
-					$TableHash = @{ }
-					if ($cacheObj.Results.TableHash -and $cacheObj.Results.TableHash.PSObject -and $cacheObj.Results.TableHash.PSObject.Properties)
-					{
-						foreach ($p in $cacheObj.Results.TableHash.PSObject.Properties) { $TableHash[$p.Name] = $p.Value }
-					}
-
-					$script:FunctionResults['Get_Table_Aliases'] = @{
-						Aliases   = @()
-						AliasHash = $AliasHash
-						TableHash = $TableHash
-					}
-
-					return $AliasHash
+				}
+				if ($cacheValid)
+				{
+					return (& $publish (& $toHash $cacheObj.Results.AliasHash) (& $toHash $cacheObj.Results.TableHash))
 				}
 			}
 		}
 		catch
 		{
-			# Cache errors fall through to rebuild
+			# unreadable cache: rebuild
 		}
 	}
 
-	# ------------------------------------------------------------------------------------------------
-	# Compute signature for *_Load.sql files (used only when dynamic rebuild is needed)
-	# ------------------------------------------------------------------------------------------------
-	$loadSignature = $null
-	try
-	{
-		if ($LoadPath -and (Test-Path $LoadPath))
+	$writeCache = {
+		param ([string]$Mode, $Signature, $AliasHash, $TableHash)
+		try
 		{
-			$files = Get-ChildItem -LiteralPath $LoadPath -Recurse -Filter '*_Load.sql' -File -ErrorAction SilentlyContinue
-			$fileCount = 0
-			$newestUtc = $null
-			$totalBytes = 0
-
-			if ($files)
-			{
-				$fileCount = $files.Count
-				$newestUtc = ($files | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).LastWriteTimeUtc
-				$totalBytes = [int64](($files | Measure-Object Length -Sum).Sum)
+			$cacheOut = [pscustomobject]@{
+				LastUpdated   = (Get-Date).ToString('o')
+				SMSVersion    = $SMSVersion
+				Mode          = $Mode
+				LoadSignature = $Signature
+				Results       = [pscustomobject]@{
+					AliasHash = [pscustomobject]$AliasHash
+					TableHash = [pscustomobject]$TableHash
+				}
 			}
-
-			$loadSignature = [pscustomobject]@{
-				Root = [string]$LoadPath
-				FileCount = [int]$fileCount
-				NewestUtc = if ($newestUtc) { $newestUtc.ToString('o') } else { "" }
-				TotalBytes = [int64]$totalBytes
-			}
+			($cacheOut | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
 		}
-	}
-	catch { $loadSignature = $null }
-
-	# ------------------------------------------------------------------------------------------------
-	# Hardcoded alias [?][?][?] table mapping
-	# ------------------------------------------------------------------------------------------------
-	$AliasToTable = @{
-		'ALT'	   = 'ALT_TAB'
-		'BIO'	   = 'BIO_TAB'
-		'BTL'	   = 'BTL_TAB'
-		'CAT'	   = 'CAT_TAB'
-		'CFG'	   = 'CFG_TAB'
-		'CLF'	   = 'CLF_TAB'
-		'CLF_SDP'  = 'CLF_SDP_TAB'
-		'CLG'	   = 'CLG_TAB'
-		'CLK'	   = 'CLK_TAB'
-		'CLL'	   = 'CLL_TAB'
-		'CLR'	   = 'CLR_TAB'
-		'CLT'	   = 'CLT_TAB'
-		'CLT_ITM'  = 'CLT_ITM_TAB'
-		'COST'	   = 'COST_TAB'
-		'CPN'	   = 'CPN_TAB'
-		'DELV'	   = 'DELV_TAB'
-		'DEPT'	   = 'DEPT_TAB'
-		'DSD'	   = 'DSD_TAB'
-		'ECL'	   = 'ECL_TAB'
-		'FAM'	   = 'FAM_TAB'
-		'KIT'	   = 'KIT_TAB'
-		'LOC'	   = 'LOC_TAB'
-		'LVL'	   = 'LVL_TAB'
-		'MIX'	   = 'MIX_TAB'
-		'MOD'	   = 'MOD_TAB'
-		'OBJ'	   = 'OBJ_TAB'
-		'POS'	   = 'POS_TAB'
-		'PRICE'    = 'PRICE_TAB'
-		'PUB'	   = 'PUB_TAB'
-		'RES'	   = 'RES_TAB'
-		'ROUTE'    = 'ROUTE_TAB'
-		'RPC'	   = 'RPC_TAB'
-		'SCAL_ITM' = 'SCL_TAB'
-		'SCAL_NUT' = 'SCL_NUT_TAB'
-		'SCAL_TXT' = 'SCL_TXT_TAB'
-		'SDP'	   = 'SDP_TAB'
-		'STD'	   = 'STD_TAB'
-		'TAR'	   = 'TAR_TAB'
-		'UNT'	   = 'UNT_TAB'
-		'VENDOR'   = 'VENDOR_TAB'
-	}
-
-	# Build reverse (table [?][?][?] alias)
-	$TableToAlias = @{ }
-	foreach ($k in $AliasToTable.Keys)
-	{
-		$TableToAlias[$AliasToTable[$k]] = $k
+		catch { }
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# Static mode (supported range)
+	# 3a. Static mode (supported SMS range): hardcoded alias -> table map
 	# ------------------------------------------------------------------------------------------------
 	if ($versionInRange)
 	{
-		# Store only what matters
-		$script:FunctionResults['Get_Table_Aliases'] = @{
-			Aliases   = @() # intentionally empty (no @CREATE clutter)
-			AliasHash = $AliasToTable
-			TableHash = $TableToAlias
+		$AliasToTable = @{
+			'ALT'      = 'ALT_TAB'
+			'BIO'      = 'BIO_TAB'
+			'BTL'      = 'BTL_TAB'
+			'CAT'      = 'CAT_TAB'
+			'CFG'      = 'CFG_TAB'
+			'CLF'      = 'CLF_TAB'
+			'CLF_SDP'  = 'CLF_SDP_TAB'
+			'CLG'      = 'CLG_TAB'
+			'CLK'      = 'CLK_TAB'
+			'CLL'      = 'CLL_TAB'
+			'CLR'      = 'CLR_TAB'
+			'CLT'      = 'CLT_TAB'
+			'CLT_ITM'  = 'CLT_ITM_TAB'
+			'COST'     = 'COST_TAB'
+			'CPN'      = 'CPN_TAB'
+			'DELV'     = 'DELV_TAB'
+			'DEPT'     = 'DEPT_TAB'
+			'DSD'      = 'DSD_TAB'
+			'ECL'      = 'ECL_TAB'
+			'FAM'      = 'FAM_TAB'
+			'KIT'      = 'KIT_TAB'
+			'LOC'      = 'LOC_TAB'
+			'LVL'      = 'LVL_TAB'
+			'MIX'      = 'MIX_TAB'
+			'MOD'      = 'MOD_TAB'
+			'OBJ'      = 'OBJ_TAB'
+			'POS'      = 'POS_TAB'
+			'PRICE'    = 'PRICE_TAB'
+			'PUB'      = 'PUB_TAB'
+			'RES'      = 'RES_TAB'
+			'ROUTE'    = 'ROUTE_TAB'
+			'RPC'      = 'RPC_TAB'
+			'SCAL_ITM' = 'SCL_TAB'
+			'SCAL_NUT' = 'SCL_NUT_TAB'
+			'SCAL_TXT' = 'SCL_TXT_TAB'
+			'SDP'      = 'SDP_TAB'
+			'STD'      = 'STD_TAB'
+			'TAR'      = 'TAR_TAB'
+			'UNT'      = 'UNT_TAB'
+			'VENDOR'   = 'VENDOR_TAB'
 		}
+		$TableToAlias = @{ }
+		foreach ($k in $AliasToTable.Keys) { $TableToAlias[$AliasToTable[$k]] = $k }
 
-		# Cache write (Static, small)
-		if ($CachePath)
-		{
-			try
-			{
-				$cacheOut = [pscustomobject]@{
-					LastUpdated = (Get-Date).ToString('o')
-					SMSVersion  = $SMSVersion
-					Mode	    = 'Static'
-					LoadSignature = $null
-					Results	    = [pscustomobject]@{
-						AliasHash = [pscustomobject]$AliasToTable
-						TableHash = [pscustomobject]$TableToAlias
-					}
-				}
-
-				($cacheOut | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
-			}
-			catch { }
-		}
-
-		return $AliasToTable
+		& $writeCache 'Static' $null $AliasToTable $TableToAlias
+		return (& $publish $AliasToTable $TableToAlias)
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# Dynamic scan mode (out of supported range)
+	# 3b. Dynamic mode (SMS version outside the supported range): read @CREATE lines from the
+	#     <TABLE>_Load.sql files, e.g.  @CREATE('OBJ_TAB', 'OBJ');
 	# ------------------------------------------------------------------------------------------------
 	Write-Host "SMS Version $SMSVersion is outside supported range ($MinSupportedSMSVersion - $MaxSupportedSMSVersion). Scanning SQL files for table/alias map..." -ForegroundColor Yellow
+
+	if (-not $LoadPath -or -not (Test-Path -LiteralPath $LoadPath))
+	{
+		Write-Warning "LoadPath is not available; cannot scan *_Load.sql files. Returning empty hashtable."
+		return (& $publish @{ } @{ })
+	}
 
 	$BaseTables = @(
 		'OBJ', 'POS', 'PRICE', 'COST', 'DSD', 'KIT', 'LOC', 'ALT', 'ECL',
@@ -276,88 +239,31 @@ function Get_Table_Aliases
 		'RES', 'ROUTE', 'VENDOR', 'DELV', 'CLT', 'CLG', 'CLF', 'CLR',
 		'CLL', 'CLT_ITM', 'CLF_SDP', 'STD', 'CFG', 'MOD'
 	)
+	$loadFileNames = @{ }
+	foreach ($bt in $BaseTables) { $loadFileNames["${bt}_Load.sql"] = $true }
 
-	$escapedTables = $BaseTables | Sort-Object Length -Descending | ForEach-Object { [regex]::Escape($_) }
-	$tablesPattern = $escapedTables -join '|'
-	$pattern = "^\s*@CREATE\s*\(\s*['""]?(?<Table>($tablesPattern)(_[A-Z]+))?['""]?\s*,\s*['""]?(?<Alias>[\w-]+)['""]?\s*\);"
-	$regex = [regex]::new($pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-
-	if (-not $LoadPath -or -not (Test-Path $LoadPath))
-	{
-		Write-Warning "LoadPath is not available; cannot scan *_Load.sql files. Returning empty hashtable."
-		$empty = @{ }
-		$script:FunctionResults['Get_Table_Aliases'] = @{ Aliases = @(); AliasHash = $empty; TableHash = @{ } }
-		return $empty
-	}
-
-	$allSqlFiles = Get-ChildItem -LiteralPath $LoadPath -Recurse -Filter '*_Load.sql' -File -ErrorAction SilentlyContinue
+	$tablesPattern = ($BaseTables | Sort-Object Length -Descending | ForEach-Object { [regex]::Escape($_) }) -join '|'
+	$regex = [regex]::new("^\s*@CREATE\s*\(\s*['""]?(?<Table>($tablesPattern)(_[A-Z]+))?['""]?\s*,\s*['""]?(?<Alias>[\w-]+)['""]?\s*\);", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 
 	$AliasToTableLive = @{ }
 	$TableToAliasLive = @{ }
-
-	foreach ($file in $allSqlFiles)
+	foreach ($file in @(Get-ChildItem -LiteralPath $LoadPath -Recurse -Filter '*_Load.sql' -File -ErrorAction SilentlyContinue))
 	{
-		foreach ($baseTable in $BaseTables)
+		if (-not $loadFileNames.ContainsKey($file.Name)) { continue }
+		foreach ($line in @(Get-Content -LiteralPath $file.FullName -ErrorAction SilentlyContinue))
 		{
-			if ($file.Name -ieq "$baseTable`_Load.sql")
+			$lineClean = $line -replace '--.*', '' -replace '/\*.*?\*/', ''
+			if ($lineClean -notmatch '@CREATE') { continue }
+			$match = $regex.Match($lineClean)
+			if ($match.Success -and $match.Groups['Table'].Value -and $match.Groups['Alias'].Value)
 			{
-				$content = Get-Content -LiteralPath $file.FullName -ErrorAction SilentlyContinue
-				if (-not $content) { break }
-
-				foreach ($line in $content)
-				{
-					$lineClean = $line -replace '--.*', '' -replace '/\*.*?\*/', ''
-					if ($lineClean -match '@CREATE')
-					{
-						$match = $regex.Match($lineClean)
-						if ($match.Success)
-						{
-							$table = $match.Groups['Table'].Value
-							$alias = $match.Groups['Alias'].Value
-							if ($table -and $alias)
-							{
-								$AliasToTableLive[$alias] = $table
-								$TableToAliasLive[$table] = $alias
-							}
-						}
-					}
-				}
-				break
+				$AliasToTableLive[$match.Groups['Alias'].Value] = $match.Groups['Table'].Value
+				$TableToAliasLive[$match.Groups['Table'].Value] = $match.Groups['Alias'].Value
 			}
 		}
 	}
+	if ($AliasToTableLive.Count -eq 0) { Write-Warning "No table-alias pairs detected. Using empty hashtable." }
 
-	if ($AliasToTableLive.Count -eq 0)
-	{
-		Write-Warning "No table-alias pairs detected. Using empty hashtable."
-	}
-
-	$script:FunctionResults['Get_Table_Aliases'] = @{
-		Aliases   = @() # intentionally empty (keep cache small)
-		AliasHash = $AliasToTableLive
-		TableHash = $TableToAliasLive
-	}
-
-	# Cache write (Dynamic, small + signature)
-	if ($CachePath)
-	{
-		try
-		{
-			$cacheOut = [pscustomobject]@{
-				LastUpdated = (Get-Date).ToString('o')
-				SMSVersion  = $SMSVersion
-				Mode	    = 'Dynamic'
-				LoadSignature = $loadSignature
-				Results	    = [pscustomobject]@{
-					AliasHash = [pscustomobject]$AliasToTableLive
-					TableHash = [pscustomobject]$TableToAliasLive
-				}
-			}
-
-			($cacheOut | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
-		}
-		catch { }
-	}
-
-	return $AliasToTableLive
+	& $writeCache 'Dynamic' (& $getLoadSignature) $AliasToTableLive $TableToAliasLive
+	return (& $publish $AliasToTableLive $TableToAliasLive)
 }

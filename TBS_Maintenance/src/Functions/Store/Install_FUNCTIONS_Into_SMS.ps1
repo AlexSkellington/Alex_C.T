@@ -8,7 +8,7 @@
 #
 # Parameters:
 #   - StoreNumber  [string]: kept for signature compatibility (not used in content)
-#   - OfficePath   [string]: Office folder (default: $script:BasePath, then $BasePath)
+#   - OfficePath   [string]: Office folder (default: $script:OfficePath, else <BasePath>\Office)
 #   - Silent       [switch]: suppress Write_Log output
 #
 # Writes:
@@ -21,10 +21,8 @@ function Install_FUNCTIONS_Into_SMS
 	param (
 		[Parameter(Mandatory = $false)]
 		[string]$StoreNumber,
-		# kept for compatibility / future use
 		[Parameter(Mandatory = $false)]
 		[string]$OfficePath,
-		# if not provided, we try common script-scoped fallbacks
 		[switch]$Silent
 	)
 
@@ -38,7 +36,8 @@ function Install_FUNCTIONS_Into_SMS
 
 	& $writeLog "`r`n==================== Starting Install_FUNCTIONS_Into_SMS ====================`r`n" "blue"
 
-	# Registered macro marker ([?][?]) as a safe char literal; we always inject via $($reg) to avoid encoding surprises.
+	# Registered-sign macro marker (U+00AE) built from its code point so this source stays ASCII;
+	# the files are written as Windows-1252, where it is the single byte 0xAE SMS expects.
 	$reg = [char]0x00AE
 
 	# --------------------------------------------------------------------------------------------------------------
@@ -46,8 +45,9 @@ function Install_FUNCTIONS_Into_SMS
 	# --------------------------------------------------------------------------------------------------------------
 	if (-not $OfficePath -or [string]::IsNullOrWhiteSpace($OfficePath))
 	{
-		if ($script:BasePath) { $OfficePath = $script:BasePath } # Prefer script-scoped base path
-		elseif ($BasePath) { $OfficePath = $BasePath } # Fallback to legacy/global base path
+		# (the storeman ROOT is not the Office folder - before v2.7.0 this fell back to BasePath itself)
+		if ($script:OfficePath) { $OfficePath = $script:OfficePath }
+		elseif ($script:BasePath) { $OfficePath = Join-Path $script:BasePath 'Office' }
 	}
 	if (-not $OfficePath -or -not (Test-Path -LiteralPath $OfficePath))
 	{
@@ -55,7 +55,7 @@ function Install_FUNCTIONS_Into_SMS
 		return
 	}
 
-	# --- Destination paths (always three files) ---
+	# --- Destination paths ---
 	$DeploySysPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_SYS.sql"
 	$DeployMultiFctPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_MULTI_FCT.sqm"
 
@@ -223,8 +223,8 @@ ORDER BY F1000,F1063;
 "@
 
 	# ===============================================================================================================
-	#                                                  WRITE FILES (Always three)
-	#   CHANGE: No nested helper; inline: normalize to CRLF [?][?][?] write ANSI [?][?][?] clear attributes [?][?][?] log.
+	#                                                  WRITE FILES
+	#   normalize to CRLF -> write ANSI (no BOM) -> clear read-only/hidden attributes -> log
 	# ===============================================================================================================
 
 	# -- DEPLOY_SYS.sql --
@@ -250,7 +250,7 @@ ORDER BY F1000,F1063;
 	}
 	catch
 	{
-		& $writeLog "Failed to write 'DEPLOY_FCT.sqm'. Error: $_" "red"
+		& $writeLog "Failed to write 'DEPLOY_MULTI_FCT.sqm'. Error: $_" "red"
 	}
 
 	& $writeLog "`r`n==================== Install_FUNCTIONS_Into_SMS Completed ====================`r`n" "blue"

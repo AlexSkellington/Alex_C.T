@@ -188,8 +188,7 @@ function Insert_Test_Item
 	}
 
 	# ----------------------------------------------------------------------------------------------
-	# Centralized SQL runner - ALWAYS use this for queries below so fallback is automatic.
-	# (CHANGE: kept as a scriptblock variable - not a nested *function* - to honor 'no nested functions')
+	# SQL runner for every query below (connection-string or -ServerInstance path, chosen above)
 	# ----------------------------------------------------------------------------------------------
 	$RunSql = {
 		param ([Parameter(Mandatory = $true)]
@@ -210,107 +209,57 @@ function Insert_Test_Item
 	}
 
 	# ----------------------------------------------------------------------------------------------
-	# Business logic: choose appropriate PLU (prefer the "test" one), then delete + insert rows
-	# (CHANGE: removed nested helper function; inlined the PLU test logic 3x for clarity/compliance)
+	# Choose the test PLU: the first candidate that is unused or already a test item
+	# (description contains "test" / "tecnica"). A candidate whose lookup FAILS is skipped -
+	# never assume a PLU is free when we could not check it (it may be a real item).
 	# ----------------------------------------------------------------------------------------------
 	$now = Get-Date
 	$nowFull = $now.ToString("yyyy-MM-dd HH:mm:ss.fff")
 	$nowDate = $now.ToString("yyyy-MM-dd 00:00:00.000")
 
-	$preferredPLU = '0020077700000'
-	$alternativePLU = '0020777700000'
-	$fallbackPLU = '0027777700000'
-
 	$PLU = $null
-	$TestF267 = 777
-	$doInsert = $false
-
-	# ---- Check preferred PLU (INLINE)
-	$okUse = $false
-	try
+	$TestF267 = $null
+	foreach ($candidate in @(
+			@{ Plu = '0020077700000'; F267 = 777; Kind = 'preferred' },
+			@{ Plu = '0020777700000'; F267 = 7777; Kind = 'alternative' },
+			@{ Plu = '0027777700000'; F267 = 77777; Kind = 'fallback' }))
 	{
-		$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$preferredPLU'"
-		$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$preferredPLU'"
-		$posDesc = if ($pos) { [string]$pos.F02 }
-		else { "" }
-		$objDesc = if ($obj) { [string]$obj.F29 }
-		else { "" }
-		$okUse = ($posDesc -match '(?i)test|tecnica') -or
-		($objDesc -match '(?i)test|tecnica') -or
-		([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
-	}
-	catch { $okUse = $true } # conservative default if lookups fail
-	if ($okUse)
-	{
-		$PLU = $preferredPLU
-		$TestF267 = 777
-		$doInsert = $true
-		& $writeLog "Using preferred PLU: $PLU with F267: $TestF267" "green"
-	}
-
-	# ---- If not chosen yet, check alternative PLU (INLINE)
-	if (-not $doInsert)
-	{
-		$okUse = $false
 		try
 		{
-			$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$alternativePLU'"
-			$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$alternativePLU'"
-			$posDesc = if ($pos) { [string]$pos.F02 }
-			else { "" }
-			$objDesc = if ($obj) { [string]$obj.F29 }
-			else { "" }
-			$okUse = ($posDesc -match '(?i)test|tecnica') -or
-			($objDesc -match '(?i)test|tecnica') -or
-			([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
+			$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$($candidate.Plu)'"
+			$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$($candidate.Plu)'"
+			$posDesc = if ($pos) { [string]$pos.F02 } else { "" }
+			$objDesc = if ($obj) { [string]$obj.F29 } else { "" }
+			$usable = ($posDesc -match '(?i)test|tecnica') -or ($objDesc -match '(?i)test|tecnica') -or
+				([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
 		}
-		catch { $okUse = $true }
-		if ($okUse)
+		catch
 		{
-			$PLU = $alternativePLU
-			$TestF267 = 7777
-			$doInsert = $true
-			& $writeLog "Using alternative PLU: $PLU with F267: $TestF267" "green"
+			& $writeLog ("Could not check PLU {0}: {1} - skipping it." -f $candidate.Plu, $_.Exception.Message) "yellow"
+			$usable = $false
+		}
+		if ($usable)
+		{
+			$PLU = $candidate.Plu
+			$TestF267 = $candidate.F267
+			& $writeLog ("Using {0} PLU: {1} with F267: {2}" -f $candidate.Kind, $PLU, $TestF267) "green"
+			break
 		}
 	}
-
-	# ---- If still not chosen, check fallback PLU (INLINE)
-	if (-not $doInsert)
-	{
-		$okUse = $false
-		try
-		{
-			$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$fallbackPLU'"
-			$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$fallbackPLU'"
-			$posDesc = if ($pos) { [string]$pos.F02 }
-			else { "" }
-			$objDesc = if ($obj) { [string]$obj.F29 }
-			else { "" }
-			$okUse = ($posDesc -match '(?i)test|tecnica') -or
-			($objDesc -match '(?i)test|tecnica') -or
-			([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
-		}
-		catch { $okUse = $true }
-		if ($okUse)
-		{
-			$PLU = $fallbackPLU
-			$TestF267 = 77777
-			$doInsert = $true
-			& $writeLog "Using fallback PLU: $PLU with F267: $TestF267" "green"
-		}
-	}
+	$doInsert = [bool]$PLU
 
 	if ($doInsert -and $PLU)
 	{
 		& $writeLog "Deleting existing records for PLU: $PLU and F267: $TestF267" "yellow"
 
-		# --- Always delete old rows for the chosen PLU/F267 to keep inserts deterministic
+		# --- Delete old rows for the chosen PLU/F267 so the inserts are deterministic. The scale
+		#     text row is only removed when no other item uses that F267 (it could be a real one).
 		$deleteQueries = @(
 			"DELETE FROM SCL_TAB     WHERE F01 = '$PLU'",
 			"DELETE FROM OBJ_TAB     WHERE F01 = '$PLU'",
 			"DELETE FROM POS_TAB     WHERE F01 = '$PLU'",
 			"DELETE FROM PRICE_TAB   WHERE F01 = '$PLU'",
-			"DELETE FROM SCL_TXT_TAB WHERE F267 = $TestF267"
+			"DELETE FROM SCL_TXT_TAB WHERE F267 = $TestF267 AND F267 NOT IN (SELECT F267 FROM SCL_TAB WHERE F01 <> '$PLU' AND F267 IS NOT NULL)"
 		)
 		foreach ($q in $deleteQueries)
 		{

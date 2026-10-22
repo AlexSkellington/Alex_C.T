@@ -125,10 +125,8 @@ function Get_All_Lanes_Database_Info
 		# If cached already in memory, skip
 		if ($LaneDatabaseInfo.ContainsKey($laneNumber)) { continue }
 
-		# Skip unwanted lanes for full mode (same logic as before)
-		# IMPORTANT: If the user explicitly requested a lane, do NOT skip it.
-		if (-not $RequestedLane -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
-		if ($RequestedLane -and $laneNumber -ne $RequestedLane -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
+		# 8xx (scales) and 9xx (server / backoffices) are not lanes - unless explicitly requested
+		if ($laneNumber -ne $RequestedLane -and $laneNumber -match '^(8|9)') { continue }
 
 		$machineName = $LaneNumToMachineName[$laneNumber]
 		if (-not $machineName) { continue }
@@ -180,8 +178,9 @@ function Get_All_Lanes_Database_Info
 
 		if (-not $content) { continue }
 
-		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
-		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
+		# First line only: a second DBNAME= line would turn the value into an array
+		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' } | Select-Object -First 1
+		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' } | Select-Object -First 1
 
 		if ($dbNameLine)
 		{

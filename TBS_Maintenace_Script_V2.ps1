@@ -2134,9 +2134,10 @@ RECONFIGURE;
 	)
 
 	$LaneSQLFiltered = ""
-	$matches = [regex]::Matches($LaneSQLScript, $sectionPattern)
+	# (not $matches - that is PowerShell's automatic -match result variable)
+	$sectionMatches = [regex]::Matches($LaneSQLScript, $sectionPattern)
 
-	foreach ($match in $matches)
+	foreach ($match in $sectionMatches)
 	{
 		$sectionName = $match.Groups['SectionName'].Value.Trim()
 		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
@@ -2569,10 +2570,8 @@ function Get_All_Lanes_Database_Info
 		# If cached already in memory, skip
 		if ($LaneDatabaseInfo.ContainsKey($laneNumber)) { continue }
 
-		# Skip unwanted lanes for full mode (same logic as before)
-		# IMPORTANT: If the user explicitly requested a lane, do NOT skip it.
-		if (-not $RequestedLane -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
-		if ($RequestedLane -and $laneNumber -ne $RequestedLane -and ($laneNumber -match '^(8|9)' -or $laneNumber -eq '901' -or $laneNumber -eq '999')) { continue }
+		# 8xx (scales) and 9xx (server / backoffices) are not lanes - unless explicitly requested
+		if ($laneNumber -ne $RequestedLane -and $laneNumber -match '^(8|9)') { continue }
 
 		$machineName = $LaneNumToMachineName[$laneNumber]
 		if (-not $machineName) { continue }
@@ -2624,8 +2623,9 @@ function Get_All_Lanes_Database_Info
 
 		if (-not $content) { continue }
 
-		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
-		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
+		# First line only: a second DBNAME= line would turn the value into an array
+		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' } | Select-Object -First 1
+		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' } | Select-Object -First 1
 
 		if ($dbNameLine)
 		{
@@ -3283,14 +3283,17 @@ function Get_Store_And_Database_Info
 #   - RefreshCache  [switch]: ignore in-memory/file cache and rebuild
 #
 # Variables:
-#   - $script:FunctionResults: stores the alias/table hashes (Get_Table_Aliases bucket)
+#   - $script:FunctionResults['Get_Table_Aliases']: @{ Aliases; AliasHash; TableHash }
+#   - $script:FunctionResults['SMSVersionFull']: decides static vs dynamic mode
 #   - $LoadPath / $OfficePath: location of the Load SQL files (dynamic mode)
 #
 # Returns:
 #   Hashtable alias -> table name.
 #
 # Writes:
-#   - Setup_Files\Get_Table_Aliases.txt (JSON cache: AliasHash + TableHash only)
+#   - Setup_Files\Get_Table_Aliases.txt (JSON cache: mode, SMS version, Load-file signature,
+#     AliasHash + TableHash). The file cache is reused only while the SMS version and (dynamic
+#     mode) the *_Load.sql signature still match.
 # ===================================================================================================
 
 function Get_Table_Aliases
@@ -3299,248 +3302,208 @@ function Get_Table_Aliases
 		[switch]$RefreshCache
 	)
 
-	# ------------------------------------------------------------------------------------------------
-	# Per-function cache
-	# ------------------------------------------------------------------------------------------------
 	$CachePath = Join-Path $script:SetupFiles 'Get_Table_Aliases.txt'
 
-	# Reuse in-memory alias map first
+	# PSCustomObject (from JSON) -> hashtable, so .ContainsKey() works for the callers
+	$toHash = {
+		param ($o)
+		$h = @{ }
+		if ($o -is [hashtable]) { return $o }
+		if ($o -and $o.PSObject -and $o.PSObject.Properties) { foreach ($p in $o.PSObject.Properties) { $h[$p.Name] = $p.Value } }
+		return $h
+	}
+	$publish = {
+		param ($AliasHash, $TableHash)
+		$script:FunctionResults['Get_Table_Aliases'] = @{ Aliases = @(); AliasHash = $AliasHash; TableHash = $TableHash }
+		return $AliasHash
+	}
+
+	# ------------------------------------------------------------------------------------------------
+	# 1. In-memory (this launch)
+	# ------------------------------------------------------------------------------------------------
 	if (-not $RefreshCache)
 	{
 		try
 		{
-			if ($script:FunctionResults.ContainsKey('Get_Table_Aliases') -and $script:FunctionResults['Get_Table_Aliases'])
+			$aliasData = $script:FunctionResults['Get_Table_Aliases']
+			if ($aliasData -and $aliasData.AliasHash)
 			{
-				$aliasData = $script:FunctionResults['Get_Table_Aliases']
 				if ($aliasData.AliasHash -is [hashtable]) { return $aliasData.AliasHash }
-				if ($aliasData.AliasHash -and $aliasData.AliasHash.PSObject -and $aliasData.AliasHash.PSObject.Properties)
-				{
-					$aliasHash = @{ }
-					foreach ($p in $aliasData.AliasHash.PSObject.Properties) { $aliasHash[$p.Name] = $p.Value }
-					$tableHash = @{ }
-					if ($aliasData.TableHash -and $aliasData.TableHash.PSObject -and $aliasData.TableHash.PSObject.Properties)
-					{
-						foreach ($p in $aliasData.TableHash.PSObject.Properties) { $tableHash[$p.Name] = $p.Value }
-					}
-					$script:FunctionResults['Get_Table_Aliases'] = @{
-						Aliases   = @()
-						AliasHash = $aliasHash
-						TableHash = $tableHash
-					}
-					return $aliasHash
-				}
+				return (& $publish (& $toHash $aliasData.AliasHash) (& $toHash $aliasData.TableHash))
 			}
 		}
 		catch { }
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# Version detection (relies on Get_Store_And_Database_Info setting SMSVersionFull)
+	# SMS version -> static (supported range) or dynamic mode
 	# ------------------------------------------------------------------------------------------------
 	$MinSupportedSMSVersion = "3.3.0.0"
 	$MaxSupportedSMSVersion = "3.6.1.8"
 
-	$SMSVersionRaw = $script:FunctionResults['SMSVersionFull']
-	$SMSVersion = $SMSVersionRaw
-	if ($SMSVersion -match '([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)')
-	{
-		$SMSVersion = $Matches[1]
-	}
-	else
-	{
-		$SMSVersion = "0.0.0.0"
-	}
+	$SMSVersion = "0.0.0.0"
+	if ([string]$script:FunctionResults['SMSVersionFull'] -match '([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)') { $SMSVersion = $Matches[1] }
+	$versionKnown = ($SMSVersion -ne "0.0.0.0")
 
-	# Version range check
 	$versionInRange = $false
 	try
 	{
 		$vTest = [version]$SMSVersion
-		$vMin = [version]$MinSupportedSMSVersion
-		$vMax = [version]$MaxSupportedSMSVersion
-		if ($vTest -ge $vMin -and $vTest -le $vMax) { $versionInRange = $true }
+		$versionInRange = ($vTest -ge [version]$MinSupportedSMSVersion -and $vTest -le [version]$MaxSupportedSMSVersion)
 	}
 	catch { $versionInRange = $false }
 
-	# ------------------------------------------------------------------------------------------------
-	# Ensure LoadPath exists (dynamic mode only)
-	# ------------------------------------------------------------------------------------------------
-	if (-not $LoadPath -or [string]::IsNullOrWhiteSpace($LoadPath))
+	if ([string]::IsNullOrWhiteSpace($LoadPath))
 	{
-		try
-		{
-			if ($OfficePath -and (Test-Path $OfficePath)) { $LoadPath = Join-Path $OfficePath 'Load' }
-		}
+		try { if ($OfficePath -and (Test-Path -LiteralPath $OfficePath)) { $LoadPath = Join-Path $OfficePath 'Load' } }
 		catch { }
 	}
 
+	# Signature of the *_Load.sql files (dynamic mode cache validation)
+	$getLoadSignature = {
+		try
+		{
+			if (-not $LoadPath -or -not (Test-Path -LiteralPath $LoadPath)) { return $null }
+			$files = @(Get-ChildItem -LiteralPath $LoadPath -Recurse -Filter '*_Load.sql' -File -ErrorAction SilentlyContinue)
+			$newest = $null
+			$total = [int64]0
+			foreach ($f in $files)
+			{
+				if (-not $newest -or $f.LastWriteTimeUtc -gt $newest) { $newest = $f.LastWriteTimeUtc }
+				$total += $f.Length
+			}
+			return [pscustomobject]@{
+				Root       = [string]$LoadPath
+				FileCount  = [int]$files.Count
+				NewestUtc  = if ($newest) { $newest.ToString('o') } else { "" }
+				TotalBytes = [int64]$total
+			}
+		}
+		catch { return $null }
+	}
+
 	# ------------------------------------------------------------------------------------------------
+	# 2. File cache (only while it still describes this store's SMS version / Load files)
 	# ------------------------------------------------------------------------------------------------
-	# Try load cache file (small)
-	# ------------------------------------------------------------------------------------------------
-	if ((-not $RefreshCache) -and $CachePath -and (Test-Path $CachePath))
+	if ((-not $RefreshCache) -and (Test-Path -LiteralPath $CachePath))
 	{
 		try
 		{
 			$raw = Get-Content -LiteralPath $CachePath -Raw -ErrorAction Stop
-			if (-not [string]::IsNullOrWhiteSpace($raw))
+			$cacheObj = $null
+			if (-not [string]::IsNullOrWhiteSpace($raw)) { $cacheObj = $raw | ConvertFrom-Json -ErrorAction Stop }
+			if ($cacheObj -and $cacheObj.Results)
 			{
-				$cacheObj = $raw | ConvertFrom-Json -ErrorAction Stop
-				if ($cacheObj -and $cacheObj.Results)
+				$cacheValid = $true
+				# A known SMS version that differs from the cached one means an upgrade: rebuild
+				if ($versionKnown -and $cacheObj.SMSVersion -and ([string]$cacheObj.SMSVersion -ne $SMSVersion)) { $cacheValid = $false }
+				if ($cacheValid -and [string]$cacheObj.Mode -eq 'Dynamic' -and $cacheObj.LoadSignature)
 				{
-					# Rebuild AliasHash hashtable (so .ContainsKey() works)
-					$AliasHash = @{ }
-					if ($cacheObj.Results.AliasHash -and $cacheObj.Results.AliasHash.PSObject -and $cacheObj.Results.AliasHash.PSObject.Properties)
+					$sig = & $getLoadSignature
+					if ($sig -and (
+							[int]$cacheObj.LoadSignature.FileCount -ne $sig.FileCount -or
+							[string]$cacheObj.LoadSignature.NewestUtc -ne $sig.NewestUtc -or
+							[int64]$cacheObj.LoadSignature.TotalBytes -ne $sig.TotalBytes))
 					{
-						foreach ($p in $cacheObj.Results.AliasHash.PSObject.Properties) { $AliasHash[$p.Name] = $p.Value }
+						$cacheValid = $false
 					}
-
-					# Rebuild TableHash hashtable
-					$TableHash = @{ }
-					if ($cacheObj.Results.TableHash -and $cacheObj.Results.TableHash.PSObject -and $cacheObj.Results.TableHash.PSObject.Properties)
-					{
-						foreach ($p in $cacheObj.Results.TableHash.PSObject.Properties) { $TableHash[$p.Name] = $p.Value }
-					}
-
-					$script:FunctionResults['Get_Table_Aliases'] = @{
-						Aliases   = @()
-						AliasHash = $AliasHash
-						TableHash = $TableHash
-					}
-
-					return $AliasHash
+				}
+				if ($cacheValid)
+				{
+					return (& $publish (& $toHash $cacheObj.Results.AliasHash) (& $toHash $cacheObj.Results.TableHash))
 				}
 			}
 		}
 		catch
 		{
-			# Cache errors fall through to rebuild
+			# unreadable cache: rebuild
 		}
 	}
 
-	# ------------------------------------------------------------------------------------------------
-	# Compute signature for *_Load.sql files (used only when dynamic rebuild is needed)
-	# ------------------------------------------------------------------------------------------------
-	$loadSignature = $null
-	try
-	{
-		if ($LoadPath -and (Test-Path $LoadPath))
+	$writeCache = {
+		param ([string]$Mode, $Signature, $AliasHash, $TableHash)
+		try
 		{
-			$files = Get-ChildItem -LiteralPath $LoadPath -Recurse -Filter '*_Load.sql' -File -ErrorAction SilentlyContinue
-			$fileCount = 0
-			$newestUtc = $null
-			$totalBytes = 0
-
-			if ($files)
-			{
-				$fileCount = $files.Count
-				$newestUtc = ($files | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).LastWriteTimeUtc
-				$totalBytes = [int64](($files | Measure-Object Length -Sum).Sum)
+			$cacheOut = [pscustomobject]@{
+				LastUpdated   = (Get-Date).ToString('o')
+				SMSVersion    = $SMSVersion
+				Mode          = $Mode
+				LoadSignature = $Signature
+				Results       = [pscustomobject]@{
+					AliasHash = [pscustomobject]$AliasHash
+					TableHash = [pscustomobject]$TableHash
+				}
 			}
-
-			$loadSignature = [pscustomobject]@{
-				Root = [string]$LoadPath
-				FileCount = [int]$fileCount
-				NewestUtc = if ($newestUtc) { $newestUtc.ToString('o') } else { "" }
-				TotalBytes = [int64]$totalBytes
-			}
+			($cacheOut | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
 		}
-	}
-	catch { $loadSignature = $null }
-
-	# ------------------------------------------------------------------------------------------------
-	# Hardcoded alias [?][?][?] table mapping
-	# ------------------------------------------------------------------------------------------------
-	$AliasToTable = @{
-		'ALT'	   = 'ALT_TAB'
-		'BIO'	   = 'BIO_TAB'
-		'BTL'	   = 'BTL_TAB'
-		'CAT'	   = 'CAT_TAB'
-		'CFG'	   = 'CFG_TAB'
-		'CLF'	   = 'CLF_TAB'
-		'CLF_SDP'  = 'CLF_SDP_TAB'
-		'CLG'	   = 'CLG_TAB'
-		'CLK'	   = 'CLK_TAB'
-		'CLL'	   = 'CLL_TAB'
-		'CLR'	   = 'CLR_TAB'
-		'CLT'	   = 'CLT_TAB'
-		'CLT_ITM'  = 'CLT_ITM_TAB'
-		'COST'	   = 'COST_TAB'
-		'CPN'	   = 'CPN_TAB'
-		'DELV'	   = 'DELV_TAB'
-		'DEPT'	   = 'DEPT_TAB'
-		'DSD'	   = 'DSD_TAB'
-		'ECL'	   = 'ECL_TAB'
-		'FAM'	   = 'FAM_TAB'
-		'KIT'	   = 'KIT_TAB'
-		'LOC'	   = 'LOC_TAB'
-		'LVL'	   = 'LVL_TAB'
-		'MIX'	   = 'MIX_TAB'
-		'MOD'	   = 'MOD_TAB'
-		'OBJ'	   = 'OBJ_TAB'
-		'POS'	   = 'POS_TAB'
-		'PRICE'    = 'PRICE_TAB'
-		'PUB'	   = 'PUB_TAB'
-		'RES'	   = 'RES_TAB'
-		'ROUTE'    = 'ROUTE_TAB'
-		'RPC'	   = 'RPC_TAB'
-		'SCAL_ITM' = 'SCL_TAB'
-		'SCAL_NUT' = 'SCL_NUT_TAB'
-		'SCAL_TXT' = 'SCL_TXT_TAB'
-		'SDP'	   = 'SDP_TAB'
-		'STD'	   = 'STD_TAB'
-		'TAR'	   = 'TAR_TAB'
-		'UNT'	   = 'UNT_TAB'
-		'VENDOR'   = 'VENDOR_TAB'
-	}
-
-	# Build reverse (table [?][?][?] alias)
-	$TableToAlias = @{ }
-	foreach ($k in $AliasToTable.Keys)
-	{
-		$TableToAlias[$AliasToTable[$k]] = $k
+		catch { }
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# Static mode (supported range)
+	# 3a. Static mode (supported SMS range): hardcoded alias -> table map
 	# ------------------------------------------------------------------------------------------------
 	if ($versionInRange)
 	{
-		# Store only what matters
-		$script:FunctionResults['Get_Table_Aliases'] = @{
-			Aliases   = @() # intentionally empty (no @CREATE clutter)
-			AliasHash = $AliasToTable
-			TableHash = $TableToAlias
+		$AliasToTable = @{
+			'ALT'      = 'ALT_TAB'
+			'BIO'      = 'BIO_TAB'
+			'BTL'      = 'BTL_TAB'
+			'CAT'      = 'CAT_TAB'
+			'CFG'      = 'CFG_TAB'
+			'CLF'      = 'CLF_TAB'
+			'CLF_SDP'  = 'CLF_SDP_TAB'
+			'CLG'      = 'CLG_TAB'
+			'CLK'      = 'CLK_TAB'
+			'CLL'      = 'CLL_TAB'
+			'CLR'      = 'CLR_TAB'
+			'CLT'      = 'CLT_TAB'
+			'CLT_ITM'  = 'CLT_ITM_TAB'
+			'COST'     = 'COST_TAB'
+			'CPN'      = 'CPN_TAB'
+			'DELV'     = 'DELV_TAB'
+			'DEPT'     = 'DEPT_TAB'
+			'DSD'      = 'DSD_TAB'
+			'ECL'      = 'ECL_TAB'
+			'FAM'      = 'FAM_TAB'
+			'KIT'      = 'KIT_TAB'
+			'LOC'      = 'LOC_TAB'
+			'LVL'      = 'LVL_TAB'
+			'MIX'      = 'MIX_TAB'
+			'MOD'      = 'MOD_TAB'
+			'OBJ'      = 'OBJ_TAB'
+			'POS'      = 'POS_TAB'
+			'PRICE'    = 'PRICE_TAB'
+			'PUB'      = 'PUB_TAB'
+			'RES'      = 'RES_TAB'
+			'ROUTE'    = 'ROUTE_TAB'
+			'RPC'      = 'RPC_TAB'
+			'SCAL_ITM' = 'SCL_TAB'
+			'SCAL_NUT' = 'SCL_NUT_TAB'
+			'SCAL_TXT' = 'SCL_TXT_TAB'
+			'SDP'      = 'SDP_TAB'
+			'STD'      = 'STD_TAB'
+			'TAR'      = 'TAR_TAB'
+			'UNT'      = 'UNT_TAB'
+			'VENDOR'   = 'VENDOR_TAB'
 		}
+		$TableToAlias = @{ }
+		foreach ($k in $AliasToTable.Keys) { $TableToAlias[$AliasToTable[$k]] = $k }
 
-		# Cache write (Static, small)
-		if ($CachePath)
-		{
-			try
-			{
-				$cacheOut = [pscustomobject]@{
-					LastUpdated = (Get-Date).ToString('o')
-					SMSVersion  = $SMSVersion
-					Mode	    = 'Static'
-					LoadSignature = $null
-					Results	    = [pscustomobject]@{
-						AliasHash = [pscustomobject]$AliasToTable
-						TableHash = [pscustomobject]$TableToAlias
-					}
-				}
-
-				($cacheOut | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
-			}
-			catch { }
-		}
-
-		return $AliasToTable
+		& $writeCache 'Static' $null $AliasToTable $TableToAlias
+		return (& $publish $AliasToTable $TableToAlias)
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# Dynamic scan mode (out of supported range)
+	# 3b. Dynamic mode (SMS version outside the supported range): read @CREATE lines from the
+	#     <TABLE>_Load.sql files, e.g.  @CREATE('OBJ_TAB', 'OBJ');
 	# ------------------------------------------------------------------------------------------------
 	Write-Host "SMS Version $SMSVersion is outside supported range ($MinSupportedSMSVersion - $MaxSupportedSMSVersion). Scanning SQL files for table/alias map..." -ForegroundColor Yellow
+
+	if (-not $LoadPath -or -not (Test-Path -LiteralPath $LoadPath))
+	{
+		Write-Warning "LoadPath is not available; cannot scan *_Load.sql files. Returning empty hashtable."
+		return (& $publish @{ } @{ })
+	}
 
 	$BaseTables = @(
 		'OBJ', 'POS', 'PRICE', 'COST', 'DSD', 'KIT', 'LOC', 'ALT', 'ECL',
@@ -3549,90 +3512,33 @@ function Get_Table_Aliases
 		'RES', 'ROUTE', 'VENDOR', 'DELV', 'CLT', 'CLG', 'CLF', 'CLR',
 		'CLL', 'CLT_ITM', 'CLF_SDP', 'STD', 'CFG', 'MOD'
 	)
+	$loadFileNames = @{ }
+	foreach ($bt in $BaseTables) { $loadFileNames["${bt}_Load.sql"] = $true }
 
-	$escapedTables = $BaseTables | Sort-Object Length -Descending | ForEach-Object { [regex]::Escape($_) }
-	$tablesPattern = $escapedTables -join '|'
-	$pattern = "^\s*@CREATE\s*\(\s*['""]?(?<Table>($tablesPattern)(_[A-Z]+))?['""]?\s*,\s*['""]?(?<Alias>[\w-]+)['""]?\s*\);"
-	$regex = [regex]::new($pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-
-	if (-not $LoadPath -or -not (Test-Path $LoadPath))
-	{
-		Write-Warning "LoadPath is not available; cannot scan *_Load.sql files. Returning empty hashtable."
-		$empty = @{ }
-		$script:FunctionResults['Get_Table_Aliases'] = @{ Aliases = @(); AliasHash = $empty; TableHash = @{ } }
-		return $empty
-	}
-
-	$allSqlFiles = Get-ChildItem -LiteralPath $LoadPath -Recurse -Filter '*_Load.sql' -File -ErrorAction SilentlyContinue
+	$tablesPattern = ($BaseTables | Sort-Object Length -Descending | ForEach-Object { [regex]::Escape($_) }) -join '|'
+	$regex = [regex]::new("^\s*@CREATE\s*\(\s*['""]?(?<Table>($tablesPattern)(_[A-Z]+))?['""]?\s*,\s*['""]?(?<Alias>[\w-]+)['""]?\s*\);", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 
 	$AliasToTableLive = @{ }
 	$TableToAliasLive = @{ }
-
-	foreach ($file in $allSqlFiles)
+	foreach ($file in @(Get-ChildItem -LiteralPath $LoadPath -Recurse -Filter '*_Load.sql' -File -ErrorAction SilentlyContinue))
 	{
-		foreach ($baseTable in $BaseTables)
+		if (-not $loadFileNames.ContainsKey($file.Name)) { continue }
+		foreach ($line in @(Get-Content -LiteralPath $file.FullName -ErrorAction SilentlyContinue))
 		{
-			if ($file.Name -ieq "$baseTable`_Load.sql")
+			$lineClean = $line -replace '--.*', '' -replace '/\*.*?\*/', ''
+			if ($lineClean -notmatch '@CREATE') { continue }
+			$match = $regex.Match($lineClean)
+			if ($match.Success -and $match.Groups['Table'].Value -and $match.Groups['Alias'].Value)
 			{
-				$content = Get-Content -LiteralPath $file.FullName -ErrorAction SilentlyContinue
-				if (-not $content) { break }
-
-				foreach ($line in $content)
-				{
-					$lineClean = $line -replace '--.*', '' -replace '/\*.*?\*/', ''
-					if ($lineClean -match '@CREATE')
-					{
-						$match = $regex.Match($lineClean)
-						if ($match.Success)
-						{
-							$table = $match.Groups['Table'].Value
-							$alias = $match.Groups['Alias'].Value
-							if ($table -and $alias)
-							{
-								$AliasToTableLive[$alias] = $table
-								$TableToAliasLive[$table] = $alias
-							}
-						}
-					}
-				}
-				break
+				$AliasToTableLive[$match.Groups['Alias'].Value] = $match.Groups['Table'].Value
+				$TableToAliasLive[$match.Groups['Table'].Value] = $match.Groups['Alias'].Value
 			}
 		}
 	}
+	if ($AliasToTableLive.Count -eq 0) { Write-Warning "No table-alias pairs detected. Using empty hashtable." }
 
-	if ($AliasToTableLive.Count -eq 0)
-	{
-		Write-Warning "No table-alias pairs detected. Using empty hashtable."
-	}
-
-	$script:FunctionResults['Get_Table_Aliases'] = @{
-		Aliases   = @() # intentionally empty (keep cache small)
-		AliasHash = $AliasToTableLive
-		TableHash = $TableToAliasLive
-	}
-
-	# Cache write (Dynamic, small + signature)
-	if ($CachePath)
-	{
-		try
-		{
-			$cacheOut = [pscustomobject]@{
-				LastUpdated = (Get-Date).ToString('o')
-				SMSVersion  = $SMSVersion
-				Mode	    = 'Dynamic'
-				LoadSignature = $loadSignature
-				Results	    = [pscustomobject]@{
-					AliasHash = [pscustomobject]$AliasToTableLive
-					TableHash = [pscustomobject]$TableToAliasLive
-				}
-			}
-
-			($cacheOut | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $CachePath -Encoding UTF8 -Force
-		}
-		catch { }
-	}
-
-	return $AliasToTableLive
+	& $writeCache 'Dynamic' (& $getLoadSignature) $AliasToTableLive $TableToAliasLive
+	return (& $publish $AliasToTableLive $TableToAliasLive)
 }
 
 # ===================================================================================================
@@ -3825,8 +3731,7 @@ function Insert_Test_Item
 	}
 
 	# ----------------------------------------------------------------------------------------------
-	# Centralized SQL runner - ALWAYS use this for queries below so fallback is automatic.
-	# (CHANGE: kept as a scriptblock variable - not a nested *function* - to honor 'no nested functions')
+	# SQL runner for every query below (connection-string or -ServerInstance path, chosen above)
 	# ----------------------------------------------------------------------------------------------
 	$RunSql = {
 		param ([Parameter(Mandatory = $true)]
@@ -3847,107 +3752,57 @@ function Insert_Test_Item
 	}
 
 	# ----------------------------------------------------------------------------------------------
-	# Business logic: choose appropriate PLU (prefer the "test" one), then delete + insert rows
-	# (CHANGE: removed nested helper function; inlined the PLU test logic 3x for clarity/compliance)
+	# Choose the test PLU: the first candidate that is unused or already a test item
+	# (description contains "test" / "tecnica"). A candidate whose lookup FAILS is skipped -
+	# never assume a PLU is free when we could not check it (it may be a real item).
 	# ----------------------------------------------------------------------------------------------
 	$now = Get-Date
 	$nowFull = $now.ToString("yyyy-MM-dd HH:mm:ss.fff")
 	$nowDate = $now.ToString("yyyy-MM-dd 00:00:00.000")
 
-	$preferredPLU = '0020077700000'
-	$alternativePLU = '0020777700000'
-	$fallbackPLU = '0027777700000'
-
 	$PLU = $null
-	$TestF267 = 777
-	$doInsert = $false
-
-	# ---- Check preferred PLU (INLINE)
-	$okUse = $false
-	try
+	$TestF267 = $null
+	foreach ($candidate in @(
+			@{ Plu = '0020077700000'; F267 = 777; Kind = 'preferred' },
+			@{ Plu = '0020777700000'; F267 = 7777; Kind = 'alternative' },
+			@{ Plu = '0027777700000'; F267 = 77777; Kind = 'fallback' }))
 	{
-		$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$preferredPLU'"
-		$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$preferredPLU'"
-		$posDesc = if ($pos) { [string]$pos.F02 }
-		else { "" }
-		$objDesc = if ($obj) { [string]$obj.F29 }
-		else { "" }
-		$okUse = ($posDesc -match '(?i)test|tecnica') -or
-		($objDesc -match '(?i)test|tecnica') -or
-		([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
-	}
-	catch { $okUse = $true } # conservative default if lookups fail
-	if ($okUse)
-	{
-		$PLU = $preferredPLU
-		$TestF267 = 777
-		$doInsert = $true
-		& $writeLog "Using preferred PLU: $PLU with F267: $TestF267" "green"
-	}
-
-	# ---- If not chosen yet, check alternative PLU (INLINE)
-	if (-not $doInsert)
-	{
-		$okUse = $false
 		try
 		{
-			$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$alternativePLU'"
-			$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$alternativePLU'"
-			$posDesc = if ($pos) { [string]$pos.F02 }
-			else { "" }
-			$objDesc = if ($obj) { [string]$obj.F29 }
-			else { "" }
-			$okUse = ($posDesc -match '(?i)test|tecnica') -or
-			($objDesc -match '(?i)test|tecnica') -or
-			([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
+			$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$($candidate.Plu)'"
+			$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$($candidate.Plu)'"
+			$posDesc = if ($pos) { [string]$pos.F02 } else { "" }
+			$objDesc = if ($obj) { [string]$obj.F29 } else { "" }
+			$usable = ($posDesc -match '(?i)test|tecnica') -or ($objDesc -match '(?i)test|tecnica') -or
+				([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
 		}
-		catch { $okUse = $true }
-		if ($okUse)
+		catch
 		{
-			$PLU = $alternativePLU
-			$TestF267 = 7777
-			$doInsert = $true
-			& $writeLog "Using alternative PLU: $PLU with F267: $TestF267" "green"
+			& $writeLog ("Could not check PLU {0}: {1} - skipping it." -f $candidate.Plu, $_.Exception.Message) "yellow"
+			$usable = $false
+		}
+		if ($usable)
+		{
+			$PLU = $candidate.Plu
+			$TestF267 = $candidate.F267
+			& $writeLog ("Using {0} PLU: {1} with F267: {2}" -f $candidate.Kind, $PLU, $TestF267) "green"
+			break
 		}
 	}
-
-	# ---- If still not chosen, check fallback PLU (INLINE)
-	if (-not $doInsert)
-	{
-		$okUse = $false
-		try
-		{
-			$pos = & $RunSql "SELECT F02 FROM POS_TAB WHERE F01 = '$fallbackPLU'"
-			$obj = & $RunSql "SELECT F29 FROM OBJ_TAB WHERE F01 = '$fallbackPLU'"
-			$posDesc = if ($pos) { [string]$pos.F02 }
-			else { "" }
-			$objDesc = if ($obj) { [string]$obj.F29 }
-			else { "" }
-			$okUse = ($posDesc -match '(?i)test|tecnica') -or
-			($objDesc -match '(?i)test|tecnica') -or
-			([string]::IsNullOrWhiteSpace($posDesc) -and [string]::IsNullOrWhiteSpace($objDesc))
-		}
-		catch { $okUse = $true }
-		if ($okUse)
-		{
-			$PLU = $fallbackPLU
-			$TestF267 = 77777
-			$doInsert = $true
-			& $writeLog "Using fallback PLU: $PLU with F267: $TestF267" "green"
-		}
-	}
+	$doInsert = [bool]$PLU
 
 	if ($doInsert -and $PLU)
 	{
 		& $writeLog "Deleting existing records for PLU: $PLU and F267: $TestF267" "yellow"
 
-		# --- Always delete old rows for the chosen PLU/F267 to keep inserts deterministic
+		# --- Delete old rows for the chosen PLU/F267 so the inserts are deterministic. The scale
+		#     text row is only removed when no other item uses that F267 (it could be a real one).
 		$deleteQueries = @(
 			"DELETE FROM SCL_TAB     WHERE F01 = '$PLU'",
 			"DELETE FROM OBJ_TAB     WHERE F01 = '$PLU'",
 			"DELETE FROM POS_TAB     WHERE F01 = '$PLU'",
 			"DELETE FROM PRICE_TAB   WHERE F01 = '$PLU'",
-			"DELETE FROM SCL_TXT_TAB WHERE F267 = $TestF267"
+			"DELETE FROM SCL_TXT_TAB WHERE F267 = $TestF267 AND F267 NOT IN (SELECT F267 FROM SCL_TAB WHERE F01 <> '$PLU' AND F267 IS NOT NULL)"
 		)
 		foreach ($q in $deleteQueries)
 		{
@@ -4040,7 +3895,7 @@ VALUES
 #
 # Parameters:
 #   - StoreNumber  [string]: kept for signature compatibility (not used in content)
-#   - OfficePath   [string]: Office folder (default: $script:BasePath, then $BasePath)
+#   - OfficePath   [string]: Office folder (default: $script:OfficePath, else <BasePath>\Office)
 #   - Silent       [switch]: suppress Write_Log output
 #
 # Writes:
@@ -4053,10 +3908,8 @@ function Install_FUNCTIONS_Into_SMS
 	param (
 		[Parameter(Mandatory = $false)]
 		[string]$StoreNumber,
-		# kept for compatibility / future use
 		[Parameter(Mandatory = $false)]
 		[string]$OfficePath,
-		# if not provided, we try common script-scoped fallbacks
 		[switch]$Silent
 	)
 
@@ -4070,7 +3923,8 @@ function Install_FUNCTIONS_Into_SMS
 
 	& $writeLog "`r`n==================== Starting Install_FUNCTIONS_Into_SMS ====================`r`n" "blue"
 
-	# Registered macro marker ([?][?]) as a safe char literal; we always inject via $($reg) to avoid encoding surprises.
+	# Registered-sign macro marker (U+00AE) built from its code point so this source stays ASCII;
+	# the files are written as Windows-1252, where it is the single byte 0xAE SMS expects.
 	$reg = [char]0x00AE
 
 	# --------------------------------------------------------------------------------------------------------------
@@ -4078,8 +3932,9 @@ function Install_FUNCTIONS_Into_SMS
 	# --------------------------------------------------------------------------------------------------------------
 	if (-not $OfficePath -or [string]::IsNullOrWhiteSpace($OfficePath))
 	{
-		if ($script:BasePath) { $OfficePath = $script:BasePath } # Prefer script-scoped base path
-		elseif ($BasePath) { $OfficePath = $BasePath } # Fallback to legacy/global base path
+		# (the storeman ROOT is not the Office folder - before v2.7.0 this fell back to BasePath itself)
+		if ($script:OfficePath) { $OfficePath = $script:OfficePath }
+		elseif ($script:BasePath) { $OfficePath = Join-Path $script:BasePath 'Office' }
 	}
 	if (-not $OfficePath -or -not (Test-Path -LiteralPath $OfficePath))
 	{
@@ -4087,7 +3942,7 @@ function Install_FUNCTIONS_Into_SMS
 		return
 	}
 
-	# --- Destination paths (always three files) ---
+	# --- Destination paths ---
 	$DeploySysPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_SYS.sql"
 	$DeployMultiFctPath = Join-Path -Path $OfficePath -ChildPath "DEPLOY_MULTI_FCT.sqm"
 
@@ -4255,8 +4110,8 @@ ORDER BY F1000,F1063;
 "@
 
 	# ===============================================================================================================
-	#                                                  WRITE FILES (Always three)
-	#   CHANGE: No nested helper; inline: normalize to CRLF [?][?][?] write ANSI [?][?][?] clear attributes [?][?][?] log.
+	#                                                  WRITE FILES
+	#   normalize to CRLF -> write ANSI (no BOM) -> clear read-only/hidden attributes -> log
 	# ===============================================================================================================
 
 	# -- DEPLOY_SYS.sql --
@@ -4282,7 +4137,7 @@ ORDER BY F1000,F1063;
 	}
 	catch
 	{
-		& $writeLog "Failed to write 'DEPLOY_FCT.sqm'. Error: $_" "red"
+		& $writeLog "Failed to write 'DEPLOY_MULTI_FCT.sqm'. Error: $_" "red"
 	}
 
 	& $writeLog "`r`n==================== Install_FUNCTIONS_Into_SMS Completed ====================`r`n" "blue"

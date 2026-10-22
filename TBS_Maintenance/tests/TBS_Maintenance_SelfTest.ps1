@@ -1016,7 +1016,7 @@ $pumpForm = New-Object System.Windows.Forms.Form
 $pumpForm.ShowInTaskbar = $false
 $pumpForm.WindowState = 'Minimized'
 $pumpTimer = New-Object System.Windows.Forms.Timer
-$pumpTimer.Interval = 7000
+$pumpTimer.Interval = 12000
 $pumpTimer.Add_Tick({ $pumpTimer.Stop(); $pumpForm.Close() })
 $pumpTimer.Start()
 [System.Windows.Forms.Application]::Run($pumpForm)
