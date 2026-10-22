@@ -591,7 +591,7 @@ function Retrieve_Nodes
 			try
 			{
 				$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder $startupConnectionString
-				$csb.ConnectTimeout = $startupConnectionTimeoutSeconds
+				$csb.PSBase.ConnectTimeout = $startupConnectionTimeoutSeconds
 				$startupConnectionString = $csb.ConnectionString
 			}
 			catch

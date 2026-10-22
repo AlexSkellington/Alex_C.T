@@ -44,7 +44,7 @@ function Insert_Test_Item
 		try
 		{
 			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder $ConnectionString
-			$csb.ConnectTimeout = $ConnectionTimeoutSeconds
+			$csb.PSBase.ConnectTimeout = $ConnectionTimeoutSeconds
 			$ConnectionString = $csb.ConnectionString
 		}
 		catch

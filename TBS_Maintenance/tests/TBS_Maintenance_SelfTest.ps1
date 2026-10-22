@@ -497,6 +497,15 @@ else
 	Check 'G: -FileOnly line keeps the [INFO] tag in the file' $false 'no line found'
 }
 
+# Test mode: known expected conditions are reworded, every other line passes unchanged.
+$script:IsTestEnvironment = $true
+Write_Log -Message 'Startup.ini path not provided (selftest)' -Color 'red'
+Write_Log -Message 'SelfTest plain line in test mode' -Color 'green'
+$script:IsTestEnvironment = $false
+$tmLines = @(Get-Content -LiteralPath $logFile -ErrorAction SilentlyContinue)
+Check 'G: test mode rewords an expected condition (orange [WARN])' (@($tmLines | Where-Object { $_ -match '\[WARN\] Store config \(Startup\.ini\) not found on this machine' }).Count -eq 1) ''
+Check 'G: test mode leaves other lines unchanged' (@($tmLines | Where-Object { $_ -match '\[ OK \] SelfTest plain line in test mode$' }).Count -eq 1) ('last: ' + ($tmLines | Select-Object -Last 1))
+
 # --------------------------------------------------------------------------
 # H) Background job engine - the real helper functions, end-to-end round trip
 # --------------------------------------------------------------------------

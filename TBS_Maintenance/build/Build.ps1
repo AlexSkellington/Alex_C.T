@@ -208,6 +208,10 @@ if ($PsBuild)
 	}
 }
 
+# Keep docs\FUNCTIONS.md in step with the sources
+try { & (Join-Path $buildDir 'Update-FunctionIndex.ps1') | Out-Null }
+catch { Write-Host ("warning: function index not updated: " + $_.Exception.Message) -ForegroundColor Yellow }
+
 Write-Host ("BUILT  v{0}  ->  {1}" -f $version, $OutFile) -ForegroundColor Green
 Write-Host ("       {0} source files, {1} embedded resource(s), {2} functions, {3} lines" -f $ordered.Count, $embedded, $functionNames.Count, $out.Count)
 Write-Host ("       SHA256 {0}" -f $hash)

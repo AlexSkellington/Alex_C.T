@@ -223,7 +223,7 @@ ORDER BY ScaleCode ASC;
 		else
 		{
 			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-			$csb.ConnectionString = $connectionString
+			$csb.PSBase.ConnectionString = $connectionString
 			$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
 			$conn.Open()
 			$cmd = $conn.CreateCommand(); $cmd.CommandText = $selectQuery; $cmd.CommandTimeout = 0
@@ -632,7 +632,7 @@ END CATCH;
 				else
 				{
 					$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb.ConnectionString = $connectionString
+					$csb.PSBase.ConnectionString = $connectionString
 					$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
 					$conn.Open()
 					$cmd = $conn.CreateCommand(); $cmd.CommandText = $sqlSave; $cmd.CommandTimeout = 0
@@ -667,7 +667,7 @@ END CATCH;
 				else
 				{
 					$csb2 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb2.ConnectionString = $connectionString
+					$csb2.PSBase.ConnectionString = $connectionString
 					$conn2 = New-Object System.Data.SqlClient.SqlConnection $csb2.ConnectionString
 					$conn2.Open()
 					$cmd2 = $conn2.CreateCommand(); $cmd2.CommandText = $selectQuery; $cmd2.CommandTimeout = 0
@@ -899,7 +899,7 @@ END CATCH;
 				else
 				{
 					$csb3 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb3.ConnectionString = $connectionString
+					$csb3.PSBase.ConnectionString = $connectionString
 					$conn3 = New-Object System.Data.SqlClient.SqlConnection $csb3.ConnectionString
 					$conn3.Open()
 					$cmd3 = $conn3.CreateCommand(); $cmd3.CommandText = $sqlSave2; $cmd3.CommandTimeout = 0
@@ -934,7 +934,7 @@ END CATCH;
 				else
 				{
 					$csb4 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb4.ConnectionString = $connectionString
+					$csb4.PSBase.ConnectionString = $connectionString
 					$conn4 = New-Object System.Data.SqlClient.SqlConnection $csb4.ConnectionString
 					$conn4.Open()
 					$cmd4 = $conn4.CreateCommand(); $cmd4.CommandText = $selectQuery; $cmd4.CommandTimeout = 0
@@ -1000,7 +1000,7 @@ END CATCH;
 				else
 				{
 					$csb5 = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-					$csb5.ConnectionString = $connectionString
+					$csb5.PSBase.ConnectionString = $connectionString
 					$conn5 = New-Object System.Data.SqlClient.SqlConnection $csb5.ConnectionString
 					$conn5.Open()
 					$cmd5 = $conn5.CreateCommand(); $cmd5.CommandText = $selectQuery; $cmd5.CommandTimeout = 0

@@ -344,7 +344,7 @@ ORDER BY
 			else
 			{
 				$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-				$csb.ConnectionString = $connStr
+				$csb.PSBase.ConnectionString = $connStr
 				$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
 				$conn.Open()
 				$cmd = $conn.CreateCommand(); $cmd.CommandText = $q; $cmd.CommandTimeout = 30

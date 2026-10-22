@@ -29,10 +29,11 @@ function Select-FolderOrDefault
 	$fd.ShowNewFolderButton = $true
 	if ($initialPath -and (Test-Path -LiteralPath $initialPath)) { $fd.SelectedPath = $initialPath }
 
-	$res = $fd.ShowDialog()
-	if ($res -eq [System.Windows.Forms.DialogResult]::OK -and $fd.SelectedPath)
+	try
 	{
-		return $fd.SelectedPath
+		$res = $fd.ShowDialog()
+		if ($res -eq [System.Windows.Forms.DialogResult]::OK -and $fd.SelectedPath) { return $fd.SelectedPath }
+		return $null
 	}
-	return $null
+	finally { $fd.Dispose() }
 }

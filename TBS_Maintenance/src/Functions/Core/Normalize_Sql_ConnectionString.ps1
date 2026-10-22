@@ -87,19 +87,14 @@ function Normalize_Sql_ConnectionString
 		}
 	}
 
-	if (-not [string]::IsNullOrWhiteSpace($connStr))
+	# Append TrustServerCertificate=True when it is not set. Plain text on purpose: a
+	# SqlConnectionStringBuilder would rewrite Server=/Database= to Data Source=/Initial Catalog=
+	# (callers parse those), and PowerShell treats the builder as a dictionary, so
+	# '$csb.ConnectionString = ...' throws instead of loading (setting a builder property needs
+	# '$csb.PSBase.<Property> = ...') - before v2.7.0 that made this step a silent no-op.
+	if (-not [string]::IsNullOrWhiteSpace($connStr) -and $connStr -notmatch '(?i)(^|;)\s*TrustServerCertificate\s*=')
 	{
-		try
-		{
-			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-			$csb.ConnectionString = $connStr
-			if (-not $csb.ContainsKey('TrustServerCertificate'))
-			{
-				$csb['TrustServerCertificate'] = 'True'
-			}
-			$connStr = $csb.ConnectionString
-		}
-		catch { }
+		$connStr = $connStr.TrimEnd().TrimEnd(';') + ';TrustServerCertificate=True;'
 	}
 
 	return $connStr

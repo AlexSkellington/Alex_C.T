@@ -159,8 +159,8 @@ ORDER BY CAST([F04] AS int);
 		else
 		{
 			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-			if ($ConnectionString) { $csb.ConnectionString = $ConnectionString }
-			else { $csb.DataSource = $server; $csb.InitialCatalog = $dbName; $csb.IntegratedSecurity = $true }
+			if ($ConnectionString) { $csb.PSBase.ConnectionString = $ConnectionString }
+			else { $csb.PSBase.DataSource = $server; $csb.PSBase.InitialCatalog = $dbName; $csb.PSBase.IntegratedSecurity = $true }
 			$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
 			$cmd = $conn.CreateCommand(); $cmd.CommandText = $sql
 			$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd

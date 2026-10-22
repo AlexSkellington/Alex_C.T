@@ -72,11 +72,19 @@ function Start_Background_Function_Job
 	}
 	$fnBody = $fnCmd.ScriptBlock.ToString()
 
-	# Copy the results bag - the job must never mutate the live one
+	# Copy the results bag - the job must never mutate the live one. UI objects (the LogBox
+	# entry, timers) are left out: they cannot be used in another runspace, serialising a
+	# WinForms control into the job is slow, and the deserialised copy would be merged back
+	# over the live entry when the job completes.
 	$seedResults = @{}
 	if ($script:FunctionResults)
 	{
-		foreach ($k in @($script:FunctionResults.Keys)) { $seedResults[$k] = $script:FunctionResults[$k] }
+		foreach ($k in @($script:FunctionResults.Keys))
+		{
+			$v = $script:FunctionResults[$k]
+			if ($v -is [System.ComponentModel.Component]) { continue }
+			$seedResults[$k] = $v
+		}
 	}
 
 	# Standard context every job needs so its Write_Log can find the file-log
