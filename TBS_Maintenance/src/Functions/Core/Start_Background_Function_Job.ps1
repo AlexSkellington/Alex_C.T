@@ -194,6 +194,7 @@ function Start_Background_Function_Job
 	# logic; they deliberately do not go through this engine. Migrating them
 	# would mean restructuring those functions into the worker pattern -
 	# considered and deferred (no performance gain, real regression risk).
+	# The reaper stops itself when no job is left; every new job (re)starts it.
 	try
 	{
 		if (-not $script:BgfJobReaper)
@@ -203,7 +204,7 @@ function Start_Background_Function_Job
 			$script:BgfJobReaper.Add_Tick({
 					try
 					{
-						if (-not $script:BgfJobs -or $script:BgfJobs.Count -eq 0) { return }
+						if (-not $script:BgfJobs -or $script:BgfJobs.Count -eq 0) { $script:BgfJobReaper.Stop(); return }
 						foreach ($key in @($script:BgfJobs.Keys))
 						{
 							$entry = $script:BgfJobs[$key]
@@ -243,8 +244,8 @@ function Start_Background_Function_Job
 					}
 					catch { }
 			})
-			$script:BgfJobReaper.Start()
 		}
+		if (-not $script:BgfJobReaper.Enabled) { $script:BgfJobReaper.Start() }
 	}
 	catch { }
 	return $job

@@ -509,12 +509,17 @@ function Retrieve_Nodes
 	{
 		Write_Log "Using Ter_Load.sql as backup for TER_TAB information." "yellow"
 		$content = Get-Content -LiteralPath $TerLoadSqlPath -Raw
-		if ($content -match 'INSERT INTO Ter_Load VALUES\s*(.*);' -or $content -match 'INSERT INTO Ter_Load VALUES\s*(.*)')
+		# SMS load files put one row per line:  INSERT INTO Ter_Load VALUES<CRLF>(...),<CRLF>(...);
+		# (the old single-line match only ever saw the first row = the first lane)
+		$insert = [regex]::Match([string]$content, '(?is)INSERT\s+INTO\s+Ter_Load\s+VALUES\s*(.*?\))\s*;')
+		if (-not $insert.Success) { $insert = [regex]::Match([string]$content, '(?is)INSERT\s+INTO\s+Ter_Load\s+VALUES\s*(.*)$') }
+		if ($insert.Success)
 		{
-			foreach ($value in ($matches[1] -split '\),\s*\(' | ForEach-Object { $_.Trim('() ') }))
+			foreach ($row in [regex]::Matches($insert.Groups[1].Value, "\((?<r>(?:'(?:[^']|'')*'|[^'()])*)\)"))
 			{
-				$fields = @($value -split "',\s*'" | ForEach-Object { $_.Trim("'") })
-				if ($fields.Count -ge 5 -and $fields[0] -eq $StoreNumber)
+				# Quoted values ('' = an escaped quote; commas and parentheses inside quotes are fine)
+				$fields = @([regex]::Matches($row.Groups['r'].Value, "'((?:[^']|'')*)'") | ForEach-Object { $_.Groups[1].Value.Replace("''", "'") })
+				if ($fields.Count -ge 5 -and ($fields[0] -eq '@STORE' -or (& $normalizeStore $fields[0]) -eq $StoreNumberNorm))
 				{
 					. $addTerRow ([string]$fields[1]) ([string]$fields[2]) ([string]$fields[3]) ([string]$fields[4])
 				}

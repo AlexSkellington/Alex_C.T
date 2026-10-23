@@ -94,6 +94,13 @@ function Download_NSSM
 		{
 			return @{ Success = $true; Path = $script:NssmExe; Note = 'Already downloading in background'; Log = $script:NssmDownloadLog }
 		}
+		# A finished earlier download nobody waited for: free its runspace before starting again
+		if ($script:NssmDownloadJob)
+		{
+			try { $script:NssmDownloadJob.PS.Dispose(); $script:NssmDownloadJob.Pool.Close(); $script:NssmDownloadJob.Pool.Dispose() }
+			catch { }
+			$script:NssmDownloadJob = $null
+		}
 
 		try
 		{

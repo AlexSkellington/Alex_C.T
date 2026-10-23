@@ -101,7 +101,7 @@ DECLARE @cmd varchar(4000)
 DECLARE cmds CURSOR FOR 
 SELECT 'drop table [' + name + ']' 
 FROM sys.tables 
-WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') 
+WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') AND DATEDIFF(DAY, create_date, GETDATE()) > 30
 OPEN cmds 
 WHILE 1 = 1 
 BEGIN 
@@ -470,7 +470,7 @@ DECLARE @cmd varchar(4000)
 DECLARE cmds CURSOR FOR 
 SELECT 'drop table [' + name + ']' 
 FROM sys.tables 
-WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') 
+WHERE (name LIKE 'TMP_%' OR name LIKE 'MSVHOST%' OR name LIKE 'MMPHOST%' OR name LIKE 'M$StoreNumber%' OR name LIKE 'R$StoreNumber%') AND DATEDIFF(DAY, create_date, GETDATE()) > 30
 OPEN cmds 
 WHILE 1 = 1 
 BEGIN 

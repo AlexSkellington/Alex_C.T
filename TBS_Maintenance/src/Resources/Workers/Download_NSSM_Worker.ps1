@@ -47,8 +47,10 @@ try
 		return @{ Success = $true; Path = $NssmExe; Note = 'Already present' }
 	}
 
-	# TLS 1.2
-	try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+	# TLS 1.2 added to what is enabled (assigning it alone would switch TLS 1.3 off where it exists)
+	try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+	# Windows PowerShell 5.1 redraws a progress bar per chunk - it makes Invoke-WebRequest many times slower
+	$ProgressPreference = 'SilentlyContinue'
 
 	$is64 = [Environment]::Is64BitOperatingSystem
 
@@ -121,7 +123,8 @@ try
 		try
 		{
 			$wc = New-Object System.Net.WebClient
-			$wc.DownloadFile($u, $tempZip)
+			try { $wc.DownloadFile($u, $tempZip) }
+			finally { $wc.Dispose() }
 
 			# IMPORTANT FIX: parentheses so "-and" is an operator
 			if ((Test-Path $tempZip) -and ((Get-Item $tempZip).Length -gt 0))

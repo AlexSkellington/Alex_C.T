@@ -385,30 +385,27 @@ Check 'D: no authentication prompt, no remote URLs in log' (($joined -notlike '*
 Check 'D: returns quickly (no network round trip)' ($sw.Elapsed.TotalSeconds -lt 2) ('{0:N1}s' -f $sw.Elapsed.TotalSeconds)
 
 # --------------------------------------------------------------------------
-# E) TCP-445 reachability probe - the real block (bounded, no SMB timeout stall)
+# E) TCP-445 reachability probe - the real block: all lanes at once, 1.5 s in total
 # --------------------------------------------------------------------------
-$ps = Find-Marker '$remoteShareReachable = $false'
-$pe = Find-Marker 'finally { $tcpClient.Dispose() }' $ps
+$ps = Find-Marker '$reachable = @{ }'
+$pd = Find-Marker '$deadline = (Get-Date).AddMilliseconds(1500)' $ps
+$pe = (Find-Marker 'foreach ($w in $work)' $pd) - 1
 $probeBlock = ($scriptLines[$ps..$pe]) -join "`n"
 
-$machineName = $env:COMPUTERNAME
-Invoke-Expression $probeBlock
-if ($remoteShareReachable)
-{
-	Check 'E: probe of this machine => reachable' $true ''
-}
-else
-{
-	Skip 'E: probe of this machine => reachable' 'no local SMB (dev machine)'
-}
-
-$machineName = 'no-such-host-tbs-selftest.invalid'
+$noLocal = Join-Path $env:TEMP 'tbs-selftest-no-such-startup'
+$work = @(
+	[pscustomobject]@{ Lane = '001'; Machine = $env:COMPUTERNAME; Local = $noLocal },
+	[pscustomobject]@{ Lane = '002'; Machine = 'no-such-host-tbs-selftest.invalid'; Local = $noLocal },
+	[pscustomobject]@{ Lane = '003'; Machine = '192.0.2.1'; Local = $noLocal },   # TEST-NET: never answers
+	[pscustomobject]@{ Lane = '004'; Machine = '192.0.2.2'; Local = $noLocal })
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 Invoke-Expression $probeBlock
 $sw.Stop()
-Check 'E: probe of bogus host => unreachable' ($remoteShareReachable -eq $false) ''
-Check 'E: bogus-host probe is bounded (<4s)' ($sw.Elapsed.TotalSeconds -lt 4) ('{0:N1}s' -f $sw.Elapsed.TotalSeconds)
-
+if ($reachable['001']) { Check 'E: probe of this machine => reachable' $true '' }
+else { Skip 'E: probe of this machine => reachable' 'no local SMB (dev machine)' }
+Check 'E: bogus / silent hosts => unreachable' (-not $reachable['002'] -and -not $reachable['003'] -and -not $reachable['004']) ''
+# Two hosts that never answer: one after the other this took >= 3 s
+Check 'E: probes run in parallel (<2.5s for two silent hosts)' ($sw.Elapsed.TotalSeconds -lt 2.5) ('{0:N1}s' -f $sw.Elapsed.TotalSeconds)
 # --------------------------------------------------------------------------
 # F) VNC job throttle + collection - the real blocks (the v2.6.9 fix)
 # --------------------------------------------------------------------------

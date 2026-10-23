@@ -224,11 +224,14 @@ function Get_Table_Aliases
 	# 3b. Dynamic mode (SMS version outside the supported range): read @CREATE lines from the
 	#     <TABLE>_Load.sql files, e.g.  @CREATE('OBJ_TAB', 'OBJ');
 	# ------------------------------------------------------------------------------------------------
-	Write-Host "SMS Version $SMSVersion is outside supported range ($MinSupportedSMSVersion - $MaxSupportedSMSVersion). Scanning SQL files for table/alias map..." -ForegroundColor Yellow
+	# (to the file log: the console is hidden once the window is up, and this also runs in a job)
+	try { Write_Log "SMS version $SMSVersion is outside the known range ($MinSupportedSMSVersion - $MaxSupportedSMSVersion) - reading the table aliases from the *_Load.sql files." 'gray' -FileOnly }
+	catch { }
 
 	if (-not $LoadPath -or -not (Test-Path -LiteralPath $LoadPath))
 	{
-		Write-Warning "LoadPath is not available; cannot scan *_Load.sql files. Returning empty hashtable."
+		try { Write_Log "No Load folder - table aliases unavailable." 'yellow' -FileOnly }
+		catch { }
 		return (& $publish @{ } @{ })
 	}
 
@@ -250,7 +253,10 @@ function Get_Table_Aliases
 	foreach ($file in @(Get-ChildItem -LiteralPath $LoadPath -Recurse -Filter '*_Load.sql' -File -ErrorAction SilentlyContinue))
 	{
 		if (-not $loadFileNames.ContainsKey($file.Name)) { continue }
-		foreach ($line in @(Get-Content -LiteralPath $file.FullName -ErrorAction SilentlyContinue))
+		$fileLines = @()
+		try { $fileLines = [System.IO.File]::ReadAllLines($file.FullName, [System.Text.Encoding]::Default) }   # much faster than Get-Content
+		catch { }
+		foreach ($line in $fileLines)
 		{
 			$lineClean = $line -replace '--.*', '' -replace '/\*.*?\*/', ''
 			if ($lineClean -notmatch '@CREATE') { continue }
@@ -262,7 +268,11 @@ function Get_Table_Aliases
 			}
 		}
 	}
-	if ($AliasToTableLive.Count -eq 0) { Write-Warning "No table-alias pairs detected. Using empty hashtable." }
+	if ($AliasToTableLive.Count -eq 0)
+	{
+		try { Write_Log "No table / alias pairs found in the *_Load.sql files." 'yellow' -FileOnly }
+		catch { }
+	}
 
 	& $writeCache 'Dynamic' (& $getLoadSignature) $AliasToTableLive $TableToAliasLive
 	return (& $publish $AliasToTableLive $TableToAliasLive)

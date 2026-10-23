@@ -224,34 +224,33 @@ ORDER BY F1000,F1063;
 
 	# ===============================================================================================================
 	#                                                  WRITE FILES
-	#   normalize to CRLF -> write ANSI (no BOM) -> clear read-only/hidden attributes -> log
+	#   clear read-only/hidden -> normalize to CRLF -> write ANSI (no BOM) when changed -> log
 	# ===============================================================================================================
 
-	# -- DEPLOY_SYS.sql --
-	try
-	{
-		$norm = [regex]::Replace($DeploySysContent, "(`r)?`n", "`r`n") # normalize to CRLF
-		[System.IO.File]::WriteAllText($DeploySysPath, $norm, $ansi) # write as ANSI, no BOM
-		Set-ItemProperty -LiteralPath $DeploySysPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		& $writeLog "Updated 'DEPLOY_SYS.sql' in '$OfficePath'." "green"
-	}
-	catch
-	{
-		& $writeLog "Failed to write 'DEPLOY_SYS.sql'. Error: $_" "red"
-	}
-
-	# -- DEPLOY_MULTI_FCT.sqm --
-	try
-	{
-		$norm = [regex]::Replace($DeployMultiFctContent, "(`r)?`n", "`r`n") # normalize to CRLF
-		[System.IO.File]::WriteAllText($DeployMultiFctPath, $norm, $ansi) # write as ANSI, no BOM
-		Set-ItemProperty -LiteralPath $DeployMultiFctPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		& $writeLog "Wrote 'DEPLOY_MULTI_FCT.sqm' (All + CSV + ranges) to '$OfficePath'." "green"
-	}
-	catch
-	{
-		& $writeLog "Failed to write 'DEPLOY_MULTI_FCT.sqm'. Error: $_" "red"
+	# Clears read-only / hidden BEFORE writing (a read-only file made the write fail), and leaves a
+	# file that already has this exact content untouched (no needless rewrite at every launch)
+	$writeAnsi = {
+		param ([string]$Path, [string]$Content)
+		$norm = [regex]::Replace($Content, "(`r)?`n", "`r`n")
+		if ([System.IO.File]::Exists($Path))
+		{
+			[System.IO.File]::SetAttributes($Path, [System.IO.FileAttributes]::Normal)
+			if ([System.IO.File]::ReadAllText($Path, $ansi) -ceq $norm) { return $false }
+		}
+		[System.IO.File]::WriteAllText($Path, $norm, $ansi)
+		return $true
 	}
 
+	foreach ($out in @(
+			@($DeploySysPath, $DeploySysContent, 'DEPLOY_SYS.sql'),
+			@($DeployMultiFctPath, $DeployMultiFctContent, 'DEPLOY_MULTI_FCT.sqm (All + CSV + ranges)')))
+	{
+		try
+		{
+			if (& $writeAnsi $out[0] $out[1]) { & $writeLog "Wrote '$($out[2])' to '$OfficePath'." "green" }
+			else { & $writeLog "'$($out[2])' in '$OfficePath' is already current." "gray" }
+		}
+		catch { & $writeLog "Failed to write '$($out[2])'. Error: $_" "red" }
+	}
 	& $writeLog "`r`n==================== Install_FUNCTIONS_Into_SMS Completed ====================`r`n" "blue"
 }

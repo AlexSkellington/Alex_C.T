@@ -129,62 +129,71 @@ function Get_All_Lanes_Database_Info
 
 	$changed = $false
 
+	# Lanes to read: all of them with -RefreshCache (an entry is kept when its lane cannot be
+	# read), otherwise only the ones not in memory yet. 8xx (scales) / 9xx (server, backoffices)
+	# are not lanes - unless explicitly requested.
+	$work = @()
 	foreach ($laneNumber in $lanesToProcess)
 	{
-		# If cached already in memory, skip
-		if ($LaneDatabaseInfo.ContainsKey($laneNumber)) { continue }
-
-		# 8xx (scales) and 9xx (server / backoffices) are not lanes - unless explicitly requested
+		if (-not $RefreshCache -and $LaneDatabaseInfo.ContainsKey($laneNumber)) { continue }
 		if ($laneNumber -ne $RequestedLane -and $laneNumber -match '^(8|9)') { continue }
-
 		$machineName = $LaneNumToMachineName[$laneNumber]
 		if (-not $machineName) { continue }
+		$work += [pscustomobject]@{ Lane = $laneNumber; Machine = [string]$machineName; Local = (Join-Path $OfficePath "INI\STARTUP.$laneNumber") }
+	}
 
-		# ---------- 1. Try LOCAL Startup file (INI\STARTUP.###) ----------
-		$startupLocalPath = Join-Path $OfficePath "INI\STARTUP.$($laneNumber.PadLeft(3, '0'))"
-		$startupIniPath = $null
+	# Lanes without a local STARTUP.<lane> copy are read over \\lane\storeman: probe port 445 of
+	# all of them at once (1.5 s in total, not 1.5 s per switched-off lane)
+	$reachable = @{ }
+	$probes = @()
+	foreach ($w in $work)
+	{
+		if (Test-Path -LiteralPath $w.Local) { continue }
+		$client = New-Object System.Net.Sockets.TcpClient
+		try { $probes += [pscustomobject]@{ Lane = $w.Lane; Client = $client; Task = $client.ConnectAsync($w.Machine, 445) } }
+		catch { $client.Dispose() }
+	}
+	$deadline = (Get-Date).AddMilliseconds(1500)
+	foreach ($p in $probes)
+	{
+		$ok = $false
+		try
+		{
+			$left = [int][Math]::Max(0, ($deadline - (Get-Date)).TotalMilliseconds)
+			$ok = ($p.Task.Wait($left) -and $p.Client.Connected)
+		}
+		catch { $ok = $false }
+		$reachable[$p.Lane] = $ok
+		try { $p.Client.Dispose() }
+		catch { }
+	}
+
+	foreach ($w in $work)
+	{
+		$laneNumber = $w.Lane
+		$machineName = $w.Machine
+
+		# ---------- 1. LOCAL Startup file (INI\STARTUP.###), 2. REMOTE \\lane\storeman\Startup.ini ----------
 		$content = $null
 		$source = $null
-
-		if (Test-Path $startupLocalPath)
+		if (Test-Path -LiteralPath $w.Local)
 		{
 			try
 			{
-				$content = Get-Content -Path $startupLocalPath -ErrorAction Stop
+				$content = Get-Content -LiteralPath $w.Local -ErrorAction Stop
 				$source = "local"
 			}
 			catch { $content = $null }
 		}
-
-		# ---------- 2. Fallback: Try REMOTE Startup.ini ----------
-		if (-not $content)
+		if (-not $content -and $reachable[$laneNumber])
 		{
-			$startupIniPath = "\\$machineName\storeman\Startup.ini"
-			$remoteShareReachable = $false
-			$tcpClient = New-Object System.Net.Sockets.TcpClient
 			try
 			{
-				$asyncResult = $tcpClient.BeginConnect($machineName, 445, $null, $null)
-				if ($asyncResult.AsyncWaitHandle.WaitOne(1500))
-				{
-					$tcpClient.EndConnect($asyncResult)
-					$remoteShareReachable = $true
-				}
+				$content = Get-Content -LiteralPath "\\$machineName\storeman\Startup.ini" -ErrorAction Stop
+				$source = "remote"
 			}
-			catch { $remoteShareReachable = $false }
-			finally { $tcpClient.Dispose() }
-
-			if ($remoteShareReachable -and (Test-Path $startupIniPath))
-			{
-				try
-				{
-					$content = Get-Content -Path $startupIniPath -ErrorAction Stop
-					$source = "remote"
-				}
-				catch { $content = $null }
-			}
+			catch { $content = $null }
 		}
-
 		if (-not $content) { continue }
 
 		# First line only: a second DBNAME= line would turn the value into an array

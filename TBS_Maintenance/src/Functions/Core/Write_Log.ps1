@@ -168,8 +168,8 @@ function Write_Log
 		}
 		$logStream = [System.IO.File]::Open($script:LogFileLogPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
 		$logWriter = New-Object System.IO.StreamWriter($logStream)
-		$logWriter.WriteLine($now.ToString('HH:mm:ss') + " " + $fullMessage)
-		$logWriter.Close()
+		try { $logWriter.WriteLine($now.ToString('HH:mm:ss') + " " + $fullMessage) }
+		finally { $logWriter.Close() }   # also closes the stream if the write fails
 	}
 	catch { }
 
@@ -196,6 +196,21 @@ function Write_Log
 			try
 			{
 				if (-not $rtb -or $rtb.IsDisposed) { return }
+				# Keep the box responsive in long sessions: past ~1M characters drop the oldest ~quarter
+				# (cut at a line end). The full history stays in the file log.
+				if ($rtb.TextLength -gt 1000000)
+				{
+					$cutAt = $rtb.Text.IndexOf("`n", 250000)
+					if ($cutAt -gt 0)
+					{
+						# A read-only box ignores SelectedText (AppendText still works): unlock for the cut
+						$wasReadOnly = $rtb.ReadOnly
+						$rtb.Select(0, $cutAt + 1)
+						$rtb.ReadOnly = $false
+						$rtb.SelectedText = ''
+						$rtb.ReadOnly = $wasReadOnly
+					}
+				}
 				$rtb.SelectionStart = $rtb.TextLength
 				$rtb.SelectionLength = 0
 				$rtb.SelectionColor = $color
