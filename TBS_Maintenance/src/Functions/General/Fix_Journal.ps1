@@ -159,12 +159,15 @@ function Fix_Journal
 		$fixedLines = New-Object System.Collections.Generic.List[string]
 
 		$skip = $false
+		$skipped = New-Object System.Collections.Generic.List[string]   # the block being removed
 
 		foreach ($line in $originalLines)
 		{
 			# 1) Start skipping at '<trs F10'
 			if ($line -match '^\s*<trs\s+F10\b')
 			{
+				if (-not $skip) { $skipped.Clear() }
+				$skipped.Add($line)
 				$skip = $true
 				continue
 			}
@@ -173,17 +176,19 @@ function Fix_Journal
 			if ($skip -and ($line -match '^\s*<trs\s+F1068\b'))
 			{
 				$skip = $false
+				$skipped.Clear()
 				# We *do* want to keep this line
 				$fixedLines.Add($line)
 				continue
 			}
 
 			# Keep the line if we're not skipping
-			if (-not $skip)
-			{
-				$fixedLines.Add($line)
-			}
+			if ($skip) { $skipped.Add($line) }
+			else { $fixedLines.Add($line) }
 		}
+		# A block that never reached its <trs F1068 line is kept: removing to the end of the file
+		# truncated the journal
+		if ($skip) { $fixedLines.AddRange($skipped) }
 
 		if ($fixedLines.Count -eq @($originalLines).Count)
 		{
@@ -225,5 +230,6 @@ function Fix_Journal
 			Write_Log -Message "Failed to write fixed content to: $($file.FullName)." "red"
 			continue
 		}
-	}	Write_Log "`r`n==================== Fix_Journal Function Completed ====================" "blue"
+	}
+	Write_Log "`r`n==================== Fix_Journal Function Completed ====================" "blue"
 }

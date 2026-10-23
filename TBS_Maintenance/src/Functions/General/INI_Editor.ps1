@@ -32,6 +32,21 @@ function INI_Editor
 	#                                    HELPERS: paths, parse, write
 	# ==============================================================================================
 
+	# Copy of an INI before it is overwritten (save / merge / replace on a lane), so a bad edit can
+	# be put back: <BackupRoot>\INI_Editor\<yyyyMMdd>\<HHmmss>_<host>_<file>
+	$backupIni = {
+		param ([string]$Path)
+		try
+		{
+			if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+			$hostPart = if ($Path -match '^\\\\([^\\]+)\\') { $matches[1] } else { $env:COMPUTERNAME }
+			$dir = Join-Path $script:BackupRoot ("INI_Editor\" + (Get-Date -Format 'yyyyMMdd'))
+			if (-not (Test-Path -LiteralPath $dir)) { $null = New-Item -Path $dir -ItemType Directory -Force }
+			Copy-Item -LiteralPath $Path -Destination (Join-Path $dir ("{0}_{1}_{2}" -f (Get-Date -Format 'HHmmss'), $hostPart, (Split-Path -Leaf $Path))) -Force -ErrorAction Stop
+		}
+		catch { Write_Log "Could not back up ${Path} before writing: $($_.Exception.Message)" "yellow" }
+	}
+
 	$getKnownLanes = {
 		$known = @()
 		if ($script:FunctionResults.ContainsKey('LaneMachines') -and $script:FunctionResults['LaneMachines'])
@@ -731,6 +746,7 @@ function INI_Editor
 			{
 				$dir = Split-Path -Parent $state.FullPath
 				if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+				& $backupIni $state.FullPath
 				Set-Content -LiteralPath $state.FullPath -Value $state.IniObj.RawLines -Encoding Default -Force
 
 				Write_Log "Saved [$secActual] to $($state.FullPath)" "green"
@@ -882,6 +898,7 @@ function INI_Editor
 					$destIni.RawLines = & $writeIniSection $destIni.RawLines $secActual $kv
 					try
 					{
+						& $backupIni $dstFull
 						Set-Content -LiteralPath $dstFull -Value $destIni.RawLines -Encoding Default -Force
 						Write_Log "Merged [$secActual] into $dstFull on $m" "green"; $ok++
 					}
@@ -902,6 +919,7 @@ function INI_Editor
 					try { if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null } }
 					catch { Write_Log "[Create Failed] $dstDir : $($_.Exception.Message)" "red"; $fail++; continue }
 
+					& $backupIni (Join-Path $dstDir $srcFile)
 					Write_Log "Replacing INI on $m ($dstDir\$srcFile)" "gray"
 					$roboArgs = @($srcDir, $dstDir, $srcFile, '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
 					$null = & robocopy @roboArgs

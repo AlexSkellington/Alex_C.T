@@ -177,9 +177,14 @@ function Sync_Selected_Node_Hosts
 	$oldLines = if (Test-Path $hostsPath) { Get-Content $hostsPath -Raw }
 	else { "" }
 	$oldMappings = @{ }
+	$oldHostNames = @{ }   # lowercase -> name as written
 	foreach ($line in $oldLines -split "`r?`n")
 	{
-		if ($line -match '^\s*([0-9\.]+)\s+(\S+)\s*$') { $oldMappings[$matches[2].ToLower()] = $matches[1] }
+		if ($line -match '^\s*([0-9\.]+)\s+(\S+)\s*$')
+		{
+			$oldMappings[$matches[2].ToLower()] = $matches[1]
+			$oldHostNames[$matches[2].ToLower()] = $matches[2]
+		}
 	}
 
 	# Preserve all lines before the first bare "IP hostname" mapping, minus trailing blank lines.
@@ -197,22 +202,36 @@ function Sync_Selected_Node_Hosts
 	$outputLines.Add('') # one blank line after the defaults
 
 	# ---------------- Build custom mappings (local first, then others by IP) ----------------
+	# Mappings of nodes that were not selected this time are KEPT (before v2.7.7 the file was rebuilt
+	# from the selection only, and every other node's line was dropped - and copied out that way)
+	$selectedNames = @{ }
+	foreach ($hn in $ipToHost.Values) { $selectedNames[$hn.ToLower()] = $true }
+	$keptMappings = @()
+	foreach ($oldKey in @($oldMappings.Keys))
+	{
+		if ($selectedNames.ContainsKey($oldKey) -or $oldKey -eq 'localhost') { continue }
+		$keptMappings += @{ IP = $oldMappings[$oldKey]; Hostname = $oldHostNames[$oldKey]; Kept = $true }
+	}
+	$ipSortKey = { $o = @(([string]$_.IP) -split '\.' | ForEach-Object { [int]$_ }); ($o | ForEach-Object { '{0:D3}' -f $_ }) -join '.' }
 	$orderedMappings = @()
 	$orderedMappings += @{ IP = $localIp; Hostname = $localHostname }
-	foreach ($ip in ($ipToHost.Keys | Sort-Object))
+	$others = @()
+	foreach ($ip in $ipToHost.Keys)
 	{
 		if ($ip -eq $localIp) { continue } # already first
-		$orderedMappings += @{ IP = $ip; Hostname = $ipToHost[$ip] }
+		$others += @{ IP = $ip; Hostname = $ipToHost[$ip] }
 	}
+	$orderedMappings += @(@($others) + @($keptMappings) | Sort-Object $ipSortKey)
 
 	foreach ($entry in $orderedMappings)
 	{
 		$hn = $entry.Hostname
 		$ip = $entry.IP
 		$oldIp = $oldMappings[$hn.ToLower()]
-		$rowColor = if ($oldIp -and $oldIp -ne $ip) { "yellow" }
+		$rowColor = if ($entry.Kept) { "gray" }
+		elseif ($oldIp -and $oldIp -ne $ip) { "yellow" }
 		else { "green" }
-		$finalRows += @{ IP = $ip; Hostname = $hn; Color = $rowColor }
+		$finalRows += @{ IP = $ip; Hostname = $hn; Color = $rowColor; Kept = [bool]$entry.Kept }
 		$outputLines.Add("$ip`t$hn")
 		if ($rowColor -eq "yellow") { $changedMappings += "$hn ($oldIp => $ip)" }
 	}
@@ -232,7 +251,7 @@ function Sync_Selected_Node_Hosts
 	{
 		$hn = $entry.Hostname
 		$ip = $entry.IP
-		if ($hn -eq $localHostname) { continue } # Don't network-copy to self
+		if ($hn -eq $localHostname -or $entry.Kept) { continue } # not to self / nodes not selected
 		$targetPath = "\\$hn\C$\Windows\System32\drivers\etc\hosts"
 		try
 		{
@@ -254,6 +273,7 @@ function Sync_Selected_Node_Hosts
 	{
 		$line = "$($r.IP)".PadRight($maxIpLen + 2) + "$($r.Hostname)".PadRight($maxHostLen + 2)
 		if ($r.Color -eq "yellow") { $line += "<CHANGED>" }
+		elseif ($r.Kept) { $line += "(kept - not selected)" }
 		Write_Log $line $r.Color
 	}
 	if ($changedMappings.Count)

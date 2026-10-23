@@ -48,6 +48,24 @@ function Reboot_Nodes
 		return
 	}
 
+	# A reboot cuts off a lane mid-sale: confirm what was picked in the dialog (a caller passing
+	# -Selection has already decided)
+	if (-not $Selection)
+	{
+		$parts = @()
+		if ($selection.Lanes) { $parts += "lanes " + (@($selection.Lanes) -join ', ') }
+		if ($selection.Scales) { $parts += "scales " + (@($selection.Scales) -join ', ') }
+		if ($selection.Backoffices) { $parts += "backoffices " + (@($selection.Backoffices) -join ', ') }
+		$answer = [System.Windows.Forms.MessageBox]::Show(("Reboot now?`r`n`r`n" + ($parts -join "`r`n")), "Confirm reboot",
+			[System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+		if ($answer -ne [System.Windows.Forms.DialogResult]::Yes)
+		{
+			Write_Log "Reboot cancelled." "yellow"
+			Write_Log "`r`n==================== Reboot_Nodes Function Completed ====================" "blue"
+			return
+		}
+	}
+
 	# shutdown.exe, then Restart-Computer; $true when one of them took the request
 	$rebootRemote = {
 		param ([string]$Target, [string]$What)

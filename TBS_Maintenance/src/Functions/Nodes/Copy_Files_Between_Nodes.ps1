@@ -575,52 +575,72 @@ function Copy_Files_Between_Nodes
 		try { $isFile = Test-Path -LiteralPath $srcFull -PathType Leaf }
 		catch { $isFile = $false }
 
+		# All destinations of this item at once (up to 8 robocopy processes) instead of one lane
+		# after the other; the window keeps painting while they run
+		$copies = @()
 		foreach ($dest in $destMachines)
 		{
 			$dstRoot = $destRootMap[$dest]
 			if (-not $dstRoot) { $failList.Add("$dest :: (no root)"); continue }
+			$dstFull = Join-Path $dstRoot $rel
+			$dstDir = if ($isFile) { Split-Path -Path $dstFull -Parent } else { $dstFull }
+			try { if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null } }
+			catch { Write_Log "[Create Failed] $dstDir : $($_.Exception.Message)" "red"; $failList.Add("$dest :: $dstDir (create failed)"); continue }
 
 			if ($isFile)
 			{
 				# Single file copy (no /MIR)
-				$dstFull = Join-Path $dstRoot $rel
-				$dstDir = Split-Path -Path $dstFull -Parent
-				try { if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null } }
-				catch { Write_Log "[Create Failed] $dstDir : $($_.Exception.Message)" "red"; $failList.Add("$dest :: $dstDir (create failed)"); continue }
-
-				$srcDir = Split-Path -Path $srcFull -Parent
-				$fileName = Split-Path -Path $srcFull -Leaf
-				$null = & robocopy @($srcDir, $dstDir, $fileName, '/R:2', '/W:2', '/NFL', '/NDL', '/NP')
-				$exit = $LASTEXITCODE
-				$failed = ($exit -ge 8)
-				$status = if ($failed) { "FAIL ($exit)" }
-				elseif ($exit -ge 4) { "OK* ($exit)" }
-				else { "OK ($exit)" }
-				if ($failed) { Write_Log "Copy file to $dest FAILED: $status" "red"; $failList.Add("$dest :: $rel (robocopy $exit)") }
-				else { Write_Log "Copied file '$rel' to $dest $status" "green"; $okCount++ }
+				$roboArgs = @(('"{0}"' -f (Split-Path -Path $srcFull -Parent)), ('"{0}"' -f $dstDir), ('"{0}"' -f (Split-Path -Path $srcFull -Leaf)), '/R:2', '/W:2', '/NFL', '/NDL', '/NP')
 				if ($doMirror) { Write_Log "Note: Mirror ignored for single-file item '$rel'." "gray" }
 			}
 			else
 			{
-				# Directory copy
-				$dstFull = Join-Path $dstRoot $rel
-				try { if (-not (Test-Path -LiteralPath $dstFull)) { New-Item -ItemType Directory -Path $dstFull -Force | Out-Null } }
-				catch { Write_Log "[Create Failed] $dstFull : $($_.Exception.Message)" "red"; $failList.Add("$dest :: $dstFull (create failed)"); continue }
-
-				$roboArgs = @($srcFull, $dstFull, '/E', '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
+				$roboArgs = @(('"{0}"' -f $srcFull), ('"{0}"' -f $dstFull), '/E', '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/MT:8')
 				if ($doMirror) { $roboArgs += '/MIR' }
-				$null = & robocopy @roboArgs
-				$exit = $LASTEXITCODE
-				$failed = ($exit -ge 8)
-				$status = if ($failed) { "FAIL ($exit)" }
-				elseif ($exit -ge 4) { "OK* ($exit)" }
-				else { "OK ($exit)" }
-				if ($failed) { Write_Log "Copy to $dest FAILED: $status" "red"; $failList.Add("$dest :: $rel (robocopy $exit)") }
-				else { Write_Log "Copy to $dest $status" "green"; $okCount++ }
 			}
+			$copies += [pscustomobject]@{ Dest = $dest; Args = $roboArgs; Proc = $null }
+		}
+
+		$maxParallel = 8
+		$next = 0
+		while ($true)
+		{
+			$running = @($copies | Where-Object { $_.Proc -and -not $_.Proc.HasExited }).Count
+			while ($next -lt $copies.Count -and $running -lt $maxParallel)
+			{
+				try
+				{
+					$copies[$next].Proc = Start-Process -FilePath 'robocopy.exe' -ArgumentList $copies[$next].Args -WindowStyle Hidden -PassThru -ErrorAction Stop
+					$null = $copies[$next].Proc.Handle   # keeps ExitCode readable after the process exits
+					$running++
+				}
+				catch
+				{
+					Write_Log "Copy to $($copies[$next].Dest) could not start robocopy: $($_.Exception.Message)" "red"
+					$failList.Add("$($copies[$next].Dest) :: $rel (robocopy did not start)")
+				}
+				$next++
+			}
+			if ($next -ge $copies.Count -and $running -eq 0) { break }
+			try { [System.Windows.Forms.Application]::DoEvents() }
+			catch { }
+			Start-Sleep -Milliseconds 200
+		}
+
+		foreach ($c in $copies)
+		{
+			if (-not $c.Proc) { continue }
+			$exit = $c.Proc.ExitCode
+			$failed = ($exit -ge 8)
+			$status = if ($failed) { "FAIL ($exit)" }
+			elseif ($exit -ge 4) { "OK* ($exit)" }
+			else { "OK ($exit)" }
+			$what = if ($isFile) { "file '$rel'" } else { "'$rel'" }
+			if ($failed) { Write_Log "Copy of $what to $($c.Dest) FAILED: $status" "red"; $failList.Add("$($c.Dest) :: $rel (robocopy $exit)") }
+			else { Write_Log "Copied $what to $($c.Dest) $status" "green"; $okCount++ }
+			$c.Proc.Dispose()
 		}
 	}
-
 	# ===================== Summary =====================
 	$totalOps = ($itemsToCopy.Count) * ($destMachines.Count)
 	$failCount = $failList.Count
