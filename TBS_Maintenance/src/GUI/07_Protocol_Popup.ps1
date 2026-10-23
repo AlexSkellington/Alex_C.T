@@ -582,23 +582,9 @@ if (-not $global:ProtocolFormTimer)
 
 			if (-not $global:ProtocolForm.Visible) { return }
 
-			# Save scroll & selection BEFORE clearing rows
-			$prevRowCount = $global:ProtocolGrid.Rows.Count
-			$scrollIndex = 0
-			if ($prevRowCount -gt 0)
-			{
-				try { $scrollIndex = $global:ProtocolGrid.FirstDisplayedScrollingRowIndex }
-				catch { $scrollIndex = 0 }
-			}
-			$selIndex = $null
-			if ($global:ProtocolGrid.SelectedRows.Count -gt 0)
-			{
-				try { $selIndex = $global:ProtocolGrid.SelectedRows[0].Index }
-				catch { $selIndex = $null }
-			}
-
-			# Refresh grid
-			$global:ProtocolGrid.Rows.Clear()
+			# Rows are collected first; the grid is only rebuilt when they differ from what it shows
+			# (it was cleared and refilled every 500 ms: flicker, and the scroll position jumped)
+			$rowsData = New-Object System.Collections.Generic.List[object]
 
 			$LaneNumToMachineName = $script:FunctionResults['LaneNumToMachineName']
 			$storeNumberForPopup = [string]$script:FunctionResults['StoreNumber']
@@ -729,13 +715,7 @@ if (-not $global:ProtocolFormTimer)
 					catch { }
 				}
 
-				$r = $global:ProtocolGrid.Rows.Add()
-				$global:ProtocolGrid.Rows[$r].Cells[0].Value = $serverDisplay
-				$global:ProtocolGrid.Rows[$r].Cells[1].Value = $proto
-				$global:ProtocolGrid.Rows[$r].Cells[2].Value = $dataText
-				$global:ProtocolGrid.Rows[$r].Cells[3].Value = $logText
-				try { $global:ProtocolGrid.Rows[$r].Tag = [string]$sizeEntry.OpenPath }
-				catch { }
+				$rowsData.Add(@([string]$serverDisplay, [string]$proto, [string]$dataText, [string]$logText, [string]$sizeEntry.OpenPath))
 			}
 			else
 			{
@@ -901,13 +881,7 @@ if (-not $global:ProtocolFormTimer)
 							catch { }
 						}
 
-						$r = $global:ProtocolGrid.Rows.Add()
-						$global:ProtocolGrid.Rows[$r].Cells[0].Value = $machineName
-						$global:ProtocolGrid.Rows[$r].Cells[1].Value = $proto
-						$global:ProtocolGrid.Rows[$r].Cells[2].Value = $dataText
-						$global:ProtocolGrid.Rows[$r].Cells[3].Value = $logText
-						try { $global:ProtocolGrid.Rows[$r].Tag = [string]$sizeEntry.OpenPath }
-						catch { }
+						$rowsData.Add(@([string]$machineName, [string]$proto, [string]$dataText, [string]$logText, [string]$sizeEntry.OpenPath))
 					}
 
 					# Optional: rebuild $script:ProtocolResults so any other old code keeps working
@@ -917,6 +891,52 @@ if (-not $global:ProtocolFormTimer)
 							[pscustomobject]@{ Lane = $ln; Protocol = [string]$map[$ln] }
 						}
 					)
+				}
+			}
+
+			$signature = $popupMode + "`n" + (($rowsData | ForEach-Object { $_ -join '|' }) -join "`n")
+			if ($signature -ne $global:ProtocolGridSignature -or $global:ProtocolGrid.Rows.Count -ne $rowsData.Count)
+			{
+				$global:ProtocolGridSignature = $signature
+
+				# Save scroll & selection, refill, restore
+				$scrollIndex = 0
+				if ($global:ProtocolGrid.Rows.Count -gt 0)
+				{
+					try { $scrollIndex = $global:ProtocolGrid.FirstDisplayedScrollingRowIndex }
+					catch { $scrollIndex = 0 }
+				}
+				$selIndex = $null
+				if ($global:ProtocolGrid.SelectedRows.Count -gt 0)
+				{
+					try { $selIndex = $global:ProtocolGrid.SelectedRows[0].Index }
+					catch { $selIndex = $null }
+				}
+
+				$global:ProtocolGrid.SuspendLayout()
+				try
+				{
+					$global:ProtocolGrid.Rows.Clear()
+					foreach ($rd in $rowsData)
+					{
+						$r = $global:ProtocolGrid.Rows.Add($rd[0], $rd[1], $rd[2], $rd[3])
+						$global:ProtocolGrid.Rows[$r].Tag = $rd[4]
+					}
+				}
+				finally { $global:ProtocolGrid.ResumeLayout() }
+
+				$rowCount = $global:ProtocolGrid.Rows.Count
+				if ($rowCount -gt 0)
+				{
+					if ($scrollIndex -lt 0) { $scrollIndex = 0 }
+					if ($scrollIndex -ge $rowCount) { $scrollIndex = $rowCount - 1 }
+					try { $global:ProtocolGrid.FirstDisplayedScrollingRowIndex = $scrollIndex }
+					catch { }
+				}
+				if ($selIndex -ne $null -and $rowCount -gt $selIndex -and $selIndex -ge 0)
+				{
+					try { $global:ProtocolGrid.Rows[$selIndex].Selected = $true }
+					catch { }
 				}
 			}
 
@@ -944,21 +964,6 @@ if (-not $global:ProtocolFormTimer)
 			if ($global:ProtocolGrid.Columns[2].Width + $global:ProtocolGrid.Columns[3].Width -gt $remainingWidth)
 			{
 				$global:ProtocolGrid.Columns[3].Width = [math]::Max(90, $remainingWidth - $global:ProtocolGrid.Columns[2].Width)
-			}
-
-			# Restore scroll & selection safely
-			$rowCount = $global:ProtocolGrid.Rows.Count
-			if ($rowCount -gt 0)
-			{
-				if ($scrollIndex -lt 0) { $scrollIndex = 0 }
-				if ($scrollIndex -ge $rowCount) { $scrollIndex = $rowCount - 1 }
-				try { $global:ProtocolGrid.FirstDisplayedScrollingRowIndex = $scrollIndex }
-				catch { }
-			}
-			if ($selIndex -ne $null -and $rowCount -gt $selIndex -and $selIndex -ge 0)
-			{
-				try { $global:ProtocolGrid.Rows[$selIndex].Selected = $true }
-				catch { }
 			}
 		})
 	$global:ProtocolFormTimer.Start()

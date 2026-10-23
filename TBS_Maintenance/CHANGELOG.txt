@@ -5,6 +5,61 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.7  -  2026-10-22
+#  Full review pass: every function checked for speed, correctness and robustness
+# ===================================================================================================
+#
+#  Fixes
+#  [FIX]  Scale IPs: a TBS scale stored as network "192.168.1" + device "50" became
+#         "192.168.150" (Windows reads 192.168.0.150) - pings, VNC files, credentials and the
+#         node picker used the wrong address. The parts are joined with one dot everywhere.
+#  [FIX]  No store database: the Ter_Load.sql fallback only read its first line, so only the
+#         first lane was found. Every row is read now.
+#  [FIX]  Drawer Control wrote its load row ending in ',' instead of ';' (the INSERT ran on into
+#         the @UPDATE_BATCH line).
+#  [FIX]  Sync hosts files: mappings of nodes not ticked were dropped from the hosts file (and
+#         copied out that way). They are kept now; only the ticked nodes are updated.
+#  [FIX]  Fix Journal: a <trs F10 block without its <trs F1068 end deleted everything to the end
+#         of the file. Such a block is kept.
+#  [FIX]  VNC files: a node that was off at launch had its real password replaced by the default.
+#         It keeps the password already in its file.
+#  [FIX]  Close Open Transactions: when nothing reached the lane (no SQL, no XF folder) it still
+#         logged the close, deleted the XE report and restarted the lane.
+#  [FIX]  Lane DB info -RefreshCache skipped every lane already in memory (nothing refreshed).
+#  [FIX]  Time sync file fallback deleted its .bat 10 s after the trigger - busy lanes ran nothing.
+#  [FIX]  Storeman ZIP backup: a failed run left a broken ZIP that pushed a good one out of the
+#         rotation. It writes .partial and renames when complete.
+#  [FIX]  Get_All_VNC_Passwords tried WinRM with a parameter Windows PowerShell 5.1 does not have
+#         (it never worked). The admin share is read first, WinRM after, with real timeouts.
+#
+#  Faster
+#  [PERF] Launch: hardware info used a PowerShell process per node plus two more per node for
+#         WMI / CIM (up to 30 at once); VNC passwords one process per node. Both use runspace
+#         threads now, with timeouts built into the WMI / CIM calls.
+#  [PERF] Lane DB info probes every switched-off lane at once (1.5 s total, not 1.5 s each).
+#  [PERF] Copy Files Between Nodes copies to up to 8 lanes at once; the window stays usable.
+#  [PERF] Pump Tables reads each table's columns once (was once per table per lane).
+#  [PERF] Process Lanes, Retrieve Transactions, Insert Test Item, Ishida SDPs, ScaleCommApp
+#         troubleshooter: the built-in SQL client - no SQL module needed, no import delay.
+#  [PERF] Key sync task: File lanes get UPDATE_SMS_KEY.SQI again only when the key changed or a
+#         day passed (was every run); SQL lanes are only written when their key differs.
+#  [PERF] Protocol window rebuilds its grid only when a value changed (was every 500 ms).
+#  [PERF] NSSM download without the PowerShell 5.1 progress bar (many times faster).
+#  [PERF] XE watcher does not re-read unchanged kept health files on every sweep.
+#  [PERF] Log box trims its oldest quarter past 1 million characters (the file log keeps all).
+#
+#  Safer
+#  [NEW]  One helper for every SMS drop file (Write_Sms_File): ANSI, CRLF and a final CRLF, no
+#         BOM, read-only files unlocked first, no archive bit left.
+#  [NEW]  INI Editor backs up every file before overwriting it (Backups\INI_Editor).
+#  [NEW]  Reboot Nodes asks for confirmation before rebooting what was picked.
+#  [CHG]  Insert Test Item and Retrieve Transactions write in one transaction (all or nothing);
+#         a failed Pump Tables SQL copy falls back to the file drop for that table.
+#  [CHG]  Lane / scheduled server SQL: temp tables are dropped after 30 days, like the server
+#         script (and the comment) already said.
+#  [CHG]  Backup schedulers create their tasks with argument lists (no Invoke-Expression).
+#
+# ===================================================================================================
 #  v2.7.6  -  2026-10-22
 #  Server maintenance: weekly drive optimize, monthly repair, readable log, never blocks the tool
 # ===================================================================================================

@@ -79,6 +79,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\Smok
   `/sc once` needs `/st`; `/ru <user>` needs `/rp` or `/it` or it prompts on the console.
   Native tools never throw: check `$LASTEXITCODE`.
 - **Backups rotate after success** - never delete old backups before the new one exists.
+- **SMS drop files** (.sqi / .sql / .sqm in Office or an XF folder): write them with
+  `Write_Sms_File` (ANSI, CRLF + final CRLF, no BOM, unlocks read-only, no archive bit).
+- **Scale IPs**: join `IPNetwork` + `IPDevice` with exactly one dot (`TrimEnd('.') + '.'`) -
+  plain concatenation turned 192.168.1 + 50 into 192.168.150.
 - **Thread pool**: a scriptblock cannot run on a .NET thread-pool thread (no runspace) - use
   a runspace pool or async .NET APIs (`SendPingAsync`, `GetHostAddressesAsync`).
 - **`Get-Job -Name <missing>`** records an error even with SilentlyContinue - filter with
