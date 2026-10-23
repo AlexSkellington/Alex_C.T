@@ -213,27 +213,24 @@ else {
 		$min = "{0:D2}" -f [int]$minutes
 		$startTime = "$hour`:$min"
 
-		$freqArg = "/SC DAILY"
-		if ($freqInput -gt 1)
-		{
-			$freqArg = "/SC DAILY /MO $freqInput"
-		}
+		$freqArgs = @('/SC', 'DAILY')
+		if ($freqInput -gt 1) { $freqArgs += @('/MO', [string]$freqInput) }
 		$taskName = "${LocalHost}_DB_Backup_Schedule"
-		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$backupScriptPath`"`""
+		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \`"$backupScriptPath\`""
 
 		# --- Remove existing task if present ---
-		schtasks.exe /Delete /TN "$taskName" /F 2>$null | Out-Null
-
+		$null = & schtasks.exe /Delete /TN $taskName /F 2>$null
 
 		# --- Create scheduled task ---
 		# Run as the CURRENT (logged-in) user, not SYSTEM: on the store the SQL
 		# login that can open the database is the interactive account, so the
 		# backup must run under it (interactive, /IT). SYSTEM has no DB access.
+		# (argument array, not Invoke-Expression of one string: that broke on '$' and quotes)
 		$backupTaskUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-		$cmd = "schtasks.exe /Create /RU `"$backupTaskUser`" /IT /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
-		Write_Log "Creating backup task as '$backupTaskUser' (interactive /IT) with command:" "yellow"
-		Write_Log $cmd "gray"
-		Invoke-Expression $cmd
+		$createArgs = @('/Create', '/RU', $backupTaskUser, '/IT', '/RL', 'HIGHEST', '/TN', $taskName, '/TR', $action) + $freqArgs + @('/ST', $startTime, '/F')
+		Write_Log "Creating backup task as '$backupTaskUser' (interactive /IT): schtasks $($createArgs -join ' ')" "gray"
+		$createOut = & schtasks.exe @createArgs 2>&1
+		if ($LASTEXITCODE -ne 0) { Write_Log ("schtasks: " + (($createOut | Out-String).Trim())) "red" }
 
 		if ($LASTEXITCODE -eq 0)
 		{

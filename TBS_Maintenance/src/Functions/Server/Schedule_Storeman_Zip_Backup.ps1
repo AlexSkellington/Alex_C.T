@@ -178,10 +178,11 @@ if (-not (Test-Path `$backupRoot)) {
 # Compose backup ZIP filename with timestamp
 `$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 `$backupZipPath = Join-Path `$backupRoot ("Storeman_Backup_`$timestamp.zip")
+`$partialZipPath = `$backupZipPath + ".partial"   # renamed to .zip only when complete
 
 # Run the backup (old ZIPs are only rotated out AFTER a successful one)
 try {
-    `$zip = [System.IO.Compression.ZipFile]::Open(`$backupZipPath, 1)  # 1 = Create
+    `$zip = [System.IO.Compression.ZipFile]::Open(`$partialZipPath, 1)  # 1 = Create
 
     # Gather all root directories starting with "install" (case-insensitive)
     `$rootDirs = Get-ChildItem -Path `$storemanPath -Directory | Select-Object -ExpandProperty FullName
@@ -229,6 +230,8 @@ try {
         }
     }
     `$zip.Dispose()
+    `$zip = `$null
+    Move-Item -LiteralPath `$partialZipPath -Destination `$backupZipPath -Force
     "`$([DateTime]::Now) Backup complete: `$backupZipPath (`$countAdded files)" | Out-File -FilePath (Join-Path `$backupRoot "backup.log") -Append -Encoding utf8
     Write-Host "Backup complete: `$backupZipPath (`$countAdded files)" -ForegroundColor Green
 
@@ -240,6 +243,7 @@ try {
 }
 catch {
     if (`$zip) { `$zip.Dispose() }
+    Remove-Item -LiteralPath `$partialZipPath -Force -ErrorAction SilentlyContinue
     "`$([DateTime]::Now) Backup FAILED for `$storemanPath - `$(`$_.Exception.Message)" | Out-File -FilePath (Join-Path `$backupRoot "backup.log") -Append -Encoding utf8
     Write-Host "Backup FAILED: `$(`$_.Exception.Message)" -ForegroundColor Red
 }
@@ -257,21 +261,18 @@ catch {
 		$hour = "{0:D2}" -f [int]$hours
 		$min = "{0:D2}" -f [int]$minutes
 		$startTime = "$hour`:$min"
-		$freqArg = "/SC DAILY"
-		if ($freqInput -gt 1)
-		{
-			$freqArg = "/SC DAILY /MO $freqInput"
-		}
-		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$backupScriptPath`"`""
+		$freqArgs = @('/SC', 'DAILY')
+		if ($freqInput -gt 1) { $freqArgs += @('/MO', [string]$freqInput) }
+		$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \`"$backupScriptPath\`""
 
 		# --- Remove existing task if present ---
-		schtasks.exe /Delete /TN "$taskName" /F 2>$null | Out-Null
+		$null = & schtasks.exe /Delete /TN $taskName /F 2>$null
 
-		# --- Create scheduled task ---
-		$cmd = "schtasks.exe /Create /RU SYSTEM /RL HIGHEST /TN `"$taskName`" /TR `"$action`" $freqArg /ST $startTime /F"
-		Write_Log "Creating scheduled task with command:" "yellow"
-		Write_Log $cmd "gray"
-		Invoke-Expression $cmd
+		# --- Create scheduled task (argument array, not Invoke-Expression of one string) ---
+		$createArgs = @('/Create', '/RU', 'SYSTEM', '/RL', 'HIGHEST', '/TN', $taskName, '/TR', $action) + $freqArgs + @('/ST', $startTime, '/F')
+		Write_Log "Creating scheduled task: schtasks $($createArgs -join ' ')" "gray"
+		$createOut = & schtasks.exe @createArgs 2>&1
+		if ($LASTEXITCODE -ne 0) { Write_Log ("schtasks: " + (($createOut | Out-String).Trim())) "red" }
 
 		if ($LASTEXITCODE -eq 0)
 		{

@@ -34,6 +34,8 @@ function Show_Node_Selection_Form
 
 	Add-Type -AssemblyName System.Windows.Forms
 	Add-Type -AssemblyName System.Drawing
+	# The "at most N lanes" notice shows once per dialog (a cancelled dialog used to keep it muted)
+	Remove-Variable -Name __laneLimitWarned -Scope Script -ErrorAction SilentlyContinue
 
 	# Normalize exclusions (names lowercased; lanes as 3-digit)
 	$__ex_names = @()
@@ -113,9 +115,12 @@ function Show_Node_Selection_Form
 			}
 		}
 
-		foreach ($laneMachine in ($allLanes | Sort-Object))
+		# Lane order (POS2 before POS10), machines without a lane number last
+		foreach ($laneMachine in ($allLanes | Sort-Object { $n = $machineToLaneNum[[string]$_]; if ($n) { [int]$n } else { 99999 } }, { [string]$_ }))
 		{
 			$laneNum = $machineToLaneNum[[string]$laneMachine]
+			# XF-folder fallback lists 3-digit lane numbers, not machine names
+			if (-not $laneNum -and [string]$laneMachine -match '^\d{3}$') { $laneNum = [string]$laneMachine }
 
 			# Skip excluded by machine name or lane number
 			$__skip = $false
@@ -210,13 +215,14 @@ function Show_Node_Selection_Form
 			if ($__skip) { continue }
 
 			$ip = if ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
+			elseif ($scale.FullIP) { [string]$scale.FullIP }   # TER scales known by host name only
 			else { "" }
 			$displayName = "$($scale.ScaleName) [$ip]"
 			$scaleObj = [PSCustomObject]@{
 				ScaleCode   = $scale.ScaleCode
 				ScaleName   = $scale.ScaleName
 				IPAddress   = $ip
-				Vendor	    = $scale.Vendor
+				Vendor	    = $scale.Scalevendor
 				FullIP	    = $scale.FullIP
 				IPNetwork   = $scale.IPNetwork
 				IPDevice    = $scale.IPDevice
@@ -512,9 +518,14 @@ function Show_Node_Selection_Form
 	$form.Controls.Add($btnCancel)
 	if ($Apply_Modern_Popup_Style) { & $Apply_Modern_Popup_Style $form }
 
-	# ----- Show form & collect selections -----
+	# ----- Show form & collect selections (the form is disposed afterwards: it leaked a window
+	#       handle set per use) -----
 	$dialogResult = $form.ShowDialog()
-	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+	if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+	{
+		$form.Dispose()
+		return $null
+	}
 
 	$result = @{ }
 	if ("Lane" -in $NodeTypes)
@@ -568,6 +579,8 @@ function Show_Node_Selection_Form
 		}
 		$result.Backoffices = $selectedBONums
 	}
+
+	$form.Dispose()
 
 	# Basic validation
 	if ($result.Keys.Count -eq 0 -or ($result.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum -eq 0)

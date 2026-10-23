@@ -74,14 +74,17 @@ function Schedule_Server_DB_Maintenance
 	$daysPromptForm.AcceptButton = $okButton
 	$daysPromptForm.CancelButton = $cancelButton
 
-	if ($daysPromptForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK)
+	$promptResult = $daysPromptForm.ShowDialog()
+	$daysText = $textBox.Text
+	$daysPromptForm.Dispose()
+	if ($promptResult -ne [System.Windows.Forms.DialogResult]::OK)
 	{
 		Write_Log "Operation cancelled by user in interval prompt." "yellow"
 		return
 	}
 
 	[int]$UserDays = 0
-	if ([int]::TryParse($textBox.Text, [ref]$UserDays) -and $UserDays -ge 1)
+	if ([int]::TryParse($daysText, [ref]$UserDays) -and $UserDays -ge 1)
 	{
 		$RepeatDays = $UserDays
 	}
@@ -131,11 +134,17 @@ function Schedule_Server_DB_Maintenance
  @EXEC(SQL=ACTIVATE_ACCEPT_SYS);
 "@ -replace "`r?`n", "`r`n"
 
-	# Write the server repair script
+	# Write both files: unlock first (a read-only file made the write fail), plain attributes after
+	# (no archive bit - SMS treats an archived file as already processed)
+	$writeFile = {
+		param ([string]$Path, [string]$Content)
+		if ([System.IO.File]::Exists($Path)) { [System.IO.File]::SetAttributes($Path, [System.IO.FileAttributes]::Normal) }
+		[System.IO.File]::WriteAllText($Path, $Content, $ansiEncoding)
+		[System.IO.File]::SetAttributes($Path, [System.IO.FileAttributes]::Normal)
+	}
 	try
 	{
-		[System.IO.File]::WriteAllText($DestScriptPath, $ServerSQLScriptContent, $ansiEncoding)
-		Set-ItemProperty -Path $DestScriptPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		& $writeFile $DestScriptPath $ServerSQLScriptContent
 		Write_Log "Wrote server DB repair script to $DestScriptPath" "green"
 	}
 	catch
@@ -143,12 +152,9 @@ function Schedule_Server_DB_Maintenance
 		Write_Log "Failed to write server script: $_" "red"
 		return
 	}
-
-	# Write the scheduler macro
 	try
 	{
-		[System.IO.File]::WriteAllText($SchedulerMacroPath, $SchedulerMacroContent, $ansiEncoding)
-		Set-ItemProperty -Path $SchedulerMacroPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+		& $writeFile $SchedulerMacroPath $SchedulerMacroContent
 		Write_Log "Scheduler SQL macro created at $SchedulerMacroPath" "green"
 	}
 	catch
@@ -156,24 +162,5 @@ function Schedule_Server_DB_Maintenance
 		Write_Log "Failed to write scheduler macro: $_" "red"
 		return
 	}
-
-	# Remove archive bit if set (optional)
-	try
-	{
-		if (Test-Path $DestScriptPath)
-		{
-			$file = Get-Item -Path $DestScriptPath
-			if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
-			{
-				$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
-				Write_Log "Removed the archive bit from '$DestScriptPath'." "green"
-			}
-		}
-	}
-	catch
-	{
-		Write_Log "Failed to remove the archive bit from '$DestScriptPath'. Error: $_" "red"
-	}
-
 	Write_Log "`r`n==================== Schedule_Server_DB_Maintenance Function Completed ====================" "blue"
 }

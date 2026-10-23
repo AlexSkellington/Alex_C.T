@@ -123,6 +123,10 @@ function Configure_System_Settings
 		try
 		{
 			Stop-Process -Name explorer -Force
+			# Windows normally relaunches the shell itself; where it does not (AutoRestartShell off)
+			# the desktop and taskbar stayed gone - start it after a short wait
+			Start-Sleep -Seconds 3
+			if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) { Start-Process -FilePath (Join-Path $env:WINDIR 'explorer.exe') }
 			Write_Log "Explorer restarted." "green"
 		}
 		catch
