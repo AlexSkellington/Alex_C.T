@@ -83,7 +83,7 @@ function Export_VNC_Files_For_All_Nodes
 					-not [string]::IsNullOrWhiteSpace([string]$scaleObj.IPDevice)
 				)
 				{
-					$ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
+					$ip = (([string]$scaleObj.IPNetwork).TrimEnd('.') + '.' + [string]$scaleObj.IPDevice)
 				}
 			}
 
@@ -523,7 +523,7 @@ PreemptiveUpdates=0
 		$scaleObj = $kv.Value
 		# Make sure to dedupe by IP address
 		$ip = if ($scaleObj.FullIP) { $scaleObj.FullIP }
-		elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice) { "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)" }
+		elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice) { (([string]$scaleObj.IPNetwork).TrimEnd('.') + '.' + [string]$scaleObj.IPDevice) }
 		else { $null }
 		if ($ip)
 		{

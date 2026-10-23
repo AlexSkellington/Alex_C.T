@@ -58,7 +58,7 @@ function Get_All_VNC_Passwords
 			# Compute a unique identifier, e.g., IP or some combination
 			$ip = $null
 			if ($scaleObj.FullIP) { $ip = $scaleObj.FullIP }
-			elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice) { $ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)" }
+			elseif ($scaleObj.IPNetwork -and $scaleObj.IPDevice) { $ip = (([string]$scaleObj.IPNetwork).TrimEnd('.') + '.' + [string]$scaleObj.IPDevice) }
 			# Add only once!
 			if ($ip -and -not $uniqueScaleObjs.ContainsKey($ip))
 			{
@@ -88,7 +88,7 @@ function Get_All_VNC_Passwords
 				}
 				elseif (($scaleObj.PSObject.Properties.Name -contains "IPNetwork") -and ($scaleObj.PSObject.Properties.Name -contains "IPDevice") -and $scaleObj.IPNetwork -and $scaleObj.IPDevice)
 				{
-					$ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
+					$ip = (([string]$scaleObj.IPNetwork).TrimEnd('.') + '.' + [string]$scaleObj.IPDevice)
 				}
 			}
 			if ($ip)

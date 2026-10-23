@@ -197,7 +197,7 @@ function Show_Node_Selection_Form
 		foreach ($scale in $sortedScales)
 		{
 			$ipKey = if ($scale.FullIP) { $scale.FullIP }
-			elseif ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
+			elseif ($scale.IPNetwork -and $scale.IPDevice) { (([string]$scale.IPNetwork).TrimEnd('.') + '.' + [string]$scale.IPDevice) }
 			else { $null }
 			if ($ipKey -and -not $uniqueScaleIPs.ContainsKey($ipKey))
 			{
@@ -214,7 +214,7 @@ function Show_Node_Selection_Form
 			elseif ([string]$scale.ScaleCode -match '^\d+$' -and ($__ex_lanes -contains ('{0:D3}' -f ([int]$scale.ScaleCode)))) { $__skip = $true }
 			if ($__skip) { continue }
 
-			$ip = if ($scale.IPNetwork -and $scale.IPDevice) { "$($scale.IPNetwork)$($scale.IPDevice)" }
+			$ip = if ($scale.IPNetwork -and $scale.IPDevice) { (([string]$scale.IPNetwork).TrimEnd('.') + '.' + [string]$scale.IPDevice) }
 			elseif ($scale.FullIP) { [string]$scale.FullIP }   # TER scales known by host name only
 			else { "" }
 			$displayName = "$($scale.ScaleName) [$ip]"

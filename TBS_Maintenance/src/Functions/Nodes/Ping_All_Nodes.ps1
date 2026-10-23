@@ -75,7 +75,7 @@ function Ping_All_Nodes
 				}
 				elseif ($scaleObj.PSObject.Properties['IPNetwork'] -and $scaleObj.PSObject.Properties['IPDevice'])
 				{
-					$ip = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
+					$ip = (([string]$scaleObj.IPNetwork).TrimEnd('.') + '.' + [string]$scaleObj.IPDevice)
 				}
 				if ($ip -and $ip -notin @("Unknown", "Not Found", ""))
 				{

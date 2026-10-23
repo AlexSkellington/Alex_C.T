@@ -101,7 +101,7 @@ function Get_Remote_Machine_Info
 					-not [string]::IsNullOrWhiteSpace([string]$scaleObj.IPDevice)
 				)
 				{
-					$scaleIp = "$($scaleObj.IPNetwork)$($scaleObj.IPDevice)"
+					$scaleIp = (([string]$scaleObj.IPNetwork).TrimEnd('.') + '.' + [string]$scaleObj.IPDevice)
 				}
 			}
 

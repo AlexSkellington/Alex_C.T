@@ -42,8 +42,8 @@ function Retrieve_Nodes
 	)
 
 	# Bump when the shape of the cached results changes (10: TBS scales keep their original
-	# ScaleCode and are never normalised to 80X)
-	$CacheSchemaVersion = 10
+	# ScaleCode and are never normalised to 80X; 11: TBS FullIP joins network + device with a dot)
+	$CacheSchemaVersion = 11
 	$CachePath = Join-Path $script:SetupFiles 'Retrieve_Nodes.txt'
 
 	# ------------------------------------------------------------------------------------------------
@@ -481,7 +481,12 @@ function Retrieve_Nodes
 						ScaleLocation = & $col $row.ScaleLocation
 						IPNetwork     = $tbsIPNetwork
 						IPDevice      = $tbsIPDevice
-						FullIP        = if ($tbsIPNetwork -or $tbsIPDevice) { "$tbsIPNetwork$tbsIPDevice" } else { $null }
+						# One dot between the parts: "192.168.1" + "50" must not become "192.168.150"
+						# (Windows reads that as 192.168.0.150)
+						FullIP        = if ($tbsIPNetwork -and $tbsIPDevice) { $tbsIPNetwork.TrimEnd('.') + '.' + $tbsIPDevice.TrimStart('.') }
+						elseif ($tbsIPNetwork) { $tbsIPNetwork.TrimEnd('.') }
+						elseif ($tbsIPDevice) { $tbsIPDevice }
+						else { $null }
 						PortRaw       = $null
 						TcpPort       = $null
 						Section       = $null

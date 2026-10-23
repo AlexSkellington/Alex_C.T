@@ -270,7 +270,7 @@ function Manage_Bizerba_Scales_Alex_Profile
 		# Resolve IP
 		$ip = $null
 		if ($info.FullIP) { $ip = $info.FullIP }
-		elseif ($info.IPNetwork -and $info.IPDevice) { $ip = "$($info.IPNetwork)$($info.IPDevice)" }
+		elseif ($info.IPNetwork -and $info.IPDevice) { $ip = (([string]$info.IPNetwork).TrimEnd('.') + '.' + [string]$info.IPDevice) }
 
 		if (-not $ip)
 		{

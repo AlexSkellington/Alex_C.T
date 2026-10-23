@@ -15,7 +15,7 @@
 #   - Force           [switch]: reserved for future use
 #
 # Variables:
-#   - $script:FunctionResults: DBNAME, DBSERVER, ConnectionString, SqlModuleName
+#   - $script:FunctionResults: DBNAME, DBSERVER, ConnectionString
 #                              (falls back to Get_Store_And_Database_Info)
 #
 # Notes:
@@ -63,7 +63,6 @@ function Pick_And_Update_IshidaSDPs
 	$dbName = $script:FunctionResults['DBNAME']
 	$server = $script:FunctionResults['DBSERVER']
 	$ConnectionString = $script:FunctionResults['ConnectionString']
-	$SqlModuleName = $script:FunctionResults['SqlModuleName']
 
 	if (-not $dbName -or -not $server -or -not $ConnectionString)
 	{
@@ -75,8 +74,7 @@ function Pick_And_Update_IshidaSDPs
 			$dbName = $script:FunctionResults['DBNAME']
 			$server = $script:FunctionResults['DBSERVER']
 			$ConnectionString = $script:FunctionResults['ConnectionString']
-			$SqlModuleName = $script:FunctionResults['SqlModuleName']
-		}
+				}
 	}
 
 	# ---------------- Build a ConnectionString when missing ----------------
@@ -104,26 +102,7 @@ function Pick_And_Update_IshidaSDPs
 		return
 	}
 
-	# ---------------- Prepare SQL execution (Invoke-Sqlcmd or .NET) ----------------
-	$InvokeSqlCmd = $null
-	if ($SqlModuleName -and $SqlModuleName -ne 'None')
-	{
-		try
-		{
-			Import-Module $SqlModuleName -ErrorAction Stop
-			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
-		}
-		catch
-		{
-			& $logWarn "SQL module '$SqlModuleName' could not be loaded. Will use .NET SqlClient fallback."
-		}
-	}
-	else
-	{
-		& $logWarn "No SQL module name provided. Will use .NET SqlClient fallback."
-	}
-	$supportsConnectionString = $false
-	if ($InvokeSqlCmd) { $supportsConnectionString = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString' }
+	# ---------------- SQL through the built-in SqlClient (no SQL module import: one query) ----------------
 
 	# ---------------- Read SDP_TAB (F04 number, F1022 name) ----------------
 	$sql = @"
@@ -145,29 +124,20 @@ ORDER BY CAST([F04] AS int);
 
 	try
 	{
-		if ($InvokeSqlCmd)
+		$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+		if ($ConnectionString) { $csb.PSBase.ConnectionString = $ConnectionString }
+		else { $csb.PSBase.DataSource = $server; $csb.PSBase.InitialCatalog = $dbName; $csb.PSBase.IntegratedSecurity = $true }
+		$csb.PSBase.TrustServerCertificate = $true
+		$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
+		try
 		{
-			if ($supportsConnectionString -and $ConnectionString)
-			{
-				$rows = & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $sql -QueryTimeout 60 -ErrorAction Stop
-			}
-			else
-			{
-				$rows = & $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $sql -QueryTimeout 60 -ErrorAction Stop
-			}
-		}
-		else
-		{
-			$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-			if ($ConnectionString) { $csb.PSBase.ConnectionString = $ConnectionString }
-			else { $csb.PSBase.DataSource = $server; $csb.PSBase.InitialCatalog = $dbName; $csb.PSBase.IntegratedSecurity = $true }
-			$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
-			$cmd = $conn.CreateCommand(); $cmd.CommandText = $sql
+			$cmd = $conn.CreateCommand(); $cmd.CommandText = $sql; $cmd.CommandTimeout = 60
 			$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
 			$dt = New-Object System.Data.DataTable
-			$conn.Open(); [void]$da.Fill($dt); $conn.Close()
+			$conn.Open(); [void]$da.Fill($dt)
 			$rows = $dt
 		}
+		finally { $conn.Dispose() }
 	}
 	catch
 	{

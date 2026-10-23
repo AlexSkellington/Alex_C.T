@@ -19,7 +19,7 @@
 #   - OfficePath          [string]: Office folder for DEPLOY_CHG.sql (default $script:OfficePath)
 #
 # Variables:
-#   - $script:FunctionResults: DBNAME, DBSERVER, ConnectionString, SqlModuleName, StoreName; $script:ScaleCommRoots
+#   - $script:FunctionResults: DBNAME, DBSERVER, ConnectionString, StoreName; $script:ScaleCommRoots
 #
 # Writes:
 #   - ScaleCommApp *.exe.config files (UTF-8 no BOM, .bak backups) and Office\DEPLOY_CHG.sql
@@ -49,7 +49,6 @@ function Troubleshoot_ScaleCommApp
 	$dbName = $script:FunctionResults['DBNAME']
 	$server = $script:FunctionResults['DBSERVER']
 	$connStr = $script:FunctionResults['ConnectionString']
-	$sqlModule = $script:FunctionResults['SqlModuleName']
 
 	if (-not $ExpectedDatabase -and $dbName) { $ExpectedDatabase = $dbName }
 	if (-not $ExpectedSqlInstance -and $server) { $ExpectedSqlInstance = $server }
@@ -181,15 +180,6 @@ function Troubleshoot_ScaleCommApp
 	$firstScaleIP = $null
 	if ($server -and $dbName -and $connStr)
 	{
-		# Decide Invoke-Sqlcmd availability and argument style
-		$InvokeSqlCmd = $null
-		if ($sqlModule -and $sqlModule -ne 'None')
-		{
-			try { Import-Module $sqlModule -ErrorAction Stop; $InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $sqlModule -ErrorAction Stop }
-			catch { $InvokeSqlCmd = $null }
-		}
-		$supportsConnStr = $false
-		if ($InvokeSqlCmd) { $supportsConnStr = $InvokeSqlCmd.Parameters.Keys -contains 'ConnectionString' }
 
 		# Query
 		$q = @"
@@ -205,24 +195,18 @@ ORDER BY
 		$rows = $null
 		try
 		{
-			if ($InvokeSqlCmd)
+			# Built-in SqlClient (no SQL module import for one query)
+			$conn = New-Object System.Data.SqlClient.SqlConnection $connStr
+			try
 			{
-				if ($supportsConnStr) { $rows = Invoke-Sqlcmd -ConnectionString $connStr -Query $q -ErrorAction Stop }
-				else { $rows = Invoke-Sqlcmd -ServerInstance $server -Database $dbName -Query $q -ErrorAction Stop }
-			}
-			else
-			{
-				$csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
-				$csb.PSBase.ConnectionString = $connStr
-				$conn = New-Object System.Data.SqlClient.SqlConnection $csb.ConnectionString
 				$conn.Open()
 				$cmd = $conn.CreateCommand(); $cmd.CommandText = $q; $cmd.CommandTimeout = 30
 				$da = New-Object System.Data.SqlClient.SqlDataAdapter $cmd
 				$dt = New-Object System.Data.DataTable
 				[void]$da.Fill($dt)
-				$conn.Close()
 				$rows = $dt
 			}
+			finally { $conn.Dispose() }
 		}
 		catch { $rows = $null }
 

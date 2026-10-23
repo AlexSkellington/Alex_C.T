@@ -82,7 +82,7 @@ function Open_Selected_Node_C_Path
 			}
 			elseif ($scale.PSObject.Properties['IPNetwork'] -and $scale.PSObject.Properties['IPDevice'])
 			{
-				$scaleHost = "$($scale.IPNetwork)$($scale.IPDevice)"
+				$scaleHost = (([string]$scale.IPNetwork).TrimEnd('.') + '.' + [string]$scale.IPDevice)
 			}
 			elseif ($scale.PSObject.Properties['ScaleName'])
 			{
