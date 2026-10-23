@@ -5,8 +5,9 @@
 #   Generates UltraVNC (.vnc) connection files for every lane, scale, and backoffice discovered
 #   in the store, saved under Desktop\Lanes, Desktop\Scales, Desktop\Backoffices. Default VNC
 #   password is 4330df922eb03b6e (UltraVNC encrypted form) unless a per-machine password is
-#   available; Ishida scales also get an Ishida_Wrapper_#.vnc. Scales with missing IP info are
-#   skipped and logged.
+#   available (a node that is off keeps the password already in its file); Ishida scale files
+#   allow untrusted servers. Scales with missing IP info are skipped. Unchanged files are not
+#   rewritten.
 #
 # Parameters:
 #   - LaneNumToMachineName       [hashtable] (required): LaneNumber => MachineName
@@ -430,7 +431,7 @@ PreemptiveUpdates=0
 			return [string]$AllVNCPasswords[$LookupKey]
 		}
 
-		return $DefaultVNCPassword
+		return $null   # unknown: writeExports keeps the existing file's password, else the default
 	}
 
 	$writeExports = {
@@ -448,19 +449,35 @@ PreemptiveUpdates=0
 
 		[void][System.IO.Directory]::CreateDirectory($TargetDir)
 
+		$written = 0
 		foreach ($item in $Exports)
 		{
-			$content = $vncTemplate.Replace('%%HOST%%', $item.Host).Replace('%%PASSWORD%%', $item.Password)
+			$existing = $null
+			if ([System.IO.File]::Exists($item.FilePath))
+			{
+				try { $existing = [System.IO.File]::ReadAllText($item.FilePath, $script:ansiPcEncoding) }
+				catch { $existing = $null }
+			}
+			# A node that was off (password not read this time) keeps the password already in its
+			# file - before, its real password was overwritten with the default
+			$password = $item.Password
+			if (-not $password -and $existing -and $existing -match '(?m)^password=([0-9A-Fa-f]+)\s*$') { $password = $matches[1] }
+			if (-not $password) { $password = $DefaultVNCPassword }
+
+			$content = $vncTemplate.Replace('%%HOST%%', $item.Host).Replace('%%PASSWORD%%', $password)
 			if ($item.AllowUntrustedServers)
 			{
 				$content = $content -replace 'AllowUntrustedServers=0', 'AllowUntrustedServers=1'
 			}
 
+			# Unchanged files are left alone (no rewrite + desktop refresh at every launch)
+			if ($existing -ceq $content) { continue }
 			[System.IO.File]::WriteAllText($item.FilePath, $content, $script:ansiPcEncoding)
 			& $log "Created: $($item.FilePath)" "green"
+			$written++
 		}
 
-		& $log "$($Exports.Count) $CategoryLabel VNC files written to $TargetDir`r`n" "blue"
+		& $log "$($Exports.Count) $CategoryLabel VNC files in $TargetDir ($written written, $($Exports.Count - $written) already current)`r`n" "blue"
 		return $Exports.Count
 	}
 

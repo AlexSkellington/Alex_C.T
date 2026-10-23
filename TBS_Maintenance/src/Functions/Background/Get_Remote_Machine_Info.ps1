@@ -2,8 +2,8 @@
 #                              FUNCTION: Get_Remote_Machine_Info
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Collects hardware/software info from selected lanes, scales and backoffices: runs
-#   concurrent WMI/CIM probes (plus an optional registry read via REG.EXE) per node, with an
+#   Collects hardware/software info from selected lanes, scales and backoffices: one runspace
+#   thread per node (10 at a time) tries WMI, then CIM, then REG.EXE, each bounded by a timeout, with an
 #   INI-based fallback for lanes/backoffices. Writes per-group info files and populates
 #   $script:LaneHardwareInfo / $script:ScaleHardwareInfo / $script:BackofficeHardwareInfo.
 #
@@ -53,7 +53,6 @@ function Get_Remote_Machine_Info
 	$maxConcurrentJobs = 10
 	$wmiTimeoutSeconds = 5
 	$cimTimeoutSeconds = 10
-	$regTimeoutSeconds = 30
 	$usePSRemotingFallback = $false # set $true to try PS-Session registry read before REG.EXE
 
 	# --------------------------- Outputs (reset) ---------------------------
@@ -356,6 +355,412 @@ function Get_Remote_Machine_Info
 		return $true
 	}
 
+
+	# --------------------------- Per-node probe (runs in a runspace pool) ---------------------------
+	# 1) ping, 2) WMI = CIM over DCOM, then CIM over WinRM - each with an operation timeout instead
+	# of the old nested Start-Job per protocol (three PowerShell processes per node), 3) optional
+	# PS-remoting registry read, 4) REG.EXE, 5) INI augmentation.
+	$nodeProbeText = {
+		param (
+			$NodeName,
+			$NodeNumber,
+			$iniPath,
+			$wmiTimeoutSeconds,
+			$cimTimeoutSeconds,
+			$usePSRemotingFallback
+		)
+
+		# --- 0) Result object scaffold ---
+		$info = [PSCustomObject]@{
+			Success			    = $false
+			SystemManufacturer  = $null
+			SystemProductName   = $null
+			CPU				    = $null
+			RAM				    = $null
+			OSInfo			    = $null
+			BIOS			    = $null
+			Method			    = $null
+			Error			    = $null
+			MachineNameOverride = $null
+		}
+
+		# Win32 classes through one CIM session; $null when unreachable / no data
+		$cimProbe = {
+			param ([string]$Protocol, [int]$TimeoutSec)
+			$session = $null
+			try
+			{
+				$session = New-CimSession -ComputerName $NodeName -SessionOption (New-CimSessionOption -Protocol $Protocol) -OperationTimeoutSec $TimeoutSec -ErrorAction Stop
+				$q = @{ CimSession = $session; OperationTimeoutSec = $TimeoutSec; ErrorAction = 'Stop' }
+				$sys = Get-CimInstance @q -ClassName Win32_ComputerSystem
+				if (-not ($sys -and $sys.Manufacturer -and $sys.Model)) { return $null }
+				$cpu = Get-CimInstance @q -ClassName Win32_Processor | Select-Object -First 1
+				$os = Get-CimInstance @q -ClassName Win32_OperatingSystem
+
+				$biosVerOut = $null
+				try
+				{
+					$bios = Get-CimInstance @q -ClassName Win32_BIOS
+					if ($bios)
+					{
+						if ($bios.SMBIOSBIOSVersion) { $biosVerOut = $bios.SMBIOSBIOSVersion }
+						elseif ($bios.BIOSVersion) { $biosVerOut = ($bios.BIOSVersion | Where-Object { $_ } | Select-Object -First 1) }
+						elseif ($bios.Version) { $biosVerOut = $bios.Version }
+						$dt = $null
+						if ($bios.ReleaseDate -is [datetime]) { $dt = $bios.ReleaseDate }
+						elseif ($bios.ReleaseDate) { try { $dt = [System.Management.ManagementDateTimeConverter]::ToDateTime([string]$bios.ReleaseDate) } catch { } }
+						if ($dt)
+						{
+							if ($biosVerOut) { $biosVerOut = "$biosVerOut ($($dt.ToString('yyyy-MM-dd')))" }
+							else { $biosVerOut = $dt.ToString('yyyy-MM-dd') }
+						}
+					}
+				}
+				catch { }
+
+				[PSCustomObject]@{
+					SystemManufacturer = $sys.Manufacturer
+					SystemProductName  = $sys.Model
+					CPU			       = $cpu.Name
+					RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
+					OSInfo			   = "$($os.Caption) ($($os.Version))"
+					BIOS			   = $biosVerOut
+					Method			   = $(if ($Protocol -eq 'Dcom') { 'WMI' } else { 'CIM' })
+				}
+			}
+			catch { $null }
+			finally { if ($session) { Remove-CimSession -CimSession $session -ErrorAction SilentlyContinue } }
+		}
+		$applyCim = {
+			param ($r)
+			$info.SystemManufacturer = $r.SystemManufacturer
+			$info.SystemProductName = $r.SystemProductName
+			$info.CPU = $r.CPU
+			$info.RAM = $r.RAM
+			$info.OSInfo = $r.OSInfo
+			if ($r.BIOS) { $info.BIOS = $r.BIOS }
+			$info.Method = $r.Method
+			$info.Success = $true
+			$info.Error = $null
+		}
+
+		# --- 1) Ping (1.5 s; Test-Connection waited up to 4 s per switched-off node) ---
+		$online = $false
+		try
+		{
+			$pinger = New-Object System.Net.NetworkInformation.Ping
+			try { $online = ($pinger.Send($NodeName, 1500).Status -eq [System.Net.NetworkInformation.IPStatus]::Success) }
+			finally { $pinger.Dispose() }
+		}
+		catch { $online = $false }
+
+		if (-not $online)
+		{
+			$info.Error = "Offline or unreachable."
+			$info.Method = "Offline"
+		}
+		else
+		{
+			# --- 2) WMI (DCOM), then CIM (WinRM) ---
+			$r = & $cimProbe 'Dcom' $wmiTimeoutSeconds
+			if ($r) { & $applyCim $r }
+			else
+			{
+				$info.Error = "WMI failed (access issue or null)"
+				$r = & $cimProbe 'Wsman' $cimTimeoutSeconds
+				if ($r) { & $applyCim $r }
+				else { $info.Error = "CIM failed (access issue or null)" }
+			}
+		}
+		# --- 3) PS-Remoting Registry (optional middle step) ---
+		if (-not $info.Success -and $usePSRemotingFallback)
+		{
+			$regResult = $null
+			try
+			{
+				$sessionOption = New-PSSessionOption -ConnectionTimeout 15000 -OpenTimeout 15000
+				$session = New-PSSession -ComputerName $NodeName -SessionOption $sessionOption -ErrorAction SilentlyContinue
+				if ($session)
+				{
+					$regResult = Invoke-Command -Session $session -ScriptBlock {
+						$out = [PSCustomObject]@{
+							SystemManufacturer = $null
+							SystemProductName  = $null
+							CPU			       = $null
+							OSInfo			   = $null
+							BIOS			   = $null
+							Success		       = $false
+							Error			   = $null
+							Method			   = 'REG(PSRemoting)'
+						}
+						try
+						{
+							$manuf = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemManufacturer -ErrorAction SilentlyContinue
+							$prod = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemProductName -ErrorAction SilentlyContinue
+							$cpu = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction SilentlyContinue
+							$os = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
+
+							# BIOS pieces
+							$biosVendor = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSVendor -ErrorAction SilentlyContinue).BIOSVendor
+							$biosVerStr = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSVersion -ErrorAction SilentlyContinue).BIOSVersion
+							if (-not $biosVerStr)
+							{
+								$biosVerStr = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemBiosVersion -ErrorAction SilentlyContinue).SystemBiosVersion
+							}
+							$biosDate = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSReleaseDate -ErrorAction SilentlyContinue).BIOSReleaseDate
+
+							# Build OSInfo
+							$osInfo = $null
+							if ($os -and $os.ProductName) { $osInfo = $os.ProductName }
+							if ($os -and $os.DisplayVersion)
+							{
+								if ($osInfo) { $osInfo = "$osInfo ($($os.DisplayVersion))" }
+								else { $osInfo = $os.DisplayVersion }
+							}
+							elseif ($os -and $os.CurrentBuild)
+							{
+								if ($osInfo) { $osInfo = "$osInfo (Build $($os.CurrentBuild))" }
+								else { $osInfo = "Build $($os.CurrentBuild)" }
+							}
+
+							# BIOS assemble
+							$biosOut = $null
+							if ($biosVendor -and $biosVerStr) { $biosOut = "$biosVendor $biosVerStr" }
+							elseif ($biosVerStr) { $biosOut = $biosVerStr }
+							elseif ($biosVendor) { $biosOut = $biosVendor }
+							if ($biosDate)
+							{
+								if ($biosOut) { $biosOut = "$biosOut ($biosDate)" }
+								else { $biosOut = $biosDate }
+							}
+
+							$out.SystemManufacturer = $manuf.SystemManufacturer
+							$out.SystemProductName = $prod.SystemProductName
+							$out.CPU = $cpu.ProcessorNameString
+							$out.OSInfo = $osInfo
+							$out.BIOS = $biosOut
+							$out.Success = $true
+						}
+						catch { $out.Error = $_.Exception.Message }
+						return $out
+					} 2>$null
+					Remove-PSSession $session -ErrorAction SilentlyContinue
+				}
+			}
+			catch
+			{
+				if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
+				$regResult = [PSCustomObject]@{
+					SystemManufacturer = $null
+					SystemProductName  = $null
+					CPU			       = $null
+					OSInfo			   = $null
+					BIOS			   = $null
+					Success		       = $false
+					Error			   = "PS-Remoting registry query failed"
+					Method			   = 'REG(PSRemoting)'
+				}
+			}
+
+			if ($regResult -and $regResult.Success)
+			{
+				if (-not $info.SystemManufacturer) { $info.SystemManufacturer = $regResult.SystemManufacturer }
+				if (-not $info.SystemProductName) { $info.SystemProductName = $regResult.SystemProductName }
+				if (-not $info.CPU) { $info.CPU = $regResult.CPU }
+				if (-not $info.OSInfo) { $info.OSInfo = $regResult.OSInfo }
+				if (-not $info.BIOS -and $regResult.BIOS) { $info.BIOS = $regResult.BIOS }
+				$info.Method = $regResult.Method
+				$info.Success = $true
+				$info.Error = $null
+			}
+			elseif (-not $info.Error)
+			{
+				if ($regResult) { $info.Error = $regResult.Error; $info.Method = 'REG(PSRemoting)' }
+			}
+		}
+
+		# --- 4) REG.EXE (starts RemoteRegistry if needed, then restores) ---
+		if (-not $info.Success)
+		{
+			$wasRunning = $false
+			$wasDisabled = $false
+			try
+			{
+				$state = sc.exe "\\$NodeName" query RemoteRegistry 2>$null | Select-String 'STATE'
+				$start = sc.exe "\\$NodeName" qc    RemoteRegistry 2>$null | Select-String 'START_TYPE'
+				if ($state -and $state.Line -match 'RUNNING') { $wasRunning = $true }
+				if ($start -and $start.Line -match 'DISABLED') { $wasDisabled = $true }
+				if ($wasDisabled) { sc.exe "\\$NodeName" config RemoteRegistry start= demand 2>$null | Out-Null }
+				if (-not $wasRunning) { sc.exe "\\$NodeName" start  RemoteRegistry 2>$null | Out-Null }
+
+				# tiny inline getter: returns only the DATA (no "REG_SZ")
+				$getVal = {
+					param ($hive,
+						$path,
+						$name)
+					$patternName = [regex]::Escape($name)
+					$raw = reg.exe QUERY "\\$NodeName\$hive\$path" /v $name 2>$null
+					if (-not $raw) { return $null }
+					$line = $raw | Select-String -Pattern "^\s*$patternName\s+REG_\w+\s+.+$" | Select-Object -First 1
+					if (-not $line) { return $null }
+					$data = $line.Line -replace "^\s*$patternName\s+REG_\w+\s+", ""
+					$data.Trim()
+				}
+
+				$manuf = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS'               'SystemManufacturer'
+				$prod = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS'               'SystemProductName'
+				$cpu = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\CentralProcessor\0' 'ProcessorNameString'
+				$osN = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'ProductName'
+				$osB = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'DisplayVersion'
+				$osV = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'CurrentBuild'
+
+				# BIOS from REG.EXE
+				$biosVendor = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSVendor'
+				$biosVerStr = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSVersion'
+				if (-not $biosVerStr)
+				{
+					$biosVerStr = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'SystemBiosVersion'
+				}
+				$biosDate = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSReleaseDate'
+				if ($biosVerStr)
+				{
+					$biosVerStr = $biosVerStr -replace '\x00', ' '
+					$biosVerStr = ($biosVerStr -split '\s{2,}' | Where-Object { $_ }) -join ' '
+					$biosVerStr = $biosVerStr.Trim()
+				}
+				$biosOut = $null
+				if ($biosVendor -and $biosVerStr) { $biosOut = "$biosVendor $biosVerStr" }
+				elseif ($biosVerStr) { $biosOut = $biosVerStr }
+				elseif ($biosVendor) { $biosOut = $biosVendor }
+				if ($biosDate)
+				{
+					if ($biosOut) { $biosOut = "$biosOut ($biosDate)" }
+					else { $biosOut = $biosDate }
+				}
+
+				# If CurrentBuild came as "0x... (7601)" keep the number in parentheses
+				if ($osV -and $osV -match '\((\d+)\)') { $osV = $matches[1] }
+
+				# build a clean OS string
+				$osInfo = $null
+				if ($osN) { $osInfo = $osN }
+				if ($osB)
+				{
+					if ($osInfo) { $osInfo = "$osInfo ($osB)" }
+					else { $osInfo = $osB }
+				}
+				elseif ($osV)
+				{
+					if ($osInfo) { $osInfo = "$osInfo (Build $osV)" }
+					else { $osInfo = "Build $osV" }
+				}
+
+				if ($manuf -or $prod -or $cpu -or $osInfo -or $biosOut)
+				{
+					if (-not $info.SystemManufacturer) { $info.SystemManufacturer = $manuf }
+					if (-not $info.SystemProductName) { $info.SystemProductName = $prod }
+					if (-not $info.CPU) { $info.CPU = $cpu }
+					if (-not $info.OSInfo) { $info.OSInfo = $osInfo }
+					if (-not $info.BIOS -and $biosOut) { $info.BIOS = $biosOut }
+					$info.Method = "REG.EXE"
+					$info.Success = $true
+					$info.Error = $null
+				}
+				else
+				{
+					$info.Method = "REG.EXE"
+					$info.Success = $false
+					$info.Error = "REG queries returned no data"
+				}
+			}
+			catch
+			{
+				$info.Method = "REG.EXE"
+				$info.Success = $false
+				$info.Error = "REG queries failed"
+			}
+			finally
+			{
+				try
+				{
+					if (-not $wasRunning) { sc.exe "\\$NodeName" stop RemoteRegistry 2>$null | Out-Null }
+					if ($wasDisabled) { sc.exe "\\$NodeName" config RemoteRegistry start= disabled 2>$null | Out-Null }
+				}
+				catch { }
+			}
+		}
+
+		# A node that did not answer the ping and not REG.EXE either is reported as offline
+		# (REG.EXE is still tried: some lanes block ICMP)
+		if (-not $info.Success -and -not $online)
+		{
+			$info.Error = "Offline or unreachable."
+			$info.Method = "Offline"
+		}
+
+		# --- 5) INI augmentation (optional; fills gaps if any fields still null) ---
+		$returnInfo = [PSCustomObject]@{
+			Machine    = $NodeName
+			NodeNumber = $NodeNumber
+			Info	   = $info
+			IniFound   = $false
+			IniPath    = $null
+		}
+		try
+		{
+			if ($iniPath)
+			{
+				$iniFolder = Split-Path $iniPath -Parent
+				$iniLeaf = Split-Path $iniPath -Leaf
+				$iniFile = Get-ChildItem -Path $iniFolder -Filter $iniLeaf -ErrorAction SilentlyContinue |
+				Sort-Object LastWriteTime -Descending |
+				Select-Object -First 1
+				if ($iniFile -and (Test-Path $iniFile.FullName))
+				{
+					$returnInfo.IniFound = $true
+					$returnInfo.IniPath = $iniFile.FullName
+					$iniLines = Get-Content $iniFile.FullName -Encoding UTF8 -ErrorAction SilentlyContinue
+
+					# tiny parser
+					$sections = @{ }
+					$curSec = ""
+					foreach ($line in $iniLines)
+					{
+						if ($line -match '^\[(.+)\]$')
+						{
+							$curSec = $matches[1]; $sections[$curSec] = @{ }
+						}
+						elseif ($line -match '^\s*([^=]+?)\s*=\s*(.*)$' -and $curSec)
+						{
+							$sections[$curSec][$matches[1].Trim()] = $matches[2].Trim()
+						}
+					}
+					if (-not $info.CPU -and $sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores'))
+					{
+						$cores = $sections['PROCESSOR']['Cores']
+						$arch = $sections['PROCESSOR']['Architecture']
+						if ($arch) { $info.CPU = "$cores cores ($arch)" }
+						else { $info.CPU = "$cores cores" }
+					}
+					if ($info.RAM -eq $null -and $sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
+					{
+						$ramMb = $sections['Memory']['PhysicalMemory']
+						if ($ramMb -match '^\d+$') { $info.RAM = [math]::Round([double]$ramMb/1024, 1) }
+						else { $info.RAM = $ramMb }
+					}
+					if (-not $info.OSInfo -and $sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
+					{
+						$info.OSInfo = $sections['OperatingSystem']['ProductName']
+					}
+				}
+			}
+		}
+		catch { }
+
+		return $returnInfo
+
+	}.ToString()
+
 	# --------------------------- Output folders ---------------------------
 	$desktop = [Environment]::GetFolderPath("Desktop")
 	$lanesDir = Join-Path $desktop "Lanes"
@@ -364,27 +769,22 @@ function Get_Remote_Machine_Info
 
 	# --------------------------- Process 3 categories uniformly ---------------------------
 	foreach ($section in @(
-			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; ScriptVar = 'LaneHardwareInfo'; InfoLinesVar = 'LaneInfoLines'; ResultsVar = 'LaneResults'; FileName = 'Lanes_Info.txt' },
-			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; ScriptVar = 'ScaleHardwareInfo'; InfoLinesVar = 'ScaleInfoLines'; ResultsVar = 'ScaleResults'; FileName = 'Scales_Info.txt' },
-			@{ Name = 'BackOffices'; Selected = $selectedBOs; Dir = $backofficesDir; ScriptVar = 'BackofficeHardwareInfo'; InfoLinesVar = 'BOInfoLines'; ResultsVar = 'BOResults'; FileName = 'Backoffices_Info.txt' }
+			@{ Name = 'Lanes'; Selected = $selectedLanes; Dir = $lanesDir; FileName = 'Lanes_Info.txt' },
+			@{ Name = 'Scales'; Selected = $selectedScales; Dir = $scalesDir; FileName = 'Scales_Info.txt' },
+			@{ Name = 'BackOffices'; Selected = $selectedBOs; Dir = $backofficesDir; FileName = 'Backoffices_Info.txt' }
 		))
 	{
 		if (-not $section.Selected -or $section.Selected.Count -eq 0) { continue }
 
 		& $log "Processing $($section.Name) nodes..." "yellow"
-		Set-Variable -Name $($section.ResultsVar) -Value @{ }
-		Set-Variable -Name $($section.InfoLinesVar) -Value @()
+		$results = @{ }
+		$infoLines = New-Object System.Collections.Generic.List[string]
 
-		$jobs = @()
-		$pending = @{ }
-
-		# Turn one finished node job into its info-file line + results entry, then drop the job
-		# (dot-sourced: updates this function's variables)
-		$collectNodeJob = {
-			param ($j)
-			$remoteName = $pending[$j.Id]
-			$result = Receive-Job $j 2>$null
-			$info = $result.Info
+		# One node's result -> its info-file line + results entry
+		$collectNode = {
+			param ([string]$remoteName, $result)
+			$info = if ($result) { $result.Info } else { $null }
+			if (-not $info) { $info = [PSCustomObject]@{ Success = $false; Error = 'No answer within the time limit'; Method = 'Timeout'; BIOS = $null } }
 
 			$line = "Machine Name: $remoteName |"
 			if ($info.Success)
@@ -406,16 +806,13 @@ function Get_Remote_Machine_Info
 			}
 			$biosText = if ($info.BIOS) { $info.BIOS } else { "Unknown" }
 			$line += " | BIOS: $biosText | Method: $($info.Method)"
-
-			Set-Variable -Name $section.InfoLinesVar -Value (@(Get-Variable -Name $section.InfoLinesVar -ValueOnly) + $line)
-			(Get-Variable -Name $section.ResultsVar -ValueOnly)[$remoteName] = $info
-
-			Stop-Job $j -ErrorAction SilentlyContinue
-			Remove-Job $j -Force -ErrorAction SilentlyContinue
-			$jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
-			[void]$pending.Remove($j.Id)
+			$infoLines.Add($line)
+			$results[$remoteName] = $info
 		}
 
+		$pool = [RunspaceFactory]::CreateRunspacePool(1, $maxConcurrentJobs)
+		$pool.Open()
+		$queued = @()
 		foreach ($sel in $section.Selected)
 		{
 			# -------- Canonical per-node identity: $NodeNumber (code) + $NodeName (machine/IP) --------
@@ -459,521 +856,45 @@ function Get_Remote_Machine_Info
 			# -------- Optional INI path (used to augment fields) --------
 			$iniPattern = "INFO_${StoreNumber}${NodeNumber}_SMSStart.ini"
 			if ($section.Name -eq 'Lanes') { $iniPath = Join-Path "\\$NodeName\storeman\office\dbs" $iniPattern }
-			elseif ($section.Name -eq 'BackOffices') { $iniPath = Join-Path $DbsPath                         $iniPattern }
+			elseif ($section.Name -eq 'BackOffices') { $iniPath = Join-Path $DbsPath $iniPattern }
 			else { $iniPath = $null }
 
-			# -------- Per-node job (throttled outside) --------
-			$job = Start-Job -Name ("RemoteMachineInfo_Node_{0}" -f $NodeName) -ArgumentList $NodeName, $NodeNumber, $iniPath, $wmiTimeoutSeconds, $cimTimeoutSeconds, $regTimeoutSeconds, $usePSRemotingFallback `
-							 -ScriptBlock {
-				param (
-					$NodeName,
-					$NodeNumber,
-					$iniPath,
-					$wmiTimeoutSeconds,
-					$cimTimeoutSeconds,
-					$regTimeoutSeconds,
-					$usePSRemotingFallback
-				)
-
-				# --- 0) Result object scaffold ---
-				$info = [PSCustomObject]@{
-					Success			    = $false
-					SystemManufacturer  = $null
-					SystemProductName   = $null
-					CPU				    = $null
-					RAM				    = $null
-					OSInfo			    = $null
-					BIOS			    = $null
-					Method			    = $null
-					Error			    = $null
-					MachineNameOverride = $null
-				}
-
-				# --- 1) WMI (fast) ---
-				if (-not (Test-Connection -ComputerName $NodeName -Count 1 -Quiet -ErrorAction SilentlyContinue))
-				{
-					$info.Error = "Offline or unreachable."
-					$info.Method = "Offline"
-				}
-				else
-				{
-					$wmiJob = Start-Job -Name ("RemoteMachineInfo_WMI_{0}" -f $NodeName) -ScriptBlock {
-						param ($NodeName)
-						try
-						{
-							$sys = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $NodeName -ErrorAction SilentlyContinue
-							$cpu = Get-WmiObject -Class Win32_Processor -ComputerName $NodeName -ErrorAction SilentlyContinue | Select-Object -First 1
-							$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $NodeName -ErrorAction SilentlyContinue
-
-							# BIOS
-							$biosVerOut = $null
-							try
-							{
-								$bios = Get-WmiObject -Class Win32_BIOS -ComputerName $NodeName -ErrorAction SilentlyContinue
-								if ($bios)
-								{
-									if ($bios.SMBIOSBIOSVersion) { $biosVerOut = $bios.SMBIOSBIOSVersion }
-									elseif ($bios.BIOSVersion) { $biosVerOut = ($bios.BIOSVersion | Where-Object { $_ } | Select-Object -First 1) }
-									elseif ($bios.Version) { $biosVerOut = $bios.Version }
-									if ($bios.ReleaseDate)
-									{
-										try
-										{
-											$dt = [System.Management.ManagementDateTimeConverter]::ToDateTime($bios.ReleaseDate)
-											if ($dt)
-											{
-												if ($biosVerOut) { $biosVerOut = "$biosVerOut ($($dt.ToString('yyyy-MM-dd')))" }
-												else { $biosVerOut = $dt.ToString('yyyy-MM-dd') }
-											}
-										}
-										catch { }
-									}
-								}
-							}
-							catch { }
-
-							if ($sys -and $sys.Manufacturer -and $sys.Model)
-							{
-								[PSCustomObject]@{
-									SystemManufacturer = $sys.Manufacturer
-									SystemProductName  = $sys.Model
-									CPU			       = $cpu.Name
-									RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
-									OSInfo			   = "$($os.Caption) ($($os.Version))"
-									BIOS			   = $biosVerOut
-									Method			   = "WMI"
-								}
-							}
-							else { $null }
-						}
-						catch { $null }
-					} -ArgumentList $NodeName
-
-					if (Wait-Job $wmiJob -Timeout $wmiTimeoutSeconds)
-					{
-						$wmiResult = Receive-Job $wmiJob 2>$null
-						Remove-Job  $wmiJob -Force -ErrorAction SilentlyContinue
-					}
-					else
-					{
-						Stop-Job    $wmiJob -ErrorAction SilentlyContinue
-						Remove-Job  $wmiJob -Force -ErrorAction SilentlyContinue
-						$wmiResult = $null
-					}
-
-					if ($wmiResult -and $wmiResult.SystemManufacturer -and $wmiResult.SystemProductName)
-					{
-						$info.SystemManufacturer = $wmiResult.SystemManufacturer
-						$info.SystemProductName = $wmiResult.SystemProductName
-						$info.CPU = $wmiResult.CPU
-						$info.RAM = $wmiResult.RAM
-						$info.OSInfo = $wmiResult.OSInfo
-						if ($wmiResult.BIOS) { $info.BIOS = $wmiResult.BIOS }
-						$info.Method = "WMI"
-						$info.Success = $true
-					}
-					else
-					{
-						$info.Error = "WMI failed (access issue or null)"
-					}
-				}
-
-				# --- 2) CIM (if WMI failed) ---
-				if (-not $info.Success)
-				{
-					$cimJob = Start-Job -Name ("RemoteMachineInfo_CIM_{0}" -f $NodeName) -ScriptBlock {
-						param ($NodeName)
-						try
-						{
-							$session = New-CimSession -ComputerName $NodeName -ErrorAction SilentlyContinue
-							if ($session)
-							{
-								$sys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem  2>$null
-								$cpu = Get-CimInstance -CimSession $session -ClassName Win32_Processor       2>$null | Select-Object -First 1
-								$os = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem  2>$null
-
-								# BIOS
-								$biosVerOut = $null
-								try
-								{
-									$bios = Get-CimInstance -CimSession $session -ClassName Win32_BIOS 2>$null
-									if ($bios)
-									{
-										if ($bios.SMBIOSBIOSVersion) { $biosVerOut = $bios.SMBIOSBIOSVersion }
-										elseif ($bios.BIOSVersion) { $biosVerOut = ($bios.BIOSVersion | Where-Object { $_ } | Select-Object -First 1) }
-										elseif ($bios.Version) { $biosVerOut = $bios.Version }
-										if ($bios.ReleaseDate)
-										{
-											try
-											{
-												$dt = [System.Management.ManagementDateTimeConverter]::ToDateTime($bios.ReleaseDate)
-												if ($dt)
-												{
-													if ($biosVerOut) { $biosVerOut = "$biosVerOut ($($dt.ToString('yyyy-MM-dd')))" }
-													else { $biosVerOut = $dt.ToString('yyyy-MM-dd') }
-												}
-											}
-											catch { }
-										}
-									}
-								}
-								catch { }
-
-								Remove-CimSession $session 2>$null
-								if ($sys -and $sys.Manufacturer -and $sys.Model)
-								{
-									[PSCustomObject]@{
-										SystemManufacturer = $sys.Manufacturer
-										SystemProductName  = $sys.Model
-										CPU			       = $cpu.Name
-										RAM			       = [math]::Round($sys.TotalPhysicalMemory / 1GB, 1)
-										OSInfo			   = "$($os.Caption) ($($os.Version))"
-										BIOS			   = $biosVerOut
-										Method			   = "CIM"
-									}
-								}
-								else { $null }
-							}
-							else { $null }
-						}
-						catch { $null }
-					} -ArgumentList $NodeName
-
-					if (Wait-Job $cimJob -Timeout $cimTimeoutSeconds)
-					{
-						$cimResult = Receive-Job $cimJob 2>$null
-						Remove-Job  $cimJob -Force -ErrorAction SilentlyContinue
-					}
-					else
-					{
-						Stop-Job    $cimJob -ErrorAction SilentlyContinue
-						Remove-Job  $cimJob -Force -ErrorAction SilentlyContinue
-						$cimResult = $null
-					}
-
-					if ($cimResult -and $cimResult.SystemManufacturer -and $cimResult.SystemProductName)
-					{
-						$info.SystemManufacturer = $cimResult.SystemManufacturer
-						$info.SystemProductName = $cimResult.SystemProductName
-						$info.CPU = $cimResult.CPU
-						$info.RAM = $cimResult.RAM
-						$info.OSInfo = $cimResult.OSInfo
-						if ($cimResult.BIOS) { $info.BIOS = $cimResult.BIOS }
-						$info.Method = "CIM"
-						$info.Success = $true
-					}
-					else
-					{
-						$info.Error = "CIM failed (access issue or null)"
-					}
-				}
-
-				# --- 3) PS-Remoting Registry (optional middle step) ---
-				if (-not $info.Success -and $usePSRemotingFallback)
-				{
-					$regResult = $null
-					try
-					{
-						$sessionOption = New-PSSessionOption -ConnectionTimeout 15000 -OpenTimeout 15000
-						$session = New-PSSession -ComputerName $NodeName -SessionOption $sessionOption -ErrorAction SilentlyContinue
-						if ($session)
-						{
-							$regResult = Invoke-Command -Session $session -TimeoutSec 30 -ScriptBlock {
-								$out = [PSCustomObject]@{
-									SystemManufacturer = $null
-									SystemProductName  = $null
-									CPU			       = $null
-									OSInfo			   = $null
-									BIOS			   = $null
-									Success		       = $false
-									Error			   = $null
-									Method			   = 'REG(PSRemoting)'
-								}
-								try
-								{
-									$manuf = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemManufacturer -ErrorAction SilentlyContinue
-									$prod = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemProductName -ErrorAction SilentlyContinue
-									$cpu = Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction SilentlyContinue
-									$os = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
-
-									# BIOS pieces
-									$biosVendor = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSVendor -ErrorAction SilentlyContinue).BIOSVendor
-									$biosVerStr = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSVersion -ErrorAction SilentlyContinue).BIOSVersion
-									if (-not $biosVerStr)
-									{
-										$biosVerStr = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name SystemBiosVersion -ErrorAction SilentlyContinue).SystemBiosVersion
-									}
-									$biosDate = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS' -Name BIOSReleaseDate -ErrorAction SilentlyContinue).BIOSReleaseDate
-
-									# Build OSInfo
-									$osInfo = $null
-									if ($os -and $os.ProductName) { $osInfo = $os.ProductName }
-									if ($os -and $os.DisplayVersion)
-									{
-										if ($osInfo) { $osInfo = "$osInfo ($($os.DisplayVersion))" }
-										else { $osInfo = $os.DisplayVersion }
-									}
-									elseif ($os -and $os.CurrentBuild)
-									{
-										if ($osInfo) { $osInfo = "$osInfo (Build $($os.CurrentBuild))" }
-										else { $osInfo = "Build $($os.CurrentBuild)" }
-									}
-
-									# BIOS assemble
-									$biosOut = $null
-									if ($biosVendor -and $biosVerStr) { $biosOut = "$biosVendor $biosVerStr" }
-									elseif ($biosVerStr) { $biosOut = $biosVerStr }
-									elseif ($biosVendor) { $biosOut = $biosVendor }
-									if ($biosDate)
-									{
-										if ($biosOut) { $biosOut = "$biosOut ($biosDate)" }
-										else { $biosOut = $biosDate }
-									}
-
-									$out.SystemManufacturer = $manuf.SystemManufacturer
-									$out.SystemProductName = $prod.SystemProductName
-									$out.CPU = $cpu.ProcessorNameString
-									$out.OSInfo = $osInfo
-									$out.BIOS = $biosOut
-									$out.Success = $true
-								}
-								catch { $out.Error = $_.Exception.Message }
-								return $out
-							} 2>$null
-							Remove-PSSession $session -ErrorAction SilentlyContinue
-						}
-					}
-					catch
-					{
-						if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
-						$regResult = [PSCustomObject]@{
-							SystemManufacturer = $null
-							SystemProductName  = $null
-							CPU			       = $null
-							OSInfo			   = $null
-							BIOS			   = $null
-							Success		       = $false
-							Error			   = "PS-Remoting registry query failed"
-							Method			   = 'REG(PSRemoting)'
-						}
-					}
-
-					if ($regResult -and $regResult.Success)
-					{
-						if (-not $info.SystemManufacturer) { $info.SystemManufacturer = $regResult.SystemManufacturer }
-						if (-not $info.SystemProductName) { $info.SystemProductName = $regResult.SystemProductName }
-						if (-not $info.CPU) { $info.CPU = $regResult.CPU }
-						if (-not $info.OSInfo) { $info.OSInfo = $regResult.OSInfo }
-						if (-not $info.BIOS -and $regResult.BIOS) { $info.BIOS = $regResult.BIOS }
-						$info.Method = $regResult.Method
-						$info.Success = $true
-						$info.Error = $null
-					}
-					elseif (-not $info.Error)
-					{
-						if ($regResult) { $info.Error = $regResult.Error; $info.Method = 'REG(PSRemoting)' }
-					}
-				}
-
-				# --- 4) REG.EXE (starts RemoteRegistry if needed, then restores) ---
-				if (-not $info.Success)
-				{
-					$wasRunning = $false
-					$wasDisabled = $false
-					try
-					{
-						$state = sc.exe "\\$NodeName" query RemoteRegistry 2>$null | Select-String 'STATE'
-						$start = sc.exe "\\$NodeName" qc    RemoteRegistry 2>$null | Select-String 'START_TYPE'
-						if ($state -and $state.Line -match 'RUNNING') { $wasRunning = $true }
-						if ($start -and $start.Line -match 'DISABLED') { $wasDisabled = $true }
-						if ($wasDisabled) { sc.exe "\\$NodeName" config RemoteRegistry start= demand 2>$null | Out-Null }
-						if (-not $wasRunning) { sc.exe "\\$NodeName" start  RemoteRegistry 2>$null | Out-Null }
-
-						# tiny inline getter: returns only the DATA (no "REG_SZ")
-						$getVal = {
-							param ($hive,
-								$path,
-								$name)
-							$patternName = [regex]::Escape($name)
-							$raw = reg.exe QUERY "\\$NodeName\$hive\$path" /v $name 2>$null
-							if (-not $raw) { return $null }
-							$line = $raw | Select-String -Pattern "^\s*$patternName\s+REG_\w+\s+.+$" | Select-Object -First 1
-							if (-not $line) { return $null }
-							$data = $line.Line -replace "^\s*$patternName\s+REG_\w+\s+", ""
-							$data.Trim()
-						}
-
-						$manuf = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS'               'SystemManufacturer'
-						$prod = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS'               'SystemProductName'
-						$cpu = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\CentralProcessor\0' 'ProcessorNameString'
-						$osN = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'ProductName'
-						$osB = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'DisplayVersion'
-						$osV = & $getVal 'HKLM' 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'   'CurrentBuild'
-
-						# BIOS from REG.EXE
-						$biosVendor = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSVendor'
-						$biosVerStr = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSVersion'
-						if (-not $biosVerStr)
-						{
-							$biosVerStr = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'SystemBiosVersion'
-						}
-						$biosDate = & $getVal 'HKLM' 'HARDWARE\DESCRIPTION\System\BIOS' 'BIOSReleaseDate'
-						if ($biosVerStr)
-						{
-							$biosVerStr = $biosVerStr -replace '\x00', ' '
-							$biosVerStr = ($biosVerStr -split '\s{2,}' | Where-Object { $_ }) -join ' '
-							$biosVerStr = $biosVerStr.Trim()
-						}
-						$biosOut = $null
-						if ($biosVendor -and $biosVerStr) { $biosOut = "$biosVendor $biosVerStr" }
-						elseif ($biosVerStr) { $biosOut = $biosVerStr }
-						elseif ($biosVendor) { $biosOut = $biosVendor }
-						if ($biosDate)
-						{
-							if ($biosOut) { $biosOut = "$biosOut ($biosDate)" }
-							else { $biosOut = $biosDate }
-						}
-
-						# If CurrentBuild came as "0x... (7601)" keep the number in parentheses
-						if ($osV -and $osV -match '\((\d+)\)') { $osV = $matches[1] }
-
-						# build a clean OS string
-						$osInfo = $null
-						if ($osN) { $osInfo = $osN }
-						if ($osB)
-						{
-							if ($osInfo) { $osInfo = "$osInfo ($osB)" }
-							else { $osInfo = $osB }
-						}
-						elseif ($osV)
-						{
-							if ($osInfo) { $osInfo = "$osInfo (Build $osV)" }
-							else { $osInfo = "Build $osV" }
-						}
-
-						if ($manuf -or $prod -or $cpu -or $osInfo -or $biosOut)
-						{
-							if (-not $info.SystemManufacturer) { $info.SystemManufacturer = $manuf }
-							if (-not $info.SystemProductName) { $info.SystemProductName = $prod }
-							if (-not $info.CPU) { $info.CPU = $cpu }
-							if (-not $info.OSInfo) { $info.OSInfo = $osInfo }
-							if (-not $info.BIOS -and $biosOut) { $info.BIOS = $biosOut }
-							$info.Method = "REG.EXE"
-							$info.Success = $true
-							$info.Error = $null
-						}
-						else
-						{
-							$info.Method = "REG.EXE"
-							$info.Success = $false
-							$info.Error = "REG queries returned no data"
-						}
-					}
-					catch
-					{
-						$info.Method = "REG.EXE"
-						$info.Success = $false
-						$info.Error = "REG queries failed"
-					}
-					finally
-					{
-						try
-						{
-							if (-not $wasRunning) { sc.exe "\\$NodeName" stop RemoteRegistry 2>$null | Out-Null }
-							if ($wasDisabled) { sc.exe "\\$NodeName" config RemoteRegistry start= disabled 2>$null | Out-Null }
-						}
-						catch { }
-					}
-				}
-
-				# --- 5) INI augmentation (optional; fills gaps if any fields still null) ---
-				$returnInfo = [PSCustomObject]@{
-					Machine    = $NodeName
-					NodeNumber = $NodeNumber
-					Info	   = $info
-					IniFound   = $false
-					IniPath    = $null
-				}
-				try
-				{
-					if ($iniPath)
-					{
-						$iniFolder = Split-Path $iniPath -Parent
-						$iniLeaf = Split-Path $iniPath -Leaf
-						$iniFile = Get-ChildItem -Path $iniFolder -Filter $iniLeaf -ErrorAction SilentlyContinue |
-						Sort-Object LastWriteTime -Descending |
-						Select-Object -First 1
-						if ($iniFile -and (Test-Path $iniFile.FullName))
-						{
-							$returnInfo.IniFound = $true
-							$returnInfo.IniPath = $iniFile.FullName
-							$iniLines = Get-Content $iniFile.FullName -Encoding UTF8 -ErrorAction SilentlyContinue
-
-							# tiny parser
-							$sections = @{ }
-							$curSec = ""
-							foreach ($line in $iniLines)
-							{
-								if ($line -match '^\[(.+)\]$')
-								{
-									$curSec = $matches[1]; $sections[$curSec] = @{ }
-								}
-								elseif ($line -match '^\s*([^=]+?)\s*=\s*(.*)$' -and $curSec)
-								{
-									$sections[$curSec][$matches[1].Trim()] = $matches[2].Trim()
-								}
-							}
-							if (-not $info.CPU -and $sections.ContainsKey('PROCESSOR') -and $sections['PROCESSOR'].ContainsKey('Cores'))
-							{
-								$cores = $sections['PROCESSOR']['Cores']
-								$arch = $sections['PROCESSOR']['Architecture']
-								if ($arch) { $info.CPU = "$cores cores ($arch)" }
-								else { $info.CPU = "$cores cores" }
-							}
-							if ($info.RAM -eq $null -and $sections.ContainsKey('Memory') -and $sections['Memory'].ContainsKey('PhysicalMemory'))
-							{
-								$ramMb = $sections['Memory']['PhysicalMemory']
-								if ($ramMb -match '^\d+$') { $info.RAM = [math]::Round([double]$ramMb/1024, 1) }
-								else { $info.RAM = $ramMb }
-							}
-							if (-not $info.OSInfo -and $sections.ContainsKey('OperatingSystem') -and $sections['OperatingSystem'].ContainsKey('ProductName'))
-							{
-								$info.OSInfo = $sections['OperatingSystem']['ProductName']
-							}
-						}
-					}
-				}
-				catch { }
-
-				return $returnInfo
-			}
-
-			$jobs = @($jobs) + $job
-			$pending[$job.Id] = $NodeName
-
-			# Throttle: wait for a slot (a job that does not finish within 60 s is collected in the drain below)
-			while ($jobs.Count -ge $maxConcurrentJobs)
-			{
-				$done = Wait-Job -Job $jobs -Any -Timeout 60
-				if (-not $done) { break }
-				foreach ($j in @($done)) { . $collectNodeJob $j }
-			}
+			$ps = [PowerShell]::Create()
+			$ps.RunspacePool = $pool
+			$null = $ps.AddScript($nodeProbeText).AddArgument($NodeName).AddArgument($NodeNumber).AddArgument($iniPath).AddArgument($wmiTimeoutSeconds).AddArgument($cimTimeoutSeconds).AddArgument($usePSRemotingFallback)
+			$queued += [pscustomobject]@{ Name = [string]$NodeName; PS = $ps; Handle = $ps.BeginInvoke() }
 		} # end foreach selected
 
-		# Drain remaining jobs
-		if ($jobs.Count -gt 0)
+		# Collect in order; 90 s for the first batch of nodes plus 30 s per further batch
+		$deadline = (Get-Date).AddSeconds(90 + 30 * [Math]::Max(0, [Math]::Ceiling($queued.Count / $maxConcurrentJobs) - 1))
+		$hung = $false
+		foreach ($q in $queued)
 		{
-			Wait-Job -Job $jobs -Timeout 60 | Out-Null
-			foreach ($j in @($jobs)) { . $collectNodeJob $j }
+			$result = $null
+			$left = [int][Math]::Max(0, ($deadline - (Get-Date)).TotalMilliseconds)
+			if ($q.Handle.AsyncWaitHandle.WaitOne($left))
+			{
+				try { $result = @($q.PS.EndInvoke($q.Handle)) | Select-Object -Last 1 }
+				catch { $result = $null }
+				$q.PS.Dispose()
+			}
+			else
+			{
+				try { $null = $q.PS.BeginStop($null, $null) }
+				catch { }
+				$hung = $true
+			}
+			& $collectNode $q.Name $result
 		}
+		if ($hung) { try { $null = $pool.BeginClose($null, $null) } catch { } }
+		else { try { $pool.Close(); $pool.Dispose() } catch { } }
 
 		# Write file (stable sorting: IPs zero-padded; otherwise lexical)
-		$infolines = Get-Variable -Name $($section.InfoLinesVar) -ValueOnly
-		if ($infolines.Count)
+		if ($infoLines.Count)
 		{
 			[void][System.IO.Directory]::CreateDirectory($section.Dir)
 
-			$sortedLines = $infolines | Sort-Object {
+			$sortedLines = $infoLines | Sort-Object {
 				if ($_ -match "^Machine Name: ([^|]+)")
 				{
 					$name = $matches[1].Trim()
@@ -992,10 +913,9 @@ function Get_Remote_Machine_Info
 		}
 
 		# Publish programmatic map
-		$mapOut = Get-Variable -Name $($section.ResultsVar) -ValueOnly
-		if ($section.Name -eq 'Lanes') { $script:LaneHardwareInfo = $mapOut }
-		elseif ($section.Name -eq 'Scales') { $script:ScaleHardwareInfo = $mapOut }
-		elseif ($section.Name -eq 'BackOffices') { $script:BackofficeHardwareInfo = $mapOut }
+		if ($section.Name -eq 'Lanes') { $script:LaneHardwareInfo = $results }
+		elseif ($section.Name -eq 'Scales') { $script:ScaleHardwareInfo = $results }
+		elseif ($section.Name -eq 'BackOffices') { $script:BackofficeHardwareInfo = $results }
 
 		& $log "Completed processing $($section.Name).`r`n" "green"
 	} # end sections

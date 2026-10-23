@@ -5,7 +5,9 @@
 #   Scans all lanes, backoffices and scales for the UltraVNC configuration file (UltraVNC.ini,
 #   any case) in the standard install locations, extracts the encrypted VNC password and
 #   returns a machine-name -> password hashtable. Uses a fixed default password for nodes
-#   where no UltraVNC.ini can be read.
+#   where no UltraVNC.ini can be read. Online lanes / backoffices / scales are read in
+#   parallel in a runspace pool (20 threads, 2 minutes in total); Bizerba scales one by one
+#   (they need the bizuser credential).
 #
 # Parameters:
 #   - LaneNumToMachineName       [hashtable]: lane number -> machine name
@@ -125,128 +127,81 @@ function Get_All_VNC_Passwords
 		}
 	}
 
-	# 3. Start jobs for online regular nodes
-	$jobs = @()
-	$MaxConcurrentJobs = 20 # Increased for faster processing
-
-	foreach ($machineName in $OnlineNodes)
-	{
-		while ($jobs.Count -ge $MaxConcurrentJobs)
-		{
-			$done = Wait-Job -Job $jobs -Any -Timeout 10
-			if ($done)
-			{
-				# Receive BEFORE removing: Remove-Job on a finished job discards
-				# its output, which silently dropped these machines' VNC passwords.
-				# -Any returns ONE job per wait, so only the reported jobs are
-				# processed here; everything else stays in the pool for the
-				# final Wait-Job/collect below (filtering by state here also
-				# dropped jobs that finished between waits).
-				$processedIds = @($done | ForEach-Object { $_.Id })
-				foreach ($j in @($done))
-				{
-					$doneResult = Receive-Job $j
-					if ($doneResult -and $doneResult.Machine) { $AllVNCPasswords[$doneResult.Machine] = $doneResult.Password }
-					Remove-Job $j -Force
-				}
-				$jobs = @($jobs | Where-Object { $processedIds -notcontains $_.Id })
-			}
+	# 3. Read ultravnc.ini of every online node in parallel - runspace threads, not one whole
+	#    PowerShell process per node. The admin share first (fast, what works in the stores);
+	#    WinRM only when the share cannot be read. (Before v2.7.7 WinRM came first and always
+	#    failed: Invoke-Command has no -TimeoutSec in Windows PowerShell 5.1.)
+	$readIniText = {
+		param ($machineName, $uvncFolders)
+		$findPasswd = {
+			param ($lines)
+			foreach ($line in $lines) { if ($line -match '^\s*passwd\s*=\s*([0-9A-Fa-f]+)') { return $matches[1] } }
+			return $null
 		}
-		$jobs += Start-Job -Name ("GetAllVNCPasswords_{0}" -f $machineName) -ArgumentList $machineName, $uvncFolders -ScriptBlock {
-			param ($machineName,
-				$uvncFolders)
-			$password = $null
-			foreach ($folder in $uvncFolders)
+		$password = $null
+		foreach ($folder in $uvncFolders)
+		{
+			$iniPath = "\\$machineName\$folder\ultravnc.ini"
+			try { if ([System.IO.File]::Exists($iniPath)) { $password = & $findPasswd ([System.IO.File]::ReadAllLines($iniPath)) } }
+			catch { }
+			if ($password) { break }
+		}
+		if (-not $password)
+		{
+			try
+			{
+				$opt = New-PSSessionOption -OpenTimeout 10000 -OperationTimeout 20000
+				$lines = Invoke-Command -ComputerName $machineName -SessionOption $opt -ErrorAction Stop -ScriptBlock {
+					param ($dirs)
+					foreach ($d in $dirs) { $p = Join-Path $d 'ultravnc.ini'; if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p; break } }
+				} -ArgumentList (, @($uvncFolders | ForEach-Object { 'C:\' + $_.Substring(3) }))
+				$password = & $findPasswd $lines
+			}
+			catch { }
+		}
+		return @{ Machine = $machineName; Password = $password }
+	}.ToString()
+
+	$MaxConcurrentJobs = 20
+	if ($OnlineNodes.Count -gt 0)
+	{
+		$poolSize = [Math]::Min($MaxConcurrentJobs, [Math]::Max(1, $OnlineNodes.Count))
+		$pool = [RunspaceFactory]::CreateRunspacePool(1, $poolSize)
+		$pool.Open()
+		$tasks = @(foreach ($machineName in $OnlineNodes)
+			{
+				$ps = [PowerShell]::Create()
+				$ps.RunspacePool = $pool
+				$null = $ps.AddScript($readIniText).AddArgument($machineName).AddArgument($uvncFolders)
+				[pscustomobject]@{ Machine = $machineName; PS = $ps; Handle = $ps.BeginInvoke() }
+			})
+		$deadline = (Get-Date).AddSeconds(120)
+		$hung = $false
+		foreach ($task in $tasks)
+		{
+			$left = [int][Math]::Max(0, ($deadline - (Get-Date)).TotalMilliseconds)
+			if ($task.Handle.AsyncWaitHandle.WaitOne($left))
 			{
 				try
 				{
-					$iniFiles = Invoke-Command -ComputerName $machineName -TimeoutSec 30 -ScriptBlock {
-						param ($dir)
-						if (Test-Path $dir)
-						{
-							Get-ChildItem -Path $dir -Filter "*.ini" -File | ForEach-Object {
-								if ($_.Name.ToLower() -eq "ultravnc.ini")
-								{
-									$_.FullName
-								}
-							}
-						}
-					} -ArgumentList ("C:\" + $folder.Substring(3)) -ErrorAction Stop
-					foreach ($iniFile in $iniFiles)
-					{
-						$content = Invoke-Command -ComputerName $machineName -TimeoutSec 30 -ScriptBlock {
-							param ($path)
-							if (Test-Path $path)
-							{
-								Get-Content $path -ErrorAction Stop
-							}
-						} -ArgumentList $iniFile -ErrorAction Stop
-						foreach ($line in $content)
-						{
-							if ($line -match '^\s*passwd\s*=\s*([0-9A-Fa-f]+)')
-							{
-								$password = $matches[1]
-								break
-							}
-						}
-						if ($password) { break }
-					}
+					$r = @($task.PS.EndInvoke($task.Handle)) | Select-Object -Last 1
+					if ($r -and $r.Machine) { $AllVNCPasswords[$r.Machine] = $r.Password }
 				}
-				catch
-				{
-					try
-					{
-						$remotePath = "\\$machineName\$folder"
-						if (Test-Path $remotePath -ErrorAction SilentlyContinue)
-						{
-							$iniFiles = Get-ChildItem -Path $remotePath -Filter "*.ini" -File -ErrorAction SilentlyContinue | Where-Object {
-								$_.Name.ToLower() -eq "ultravnc.ini"
-							}
-							foreach ($iniFile in $iniFiles)
-							{
-								$content = Get-Content $iniFile.FullName -ErrorAction Stop
-								foreach ($line in $content)
-								{
-									if ($line -match '^\s*passwd\s*=\s*([0-9A-Fa-f]+)')
-									{
-										$password = $matches[1]
-										break
-									}
-								}
-								if ($password) { break }
-							}
-						}
-					}
-					catch { continue }
-				}
-				if ($password) { break }
+				catch { $AllVNCPasswords[$task.Machine] = $null }
+				$task.PS.Dispose()
 			}
-			return @{ Machine = $machineName; Password = $password }
+			else
+			{
+				# Still stuck after 2 minutes: give up on it without blocking on the stop
+				$AllVNCPasswords[$task.Machine] = $null
+				try { $null = $task.PS.BeginStop($null, $null) }
+				catch { }
+				$hung = $true
+			}
 		}
+		if ($hung) { try { $null = $pool.BeginClose($null, $null) } catch { } }
+		else { try { $pool.Close(); $pool.Dispose() } catch { } }
 	}
-
-	# Only wait if there is anything to wait for: when the throttle loop above
-	# has already drained all jobs, $jobs is empty/null and Wait-Job throws a
-	# parameter validation error.
-	if (@($jobs).Count -gt 0)
-	{
-		$null = Wait-Job -Job $jobs -Timeout 120
-		foreach ($j in @($jobs))
-		{
-			if ($j.State -ne 'Completed') { Stop-Job -Job $j -ErrorAction SilentlyContinue }
-		}
-	}
-
-	foreach ($j in $jobs)
-	{
-		$result = Receive-Job $j
-		if ($result -and $result.Machine)
-		{
-			$AllVNCPasswords[$result.Machine] = $result.Password
-		}
-		Remove-Job $j -Force
-	}
-
 	# 4. Handle Bizerba scales (using cmdkey/bizuser logic, serially)
 	foreach ($b in $BizerbaScales)
 	{

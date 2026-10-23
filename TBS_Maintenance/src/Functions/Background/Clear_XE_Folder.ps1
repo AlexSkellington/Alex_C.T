@@ -134,6 +134,7 @@ function Clear_XE_Folder
 			$fsw.NotifyFilter = [IO.NotifyFilters]'FileName, DirectoryName, LastWrite, CreationTime'
 
 			# --- Shared processor (MONITOR MODE: keep FATAL*) ---
+			$KeptCache = @{ }   # path -> @{ Stamp; Checked } of health files judged "keep"
 			$ProcessPath = {
 				param ([string]$Path)
 
@@ -159,10 +160,18 @@ function Clear_XE_Folder
 				# Skip reparse points
 				if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return }
 
+				# A health file already judged "keep" and unchanged since is not re-read on every
+				# sweep / event (re-checked hourly so the age limit still applies)
+				$stamp = $item.LastWriteTimeUtc.Ticks
+				$prev = $KeptCache[$item.FullName]
+				if ($prev -and $prev.Stamp -eq $stamp -and ((Get-Date) - $prev.Checked).TotalHours -lt 1) { return }
+
 				$keep = & $IsHealthFile $item $StoreNumber $HealthMaxAgeDays
 
-				if (-not $keep)
+				if ($keep) { $KeptCache[$item.FullName] = @{ Stamp = $stamp; Checked = Get-Date } }
+				else
 				{
+					[void]$KeptCache.Remove($item.FullName)
 					for ($i = 0; $i -lt 8; $i++)
 					{
 						try

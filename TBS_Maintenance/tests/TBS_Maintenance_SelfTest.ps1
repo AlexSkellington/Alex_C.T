@@ -407,41 +407,28 @@ Check 'E: bogus / silent hosts => unreachable' (-not $reachable['002'] -and -not
 # Two hosts that never answer: one after the other this took >= 3 s
 Check 'E: probes run in parallel (<2.5s for two silent hosts)' ($sw.Elapsed.TotalSeconds -lt 2.5) ('{0:N1}s' -f $sw.Elapsed.TotalSeconds)
 # --------------------------------------------------------------------------
-# F) VNC job throttle + collection - the real blocks (the v2.6.9 fix)
+# F) VNC password read pool - the real block, with a fake reader (2 s per node)
 # --------------------------------------------------------------------------
-$throttleText = Get-BlockFromLine (Find-Marker 'while ($jobs.Count -ge $MaxConcurrentJobs)')
-$cs = Find-Marker 'if (@($jobs).Count -gt 0)'
-$ce = Find-Marker 'Remove-Job $j -Force' $cs
-$collectText = ($scriptLines[$cs..($ce + 1)]) -join "`n"
-
+$ps = Find-Marker '$MaxConcurrentJobs = 20'
+$pe = Find-Marker 'else { try { $pool.Close(); $pool.Dispose() } catch { } }' $ps
+$poolText = ($scriptLines[$ps..($pe + 1)]) -join "`n"
 $ftok = $null; $ferr = $null
-$null = [System.Management.Automation.Language.Parser]::ParseInput($throttleText, [ref]$ftok, [ref]$ferr)
-Check 'F: throttle block extracted cleanly' (@($ferr).Count -eq 0) ''
-$ftok2 = $null; $ferr2 = $null
-$null = [System.Management.Automation.Language.Parser]::ParseInput($collectText, [ref]$ftok2, [ref]$ferr2)
-Check 'F: collect block extracted cleanly' (@($ferr2).Count -eq 0) ''
+$null = [System.Management.Automation.Language.Parser]::ParseInput($poolText, [ref]$ftok, [ref]$ferr)
+Check 'F: pool block extracted cleanly' (@($ferr).Count -eq 0) ''
 
 $AllVNCPasswords = @{}
-$MaxConcurrentJobs = 2
-$jobs = @()
-$fakeMachines = @('vm-a', 'vm-b', 'vm-c', 'vm-d', 'vm-e', 'vm-f')
-foreach ($m in $fakeMachines)
-{
-	$jobs += Start-Job -Name ('tbstest_' + $m) -ScriptBlock {
-		param ($mm)
-		Start-Sleep -Seconds 2
-		return @{ Machine = $mm; Password = ('pw-' + $mm) }
-	} -ArgumentList $m
-}
+$uvncFolders = @('C$\nowhere')
+$readIniText = 'param($m, $f) Start-Sleep -Seconds 2; if ($m -eq "vm-c") { throw "unreadable" }; @{ Machine = $m; Password = ("pw-" + $m) }'
+$OnlineNodes = @('vm-a', 'vm-b', 'vm-c', 'vm-d', 'vm-e', 'vm-f')
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-Invoke-Expression ($throttleText + "`n" + $collectText)
+Invoke-Expression $poolText
 $sw.Stop()
-Check 'F: all 6 VNC results collected (throttle drops none)' ($AllVNCPasswords.Count -eq 6) ('got ' + $AllVNCPasswords.Count)
+Check 'F: every node answered' ($AllVNCPasswords.Count -eq 6) ('got ' + $AllVNCPasswords.Count)
 $allOk = $true
-foreach ($m in $fakeMachines) { if ($AllVNCPasswords[$m] -ne ('pw-' + $m)) { $allOk = $false } }
-Check 'F: every password value correct' $allOk ''
-Check 'F: finished without hanging (<30s)' ($sw.Elapsed.TotalSeconds -lt 30) ('{0:N1}s' -f $sw.Elapsed.TotalSeconds)
-
+foreach ($m in $OnlineNodes) { if ($m -ne 'vm-c' -and $AllVNCPasswords[$m] -ne ('pw-' + $m)) { $allOk = $false } }
+Check 'F: every password value correct, a failing node -> $null' ($allOk -and $AllVNCPasswords.ContainsKey('vm-c') -and $null -eq $AllVNCPasswords['vm-c']) ''
+# Six nodes x 2 s: one after the other this is 12 s
+Check 'F: nodes read in parallel (<6s for 6 x 2 s)' ($sw.Elapsed.TotalSeconds -lt 6) ('{0:N1}s' -f $sw.Elapsed.TotalSeconds)
 # --------------------------------------------------------------------------
 # G) File log - the real Write_Log, pointed at a TEMP log folder
 # --------------------------------------------------------------------------
