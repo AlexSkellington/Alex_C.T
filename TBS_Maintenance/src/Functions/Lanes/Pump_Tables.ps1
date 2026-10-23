@@ -249,6 +249,7 @@ function Pump_Tables
 	# FIX: Pre-calc row counts ONCE (used for file-lane 1000-row rule + better logging)
 	# ------------------------------------------------------------------------------------------------
 	$tableRowCounts = @{ }
+	$tableMeta = @{ }   # table -> source column metadata, read once for all lanes
 	foreach ($aliasEntry in $filteredAliasEntries)
 	{
 		$tableName = [string]$aliasEntry.Table
@@ -329,6 +330,7 @@ function Pump_Tables
 
 		$laneSqlConn = $null
 		$protocolWorked = $false
+		$sqlFailedTables = New-Object System.Collections.Generic.List[string]
 
 		# ----------------------------------------------------------------------------------------
 		# Try direct SQL protocol copy (Named Pipes/TCP) using FAST SqlBulkCopy
@@ -376,9 +378,12 @@ function Pump_Tables
 								#    - create table if missing
 								#    - identify identity/computed/rowversion columns
 								# -----------------------------
-								$metaCmd = $srcSqlConnection.CreateCommand()
-								$metaCmd.CommandTimeout = 60
-								$metaCmd.CommandText = @"
+								$metaRows = $tableMeta[$table]
+								if (-not $metaRows)
+								{
+									$metaCmd = $srcSqlConnection.CreateCommand()
+									$metaCmd.CommandTimeout = 60
+									$metaCmd.CommandText = @"
 SELECT
 	c.name AS ColumnName,
 	t.name AS DataType,
@@ -399,27 +404,29 @@ LEFT JOIN sys.identity_columns ic
 WHERE c.object_id = OBJECT_ID(@obj)
 ORDER BY c.column_id;
 "@
-								$null = $metaCmd.Parameters.Clear()
-								$param = $metaCmd.Parameters.Add("@obj", [System.Data.SqlDbType]::NVarChar, 256)
-								$param.Value = "dbo.$table"
-								$metaRows = @()
-								$metaReader = $metaCmd.ExecuteReader()
-								while ($metaReader.Read())
-								{
-									$metaRows += [pscustomobject]@{
-										ColumnName = [string]$metaReader['ColumnName']
-										DataType   = [string]$metaReader['DataType']
-										MaxLength  = [int]$metaReader['MaxLength']
-										Precision  = [int]$metaReader['Precision']
-										Scale	   = [int]$metaReader['Scale']
-										IsNullable = [bool]$metaReader['IsNullable']
-										IsIdentity = [bool]$metaReader['IsIdentity']
-										IsComputed = [bool]$metaReader['IsComputed']
-										IdentitySeed = $metaReader['IdentitySeed']
-										IdentityIncrement = $metaReader['IdentityIncrement']
+									$null = $metaCmd.Parameters.Clear()
+									$param = $metaCmd.Parameters.Add("@obj", [System.Data.SqlDbType]::NVarChar, 256)
+									$param.Value = "dbo.$table"
+									$metaRows = @()
+									$metaReader = $metaCmd.ExecuteReader()
+									while ($metaReader.Read())
+									{
+										$metaRows += [pscustomobject]@{
+											ColumnName = [string]$metaReader['ColumnName']
+											DataType   = [string]$metaReader['DataType']
+											MaxLength  = [int]$metaReader['MaxLength']
+											Precision  = [int]$metaReader['Precision']
+											Scale	   = [int]$metaReader['Scale']
+											IsNullable = [bool]$metaReader['IsNullable']
+											IsIdentity = [bool]$metaReader['IsIdentity']
+											IsComputed = [bool]$metaReader['IsComputed']
+											IdentitySeed = $metaReader['IdentitySeed']
+											IdentityIncrement = $metaReader['IdentityIncrement']
+										}
 									}
+									$metaReader.Close()
+									$tableMeta[$table] = $metaRows
 								}
-								$metaReader.Close()
 
 								if (-not $metaRows -or $metaRows.Count -eq 0)
 								{
@@ -652,6 +659,7 @@ ORDER BY c.column_id;
 									Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL - lane table left unchanged: $_" "red"
 								}
 								else { Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL: $_" "red" }
+								$sqlFailedTables.Add($table)
 							}
 						}
 
@@ -683,13 +691,17 @@ ORDER BY c.column_id;
 		# File fallback (if protocol copy not possible)
 		# RULE: File-only lanes must ONLY pump tables <= 1000 rows
 		# --------------------------------------------------------------------------------------------
-		if (-not $protocolWorked)
+		# Tables for the file drop: all of them when SQL was not possible, else the ones whose SQL copy failed
+		$fileEntries = @()
+		if (-not $protocolWorked) { $fileEntries = $filteredAliasEntries }
+		elseif ($sqlFailedTables.Count -gt 0) { $fileEntries = @($filteredAliasEntries | Where-Object { $sqlFailedTables -contains [string]$_.Table }) }
+		if ($fileEntries.Count -gt 0)
 		{
 			if (Test-Path $LaneLocalPath)
 			{
 				Write_Log "`r`nCopying via FILE fallback for Lane #$laneNum ($machineName)..." "blue"
 
-				foreach ($aliasEntry in $filteredAliasEntries)
+				foreach ($aliasEntry in $fileEntries)
 				{
 					$table = [string]$aliasEntry.Table
 					if ([string]::IsNullOrWhiteSpace($table)) { continue }

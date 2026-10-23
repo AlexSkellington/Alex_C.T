@@ -13,7 +13,7 @@
 #
 # Variables:
 #   - $script:OfficePath: Storeman office root (resolved and back-filled)
-#   - $script:FunctionResults['SqlModuleName']: SQL module to import when Invoke-Sqlcmd is missing
+#   - Get_All_Lanes_Database_Info: the lane's Named Pipes / TCP connection strings (SqlClient)
 #
 # Writes:
 #   - XF<Store><Lane>\trs_clt_reprocess.sqi on File-protocol / failed lanes
@@ -65,33 +65,10 @@ function Retrive_Transactions
 	if ($st -match '^\d+$') { $st = $st.PadLeft(3, '0') }
 
 	# -----------------------------
-	# Ensure Invoke-Sqlcmd exists
-	#   If unavailable, continue in SQI-only mode
+	# SQL through the built-in SqlClient over the lane's own connection strings (no SQL
+	# PowerShell module needed - before v2.7.7 a store without one always got the SQI drop)
 	# -----------------------------
 	$canUseSql = $true
-	if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
-	{
-		$modName = $null
-		if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('SqlModuleName'))
-		{
-			$modName = $script:FunctionResults['SqlModuleName']
-		}
-		foreach ($m in @($modName, "SqlServer", "SQLPS") | Where-Object { $_ })
-		{
-			try { Import-Module $m -ErrorAction Stop; break }
-			catch { }
-		}
-	}
-	$invokeSql = Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue
-	if (-not $invokeSql)
-	{
-		$canUseSql = $false
-		& $log "Invoke-Sqlcmd not available. SQI mode will be used for all selected lanes." "yellow"
-	}
-	# SqlServer 22+ encrypts by default; lanes use self-signed certificates
-	$sqlExtra = @{ }
-	if ($invokeSql -and $invokeSql.Parameters.ContainsKey('TrustServerCertificate')) { $sqlExtra['TrustServerCertificate'] = $true }
-
 	if (-not (Get-Command Get_All_Lanes_Database_Info -ErrorAction SilentlyContinue))
 	{
 		& $log "Get_All_Lanes_Database_Info not found. Cannot guarantee correct DB connections." "red"
@@ -297,6 +274,8 @@ function Retrive_Transactions
 
 		$sql = @"
 SET NOCOUNT ON;
+SET XACT_ABORT ON;
+BEGIN TRAN;
 
 DECLARE @StartDate datetime = CONVERT(datetime, '$startIso', 126);
 DECLARE @StopDate  datetime = CONVERT(datetime, '$stopIso', 126);
@@ -321,6 +300,7 @@ WHERE F1067 = 'CLOSE'
   AND F1032 <= $fil2;
 
 SET @Inserted = @@ROWCOUNT;
+COMMIT;
 
 SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 "@
@@ -334,26 +314,27 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 
 		if ($useSql)
 		{
-			$npServer = if ($laneInfo -and $laneInfo.ContainsKey('NamedPipes')) { [string]$laneInfo['NamedPipes'] }
+			# Connection strings from Get_All_Lanes_Database_Info (Integrated Security, TrustServerCertificate)
+			$npConn = if ($laneInfo -and $laneInfo['NamedPipesConnStr']) { ([string]$laneInfo['NamedPipesConnStr']).TrimEnd(';') + ';Connect Timeout=10;' }
 			else { $null }
-			$tcpServer = if ($laneInfo -and $laneInfo.ContainsKey('TcpServer')) { [string]$laneInfo['TcpServer'] }
+			$tcpConn = if ($laneInfo -and $laneInfo['TcpConnStr']) { ([string]$laneInfo['TcpConnStr']).TrimEnd(';') + ';Connect Timeout=10;' }
 			else { $null }
 
 			$attempts = @()
 			if ($protoNorm -eq 'tcp')
 			{
-				$attempts += [pscustomobject]@{ Proto = 'TCP'; Server = $tcpServer }
-				$attempts += [pscustomobject]@{ Proto = 'Named Pipes'; Server = $npServer }
+				$attempts += [pscustomobject]@{ Proto = 'TCP'; Server = $tcpConn }
+				$attempts += [pscustomobject]@{ Proto = 'Named Pipes'; Server = $npConn }
 			}
 			elseif ($protoNorm -eq 'named pipes' -or $protoNorm -match 'pipe')
 			{
-				$attempts += [pscustomobject]@{ Proto = 'Named Pipes'; Server = $npServer }
-				$attempts += [pscustomobject]@{ Proto = 'TCP'; Server = $tcpServer }
+				$attempts += [pscustomobject]@{ Proto = 'Named Pipes'; Server = $npConn }
+				$attempts += [pscustomobject]@{ Proto = 'TCP'; Server = $tcpConn }
 			}
 			else
 			{
-				$attempts += [pscustomobject]@{ Proto = 'Named Pipes'; Server = $npServer }
-				$attempts += [pscustomobject]@{ Proto = 'TCP'; Server = $tcpServer }
+				$attempts += [pscustomobject]@{ Proto = 'Named Pipes'; Server = $npConn }
+				$attempts += [pscustomobject]@{ Proto = 'TCP'; Server = $tcpConn }
 			}
 
 			$connected = $false
@@ -363,7 +344,17 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 
 				try
 				{
-					$res = Invoke-Sqlcmd -ServerInstance $a.Server -Database $dbName -Query $sql -QueryTimeout 120 -ErrorAction Stop @sqlExtra
+					$res = New-Object System.Data.DataTable
+					$cn = New-Object System.Data.SqlClient.SqlConnection $a.Server
+					try
+					{
+						$cn.Open()
+						$cmd = $cn.CreateCommand()
+						$cmd.CommandText = $sql
+						$cmd.CommandTimeout = 120
+						$res.Load($cmd.ExecuteReader())
+					}
+					finally { $cn.Dispose() }
 
 					# Robust parse
 					$row = $null
@@ -448,9 +439,7 @@ SELECT @Deleted AS DeletedRows, @Inserted AS InsertedRows;
 
 			try
 			{
-				$sqi.ToString() | Out-File -FilePath $sqiPath -Encoding ASCII -Force
-				try { [System.IO.File]::SetAttributes($sqiPath, [System.IO.FileAttributes]::Normal) }
-				catch { }
+				Write_Sms_File -Path $sqiPath -Content $sqi.ToString()
 				$usedProtoDisplay = "File"
 				# We can't know the rowcount from SQI here
 				$deleted = "N/A"

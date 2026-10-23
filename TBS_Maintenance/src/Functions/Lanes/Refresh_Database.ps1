@@ -80,12 +80,12 @@ function Refresh_Database
 		# Define the full path to the SQI file (named "Refresh_Database.sqi")
 		$SQIFilePath = Join-Path -Path $RegisterDirectory -ChildPath "Refresh_Database.sqi"
 
-		# Write the SQI file in ANSI (PC) format (using ASCII encoding)
-		Set-Content -Path $SQIFilePath -Value $SQIContent -Encoding ASCII
-
-		# Remove the Archive attribute (set file attributes to Normal)
-		Set-ItemProperty -Path $SQIFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-		Write_Log "Deployed Refresh_Database.sqi command to register $register in directory $RegisterDirectory." "green"
+		try
+		{
+			Write_Sms_File -Path $SQIFilePath -Content $SQIContent
+			Write_Log "Deployed Refresh_Database.sqi command to register $register in directory $RegisterDirectory." "green"
+		}
+		catch { Write_Log "Could not write $SQIFilePath : $($_.Exception.Message)" "red" }
 	}
 	Write_Log "`r`n==================== Refresh_Database Function Completed ====================" "blue"
 }

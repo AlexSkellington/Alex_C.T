@@ -57,7 +57,6 @@ function Schedule_Lane_DB_Maintenance
 			return
 		}
 	}
-	$ansiEncoding = [System.Text.Encoding]::GetEncoding(1252)
 	$LaneSQLScriptContent = $LaneSQLScript -replace "`r?`n", "`r`n"
 
 	# Prompt user for the repeat interval in days
@@ -175,8 +174,7 @@ function Schedule_Lane_DB_Maintenance
 		# Write the lane repair script
 		try
 		{
-			[System.IO.File]::WriteAllText($DestScriptPath, $LaneSQLScriptContent, $ansiEncoding)
-			Set-ItemProperty -Path $DestScriptPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+			Write_Sms_File -Path $DestScriptPath -Content $LaneSQLScriptContent
 			Write_Log "Wrote lane DB maintenance script to $DestScriptPath" "green"
 		}
 		catch
@@ -188,32 +186,13 @@ function Schedule_Lane_DB_Maintenance
 		# Write the scheduler macro
 		try
 		{
-			[System.IO.File]::WriteAllText($SchedulerMacroPath, $SchedulerMacroContent, $ansiEncoding)
-			Set-ItemProperty -Path $SchedulerMacroPath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+			Write_Sms_File -Path $SchedulerMacroPath -Content $SchedulerMacroContent
 			Write_Log "Scheduler SQL macro created at $SchedulerMacroPath" "green"
 		}
 		catch
 		{
 			Write_Log "Failed to write scheduler macro: $_" "red"
 			continue
-		}
-
-		# Remove archive bit if set (optional)
-		try
-		{
-			if (Test-Path $DestScriptPath)
-			{
-				$file = Get-Item -Path $DestScriptPath
-				if ($file.Attributes -band [System.IO.FileAttributes]::Archive)
-				{
-					$file.Attributes = $file.Attributes -bxor [System.IO.FileAttributes]::Archive
-					Write_Log "Removed the archive bit from '$DestScriptPath'." "green"
-				}
-			}
-		}
-		catch
-		{
-			Write_Log "Failed to remove the archive bit from '$DestScriptPath'. Error: $_" "red"
 		}
 	}
 

@@ -72,6 +72,28 @@ function Close_Open_Transactions
 		}
 	}
 
+	# Close through a Close_Transaction.sqi drop in the lane's XF folder; $true when written
+	$closeViaFile = {
+		param ([string]$Lane, [string]$Sqi)
+		$laneDirectory = "$OfficePath\XF${StoreNumber}${Lane}"
+		if (-not (Test-Path -LiteralPath $laneDirectory))
+		{
+			Write_Log "Lane directory $laneDirectory not found (file fallback)." "yellow"
+			return $false
+		}
+		try
+		{
+			Write_Sms_File -Path (Join-Path $laneDirectory 'Close_Transaction.sqi') -Content $Sqi
+			Write_Log "Wrote Close_Transaction.sqi for lane $Lane (file fallback)." "yellow"
+			return $true
+		}
+		catch
+		{
+			Write_Log "Could not write Close_Transaction.sqi for lane ${Lane}: $($_.Exception.Message)" "red"
+			return $false
+		}
+	}
+
 	# SQL string for closing all open transactions (manual fallback)
 	$CloseTransactionManual = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE')"
 
@@ -147,18 +169,13 @@ function Close_Open_Transactions
 										if (-not $protocolWorked)
 										{
 											$CloseTransactionAuto = "@dbEXEC(UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1032 = $transactionNumber)"
-											$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
-											if (Test-Path $LaneDirectory)
-											{
-												$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
-												Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionAuto -Encoding ASCII
-												Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-												Write_Log "Wrote Close_Transaction.sqi file for lane $LaneNumber (file fallback)." "yellow"
-											}
-											else
-											{
-												Write_Log "Lane directory $LaneDirectory not found (file fallback)." "yellow"
-											}
+											$protocolWorked = & $closeViaFile $LaneNumber $CloseTransactionAuto
+										}
+										if (-not $protocolWorked)
+										{
+											# Nothing reached the lane: keep the XE report, do not log a close or restart
+											Write_Log "Transaction $transactionNumber on lane $LaneNumber NOT closed (no SQL access and no XF folder) - XE file kept." "red"
+											continue
 										}
 
 										# Log the close action
@@ -232,20 +249,11 @@ function Close_Open_Transactions
 				$closeSQL = "UPDATE SAL_HDR SET F1067 = 'CLOSE' WHERE F1067 <> 'CLOSE'"
 				$protocolWorked = & $closeViaProtocol $LaneNumber $protocolType $laneInfo $closeSQL "all open transactions"
 
+				if (-not $protocolWorked) { $protocolWorked = & $closeViaFile $LaneNumber $CloseTransactionManual }
 				if (-not $protocolWorked)
 				{
-					$LaneDirectory = "$OfficePath\XF${StoreNumber}${LaneNumber}"
-					if (Test-Path $LaneDirectory)
-					{
-						$CloseTransactionFilePath = Join-Path -Path $LaneDirectory -ChildPath "Close_Transaction.sqi"
-						Set-Content -Path $CloseTransactionFilePath -Value $CloseTransactionManual -Encoding ASCII
-						Set-ItemProperty -Path $CloseTransactionFilePath -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
-						Write_Log "Deployed Close_Transaction.sqi to lane $LaneNumber (fallback)." "yellow"
-					}
-					else
-					{
-						Write_Log "Lane directory $LaneDirectory not found" "yellow"
-					}
+					Write_Log "Lane ${LaneNumber}: open transactions NOT closed (no SQL access and no XF folder)." "red"
+					continue
 				}
 				$logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - User deployed Close_Transaction to lane $LaneNumber"
 				Add-Content -Path $LogFilePath -Value $logMessage

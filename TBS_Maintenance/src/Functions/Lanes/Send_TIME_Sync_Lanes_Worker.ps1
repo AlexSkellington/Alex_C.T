@@ -143,18 +143,12 @@ function Send_TIME_Sync_Lanes_Worker
 				# Drop exec trigger in XF (ASCII)
 				$execFilePath = Join-Path $xfFolder "exec_time_sync.txt"
 				$execContent = "@EXEC(Run='" + (Join-Path $script:PrimaryStoremanRoot 'Temp\sync_time.bat') + "')"
-				Set-Content -Path $execFilePath -Value $execContent -Encoding Ascii -ErrorAction Stop
-
-				# Clear archive bit on exec trigger (so SMS processes it cleanly)
-				try { attrib -a -r "$execFilePath" 2>$null | Out-Null }
-				catch { }
+				Write_Sms_File -Path $execFilePath -Content $execContent
 
 				Write_Log "Created @EXEC trigger in XF folder for lane $laneNum (Storeman\Temp path)." "green"
 
-				# Optional: cleanup remote bat after a bit
-				Start-Sleep -Seconds 10
-				Remove-Item -Path $remoteBatPath -Force -ErrorAction SilentlyContinue
-
+				# The .bat stays in Storeman\Temp (overwritten next time): deleting it after 10 s
+				# removed it before a busy lane had run the trigger, and the sync silently did nothing
 				$success = $true
 			}
 			catch

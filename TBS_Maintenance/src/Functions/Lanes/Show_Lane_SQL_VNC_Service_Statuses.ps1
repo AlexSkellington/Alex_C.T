@@ -505,4 +505,5 @@ $snapshot
 		})
 
 	[void]$formSvc.ShowDialog()
+	$formSvc.Dispose()
 }

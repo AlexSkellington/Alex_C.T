@@ -84,7 +84,10 @@ function Send_SERVER_time_to_Lanes
 		-Label ('Time sync to ' + @($selectedLanes).Count + ' lane(s)') `
 		-CallArgs @{ StoreNumber = $StoreNumber; SelectedLanes = $selectedLanes; IsScheduling = $isScheduling; IntervalMinutes = $intervalMinutes } `
 		-SeedVars @{ OfficePath = $OfficePath; PrimaryStoremanRoot = $script:PrimaryStoremanRoot } `
-		-DependentBodies @{ Ensure_MailslotSender_Type = (Get-Command Ensure_MailslotSender_Type -CommandType Function).ScriptBlock.ToString() } `
+		-DependentBodies @{
+			Ensure_MailslotSender_Type = (Get-Command Ensure_MailslotSender_Type -CommandType Function).ScriptBlock.ToString()
+			Write_Sms_File             = (Get-Command Write_Sms_File -CommandType Function).ScriptBlock.ToString()
+		} `
 		-NotifyOnComplete
 	if ($bgJob)
 	{

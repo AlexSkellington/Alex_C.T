@@ -225,8 +225,7 @@ function Update_Lane_Config
 			try
 			{
 				$dest = Join-Path -Path $laneFolderPath -ChildPath $job.Filename
-				[System.IO.File]::WriteAllText($dest, (& $buildLoadFile $job), $ansiPcEncoding)
-				Set-ItemProperty -Path $dest -Name Attributes -Value ([System.IO.FileAttributes]::Normal)
+				Write_Sms_File -Path $dest -Content (& $buildLoadFile $job)
 				$actionSummaries += "Copied $($job.Filename)"
 			}
 			catch
