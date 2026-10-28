@@ -1,5 +1,9 @@
 # Working on this repository
 
+(Other agents: `AGENTS.md` points here - these rules apply to every agent. When this checkout is
+in the owner's shared workspace, `..\AGENTS.md` explains the whole workspace and `..\CHANGES.md`
+is the shared change log: read its newest entries first and add an entry after every change.)
+
 Two PowerShell tools live here:
 
 | Path | What it is |
