@@ -41,7 +41,8 @@ function Process_Lanes
 
 	# Direct (single-lane) runs use the built-in SqlClient: no SQL PowerShell module needed (before
 	# v2.7.7 a store without one always got the file drop) and no module import delay
-	# (ExecuteNonQuery runs every statement of a section; only the user-exists lookup needs rows)
+	# (ExecuteNonQuery runs every statement of a section; only the user-exists lookup needs rows).
+	# The sections run through Invoke_In_Background so a long section does not freeze the window.
 	$runSql = {
 		param ([string]$ConnStr, [string]$Sql, [switch]$Rows)
 		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnStr
@@ -239,7 +240,7 @@ function Process_Lanes
 				{
 					try
 					{
-						$null = & $runSql $workingConnStr $sqlCommands
+						$null = Invoke_In_Background -ScriptBlock $runSql -ArgumentList @($workingConnStr, $sqlCommands)
 						Write_Log "Section '$sectionName' executed successfully on $machineName using ($protocolType)." "green"
 						$protocolWorked = $true
 						$querySucceeded = $true
@@ -284,7 +285,7 @@ function Process_Lanes
 							Write_Log "ConnectionString method failed for section '$sectionName' on [$machineName]: $_. Trying ServerInstance fallback..." "yellow"
 							try
 							{
-								$null = & $runSql $instanceConnStr $sqlCommands
+								$null = Invoke_In_Background -ScriptBlock $runSql -ArgumentList @($instanceConnStr, $sqlCommands)
 								Write_Log "Section '$sectionName' executed successfully on $machineName using ($protocolType, ServerInstance fallback)." "green"
 								$protocolWorked = $true
 								$querySucceeded = $true
