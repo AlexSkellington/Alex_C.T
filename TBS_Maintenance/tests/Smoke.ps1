@@ -29,6 +29,10 @@
 .PARAMETER Compare
 	Compare this run's report with a saved baseline and list the differences.
 
+.PARAMETER Screenshot
+	Folder to save PNG renders of the main window and the four tool menus into (UI review; the
+	window is drawn off-screen with DrawToBitmap just before it closes).
+
 .PARAMETER Detail
 	Also print, for every runtime error, the source line that raised it (diagnosis only;
 	detail lines are left out of -Baseline / -Compare).
@@ -42,6 +46,7 @@ param (
 	[int]$Seconds = 25,
 	[string]$Baseline,
 	[string]$Compare,
+	[string]$Screenshot,
 	[switch]$Detail
 )
 
@@ -91,6 +96,34 @@ $script:__smokeTimer.Add_Tick({
 		$script:__smokeTimer.Stop()
 		# state that FormClosing tears down - capture it while the window is still open
 		$script:__smokeProtocolTimer = [bool]$script:protocolTimer
+		$__shotDir = '__SMOKE_SHOT__'
+		if ($__shotDir)
+		{
+			try
+			{
+				$__bmp = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
+				$form.DrawToBitmap($__bmp, (New-Object System.Drawing.Rectangle(0, 0, $form.Width, $form.Height)))
+				$__bmp.Save((Join-Path $__shotDir 'tbs_main.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+				$__bmp.Dispose()
+			}
+			catch { Write-Output ('SMOKE|shot_error|main: ' + $_.Exception.Message) }
+			foreach ($__mn in 'ContextMenuServer', 'ContextMenuLane', 'ContextMenuScale', 'ContextMenuGeneral')
+			{
+				try
+				{
+					$__m = Get-Variable -Name $__mn -ValueOnly -ErrorAction SilentlyContinue
+					if (-not $__m) { continue }
+					$__m.Show($form, (New-Object System.Drawing.Point(10, 10)))
+					[System.Windows.Forms.Application]::DoEvents()
+					$__bmp = New-Object System.Drawing.Bitmap($__m.Width, $__m.Height)
+					$__m.DrawToBitmap($__bmp, (New-Object System.Drawing.Rectangle(0, 0, $__m.Width, $__m.Height)))
+					$__bmp.Save((Join-Path $__shotDir ('tbs_' + $__mn + '.png')), [System.Drawing.Imaging.ImageFormat]::Png)
+					$__bmp.Dispose()
+					$__m.Close()
+				}
+				catch { Write-Output ('SMOKE|shot_error|' + $__mn + ': ' + $_.Exception.Message) }
+			}
+		}
 		$form.Close()
 	})
 $form.Add_Shown({ $script:__smokeTimer.Start() })
@@ -140,7 +173,9 @@ foreach ($er in @($Error))
 foreach ($k in ($seenErr.Keys | Sort-Object)) { Write-Output ('SMOKE|error|' + $k) }
 Write-Output 'SMOKE|done|1'
 '@
-Patch '[void]$form.ShowDialog()' ($harness.Replace('__SMOKE_MS__', [string]($Seconds * 1000)).Replace('__SMOKE_DETAIL__', $(if ($Detail) { '$true' } else { '$false' }))) -Last
+if ($Screenshot -and -not (Test-Path -LiteralPath $Screenshot)) { New-Item -ItemType Directory -Path $Screenshot -Force | Out-Null }
+$shotDir = if ($Screenshot) { (Resolve-Path -LiteralPath $Screenshot).ProviderPath.Replace("'", "''") } else { '' }
+Patch '[void]$form.ShowDialog()' ($harness.Replace('__SMOKE_MS__', [string]($Seconds * 1000)).Replace('__SMOKE_DETAIL__', $(if ($Detail) { '$true' } else { '$false' })).Replace('__SMOKE_SHOT__', $shotDir)) -Last
 
 $patched = Join-Path $sandbox 'tbs_smoke_patched.ps1'
 [System.IO.File]::WriteAllText($patched, $text, [System.Text.Encoding]::ASCII)

@@ -55,3 +55,30 @@ jobs:
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File .\MiniGhost\tests\MiniGhost_SelfTest.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  ui-screenshots:
+    name: UI screenshots (both tools, off-screen)
+    runs-on: windows-latest
+    # Visual review aid: renders the main windows, menus and dialogs to PNG (artifact "ui-screenshots").
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: TBS smoke run with screenshots
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\build\Build.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\Smoke.ps1 -Seconds 10 -Screenshot "$env:RUNNER_TEMP\shots"
+
+      - name: MiniGhost smoke run with screenshots
+        if: always()
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\MiniGhost\tests\Smoke.ps1 -Screenshot "$env:RUNNER_TEMP\shots"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots
+          path: ${{ runner.temp }}/shots/*.png
+          if-no-files-found: warn
