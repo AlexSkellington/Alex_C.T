@@ -168,5 +168,14 @@ if ($stderr) { Write-Host "  stderr: $stderr" -ForegroundColor DarkYellow }
 if ($Screenshot) { Get-ChildItem -LiteralPath $Screenshot -Filter 'minighost_*.png' | ForEach-Object { Write-Host ("  screenshot: " + $_.Name) } }
 
 $ok = ($lines -contains 'done|1') -and -not ($lines | Where-Object { $_ -like 'show_error|*' -or $_ -like 'shot_error|*' })
+# an adapter was found but the window shows no IP = the config list was not read as an array
+$ipCount = 0
+$ipLine = @($lines | Where-Object { $_ -like 'ip_configs|*' }) | Select-Object -First 1
+if ($ipLine) { [void][int]::TryParse(($ipLine -split '\|')[1], [ref]$ipCount) }
+if ($ipCount -gt 0 -and ($lines -contains 'ip_label|Not found'))
+{
+	Write-Host '  IP adapter found but the window shows "Not found"' -ForegroundColor Red
+	$ok = $false
+}
 Write-Host $(if ($ok) { 'SMOKE PASSED' } else { 'SMOKE FAILED' }) -ForegroundColor $(if ($ok) { 'Green' } else { 'Red' })
 if ($ok) { exit 0 } else { exit 1 }

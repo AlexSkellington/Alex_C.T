@@ -6,7 +6,9 @@
 # ===================================================================================================
 
 # Get current IP configuration
-$currentConfigs = Get_Active_IP_Config
+# Always an array: the WMI path returns a [pscustomobject], and in PowerShell 5.1 indexing a single
+# pscustomobject ($x[0]) gives $null - the IP showed "not found" and Configure Network had no adapter.
+$currentConfigs = @(Get_Active_IP_Config | Where-Object { $_ })
 
 # Get the store number
 $currentStoreNumber = Get_Store_Number_From_INI -UpdateLabel

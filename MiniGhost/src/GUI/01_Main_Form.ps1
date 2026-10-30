@@ -283,12 +283,12 @@ $footerPanel.BackColor = [System.Drawing.Color]::FromArgb(235, 235, 238)
 $footerLeft = New-Object System.Windows.Forms.Label
 $footerLeft.Dock = 'Left'
 $footerLeft.AutoSize = $false
-$footerLeft.Width = 360
+$footerLeft.Width = 420
 $footerLeft.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
 $footerLeft.Padding = New-Object System.Windows.Forms.Padding(16, 0, 0, 0)
 $footerLeft.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
 $footerLeft.ForeColor = $uiTextMuted
-$footerLeft.Text = "Every action asks before it changes anything.  Show Summary lists the results."
+$footerLeft.Text = "Every action asks before it changes anything."
 
 $footerRight = New-Object System.Windows.Forms.Label
 $footerRight.Dock = 'Fill'

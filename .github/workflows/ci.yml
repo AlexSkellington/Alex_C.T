@@ -82,3 +82,23 @@ jobs:
           name: ui-screenshots
           path: ${{ runner.temp }}/shots/*.png
           if-no-files-found: warn
+
+  antivirus:
+    name: Antivirus check (Defender AMSI + file scan)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Update Defender signatures
+        shell: powershell
+        continue-on-error: true
+        run: |
+          Update-MpSignature -ErrorAction SilentlyContinue
+          & "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -SignatureUpdate
+
+      - name: Scan the shipped scripts
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\build\Build.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\AV_Scan.ps1
+          if ($LASTEXITCODE -eq 1) { exit 1 }

@@ -5839,7 +5839,9 @@ function Invoke_Machine_Name_Sync
 # ===================================================================================================
 
 # Get current IP configuration
-$currentConfigs = Get_Active_IP_Config
+# Always an array: the WMI path returns a [pscustomobject], and in PowerShell 5.1 indexing a single
+# pscustomobject ($x[0]) gives $null - the IP showed "not found" and Configure Network had no adapter.
+$currentConfigs = @(Get_Active_IP_Config | Where-Object { $_ })
 
 # Get the store number
 $currentStoreNumber = Get_Store_Number_From_INI -UpdateLabel
@@ -6173,12 +6175,12 @@ $footerPanel.BackColor = [System.Drawing.Color]::FromArgb(235, 235, 238)
 $footerLeft = New-Object System.Windows.Forms.Label
 $footerLeft.Dock = 'Left'
 $footerLeft.AutoSize = $false
-$footerLeft.Width = 360
+$footerLeft.Width = 420
 $footerLeft.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
 $footerLeft.Padding = New-Object System.Windows.Forms.Padding(16, 0, 0, 0)
 $footerLeft.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
 $footerLeft.ForeColor = $uiTextMuted
-$footerLeft.Text = "Every action asks before it changes anything.  Show Summary lists the results."
+$footerLeft.Text = "Every action asks before it changes anything."
 
 $footerRight = New-Object System.Windows.Forms.Label
 $footerRight.Dock = 'Fill'
@@ -6301,8 +6303,9 @@ $configureNetworkButton.Add_Click({
 		
 		# Proceed with configuring network
 		# Display current IP Address
-		$currentIP = $currentConfig.IPv4Address.IPAddress
-		$currentGateway = $currentConfig.IPv4DefaultGateway.NextHop
+		# first address / gateway: an adapter can carry several (Split on an array would fail)
+		$currentIP = [string](@($currentConfig.IPv4Address)[0].IPAddress)
+		$currentGateway = [string](@($currentConfig.IPv4DefaultGateway)[0].NextHop)
 		$adapterName = $currentConfig.InterfaceAlias
 		
 		# Ask user for network type
@@ -6845,6 +6848,9 @@ exit
 #         with the default button highlighted. The failed-SQL list uses the report window.
 #  [CHG]  Tile values show the value only ("POS005 -> POS006 (after reboot)"); a cut-off value is
 #         shown in full on hover. Button tooltips say what each action changes.
+#  [FIX]  The current IP showed "not found" and Configure Network found no adapter whenever the
+#         WMI lookup answered (since v1.3.9 that is the normal case): PowerShell 5.1 cannot index
+#         a single [pscustomobject]. The adapter list is always an array now.
 #  [NEW]  tests\Smoke.ps1 runs MiniGhost off-screen (read-only start) and saves screenshots of
 #         the window and dialogs; CI runs it on every push.
 

@@ -69,8 +69,9 @@ $configureNetworkButton.Add_Click({
 		
 		# Proceed with configuring network
 		# Display current IP Address
-		$currentIP = $currentConfig.IPv4Address.IPAddress
-		$currentGateway = $currentConfig.IPv4DefaultGateway.NextHop
+		# first address / gateway: an adapter can carry several (Split on an array would fail)
+		$currentIP = [string](@($currentConfig.IPv4Address)[0].IPAddress)
+		$currentGateway = [string](@($currentConfig.IPv4DefaultGateway)[0].NextHop)
 		$adapterName = $currentConfig.InterfaceAlias
 		
 		# Ask user for network type
