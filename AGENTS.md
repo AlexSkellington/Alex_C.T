@@ -11,7 +11,8 @@ Then:
 - How the pieces fit: [`TBS_Maintenance/docs/ARCHITECTURE.md`](TBS_Maintenance/docs/ARCHITECTURE.md).
 - Never edit `TBS_Maintenance/dist/` (build output); never move or rename the two root
   launchers (`TBS_Maintenace_Script_V2.ps1`, `MiniGhost_V38.ps1`).
-- A pushed version tag releases to the stores; a push to `main` changes MiniGhost for its
+- A push to `main` with a new TBS `$VersionNumber` (or a pushed version tag) releases TBS to the
+  stores; any push to `main` changes MiniGhost for its
   users. Do neither without the owner's go-ahead.
 
 If this checkout sits in the owner's shared workspace (`..\AGENTS.md` and `..\CHANGES.md`

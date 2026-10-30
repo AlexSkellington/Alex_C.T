@@ -136,9 +136,10 @@ Use `-Baseline` / `-Compare` to diff two smoke runs (before/after a change).
 
 ## Releasing
 
-See `TBS_Maintenance/README.md` (Release). In short: bump the version + changelog entry, build,
-both tests green, commit, push to `main`, then `git tag v<version>` + `git push origin
-v<version>`. The `Release TBS Maintenance Script` workflow builds, checks the tag against
-`$VersionNumber`, runs the self-test and publishes the release - that is what reaches the
-stores, so only push a version tag when asked. Verify afterwards that
+See `TBS_Maintenance/README.md` (Release). **A push to `main` that bumps `$VersionNumber` IS a
+release**: the `Release TBS Maintenance Script` workflow builds, self-tests, creates the tag
+`v<version>` and publishes the release that the stores download. A push without a version bump
+publishes nothing; pushing a `v<version>` tag by hand still works (it must match
+`$VersionNumber`). So bump the version (+ changelog entry) only for what should reach the stores,
+and push to `main` only when asked. Verify afterwards that
 `releases/latest/download/TBS_Maintenance_Script.ps1` serves the new `$VersionNumber`.

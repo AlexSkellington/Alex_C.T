@@ -1,17 +1,31 @@
-# Publishes the TBS Maintenance Script when a version tag is pushed (git push origin v2.7.1).
+# Publishes the TBS Maintenance Script.
 #
 # Stores run the asset of the LATEST release (root launcher -> releases/latest/download/
 # TBS_Maintenance_Script.ps1), so this workflow is the only thing that changes what stores run.
+#
+# Two ways in:
+#   - push to main: when $VersionNumber in the sources has no release yet, it is built, self-tested
+#     and published as v<version> (the tag is created here). A push without a version bump
+#     publishes nothing.
+#   - push a v* tag by hand (git push origin v2.7.9): the tag must match $VersionNumber.
 # Any failed step - build, tag/version mismatch, self-test - stops before the release exists.
 name: Release TBS Maintenance Script
 
 on:
   push:
+    branches: [main]
+    paths:
+      - 'TBS_Maintenance/**'
+      - '.github/workflows/release.yml'
     tags:
       - 'v*'
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-tbs
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -25,32 +39,49 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\build\Build.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Tag must match $VersionNumber
+      - name: Version, tag and "already released?"
+        id: ver
         shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = '${{ github.ref_name }}'
           $text = [IO.File]::ReadAllText("$PWD\TBS_Maintenance\dist\TBS_Maintenance_Script.ps1")
           $ver = [regex]::Match($text, '(?m)^\$VersionNumber\s*=\s*"([\d.]+)"').Groups[1].Value
-          if ("v$ver" -ne $tag) { Write-Error "Tag $tag does not match `$VersionNumber $ver in the sources"; exit 1 }
-          "Version $ver matches tag $tag"
+          if (-not $ver) { Write-Error 'No $VersionNumber in the built script'; exit 1 }
+          $tag = "v$ver"
+          if ('${{ github.ref_type }}' -eq 'tag' -and '${{ github.ref_name }}' -ne $tag)
+          {
+            Write-Error "Tag ${{ github.ref_name }} does not match `$VersionNumber $ver in the sources"; exit 1
+          }
+          gh release view $tag --repo '${{ github.repository }}' *> $null
+          $exists = ($LASTEXITCODE -eq 0)
+          $global:LASTEXITCODE = 0
+          if ($exists) { "Release $tag already exists - nothing to publish" } else { "Will publish $tag" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "ver=$ver" >> $env:GITHUB_OUTPUT
+          "publish=$(if ($exists) { 'false' } else { 'true' })" >> $env:GITHUB_OUTPUT
+          exit 0
 
       - name: Self-test
+        if: steps.ver.outputs.publish == 'true'
         shell: powershell
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\TBS_Maintenance_SelfTest.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Publish release
+        if: steps.ver.outputs.publish == 'true'
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = '${{ github.ref_name }}'
-          $ver = $tag.TrimStart('v')
+          $tag = '${{ steps.ver.outputs.tag }}'
+          $ver = '${{ steps.ver.outputs.ver }}'
           # Release notes = this version's CHANGELOG.txt entry
           $log = [IO.File]::ReadAllText("$PWD\TBS_Maintenance\CHANGELOG.txt") -replace "`r`n", "`n"
           $m = [regex]::Match($log, "(?ms)^#  v$([regex]::Escape($ver))  -.*?(?=^# =+\n#  v\d|\z)")
           $notes = if ($m.Success) { ($m.Value -split "`n" | ForEach-Object { $_ -replace '^#  ?', '' } | Where-Object { $_ -notmatch '^(#|=+)$' }) -join "`n" } else { "TBS Maintenance Script $tag" }
           [IO.File]::WriteAllText("$PWD\release-notes.md", $notes)
-          gh release create $tag "TBS_Maintenance\dist\TBS_Maintenance_Script.ps1" --title $tag --notes-file release-notes.md --latest
+          # --target creates the tag on this commit when it does not exist yet (push-to-main path)
+          gh release create $tag "TBS_Maintenance\dist\TBS_Maintenance_Script.ps1" --title $tag --notes-file release-notes.md --target '${{ github.sha }}' --latest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

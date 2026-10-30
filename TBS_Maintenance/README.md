@@ -55,21 +55,18 @@ other pitfalls found so far) are in `..\CLAUDE.md`.
 
 ## Release
 
-Stores run the file attached to the **latest GitHub Release**. Pushing to `main` changes
-nothing for them; pushing a **version tag** does: `.github/workflows/release.yml` then builds the
-script on GitHub, checks the tag matches `$VersionNumber`, runs the self-test and publishes the
-release with `TBS_Maintenance_Script.ps1` attached. Any failed step means no release.
+Stores run the file attached to the **latest GitHub Release**. `.github/workflows/release.yml`
+publishes one whenever `main` gets a `$VersionNumber` that has no release yet: it builds the script
+on GitHub, runs the self-test, creates the tag `v<version>` and publishes the release with
+`TBS_Maintenance_Script.ps1` attached. A push to `main` without a version bump publishes nothing.
+Any failed step means no release.
 
 1. Bump `$VersionNumber` / `$VersionDate` in `src\Bootstrap\02_Version_And_Host.ps1` and add
    the matching entry at the top of `CHANGELOG.txt` (it becomes the release notes).
-2. `Build.ps1`, self-test and smoke test green locally; commit; push to `main`.
-3. Tag and push the tag:
-   ```powershell
-   git tag v2.7.2
-   git push origin v2.7.2
-   ```
-   Follow the run under the repository's **Actions** tab. When it is green,
+2. `Build.ps1`, self-test and smoke test green locally; commit.
+3. Push to `main`. Follow the run under the repository's **Actions** tab. When it is green,
    `irm https://bit.ly/TBS_Maintenance_Script | iex` runs the new version.
+   (Pushing a tag by hand - `git tag v2.7.9; git push origin v2.7.9` - still works too.)
 4. Package (optional): `Build.ps1 -PsBuild`, open `dist\TBS_Maintenance_Script.ps1` in
    PowerShell Studio and package it; the `.exe` can be uploaded to the same release.
 
