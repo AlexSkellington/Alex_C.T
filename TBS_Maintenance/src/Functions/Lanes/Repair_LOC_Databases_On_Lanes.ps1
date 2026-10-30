@@ -643,7 +643,7 @@ WHERE name = N'$dbNameQuoted';
 					$stopped = $false
 					for ($i = 0; $i -lt 30; $i++)
 					{
-						Start-Sleep -Milliseconds 2000
+						Wait_UI -Milliseconds 2000
 						try
 						{
 							$chk = sc.exe "\\$machineName" query $svcName 2>$null
@@ -664,7 +664,7 @@ WHERE name = N'$dbNameQuoted';
 					$running = $false
 					for ($i = 0; $i -lt 45; $i++)
 					{
-						Start-Sleep -Milliseconds 2000
+						Wait_UI -Milliseconds 2000
 						try
 						{
 							$chk = sc.exe "\\$machineName" query $svcName 2>$null
@@ -682,7 +682,7 @@ WHERE name = N'$dbNameQuoted';
 					for ($t = 1; $t -le 60; $t++)
 					{
 						if (& $testSqlConnectivity $connStr) { $reprobeOK = $true; break }
-						Start-Sleep -Milliseconds 2000
+						Wait_UI -Milliseconds 2000
 					}
 					if (-not $reprobeOK)
 					{

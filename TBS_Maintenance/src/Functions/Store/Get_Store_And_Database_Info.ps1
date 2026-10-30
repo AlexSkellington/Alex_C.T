@@ -473,22 +473,24 @@ function Get_Store_And_Database_Info
 			{
 				try
 				{
-					$bn = $script:FunctionResults['StoreNumber']
-					$bnm = $script:FunctionResults['StoreName']
-					if ($bn -and "$bn" -ne 'N/A' -and -not [string]::IsNullOrWhiteSpace("$bn"))
+					# Node-role badge from DBNAME (the store number / name are in the info strip)
+					$roleDb = ([string]$script:FunctionResults['DBNAME']).Trim().ToUpper()
+					$roleText = $null
+					$roleColor = $null
+					switch ($roleDb)
 					{
-						if ($bnm -and "$bnm" -ne 'N/A' -and -not [string]::IsNullOrWhiteSpace("$bnm"))
-						{
-						$bnmShort = "$bnm"
-						if ($bnmShort.Length -gt 26) { $bnmShort = $bnmShort.Substring(0, 25).TrimEnd() + '...' }
-						$bannerDateLabel.Text = "Store $bn  -  $bnmShort"
-						}
-						else { $bannerDateLabel.Text = "Store $bn" }
+						'STORESQL' { $roleText = 'STORE SERVER'; $roleColor = [System.Drawing.Color]::FromArgb(16, 124, 64) }
+						'HOSTSQL' { $roleText = 'HOST SERVER'; $roleColor = [System.Drawing.Color]::FromArgb(196, 98, 16) }
+						'LANESQL' { $roleText = 'LANE'; $roleColor = [System.Drawing.Color]::FromArgb(0, 103, 192) }
 					}
-					else
+					$script:NodeRoleText = $roleText
+					if ($roleText)
 					{
-					$bannerDateLabel.Text = "Store Maintenance Console"
+						$bannerDateLabel.Text = $roleText
+						$bannerDateLabel.BackColor = $roleColor
+						$bannerDateLabel.Visible = $true
 					}
+					else { $bannerDateLabel.Visible = $false }
 					$anyLabelChanged = $true
 					try { if ($layoutBanner) { & $layoutBanner } } catch { }
 				}

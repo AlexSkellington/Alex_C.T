@@ -189,7 +189,7 @@ function Close_Open_Transactions
 										$MatchedTransactions = $true
 
 										# ----------- Optionally restart all programs on the lane -----------
-										Start-Sleep -Seconds 3
+										Wait_UI -Milliseconds 3000
 										$laneMap = $script:FunctionResults['LaneNumToMachineName']
 										if ($laneMap)
 										{

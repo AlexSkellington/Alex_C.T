@@ -4,12 +4,13 @@
 # Description:
 #   Runs the server (store) SQL maintenance: takes the script from $script:ServerSQLScript
 #   (generated on demand) or a file, optionally lets the user pick sections, runs each section
-#   once - Invoke-Sqlcmd when a SQL module is available, else SqlClient split on GO lines - and
-#   logs which sections failed.
+#   once with the built-in SqlClient (split on GO lines) in a background runspace so the window
+#   stays responsive, and logs which sections failed.
 #
 # Parameters:
 #   - StoresqlFilePath  [string]: SQL file to run instead of the script variable
-#   - PromptForSections [switch]: show the section selection dialog first
+#   - PromptForSections [switch]: show the SQL section editor first - pick sections, edit their SQL
+#                                 for this run, add custom SQL (saved in Settings\Custom_Server_SQL.json)
 #
 # Variables:
 #   - $script:ServerSQLScript: default SQL script text
@@ -90,63 +91,37 @@ function Process_Server
 		return
 	}
 
-	$SectionsToRun = $null
+	# Sections in run order: Name + SQL
+	$sectionsToRun = @($sectionMatches | ForEach-Object { [pscustomobject]@{ Name = $_.Groups['SectionName'].Value.Trim(); Sql = $_.Groups['SQLCommands'].Value.Trim(); Edited = $false } })
 	if ($PromptForSections)
 	{
-		$allSectionNames = @($sectionMatches | ForEach-Object { $_.Groups['SectionName'].Value.Trim() })
-		$SectionsToRun = Show_Section_Selection_Form -SectionNames $allSectionNames
-		if (-not $SectionsToRun -or @($SectionsToRun).Count -eq 0)
+		$customFile = Join-Path $script:AlexRoot 'Settings\Custom_Server_SQL.json'
+		$sectionsToRun = @(Show_SQL_Section_Editor -Sections $sectionsToRun -Title 'Server Database Maintenance - SQL Sections' -CustomFile $customFile)
+		if ($sectionsToRun.Count -eq 0 -or -not $sectionsToRun[0])
 		{
 			Write_Log "No sections selected or form was canceled. Aborting execution." "yellow"
 			return
 		}
 	}
-	$useSpecificSections = $SectionsToRun -and @($SectionsToRun).Count -gt 0
 
 	# ------------------------------------------------------------------------------------------------
-	# How to run SQL: Invoke-Sqlcmd from the detected module, else the built-in SqlClient
-	# (which does not understand GO - the sections are split into batches on GO lines)
+	# How to run SQL: the built-in SqlClient in a background runspace (Invoke_In_Background), split on
+	# GO lines - index rebuilds / shrinks take minutes and used to freeze the window ("Not
+	# Responding"). No SQL PowerShell module is loaded (that alone took seconds on the UI thread).
 	# ------------------------------------------------------------------------------------------------
 	$ConnectionString = $script:FunctionResults['ConnectionString']
-	$SqlModuleName = $script:FunctionResults['SqlModuleName']
 	if (-not $ConnectionString -or -not $server -or -not $dbName)
 	{
 		Write_Log "DB server, DB name, or connection string not found. Cannot execute SQL script." "red"
 		return
 	}
 
-	$InvokeSqlCmd = $null
-	if ($SqlModuleName -and $SqlModuleName -ne "None")
-	{
+	$sectionWorker = {
+		param ([string]$ConnStr, [string]$Sql)
+		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnStr
+		$cn.Open()
 		try
 		{
-			Import-Module $SqlModuleName -ErrorAction Stop
-			$InvokeSqlCmd = Get-Command Invoke-Sqlcmd -Module $SqlModuleName -ErrorAction Stop
-		}
-		catch
-		{
-			Write_Log "SQL module '$SqlModuleName' could not be loaded ($($_.Exception.Message)) - using the built-in SQL client." "yellow"
-			$InvokeSqlCmd = $null
-		}
-	}
-	else
-	{
-		Write_Log "No SQL PowerShell module - using the built-in SQL client." "yellow"
-	}
-	$supportsConnectionString = ($InvokeSqlCmd -and $InvokeSqlCmd.Parameters.ContainsKey('ConnectionString'))
-
-	$runSection = {
-		param ([string]$Sql)
-		if ($InvokeSqlCmd)
-		{
-			if ($supportsConnectionString) { $null = & $InvokeSqlCmd -ConnectionString $ConnectionString -Query $Sql -ErrorAction Stop -QueryTimeout 0 }
-			else { $null = & $InvokeSqlCmd -ServerInstance $server -Database $dbName -Query $Sql -ErrorAction Stop -QueryTimeout 0 }
-			return
-		}
-		$cn = New-Object System.Data.SqlClient.SqlConnection $ConnectionString
-		try
-		{
-			$cn.Open()
 			foreach ($batch in ([regex]::Split($Sql, '(?im)^\s*GO\s*$')))
 			{
 				if ([string]::IsNullOrWhiteSpace($batch)) { continue }
@@ -163,12 +138,12 @@ function Process_Server
 	# Execute each section once, in order
 	# ------------------------------------------------------------------------------------------------
 	$failedSections = @()
-	foreach ($match in $sectionMatches)
+	foreach ($section in $sectionsToRun)
 	{
-		$sectionName = $match.Groups['SectionName'].Value.Trim()
-		$sqlCommands = $match.Groups['SQLCommands'].Value.Trim()
+		$sectionName = $section.Name
+		$sqlCommands = ([string]$section.Sql).Trim()
+		if ($section.Edited) { $sectionName += ' (edited)' }
 
-		if ($useSpecificSections -and ($SectionsToRun -notcontains $sectionName)) { continue }
 		if ([string]::IsNullOrWhiteSpace($sqlCommands))
 		{
 			Write_Log "Section '$sectionName' has no commands. Skipping..." "yellow"
@@ -182,7 +157,7 @@ function Process_Server
 
 		try
 		{
-			& $runSection $sqlCommands
+			$null = Invoke_In_Background -ScriptBlock $sectionWorker -ArgumentList @($ConnectionString, $sqlCommands)
 			Write_Log "Section '$sectionName' executed successfully." "green"
 		}
 		catch

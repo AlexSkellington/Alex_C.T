@@ -309,7 +309,7 @@ function Remove_Archive_Bit
 		try { & sc.exe delete $serviceName *> $null }
 		catch { }
 
-		Start-Sleep -Milliseconds 700
+		Wait_UI -Milliseconds 700
 		if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue))
 		{
 			Write_Log "Service '$serviceName' removed via sc.exe (no NSSM required)." "green"
@@ -331,7 +331,7 @@ function Remove_Archive_Bit
 		try { & $nssmExe remove $serviceName confirm *> $null }
 		catch { }
 
-		Start-Sleep -Milliseconds 700
+		Wait_UI -Milliseconds 700
 		if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
 		{
 			Write_Log "ERROR: NSSM attempted removal but service still exists. Check Services.msc for '$serviceName'." "red"

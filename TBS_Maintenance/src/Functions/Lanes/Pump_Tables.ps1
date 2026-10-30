@@ -2,10 +2,16 @@
 #                              FUNCTION: Pump_Tables
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Extracts selected tables (from Get_Table_Aliases) from the store SQL Server and copies
-#   the generated .sql files to the selected lanes. Uses the cached per-lane protocol
-#   ($script:LaneProtocols) to push lanes over SQL where possible and falls back to a file
-#   copy for the rest. Each selected table is generated once, then copied to many lanes.
+#   Copies the selected tables (from Get_Table_Aliases) from the store SQL Server to the selected
+#   lanes as an UPSERT: rows the lane already has (same primary key) are updated when a value
+#   differs, missing rows are added, nothing is truncated or deleted and the lane's table schema
+#   is kept (a missing table is created with the server's columns and primary key).
+#   - Lanes reachable over SQL (cached $script:LaneProtocols TCP / Named Pipes) are pumped in
+#     parallel (up to 6 at once, runspace pool), one transaction per table; the window stays
+#     responsive and shows each lane's progress.
+#   - Lanes on the File protocol, and tables whose SQL pump failed, get the SMS file drop
+#     (@UPDATE_BATCH ADDRPL = update-or-add too), tables of up to 1000 rows. Each file is
+#     generated once and copied to every lane that needs it.
 #
 # Parameters:
 #   - StoreNumber  [string]: store to process (required)
@@ -246,48 +252,197 @@ function Pump_Tables
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# FIX: Pre-calc row counts ONCE (used for file-lane 1000-row rule + better logging)
+	# STEP 5: Read each selected table's shape from the SOURCE once (shared by every lane)
 	# ------------------------------------------------------------------------------------------------
 	$tableRowCounts = @{ }
-	$tableMeta = @{ }   # table -> source column metadata, read once for all lanes
+	$tablePlans = New-Object System.Collections.Generic.List[object]
 	foreach ($aliasEntry in $filteredAliasEntries)
 	{
 		$tableName = [string]$aliasEntry.Table
-		if ([string]::IsNullOrWhiteSpace($tableName)) { continue }
-		if ($tableRowCounts.ContainsKey($tableName)) { continue }
-
+		if ([string]::IsNullOrWhiteSpace($tableName) -or $tableRowCounts.ContainsKey($tableName)) { continue }
 		# Table-name sanity (prevents weird alias entries from breaking queries)
 		if ($tableName -notmatch '^[A-Za-z0-9_]+$')
 		{
 			Write_Log "Skipping invalid table name (bad characters): '$tableName'" "yellow"
 			continue
 		}
-
 		try
 		{
 			$cntCmd = $srcSqlConnection.CreateCommand()
 			$cntCmd.CommandTimeout = 60
-			$cntCmd.CommandText = "SELECT COUNT(1) FROM [dbo].[$tableName]"
-			$tableRowCounts[$tableName] = [int]$cntCmd.ExecuteScalar()
+			$cntCmd.CommandText = "SELECT COUNT_BIG(1) FROM [dbo].[$tableName]"
+			$tableRowCounts[$tableName] = [long]$cntCmd.ExecuteScalar()
+
+			$metaCmd = $srcSqlConnection.CreateCommand()
+			$metaCmd.CommandTimeout = 60
+			$metaCmd.CommandText = @"
+SELECT c.name AS ColumnName, t.name AS DataType, c.max_length AS MaxLength, c.precision AS [Precision],
+	c.scale AS [Scale], c.is_nullable AS IsNullable, c.is_identity AS IsIdentity, c.is_computed AS IsComputed,
+	ic.seed_value AS IdentitySeed, ic.increment_value AS IdentityIncrement
+FROM sys.columns c
+JOIN sys.types t ON c.user_type_id = t.user_type_id
+LEFT JOIN sys.identity_columns ic ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+WHERE c.object_id = OBJECT_ID(@obj)
+ORDER BY c.column_id;
+"@
+			$param = $metaCmd.Parameters.Add("@obj", [System.Data.SqlDbType]::NVarChar, 256)
+			$param.Value = "dbo.$tableName"
+			$metaRows = New-Object System.Collections.Generic.List[object]
+			$metaReader = $metaCmd.ExecuteReader()
+			try
+			{
+				while ($metaReader.Read())
+				{
+					$metaRows.Add([pscustomobject]@{
+							ColumnName = [string]$metaReader['ColumnName']
+							DataType   = [string]$metaReader['DataType']
+							MaxLength  = [int]$metaReader['MaxLength']
+							Precision  = [int]$metaReader['Precision']
+							Scale	   = [int]$metaReader['Scale']
+							IsNullable = [bool]$metaReader['IsNullable']
+							IsIdentity = [bool]$metaReader['IsIdentity']
+							IsComputed = [bool]$metaReader['IsComputed']
+							IdentitySeed = $metaReader['IdentitySeed']
+							IdentityIncrement = $metaReader['IdentityIncrement']
+						})
+				}
+			}
+			finally { $metaReader.Close() }
+			if ($metaRows.Count -eq 0) { throw "source table metadata not found" }
+
+			$pkCmd = $srcSqlConnection.CreateCommand()
+			$pkCmd.CommandTimeout = 60
+			$pkCmd.CommandText = @"
+SELECT c.name FROM sys.indexes i
+JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+WHERE i.object_id = OBJECT_ID(@obj) AND i.is_primary_key = 1
+ORDER BY ic.key_ordinal;
+"@
+			$p2 = $pkCmd.Parameters.Add("@obj", [System.Data.SqlDbType]::NVarChar, 256)
+			$p2.Value = "dbo.$tableName"
+			$srcPk = New-Object System.Collections.Generic.List[string]
+			$pkReader = $pkCmd.ExecuteReader()
+			try { while ($pkReader.Read()) { $srcPk.Add([string]$pkReader[0]) } }
+			finally { $pkReader.Close() }
+
+			# CREATE TABLE text for lanes that do not have the table yet (same shape as the source)
+			$table = $tableName
+			$hasComputed = @($metaRows | Where-Object { $_.IsComputed }).Count -gt 0
+			$createSql = $null
+			if (-not $hasComputed)
+			{
+				# Build CREATE TABLE from source metadata
+				$colDefs = @()
+				foreach ($c in $metaRows)
+				{
+					$colName = $c.ColumnName
+					$dataType = $c.DataType
+					$maxLen = [int]$c.MaxLength
+					$prec = [int]$c.Precision
+					$scale = [int]$c.Scale
+					$isNull = [bool]$c.IsNullable
+					$isIdent = [bool]$c.IsIdentity
+
+					# Skip computed + rowversion for CREATE when destination is missing
+					if ($c.IsComputed -or $dataType -in @('timestamp', 'rowversion')) { continue }
+
+					# Type formatting
+					$typeText = $dataType
+					switch ($dataType)
+					{
+						'nvarchar' {
+							if ($maxLen -eq -1) { $typeText = 'nvarchar(max)' }
+							else { $typeText = "nvarchar($([int]($maxLen/2)))" }
+						}
+						'varchar'  {
+							if ($maxLen -eq -1) { $typeText = 'varchar(max)' }
+							else { $typeText = "varchar($maxLen)" }
+						}
+						'nchar'    { $typeText = "nchar($([int]($maxLen/2)))" }
+						'char'     { $typeText = "char($maxLen)" }
+						'varbinary' {
+							if ($maxLen -eq -1) { $typeText = 'varbinary(max)' }
+							else { $typeText = "varbinary($maxLen)" }
+						}
+						'binary'   { $typeText = "binary($maxLen)" }
+						'decimal'  { $typeText = "decimal($prec,$scale)" }
+						'numeric'  { $typeText = "numeric($prec,$scale)" }
+						'datetime2' {
+							$typeText = if ($scale -ge 0) { "datetime2($scale)" }
+							else { 'datetime2' }
+						}
+						'time' {
+							$typeText = if ($scale -ge 0) { "time($scale)" }
+							else { 'time' }
+						}
+						'datetimeoffset' {
+							$typeText = if ($scale -ge 0) { "datetimeoffset($scale)" }
+							else { 'datetimeoffset' }
+						}
+						'float' {
+							$typeText = if ($prec -and $prec -ne 53) { "float($prec)" }
+							else { 'float' }
+						}
+					}
+
+					# Identity
+					$identityText = ''
+					if ($isIdent)
+					{
+						$seed = $c.IdentitySeed
+						$inc = $c.IdentityIncrement
+						if ($seed -ne $null -and $seed -ne [DBNull]::Value -and $inc -ne $null -and $inc -ne [DBNull]::Value)
+						{
+							$identityText = " IDENTITY($seed,$inc)"
+						}
+						else
+						{
+							$identityText = " IDENTITY(1,1)"
+						}
+					}
+
+					$nullText = if ($isNull) { 'NULL' }
+					else { 'NOT NULL' }
+					$colDefs += "[$colName] $typeText$identityText $nullText"
+				}
+
+				# Same primary key as the server, so later pumps can match rows
+				if ($colDefs.Count -gt 0 -and $srcPk.Count -gt 0) { $colDefs += ("CONSTRAINT [PK_" + $table + "] PRIMARY KEY (" + (($srcPk | ForEach-Object { "[$_]" }) -join ', ') + ")") }
+				if ($colDefs.Count -gt 0) { $createSql = "CREATE TABLE [dbo].[$table] (" + ($colDefs -join ', ') + ")" }
+			}
+
+			$tablePlans.Add([pscustomobject]@{
+					Table     = $tableName
+					Columns   = [string[]]@($metaRows | Where-Object { -not $_.IsComputed -and $_.DataType -notin @('timestamp', 'rowversion') } | ForEach-Object { $_.ColumnName })
+					SourcePk  = [string[]]$srcPk.ToArray()
+					CreateSql = $createSql
+					Rows      = $tableRowCounts[$tableName]
+				})
 		}
 		catch
 		{
-			Write_Log "Could not read rowcount for table '$tableName' from SOURCE. Skipping table. Error: $_" "yellow"
+			Write_Log "Could not read table '$tableName' from the SOURCE - skipping it: $($_.Exception.Message)" "yellow"
 			$tableRowCounts[$tableName] = $null
 		}
 	}
+	if ($tablePlans.Count -eq 0)
+	{
+		Write_Log "None of the selected tables could be read from the source database." "red"
+		try { $srcSqlConnection.Dispose() } catch { }
+		Write_Log "`r`n==================== Pump_Tables Function Completed ====================" "blue"
+		return
+	}
 
 	# ------------------------------------------------------------------------------------------------
-	# STEP 5: Process each lane: Try protocol (Named Pipes or TCP), else fall back to file copy
-	# RULE: File-only lanes must ONLY pump tables <= 1000 rows
+	# STEP 6: Sort lanes: SQL-reachable (TCP / Named Pipes) or file drop
 	# ------------------------------------------------------------------------------------------------
-	$MaxFileRows = 1000
-
+	$sqlWork = New-Object System.Collections.Generic.List[object]
+	$fileWork = New-Object System.Collections.Generic.List[object]
 	foreach ($laneNum in $Lanes)
 	{
 		$laneNum = [string]$laneNum
 		if ($laneNum -match '^\d+$') { $laneNum = $laneNum.PadLeft(3, '0') }
-
 		$machineName = $LaneNumToMachineName[$laneNum]
 		if ([string]::IsNullOrWhiteSpace($machineName) -or $machineName -eq "Unknown")
 		{
@@ -295,406 +450,234 @@ function Pump_Tables
 			continue
 		}
 
-		# Retrieve DB connection info for the lane
-		$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
-		if (-not $laneInfo)
-		{
-			Write_Log "Could not get DB info for lane $laneNum. Skipping." "yellow"
-			continue
-		}
-
-		# FIX: Convert PSCustomObject -> hashtable for consistent indexing (matches your Process_Lanes fix)
-		if ($laneInfo -and ($laneInfo -isnot [System.Collections.IDictionary]))
-		{
-			$tmp = @{ }
-			foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
-			$laneInfo = $tmp
-		}
-
-		$namedPipesConnStr = [string]$laneInfo['NamedPipesConnStr']
-		$tcpConnStr = [string]$laneInfo['TcpConnStr']
-
-		# Always use numeric lane number for folder path
-		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${laneNum}"
-
-		# FIX: Robust protocol lookup (Start_Lane_Protocol_Jobs stores several keys)
 		$protocolType = $null
 		if ($script:LaneProtocols)
 		{
-			if ($script:LaneProtocols.ContainsKey($laneNum)) { $protocolType = $script:LaneProtocols[$laneNum] }
-			elseif ($script:LaneProtocols.ContainsKey($laneNum.PadLeft(3, '0'))) { $protocolType = $script:LaneProtocols[$laneNum.PadLeft(3, '0')] }
-			elseif ($script:LaneProtocols.ContainsKey($machineName)) { $protocolType = $script:LaneProtocols[$machineName] }
-			elseif ($script:LaneProtocols.ContainsKey($machineName.ToLower())) { $protocolType = $script:LaneProtocols[$machineName.ToLower()] }
+			foreach ($k in @($laneNum, $machineName, $machineName.ToLower()))
+			{
+				if ($script:LaneProtocols.ContainsKey($k)) { $protocolType = $script:LaneProtocols[$k]; break }
+			}
 		}
 		if ([string]::IsNullOrWhiteSpace($protocolType)) { $protocolType = 'File' }
 
-		$laneSqlConn = $null
-		$protocolWorked = $false
-		$sqlFailedTables = New-Object System.Collections.Generic.List[string]
-
-		# ----------------------------------------------------------------------------------------
-		# Try direct SQL protocol copy (Named Pipes/TCP) using FAST SqlBulkCopy
-		# ----------------------------------------------------------------------------------------
-		if ($protocolType -eq "Named Pipes" -or $protocolType -eq "TCP")
+		$laneConnStr = $null
+		if ($protocolType -eq 'TCP' -or $protocolType -eq 'Named Pipes')
 		{
-			$workingConnStr = $null
-			if ($protocolType -eq 'Named Pipes') { $workingConnStr = $namedPipesConnStr }
-			elseif ($protocolType -eq 'TCP') { $workingConnStr = $tcpConnStr }
-
-			$workingConnStrIsValid =
-			(-not [string]::IsNullOrWhiteSpace($workingConnStr)) -and
-			($workingConnStr -match '^\s*Server\s*=') -and
-			($workingConnStr -match 'Database\s*=')
-
-			if ($workingConnStrIsValid)
+			$laneInfo = Get_All_Lanes_Database_Info -LaneNumber $laneNum
+			if ($laneInfo -and ($laneInfo -isnot [System.Collections.IDictionary]))
 			{
-				try
-				{
-					$laneSqlConn = New-Object System.Data.SqlClient.SqlConnection $workingConnStr
-					$laneSqlConn.Open()
-					if ($laneSqlConn.State -eq 'Open')
-					{
-						Write_Log "`r`nCopying data to Lane $laneNum ($machineName) via SQL protocol [$protocolType]..." "blue"
-
-						foreach ($aliasEntry in $filteredAliasEntries)
-						{
-							$table = [string]$aliasEntry.Table
-							if ([string]::IsNullOrWhiteSpace($table)) { continue }
-
-							# Skip tables that we could not count / validate
-							if (-not $tableRowCounts.ContainsKey($table) -or $null -eq $tableRowCounts[$table])
-							{
-								Write_Log "Skipping table '$table' (rowcount/validation failed on SOURCE)." "yellow"
-								continue
-							}
-
-							Write_Log "Pumping table '$table' to lane $laneNum ($machineName) via SQL (SqlBulkCopy)..." "blue"
-							$laneTx = $null
-
-							try
-							{
-								# -----------------------------
-								# 1) Get SOURCE column metadata (sys.columns) so we can:
-								#    - create table if missing
-								#    - identify identity/computed/rowversion columns
-								# -----------------------------
-								$metaRows = $tableMeta[$table]
-								if (-not $metaRows)
-								{
-									$metaCmd = $srcSqlConnection.CreateCommand()
-									$metaCmd.CommandTimeout = 60
-									$metaCmd.CommandText = @"
-SELECT
-	c.name AS ColumnName,
-	t.name AS DataType,
-	c.max_length AS MaxLength,
-	c.precision AS [Precision],
-	c.scale AS [Scale],
-	c.is_nullable AS IsNullable,
-	c.is_identity AS IsIdentity,
-	c.is_computed AS IsComputed,
-	ic.seed_value AS IdentitySeed,
-	ic.increment_value AS IdentityIncrement
-FROM sys.columns c
-JOIN sys.types t
-	ON c.user_type_id = t.user_type_id
-LEFT JOIN sys.identity_columns ic
-	ON c.object_id = ic.object_id
-	AND c.column_id = ic.column_id
-WHERE c.object_id = OBJECT_ID(@obj)
-ORDER BY c.column_id;
-"@
-									$null = $metaCmd.Parameters.Clear()
-									$param = $metaCmd.Parameters.Add("@obj", [System.Data.SqlDbType]::NVarChar, 256)
-									$param.Value = "dbo.$table"
-									$metaRows = @()
-									$metaReader = $metaCmd.ExecuteReader()
-									while ($metaReader.Read())
-									{
-										$metaRows += [pscustomobject]@{
-											ColumnName = [string]$metaReader['ColumnName']
-											DataType   = [string]$metaReader['DataType']
-											MaxLength  = [int]$metaReader['MaxLength']
-											Precision  = [int]$metaReader['Precision']
-											Scale	   = [int]$metaReader['Scale']
-											IsNullable = [bool]$metaReader['IsNullable']
-											IsIdentity = [bool]$metaReader['IsIdentity']
-											IsComputed = [bool]$metaReader['IsComputed']
-											IdentitySeed = $metaReader['IdentitySeed']
-											IdentityIncrement = $metaReader['IdentityIncrement']
-										}
-									}
-									$metaReader.Close()
-									$tableMeta[$table] = $metaRows
-								}
-
-								if (-not $metaRows -or $metaRows.Count -eq 0)
-								{
-									throw "Source table metadata not found (OBJECT_ID failed)."
-								}
-
-								# Identify special columns
-								$computedCols = @($metaRows | Where-Object { $_.IsComputed })
-								$identityCols = @($metaRows | Where-Object { $_.IsIdentity })
-
-								# Copy columns: exclude computed + rowversion/timestamp (SQL Server won't allow explicit insert)
-								$copyCols = @($metaRows | Where-Object { -not $_.IsComputed -and $_.DataType -notin @('timestamp', 'rowversion') })
-
-								# -----------------------------
-								# 2) Ensure destination table exists and is empty
-								#    - If exists: TRUNCATE (fallback to DELETE)
-								#    - If missing: CREATE from source columns (computed columns cannot be created here -> fail)
-								# -----------------------------
-								# Empty + reload in ONE lane transaction: a failed copy rolls back and the
-								# lane keeps its old rows instead of an empty / half-filled table
-								$laneTx = $laneSqlConn.BeginTransaction()
-								$existsCmd = $laneSqlConn.CreateCommand()
-								$existsCmd.Transaction = $laneTx
-								$existsCmd.CommandTimeout = 30
-								$existsCmd.CommandText = "SELECT OBJECT_ID(N'[dbo].[$table]', N'U')"
-								$destObjId = $existsCmd.ExecuteScalar()
-								$destExists = ($destObjId -ne $null -and $destObjId -ne [DBNull]::Value)
-
-								if ($destExists)
-								{
-									# Empty the table
-									try
-									{
-										$emptyCmd = $laneSqlConn.CreateCommand()
-										$emptyCmd.Transaction = $laneTx
-										$emptyCmd.CommandTimeout = 60
-										$emptyCmd.CommandText = "TRUNCATE TABLE [dbo].[$table]"
-										$emptyCmd.ExecuteNonQuery() | Out-Null
-									}
-									catch
-									{
-										# TRUNCATE can fail (FKs). Fallback to DELETE.
-										$emptyCmd2 = $laneSqlConn.CreateCommand()
-										$emptyCmd2.Transaction = $laneTx
-										$emptyCmd2.CommandTimeout = 120
-										$emptyCmd2.CommandText = "DELETE FROM [dbo].[$table]"
-										$emptyCmd2.ExecuteNonQuery() | Out-Null
-									}
-								}
-								else
-								{
-									# Cannot recreate computed columns without expressions; fail fast if source has them
-									if ($computedCols.Count -gt 0)
-									{
-										throw "Destination table missing and source has computed columns. Cannot safely CREATE."
-									}
-
-									# Build CREATE TABLE from source metadata
-									$colDefs = @()
-									foreach ($c in $metaRows)
-									{
-										$colName = $c.ColumnName
-										$dataType = $c.DataType
-										$maxLen = [int]$c.MaxLength
-										$prec = [int]$c.Precision
-										$scale = [int]$c.Scale
-										$isNull = [bool]$c.IsNullable
-										$isIdent = [bool]$c.IsIdentity
-
-										# Skip computed + rowversion for CREATE when destination is missing
-										if ($c.IsComputed -or $dataType -in @('timestamp', 'rowversion')) { continue }
-
-										# Type formatting
-										$typeText = $dataType
-										switch ($dataType)
-										{
-											'nvarchar' {
-												if ($maxLen -eq -1) { $typeText = 'nvarchar(max)' }
-												else { $typeText = "nvarchar($([int]($maxLen/2)))" }
-											}
-											'varchar'  {
-												if ($maxLen -eq -1) { $typeText = 'varchar(max)' }
-												else { $typeText = "varchar($maxLen)" }
-											}
-											'nchar'    { $typeText = "nchar($([int]($maxLen/2)))" }
-											'char'     { $typeText = "char($maxLen)" }
-											'varbinary' {
-												if ($maxLen -eq -1) { $typeText = 'varbinary(max)' }
-												else { $typeText = "varbinary($maxLen)" }
-											}
-											'binary'   { $typeText = "binary($maxLen)" }
-											'decimal'  { $typeText = "decimal($prec,$scale)" }
-											'numeric'  { $typeText = "numeric($prec,$scale)" }
-											'datetime2' {
-												$typeText = if ($scale -ge 0) { "datetime2($scale)" }
-												else { 'datetime2' }
-											}
-											'time' {
-												$typeText = if ($scale -ge 0) { "time($scale)" }
-												else { 'time' }
-											}
-											'datetimeoffset' {
-												$typeText = if ($scale -ge 0) { "datetimeoffset($scale)" }
-												else { 'datetimeoffset' }
-											}
-											'float' {
-												$typeText = if ($prec -and $prec -ne 53) { "float($prec)" }
-												else { 'float' }
-											}
-										}
-
-										# Identity
-										$identityText = ''
-										if ($isIdent)
-										{
-											$seed = $c.IdentitySeed
-											$inc = $c.IdentityIncrement
-											if ($seed -ne $null -and $seed -ne [DBNull]::Value -and $inc -ne $null -and $inc -ne [DBNull]::Value)
-											{
-												$identityText = " IDENTITY($seed,$inc)"
-											}
-											else
-											{
-												$identityText = " IDENTITY(1,1)"
-											}
-										}
-
-										$nullText = if ($isNull) { 'NULL' }
-										else { 'NOT NULL' }
-										$colDefs += "[$colName] $typeText$identityText $nullText"
-									}
-
-									if (-not $colDefs -or $colDefs.Count -eq 0)
-									{
-										throw "No creatable columns discovered for '$table'."
-									}
-
-									$createSql = "CREATE TABLE [dbo].[$table] (" + ($colDefs -join ', ') + ")"
-									$createCmd = $laneSqlConn.CreateCommand()
-									$createCmd.Transaction = $laneTx
-									$createCmd.CommandTimeout = 120
-									$createCmd.CommandText = "IF OBJECT_ID(N'[dbo].[$table]', N'U') IS NOT NULL DROP TABLE [dbo].[$table]; $createSql;"
-									$createCmd.ExecuteNonQuery() | Out-Null
-									Write_Log "Created table '$table' on $machineName" "green"
-								}
-
-								# -----------------------------
-								# 3) Bulk copy data
-								# -----------------------------
-								$identityInsertEnabled = $false
-								if ($identityCols.Count -gt 0)
-								{
-									try
-									{
-										$identOn = $laneSqlConn.CreateCommand()
-										$identOn.Transaction = $laneTx
-										$identOn.CommandTimeout = 30
-										$identOn.CommandText = "SET IDENTITY_INSERT [dbo].[$table] ON"
-										$identOn.ExecuteNonQuery() | Out-Null
-										$identityInsertEnabled = $true
-									}
-									catch
-									{
-										Write_Log "Could not enable IDENTITY_INSERT for '$table' on $machineName. Will copy without identity columns. Error: $_" "yellow"
-										$copyCols = @($copyCols | Where-Object { -not $_.IsIdentity })
-									}
-								}
-
-								if (-not $copyCols -or $copyCols.Count -eq 0)
-								{
-									throw "No columns available to copy (computed/rowversion filtered everything)."
-								}
-
-								$colListSql = ($copyCols | ForEach-Object { "[" + $_.ColumnName + "]" }) -join ','
-								$srcCmd = $srcSqlConnection.CreateCommand()
-								$srcCmd.CommandTimeout = 0
-								$srcCmd.CommandText = "SELECT $colListSql FROM [dbo].[$table]"
-								$srcReader = $srcCmd.ExecuteReader()
-
-								try
-								{
-									$bulkOptions = [System.Data.SqlClient.SqlBulkCopyOptions]::TableLock
-									if ($identityInsertEnabled) { $bulkOptions = $bulkOptions -bor [System.Data.SqlClient.SqlBulkCopyOptions]::KeepIdentity }
-
-									$bulk = New-Object System.Data.SqlClient.SqlBulkCopy($laneSqlConn, $bulkOptions, $laneTx)
-									$bulk.DestinationTableName = "[dbo].[$table]"
-									$bulk.BatchSize = 5000
-									$bulk.BulkCopyTimeout = 0
-
-									foreach ($c in $copyCols)
-									{
-										$bulk.ColumnMappings.Add($c.ColumnName, $c.ColumnName) | Out-Null
-									}
-
-									$bulk.WriteToServer($srcReader)
-								}
-								finally
-								{
-									try { $srcReader.Close() }
-									catch { }
-									try { $bulk.Close() }
-									catch { }
-								}
-
-								if ($identityInsertEnabled)
-								{
-									try
-									{
-										$identOff = $laneSqlConn.CreateCommand()
-										$identOff.Transaction = $laneTx
-										$identOff.CommandTimeout = 30
-										$identOff.CommandText = "SET IDENTITY_INSERT [dbo].[$table] OFF"
-										$identOff.ExecuteNonQuery() | Out-Null
-									}
-									catch { }
-								}
-
-								$laneTx.Commit()
-								$laneTx = $null
-								$rowCountCopied = $tableRowCounts[$table]
-								Write_Log "Copied $rowCountCopied rows to '$table' on lane $laneNum ($machineName) (SQL protocol)." "green"
-							}
-							catch
-							{
-								if ($laneTx)
-								{
-									try { $laneTx.Rollback() }
-									catch { }
-									$laneTx = $null
-									Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL - lane table left unchanged: $_" "red"
-								}
-								else { Write_Log "Failed to copy table '$table' to lane $laneNum ($machineName) via SQL: $_" "red" }
-								$sqlFailedTables.Add($table)
-							}
-						}
-
-						$protocolWorked = $true
-						$protocolLanes += $laneNum
-						$ProcessedLanes += $laneNum
-					}
-				}
-				catch
-				{
-					Write_Log "SQL protocol copy failed for lane [$laneNum] ($machineName) ($protocolType): $_" "yellow"
-					$protocolWorked = $false
-				}
-				finally
-				{
-					try { if ($laneSqlConn) { $laneSqlConn.Close() } }
-					catch { }
-					try { if ($laneSqlConn) { $laneSqlConn.Dispose() } }
-					catch { }
-				}
+				$tmp = @{ }
+				foreach ($p in $laneInfo.PSObject.Properties) { $tmp[$p.Name] = $p.Value }
+				$laneInfo = $tmp
 			}
-			else
+			if ($laneInfo)
+			{
+				$laneConnStr = if ($protocolType -eq 'Named Pipes') { [string]$laneInfo['NamedPipesConnStr'] } else { [string]$laneInfo['TcpConnStr'] }
+			}
+			if ([string]::IsNullOrWhiteSpace($laneConnStr) -or $laneConnStr -notmatch '^\s*Server\s*=' -or $laneConnStr -notmatch 'Database\s*=')
 			{
 				Write_Log "Lane $laneNum ($machineName) protocol cached as '$protocolType' but connection string is invalid. Using file fallback." "yellow"
+				$laneConnStr = $null
 			}
 		}
 
-		# --------------------------------------------------------------------------------------------
-		# File fallback (if protocol copy not possible)
-		# RULE: File-only lanes must ONLY pump tables <= 1000 rows
-		# --------------------------------------------------------------------------------------------
-		# Tables for the file drop: all of them when SQL was not possible, else the ones whose SQL copy failed
-		$fileEntries = @()
-		if (-not $protocolWorked) { $fileEntries = $filteredAliasEntries }
-		elseif ($sqlFailedTables.Count -gt 0) { $fileEntries = @($filteredAliasEntries | Where-Object { $sqlFailedTables -contains [string]$_.Table }) }
+		if ($laneConnStr) { $sqlWork.Add([pscustomobject]@{ Lane = $laneNum; Machine = $machineName; Protocol = $protocolType; ConnStr = $laneConnStr }) }
+		else { $fileWork.Add([pscustomobject]@{ Lane = $laneNum; Machine = $machineName; Tables = @($filteredAliasEntries) }) }
+	}
+
+	# ------------------------------------------------------------------------------------------------
+	# STEP 7: SQL lanes - all at once (up to 6 in parallel), each table UPSERTED in one transaction:
+	#   - the lane's own table is kept (schema, and rows the server does not have)
+	#   - server rows are bulk-copied into a #staging table shaped like the LANE's table
+	#   - rows whose key exists are UPDATED (only when a value differs), missing rows are INSERTED
+	#   - nothing is truncated or deleted; a failed table rolls back and goes to the file drop
+	# ------------------------------------------------------------------------------------------------
+	if ($sqlWork.Count -gt 0)
+	{
+		$laneUpsertWorker = @'
+param ($SrcConnStr, $LaneConnStr, $Lane, $Machine, $Protocol, $Plans, $Log)
+$say = { param ([string]$Text, [string]$Color) $Log.Enqueue([pscustomobject]@{ Text = $Text; Color = $Color }) }
+$failed = New-Object System.Collections.Generic.List[string]
+$src = $null
+$dst = $null
+try
+{
+	$src = New-Object System.Data.SqlClient.SqlConnection $SrcConnStr
+	$src.Open()
+	$dst = New-Object System.Data.SqlClient.SqlConnection $LaneConnStr
+	$dst.Open()
+}
+catch
+{
+	& $say ("Lane {0} ({1}): SQL connection failed ({2}) - using the file drop. {3}" -f $Lane, $Machine, $Protocol, $_.Exception.Message) 'yellow'
+	try { if ($src) { $src.Dispose() } } catch { }
+	try { if ($dst) { $dst.Dispose() } } catch { }
+	return [pscustomobject]@{ Lane = $Lane; Connected = $false; Failed = @($Plans | ForEach-Object { $_.Table }) }
+}
+& $say ("Lane {0} ({1}): connected over {2}, pumping {3} table(s)..." -f $Lane, $Machine, $Protocol, @($Plans).Count) 'blue'
+$noCompare = @('text', 'ntext', 'image', 'xml', 'sql_variant', 'geography', 'geometry', 'hierarchyid')
+foreach ($plan in $Plans)
+{
+	$table = $plan.Table
+	$tx = $null
+	try
+	{
+		$tx = $dst.BeginTransaction()
+		$run = {
+			param ([string]$Sql, [int]$Timeout = 120)
+			$c = $dst.CreateCommand()
+			$c.Transaction = $tx
+			$c.CommandTimeout = $Timeout
+			$c.CommandText = $Sql
+			return $c
+		}
+
+		$objId = (& $run "SELECT OBJECT_ID(N'[dbo].[$table]', N'U')").ExecuteScalar()
+		if ($null -eq $objId -or $objId -is [DBNull])
+		{
+			if (-not $plan.CreateSql) { throw "the lane has no $table table and it cannot be created from the source (computed columns)" }
+			$null = (& $run $plan.CreateSql).ExecuteNonQuery()
+			& $say ("Lane {0}: created table {1} (same columns as the server)" -f $Lane, $table) 'green'
+		}
+
+		# The LANE's columns decide what is written - its schema is never changed
+		$destCols = @{ }
+		$rd = (& $run "SELECT c.name, t.name, c.is_identity, c.is_computed FROM sys.columns c JOIN sys.types t ON c.user_type_id = t.user_type_id WHERE c.object_id = OBJECT_ID(N'[dbo].[$table]')").ExecuteReader()
+		try { while ($rd.Read()) { $destCols[[string]$rd[0]] = [pscustomobject]@{ Type = [string]$rd[1]; Identity = [bool]$rd[2]; Skip = ([bool]$rd[3] -or ([string]$rd[1]) -in @('timestamp', 'rowversion')) } } }
+		finally { $rd.Close() }
+		$cols = @($plan.Columns | Where-Object { $destCols.ContainsKey($_) -and -not $destCols[$_].Skip })
+		if ($cols.Count -eq 0) { throw "no columns in common with the server table" }
+
+		# Match rows on the lane's primary key (the server's when the lane has none)
+		$pk = New-Object System.Collections.Generic.List[string]
+		$rd = (& $run "SELECT c.name FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id WHERE i.object_id = OBJECT_ID(N'[dbo].[$table]') AND i.is_primary_key = 1 ORDER BY ic.key_ordinal").ExecuteReader()
+		try { while ($rd.Read()) { $pk.Add([string]$rd[0]) } }
+		finally { $rd.Close() }
+		if ($pk.Count -eq 0) { foreach ($k in @($plan.SourcePk)) { $pk.Add($k) } }
+		if ($pk.Count -eq 0) { throw "no primary key on the lane or the server table - cannot match rows (it would add duplicates)" }
+		$missingKey = @($pk | Where-Object { $cols -notcontains $_ })
+		if ($missingKey.Count -gt 0) { throw ("key column(s) not copied: " + ($missingKey -join ', ')) }
+
+		$colList = ($cols | ForEach-Object { "[$_]" }) -join ', '
+		$sCols = ($cols | ForEach-Object { "s.[$_]" }) -join ', '
+		$on = ($pk | ForEach-Object { "d.[$_] = s.[$_]" }) -join ' AND '
+
+		# Staging table with the lane's column types (the UNION drops the IDENTITY property)
+		$null = (& $run "IF OBJECT_ID('tempdb..#pump') IS NOT NULL DROP TABLE #pump; SELECT $colList INTO #pump FROM [dbo].[$table] WHERE 1 = 0 UNION ALL SELECT $colList FROM [dbo].[$table] WHERE 1 = 0;").ExecuteNonQuery()
+
+		$srcCmd = $src.CreateCommand()
+		$srcCmd.CommandTimeout = 0
+		$srcCmd.CommandText = "SELECT $colList FROM [dbo].[$table]"
+		$srcReader = $srcCmd.ExecuteReader()
+		try
+		{
+			$bulk = New-Object System.Data.SqlClient.SqlBulkCopy($dst, [System.Data.SqlClient.SqlBulkCopyOptions]::Default, $tx)
+			$bulk.DestinationTableName = '#pump'
+			$bulk.BatchSize = 5000
+			$bulk.BulkCopyTimeout = 0
+			foreach ($c in $cols) { $null = $bulk.ColumnMappings.Add($c, $c) }
+			$bulk.WriteToServer($srcReader)
+			$bulk.Close()
+		}
+		finally { $srcReader.Close() }
+
+		# UPDATE rows that exist and differ (EXCEPT compares NULLs correctly)
+		$updated = 0
+		$nonKey = @($cols | Where-Object { $pk -notcontains $_ -and -not $destCols[$_].Identity })
+		if ($nonKey.Count -gt 0)
+		{
+			$set = ($nonKey | ForEach-Object { "d.[$_] = s.[$_]" }) -join ', '
+			$diff = ''
+			if (@($nonKey | Where-Object { $noCompare -contains $destCols[$_].Type }).Count -eq 0)
+			{
+				$diff = " WHERE EXISTS (SELECT " + (($nonKey | ForEach-Object { "s.[$_]" }) -join ', ') + " EXCEPT SELECT " + (($nonKey | ForEach-Object { "d.[$_]" }) -join ', ') + ")"
+			}
+			$updated = (& $run "UPDATE d SET $set FROM [dbo].[$table] d JOIN #pump s ON $on$diff;" 0).ExecuteNonQuery()
+		}
+
+		# INSERT rows the lane does not have
+		$insert = "INSERT INTO [dbo].[$table] ($colList) SELECT $sCols FROM #pump s WHERE NOT EXISTS (SELECT 1 FROM [dbo].[$table] d WHERE $on);"
+		if (@($cols | Where-Object { $destCols[$_].Identity }).Count -gt 0) { $insert = "SET IDENTITY_INSERT [dbo].[$table] ON; $insert SET IDENTITY_INSERT [dbo].[$table] OFF;" }
+		$inserted = (& $run $insert 0).ExecuteNonQuery()
+
+		$null = (& $run "DROP TABLE #pump;").ExecuteNonQuery()
+		$tx.Commit()
+		$tx = $null
+		& $say ("Lane {0} ({1}): {2} - {3} updated, {4} added, {5} server rows checked (lane-only rows kept)" -f $Lane, $Machine, $table, $updated, $inserted, $plan.Rows) 'green'
+	}
+	catch
+	{
+		if ($tx) { try { $tx.Rollback() } catch { } }
+		& $say ("Lane {0} ({1}): {2} NOT pumped over SQL, lane table unchanged - {3}" -f $Lane, $Machine, $table, $_.Exception.Message) 'red'
+		$failed.Add($table)
+	}
+}
+try { $src.Dispose() } catch { }
+try { $dst.Dispose() } catch { }
+return [pscustomobject]@{ Lane = $Lane; Connected = $true; Failed = $failed.ToArray() }
+'@
+
+		$logQueue = New-Object System.Collections.Concurrent.ConcurrentQueue[object]
+		$poolSize = [Math]::Min(6, [Math]::Max(1, $sqlWork.Count))
+		$pool = [RunspaceFactory]::CreateRunspacePool(1, $poolSize)
+		$pool.Open()
+		$plansArray = $tablePlans.ToArray()
+		$tasks = New-Object System.Collections.Generic.List[object]
+		Write_Log "`r`nPumping $($plansArray.Count) table(s) to $($sqlWork.Count) lane(s) over SQL, up to $poolSize at a time..." "blue"
+		foreach ($w in $sqlWork)
+		{
+			$ps = [PowerShell]::Create()
+			$ps.RunspacePool = $pool
+			$null = $ps.AddScript($laneUpsertWorker).AddArgument($ConnectionString).AddArgument($w.ConnStr).AddArgument($w.Lane).AddArgument($w.Machine).AddArgument($w.Protocol).AddArgument($plansArray).AddArgument($logQueue)
+			$tasks.Add([pscustomobject]@{ Work = $w; PS = $ps; Handle = $ps.BeginInvoke(); Done = $false })
+		}
+
+		# Wait without freezing the window: show worker messages as they come
+		$drain = {
+			$m = $null
+			while ($logQueue.TryDequeue([ref]$m)) { Write_Log $m.Text $m.Color }
+		}
+		while (@($tasks | Where-Object { -not $_.Done }).Count -gt 0)
+		{
+			foreach ($tk in $tasks)
+			{
+				if ($tk.Done -or -not $tk.Handle.IsCompleted) { continue }
+				$tk.Done = $true
+				$res = $null
+				try { $res = @($tk.PS.EndInvoke($tk.Handle)) | Select-Object -Last 1 }
+				catch { Write_Log "Lane $($tk.Work.Lane): pump worker failed - $($_.Exception.Message)" "red" }
+				finally { $tk.PS.Dispose() }
+				& $drain
+				if (-not $res) { $res = [pscustomobject]@{ Lane = $tk.Work.Lane; Connected = $false; Failed = @($tablePlans | ForEach-Object { $_.Table }) } }
+				$failedTables = @($res.Failed)
+				if ($res.Connected -and $failedTables.Count -lt $tablePlans.Count) { $protocolLanes += $tk.Work.Lane; $ProcessedLanes += $tk.Work.Lane }
+				if ($failedTables.Count -gt 0)
+				{
+					$fileWork.Add([pscustomobject]@{ Lane = $tk.Work.Lane; Machine = $tk.Work.Machine; Tables = @($filteredAliasEntries | Where-Object { $failedTables -contains [string]$_.Table }) })
+				}
+			}
+			& $drain
+			$script:LastActivity = Get-Date
+			try { [System.Windows.Forms.Application]::DoEvents() } catch { }
+			Start-Sleep -Milliseconds 100
+		}
+		& $drain
+		try { $pool.Close(); $pool.Dispose() } catch { }
+	}
+
+	# ------------------------------------------------------------------------------------------------
+	# STEP 8: File drop (lanes without SQL access, and tables whose SQL pump failed)
+	#   SMS loads the file with @UPDATE_BATCH(JOB=ADDRPL ...) - also update-or-add by key.
+	#   RULE: File-only lanes must ONLY pump tables <= 1000 rows
+	# ------------------------------------------------------------------------------------------------
+	$MaxFileRows = 1000
+	$generatedSqlFiles = @{ }
+	foreach ($fw in $fileWork)
+	{
+		$laneNum = $fw.Lane
+		$machineName = $fw.Machine
+		$fileEntries = @($fw.Tables)
+		$LaneLocalPath = Join-Path $OfficePath "XF${StoreNumber}${laneNum}"
 		if ($fileEntries.Count -gt 0)
 		{
 			if (Test-Path $LaneLocalPath)
@@ -954,7 +937,7 @@ DROP VIEW $viewName;
 	}
 
 	# ------------------------------------------------------------------------------------------------
-	# STEP 6: Clean up and final logging
+	# STEP 9: Clean up and final logging
 	# ------------------------------------------------------------------------------------------------
 	try { if ($srcSqlConnection) { $srcSqlConnection.Close() } }
 	catch { }

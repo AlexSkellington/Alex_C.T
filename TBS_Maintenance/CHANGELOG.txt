@@ -5,6 +5,30 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.9  -  2026-10-30
+#  Pump Table to Lane upserts; editable server SQL; role badge; no frozen window on long work
+# ===================================================================================================
+#
+#  [CHG]  Pump Table to Lane never wipes a lane table any more: rows with the same primary key are
+#         updated (only when a value differs), missing rows are added, rows only the lane has and
+#         the lane's own columns are kept. A missing table is created with the server's columns
+#         and primary key. A table without any primary key is refused (it would add duplicates).
+#         Each table runs in its own transaction - a failure leaves the lane table unchanged and
+#         that table goes to the SMS file drop (which also updates-or-adds).
+#  [NEW]  Pump Table to Lane pumps up to 6 lanes at once and shows each lane's progress while the
+#         window stays usable.
+#  [NEW]  Server Database Maintenance: the section list is an editor - click a section to see and
+#         edit its SQL for this run, "Undo My Edits" restores it, "Add Custom SQL" adds your own
+#         queries (saved in Settings\Custom_Server_SQL.json on this PC and offered next time).
+#  [CHG]  Server maintenance SQL runs in the background: the window no longer freezes ("Not
+#         Responding") during index rebuilds / shrinks, and the SQL module is no longer loaded.
+#  [CHG]  Header: a STORE SERVER / HOST SERVER / LANE badge (from DBNAME) instead of repeating the
+#         store number and name that the info strip already shows.
+#  [CHG]  Waits inside menu actions (service restarts, explorer restart, LOC repair, protocol
+#         probes, scale profile) keep the window responsive (Wait_UI).
+#  [DEL]  Manage SQL 'sa' Account removed.
+
+# ===================================================================================================
 #  v2.7.8  -  2026-10-30
 #  UI polish: info tiles, log header, menu labels
 # ===================================================================================================

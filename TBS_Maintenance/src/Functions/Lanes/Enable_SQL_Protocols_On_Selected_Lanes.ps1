@@ -477,7 +477,7 @@ if ($createdAndTested -and ($protocol -eq 'File' -or [string]::IsNullOrWhiteSpac
 			}
 		}
 		if ($allDone) { break }
-		Start-Sleep -Milliseconds 150
+		Wait_UI -Milliseconds 150
 	}
 
 	# ---- Cleanup pool -----------------------------------------------------------------------------

@@ -157,23 +157,17 @@ $bannerStatusPanel.Location = New-Object System.Drawing.Point(350, 10)
 $bannerStatusPanel.Size = New-Object System.Drawing.Size(250, 36)
 $bannerStatusPanel.BackColor = [System.Drawing.Color]::Transparent
 
-# Single clean line: version + build date (the old layout stacked a tiny
-# 7pt "Build: <date>" line under the version, which looked out of place)
+# Node-role badge (STORE SERVER / HOST SERVER / LANE - same as MiniGhost's). Store number and
+# name are in the info strip, so the banner no longer repeats them. The role comes from DBNAME;
+# Get_Store_And_Database_Info sets text, colour and visibility once the store data resolves.
 $bannerDateLabel = New-Object System.Windows.Forms.Label
-$bannerDateLabel.Name = "BannerDate"
-# Store identity (the version + build date are shown in the status bar at
-# the bottom - the banner shows which store this console manages instead).
-# Get_Store_And_Database_Info updates this label once the store data resolves.
-$bannerDateLabel.Text = "Store Maintenance Console"
-try
-{
-	$bn0 = $script:FunctionResults['StoreNumber']
-	if ($bn0 -and "$bn0" -ne 'N/A') { $bannerDateLabel.Text = "Store $bn0" }
-}
-catch { }
-$bannerDateLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]9, [System.Drawing.FontStyle]::Bold)
-$bannerDateLabel.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
-$bannerDateLabel.BackColor = [System.Drawing.Color]::Transparent
+$bannerDateLabel.Name = "BannerRole"
+$bannerDateLabel.Text = ""
+$bannerDateLabel.Visible = $false
+$bannerDateLabel.Font = New-Object System.Drawing.Font("Segoe UI Semibold", [float]8.5)
+$bannerDateLabel.ForeColor = [System.Drawing.Color]::White
+$bannerDateLabel.BackColor = [System.Drawing.Color]::FromArgb(110, 110, 120)
+$bannerDateLabel.Padding = New-Object System.Windows.Forms.Padding(8, 3, 8, 3)
 $bannerDateLabel.AutoSize = $true
 $bannerDateLabel.Location = New-Object System.Drawing.Point(0, 10)
 $bannerStatusPanel.Controls.Add($bannerDateLabel)
@@ -202,7 +196,7 @@ $bannerTestBadge.AutoSize = $true
 $bannerTestBadge.Padding = New-Object System.Windows.Forms.Padding(6, 0, 6, 0)
 $bannerTestBadge.Visible = [bool]$script:IsTestEnvironment
 $toolTip.SetToolTip($bannerTestBadge, $(if ($script:StoremanKeyStale) { "KEY EXPIRED - " + $script:StoremanSourceReason + ". Using: $BasePath" } elseif ($script:IsTestEnvironment) { "TEST ENVIRONMENT - " + $script:StoremanSourceReason + ". Using: $BasePath" } else { "Production storeman share in use." }))
-$toolTip.SetToolTip($bannerDateLabel, "Storeman source: " + $script:StoremanSource + " - " + $script:StoremanSourceReason)
+$toolTip.SetToolTip($bannerDateLabel, "Where this console runs (from Startup.ini DBNAME: STORESQL = store server, HOSTSQL = host server, LANESQL = lane). Storeman source: " + $script:StoremanSource + " - " + $script:StoremanSourceReason)
 $bannerStatusPanel.Controls.Add($bannerTestBadge)
 
 $bannerPanel.Controls.Add($bannerStatusPanel)

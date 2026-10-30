@@ -38,6 +38,12 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\TBS_Maintenance_SelfTest.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Pump upsert test (real worker against SQL LocalDB)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\Pump_Upsert_Test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   minighost:
     name: MiniGhost
     runs-on: windows-latest

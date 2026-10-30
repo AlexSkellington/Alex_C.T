@@ -631,7 +631,7 @@ ORDER BY e.F01;
 			if ($atstCaptured -and $plstCaptured) { break }
 			if ($scaleExited -and ($atstCaptured -or $plstCaptured)) { break }
 
-			Start-Sleep -Milliseconds $pollIntervalMs
+			Wait_UI -Milliseconds $pollIntervalMs
 			$elapsedMs += $pollIntervalMs
 		}
 
@@ -933,7 +933,7 @@ ORDER BY e.F01;
 			catch { }
 		}
 
-		Start-Sleep -Milliseconds 250
+		Wait_UI -Milliseconds 250
 	}
 
 	# ========== STAGE 2: DEPLOY (if FULL or RECENT) ==========

@@ -2,8 +2,8 @@
 #                              FUNCTION: Show_Section_Selection_Form
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Dialog with a check list of SQL script sections (Process_Server / lane maintenance);
-#   returns the checked section names. Thin wrapper over Show_CheckList_Form.
+#   Dialog with a check list of SQL script sections (lane maintenance; the server uses
+#   Show_SQL_Section_Editor); returns the checked names. Thin wrapper over Show_CheckList_Form.
 #
 # Parameters:
 #   - SectionNames  [string[]] (required): section names to list

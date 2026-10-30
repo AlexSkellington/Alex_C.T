@@ -85,16 +85,6 @@ $ServerScheduleStoremanZipBackupItem.Add_Click({
 [void]$SubServerSchedule.DropDownItems.Add($ServerScheduleStoremanZipBackupItem)
 
 ############################################################################
-# 5) Manage SQL 'sa' Account Menu Item
-############################################################################
-$ManageSaAccountItem = New-Object System.Windows.Forms.ToolStripMenuItem("Manage SQL 'sa' Account")
-$ManageSaAccountItem.ToolTipText = "Enable or disable the 'sa' account on the local SQL Server with a predefined password."
-$ManageSaAccountItem.Add_Click({
-		$script:LastActivity = Get-Date
-		Manage_Sa_Account
-	})
-
-############################################################################
 # 6) Repair Windows Menu Item
 ############################################################################
 $RepairWindowsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Repair Windows")
@@ -201,7 +191,6 @@ $OrganizeDesktopItemsItem.Add_Click({
 
 # --- Assembled layout: frequent actions on top, the rest grouped in submenus ---
 [void]$ContextMenuServer.Items.Add($ServerDBMaintenanceItem)
-[void]$ContextMenuServer.Items.Add($ManageSaAccountItem)
 [void]$ContextMenuServer.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 [void]$ContextMenuServer.Items.Add($SubServerSchedule)
 [void]$ContextMenuServer.Items.Add($SubServerSystem)
