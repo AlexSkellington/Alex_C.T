@@ -53,8 +53,12 @@ jobs:
           {
             Write-Error "Tag ${{ github.ref_name }} does not match `$VersionNumber $ver in the sources"; exit 1
           }
-          gh release view $tag --repo '${{ github.repository }}' *> $null
+          # "release not found" on stderr is the normal answer for a new version: the runner's
+          # ErrorActionPreference=Stop would turn it into a failure, so relax it for this call
+          $ErrorActionPreference = 'Continue'
+          & gh release view $tag --repo '${{ github.repository }}' 2>$null | Out-Null
           $exists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = 'Stop'
           $global:LASTEXITCODE = 0
           if ($exists) { "Release $tag already exists - nothing to publish" } else { "Will publish $tag" }
           "tag=$tag" >> $env:GITHUB_OUTPUT
