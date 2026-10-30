@@ -14,3 +14,6 @@ TBS_Maintenance/**/*.ico        binary
 # it (ASCII, CRLF), so it is not converted.
 MiniGhost/**                    text eol=crlf
 MiniGhost/MiniGhost.ps1         -text
+
+# Double-click launchers: batch files must keep CRLF
+Run/*.bat                       text eol=crlf

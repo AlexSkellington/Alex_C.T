@@ -24,6 +24,13 @@ MiniGhost_V38.ps1              launcher for bit.ly/MiniGhost               - do 
 CLAUDE.md               working rules for this repository (also for AI assistants)
 ```
 
+## Double-click launchers (Run\)
+
+`Run\Run_MiniGhost.bat` and `Run\Run_TBS_Maintenance_Script.bat` replace the old
+`Execute(...).bat` files. They download the script with Windows' `curl.exe` to `%TEMP%` and run that
+file. The old ones ran `powershell -Command "irm https://bit.ly/... | iex"`, a download-and-run
+command line that Microsoft Defender blocks as `Trojan:Win32/Commando.A!ml` before anything runs.
+
 ## The two root launchers
 
 The short links cannot be changed (free bit.ly plan), so they keep pointing at these files:
