@@ -1,3 +1,10 @@
+# ===================================================================================================
+#                                FUNCTION: Show_Text_Report_Form
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Shows a read-only text report (summary, failure log) in a resizable window with a Close button.
+# ===================================================================================================
+
 function Show_Text_Report_Form
 {
 	[CmdletBinding()]

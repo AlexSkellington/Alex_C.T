@@ -1,3 +1,19 @@
+# ===================================================================================================
+#                              FUNCTION: Show_Action_Prompt_With_Log
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Message dialog with one or two action buttons and an optional View Log button that opens the
+#   given log text in Show_Text_Report_Form.
+#
+# Returns:
+#   "Primary", "Secondary" or "Closed" (window closed with X).
+#
+# Notes:
+#   - Click handlers run in their own scope: a plain $selection = ... inside them would set a new
+#     local variable and the function would always return "Closed". The choice is carried on the
+#     form's .Tag instead.
+# ===================================================================================================
+
 function Show_Action_Prompt_With_Log
 {
 	[CmdletBinding()]
@@ -41,13 +57,13 @@ function Show_Action_Prompt_With_Log
 	$buttonPanel.WrapContents = $false
 	$buttonPanel.Padding = New-Object System.Windows.Forms.Padding(0, 6, 12, 6)
 	
-	$selection = "Closed"
+	$promptForm.Tag = "Closed"
 	
 	$primaryButton = New-Object System.Windows.Forms.Button
 	$primaryButton.Text = $PrimaryButtonText
 	$primaryButton.AutoSize = $true
 	$primaryButton.Add_Click({
-			$selection = "Primary"
+			$promptForm.Tag = "Primary"
 			$promptForm.Close()
 		})
 	$buttonPanel.Controls.Add($primaryButton)
@@ -60,7 +76,7 @@ function Show_Action_Prompt_With_Log
 		$secondaryButton.Text = $SecondaryButtonText
 		$secondaryButton.AutoSize = $true
 		$secondaryButton.Add_Click({
-				$selection = "Secondary"
+				$promptForm.Tag = "Secondary"
 				$promptForm.Close()
 			})
 		$buttonPanel.Controls.Add($secondaryButton)
@@ -81,5 +97,7 @@ function Show_Action_Prompt_With_Log
 	$promptForm.Controls.Add($messageTextBox)
 	$promptForm.Controls.Add($buttonPanel)
 	[void]$promptForm.ShowDialog()
+	$selection = [string]$promptForm.Tag
+	$promptForm.Dispose()
 	return $selection
 }

@@ -5,6 +5,41 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v1.3.9  -  2026-10-30
+#  Review pass: database connection, network, INI rewrites, dialogs, temp cleanup
+# ===================================================================================================
+#
+#  Fixes
+#  [FIX]  Truncate Tables, Update SQL Database and the store-number SQL step could not connect on a
+#         fresh launch ("Database connection string is not available"): the connection lookup read
+#         its own empty parameter instead of the detected Startup.ini. It finds Startup.ini now.
+#  [FIX]  Rename with INI/SQL errors -> "Reboot Now" did nothing: the dialog always answered
+#         "Closed". It returns the button that was clicked.
+#  [FIX]  Store number change rewrote IP addresses whose octet equalled the old store number
+#         (store 100: 10.0.100.5 -> 10.0.242.5), and a TIMESYNC SERVER= IP address got its first
+#         octet replaced by the store number. IP addresses are left alone.
+#  [FIX]  Network detection (WMI path) matched the route's interface index against the adapter's
+#         DeviceID, which numbers adapters differently - it could show another adapter's IP. The
+#         subnet prefix length was also miscalculated (33 for 255.255.255.0).
+#  [FIX]  Configure Network reported success when netsh failed (native commands never throw); the
+#         exit code is checked. A static IP keeps the adapter's current subnet size instead of
+#         always /24.
+#  [FIX]  A failed store-number SQL update was only visible in Summary; it is shown with the failed
+#         commands.
+#  [FIX]  Old X*/Z* folder cleanup looks in the detected storeman Office folder first (it only knew
+#         \\localhost\storeman, C:\storeman and D:\storeman).
+#  [FIX]  Store name: only the first NAME= line, and names containing '=' are kept whole.
+#
+#  Faster
+#  [PERF] Closing MiniGhost no longer searches all of %TEMP% recursively; it deletes only its own
+#         copies at the top of %TEMP% - including the _Elevated copy the old cleanup never matched.
+#         Reboot System cleans up before restarting (nothing after Restart-Computer is sure to run).
+#
+#  Code
+#  [CHG]  Removed the unused Delete_Files_And_Folders (280 lines) and a no-op SmsHttps block.
+#  [NEW]  tests\MiniGhost_SelfTest.ps1 and a CI workflow that builds and tests on every push.
+
+# ===================================================================================================
 #  v1.3.8  -  2026-04-15
 #  Sources split into one file per function (MiniGhost\src) with a build step - no behaviour change
 # ===================================================================================================

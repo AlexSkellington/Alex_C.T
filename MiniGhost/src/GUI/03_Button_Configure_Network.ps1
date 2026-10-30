@@ -80,8 +80,12 @@ $configureNetworkButton.Add_Click({
 			# Configure DHCP
 			try
 			{
-				netsh interface ip set address name="$adapterName" source=dhcp
-				netsh interface ip set dns name="$adapterName" source=dhcp
+				# netsh never throws: check its exit code so a failure is not reported as success
+				# ("DHCP is already enabled on this interface" also exits 1 - that one is fine)
+				$netshOutput = netsh interface ip set address name="$adapterName" source=dhcp 2>&1
+				if ($LASTEXITCODE -ne 0 -and (($netshOutput | Out-String) -notmatch '(?i)already')) { throw ("netsh (address) exit code {0}: {1}" -f $LASTEXITCODE, (($netshOutput | Out-String).Trim())) }
+				$netshOutput = netsh interface ip set dns name="$adapterName" source=dhcp 2>&1
+				if ($LASTEXITCODE -ne 0 -and (($netshOutput | Out-String) -notmatch '(?i)already')) { throw ("netsh (dns) exit code {0}: {1}" -f $LASTEXITCODE, (($netshOutput | Out-String).Trim())) }
 				[System.Windows.Forms.MessageBox]::Show("DHCP configuration applied.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 				$operationStatus["IPConfiguration"].Status = "Successful"
 				$operationStatus["IPConfiguration"].Message = "DHCP configuration applied."
@@ -157,7 +161,17 @@ $configureNetworkButton.Add_Click({
 						{
 							try
 							{
-								netsh interface ip set address name="$adapterName" static $ipAddress 255.255.255.0 $currentGateway
+								# Keep the adapter's current subnet size (fall back to /24 when it is unknown)
+								$subnetMask = '255.255.255.0'
+								$currentPrefix = 0
+								if ([int]::TryParse([string](@($currentConfig.IPv4Address)[0].PrefixLength), [ref]$currentPrefix) -and $currentPrefix -ge 8 -and $currentPrefix -le 30)
+								{
+									$subnetMask = Convert_Prefix_Length_To_Subnet_Mask -PrefixLength $currentPrefix
+								}
+								
+								# netsh never throws: check its exit code so a failure is not reported as success
+								$netshOutput = netsh interface ip set address name="$adapterName" static $ipAddress $subnetMask $currentGateway 2>&1
+								if ($LASTEXITCODE -ne 0) { throw ("netsh exit code {0}: {1}" -f $LASTEXITCODE, (($netshOutput | Out-String).Trim())) }
 								
 								# Update the label
 								$ipAddressLabel.Text = "IP Address changed from: $currentIP to $ipAddress"

@@ -13,9 +13,9 @@ Dialogs, message boxes, labels and the shared operation-status table.
 | `Get_NEW_Store_Number` | Prompts the user via a GUI to enter a valid store number. | GUI/04_Button_Update_Store_Number |
 | `Set_Label_Text` | Updates a WinForms label and optionally refreshes its parent layout. | Get_Store_Number_From_INI, Invoke_Machine_Name_Change_Workflow, GUI/04_Button_Update_Store_Number |
 | `Set_Operation_Status` | Central helper to update the shared operation-status table only when the requested key exists. | Invoke_Machine_Name_Change_Workflow, GUI/02_Button_Change_Machine_Name, GUI/04_Button_Update_Store_Number |
-| `Show_Action_Prompt_With_Log` |  | Invoke_Machine_Name_Change_Workflow |
+| `Show_Action_Prompt_With_Log` | Message dialog with one or two action buttons and an optional View Log button that opens the given log text in Show_Text_Report_Form. | Invoke_Machine_Name_Change_Workflow, GUI/04_Button_Update_Store_Number |
 | `Show_App_Message` | Small wrapper around WinForms MessageBox to reduce repeated enum boilerplate. | Invoke_Machine_Name_Change_Workflow, GUI/02_Button_Change_Machine_Name, GUI/04_Button_Update_Store_Number |
-| `Show_Text_Report_Form` |  | Show_Action_Prompt_With_Log, GUI/08_Button_Summary |
+| `Show_Text_Report_Form` | Shows a read-only text report (summary, failure log) in a resizable window with a Close button. | Show_Action_Prompt_With_Log, GUI/08_Button_Summary |
 
 ## Store
 
@@ -27,7 +27,7 @@ Store number, store name, machine-name rules and every INI file MiniGhost rewrit
 | `Get_Machine_Name_Context` | Normalizes a requested machine name and derives the terminal behavior used by INI + SQL sync paths. | Update_SQL_Database, Get_NEW_Machine_Name, Invoke_Machine_Name_Change_Workflow, Invoke_Machine_Name_Sync |
 | `Get_Store_Name_From_INI` | Retrieves the store name from the system.ini file. | Main/01_Load_Store_Data |
 | `Get_Store_Number_From_INI` | Retrieves the store number from the startup.ini file. | Update_SQL_Database, Get_Machine_Name_Context, Get_NEW_Machine_Name, Get_NEW_Store_Number, Invoke_Machine_Name_Change_Workflow, GUI/04_Button_Update_Store_Number, Main/01_Load_Store_Data |
-| `Resolve_Startup_Ini_Path` | Resolves the active Startup.ini path using an explicit value first, then existing script/global variables, and finally BasePath when available. | Update_Startup_Ini_For_Machine, Invoke_Machine_Name_Change_Workflow, Invoke_Machine_Name_Sync |
+| `Resolve_Startup_Ini_Path` | Resolves the active Startup.ini path using an explicit value first, then existing script/global variables, and finally BasePath when available. | Get_Database_Connection_String, Update_Startup_Ini_For_Machine, Invoke_Machine_Name_Change_Workflow, Invoke_Machine_Name_Sync |
 | `Update_INIs` | Updates ALL required INI files with the new store number. | Get_NEW_Machine_Name, Invoke_Machine_Name_Change_Workflow, Invoke_Machine_Name_Sync, GUI/04_Button_Update_Store_Number |
 | `Update_Startup_Ini_For_Machine` | Applies machine-specific Startup.ini changes that should happen both after a rename and during a same-name sync. | Invoke_Machine_Name_Sync |
 
@@ -39,7 +39,7 @@ Database connection and the SQL updates (store number, machine name, truncation)
 |---|---|---|
 | `Ensure_Database_Connection_Context` | Lazily refreshes DBSERVER / DBNAME / ConnectionString from Startup.ini so SQL-specific work can initialize only when needed instead of front-loading that work during GUI startup. | Execute_SQL_Commands, Update_SQL_Tables_For_Machine_Name_Change, Invoke_Machine_Name_Sync |
 | `Execute_SQL_Commands` | Executes a given SQL command using the provided connection string. | RPT_Blank, Update_SQL_Tables_For_Machine_Name_Change, Update_SQL_Tables_For_Store_Number_Change |
-| `Get_Database_Connection_String` | Searches for the Startup.ini file in specified locations, extracts the DBNAME value, constructs the connection string, and stores it in a script-level hashtable. | Ensure_Database_Connection_Context, Update_SQL_Tables_For_Machine_Name_Change |
+| `Get_Database_Connection_String` | Reads DBSERVER / DBNAME from Startup.ini, finds the SQL instance that answers (configured server first, then local aliases and local instances), and stores the configured and ru... | Ensure_Database_Connection_Context, Update_SQL_Tables_For_Machine_Name_Change |
 | `RPT_Blank` | Truncates the specified list of tables in the SQL database. | GUI/05_Button_Truncate_Tables |
 | `Update_SQL_Database` | Runs the newer protected SQL machine/store sync routine used by rename flows so the standalone "Update SQL Database" button follows the same safer TER/STO/LNK/RUN/STD update path. | GUI/07_Button_Update_SQL_Database |
 | `Update_SQL_Tables_For_Machine_Name_Change` | Updates TER_TAB, STO_TAB, LNK_TAB, RUN_TAB, and STD_TAB after machine name change / store change. | Update_SQL_Database, Invoke_Machine_Name_Sync |
@@ -51,9 +51,11 @@ Network, registry, X*/Z* folder and temp-file housekeeping on this machine.
 
 | Function | What it does | Called from |
 |---|---|---|
-| `Delete_Files_And_Folders` | Deletes specified files within a directory, supporting wildcards and exclusions. | GUI/09_Button_Reboot, GUI/10_Form_Closing, Main/01_Load_Store_Data |
+| `Convert_Prefix_Length_To_Subnet_Mask` | Converts an IPv4 prefix length (24) to a dotted subnet mask (255.255.255.0). | GUI/03_Button_Configure_Network |
+| `Convert_Subnet_Mask_To_Prefix_Length` | Converts a dotted IPv4 subnet mask (255.255.255.0) to its prefix length (24). | Get_Active_IP_Config |
 | `Get_Active_IP_Config` | Retrieves the active IP configuration for network adapters that are up and have valid IPv4 addresses. | Main/01_Load_Store_Data |
 | `Remove_GT_Registry_Values` | Removes all registry values starting with 'GT' from specified registry paths. | GUI/06_Button_Registry_Cleanup |
+| `Remove_MiniGhost_Temp_Copies` | Deletes the copies of MiniGhost left in %TEMP% (MiniGhost.ps1 and the MiniGhost_<version>_Elevated.ps1 written by the elevation bootstrap for irm | iex launches). | GUI/09_Button_Reboot, GUI/10_Form_Closing |
 | `Remove_Old_XZ_Folders` | Removes old X* and Z* folders under \storeman\office that do NOT match the NEW store and allowed terminal numbers. | Invoke_Machine_Name_Change_Workflow |
 
 ## Workflow

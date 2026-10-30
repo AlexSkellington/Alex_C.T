@@ -14,6 +14,8 @@
 #   - Terminal IN: current lane terminal (from MachineName), 900, 901
 #
 # Safeguard: refuses to run if extracted terminal is 901 unless -AllowBackoffice is passed.
+# Office folder: -OfficePath, else the detected storeman Office folder ($OfficePath), else
+# \\localhost\storeman\office, C:\storeman\office, D:\storeman\office.
 # Automatic: no prompts.
 # ===================================================================================================
 
@@ -28,7 +30,9 @@ function Remove_Old_XZ_Folders
 		[Parameter(Mandatory = $false)]
 		[hashtable]$OperationStatus,
 		[Parameter(Mandatory = $false)]
-		[switch]$AllowBackoffice
+		[switch]$AllowBackoffice,
+		[Parameter(Mandatory = $false)]
+		[string]$OfficePath
 	)
 	
 	# -----------------------------
@@ -77,7 +81,20 @@ function Remove_Old_XZ_Folders
 	# -----------------------------
 	# Pick base path
 	# -----------------------------
-	$possibleBasePaths = @("\\localhost\storeman\office", "C:\storeman\office", "D:\storeman\office")
+	# The detected storeman folder comes first: it can be on another drive or named differently
+	# (e.g. E:\Storeman), where the fixed paths below would miss it or pick a stale copy.
+	$possibleBasePaths = @()
+	if (-not [string]::IsNullOrWhiteSpace($OfficePath)) { $possibleBasePaths += $OfficePath }
+	else
+	{
+		# (the parameter hides the script-level $OfficePath, so read that one explicitly)
+		foreach ($sc in @('Script', 'Global'))
+		{
+			$v = Get-Variable -Name OfficePath -Scope $sc -ErrorAction SilentlyContinue
+			if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value)) { $possibleBasePaths += [string]$v.Value; break }
+		}
+		$possibleBasePaths += @("\\localhost\storeman\office", "C:\storeman\office", "D:\storeman\office")
+	}
 	$basePath = $null
 	foreach ($p in $possibleBasePaths)
 	{

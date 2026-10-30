@@ -63,7 +63,7 @@ function Invoke_Machine_Name_Change_Workflow
 			Set_Label_Text -Label $script:machineNameLabel -Text "The machine name will change from: $env:COMPUTERNAME to $script:newMachineName" -RefreshParent -ProcessEvents
 			Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Successful" -Message "Machine name changed successfully." -Details "Machine name changed to '$script:newMachineName'."
 			
-			& 'Remove_Old_XZ_Folders' -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
+			Remove_Old_XZ_Folders -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
 		}
 		
 		$syncResult = Invoke_Machine_Name_Sync -StoreNumber $currentStoreNumber -MachineName $machineContext.MachineName -OldMachineName $oldMachineName -MachineContext $machineContext -StartupIniPath $startupIniPath -OperationStatus $OperationStatus

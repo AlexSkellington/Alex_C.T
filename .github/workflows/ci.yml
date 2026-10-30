@@ -1,0 +1,57 @@
+# Builds and tests both tools on every push and pull request (Windows PowerShell 5.1, like the stores).
+#
+# Nothing is published here: the TBS script only reaches stores through release.yml (version tag),
+# MiniGhost through the committed MiniGhost/MiniGhost.ps1 on main - this checks that file is
+# exactly what the sources build.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tbs-maintenance:
+    name: TBS Maintenance Script
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Sources formatted
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\build\Format-Sources.ps1 -Check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build (sources -> one script)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\build\Build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Self-test
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\TBS_Maintenance\tests\TBS_Maintenance_SelfTest.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  minighost:
+    name: MiniGhost
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Committed MiniGhost.ps1 matches the sources
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\MiniGhost\build\Build.ps1 -Check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Self-test
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\MiniGhost\tests\MiniGhost_SelfTest.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

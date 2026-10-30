@@ -59,6 +59,7 @@ function Update_INIs
 		[string]$WinIniPath,
 		[Parameter(Mandatory = $false)]
 		[string]$SmsHttpsIniPath,
+		# Accepted for the existing callers; SmsHttps.INI is only updated when it already exists.
 		[Parameter(Mandatory = $false)]
 		[switch]$CreateSmsHttpsIfMissing
 	)
@@ -287,7 +288,7 @@ function Update_INIs
 					
 					$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 					$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-					$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+					$line = $line -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 				}
 			}
 			
@@ -386,7 +387,7 @@ function Update_INIs
 						
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-						$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+						$line = $line -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 					}
 				}
 				
@@ -648,7 +649,7 @@ function Update_INIs
 							$newTok = $newTokens[$t]
 							$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 							$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-							$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+							$line = $line -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 						}
 					}
 				}
@@ -666,7 +667,7 @@ function Update_INIs
 					{
 						$sv = ($matches['sv'] + "").Trim()
 						
-						if ($sv -match '^(?<st>\d{3,4})(?<rest>.*)$')
+						if ($sv -match '^(?<st>\d{3,4})(?<rest>[A-Za-z].*)$')
 						{
 							$st = $matches['st']
 							$rest = $matches['rest']
@@ -683,7 +684,7 @@ function Update_INIs
 									$newTok = $newTokens[$t]
 									$sv = $sv -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 									$sv = $sv -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-									$sv = $sv -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+									$sv = $sv -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 								}
 							}
 						}
@@ -817,7 +818,7 @@ function Update_INIs
 								$newTok = $nt[$t]
 								$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 								$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-								$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+								$line = $line -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 							}
 						}
 						
@@ -896,7 +897,7 @@ function Update_INIs
 						$newTok = $newTokensW[$t]
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-						$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+						$line = $line -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 					}
 				}
 				
@@ -927,20 +928,6 @@ function Update_INIs
 	#   - ALWAYS writes the file (even if identical), so it "triggers" every run.
 	# ===============================================================================================
 	
-	# --- Resolve SmsHttpsIniPath if missing (fast, no broad probing) ---
-	if ([string]::IsNullOrWhiteSpace($SmsHttpsIniPath))
-	{
-		try
-		{
-			$startupDirLocal = $null
-			if (-not [string]::IsNullOrWhiteSpace($StartupIniPath))
-			{
-				try { $startupDirLocal = Split-Path -Path $StartupIniPath -Parent }
-				catch { $startupDirLocal = $null }
-			}
-		}
-		catch { }
-	}
 	if (-not [string]::IsNullOrWhiteSpace($SmsHttpsIniPath) -and (Test-Path $SmsHttpsIniPath))
 	{
 		try

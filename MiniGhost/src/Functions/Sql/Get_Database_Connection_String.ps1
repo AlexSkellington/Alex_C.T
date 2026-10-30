@@ -2,8 +2,13 @@
 #                               FUNCTION: Get_Database_Connection_String
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Searches for the Startup.ini file in specified locations, extracts the DBNAME value,
-#   constructs the connection string, and stores it in a script-level hashtable.
+#   Reads DBSERVER / DBNAME from Startup.ini, finds the SQL instance that answers (configured
+#   server first, then local aliases and local instances), and stores the configured and runtime
+#   server, DBNAME and connection string in $script:FunctionResults.
+#
+# Parameters:
+#   - StartupIniPath [string]: Startup.ini to read. When empty, Resolve_Startup_Ini_Path finds it
+#     (script StartupIniPath, then BasePath\Startup.ini).
 # ===================================================================================================
 
 function Get_Database_Connection_String
@@ -19,10 +24,12 @@ function Get_Database_Connection_String
 		$script:FunctionResults = @{ }
 	}
 	
+	# The parameter shadows the script-level $StartupIniPath (names are case-insensitive), so an
+	# empty parameter must be resolved explicitly - reading $startupIniPath here returns the parameter.
 	$effectiveStartupIniPath = $StartupIniPath
 	if ([string]::IsNullOrWhiteSpace($effectiveStartupIniPath))
 	{
-		$effectiveStartupIniPath = $startupIniPath
+		$effectiveStartupIniPath = Resolve_Startup_Ini_Path
 	}
 	
 	if (-not $effectiveStartupIniPath)

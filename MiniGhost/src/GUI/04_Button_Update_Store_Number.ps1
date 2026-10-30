@@ -76,6 +76,11 @@ $updateStoreNumberButton.Add_Click({
 			$operationStatus["SQLDatabaseUpdate"].Status = "Failed"
 			$operationStatus["SQLDatabaseUpdate"].Message = "Failed to update STD_TAB after store number change."
 			$operationStatus["SQLDatabaseUpdate"].Details = "Failed commands: $($sqlUpdateResult.FailedCommands -join ', ')"
+			
+			# The INI result was already shown; without this the SQL failure was only visible in Summary
+			$sqlFailureLog = (@($sqlUpdateResult.FailedCommands) -join "`r`n`r`n")
+			if ([string]::IsNullOrWhiteSpace($sqlFailureLog)) { $sqlFailureLog = "SQL update result indicated failure." }
+			[void](Show_Action_Prompt_With_Log -Text "The store number SQL update (STD_TAB / TER_TAB 901) failed.`r`n`r`nUse View Log to see the failed commands, then run Update SQL Database or fix the database connection." -Title "SQL Update Failed" -PrimaryButtonText "OK" -LogText $sqlFailureLog -LogTitle "Failed SQL Commands")
 		}
 		
 		<# Run Update_INIs again at the end so INIs always reflect the latest state

@@ -17,8 +17,8 @@
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.3.8"
-$VersionDate = "2026-04-15"
+$VersionNumber = "1.3.9"
+$VersionDate = "2026-10-30"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
 $major = $PSVersionTable.PSVersion.Major
@@ -822,6 +822,22 @@ function Set_Operation_Status
 	}
 }
 
+# ===================================================================================================
+#                              FUNCTION: Show_Action_Prompt_With_Log
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Message dialog with one or two action buttons and an optional View Log button that opens the
+#   given log text in Show_Text_Report_Form.
+#
+# Returns:
+#   "Primary", "Secondary" or "Closed" (window closed with X).
+#
+# Notes:
+#   - Click handlers run in their own scope: a plain $selection = ... inside them would set a new
+#     local variable and the function would always return "Closed". The choice is carried on the
+#     form's .Tag instead.
+# ===================================================================================================
+
 function Show_Action_Prompt_With_Log
 {
 	[CmdletBinding()]
@@ -865,13 +881,13 @@ function Show_Action_Prompt_With_Log
 	$buttonPanel.WrapContents = $false
 	$buttonPanel.Padding = New-Object System.Windows.Forms.Padding(0, 6, 12, 6)
 	
-	$selection = "Closed"
+	$promptForm.Tag = "Closed"
 	
 	$primaryButton = New-Object System.Windows.Forms.Button
 	$primaryButton.Text = $PrimaryButtonText
 	$primaryButton.AutoSize = $true
 	$primaryButton.Add_Click({
-			$selection = "Primary"
+			$promptForm.Tag = "Primary"
 			$promptForm.Close()
 		})
 	$buttonPanel.Controls.Add($primaryButton)
@@ -884,7 +900,7 @@ function Show_Action_Prompt_With_Log
 		$secondaryButton.Text = $SecondaryButtonText
 		$secondaryButton.AutoSize = $true
 		$secondaryButton.Add_Click({
-				$selection = "Secondary"
+				$promptForm.Tag = "Secondary"
 				$promptForm.Close()
 			})
 		$buttonPanel.Controls.Add($secondaryButton)
@@ -905,6 +921,8 @@ function Show_Action_Prompt_With_Log
 	$promptForm.Controls.Add($messageTextBox)
 	$promptForm.Controls.Add($buttonPanel)
 	[void]$promptForm.ShowDialog()
+	$selection = [string]$promptForm.Tag
+	$promptForm.Dispose()
 	return $selection
 }
 
@@ -943,6 +961,13 @@ function Show_App_Message
 	$iconValue = [System.Enum]::Parse([System.Windows.Forms.MessageBoxIcon], $Icon)
 	return [System.Windows.Forms.MessageBox]::Show($Text, $Title, $buttonValue, $iconValue)
 }
+
+# ===================================================================================================
+#                                FUNCTION: Show_Text_Report_Form
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Shows a read-only text report (summary, failure log) in a resizable window with a Close button.
+# ===================================================================================================
 
 function Show_Text_Report_Form
 {
@@ -1334,8 +1359,10 @@ function Get_Store_Name_From_INI
 	
 	if (Test-Path $INIPath)
 	{
-		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | ForEach-Object {
-			$_.Line.Split('=')[1].Trim()
+		# First NAME= line only, and everything after the first '=' (a name may contain '=';
+		# several NAME= lines used to produce an array that printed as one run-together label)
+		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | Select-Object -First 1 | ForEach-Object {
+			$_.Line.Split('=', 2)[1].Trim()
 		}
 		if ($storeName)
 		{
@@ -1535,6 +1562,7 @@ function Update_INIs
 		[string]$WinIniPath,
 		[Parameter(Mandatory = $false)]
 		[string]$SmsHttpsIniPath,
+		# Accepted for the existing callers; SmsHttps.INI is only updated when it already exists.
 		[Parameter(Mandatory = $false)]
 		[switch]$CreateSmsHttpsIfMissing
 	)
@@ -1763,7 +1791,7 @@ function Update_INIs
 					
 					$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 					$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-					$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+					$line = $line -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 				}
 			}
 			
@@ -1862,7 +1890,7 @@ function Update_INIs
 						
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-						$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+						$line = $line -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 					}
 				}
 				
@@ -2124,7 +2152,7 @@ function Update_INIs
 							$newTok = $newTokens[$t]
 							$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 							$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-							$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+							$line = $line -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 						}
 					}
 				}
@@ -2142,7 +2170,7 @@ function Update_INIs
 					{
 						$sv = ($matches['sv'] + "").Trim()
 						
-						if ($sv -match '^(?<st>\d{3,4})(?<rest>.*)$')
+						if ($sv -match '^(?<st>\d{3,4})(?<rest>[A-Za-z].*)$')
 						{
 							$st = $matches['st']
 							$rest = $matches['rest']
@@ -2159,7 +2187,7 @@ function Update_INIs
 									$newTok = $newTokens[$t]
 									$sv = $sv -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 									$sv = $sv -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-									$sv = $sv -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+									$sv = $sv -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 								}
 							}
 						}
@@ -2293,7 +2321,7 @@ function Update_INIs
 								$newTok = $nt[$t]
 								$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 								$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-								$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+								$line = $line -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 							}
 						}
 						
@@ -2372,7 +2400,7 @@ function Update_INIs
 						$newTok = $newTokensW[$t]
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=[A-Za-z])"), $newTok
 						$line = $line -replace ("(?<!\d)" + $oldEsc + "(?=\d{3})"), $newTok
-						$line = $line -replace ("(?<![\dA-Za-z])" + $oldEsc + "(?!\d)"), $newTok
+						$line = $line -replace ("(?<![\dA-Za-z.])" + $oldEsc + "(?!\d|\.\d)"), $newTok
 					}
 				}
 				
@@ -2403,20 +2431,6 @@ function Update_INIs
 	#   - ALWAYS writes the file (even if identical), so it "triggers" every run.
 	# ===============================================================================================
 	
-	# --- Resolve SmsHttpsIniPath if missing (fast, no broad probing) ---
-	if ([string]::IsNullOrWhiteSpace($SmsHttpsIniPath))
-	{
-		try
-		{
-			$startupDirLocal = $null
-			if (-not [string]::IsNullOrWhiteSpace($StartupIniPath))
-			{
-				try { $startupDirLocal = Split-Path -Path $StartupIniPath -Parent }
-				catch { $startupDirLocal = $null }
-			}
-		}
-		catch { }
-	}
 	if (-not [string]::IsNullOrWhiteSpace($SmsHttpsIniPath) -and (Test-Path $SmsHttpsIniPath))
 	{
 		try
@@ -2927,8 +2941,13 @@ function Execute_SQL_Commands
 #                               FUNCTION: Get_Database_Connection_String
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Searches for the Startup.ini file in specified locations, extracts the DBNAME value,
-#   constructs the connection string, and stores it in a script-level hashtable.
+#   Reads DBSERVER / DBNAME from Startup.ini, finds the SQL instance that answers (configured
+#   server first, then local aliases and local instances), and stores the configured and runtime
+#   server, DBNAME and connection string in $script:FunctionResults.
+#
+# Parameters:
+#   - StartupIniPath [string]: Startup.ini to read. When empty, Resolve_Startup_Ini_Path finds it
+#     (script StartupIniPath, then BasePath\Startup.ini).
 # ===================================================================================================
 
 function Get_Database_Connection_String
@@ -2944,10 +2963,12 @@ function Get_Database_Connection_String
 		$script:FunctionResults = @{ }
 	}
 	
+	# The parameter shadows the script-level $StartupIniPath (names are case-insensitive), so an
+	# empty parameter must be resolved explicitly - reading $startupIniPath here returns the parameter.
 	$effectiveStartupIniPath = $StartupIniPath
 	if ([string]::IsNullOrWhiteSpace($effectiveStartupIniPath))
 	{
-		$effectiveStartupIniPath = $startupIniPath
+		$effectiveStartupIniPath = Resolve_Startup_Ini_Path
 	}
 	
 	if (-not $effectiveStartupIniPath)
@@ -4435,294 +4456,65 @@ WHERE F1057 = '901';
 }
 
 # ===================================================================================================
-#                              FUNCTION: Delete_Files_And_Folders
+#                          FUNCTION: Convert_Prefix_Length_To_Subnet_Mask
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Deletes specified files within a directory, supporting wildcards and exclusions.
-#   Can be executed synchronously or as a background job to prevent interruption of the main script.
-#   Parameters:
-#     - Path: The directory path where files will be deleted.
-#     - SpecifiedFiles: Specific file names or patterns to delete. Wildcards are supported.
-#     - Exclusions: File names or patterns to exclude from deletion. Wildcards are supported.
-#     - AsJob: (Optional) Runs the deletion process as a background job.
+#   Converts an IPv4 prefix length (24) to a dotted subnet mask (255.255.255.0).
+#
+# Returns:
+#   The dotted mask, or $null when the prefix length is not 0-32.
 # ===================================================================================================
 
-function Delete_Files_And_Folders
+function Convert_Prefix_Length_To_Subnet_Mask
 {
 	[CmdletBinding()]
 	param (
-		[Parameter(Mandatory = $true, Position = 0, HelpMessage = "The directory path where files and folders will be deleted.")]
-		[ValidateNotNullOrEmpty()]
-		[string]$Path,
-		[Parameter(Mandatory = $false, HelpMessage = "Specific file or folder patterns to delete within the specified directory. Wildcards supported.")]
-		[string[]]$SpecifiedFiles,
-		[Parameter(Mandatory = $false, HelpMessage = "File or folder patterns to exclude from deletion. Wildcards supported.")]
-		[string[]]$Exclusions,
-		[Parameter(Mandatory = $false, HelpMessage = "Run the deletion as a background job.")]
-		[switch]$AsJob
+		[Parameter(Mandatory = $false)]
+		$PrefixLength
 	)
 	
-	if ($AsJob)
+	$prefix = 0
+	if ($null -eq $PrefixLength -or -not [int]::TryParse(([string]@($PrefixLength)[0]).Trim(), [ref]$prefix)) { return $null }
+	if ($prefix -lt 0 -or $prefix -gt 32) { return $null }
+	
+	$bits = ('1' * $prefix).PadRight(32, '0')
+	$octets = for ($i = 0; $i -lt 32; $i += 8) { [Convert]::ToInt32($bits.Substring($i, 8), 2) }
+	return ($octets -join '.')
+}
+
+# ===================================================================================================
+#                          FUNCTION: Convert_Subnet_Mask_To_Prefix_Length
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Converts a dotted IPv4 subnet mask (255.255.255.0) to its prefix length (24).
+#
+# Returns:
+#   The prefix length (0-32), or $null when the mask is not a valid contiguous IPv4 mask.
+# ===================================================================================================
+
+function Convert_Subnet_Mask_To_Prefix_Length
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $false)]
+		[string]$SubnetMask
+	)
+	
+	if ([string]::IsNullOrWhiteSpace($SubnetMask) -or $SubnetMask.Trim() -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return $null }
+	
+	$bits = ""
+	foreach ($octet in $SubnetMask.Trim().Split('.'))
 	{
-		# Define the script block that performs the deletion
-		$scriptBlock = {
-			param ($Path,
-				$SpecifiedFiles,
-				$Exclusions)
-			
-			# Initialize counter for deleted items
-			$deletedCount = 0
-			
-			# Resolve the full path
-			$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
-			if (-not $resolvedPath)
-			{
-				# Write-Log "The specified path '$Path' does not exist." "Red"
-				return
-			}
-			$targetPath = $resolvedPath.ProviderPath
-			
-			try
-			{
-				if ($SpecifiedFiles)
-				{
-					# Delete only specified files and folders
-					foreach ($filePattern in $SpecifiedFiles)
-					{
-						# Retrieve matching items using wildcards
-						$matchedItems = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue
-						
-						if ($matchedItems)
-						{
-							foreach ($matchedItem in $matchedItems)
-							{
-								# Check against exclusions
-								$exclude = $false
-								if ($Exclusions)
-								{
-									foreach ($exclusionPattern in $Exclusions)
-									{
-										if ($matchedItem.Name -like $exclusionPattern)
-										{
-											$exclude = $true
-											# Write-Log "Excluded: $($matchedItem.FullName)" "Yellow"
-											break
-										}
-									}
-								}
-								
-								if (-not $exclude)
-								{
-									try
-									{
-										if ($matchedItem.PSIsContainer)
-										{
-											Remove-Item -Path $matchedItem.FullName -Recurse -Force -ErrorAction Stop
-										}
-										else
-										{
-											Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
-										}
-										$deletedCount++
-										# Write-Log "Deleted: $($matchedItem.FullName)" "Green"
-									}
-									catch
-									{
-										# Write-Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
-									}
-								}
-							}
-						}
-						else
-						{
-							# Write-Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
-						}
-					}
-				}
-				else
-				{
-					# Delete all files and folders in the path
-					$allItems = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue
-					
-					foreach ($item in $allItems)
-					{
-						# Check against exclusions
-						$exclude = $false
-						if ($Exclusions)
-						{
-							foreach ($exclusionPattern in $Exclusions)
-							{
-								if ($item.Name -like $exclusionPattern)
-								{
-									$exclude = $true
-									# Write-Log "Excluded: $($item.FullName)" "Yellow"
-									break
-								}
-							}
-						}
-						
-						if (-not $exclude)
-						{
-							try
-							{
-								if ($item.PSIsContainer)
-								{
-									Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
-								}
-								else
-								{
-									Remove-Item -Path $item.FullName -Force -ErrorAction Stop
-								}
-								$deletedCount++
-								# Write-Log "Deleted: $($item.FullName)" "Green"
-							}
-							catch
-							{
-								# Write-Log "Failed to delete $($item.FullName). Error: $_" "Red"
-							}
-						}
-					}
-				}
-				
-				# Write-Log "Total items deleted: $deletedCount" "Blue"
-				return $deletedCount
-			}
-			catch
-			{
-				# Write-Log "An error occurred during the deletion process. Error: $_" "Red"
-				return $deletedCount
-			}
-		}
-		
-		# Start the background job
-		Start-Job -ScriptBlock $scriptBlock -ArgumentList $Path, $SpecifiedFiles, $Exclusions
+		$value = [int]$octet
+		if ($value -gt 255) { return $null }
+		$bits += [Convert]::ToString($value, 2).PadLeft(8, '0')
 	}
-	else
-	{
-		# Synchronous execution
-		# Initialize counter for deleted items
-		$deletedCount = 0
-		
-		# Resolve the full path
-		$resolvedPath = Resolve-Path -Path $Path -ErrorAction SilentlyContinue
-		if (-not $resolvedPath)
-		{
-			#	Write-Log "The specified path '$Path' does not exist." "Red"
-			return
-		}
-		$targetPath = $resolvedPath.ProviderPath
-		
-		try
-		{
-			if ($SpecifiedFiles)
-			{
-				# Delete only specified files and folders
-				foreach ($filePattern in $SpecifiedFiles)
-				{
-					# Retrieve matching items using wildcards
-					$matchedItems = Get-ChildItem -Path $targetPath -Filter $filePattern -Recurse -Force -ErrorAction SilentlyContinue
-					
-					if ($matchedItems)
-					{
-						foreach ($matchedItem in $matchedItems)
-						{
-							# Check against exclusions
-							$exclude = $false
-							if ($Exclusions)
-							{
-								foreach ($exclusionPattern in $Exclusions)
-								{
-									if ($matchedItem.Name -like $exclusionPattern)
-									{
-										$exclude = $true
-										#	Write-Log "Excluded: $($matchedItem.FullName)" "Yellow"
-										break
-									}
-								}
-							}
-							
-							if (-not $exclude)
-							{
-								try
-								{
-									if ($matchedItem.PSIsContainer)
-									{
-										Remove-Item -Path $matchedItem.FullName -Recurse -Force -ErrorAction Stop
-									}
-									else
-									{
-										Remove-Item -Path $matchedItem.FullName -Force -ErrorAction Stop
-									}
-									$deletedCount++
-									#	Write-Log "Deleted: $($matchedItem.FullName)" "Green"
-								}
-								catch
-								{
-									#	Write-Log "Failed to delete $($matchedItem.FullName). Error: $_" "Red"
-								}
-							}
-						}
-					}
-					else
-					{
-						#	Write-Log "No items matched the pattern: '$filePattern' in '$targetPath'." "Yellow"
-					}
-				}
-			}
-			else
-			{
-				# Delete all files and folders in the path
-				$allItems = Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue
-				
-				foreach ($item in $allItems)
-				{
-					# Check against exclusions
-					$exclude = $false
-					if ($Exclusions)
-					{
-						foreach ($exclusionPattern in $Exclusions)
-						{
-							if ($item.Name -like $exclusionPattern)
-							{
-								$exclude = $true
-								#	Write-Log "Excluded: $($item.FullName)" "Yellow"
-								break
-							}
-						}
-					}
-					
-					if (-not $exclude)
-					{
-						try
-						{
-							if ($item.PSIsContainer)
-							{
-								Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
-							}
-							else
-							{
-								Remove-Item -Path $item.FullName -Force -ErrorAction Stop
-							}
-							$deletedCount++
-							#	Write-Log "Deleted: $($item.FullName)" "Green"
-						}
-						catch
-						{
-							#	Write-Log "Failed to delete $($item.FullName). Error: $_" "Red"
-						}
-					}
-				}
-			}
-			
-			#	Write-Log "Total items deleted: $deletedCount" "Blue"
-			return $deletedCount
-		}
-		catch
-		{
-			#	Write-Log "An error occurred during the deletion process. Error: $_" "Red"
-			return $deletedCount
-		}
-	}
+	
+	# A mask is ones followed by zeros only
+	if ($bits -notmatch '^1*0*$') { return $null }
+	$firstZero = $bits.IndexOf('0')
+	if ($firstZero -lt 0) { return 32 }
+	return $firstZero
 }
 
 # ===================================================================================================
@@ -4748,12 +4540,14 @@ function Get_Active_IP_Config
 		{
 			$idx = [int]$defaultRoute.InterfaceIndex
 			
-			# Check adapter status via Win32_NetworkAdapter (NetConnectionStatus 2 = Connected)
-			$ad = Get-WmiObject -Class Win32_NetworkAdapter -Filter "DeviceID = $idx" -ErrorAction SilentlyContinue
+			# Check adapter status via Win32_NetworkAdapter (NetConnectionStatus 2 = Connected).
+			# The route's InterfaceIndex is the adapter's InterfaceIndex - not its DeviceID / Index
+			# (those number adapters differently, so filtering on them picked an unrelated adapter).
+			$ad = Get-WmiObject -Class Win32_NetworkAdapter -Filter "InterfaceIndex = $idx" -ErrorAction SilentlyContinue | Select-Object -First 1
 			if ($ad -and $ad.NetConnectionStatus -eq 2)
 			{
 				# Get config via Win32_NetworkAdapterConfiguration
-				$wmiCfg = Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter "Index = $idx" -ErrorAction SilentlyContinue
+				$wmiCfg = Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter "InterfaceIndex = $idx" -ErrorAction SilentlyContinue | Select-Object -First 1
 				if ($wmiCfg -and $wmiCfg.IPEnabled -and $wmiCfg.DefaultIPGateway)
 				{
 					# Filter for valid IPv4 (non-APIPA)
@@ -4761,11 +4555,11 @@ function Get_Active_IP_Config
 					if ($validIPs)
 					{
 						# Construct a custom object similar to Get-NetIPConfiguration for consistency
+						$validIPs = @($validIPs)
+						$ipv4Mask = @($wmiCfg.IPSubnet | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' }) | Select-Object -First 1
 						$ipv4Address = [PSCustomObject]@{
 							IPAddress    = $validIPs[0]
-							PrefixLength = ($wmiCfg.IPSubnet | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' })[0] | ForEach-Object {
-								[int]([math]::Log([uint32]::MaxValue -bxor ([ipaddress]$_).Address, 2)) + 1
-							}
+							PrefixLength = Convert_Subnet_Mask_To_Prefix_Length -SubnetMask $ipv4Mask
 						}
 						$cfg = [PSCustomObject]@{
 							InterfaceAlias	   = $ad.NetConnectionID
@@ -4966,6 +4760,48 @@ function Remove_GT_Registry_Values
 }
 
 # ===================================================================================================
+#                             FUNCTION: Remove_MiniGhost_Temp_Copies
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Deletes the copies of MiniGhost left in %TEMP% (MiniGhost.ps1 and the
+#   MiniGhost_<version>_Elevated.ps1 written by the elevation bootstrap for irm | iex launches).
+#
+# Parameters:
+#   - TempPath [string]: folder to clean (default: the user's %TEMP%)
+#
+# Returns:
+#   Number of files deleted.
+#
+# Notes:
+#   - Top level of the temp folder only. The old cleanup searched all of %TEMP% recursively for
+#     MiniGhost.ps1 on every exit (slow on a full temp folder) and never matched the _Elevated copy.
+# ===================================================================================================
+
+function Remove_MiniGhost_Temp_Copies
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $false)]
+		[string]$TempPath = [System.IO.Path]::GetTempPath()
+	)
+	
+	$deleted = 0
+	if ([string]::IsNullOrWhiteSpace($TempPath) -or -not (Test-Path -LiteralPath $TempPath)) { return $deleted }
+	
+	foreach ($file in @(Get-ChildItem -LiteralPath $TempPath -File -Filter 'MiniGhost*.ps1' -ErrorAction SilentlyContinue))
+	{
+		if ($file.Name -notmatch '^(?i)MiniGhost(_[\d.]+_Elevated)?\.ps1$') { continue }
+		try
+		{
+			Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+			$deleted++
+		}
+		catch { }
+	}
+	return $deleted
+}
+
+# ===================================================================================================
 # FUNCTION: Remove_Old_XZ_Folders
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -4981,6 +4817,8 @@ function Remove_GT_Registry_Values
 #   - Terminal IN: current lane terminal (from MachineName), 900, 901
 #
 # Safeguard: refuses to run if extracted terminal is 901 unless -AllowBackoffice is passed.
+# Office folder: -OfficePath, else the detected storeman Office folder ($OfficePath), else
+# \\localhost\storeman\office, C:\storeman\office, D:\storeman\office.
 # Automatic: no prompts.
 # ===================================================================================================
 
@@ -4995,7 +4833,9 @@ function Remove_Old_XZ_Folders
 		[Parameter(Mandatory = $false)]
 		[hashtable]$OperationStatus,
 		[Parameter(Mandatory = $false)]
-		[switch]$AllowBackoffice
+		[switch]$AllowBackoffice,
+		[Parameter(Mandatory = $false)]
+		[string]$OfficePath
 	)
 	
 	# -----------------------------
@@ -5044,7 +4884,20 @@ function Remove_Old_XZ_Folders
 	# -----------------------------
 	# Pick base path
 	# -----------------------------
-	$possibleBasePaths = @("\\localhost\storeman\office", "C:\storeman\office", "D:\storeman\office")
+	# The detected storeman folder comes first: it can be on another drive or named differently
+	# (e.g. E:\Storeman), where the fixed paths below would miss it or pick a stale copy.
+	$possibleBasePaths = @()
+	if (-not [string]::IsNullOrWhiteSpace($OfficePath)) { $possibleBasePaths += $OfficePath }
+	else
+	{
+		# (the parameter hides the script-level $OfficePath, so read that one explicitly)
+		foreach ($sc in @('Script', 'Global'))
+		{
+			$v = Get-Variable -Name OfficePath -Scope $sc -ErrorAction SilentlyContinue
+			if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value)) { $possibleBasePaths += [string]$v.Value; break }
+		}
+		$possibleBasePaths += @("\\localhost\storeman\office", "C:\storeman\office", "D:\storeman\office")
+	}
 	$basePath = $null
 	foreach ($p in $possibleBasePaths)
 	{
@@ -5302,7 +5155,7 @@ function Invoke_Machine_Name_Change_Workflow
 			Set_Label_Text -Label $script:machineNameLabel -Text "The machine name will change from: $env:COMPUTERNAME to $script:newMachineName" -RefreshParent -ProcessEvents
 			Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Successful" -Message "Machine name changed successfully." -Details "Machine name changed to '$script:newMachineName'."
 			
-			& 'Remove_Old_XZ_Folders' -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
+			Remove_Old_XZ_Folders -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
 		}
 		
 		$syncResult = Invoke_Machine_Name_Sync -StoreNumber $currentStoreNumber -MachineName $machineContext.MachineName -OldMachineName $oldMachineName -MachineContext $machineContext -StartupIniPath $startupIniPath -OperationStatus $OperationStatus
@@ -5736,9 +5589,6 @@ $connectionString = $null
 # Set the old machine name variable
 $oldMachineName = $currentMachineName
 
-# Clear %Temp% foder on start
-# $FilesAndDirsDeleted = Delete_Files_And_Folders -Path "$TempDir" -Exclusions "MiniGhost.ps1" -AsJob
-
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
 
@@ -5996,8 +5846,12 @@ $configureNetworkButton.Add_Click({
 			# Configure DHCP
 			try
 			{
-				netsh interface ip set address name="$adapterName" source=dhcp
-				netsh interface ip set dns name="$adapterName" source=dhcp
+				# netsh never throws: check its exit code so a failure is not reported as success
+				# ("DHCP is already enabled on this interface" also exits 1 - that one is fine)
+				$netshOutput = netsh interface ip set address name="$adapterName" source=dhcp 2>&1
+				if ($LASTEXITCODE -ne 0 -and (($netshOutput | Out-String) -notmatch '(?i)already')) { throw ("netsh (address) exit code {0}: {1}" -f $LASTEXITCODE, (($netshOutput | Out-String).Trim())) }
+				$netshOutput = netsh interface ip set dns name="$adapterName" source=dhcp 2>&1
+				if ($LASTEXITCODE -ne 0 -and (($netshOutput | Out-String) -notmatch '(?i)already')) { throw ("netsh (dns) exit code {0}: {1}" -f $LASTEXITCODE, (($netshOutput | Out-String).Trim())) }
 				[System.Windows.Forms.MessageBox]::Show("DHCP configuration applied.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 				$operationStatus["IPConfiguration"].Status = "Successful"
 				$operationStatus["IPConfiguration"].Message = "DHCP configuration applied."
@@ -6073,7 +5927,17 @@ $configureNetworkButton.Add_Click({
 						{
 							try
 							{
-								netsh interface ip set address name="$adapterName" static $ipAddress 255.255.255.0 $currentGateway
+								# Keep the adapter's current subnet size (fall back to /24 when it is unknown)
+								$subnetMask = '255.255.255.0'
+								$currentPrefix = 0
+								if ([int]::TryParse([string](@($currentConfig.IPv4Address)[0].PrefixLength), [ref]$currentPrefix) -and $currentPrefix -ge 8 -and $currentPrefix -le 30)
+								{
+									$subnetMask = Convert_Prefix_Length_To_Subnet_Mask -PrefixLength $currentPrefix
+								}
+								
+								# netsh never throws: check its exit code so a failure is not reported as success
+								$netshOutput = netsh interface ip set address name="$adapterName" static $ipAddress $subnetMask $currentGateway 2>&1
+								if ($LASTEXITCODE -ne 0) { throw ("netsh exit code {0}: {1}" -f $LASTEXITCODE, (($netshOutput | Out-String).Trim())) }
 								
 								# Update the label
 								$ipAddressLabel.Text = "IP Address changed from: $currentIP to $ipAddress"
@@ -6200,6 +6064,11 @@ $updateStoreNumberButton.Add_Click({
 			$operationStatus["SQLDatabaseUpdate"].Status = "Failed"
 			$operationStatus["SQLDatabaseUpdate"].Message = "Failed to update STD_TAB after store number change."
 			$operationStatus["SQLDatabaseUpdate"].Details = "Failed commands: $($sqlUpdateResult.FailedCommands -join ', ')"
+			
+			# The INI result was already shown; without this the SQL failure was only visible in Summary
+			$sqlFailureLog = (@($sqlUpdateResult.FailedCommands) -join "`r`n`r`n")
+			if ([string]::IsNullOrWhiteSpace($sqlFailureLog)) { $sqlFailureLog = "SQL update result indicated failure." }
+			[void](Show_Action_Prompt_With_Log -Text "The store number SQL update (STD_TAB / TER_TAB 901) failed.`r`n`r`nUse View Log to see the failed commands, then run Update SQL Database or fix the database connection." -Title "SQL Update Failed" -PrimaryButtonText "OK" -LogText $sqlFailureLog -LogTitle "Failed SQL Commands")
 		}
 		
 		<# Run Update_INIs again at the end so INIs always reflect the latest state
@@ -6354,7 +6223,7 @@ $summaryButton.Add_Click({
 	})
 
 ############################################################################
-# 11) Summary Button
+# 11) Reboot Button
 ############################################################################
 $rebootButton = New-Object System.Windows.Forms.Button
 $rebootButton.Text = "Reboot System"
@@ -6364,9 +6233,9 @@ $rebootButton.Add_Click({
 		$rebootResult = [System.Windows.Forms.MessageBox]::Show("Do you want to reboot now?", "Reboot", [System.Windows.Forms.MessageBoxButtons]::YesNo)
 		if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes)
 		{
+			# Clean the temp copies first: nothing after Restart-Computer -Force is guaranteed to run
+			[void](Remove_MiniGhost_Temp_Copies -TempPath $TempDir)
 			Restart-Computer -Force
-			# Clean Temp Folder
-			Delete_Files_And_Folders -Path "$TempDir" -SpecifiedFiles "MiniGhost.ps1"
 		}
 	})
 
@@ -6393,7 +6262,7 @@ $form.add_FormClosing({
 			# Write-Log "Form is closing. Performing cleanup." "green"
 			
 			# Clean Temp Folder
-			Delete_Files_And_Folders -Path "$TempDir" -SpecifiedFiles "MiniGhost.ps1"
+			[void](Remove_MiniGhost_Temp_Copies -TempPath $TempDir)
 		}
 	})
 
@@ -6484,6 +6353,41 @@ exit
 #                                     CHANGELOG
 #
 #######################################################################################################
+
+# ===================================================================================================
+#  v1.3.9  -  2026-10-30
+#  Review pass: database connection, network, INI rewrites, dialogs, temp cleanup
+# ===================================================================================================
+#
+#  Fixes
+#  [FIX]  Truncate Tables, Update SQL Database and the store-number SQL step could not connect on a
+#         fresh launch ("Database connection string is not available"): the connection lookup read
+#         its own empty parameter instead of the detected Startup.ini. It finds Startup.ini now.
+#  [FIX]  Rename with INI/SQL errors -> "Reboot Now" did nothing: the dialog always answered
+#         "Closed". It returns the button that was clicked.
+#  [FIX]  Store number change rewrote IP addresses whose octet equalled the old store number
+#         (store 100: 10.0.100.5 -> 10.0.242.5), and a TIMESYNC SERVER= IP address got its first
+#         octet replaced by the store number. IP addresses are left alone.
+#  [FIX]  Network detection (WMI path) matched the route's interface index against the adapter's
+#         DeviceID, which numbers adapters differently - it could show another adapter's IP. The
+#         subnet prefix length was also miscalculated (33 for 255.255.255.0).
+#  [FIX]  Configure Network reported success when netsh failed (native commands never throw); the
+#         exit code is checked. A static IP keeps the adapter's current subnet size instead of
+#         always /24.
+#  [FIX]  A failed store-number SQL update was only visible in Summary; it is shown with the failed
+#         commands.
+#  [FIX]  Old X*/Z* folder cleanup looks in the detected storeman Office folder first (it only knew
+#         \\localhost\storeman, C:\storeman and D:\storeman).
+#  [FIX]  Store name: only the first NAME= line, and names containing '=' are kept whole.
+#
+#  Faster
+#  [PERF] Closing MiniGhost no longer searches all of %TEMP% recursively; it deletes only its own
+#         copies at the top of %TEMP% - including the _Elevated copy the old cleanup never matched.
+#         Reboot System cleans up before restarting (nothing after Restart-Computer is sure to run).
+#
+#  Code
+#  [CHG]  Removed the unused Delete_Files_And_Folders (280 lines) and a no-op SmsHttps block.
+#  [NEW]  tests\MiniGhost_SelfTest.ps1 and a CI workflow that builds and tests on every push.
 
 # ===================================================================================================
 #  v1.3.8  -  2026-04-15

@@ -27,6 +27,7 @@ Unlike the TBS script, the built `MiniGhost.ps1` **is committed**: the launcher 
 | `src\Main` | `01_Load_Store_Data` (store number / name, IP, node role) and `02_Show_Form` |
 | `src\GUI` | The main window and one file per button, then layout and tooltips |
 | `build` | `Build.ps1`, `Manifest.psd1` (file order), `Update-FunctionIndex.ps1` |
+| `tests` | `MiniGhost_SelfTest.ps1` - static checks plus the real functions run against temp files |
 | `docs` | `FUNCTIONS.md` (generated: every function, its purpose and callers) |
 
 ## Change something
@@ -34,12 +35,14 @@ Unlike the TBS script, the built `MiniGhost.ps1` **is committed**: the launcher 
 ```powershell
 # from the repository root
 powershell -NoProfile -ExecutionPolicy Bypass -File .\MiniGhost\build\Build.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\MiniGhost\tests\MiniGhost_SelfTest.ps1
 ```
 
 - Edit files under `src`, never `MiniGhost.ps1` (it is overwritten by the build).
 - **Build.ps1** fails on parse errors, non-ASCII characters, duplicate function names and source
   files the manifest does not cover; it writes `MiniGhost.ps1` (ASCII, CRLF) and regenerates
-  `docs\FUNCTIONS.md`. `-Check` exits 1 when the committed `MiniGhost.ps1` is out of date.
+  `docs\FUNCTIONS.md`. `-Check` exits 1 when the committed `MiniGhost.ps1` is out of date - the
+  CI workflow runs it on every push.
 - Commit the sources **and** the rebuilt `MiniGhost.ps1` together.
 - Version bump: `$VersionNumber` / `$VersionDate` in `src\Bootstrap\01_Header_And_Version.ps1`
   plus a matching `#  vX.Y.Z  -  date` entry at the top of `CHANGELOG.txt`.

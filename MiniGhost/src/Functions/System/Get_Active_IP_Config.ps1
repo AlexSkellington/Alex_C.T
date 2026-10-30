@@ -21,12 +21,14 @@ function Get_Active_IP_Config
 		{
 			$idx = [int]$defaultRoute.InterfaceIndex
 			
-			# Check adapter status via Win32_NetworkAdapter (NetConnectionStatus 2 = Connected)
-			$ad = Get-WmiObject -Class Win32_NetworkAdapter -Filter "DeviceID = $idx" -ErrorAction SilentlyContinue
+			# Check adapter status via Win32_NetworkAdapter (NetConnectionStatus 2 = Connected).
+			# The route's InterfaceIndex is the adapter's InterfaceIndex - not its DeviceID / Index
+			# (those number adapters differently, so filtering on them picked an unrelated adapter).
+			$ad = Get-WmiObject -Class Win32_NetworkAdapter -Filter "InterfaceIndex = $idx" -ErrorAction SilentlyContinue | Select-Object -First 1
 			if ($ad -and $ad.NetConnectionStatus -eq 2)
 			{
 				# Get config via Win32_NetworkAdapterConfiguration
-				$wmiCfg = Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter "Index = $idx" -ErrorAction SilentlyContinue
+				$wmiCfg = Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter "InterfaceIndex = $idx" -ErrorAction SilentlyContinue | Select-Object -First 1
 				if ($wmiCfg -and $wmiCfg.IPEnabled -and $wmiCfg.DefaultIPGateway)
 				{
 					# Filter for valid IPv4 (non-APIPA)
@@ -34,11 +36,11 @@ function Get_Active_IP_Config
 					if ($validIPs)
 					{
 						# Construct a custom object similar to Get-NetIPConfiguration for consistency
+						$validIPs = @($validIPs)
+						$ipv4Mask = @($wmiCfg.IPSubnet | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' }) | Select-Object -First 1
 						$ipv4Address = [PSCustomObject]@{
 							IPAddress    = $validIPs[0]
-							PrefixLength = ($wmiCfg.IPSubnet | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' })[0] | ForEach-Object {
-								[int]([math]::Log([uint32]::MaxValue -bxor ([ipaddress]$_).Address, 2)) + 1
-							}
+							PrefixLength = Convert_Subnet_Mask_To_Prefix_Length -SubnetMask $ipv4Mask
 						}
 						$cfg = [PSCustomObject]@{
 							InterfaceAlias	   = $ad.NetConnectionID

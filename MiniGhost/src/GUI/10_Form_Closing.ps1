@@ -21,6 +21,6 @@ $form.add_FormClosing({
 			# Write-Log "Form is closing. Performing cleanup." "green"
 			
 			# Clean Temp Folder
-			Delete_Files_And_Folders -Path "$TempDir" -SpecifiedFiles "MiniGhost.ps1"
+			[void](Remove_MiniGhost_Temp_Copies -TempPath $TempDir)
 		}
 	})

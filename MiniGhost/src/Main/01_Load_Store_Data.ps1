@@ -52,8 +52,5 @@ $connectionString = $null
 # Set the old machine name variable
 $oldMachineName = $currentMachineName
 
-# Clear %Temp% foder on start
-# $FilesAndDirsDeleted = Delete_Files_And_Folders -Path "$TempDir" -Exclusions "MiniGhost.ps1" -AsJob
-
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green

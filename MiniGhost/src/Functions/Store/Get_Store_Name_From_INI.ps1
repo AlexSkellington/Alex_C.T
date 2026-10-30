@@ -17,8 +17,10 @@ function Get_Store_Name_From_INI
 	
 	if (Test-Path $INIPath)
 	{
-		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | ForEach-Object {
-			$_.Line.Split('=')[1].Trim()
+		# First NAME= line only, and everything after the first '=' (a name may contain '=';
+		# several NAME= lines used to produce an array that printed as one run-together label)
+		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | Select-Object -First 1 | ForEach-Object {
+			$_.Line.Split('=', 2)[1].Trim()
 		}
 		if ($storeName)
 		{
