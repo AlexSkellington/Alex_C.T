@@ -9,24 +9,9 @@
 # Add the WinForms assembly early so the elevation gate can show a warning dialog if needed.
 Add-Type -AssemblyName System.Windows.Forms
 
-if (-not ([System.Management.Automation.PSTypeName]'ConsoleWindowHelper').Type)
-{
-	Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-
-public static class ConsoleWindowHelper {
-    [DllImport("kernel32.dll")]
-    public static extern IntPtr GetConsoleWindow();
-
-    [DllImport("user32.dll")]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-}
-"@
-}
-
-$script:ShowConsole = [bool](@($args | Where-Object { $_ -in @('-ShowConsole', '/ShowConsole', '-KeepConsole', '/KeepConsole') }).Count -gt 0)
-$script:ConsoleHidden = $false
+# No hidden console: the console is no longer hidden through user32 ShowWindow (that needed C# compiled
+# at run time, and hiding a window is a classic malware trait antivirus scores). The launcher and
+# the elevated relaunch start the console minimized instead - visible in the taskbar.
 
 # Prefer the standard WinForms startup order, but don't fail if the current PowerShell
 # session has already created a window handle before MiniGhost starts.

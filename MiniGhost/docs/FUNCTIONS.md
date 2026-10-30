@@ -60,7 +60,7 @@ Network, registry, X*/Z* folder and temp-file housekeeping on this machine.
 | `Convert_Subnet_Mask_To_Prefix_Length` | Converts a dotted IPv4 subnet mask (255.255.255.0) to its prefix length (24). | Get_Active_IP_Config |
 | `Get_Active_IP_Config` | Retrieves the active IP configuration for network adapters that are up and have valid IPv4 addresses. | Main/01_Load_Store_Data |
 | `Remove_GT_Registry_Values` | Removes all registry values starting with 'GT' from specified registry paths. | GUI/06_Button_Registry_Cleanup |
-| `Remove_MiniGhost_Temp_Copies` | Deletes the copies of MiniGhost left in %TEMP% (MiniGhost.ps1 and the MiniGhost_<version>_Elevated.ps1 written by the elevation bootstrap for irm | iex launches). | GUI/09_Button_Reboot, GUI/10_Form_Closing |
+| `Remove_MiniGhost_Temp_Copies` | Deletes the copies of MiniGhost left in %TEMP% (MiniGhost.ps1 and the MiniGhost_<version>_Elevated.ps1 that versions before 1.4.2 wrote for irm | iex launches). | GUI/09_Button_Reboot, GUI/10_Form_Closing |
 | `Remove_Old_XZ_Folders` | Removes old X* and Z* folders under \storeman\office that do NOT match the NEW store and allowed terminal numbers. | Invoke_Machine_Name_Change_Workflow |
 
 ## Workflow

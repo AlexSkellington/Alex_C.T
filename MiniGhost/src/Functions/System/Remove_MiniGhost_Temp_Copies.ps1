@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deletes the copies of MiniGhost left in %TEMP% (MiniGhost.ps1 and the
-#   MiniGhost_<version>_Elevated.ps1 written by the elevation bootstrap for irm | iex launches).
+#   MiniGhost_<version>_Elevated.ps1 that versions before 1.4.2 wrote for irm | iex launches).
 #
 # Parameters:
 #   - TempPath [string]: folder to clean (default: the user's %TEMP%)

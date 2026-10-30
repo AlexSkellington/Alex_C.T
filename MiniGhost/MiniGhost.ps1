@@ -17,7 +17,7 @@
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.4.1"
+$VersionNumber = "1.4.2"
 $VersionDate = "2026-10-30"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -40,24 +40,9 @@ $PowerShellVersion = "$major.$minor.$build.$revision"
 # Add the WinForms assembly early so the elevation gate can show a warning dialog if needed.
 Add-Type -AssemblyName System.Windows.Forms
 
-if (-not ([System.Management.Automation.PSTypeName]'ConsoleWindowHelper').Type)
-{
-	Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-
-public static class ConsoleWindowHelper {
-    [DllImport("kernel32.dll")]
-    public static extern IntPtr GetConsoleWindow();
-
-    [DllImport("user32.dll")]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-}
-"@
-}
-
-$script:ShowConsole = [bool](@($args | Where-Object { $_ -in @('-ShowConsole', '/ShowConsole', '-KeepConsole', '/KeepConsole') }).Count -gt 0)
-$script:ConsoleHidden = $false
+# No hidden console: the console is no longer hidden through user32 ShowWindow (that needed C# compiled
+# at run time, and hiding a window is a classic malware trait antivirus scores). The launcher and
+# the elevated relaunch start the console minimized instead - visible in the taskbar.
 
 # Prefer the standard WinForms startup order, but don't fail if the current PowerShell
 # session has already created a window handle before MiniGhost starts.
@@ -81,15 +66,11 @@ catch
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Relaunches MiniGhost as administrator before any maintenance logic runs.
-#   Supports packaged EXE launches, direct .ps1 launches, and in-memory irm | iex execution.
+#   Supports packaged EXE launches and .ps1 launches (the launcher and Run_MiniGhost.bat both run a
+#   downloaded .ps1). An inline irm | iex run without admin rights is NOT relaunched: that needed
+#   writing MiniGhost's own code to a new .ps1 in %TEMP% and starting it elevated - the dropper
+#   pattern antivirus flags - so the user is told to start it as administrator instead.
 # ===================================================================================================
-
-$script:MiniGhostBootstrapSourceText = $null
-try
-{
-	$script:MiniGhostBootstrapSourceText = $MyInvocation.MyCommand.ScriptBlock.Ast.Extent.Text
-}
-catch { }
 
 function Invoke_Elevation_Bootstrap
 {
@@ -205,25 +186,7 @@ function Invoke_Elevation_Bootstrap
 			}
 			if ($PassthroughArgs) { $argumentList += $PassthroughArgs }
 		}
-		elseif (-not [string]::IsNullOrWhiteSpace($shellHostPath))
-		{
-			$scriptText = $script:MiniGhostBootstrapSourceText
-			if (-not [string]::IsNullOrWhiteSpace($scriptText) -and $scriptText -match '\$VersionNumber\s*=' -and $scriptText -match 'MiniGhost SCRIPT')
-			{
-				$tempScriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("MiniGhost_" + $VersionNumber + "_Elevated.ps1")
-				[System.IO.File]::WriteAllText($tempScriptPath, $scriptText, (New-Object System.Text.UTF8Encoding($false)))
-				
-				$launchPath = $shellHostPath
-				$argumentList = @('-NoProfile')
-				if ([System.IO.Path]::GetFileName($shellHostPath) -match '^(?i)powershell\.exe$')
-				{
-					$argumentList += '-STA'
-				}
-				
-				$argumentList += @('-ExecutionPolicy', 'Bypass', '-File', $tempScriptPath)
-				if ($PassthroughArgs) { $argumentList += $PassthroughArgs }
-			}
-		}
+		# Inline (irm | iex) without admin: no relaunch - see the header
 		
 		if (-not [string]::IsNullOrWhiteSpace($launchPath))
 		{
@@ -251,6 +214,7 @@ function Invoke_Elevation_Bootstrap
 				FilePath         = $launchPath
 				WorkingDirectory = $workingDirectory
 				Verb             = 'RunAs'
+				WindowStyle      = 'Minimized'
 			}
 			
 			if (-not [string]::IsNullOrWhiteSpace($processArgumentList))
@@ -280,7 +244,7 @@ function Invoke_Elevation_Bootstrap
 	}
 	
 	[System.Windows.Forms.MessageBox]::Show(
-		"MiniGhost requires administrator privileges to continue.",
+		"MiniGhost needs administrator rights.`r`n`r`nStart it with Run_MiniGhost.bat, or open PowerShell with right-click > Run as administrator and run it there.",
 		"Administrator Required",
 		[System.Windows.Forms.MessageBoxButtons]::OK,
 		[System.Windows.Forms.MessageBoxIcon]::Warning
@@ -5062,7 +5026,7 @@ function Remove_GT_Registry_Values
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deletes the copies of MiniGhost left in %TEMP% (MiniGhost.ps1 and the
-#   MiniGhost_<version>_Elevated.ps1 written by the elevation bootstrap for irm | iex launches).
+#   MiniGhost_<version>_Elevated.ps1 that versions before 1.4.2 wrote for irm | iex launches).
 #
 # Parameters:
 #   - TempPath [string]: folder to clean (default: the user's %TEMP%)
@@ -6792,20 +6756,6 @@ $toolTip.SetToolTip($rebootButton, "Restart the computer (asks first). Needed af
 #   Displays the main GUI form to the user.
 # ===================================================================================================
 
-if (-not $script:ShowConsole -and [Environment]::UserInteractive)
-{
-	try
-	{
-		$consoleHandle = [ConsoleWindowHelper]::GetConsoleWindow()
-		if ($consoleHandle -ne [IntPtr]::Zero)
-		{
-			[void][ConsoleWindowHelper]::ShowWindow($consoleHandle, 0)
-			$script:ConsoleHidden = $true
-		}
-	}
-	catch { }
-}
-
 [void]$form.ShowDialog()
 
 # Indicate the script is closing
@@ -6819,6 +6769,19 @@ exit
 #                                     CHANGELOG
 #
 #######################################################################################################
+
+# ===================================================================================================
+#  v1.4.2  -  2026-10-30
+#  Antivirus: no in-memory run, no self-copy, no hidden window
+# ===================================================================================================
+#
+#  [CHG]  The bit.ly launcher (MiniGhost_V38.ps1) saves MiniGhost to %TEMP%\MiniGhost.ps1 and starts
+#         that file as administrator in a minimized window - it no longer runs downloaded code with
+#         Invoke-Expression (Defender blocks that as Trojan:Win32/Commando).
+#  [CHG]  MiniGhost no longer writes its own code to a new .ps1 and relaunches it elevated (an
+#         inline irm | iex run without admin rights now says to start it as administrator).
+#  [CHG]  The console is no longer hidden (no user32 ShowWindow, no C# compiled at run time); the
+#         launcher and the elevated relaunch start it minimized instead.
 
 # ===================================================================================================
 #  v1.4.1  -  2026-10-30

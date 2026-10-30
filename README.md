@@ -40,9 +40,11 @@ The short links cannot be changed (free bit.ly plan), so they keep pointing at t
 | `bit.ly/TBS_Maintenance_Script` | `TBS_Maintenace_Script_V2.ps1` | the latest GitHub Release asset `TBS_Maintenance_Script.ps1` |
 | `bit.ly/MiniGhost` | `MiniGhost_V38.ps1` | `MiniGhost/MiniGhost.ps1` on `main` |
 
-Each launcher is ~20 lines: download the real script, run it with `Invoke-Expression` (so it
-still starts as an inline `irm | iex` launch), print a red line if the download fails. Keep
-their names and paths exactly as they are.
+Each launcher is ~25 lines. The TBS one downloads the real script and runs it with `Invoke-Expression`
+(so it still starts as an inline `irm | iex` launch). The MiniGhost one saves the script to
+`%TEMP%\MiniGhost.ps1` and starts that file as administrator, because running downloaded code with
+`Invoke-Expression` is what Defender blocks (`Trojan:Win32/Commando.A!ml`). Both print a red line if the
+download fails. Keep their names and paths exactly as they are.
 
 ## How the TBS script reaches stores
 

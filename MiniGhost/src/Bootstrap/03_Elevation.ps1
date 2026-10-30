@@ -3,15 +3,11 @@
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Relaunches MiniGhost as administrator before any maintenance logic runs.
-#   Supports packaged EXE launches, direct .ps1 launches, and in-memory irm | iex execution.
+#   Supports packaged EXE launches and .ps1 launches (the launcher and Run_MiniGhost.bat both run a
+#   downloaded .ps1). An inline irm | iex run without admin rights is NOT relaunched: that needed
+#   writing MiniGhost's own code to a new .ps1 in %TEMP% and starting it elevated - the dropper
+#   pattern antivirus flags - so the user is told to start it as administrator instead.
 # ===================================================================================================
-
-$script:MiniGhostBootstrapSourceText = $null
-try
-{
-	$script:MiniGhostBootstrapSourceText = $MyInvocation.MyCommand.ScriptBlock.Ast.Extent.Text
-}
-catch { }
 
 function Invoke_Elevation_Bootstrap
 {
@@ -127,25 +123,7 @@ function Invoke_Elevation_Bootstrap
 			}
 			if ($PassthroughArgs) { $argumentList += $PassthroughArgs }
 		}
-		elseif (-not [string]::IsNullOrWhiteSpace($shellHostPath))
-		{
-			$scriptText = $script:MiniGhostBootstrapSourceText
-			if (-not [string]::IsNullOrWhiteSpace($scriptText) -and $scriptText -match '\$VersionNumber\s*=' -and $scriptText -match 'MiniGhost SCRIPT')
-			{
-				$tempScriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("MiniGhost_" + $VersionNumber + "_Elevated.ps1")
-				[System.IO.File]::WriteAllText($tempScriptPath, $scriptText, (New-Object System.Text.UTF8Encoding($false)))
-				
-				$launchPath = $shellHostPath
-				$argumentList = @('-NoProfile')
-				if ([System.IO.Path]::GetFileName($shellHostPath) -match '^(?i)powershell\.exe$')
-				{
-					$argumentList += '-STA'
-				}
-				
-				$argumentList += @('-ExecutionPolicy', 'Bypass', '-File', $tempScriptPath)
-				if ($PassthroughArgs) { $argumentList += $PassthroughArgs }
-			}
-		}
+		# Inline (irm | iex) without admin: no relaunch - see the header
 		
 		if (-not [string]::IsNullOrWhiteSpace($launchPath))
 		{
@@ -173,6 +151,7 @@ function Invoke_Elevation_Bootstrap
 				FilePath         = $launchPath
 				WorkingDirectory = $workingDirectory
 				Verb             = 'RunAs'
+				WindowStyle      = 'Minimized'
 			}
 			
 			if (-not [string]::IsNullOrWhiteSpace($processArgumentList))
@@ -202,7 +181,7 @@ function Invoke_Elevation_Bootstrap
 	}
 	
 	[System.Windows.Forms.MessageBox]::Show(
-		"MiniGhost requires administrator privileges to continue.",
+		"MiniGhost needs administrator rights.`r`n`r`nStart it with Run_MiniGhost.bat, or open PowerShell with right-click > Run as administrator and run it there.",
 		"Administrator Required",
 		[System.Windows.Forms.MessageBoxButtons]::OK,
 		[System.Windows.Forms.MessageBoxIcon]::Warning

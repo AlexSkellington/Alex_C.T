@@ -5,6 +5,19 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v1.4.2  -  2026-10-30
+#  Antivirus: no in-memory run, no self-copy, no hidden window
+# ===================================================================================================
+#
+#  [CHG]  The bit.ly launcher (MiniGhost_V38.ps1) saves MiniGhost to %TEMP%\MiniGhost.ps1 and starts
+#         that file as administrator in a minimized window - it no longer runs downloaded code with
+#         Invoke-Expression (Defender blocks that as Trojan:Win32/Commando).
+#  [CHG]  MiniGhost no longer writes its own code to a new .ps1 and relaunches it elevated (an
+#         inline irm | iex run without admin rights now says to start it as administrator).
+#  [CHG]  The console is no longer hidden (no user32 ShowWindow, no C# compiled at run time); the
+#         launcher and the elevated relaunch start it minimized instead.
+
+# ===================================================================================================
 #  v1.4.1  -  2026-10-30
 #  Closes without asking
 # ===================================================================================================
