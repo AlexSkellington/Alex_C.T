@@ -89,10 +89,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Update Defender signatures
+      - name: Update Defender signatures, real-time protection on (AMSI needs it)
         shell: powershell
         continue-on-error: true
         run: |
+          Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction SilentlyContinue
           Update-MpSignature -ErrorAction SilentlyContinue
           & "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -SignatureUpdate
 

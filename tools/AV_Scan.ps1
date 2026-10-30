@@ -59,6 +59,21 @@ public static class AvScanAmsi {
 $ctx = [IntPtr]::Zero
 $amsiOk = $false
 try { $amsiOk = ([AvScanAmsi]::AmsiInitialize('TBS-AV-Check', [ref]$ctx) -eq 0) } catch { }
+
+# Control: Microsoft's harmless AMSI test string MUST be detected, otherwise AMSI results mean nothing
+# (built from two parts so this file itself is not the test sample)
+if ($amsiOk)
+{
+	$control = 'AMSI Test Sample: ' + '7e72c3ce-861b-4339-8740-0ac1484c1386'
+	$r = 0
+	$hr = [AvScanAmsi]::AmsiScanString($ctx, $control, 'control', [IntPtr]::Zero, [ref]$r)
+	if ($hr -eq 0 -and $r -ge 32768) { Write-Host '  OK    AMSI control sample detected - AMSI scanning works' -ForegroundColor Green }
+	else
+	{
+		Write-Host ("  ?     AMSI control sample NOT detected (hr 0x{0:X8}, result {1}) - AMSI results skipped" -f $hr, $r) -ForegroundColor Yellow
+		$amsiOk = $false
+	}
+}
 $mpCmd = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
 
 $detected = 0
@@ -73,7 +88,7 @@ foreach ($p in $Path)
 	{
 		$r = 0
 		$hr = [AvScanAmsi]::AmsiScanString($ctx, $text, $name, [IntPtr]::Zero, [ref]$r)
-		$checked++
+		if ($hr -eq 0) { $checked++ }
 		if ($hr -ne 0) { Write-Host ("  ?     AMSI {0}: scan call failed (0x{1:X8})" -f $name, $hr) -ForegroundColor Yellow }
 		elseif ($r -ge 32768) { $detected++; Write-Host ("  FLAG  AMSI {0}: DETECTED (result {1})" -f $name, $r) -ForegroundColor Red }
 		else { Write-Host ("  OK    AMSI {0}: not detected (result {1})" -f $name, $r) -ForegroundColor Green }
@@ -83,7 +98,7 @@ foreach ($p in $Path)
 	{
 		$out = & $mpCmd -Scan -ScanType 3 -File $p -DisableRemediation 2>&1
 		$code = $LASTEXITCODE
-		$checked++
+		if ($code -eq 0 -or $code -eq 2) { $checked++ }
 		if ($code -eq 2) { $detected++; Write-Host ("  FLAG  Defender file scan {0}: THREAT FOUND`n{1}" -f $name, (($out | Out-String).Trim())) -ForegroundColor Red }
 		elseif ($code -eq 0) { Write-Host ("  OK    Defender file scan {0}: no threats" -f $name) -ForegroundColor Green }
 		else { Write-Host ("  ?     Defender file scan {0}: exit {1} {2}" -f $name, $code, (($out | Out-String).Trim())) -ForegroundColor Yellow }
@@ -93,5 +108,6 @@ if ($amsiOk) { [AvScanAmsi]::AmsiUninitialize($ctx) }
 
 if ($detected -gt 0) { Write-Host "AV CHECK FAILED: $detected detection(s)" -ForegroundColor Red; exit 1 }
 if ($checked -eq 0) { Write-Host 'AV CHECK INCONCLUSIVE: Defender / AMSI not available here' -ForegroundColor Yellow; exit 2 }
+if (-not $amsiOk) { Write-Host 'note: AMSI (the irm | iex path) was not checked - only the file scan ran' -ForegroundColor Yellow }
 Write-Host "AV CHECK PASSED ($checked scans, no detections)" -ForegroundColor Green
 exit 0

@@ -212,7 +212,9 @@ function Invoke_Elevation_Bootstrap
 
 Invoke_Elevation_Bootstrap -PassthroughArgs $args
 
-Set-ExecutionPolicy Bypass -Scope Process -Force
+# No Set-ExecutionPolicy here: MiniGhost loads no script files and starts no child PowerShell (the
+# elevated relaunch passes -ExecutionPolicy Bypass itself), so it changed nothing - it only made the
+# script look like it disables security settings.
 Import-Module -Name Microsoft.PowerShell.Utility
 Add-Type -AssemblyName System.Drawing
 

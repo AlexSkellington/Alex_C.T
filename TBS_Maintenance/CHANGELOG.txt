@@ -14,6 +14,11 @@
 #  [CHG]  Info strip: each value is shown as a small caption over a bold value (SMS VERSION / 9.x),
 #         like the MiniGhost tiles; clicking and hovering work as before.
 #  [CHG]  Log card header reads "Activity log" with a "Clear" button (was a stray-looking "x").
+#  [CHG]  Antivirus-friendly: the lane SQL-enable worker deletes itself with Remove-Item instead
+#         of a hidden 'cmd /c ping -n 3 & del' chain (a classic malware idiom), and the generated
+#         Send SMS Key task script holds its connection data as plain text instead of base64 +
+#         FromBase64String (it hid nothing - the SQL login is in the same file). Every build is
+#         scanned by Microsoft Defender (AMSI + file scan) in CI: tools\AV_Scan.ps1.
 #  [NEW]  tests\Smoke.ps1 -Screenshot <folder> saves PNGs of the window and the four tool menus;
 #         CI runs it on every push (artifact "ui-screenshots").
 

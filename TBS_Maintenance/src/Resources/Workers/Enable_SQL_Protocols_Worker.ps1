@@ -72,4 +72,6 @@ try
 catch { }
 
 try { $null = & schtasks.exe /Delete /TN $TaskName /F } catch { }
-try { Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "ping 127.0.0.1 -n 3 >nul & del /f /q `"$PSCommandPath`"" -WindowStyle Hidden } catch { }
+# Remove this one-shot script. PowerShell has read it already, so it can delete its own file directly
+# (the old hidden 'cmd /c ping -n 3 & del' chain is a classic malware idiom antivirus flags).
+try { Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction Stop } catch { }

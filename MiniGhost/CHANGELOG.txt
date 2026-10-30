@@ -20,6 +20,8 @@
 #  [FIX]  The current IP showed "not found" and Configure Network found no adapter whenever the
 #         WMI lookup answered (since v1.3.9 that is the normal case): PowerShell 5.1 cannot index
 #         a single [pscustomobject]. The adapter list is always an array now.
+#  [CHG]  No Set-ExecutionPolicy call (it changed nothing in MiniGhost and is a pattern antivirus
+#         heuristics look for). Every build is scanned by Microsoft Defender in CI.
 #  [NEW]  tests\Smoke.ps1 runs MiniGhost off-screen (read-only start) and saves screenshots of
 #         the window and dialogs; CI runs it on every push.
 

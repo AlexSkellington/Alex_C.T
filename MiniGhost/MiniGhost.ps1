@@ -290,7 +290,9 @@ function Invoke_Elevation_Bootstrap
 
 Invoke_Elevation_Bootstrap -PassthroughArgs $args
 
-Set-ExecutionPolicy Bypass -Scope Process -Force
+# No Set-ExecutionPolicy here: MiniGhost loads no script files and starts no child PowerShell (the
+# elevated relaunch passes -ExecutionPolicy Bypass itself), so it changed nothing - it only made the
+# script look like it disables security settings.
 Import-Module -Name Microsoft.PowerShell.Utility
 Add-Type -AssemblyName System.Drawing
 
@@ -6851,6 +6853,8 @@ exit
 #  [FIX]  The current IP showed "not found" and Configure Network found no adapter whenever the
 #         WMI lookup answered (since v1.3.9 that is the normal case): PowerShell 5.1 cannot index
 #         a single [pscustomobject]. The adapter list is always an array now.
+#  [CHG]  No Set-ExecutionPolicy call (it changed nothing in MiniGhost and is a pattern antivirus
+#         heuristics look for). Every build is scanned by Microsoft Defender in CI.
 #  [NEW]  tests\Smoke.ps1 runs MiniGhost off-screen (read-only start) and saves screenshots of
 #         the window and dialogs; CI runs it on every push.
 

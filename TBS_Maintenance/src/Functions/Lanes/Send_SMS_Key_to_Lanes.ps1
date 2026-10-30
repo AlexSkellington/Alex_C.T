@@ -694,9 +694,10 @@ function Send_SMS_Key_to_Lanes
 			$taskScriptPath = Join-Path $script:ScriptsFolder ("Send_SMS_Key_Task_Store{0}.ps1" -f $StoreNumber)
 			$latestLogPath = Join-Path $script:ScriptsLog    ("Send_SMS_Key_LATEST_Store{0}.txt" -f $StoreNumber)
 
-			$enc = [System.Text.Encoding]::UTF8
-			$localConnB64 = [Convert]::ToBase64String($enc.GetBytes($localConnStr))
-			$laneConnB64 = [Convert]::ToBase64String($enc.GetBytes(($laneConnMap | ConvertTo-Json -Depth 6)))
+			# Connection data goes in as plain literals: base64 + FromBase64String in a generated
+			# scheduled script looks like obfuscation to antivirus heuristics (it hid nothing - the SQL
+			# login is in the same file). JSON never has a line starting with '@, so a here-string is safe.
+			$laneConnJson = ($laneConnMap | ConvertTo-Json -Depth 6)
 
 			$laneListLiteral = ($LaneNumbers | ForEach-Object { "'$_'" }) -join ", "
 
@@ -713,8 +714,10 @@ function Send_SMS_Key_to_Lanes
 			[void]$sb.AppendLine("`$LatestLogPath = '$latestLogPath'")
 			[void]$sb.AppendLine("`$ProtocolFile = '$protoFile'")
 			[void]$sb.AppendLine("`$enc = [System.Text.Encoding]::UTF8")
-			[void]$sb.AppendLine("`$LocalConnStr = `$enc.GetString([Convert]::FromBase64String('$localConnB64'))")
-			[void]$sb.AppendLine("`$LaneConnMap  = ConvertFrom-Json (`$enc.GetString([Convert]::FromBase64String('$laneConnB64')))")
+			[void]$sb.AppendLine("`$LocalConnStr = '" + ([string]$localConnStr).Replace("'", "''") + "'")
+			[void]$sb.AppendLine("`$LaneConnMap  = ConvertFrom-Json @'")
+			[void]$sb.AppendLine($laneConnJson)
+			[void]$sb.AppendLine("'@")
 			[void]$sb.AppendLine("`$LaneNumbers = @($laneListLiteral)")
 			[void]$sb.AppendLine("`$UpdatedViaSql  = New-Object System.Collections.Generic.List[string]")
 			[void]$sb.AppendLine("`$UpdatedViaFile = New-Object System.Collections.Generic.List[string]")
