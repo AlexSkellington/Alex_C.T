@@ -42,5 +42,6 @@ function Show_Text_Report_Form
 	$reportForm.AcceptButton = $closeButton
 	$reportForm.Controls.Add($textBox)
 	$reportForm.Controls.Add($closeButton)
+	Set_Modern_Dialog_Style -Form $reportForm -PrimaryButton $closeButton
 	[void]$reportForm.ShowDialog()
 }

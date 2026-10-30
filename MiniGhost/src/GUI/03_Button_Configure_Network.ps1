@@ -47,6 +47,7 @@ $configureNetworkButton.Add_Click({
 			
 			$adapterForm.AcceptButton = $okButton
 			$adapterForm.Controls.AddRange(@($label, $listBox, $okButton))
+			Set_Modern_Dialog_Style -Form $adapterForm -PrimaryButton $okButton
 			$adapterForm.ShowDialog() | Out-Null
 			
 			$selectedIndex = $listBox.SelectedIndex
@@ -141,6 +142,7 @@ $configureNetworkButton.Add_Click({
 				$ipForm.AcceptButton = $okButton
 				
 				$ipForm.Controls.AddRange(@($label, $textBox, $okButton))
+				Set_Modern_Dialog_Style -Form $ipForm -PrimaryButton $okButton
 				$dialogResult = $ipForm.ShowDialog()
 				
 				if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
@@ -174,7 +176,7 @@ $configureNetworkButton.Add_Click({
 								if ($LASTEXITCODE -ne 0) { throw ("netsh exit code {0}: {1}" -f $LASTEXITCODE, (($netshOutput | Out-String).Trim())) }
 								
 								# Update the label
-								$ipAddressLabel.Text = "IP Address changed from: $currentIP to $ipAddress"
+								$ipAddressLabel.Text = "$currentIP -> $ipAddress"
 								$operationStatus["IPConfiguration"].Status = "Successful"
 								$operationStatus["IPConfiguration"].Message = "Static IP configuration applied."
 								$operationStatus["IPConfiguration"].Details = "Adapter: $adapterName, IP: $ipAddress"

@@ -83,6 +83,34 @@ function __SmokeDialog([string]$Name, [scriptblock]$Open)
 	try { $null = & $Open } catch { $script:__out.Add('shot_error|' + $Name + ': ' + $_.Exception.Message) }
 }
 
+function __SmokeReport
+{
+	$r = New-Object System.Collections.Generic.List[string]
+	foreach ($o in $script:__out) { $r.Add($o) }
+	function __SmokeControls($c) { $n = 0; foreach ($x in @($c.Controls)) { $n += 1 + (__SmokeControls $x) }; $n }
+	$r.Add('functions|' + @(Get-ChildItem function:).Count)
+	$r.Add('form_controls|' + (__SmokeControls $script:__mainForm))
+	$r.Add('node_role|' + [string]$script:NodeRole)
+	$r.Add('ip_label|' + [string]$script:ipAddressLabel.Text)
+	try { $cfg = @(Get_Active_IP_Config); $r.Add('ip_configs|' + $cfg.Count + '|' + (($cfg | ForEach-Object { [string]$_.InterfaceAlias + '=' + [string](@($_.IPv4Address)[0].IPAddress) + '/' + [string](@($_.IPv4Address)[0].PrefixLength) }) -join ';')) }
+	catch { $r.Add('ip_configs|error|' + $_.Exception.Message) }
+	try { $r.Add('ip_diag_wmi_route|' + ((@(Get-WmiObject -Class Win32_IP4RouteTable | Where-Object { $_.Destination -eq '0.0.0.0' }) | ForEach-Object { 'if' + $_.InterfaceIndex + ' via ' + $_.NextHop }) -join ';')) } catch { $r.Add('ip_diag_wmi_route|error|' + $_.Exception.Message) }
+	try { $r.Add('ip_diag_netroute|' + ((@(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4) | ForEach-Object { 'if' + $_.InterfaceIndex + ' via ' + $_.NextHop }) -join ';')) } catch { $r.Add('ip_diag_netroute|error|' + $_.Exception.Message) }
+	try { $r.Add('ip_diag_adapters|' + ((@(Get-NetAdapter) | ForEach-Object { $_.Name + ':' + $_.Status + ':if' + $_.InterfaceIndex }) -join ';')) } catch { $r.Add('ip_diag_adapters|error|' + $_.Exception.Message) }
+	$seenErr = @{ }
+	foreach ($er in @($Error))
+	{
+		$msg = ''
+		try { $msg = [string]$er.Exception.Message } catch { $msg = [string]$er }
+		$msg = ($msg -replace '\s+', ' ').Trim()
+		if ($msg.Length -gt 220) { $msg = $msg.Substring(0, 220) }
+		$seenErr[$msg] = 1
+	}
+	foreach ($k in ($seenErr.Keys | Sort-Object)) { $r.Add('error|' + $k) }
+	$r.Add('done|1')
+	[System.IO.File]::WriteAllLines('__SMOKE_REPORT__', $r.ToArray())
+}
+
 $script:__mainTimer = New-Object System.Windows.Forms.Timer
 $script:__mainTimer.Interval = __SMOKE_MS__
 $script:__mainTimer.Add_Tick({
@@ -104,30 +132,17 @@ $script:__mainTimer.Add_Tick({
 			__SmokeDialog 'report' { Show_Text_Report_Form -Title 'Operation Summary' -Text ("StoreNumberChange: Successful`r`n  Message: Store number updated in INIs.`r`n`r`nMachineNameChange: Pending`r`n") -Width 600 -Height 400 }
 		}
 
-		# Hiding a modal window ends ShowDialog without FormClosing (no exit confirmation)
-		$script:__mainForm.Visible = $false
+		# Report to a file and leave: closing the window would raise the exit confirmation
+		__SmokeReport
+		[Environment]::Exit(0)
 	})
 $form.Add_Shown({ $script:__mainTimer.Start() })
 try { [void]$form.ShowDialog() } catch { Write-Output ('SMOKE|show_error|' + $_.Exception.Message) }
-foreach ($o in $script:__out) { Write-Output ('SMOKE|' + $o) }
-function __SmokeControls($c) { $n = 0; foreach ($x in @($c.Controls)) { $n += 1 + (__SmokeControls $x) }; $n }
-Write-Output ('SMOKE|functions|' + @(Get-ChildItem function:).Count)
-Write-Output ('SMOKE|form_controls|' + (__SmokeControls $form))
-Write-Output ('SMOKE|node_role|' + [string]$script:NodeRole)
-$seenErr = @{ }
-foreach ($er in @($Error))
-{
-	$msg = ''
-	try { $msg = [string]$er.Exception.Message } catch { $msg = [string]$er }
-	$msg = ($msg -replace '\s+', ' ').Trim()
-	if ($msg.Length -gt 220) { $msg = $msg.Substring(0, 220) }
-	$seenErr[$msg] = 1
-}
-foreach ($k in ($seenErr.Keys | Sort-Object)) { Write-Output ('SMOKE|error|' + $k) }
-Write-Output 'SMOKE|done|1'
+__SmokeReport
 [Environment]::Exit(0)
 '@
-$harness = $harness.Replace('__SMOKE_MS__', [string]($Seconds * 1000)).Replace('__SMOKE_SHOT__', $shotDir)
+$reportFile = Join-Path $sandbox 'smoke_report.txt'
+$harness = $harness.Replace('__SMOKE_MS__', [string]($Seconds * 1000)).Replace('__SMOKE_SHOT__', $shotDir).Replace('__SMOKE_REPORT__', $reportFile.Replace("'", "''"))
 $text = $text.Substring(0, $ix) + $harness + $text.Substring($ix + $find.Length)
 
 $patched = Join-Path $sandbox 'minighost_smoke_patched.ps1'
@@ -145,7 +160,7 @@ if (-not $proc.WaitForExit(($Seconds + 60) * 1000))
 }
 
 $lines = @()
-if (Test-Path -LiteralPath $outFile) { $lines = @([System.IO.File]::ReadAllLines($outFile) | Where-Object { $_.StartsWith('SMOKE|') } | ForEach-Object { $_.Substring(6) }) }
+if (Test-Path -LiteralPath $reportFile) { $lines = @([System.IO.File]::ReadAllLines($reportFile)) }
 foreach ($l in $lines) { Write-Host "  $l" }
 $stderr = ''
 if (Test-Path -LiteralPath $errFile) { $stderr = [System.IO.File]::ReadAllText($errFile).Trim() }

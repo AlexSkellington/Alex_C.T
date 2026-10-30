@@ -1,21 +1,46 @@
-# Apply consistent styling + layout behavior for all main action buttons
-$mainButtons = @(
-	$updateStoreNumberButton, $configureNetworkButton, $changeMachineNameButton,
-	$truncateTablesButton, $registryCleanupButton, $updateSQLDatabaseButton,
-	$summaryButton, $rebootButton
-)
+# ===================================================================================================
+#                              SECTION: GUI - Button Layout and Tooltips
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Styles the eight action buttons (created with their click handlers in 02..09) and places them
+#   in the three cards of 01_Main_Form, then sets their tooltips.
+# ===================================================================================================
 
-foreach ($btn in $mainButtons)
+# Card -> buttons, top to bottom; Danger buttons get red text
+$actionGroups = @(
+	@{ Host = $script:CardIdentity; Accent = $uiAccentIdentity; Buttons = @($changeMachineNameButton, $updateStoreNumberButton, $configureNetworkButton) },
+	@{ Host = $script:CardDatabase; Accent = $uiAccentDatabase; Buttons = @($updateSQLDatabaseButton, $truncateTablesButton) },
+	@{ Host = $script:CardSystem; Accent = $uiAccentSystem; Buttons = @($registryCleanupButton, $summaryButton, $rebootButton) }
+)
+$dangerButtons = @($truncateTablesButton, $rebootButton)
+
+foreach ($group in $actionGroups)
 {
-	$btn.Dock = 'Fill'
-	$btn.Margin = New-Object System.Windows.Forms.Padding(8, 6, 8, 6)
-	$btn.MinimumSize = New-Object System.Drawing.Size(0, 42)
-	$btn.UseVisualStyleBackColor = $true
+	# Dock=Top stacks the LAST added control at the top, so add bottom-up
+	$ordered = @($group.Buttons)
+	[array]::Reverse($ordered)
+	foreach ($btn in $ordered)
+	{
+		$kind = if ($dangerButtons -contains $btn) { 'Danger' } else { 'Action' }
+		Set_Modern_Button_Style -Button $btn -Kind $kind -AccentColor $group.Accent
+		$btn.Dock = 'Fill'
+		$btn.Margin = New-Object System.Windows.Forms.Padding(0)
+		$btn.MinimumSize = New-Object System.Drawing.Size(0, 0)
+		
+		# wrapper = button + 8 px gap below it (docked controls ignore Margin)
+		$slot = New-Object System.Windows.Forms.Panel
+		$slot.Dock = 'Top'
+		$slot.Height = 54
+		$slot.BackColor = [System.Drawing.Color]::White
+		$slot.Padding = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
+		$slot.Controls.Add($btn)
+		$group.Host.Controls.Add($slot)
+	}
 }
 
 # Tooltips (one per button)
-$toolTip.SetToolTip($updateStoreNumberButton, "Update the store number (startup.ini) and refresh the on-screen store info. If supported, also syncs related SQL/INI values.")
-$toolTip.SetToolTip($configureNetworkButton, "Configure NIC settings (IP/Subnet/Gateway/DNS) using store/lane conventions and validate the current network configuration.")
+$toolTip.SetToolTip($updateStoreNumberButton, "Change the store number in Startup.ini, Server.ini, SMSStart.ini, System.ini, INFO_*901_WIN.INI and SmsHttps.INI, then update STD_TAB / TER_TAB 901.")
+$toolTip.SetToolTip($configureNetworkButton, "Switch the active network adapter to DHCP, or to a static IP in the gateway's subnet (the address is pinged first).")
 $changeMachineNameToolTipText = "Rename this computer or re-enter the current machine name to force a full INI + SQL sync."
 if ($script:NodeRole -match '^(?i)Lane$')
 {
@@ -30,23 +55,8 @@ else
 	$changeMachineNameToolTipText += " Accepted formats depend on node role and are shown in the rename dialog."
 }
 $toolTip.SetToolTip($changeMachineNameButton, $changeMachineNameToolTipText)
-$toolTip.SetToolTip($truncateTablesButton, "Run SQL cleanup by truncating selected tables (maintenance routine).")
-$toolTip.SetToolTip($registryCleanupButton, "Remove 'GT' registry values (after confirmation) to clean up old configuration leftovers.")
-$toolTip.SetToolTip($updateSQLDatabaseButton, "Update SQL records to reflect the new machine name/store number for this node.")
-$toolTip.SetToolTip($summaryButton, "View a session summary of which operations succeeded, failed, or were skipped.")
-$toolTip.SetToolTip($rebootButton, "Restart the computer (optional cleanup before reboot).")
-
-# Add buttons to the Actions grid (3 columns x 3 rows)
-# Row 1
-$actionsLayout.Controls.Add($changeMachineNameButton, 0, 0)
-$actionsLayout.Controls.Add($configureNetworkButton,   1, 0)
-$actionsLayout.Controls.Add($updateStoreNumberButton, 2, 0)
-
-# Row 2 (middle cell intentionally left empty to preserve the classic 3-column layout)
-$actionsLayout.Controls.Add($truncateTablesButton,     0, 1)
-$actionsLayout.Controls.Add($registryCleanupButton,    2, 1)
-
-# Row 3
-$actionsLayout.Controls.Add($updateSQLDatabaseButton,  0, 2)
-$actionsLayout.Controls.Add($summaryButton,            1, 2)
-$actionsLayout.Controls.Add($rebootButton,             2, 2)
+$toolTip.SetToolTip($truncateTablesButton, "Empty the transaction, report and sales tables (TRS_*, RPT_*, SAL_*, REC_*, INV_* ...) - asks first. Cannot be undone.")
+$toolTip.SetToolTip($registryCleanupButton, "Remove the 'GT*' counter values under Store Management\Counters (after confirmation).")
+$toolTip.SetToolTip($updateSQLDatabaseButton, "Bring TER_TAB, STO_TAB, LNK_TAB, RUN_TAB and STD_TAB in line with this machine's name and store number.")
+$toolTip.SetToolTip($summaryButton, "See which operations of this session succeeded, failed or were skipped.")
+$toolTip.SetToolTip($rebootButton, "Restart the computer (asks first). Needed after a machine rename.")

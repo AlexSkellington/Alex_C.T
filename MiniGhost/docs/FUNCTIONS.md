@@ -9,13 +9,18 @@ Dialogs, message boxes, labels and the shared operation-status table.
 
 | Function | What it does | Called from |
 |---|---|---|
+| `Draw_MiniGhost_Logo` | Draws the MiniGhost logo (violet gradient disc with a white ghost) into the square (X, Y, Size) of any Graphics - the window icon and the header badge use it. | GUI/01_Main_Form |
 | `Get_NEW_Machine_Name` | Prompts user for a new machine name via GUI. | GUI/02_Button_Change_Machine_Name |
 | `Get_NEW_Store_Number` | Prompts the user via a GUI to enter a valid store number. | GUI/04_Button_Update_Store_Number |
+| `New_MiniGhost_Action_Card` | Returns an action card for the main window: coloured dot, title, subtitle, and a host panel for its buttons (in the card's .Tag). | GUI/01_Main_Form |
+| `New_MiniGhost_Card` | Returns a white card panel with a 1 px light border (main-window sections). | New_MiniGhost_Action_Card, GUI/01_Main_Form |
 | `Set_Label_Text` | Updates a WinForms label and optionally refreshes its parent layout. | Get_Store_Number_From_INI, Invoke_Machine_Name_Change_Workflow, GUI/04_Button_Update_Store_Number |
+| `Set_Modern_Button_Style` | Gives a button the flat MiniGhost look: Primary (filled accent), Secondary (white with a border), Action (main-window card button: left-aligned, coloured stripe) or Danger (Acti... | Set_Modern_Dialog_Style, GUI/11_Layout_And_Tooltips |
+| `Set_Modern_Dialog_Style` | Restyles a dialog and every control in it to match the main window: white background, Segoe UI, flat buttons (the given primary button filled with the accent colour), bordered t... | Get_NEW_Machine_Name, Get_NEW_Store_Number, Show_Action_Prompt_With_Log, Show_Text_Report_Form, GUI/03_Button_Configure_Network |
 | `Set_Operation_Status` | Central helper to update the shared operation-status table only when the requested key exists. | Invoke_Machine_Name_Change_Workflow, GUI/02_Button_Change_Machine_Name, GUI/04_Button_Update_Store_Number |
 | `Show_Action_Prompt_With_Log` | Message dialog with one or two action buttons and an optional View Log button that opens the given log text in Show_Text_Report_Form. | Invoke_Machine_Name_Change_Workflow, GUI/04_Button_Update_Store_Number |
 | `Show_App_Message` | Small wrapper around WinForms MessageBox to reduce repeated enum boilerplate. | Invoke_Machine_Name_Change_Workflow, GUI/02_Button_Change_Machine_Name, GUI/04_Button_Update_Store_Number |
-| `Show_Text_Report_Form` | Shows a read-only text report (summary, failure log) in a resizable window with a Close button. | Show_Action_Prompt_With_Log, GUI/08_Button_Summary |
+| `Show_Text_Report_Form` | Shows a read-only text report (summary, failure log) in a resizable window with a Close button. | Update_SQL_Database, Show_Action_Prompt_With_Log, GUI/08_Button_Summary |
 
 ## Store
 

@@ -75,6 +75,7 @@ function Get_NEW_Store_Number
 		$storeNumberForm.CancelButton = $cancelButton
 		
 		$script:MiniGhostTempDialogSelection = $null
+		Set_Modern_Dialog_Style -Form $storeNumberForm -PrimaryButton $okButton
 		[void]$storeNumberForm.ShowDialog()
 		
 		# IMPORTANT: read before Dispose (PS WinForms reliability)

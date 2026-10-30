@@ -72,6 +72,7 @@ function Get_NEW_Machine_Name
 		$form.AcceptButton = $okBtn
 		$form.CancelButton = $cancelBtn
 		
+		Set_Modern_Dialog_Style -Form $form -PrimaryButton $okBtn
 		$dialogResult = $form.ShowDialog()
 		
 		# PS 5.1-safe: read textbox BEFORE disposing
@@ -160,7 +161,7 @@ function Get_NEW_Machine_Name
 						
 						if ($storeNumberLabel)
 						{
-							$storeNumberLabel.Text = "Store Number: $storePrefixFromName (updated)"
+							$storeNumberLabel.Text = "$storePrefixFromName (updated)"
 							$storeNumberLabel.Refresh()
 						}
 					}

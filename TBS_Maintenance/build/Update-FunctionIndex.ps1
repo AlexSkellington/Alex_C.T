@@ -95,7 +95,8 @@ foreach ($g in @(Get-ChildItem -Path (Join-Path $srcRoot 'GUI') -File -Filter '*
 		$menu = ($g.BaseName -replace '^\d+_Menu_', '' -replace '^\d+_', '')
 		foreach ($called in (Find-Calls $handler ''))
 		{
-			$functions[$called].CalledFrom.Add(('menu: {0} > "{1}"' -f $menu, $m.Groups['text'].Value))
+			# '&&' is how a menu text shows a literal '&' (a single '&' marks the access key)
+			$functions[$called].CalledFrom.Add(('menu: {0} > "{1}"' -f $menu, ($m.Groups['text'].Value -replace '&&', '&')))
 		}
 	}
 	# non-menu GUI uses (info labels, popups, timers)

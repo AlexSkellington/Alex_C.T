@@ -4,7 +4,7 @@
 $topStripCard = New-Object System.Windows.Forms.Panel
 $topStripCard.BackColor = $uiCardBg
 $topStripCard.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-$topStripCard.Height = 82  # Slightly taller for better spacing
+$topStripCard.Height = 100 # two rows of caption + value tiles
 $topStripCard.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
 $form.Controls.Add($topStripCard)
 
@@ -40,7 +40,7 @@ $topStripTable.BackColor = [System.Drawing.Color]::Transparent
 $topStripCard.Controls.Add($topStripTable)
 
 # ------------------------------------------------------------------------------------------------
-# Shared tooltip (create once)  [?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?][?]
+# Shared tooltip (create once)
 # ------------------------------------------------------------------------------------------------
 if (-not $toolTip)
 {
@@ -110,6 +110,39 @@ $applyInfoLabelStyle = {
 		})
 }
 
+# Info tile look: every label keeps its "Caption: value" text (set by many functions), and this
+# Paint handler draws it as a small muted CAPTION above the value. The value uses the label's
+# current ForeColor / Font, so the hover link style and status colours still show.
+$script:PaintInfoTile = {
+	param ($s, $e)
+	try
+	{
+		$text = [string]$s.Text
+		$ix = $text.IndexOf(': ')
+		$caption = ''
+		$value = $text
+		if ($ix -gt 0) { $caption = $text.Substring(0, $ix).ToUpper(); $value = $text.Substring($ix + 2) }
+		$bg = if ($s.BackColor.A -eq 0) { [System.Drawing.Color]::White } else { $s.BackColor }
+		$e.Graphics.Clear($bg)
+		$align = [System.Windows.Forms.TextFormatFlags]::Left
+		if ($s.TextAlign -eq [System.Drawing.ContentAlignment]::MiddleCenter) { $align = [System.Windows.Forms.TextFormatFlags]::HorizontalCenter }
+		elseif ($s.TextAlign -eq [System.Drawing.ContentAlignment]::MiddleRight) { $align = [System.Windows.Forms.TextFormatFlags]::Right }
+		$flags = $align -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis -bor [System.Windows.Forms.TextFormatFlags]::SingleLine
+		$capFont = New-Object System.Drawing.Font("Segoe UI Semibold", [float]7.5)
+		$valStyle = if ($s.Font.Underline) { [System.Drawing.FontStyle]::Underline } else { [System.Drawing.FontStyle]::Regular }
+		$valFont = New-Object System.Drawing.Font("Segoe UI Semibold", [float]11, $valStyle)
+		$top = [int][Math]::Max(0, ($s.Height - 38) / 2)
+		if ($caption)
+		{
+			[System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $caption, $capFont, [System.Drawing.Rectangle]::new(0, $top, $s.Width, 15), [System.Drawing.Color]::FromArgb(125, 125, 125), $flags)
+		}
+		[System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $value, $valFont, [System.Drawing.Rectangle]::new(0, ($top + 15), $s.Width, 23), $s.ForeColor, $flags)
+		$capFont.Dispose()
+		$valFont.Dispose()
+	}
+	catch { }
+}
+
 # SMS Version (left, row 1)
 $smsVersionLabel = New-Object System.Windows.Forms.Label
 $smsVersionLabel.Name = "SMSVersionLabel"
@@ -126,6 +159,7 @@ $topStripTable.Controls.Add($smsVersionLabel, 0, 0) | Out-Null
 $smsVersionLabel.AutoSize = $false
 $smsVersionLabel.Dock = 'Fill'
 $smsVersionLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$smsVersionLabel.add_Paint($script:PaintInfoTile)
 $toolTip.SetToolTip($smsVersionLabel, "Shows current SMS version. Click to bring SMSStart to front (or launch it).")
 & $applyInfoLabelStyle $smsVersionLabel
 
@@ -210,6 +244,7 @@ $topStripTable.Controls.Add($storeNameLabel, 1, 0) | Out-Null
 $storeNameLabel.AutoSize = $false
 $storeNameLabel.Dock = 'Fill'
 $storeNameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$storeNameLabel.add_Paint($script:PaintInfoTile)
 $toolTip.SetToolTip($storeNameLabel, "Shows store name. Click to ping all nodes (Lanes > Scales > Backoffices).")
 & $applyInfoLabelStyle $storeNameLabel
 
@@ -249,6 +284,7 @@ $topStripTable.Controls.Add($storeNumberLabel, 2, 0) | Out-Null
 $storeNumberLabel.AutoSize = $false
 $storeNumberLabel.Dock = 'Fill'
 $storeNumberLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+$storeNumberLabel.add_Paint($script:PaintInfoTile)
 
 # keep your original script-scoped reference for other code
 $script:storeNumberLabel = $storeNumberLabel
@@ -320,6 +356,7 @@ $topStripTable.Controls.Add($NodesStore, 0, 1) | Out-Null
 $NodesStore.AutoSize = $false
 $NodesStore.Dock = 'Fill'
 $NodesStore.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$NodesStore.add_Paint($script:PaintInfoTile)
 
 # keep your original script-scoped reference for other code
 $script:NodesStore = $NodesStore
@@ -348,6 +385,7 @@ $topStripTable.Controls.Add($scalesLabel, 1, 1) | Out-Null
 $scalesLabel.AutoSize = $false
 $scalesLabel.Dock = 'Fill'
 $scalesLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$scalesLabel.add_Paint($script:PaintInfoTile)
 
 # keep your original script-scoped reference for other code
 $script:scalesLabel = $scalesLabel
@@ -376,6 +414,7 @@ $topStripTable.Controls.Add($NodesBackoffices, 2, 1) | Out-Null
 $NodesBackoffices.AutoSize = $false
 $NodesBackoffices.Dock = 'Fill'
 $NodesBackoffices.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+$NodesBackoffices.add_Paint($script:PaintInfoTile)
 
 $toolTip.SetToolTip($NodesBackoffices, "Shows count of Backoffices. Click to ping Backoffice nodes.")
 & $applyInfoLabelStyle $NodesBackoffices

@@ -44,7 +44,7 @@ function Get_Store_Number_From_INI
 	# Update label ONLY if requested
 	if ($UpdateLabel -and (-not $SilentMode) -and $script:storeNumberLabel)
 	{
-		Set_Label_Text -Label $script:storeNumberLabel -Text "Store Number: $($script:FunctionResults['StoreNumber'])" -RefreshParent -ProcessEvents
+		Set_Label_Text -Label $script:storeNumberLabel -Text "$($script:FunctionResults['StoreNumber'])" -RefreshParent -ProcessEvents
 	}
 	
 	if ($foundStore) { return $foundStore }

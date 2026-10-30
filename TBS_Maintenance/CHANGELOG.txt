@@ -5,6 +5,19 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.8  -  2026-10-30
+#  UI polish: info tiles, log header, menu labels
+# ===================================================================================================
+#
+#  [FIX]  Menu labels with "&" lost it ("Files & Data" showed as "Files  Data"): a single & marks a
+#         keyboard shortcut in Windows menus. Lane, Scale and General menus show the "&" again.
+#  [CHG]  Info strip: each value is shown as a small caption over a bold value (SMS VERSION / 9.x),
+#         like the MiniGhost tiles; clicking and hovering work as before.
+#  [CHG]  Log card header reads "Activity log" with a "Clear" button (was a stray-looking "x").
+#  [NEW]  tests\Smoke.ps1 -Screenshot <folder> saves PNGs of the window and the four tool menus;
+#         CI runs it on every push (artifact "ui-screenshots").
+
+# ===================================================================================================
 #  v2.7.7  -  2026-10-22
 #  Full review pass: every function checked for speed, correctness and robustness
 # ===================================================================================================

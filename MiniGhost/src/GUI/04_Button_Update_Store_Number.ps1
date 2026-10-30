@@ -52,7 +52,7 @@ $updateStoreNumberButton.Add_Click({
 		if ($iniOk)
 		{
 			$script:newStoreNumber = $newStoreNumberInput
-			Set_Label_Text -Label $storeNumberLabel -Text "Store Number changed from: $oldStoreNumber to $script:newStoreNumber"
+			Set_Label_Text -Label $storeNumberLabel -Text "$oldStoreNumber -> $script:newStoreNumber"
 			Set_Operation_Status -OperationStatus $operationStatus -Key "StoreNumberChange" -Status "Successful" -Message "Store number updated in INIs." -Details "Store number changed to '$script:newStoreNumber'."
 			Show_App_Message -Text "Store number successfully changed to '$script:newStoreNumber'." -Title "Store Number Updated" -Icon Information | Out-Null
 		}

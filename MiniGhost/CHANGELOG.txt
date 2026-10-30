@@ -5,6 +5,22 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v1.4.0  -  2026-10-30
+#  New look: same buttons and behaviour, modern window and dialogs
+# ===================================================================================================
+#
+#  [CHG]  Main window: dark header with the MiniGhost logo, node-role and version badges; the
+#         current machine name, store name, store number and IP as four tiles; the eight actions
+#         in three cards (Identity / Database / System) - Truncate Tables and Reboot in red; a
+#         footer with author, version and PowerShell version. Window and taskbar icon.
+#  [CHG]  Dialogs (store number, machine name, network, prompts, reports) use the same flat style
+#         with the default button highlighted. The failed-SQL list uses the report window.
+#  [CHG]  Tile values show the value only ("POS005 -> POS006 (after reboot)"); a cut-off value is
+#         shown in full on hover. Button tooltips say what each action changes.
+#  [NEW]  tests\Smoke.ps1 runs MiniGhost off-screen (read-only start) and saves screenshots of
+#         the window and dialogs; CI runs it on every push.
+
+# ===================================================================================================
 #  v1.3.9  -  2026-10-30
 #  Review pass: database connection, network, INI rewrites, dialogs, temp cleanup
 # ===================================================================================================

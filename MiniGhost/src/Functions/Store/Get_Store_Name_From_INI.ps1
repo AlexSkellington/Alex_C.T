@@ -40,7 +40,7 @@ function Get_Store_Name_From_INI
 	# Update the storeNameLabel in the GUI
 	if (-not $SilentMode -and $storeNameLabel -ne $null)
 	{
-		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
+		$storeNameLabel.Text = "$($script:FunctionResults['StoreName'])"
 		$form.Refresh()
 		[System.Windows.Forms.Application]::DoEvents()
 	}

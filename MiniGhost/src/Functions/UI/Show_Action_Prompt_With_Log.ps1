@@ -96,6 +96,7 @@ function Show_Action_Prompt_With_Log
 	
 	$promptForm.Controls.Add($messageTextBox)
 	$promptForm.Controls.Add($buttonPanel)
+	Set_Modern_Dialog_Style -Form $promptForm -PrimaryButton $primaryButton
 	[void]$promptForm.ShowDialog()
 	$selection = [string]$promptForm.Tag
 	$promptForm.Dispose()

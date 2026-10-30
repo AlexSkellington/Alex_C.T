@@ -60,7 +60,7 @@ function Invoke_Machine_Name_Change_Workflow
 			Rename-Computer -NewName $machineContext.MachineName -Force -ErrorAction Stop
 			$renamePerformed = $true
 			
-			Set_Label_Text -Label $script:machineNameLabel -Text "The machine name will change from: $env:COMPUTERNAME to $script:newMachineName" -RefreshParent -ProcessEvents
+			Set_Label_Text -Label $script:machineNameLabel -Text "$env:COMPUTERNAME -> $script:newMachineName (after reboot)" -RefreshParent -ProcessEvents
 			Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Successful" -Message "Machine name changed successfully." -Details "Machine name changed to '$script:newMachineName'."
 			
 			Remove_Old_XZ_Folders -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
@@ -167,7 +167,7 @@ function Invoke_Machine_Name_Change_Workflow
 			if ($syncResult.Success)
 			{
 				Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Successful" -Message "Machine settings synced successfully." -Details "Requested machine name already matched '$script:newMachineName'; full INI + SQL sync was run without renaming."
-				Set_Label_Text -Label $script:machineNameLabel -Text "Current Machine Name: $script:newMachineName (sync refreshed)" -RefreshParent
+				Set_Label_Text -Label $script:machineNameLabel -Text "$script:newMachineName (sync refreshed)" -RefreshParent
 				Show_App_Message -Text "Full INI + SQL sync completed for '$script:newMachineName'. No reboot is required because the machine name did not change." -Title "Sync Complete" -Icon Information | Out-Null
 			}
 			else

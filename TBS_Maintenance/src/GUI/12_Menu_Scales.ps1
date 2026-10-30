@@ -21,7 +21,7 @@ $SubScaleServices = New-Object System.Windows.Forms.ToolStripMenuItem("Services"
 $SubScaleServices.ToolTipText = "BMS / ScaleCommApp services and reboot"
 $SubScaleConfig = New-Object System.Windows.Forms.ToolStripMenuItem("Configuration")
 $SubScaleConfig.ToolTipText = "Scale configuration and database tables"
-$SubScaleFiles = New-Object System.Windows.Forms.ToolStripMenuItem("Files & Shares")
+$SubScaleFiles = New-Object System.Windows.Forms.ToolStripMenuItem("Files && Shares")
 $SubScaleFiles.ToolTipText = "Scale file deployment and C$ shares"
 
 ############################################################################
@@ -115,7 +115,7 @@ $UpdateScalesSpecialsItem.Add_Click({
 ############################################################################
 # 9) Update Scale Config and DB (F272 Upsert)
 ############################################################################
-$UpdateScaleConfigAndDBItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scale Config & DB (F272 Upsert)")
+$UpdateScaleConfigAndDBItem = New-Object System.Windows.Forms.ToolStripMenuItem("Update Scale Config && DB (F272 Upsert)")
 $UpdateScaleConfigAndDBItem.ToolTipText = "Updates ScaleCommApp configs and upserts F272 in SCL_TAB for POS_TAB F82=1 in item range."
 $UpdateScaleConfigAndDBItem.Add_Click({
 		$script:LastActivity = Get-Date

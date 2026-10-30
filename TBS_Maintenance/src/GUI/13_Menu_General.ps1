@@ -17,7 +17,7 @@ $GeneralToolsButton = & $New_Category_Button -Name "GeneralToolsButton" -Text "G
 	-Menu $ContextMenuGeneral -ToolTipText "Click for general maintenance tools."
 
 # Submenu containers (the assembled layout is at the bottom of this menu section)
-$SubGenDiagnostics = New-Object System.Windows.Forms.ToolStripMenuItem("Diagnostics & Repair")
+$SubGenDiagnostics = New-Object System.Windows.Forms.ToolStripMenuItem("Diagnostics && Repair")
 $SubGenDiagnostics.ToolTipText = "Journal, hosts, archive bit and node repairs"
 $SubGenTools = New-Object System.Windows.Forms.ToolStripMenuItem("Tools")
 $SubGenTools.ToolTipText = "INI editor and activation"

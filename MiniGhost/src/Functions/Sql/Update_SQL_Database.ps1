@@ -112,20 +112,7 @@ function Update_SQL_Database
 			
 			if ($failedSqlCommands.Count -gt 0)
 			{
-				$failedCommandsForm = New-Object System.Windows.Forms.Form
-				$failedCommandsForm.Text = "Failed SQL Commands"
-				$failedCommandsForm.Size = New-Object System.Drawing.Size(600, 400)
-				$failedCommandsForm.StartPosition = "CenterParent"
-				
-				$textBox = New-Object System.Windows.Forms.TextBox
-				$textBox.Multiline = $true
-				$textBox.ReadOnly = $true
-				$textBox.ScrollBars = "Vertical"
-				$textBox.Dock = "Fill"
-				$textBox.Text = $failedSqlCommands -join "`r`n`r`n"
-				
-				$failedCommandsForm.Controls.Add($textBox)
-				[void]$failedCommandsForm.ShowDialog()
+				Show_Text_Report_Form -Title "Failed SQL Commands" -Text ($failedSqlCommands -join "`r`n`r`n") -Width 640 -Height 420
 			}
 		}
 	}

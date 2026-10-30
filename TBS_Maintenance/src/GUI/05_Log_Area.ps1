@@ -20,25 +20,26 @@ $logFrame.Controls.Add($logFrameHeader)
 # Header text
 $logHeaderLabel = New-Object System.Windows.Forms.Label
 $logHeaderLabel.Name = "LogHeaderLabel"
-$logHeaderLabel.Text = "LOG OUTPUT"
-$logHeaderLabel.Font = New-Object System.Drawing.Font("Segoe UI", [float]9, [System.Drawing.FontStyle]::Regular)
-$logHeaderLabel.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+$logHeaderLabel.Text = "Activity log"
+$logHeaderLabel.Font = New-Object System.Drawing.Font("Segoe UI Semibold", [float]9.5)
+$logHeaderLabel.ForeColor = [System.Drawing.Color]::FromArgb(50, 50, 50)
 $logHeaderLabel.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
 $logHeaderLabel.AutoSize = $false
-$logHeaderLabel.Width = 120
+$logHeaderLabel.Width = 160
 $logHeaderLabel.Height = 28
-$logHeaderLabel.Location = New-Object System.Drawing.Point(12, 4)
+$logHeaderLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$logHeaderLabel.Location = New-Object System.Drawing.Point(12, 0)
 $logFrameHeader.Controls.Add($logHeaderLabel)
 
 # Clear button in header
 $logClearButton = New-Object System.Windows.Forms.Button
 $logClearButton.Name = "LogClearButton"
-$logClearButton.Text = "X"
-$logClearButton.Font = New-Object System.Drawing.Font("Segoe UI", [float]8, [System.Drawing.FontStyle]::Regular)
-$logClearButton.Size = New-Object System.Drawing.Size(24, 20)
-$logClearButton.Location = New-Object System.Drawing.Point(($logFrameHeader.Width - 32), 4)
+$logClearButton.Text = "Clear"
+$logClearButton.Font = New-Object System.Drawing.Font("Segoe UI", [float]8.5, [System.Drawing.FontStyle]::Regular)
+$logClearButton.Size = New-Object System.Drawing.Size(56, 22)
+$logClearButton.Location = New-Object System.Drawing.Point(($logFrameHeader.Width - 64), 3)
 $logClearButton.BackColor = [System.Drawing.Color]::Transparent
-$logClearButton.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 150)
+$logClearButton.ForeColor = [System.Drawing.Color]::FromArgb(0, 103, 192)
 $logClearButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $logClearButton.FlatAppearance.BorderSize = 0
 $logClearButton.Cursor = [System.Windows.Forms.Cursors]::Hand
@@ -47,8 +48,8 @@ $logClearButton.Margin = New-Object System.Windows.Forms.Padding(0)
 # Follow the right edge of the log header when the frame resizes
 $logClearButton.Anchor = 'Top,Right'
 $toolTip.SetToolTip($logClearButton, "Clear log")
-$logClearButton.Add_MouseEnter({ $logClearButton.ForeColor = [System.Drawing.Color]::Red })
-$logClearButton.Add_MouseLeave({ $logClearButton.ForeColor = [System.Drawing.Color]::FromArgb(150, 150, 150) })
+$logClearButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(229, 239, 250)
+$logClearButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(210, 228, 248)
 $logClearButton.Add_Click({
 		$logBox.Clear()
 		if (Get-Command Write_Log -ErrorAction SilentlyContinue) { Write_Log "Log Cleared" }

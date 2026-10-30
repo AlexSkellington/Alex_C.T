@@ -18,9 +18,9 @@ $SubLaneMaintenance = New-Object System.Windows.Forms.ToolStripMenuItem("Mainten
 $SubLaneMaintenance.ToolTipText = "Lane database and program maintenance tasks"
 $SubLaneSchedule = New-Object System.Windows.Forms.ToolStripMenuItem("Schedule")
 $SubLaneSchedule.ToolTipText = "Scheduled maintenance and backup tasks"
-$SubLaneFiles = New-Object System.Windows.Forms.ToolStripMenuItem("Files & Data")
+$SubLaneFiles = New-Object System.Windows.Forms.ToolStripMenuItem("Files && Data")
 $SubLaneFiles.ToolTipText = "Lane files, shares and data retrieval"
-$SubLanePower = New-Object System.Windows.Forms.ToolStripMenuItem("Power & Services")
+$SubLanePower = New-Object System.Windows.Forms.ToolStripMenuItem("Power && Services")
 $SubLanePower.ToolTipText = "Reboots, restarts, time sync and service tasks"
 
 $LaneToolsButton = & $New_Category_Button -Name "LaneToolsButton" -Text "Lane Tools" -X 275 -Accent $uiCategoryLane `

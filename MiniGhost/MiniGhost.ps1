@@ -17,7 +17,7 @@
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.3.9"
+$VersionNumber = "1.4.0"
 $VersionDate = "2026-10-30"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -449,6 +449,65 @@ $operationStatus = @{
 }
 
 # ===================================================================================================
+#                                 FUNCTION: Draw_MiniGhost_Logo
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Draws the MiniGhost logo (violet gradient disc with a white ghost) into the square (X, Y, Size)
+#   of any Graphics - the window icon and the header badge use it.
+#
+# Notes:
+#   - Coordinates are computed in expression mode and passed to .NET methods, never as
+#     'New-Object T($a + $b, ...)' (command mode turns that into $a + @($b, ...)).
+# ===================================================================================================
+
+function Draw_MiniGhost_Logo
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[System.Drawing.Graphics]$Graphics,
+		[float]$X = 0,
+		[float]$Y = 0,
+		[float]$Size = 32
+	)
+	
+	$Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+	$disc = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
+		[System.Drawing.RectangleF]::new($X, $Y, $Size, $Size),
+		[System.Drawing.Color]::FromArgb(126, 87, 214),
+		[System.Drawing.Color]::FromArgb(79, 70, 189),
+		[float]90)
+	$Graphics.FillEllipse($disc, $X, $Y, $Size, $Size)
+	$disc.Dispose()
+	
+	# Ghost: round head, straight sides, three scallops along the bottom
+	$w = $Size * 0.48
+	$h = $Size * 0.56
+	$left = $X + ($Size - $w) / 2
+	$top = $Y + $Size * 0.2
+	$bump = $w / 3
+	$ghost = New-Object System.Drawing.Drawing2D.GraphicsPath
+	$ghost.AddArc($left, $top, $w, $w, [float]180, [float]180)
+	$ghost.AddLine(($left + $w), ($top + $w / 2), ($left + $w), ($top + $h - $bump / 2))
+	for ($i = 0; $i -lt 3; $i++)
+	{
+		$ghost.AddArc(($left + $w - ($i + 1) * $bump), ($top + $h - $bump), $bump, $bump, [float]0, [float]180)
+	}
+	$ghost.CloseFigure()
+	$white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+	$Graphics.FillPath($white, $ghost)
+	$white.Dispose()
+	$ghost.Dispose()
+	
+	$eye = $Size * 0.085
+	$eyeY = $top + $w * 0.38
+	$dark = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(79, 70, 189))
+	$Graphics.FillEllipse($dark, ($left + $w * 0.3 - $eye / 2), $eyeY, $eye, ($eye * 1.3))
+	$Graphics.FillEllipse($dark, ($left + $w * 0.7 - $eye / 2), $eyeY, $eye, ($eye * 1.3))
+	$dark.Dispose()
+}
+
+# ===================================================================================================
 # 									FUNCTION: Get_NEW_Machine_Name
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -522,6 +581,7 @@ function Get_NEW_Machine_Name
 		$form.AcceptButton = $okBtn
 		$form.CancelButton = $cancelBtn
 		
+		Set_Modern_Dialog_Style -Form $form -PrimaryButton $okBtn
 		$dialogResult = $form.ShowDialog()
 		
 		# PS 5.1-safe: read textbox BEFORE disposing
@@ -610,7 +670,7 @@ function Get_NEW_Machine_Name
 						
 						if ($storeNumberLabel)
 						{
-							$storeNumberLabel.Text = "Store Number: $storePrefixFromName (updated)"
+							$storeNumberLabel.Text = "$storePrefixFromName (updated)"
 							$storeNumberLabel.Refresh()
 						}
 					}
@@ -704,6 +764,7 @@ function Get_NEW_Store_Number
 		$storeNumberForm.CancelButton = $cancelButton
 		
 		$script:MiniGhostTempDialogSelection = $null
+		Set_Modern_Dialog_Style -Form $storeNumberForm -PrimaryButton $okButton
 		[void]$storeNumberForm.ShowDialog()
 		
 		# IMPORTANT: read before Dispose (PS WinForms reliability)
@@ -754,6 +815,96 @@ function Get_NEW_Store_Number
 }
 
 # ===================================================================================================
+#                                 FUNCTION: New_MiniGhost_Action_Card
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Returns an action card for the main window: coloured dot, title, subtitle, and a host panel
+#   for its buttons (in the card's .Tag).
+#
+# Parameters:
+#   - Title, Subtitle [string]: card header text
+#   - Accent          [Color]: colour of the header dot
+# ===================================================================================================
+
+function New_MiniGhost_Action_Card
+{
+	param ([string]$Title, [string]$Subtitle, [System.Drawing.Color]$Accent)
+
+	$card = New_MiniGhost_Card -Margin (New-Object System.Windows.Forms.Padding(6))
+	$card.Dock = 'Fill'
+
+	# Buttons go into the host panel (11_Layout_And_Tooltips); the header docks above it.
+	# ($host is a read-only automatic variable - hence $buttonHost)
+	$buttonHost = New-Object System.Windows.Forms.Panel
+	$buttonHost.Dock = 'Fill'
+	$buttonHost.BackColor = [System.Drawing.Color]::White
+	$buttonHost.Padding = New-Object System.Windows.Forms.Padding(12, 4, 12, 12)
+	$card.Controls.Add($buttonHost)
+
+	$head = New-Object System.Windows.Forms.Panel
+	$head.Dock = 'Top'
+	$head.Height = 58
+	$head.BackColor = [System.Drawing.Color]::White
+	$head.Tag = $Accent
+	$head.add_Paint({
+			param ($s, $e)
+			try
+			{
+				$e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+				$dot = New-Object System.Drawing.SolidBrush($s.Tag)
+				$e.Graphics.FillEllipse($dot, 14, 16, 10, 10)
+				$dot.Dispose()
+			}
+			catch { }
+		})
+	$t = New-Object System.Windows.Forms.Label
+	$t.Text = $Title
+	$t.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 11)
+	$t.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+	$t.AutoSize = $true
+	$t.Location = New-Object System.Drawing.Point(30, 9)
+	$head.Controls.Add($t)
+	$st = New-Object System.Windows.Forms.Label
+	$st.Text = $Subtitle
+	$st.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+	$st.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 110)
+	$st.AutoSize = $true
+	$st.Location = New-Object System.Drawing.Point(31, 32)
+	$head.Controls.Add($st)
+	$card.Controls.Add($head)
+
+	$card.Tag = $buttonHost
+	return $card
+}
+
+# ===================================================================================================
+#                                    FUNCTION: New_MiniGhost_Card
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Returns a white card panel with a 1 px light border (main-window sections).
+# ===================================================================================================
+
+function New_MiniGhost_Card
+{
+	param ([System.Windows.Forms.Padding]$Margin)
+	$card = New-Object System.Windows.Forms.Panel
+	$card.BackColor = [System.Drawing.Color]::White
+	$card.Margin = $Margin
+	$card.Padding = New-Object System.Windows.Forms.Padding(1)
+	$card.add_Paint({
+			param ($s, $e)
+			try
+			{
+				$pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(229, 229, 229))
+				$e.Graphics.DrawRectangle($pen, 0, 0, ($s.Width - 1), ($s.Height - 1))
+				$pen.Dispose()
+			}
+			catch { }
+		})
+	return $card
+}
+
+# ===================================================================================================
 #                                  FUNCTION: Set_Label_Text
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -788,6 +939,162 @@ function Set_Label_Text
 	if ($ProcessEvents)
 	{
 		[System.Windows.Forms.Application]::DoEvents()
+	}
+}
+
+# ===================================================================================================
+#                                FUNCTION: Set_Modern_Button_Style
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Gives a button the flat MiniGhost look: Primary (filled accent), Secondary (white with a border),
+#   Action (main-window card button: left-aligned, coloured stripe) or Danger (Action in red text).
+#
+# Parameters:
+#   - Button      [Button]: the button to style
+#   - Kind        [string]: Primary | Secondary | Action | Danger (default Secondary)
+#   - AccentColor [Color]: stripe colour for Action / Danger (default accent blue)
+#
+# Notes:
+#   - Hover / pressed colours come from FlatAppearance, so no mouse handlers are needed.
+#   - The stripe is drawn by a Paint handler that reads the colour from the button's .Tag (handlers
+#     run in their own scope - nothing from this function is visible there).
+# ===================================================================================================
+
+function Set_Modern_Button_Style
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[System.Windows.Forms.Button]$Button,
+		[Parameter(Mandatory = $false)]
+		[ValidateSet('Primary', 'Secondary', 'Action', 'Danger')]
+		[string]$Kind = 'Secondary',
+		[Parameter(Mandatory = $false)]
+		[System.Drawing.Color]$AccentColor = [System.Drawing.Color]::FromArgb(0, 103, 192)
+	)
+	
+	$Button.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+	$Button.UseVisualStyleBackColor = $false
+	$Button.Cursor = [System.Windows.Forms.Cursors]::Hand
+	$Button.FlatAppearance.BorderSize = 1
+	
+	switch ($Kind)
+	{
+		'Primary'
+		{
+			$Button.BackColor = [System.Drawing.Color]::FromArgb(0, 103, 192)
+			$Button.ForeColor = [System.Drawing.Color]::White
+			$Button.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9.5)
+			$Button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(0, 103, 192)
+			$Button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(25, 117, 197)
+			$Button.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(0, 84, 158)
+		}
+		'Secondary'
+		{
+			$Button.BackColor = [System.Drawing.Color]::White
+			$Button.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+			$Button.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+			$Button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(209, 209, 209)
+			$Button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+			$Button.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(235, 235, 235)
+		}
+		default
+		{
+			# Action / Danger: card buttons in the main window
+			$Button.BackColor = [System.Drawing.Color]::White
+			$Button.ForeColor = if ($Kind -eq 'Danger') { [System.Drawing.Color]::FromArgb(196, 43, 28) } else { [System.Drawing.Color]::FromArgb(32, 32, 32) }
+			$Button.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 10)
+			$Button.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+			$Button.Padding = New-Object System.Windows.Forms.Padding(14, 0, 8, 0)
+			$Button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(225, 225, 225)
+			$Button.FlatAppearance.MouseOverBackColor = if ($Kind -eq 'Danger') { [System.Drawing.Color]::FromArgb(253, 240, 238) } else { [System.Drawing.Color]::FromArgb(240, 246, 253) }
+			$Button.FlatAppearance.MouseDownBackColor = if ($Kind -eq 'Danger') { [System.Drawing.Color]::FromArgb(249, 224, 220) } else { [System.Drawing.Color]::FromArgb(224, 236, 250) }
+			$Button.Tag = $AccentColor
+			$Button.Add_Paint({
+					param ($s, $e)
+					try
+					{
+						if ($s.Tag -is [System.Drawing.Color])
+						{
+							$stripe = New-Object System.Drawing.SolidBrush($s.Tag)
+							$e.Graphics.FillRectangle($stripe, 0, 0, 4, $s.Height)
+							$stripe.Dispose()
+						}
+					}
+					catch { }
+				})
+		}
+	}
+}
+
+# ===================================================================================================
+#                                FUNCTION: Set_Modern_Dialog_Style
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Restyles a dialog and every control in it to match the main window: white background, Segoe UI,
+#   flat buttons (the given primary button filled with the accent colour), bordered text boxes.
+#
+# Parameters:
+#   - Form          [Form]: the dialog
+#   - PrimaryButton [Button]: the default action (OK / Reboot Now); other buttons get Secondary
+#
+# Notes:
+#   - Layout is not changed: positions and sizes stay as the dialog defined them.
+#   - Monospaced fonts (report text) are kept.
+# ===================================================================================================
+
+function Set_Modern_Dialog_Style
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[System.Windows.Forms.Form]$Form,
+		[Parameter(Mandatory = $false)]
+		[System.Windows.Forms.Button]$PrimaryButton
+	)
+	
+	$Form.BackColor = [System.Drawing.Color]::White
+	$Form.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+	$Form.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+	if ($script:MiniGhostIcon) { try { $Form.Icon = $script:MiniGhostIcon; $Form.ShowIcon = $true } catch { } }
+	
+	$pending = New-Object System.Collections.Generic.Queue[System.Windows.Forms.Control]
+	foreach ($c in @($Form.Controls)) { $pending.Enqueue($c) }
+	while ($pending.Count -gt 0)
+	{
+		$c = $pending.Dequeue()
+		foreach ($child in @($c.Controls)) { $pending.Enqueue($child) }
+		try
+		{
+			if ($c -is [System.Windows.Forms.Button])
+			{
+				if ($PrimaryButton -and [object]::ReferenceEquals($c, $PrimaryButton)) { Set_Modern_Button_Style -Button $c -Kind Primary }
+				else { Set_Modern_Button_Style -Button $c -Kind Secondary }
+			}
+			elseif ($c -is [System.Windows.Forms.TextBox])
+			{
+				if ($c.Font.Name -notmatch '(?i)consolas|courier|lucida console') { $c.Font = New-Object System.Drawing.Font("Segoe UI", 10) }
+				if ($c.ReadOnly -and $c.BorderStyle -eq [System.Windows.Forms.BorderStyle]::None)
+				{
+					$c.BackColor = [System.Drawing.Color]::White
+				}
+				else
+				{
+					$c.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+				}
+			}
+			elseif ($c -is [System.Windows.Forms.Label])
+			{
+				$c.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+				$c.ForeColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+			}
+			elseif ($c -is [System.Windows.Forms.FlowLayoutPanel] -and $c.Dock -eq [System.Windows.Forms.DockStyle]::Bottom)
+			{
+				# button bar: light footer like Windows 11 dialogs
+				$c.BackColor = [System.Drawing.Color]::FromArgb(243, 243, 243)
+			}
+		}
+		catch { }
 	}
 }
 
@@ -920,6 +1227,7 @@ function Show_Action_Prompt_With_Log
 	
 	$promptForm.Controls.Add($messageTextBox)
 	$promptForm.Controls.Add($buttonPanel)
+	Set_Modern_Dialog_Style -Form $promptForm -PrimaryButton $primaryButton
 	[void]$promptForm.ShowDialog()
 	$selection = [string]$promptForm.Tag
 	$promptForm.Dispose()
@@ -1006,6 +1314,7 @@ function Show_Text_Report_Form
 	$reportForm.AcceptButton = $closeButton
 	$reportForm.Controls.Add($textBox)
 	$reportForm.Controls.Add($closeButton)
+	Set_Modern_Dialog_Style -Form $reportForm -PrimaryButton $closeButton
 	[void]$reportForm.ShowDialog()
 }
 
@@ -1382,7 +1691,7 @@ function Get_Store_Name_From_INI
 	# Update the storeNameLabel in the GUI
 	if (-not $SilentMode -and $storeNameLabel -ne $null)
 	{
-		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
+		$storeNameLabel.Text = "$($script:FunctionResults['StoreName'])"
 		$form.Refresh()
 		[System.Windows.Forms.Application]::DoEvents()
 	}
@@ -1434,7 +1743,7 @@ function Get_Store_Number_From_INI
 	# Update label ONLY if requested
 	if ($UpdateLabel -and (-not $SilentMode) -and $script:storeNumberLabel)
 	{
-		Set_Label_Text -Label $script:storeNumberLabel -Text "Store Number: $($script:FunctionResults['StoreNumber'])" -RefreshParent -ProcessEvents
+		Set_Label_Text -Label $script:storeNumberLabel -Text "$($script:FunctionResults['StoreNumber'])" -RefreshParent -ProcessEvents
 	}
 	
 	if ($foundStore) { return $foundStore }
@@ -3307,20 +3616,7 @@ function Update_SQL_Database
 			
 			if ($failedSqlCommands.Count -gt 0)
 			{
-				$failedCommandsForm = New-Object System.Windows.Forms.Form
-				$failedCommandsForm.Text = "Failed SQL Commands"
-				$failedCommandsForm.Size = New-Object System.Drawing.Size(600, 400)
-				$failedCommandsForm.StartPosition = "CenterParent"
-				
-				$textBox = New-Object System.Windows.Forms.TextBox
-				$textBox.Multiline = $true
-				$textBox.ReadOnly = $true
-				$textBox.ScrollBars = "Vertical"
-				$textBox.Dock = "Fill"
-				$textBox.Text = $failedSqlCommands -join "`r`n`r`n"
-				
-				$failedCommandsForm.Controls.Add($textBox)
-				[void]$failedCommandsForm.ShowDialog()
+				Show_Text_Report_Form -Title "Failed SQL Commands" -Text ($failedSqlCommands -join "`r`n`r`n") -Width 640 -Height 420
 			}
 		}
 	}
@@ -5152,7 +5448,7 @@ function Invoke_Machine_Name_Change_Workflow
 			Rename-Computer -NewName $machineContext.MachineName -Force -ErrorAction Stop
 			$renamePerformed = $true
 			
-			Set_Label_Text -Label $script:machineNameLabel -Text "The machine name will change from: $env:COMPUTERNAME to $script:newMachineName" -RefreshParent -ProcessEvents
+			Set_Label_Text -Label $script:machineNameLabel -Text "$env:COMPUTERNAME -> $script:newMachineName (after reboot)" -RefreshParent -ProcessEvents
 			Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Successful" -Message "Machine name changed successfully." -Details "Machine name changed to '$script:newMachineName'."
 			
 			Remove_Old_XZ_Folders -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
@@ -5259,7 +5555,7 @@ function Invoke_Machine_Name_Change_Workflow
 			if ($syncResult.Success)
 			{
 				Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Successful" -Message "Machine settings synced successfully." -Details "Requested machine name already matched '$script:newMachineName'; full INI + SQL sync was run without renaming."
-				Set_Label_Text -Label $script:machineNameLabel -Text "Current Machine Name: $script:newMachineName (sync refreshed)" -RefreshParent
+				Set_Label_Text -Label $script:machineNameLabel -Text "$script:newMachineName (sync refreshed)" -RefreshParent
 				Show_App_Message -Text "Full INI + SQL sync completed for '$script:newMachineName'. No reboot is required because the machine name did not change." -Title "Sync Complete" -Icon Information | Out-Null
 			}
 			else
@@ -5593,24 +5889,70 @@ $oldMachineName = $currentMachineName
 Write-Host "Script started" -ForegroundColor Green
 
 # ===================================================================================================
-#                                       SECTION: Initialize GUI Components
+#                                  SECTION: GUI - Main Window
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Creates and initializes the main graphical user interface (GUI) form and its components.
+#   First of the GUI files (src\GUI\01..11 run in order and share script-scope variables): the main
+#   $form with its header bar, the "Current Info" tiles, the three action cards the buttons go into
+#   (filled by 11_Layout_And_Tooltips) and the footer.
+#
+# Variables (read by the later GUI files and by functions that update the window):
+#   - $form, $script:MainForm, $toolTip, $script:MiniGhostIcon
+#   - $script:machineNameLabel, $script:storeNameLabel, $script:storeNumberLabel,
+#     $script:ipAddressLabel        value labels of the info tiles (text = the value only)
+#   - $script:CardIdentity, $script:CardDatabase, $script:CardSystem   button hosts of the cards
+#   - $ui* colours
+#
+# Notes:
+#   - Dialog functions name their own window $form: anything that can run while a dialog is open
+#     (handlers, timers) must use $script:MainForm.
+#   - Paint handlers only use their sender ($s) and colours stored on .Tag - they run in their
+#     own scope.
 # ===================================================================================================
 
-# Create the main form (resizable, DPI-aware)
+# ---- Palette (same family as the TBS Maintenance Script) -----------------------------------------
+$uiBg = [System.Drawing.Color]::FromArgb(243, 243, 243)
+$uiCard = [System.Drawing.Color]::White
+$uiBorder = [System.Drawing.Color]::FromArgb(229, 229, 229)
+$uiText = [System.Drawing.Color]::FromArgb(32, 32, 32)
+$uiTextMuted = [System.Drawing.Color]::FromArgb(110, 110, 110)
+$uiAccentIdentity = [System.Drawing.Color]::FromArgb(0, 103, 192)  # blue
+$uiAccentDatabase = [System.Drawing.Color]::FromArgb(126, 87, 214) # violet
+$uiAccentSystem = [System.Drawing.Color]::FromArgb(230, 126, 34)   # orange
+
+# ---- Main form -----------------------------------------------------------------------------------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Created by Alex_C.T | Version: $VersionNumber | Revised: $VersionDate"
+$script:MainForm = $form
+$form.Text = "MiniGhost $VersionNumber"
 $form.StartPosition = "CenterScreen"
 $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
-$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-$form.MinimumSize = New-Object System.Drawing.Size(760, 520)
-$form.Size = New-Object System.Drawing.Size(880, 580)
+$form.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+$form.MinimumSize = New-Object System.Drawing.Size(820, 560)
+$form.Size = New-Object System.Drawing.Size(940, 620)
 $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
 $form.MaximizeBox = $true
 $form.MinimizeBox = $true
-$form.BackColor = [System.Drawing.Color]::White
+$form.BackColor = $uiBg
+$form.ForeColor = $uiText
+try
+{
+	$prop = $form.GetType().GetProperty("DoubleBuffered", [System.Reflection.BindingFlags] "Instance,NonPublic")
+	if ($prop) { $prop.SetValue($form, $true, $null) }
+}
+catch { }
+
+# Window / taskbar icon drawn from the logo
+$script:MiniGhostIcon = $null
+try
+{
+	$iconBmp = New-Object System.Drawing.Bitmap(32, 32)
+	$iconG = [System.Drawing.Graphics]::FromImage($iconBmp)
+	Draw_MiniGhost_Logo -Graphics $iconG -X 1 -Y 1 -Size 30
+	$iconG.Dispose()
+	$script:MiniGhostIcon = [System.Drawing.Icon]::FromHandle($iconBmp.GetHicon())
+	$form.Icon = $script:MiniGhostIcon
+}
+catch { }
 
 # Global tooltip provider (per-button tooltips)
 $toolTip = New-Object System.Windows.Forms.ToolTip
@@ -5619,113 +5961,237 @@ $toolTip.InitialDelay = 350
 $toolTip.ReshowDelay = 150
 $toolTip.ShowAlways = $true
 
-# ---------------------------------------------------------------------------------------------------
-# Main layout (Banner + Info + Actions)
-# ---------------------------------------------------------------------------------------------------
+# ---- Root layout: header / info / actions / footer -----------------------------------------------
 $mainLayout = New-Object System.Windows.Forms.TableLayoutPanel
 $mainLayout.Dock = 'Fill'
 $mainLayout.ColumnCount = 1
-$mainLayout.RowCount = 3
-$mainLayout.Padding = New-Object System.Windows.Forms.Padding(12)
-$mainLayout.Margin  = New-Object System.Windows.Forms.Padding(0)
+$mainLayout.RowCount = 4
+$mainLayout.Padding = New-Object System.Windows.Forms.Padding(0)
+$mainLayout.Margin = New-Object System.Windows.Forms.Padding(0)
 $mainLayout.GrowStyle = [System.Windows.Forms.TableLayoutPanelGrowStyle]::FixedSize
-
-[void]$mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
-[void]$mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+[void]$mainLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+[void]$mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 72)))
+[void]$mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 92)))
 [void]$mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-
+[void]$mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 30)))
 $form.Controls.Add($mainLayout)
 
-# Banner Label
+# ---- Header bar ----------------------------------------------------------------------------------
+$headerPanel = New-Object System.Windows.Forms.Panel
+$headerPanel.Dock = 'Fill'
+$headerPanel.Margin = New-Object System.Windows.Forms.Padding(0)
+$headerPanel.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 36)
+$headerPanel.add_Paint({
+		param ($s, $e)
+		try
+		{
+			$rect = New-Object System.Drawing.Rectangle(0, 0, $s.Width, $s.Height)
+			$bg = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, [System.Drawing.Color]::FromArgb(26, 26, 32), [System.Drawing.Color]::FromArgb(48, 44, 66), [System.Drawing.Drawing2D.LinearGradientMode]::Horizontal)
+			$e.Graphics.FillRectangle($bg, $rect)
+			$bg.Dispose()
+			$stripe = New-Object System.Drawing.Rectangle(0, 0, 4, $s.Height)
+			$sb = New-Object System.Drawing.Drawing2D.LinearGradientBrush($stripe, [System.Drawing.Color]::FromArgb(126, 87, 214), [System.Drawing.Color]::FromArgb(0, 120, 215), [System.Drawing.Drawing2D.LinearGradientMode]::Vertical)
+			$e.Graphics.FillRectangle($sb, $stripe)
+			$sb.Dispose()
+		}
+		catch { }
+	})
+
+$logoPanel = New-Object System.Windows.Forms.Panel
+$logoPanel.Location = New-Object System.Drawing.Point(20, 16)
+$logoPanel.Size = New-Object System.Drawing.Size(40, 40)
+$logoPanel.BackColor = [System.Drawing.Color]::Transparent
+$logoPanel.add_Paint({
+		param ($s, $e)
+		try { Draw_MiniGhost_Logo -Graphics $e.Graphics -X 1 -Y 1 -Size ([float]([Math]::Min($s.Width, $s.Height) - 2)) }
+		catch { }
+	})
+$headerPanel.Controls.Add($logoPanel)
+
 $bannerLabel = New-Object System.Windows.Forms.Label
-$bannerLabel.Text = "PowerShell Script - Mini Ghost"
-$bannerLabel.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
+$bannerLabel.Text = "MiniGhost"
+$bannerLabel.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 16)
+$bannerLabel.ForeColor = [System.Drawing.Color]::White
+$bannerLabel.BackColor = [System.Drawing.Color]::Transparent
 $bannerLabel.AutoSize = $true
-$bannerLabel.TextAlign = 'MiddleCenter'
-$bannerLabel.Dock = 'Fill'
-$bannerLabel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
+$bannerLabel.Location = New-Object System.Drawing.Point(70, 10)
+$headerPanel.Controls.Add($bannerLabel)
 
-$mainLayout.Controls.Add($bannerLabel, 0, 0)
+$bannerSubLabel = New-Object System.Windows.Forms.Label
+$bannerSubLabel.Text = "Re-identify a cloned TBS machine: name, store, network, INIs and SQL"
+$bannerSubLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$bannerSubLabel.ForeColor = [System.Drawing.Color]::FromArgb(185, 185, 200)
+$bannerSubLabel.BackColor = [System.Drawing.Color]::Transparent
+$bannerSubLabel.AutoSize = $true
+$bannerSubLabel.Location = New-Object System.Drawing.Point(72, 42)
+$headerPanel.Controls.Add($bannerSubLabel)
 
-# Display current machine name and store number in labels
-$script:machineNameLabel = New-Object System.Windows.Forms.Label
-$script:machineNameLabel.Text = "Current Machine Name: $currentMachineName"
-$script:machineNameLabel.AutoSize = $true
-$script:machineNameLabel.Margin = New-Object System.Windows.Forms.Padding(6, 6, 6, 2)
+# Right side: node role + version pills
+$pillPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+$pillPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::RightToLeft
+$pillPanel.WrapContents = $false
+$pillPanel.AutoSize = $true
+$pillPanel.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$pillPanel.BackColor = [System.Drawing.Color]::Transparent
+$pillPanel.Anchor = [System.Windows.Forms.AnchorStyles]'Top,Right'
+$pillPanel.Location = New-Object System.Drawing.Point(600, 23)
 
-$script:storeNameLabel = New-Object System.Windows.Forms.Label
-$script:storeNameLabel.Text = "Store Name: $storeName"
-$script:storeNameLabel.AutoSize = $true
-$script:storeNameLabel.Margin = New-Object System.Windows.Forms.Padding(6, 2, 6, 2)
+$versionPill = New-Object System.Windows.Forms.Label
+$versionPill.Text = "v$VersionNumber"
+$versionPill.AutoSize = $true
+$versionPill.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 8.5)
+$versionPill.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 230)
+$versionPill.BackColor = [System.Drawing.Color]::FromArgb(62, 60, 80)
+$versionPill.Padding = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
+$versionPill.Margin = New-Object System.Windows.Forms.Padding(6, 0, 0, 0)
 
-$script:storeNumberLabel = New-Object System.Windows.Forms.Label
-$script:storeNumberLabel.Text = "Store Number: $currentStoreNumber"
-$script:storeNumberLabel.AutoSize = $true
-$script:storeNumberLabel.Margin = New-Object System.Windows.Forms.Padding(6, 2, 6, 2)
+$rolePill = New-Object System.Windows.Forms.Label
+$roleText = switch -Regex ([string]$script:NodeRole)
+{
+	'^(?i)Lane$' { 'LANE'; break }
+	'^(?i)StoreServer$' { 'STORE SERVER'; break }
+	'^(?i)HostServer$' { 'HOST SERVER'; break }
+	default { 'ROLE UNKNOWN' }
+}
+$rolePill.Text = $roleText
+$rolePill.AutoSize = $true
+$rolePill.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 8.5)
+$rolePill.ForeColor = [System.Drawing.Color]::White
+$rolePill.BackColor = switch -Regex ([string]$script:NodeRole)
+{
+	'^(?i)Lane$' { [System.Drawing.Color]::FromArgb(0, 103, 192); break }
+	'^(?i)(StoreServer|HostServer)$' { [System.Drawing.Color]::FromArgb(16, 124, 64); break }
+	default { [System.Drawing.Color]::FromArgb(110, 110, 120) }
+}
+$rolePill.Padding = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
+$rolePill.Margin = New-Object System.Windows.Forms.Padding(6, 0, 0, 0)
+$toolTip.SetToolTip($rolePill, "Node role from Startup.ini DBNAME (LANESQL = lane, STORESQL = store server, HOSTSQL = host server). It decides which machine-name formats are accepted.")
 
-# Display current IP address in a label
-$currentIP = if ($currentConfigs -and $currentConfigs.Count -gt 0) { $currentConfigs[0].IPv4Address.IPAddress }
-else { "IP Not Found" }
+$pillPanel.Controls.Add($versionPill)
+$pillPanel.Controls.Add($rolePill)
+$headerPanel.Controls.Add($pillPanel)
+# keep the pills right-aligned when the window is resized (Anchor alone does not move an AutoSize flow panel reliably)
+$headerPanel.add_Resize({
+		param ($s, $e)
+		try
+		{
+			foreach ($c in @($s.Controls))
+			{
+				if ($c -is [System.Windows.Forms.FlowLayoutPanel]) { $c.Left = [Math]::Max(300, $s.ClientSize.Width - $c.Width - 20); $c.Top = [int](($s.ClientSize.Height - $c.Height) / 2) }
+			}
+		}
+		catch { }
+	})
+$mainLayout.Controls.Add($headerPanel, 0, 0)
 
-$script:ipAddressLabel = New-Object System.Windows.Forms.Label
-$script:ipAddressLabel.Text = "Current IP Address: $currentIP"
-$script:ipAddressLabel.AutoSize = $true
-$script:ipAddressLabel.Margin = New-Object System.Windows.Forms.Padding(6, 2, 6, 6)
-
-# Info group
-$infoGroup = New-Object System.Windows.Forms.GroupBox
-$infoGroup.Text = "Current Info"
-$infoGroup.Dock = 'Top'
-$infoGroup.AutoSize = $true
-$infoGroup.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
-$infoGroup.Padding = New-Object System.Windows.Forms.Padding(10)
-$infoGroup.Margin  = New-Object System.Windows.Forms.Padding(0, 0, 0, 12)
+# ---- Current Info: four tiles (caption + value) --------------------------------------------------
+$infoCard = New_MiniGhost_Card -Margin (New-Object System.Windows.Forms.Padding(16, 14, 16, 0))
+$infoCard.Dock = 'Fill'
 
 $infoLayout = New-Object System.Windows.Forms.TableLayoutPanel
 $infoLayout.Dock = 'Fill'
-$infoLayout.ColumnCount = 1
-$infoLayout.RowCount = 4
-$infoLayout.AutoSize = $true
-$infoLayout.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+$infoLayout.ColumnCount = 4
+$infoLayout.RowCount = 2
 $infoLayout.Margin = New-Object System.Windows.Forms.Padding(0)
+$infoLayout.Padding = New-Object System.Windows.Forms.Padding(8, 10, 8, 8)
+$infoLayout.BackColor = [System.Drawing.Color]::White
+foreach ($pct in @(25, 25, 22, 28)) { [void]$infoLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, $pct))) }
+[void]$infoLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 20)))
+[void]$infoLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$infoCard.Controls.Add($infoLayout)
 
-$infoLayout.Controls.Add($machineNameLabel, 0, 0)
-$infoLayout.Controls.Add($storeNameLabel, 0, 1)
-$infoLayout.Controls.Add($storeNumberLabel, 0, 2)
-$infoLayout.Controls.Add($ipAddressLabel, 0, 3)
+$currentIP = if ($currentConfigs -and @($currentConfigs).Count -gt 0) { [string](@(@($currentConfigs)[0].IPv4Address)[0].IPAddress) }
+else { "Not found" }
+if ([string]::IsNullOrWhiteSpace($currentIP)) { $currentIP = "Not found" }
 
-$infoGroup.Controls.Add($infoLayout)
+$infoTiles = @(
+	@{ Caption = 'MACHINE NAME'; Value = [string]$currentMachineName; Var = 'machineNameLabel' },
+	@{ Caption = 'STORE NAME'; Value = [string]$storeName; Var = 'storeNameLabel' },
+	@{ Caption = 'STORE NUMBER'; Value = [string]$currentStoreNumber; Var = 'storeNumberLabel' },
+	@{ Caption = 'IP ADDRESS'; Value = $currentIP; Var = 'ipAddressLabel' }
+)
+for ($col = 0; $col -lt $infoTiles.Count; $col++)
+{
+	$tile = $infoTiles[$col]
+	$cap = New-Object System.Windows.Forms.Label
+	$cap.Text = $tile.Caption
+	$cap.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 8)
+	$cap.ForeColor = $uiTextMuted
+	$cap.Dock = 'Fill'
+	$cap.Margin = New-Object System.Windows.Forms.Padding(10, 0, 6, 0)
+	$cap.TextAlign = [System.Drawing.ContentAlignment]::BottomLeft
+	$infoLayout.Controls.Add($cap, $col, 0)
+	
+	$val = New-Object System.Windows.Forms.Label
+	$val.Text = $(if ([string]::IsNullOrWhiteSpace($tile.Value)) { 'N/A' } else { $tile.Value })
+	$val.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 12)
+	$val.ForeColor = $uiText
+	$val.Dock = 'Fill'
+	$val.AutoSize = $false
+	$val.AutoEllipsis = $true
+	$val.Margin = New-Object System.Windows.Forms.Padding(10, 0, 6, 0)
+	$val.TextAlign = [System.Drawing.ContentAlignment]::TopLeft
+	$infoLayout.Controls.Add($val, $col, 1)
+	Set-Variable -Scope Script -Name $tile.Var -Value $val
+}
+# the full text is in the tooltip when a long value is cut with "..."
+foreach ($v in @($script:machineNameLabel, $script:storeNameLabel, $script:storeNumberLabel, $script:ipAddressLabel))
+{
+	$v.add_TextChanged({ param ($s, $e) try { $toolTip.SetToolTip($s, $s.Text) } catch { } })
+	$toolTip.SetToolTip($v, $v.Text)
+}
+$mainLayout.Controls.Add($infoCard, 0, 1)
 
-$mainLayout.Controls.Add($infoGroup, 0, 1)
-
-# ---------------------------------------------------------------------------------------------------
-# Actions group (buttons live here; populated after button creation)
-# ---------------------------------------------------------------------------------------------------
-$actionsGroup = New-Object System.Windows.Forms.GroupBox
-$actionsGroup.Text = "Actions"
-$actionsGroup.Dock = 'Fill'
-$actionsGroup.Padding = New-Object System.Windows.Forms.Padding(10)
-$actionsGroup.Margin  = New-Object System.Windows.Forms.Padding(0)
-
+# ---- Actions: three cards (Identity / Database / System) -----------------------------------------
 $actionsLayout = New-Object System.Windows.Forms.TableLayoutPanel
 $actionsLayout.Dock = 'Fill'
 $actionsLayout.ColumnCount = 3
-$actionsLayout.RowCount = 3
-$actionsLayout.Margin = New-Object System.Windows.Forms.Padding(0)
+$actionsLayout.RowCount = 1
+$actionsLayout.Margin = New-Object System.Windows.Forms.Padding(10, 8, 10, 6)
 $actionsLayout.Padding = New-Object System.Windows.Forms.Padding(0)
 $actionsLayout.GrowStyle = [System.Windows.Forms.TableLayoutPanelGrowStyle]::FixedSize
+foreach ($pct in @(33.33, 33.33, 33.34)) { [void]$actionsLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, $pct))) }
+[void]$actionsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$mainLayout.Controls.Add($actionsLayout, 0, 2)
 
-[void]$actionsLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 33.33)))
-[void]$actionsLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 33.33)))
-[void]$actionsLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 33.34)))
+$cardIdentityPanel = New_MiniGhost_Action_Card -Title 'Identity' -Subtitle 'Machine name, store number, network' -Accent $uiAccentIdentity
+$cardDatabasePanel = New_MiniGhost_Action_Card -Title 'Database' -Subtitle 'SQL tables for this store / node' -Accent $uiAccentDatabase
+$cardSystemPanel = New_MiniGhost_Action_Card -Title 'System' -Subtitle 'Registry, results, restart' -Accent $uiAccentSystem
+$actionsLayout.Controls.Add($cardIdentityPanel, 0, 0)
+$actionsLayout.Controls.Add($cardDatabasePanel, 1, 0)
+$actionsLayout.Controls.Add($cardSystemPanel, 2, 0)
+$script:CardIdentity = $cardIdentityPanel.Tag
+$script:CardDatabase = $cardDatabasePanel.Tag
+$script:CardSystem = $cardSystemPanel.Tag
 
-[void]$actionsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 33.33)))
-[void]$actionsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 33.33)))
-[void]$actionsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 33.34)))
+# ---- Footer --------------------------------------------------------------------------------------
+$footerPanel = New-Object System.Windows.Forms.Panel
+$footerPanel.Dock = 'Fill'
+$footerPanel.Margin = New-Object System.Windows.Forms.Padding(0)
+$footerPanel.BackColor = [System.Drawing.Color]::FromArgb(235, 235, 238)
 
-$actionsGroup.Controls.Add($actionsLayout)
+$footerLeft = New-Object System.Windows.Forms.Label
+$footerLeft.Dock = 'Left'
+$footerLeft.AutoSize = $false
+$footerLeft.Width = 360
+$footerLeft.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$footerLeft.Padding = New-Object System.Windows.Forms.Padding(16, 0, 0, 0)
+$footerLeft.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+$footerLeft.ForeColor = $uiTextMuted
+$footerLeft.Text = "Every action asks before it changes anything.  Show Summary lists the results."
 
-$mainLayout.Controls.Add($actionsGroup, 0, 2)
+$footerRight = New-Object System.Windows.Forms.Label
+$footerRight.Dock = 'Fill'
+$footerRight.AutoSize = $false
+$footerRight.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+$footerRight.Padding = New-Object System.Windows.Forms.Padding(0, 0, 16, 0)
+$footerRight.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+$footerRight.ForeColor = $uiTextMuted
+$footerRight.Text = "Created by Alex_C.T   |   Version $VersionNumber   |   Revised $VersionDate   |   PowerShell $PowerShellVersion"
+
+$footerPanel.Controls.Add($footerRight)
+$footerPanel.Controls.Add($footerLeft)
+$mainLayout.Controls.Add($footerPanel, 0, 3)
 
 # ===================================================================================================
 #									SECTION: GUI Buttons
@@ -5813,6 +6279,7 @@ $configureNetworkButton.Add_Click({
 			
 			$adapterForm.AcceptButton = $okButton
 			$adapterForm.Controls.AddRange(@($label, $listBox, $okButton))
+			Set_Modern_Dialog_Style -Form $adapterForm -PrimaryButton $okButton
 			$adapterForm.ShowDialog() | Out-Null
 			
 			$selectedIndex = $listBox.SelectedIndex
@@ -5907,6 +6374,7 @@ $configureNetworkButton.Add_Click({
 				$ipForm.AcceptButton = $okButton
 				
 				$ipForm.Controls.AddRange(@($label, $textBox, $okButton))
+				Set_Modern_Dialog_Style -Form $ipForm -PrimaryButton $okButton
 				$dialogResult = $ipForm.ShowDialog()
 				
 				if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK)
@@ -5940,7 +6408,7 @@ $configureNetworkButton.Add_Click({
 								if ($LASTEXITCODE -ne 0) { throw ("netsh exit code {0}: {1}" -f $LASTEXITCODE, (($netshOutput | Out-String).Trim())) }
 								
 								# Update the label
-								$ipAddressLabel.Text = "IP Address changed from: $currentIP to $ipAddress"
+								$ipAddressLabel.Text = "$currentIP -> $ipAddress"
 								$operationStatus["IPConfiguration"].Status = "Successful"
 								$operationStatus["IPConfiguration"].Message = "Static IP configuration applied."
 								$operationStatus["IPConfiguration"].Details = "Adapter: $adapterName, IP: $ipAddress"
@@ -6040,7 +6508,7 @@ $updateStoreNumberButton.Add_Click({
 		if ($iniOk)
 		{
 			$script:newStoreNumber = $newStoreNumberInput
-			Set_Label_Text -Label $storeNumberLabel -Text "Store Number changed from: $oldStoreNumber to $script:newStoreNumber"
+			Set_Label_Text -Label $storeNumberLabel -Text "$oldStoreNumber -> $script:newStoreNumber"
 			Set_Operation_Status -OperationStatus $operationStatus -Key "StoreNumberChange" -Status "Successful" -Message "Store number updated in INIs." -Details "Store number changed to '$script:newStoreNumber'."
 			Show_App_Message -Text "Store number successfully changed to '$script:newStoreNumber'." -Title "Store Number Updated" -Icon Information | Out-Null
 		}
@@ -6266,24 +6734,49 @@ $form.add_FormClosing({
 		}
 	})
 
-# Apply consistent styling + layout behavior for all main action buttons
-$mainButtons = @(
-	$updateStoreNumberButton, $configureNetworkButton, $changeMachineNameButton,
-	$truncateTablesButton, $registryCleanupButton, $updateSQLDatabaseButton,
-	$summaryButton, $rebootButton
-)
+# ===================================================================================================
+#                              SECTION: GUI - Button Layout and Tooltips
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Styles the eight action buttons (created with their click handlers in 02..09) and places them
+#   in the three cards of 01_Main_Form, then sets their tooltips.
+# ===================================================================================================
 
-foreach ($btn in $mainButtons)
+# Card -> buttons, top to bottom; Danger buttons get red text
+$actionGroups = @(
+	@{ Host = $script:CardIdentity; Accent = $uiAccentIdentity; Buttons = @($changeMachineNameButton, $updateStoreNumberButton, $configureNetworkButton) },
+	@{ Host = $script:CardDatabase; Accent = $uiAccentDatabase; Buttons = @($updateSQLDatabaseButton, $truncateTablesButton) },
+	@{ Host = $script:CardSystem; Accent = $uiAccentSystem; Buttons = @($registryCleanupButton, $summaryButton, $rebootButton) }
+)
+$dangerButtons = @($truncateTablesButton, $rebootButton)
+
+foreach ($group in $actionGroups)
 {
-	$btn.Dock = 'Fill'
-	$btn.Margin = New-Object System.Windows.Forms.Padding(8, 6, 8, 6)
-	$btn.MinimumSize = New-Object System.Drawing.Size(0, 42)
-	$btn.UseVisualStyleBackColor = $true
+	# Dock=Top stacks the LAST added control at the top, so add bottom-up
+	$ordered = @($group.Buttons)
+	[array]::Reverse($ordered)
+	foreach ($btn in $ordered)
+	{
+		$kind = if ($dangerButtons -contains $btn) { 'Danger' } else { 'Action' }
+		Set_Modern_Button_Style -Button $btn -Kind $kind -AccentColor $group.Accent
+		$btn.Dock = 'Fill'
+		$btn.Margin = New-Object System.Windows.Forms.Padding(0)
+		$btn.MinimumSize = New-Object System.Drawing.Size(0, 0)
+		
+		# wrapper = button + 8 px gap below it (docked controls ignore Margin)
+		$slot = New-Object System.Windows.Forms.Panel
+		$slot.Dock = 'Top'
+		$slot.Height = 54
+		$slot.BackColor = [System.Drawing.Color]::White
+		$slot.Padding = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
+		$slot.Controls.Add($btn)
+		$group.Host.Controls.Add($slot)
+	}
 }
 
 # Tooltips (one per button)
-$toolTip.SetToolTip($updateStoreNumberButton, "Update the store number (startup.ini) and refresh the on-screen store info. If supported, also syncs related SQL/INI values.")
-$toolTip.SetToolTip($configureNetworkButton, "Configure NIC settings (IP/Subnet/Gateway/DNS) using store/lane conventions and validate the current network configuration.")
+$toolTip.SetToolTip($updateStoreNumberButton, "Change the store number in Startup.ini, Server.ini, SMSStart.ini, System.ini, INFO_*901_WIN.INI and SmsHttps.INI, then update STD_TAB / TER_TAB 901.")
+$toolTip.SetToolTip($configureNetworkButton, "Switch the active network adapter to DHCP, or to a static IP in the gateway's subnet (the address is pinged first).")
 $changeMachineNameToolTipText = "Rename this computer or re-enter the current machine name to force a full INI + SQL sync."
 if ($script:NodeRole -match '^(?i)Lane$')
 {
@@ -6298,26 +6791,11 @@ else
 	$changeMachineNameToolTipText += " Accepted formats depend on node role and are shown in the rename dialog."
 }
 $toolTip.SetToolTip($changeMachineNameButton, $changeMachineNameToolTipText)
-$toolTip.SetToolTip($truncateTablesButton, "Run SQL cleanup by truncating selected tables (maintenance routine).")
-$toolTip.SetToolTip($registryCleanupButton, "Remove 'GT' registry values (after confirmation) to clean up old configuration leftovers.")
-$toolTip.SetToolTip($updateSQLDatabaseButton, "Update SQL records to reflect the new machine name/store number for this node.")
-$toolTip.SetToolTip($summaryButton, "View a session summary of which operations succeeded, failed, or were skipped.")
-$toolTip.SetToolTip($rebootButton, "Restart the computer (optional cleanup before reboot).")
-
-# Add buttons to the Actions grid (3 columns x 3 rows)
-# Row 1
-$actionsLayout.Controls.Add($changeMachineNameButton, 0, 0)
-$actionsLayout.Controls.Add($configureNetworkButton,   1, 0)
-$actionsLayout.Controls.Add($updateStoreNumberButton, 2, 0)
-
-# Row 2 (middle cell intentionally left empty to preserve the classic 3-column layout)
-$actionsLayout.Controls.Add($truncateTablesButton,     0, 1)
-$actionsLayout.Controls.Add($registryCleanupButton,    2, 1)
-
-# Row 3
-$actionsLayout.Controls.Add($updateSQLDatabaseButton,  0, 2)
-$actionsLayout.Controls.Add($summaryButton,            1, 2)
-$actionsLayout.Controls.Add($rebootButton,             2, 2)
+$toolTip.SetToolTip($truncateTablesButton, "Empty the transaction, report and sales tables (TRS_*, RPT_*, SAL_*, REC_*, INV_* ...) - asks first. Cannot be undone.")
+$toolTip.SetToolTip($registryCleanupButton, "Remove the 'GT*' counter values under Store Management\Counters (after confirmation).")
+$toolTip.SetToolTip($updateSQLDatabaseButton, "Bring TER_TAB, STO_TAB, LNK_TAB, RUN_TAB and STD_TAB in line with this machine's name and store number.")
+$toolTip.SetToolTip($summaryButton, "See which operations of this session succeeded, failed or were skipped.")
+$toolTip.SetToolTip($rebootButton, "Restart the computer (asks first). Needed after a machine rename.")
 
 # ===================================================================================================
 #                                       SECTION: Show the Form
@@ -6353,6 +6831,22 @@ exit
 #                                     CHANGELOG
 #
 #######################################################################################################
+
+# ===================================================================================================
+#  v1.4.0  -  2026-10-30
+#  New look: same buttons and behaviour, modern window and dialogs
+# ===================================================================================================
+#
+#  [CHG]  Main window: dark header with the MiniGhost logo, node-role and version badges; the
+#         current machine name, store name, store number and IP as four tiles; the eight actions
+#         in three cards (Identity / Database / System) - Truncate Tables and Reboot in red; a
+#         footer with author, version and PowerShell version. Window and taskbar icon.
+#  [CHG]  Dialogs (store number, machine name, network, prompts, reports) use the same flat style
+#         with the default button highlighted. The failed-SQL list uses the report window.
+#  [CHG]  Tile values show the value only ("POS005 -> POS006 (after reboot)"); a cut-off value is
+#         shown in full on hover. Button tooltips say what each action changes.
+#  [NEW]  tests\Smoke.ps1 runs MiniGhost off-screen (read-only start) and saves screenshots of
+#         the window and dialogs; CI runs it on every push.
 
 # ===================================================================================================
 #  v1.3.9  -  2026-10-30
