@@ -10,8 +10,7 @@
 	  - opens the main window off-screen
 	  - optionally renders it and the input / report dialogs (each dialog is opened, drawn and
 	    cancelled - no button handler ever runs)
-	  - prints counts and the de-duplicated runtime errors, then exits the child process (so the
-	    "Are you sure you want to exit?" prompt never appears)
+	  - prints counts and the de-duplicated runtime errors, then exits the child process
 
 .PARAMETER ScriptPath
 	The built script. Default: MiniGhost\MiniGhost.ps1.
@@ -132,7 +131,7 @@ $script:__mainTimer.Add_Tick({
 			__SmokeDialog 'report' { Show_Text_Report_Form -Title 'Operation Summary' -Text ("StoreNumberChange: Successful`r`n  Message: Store number updated in INIs.`r`n`r`nMachineNameChange: Pending`r`n") -Width 600 -Height 400 }
 		}
 
-		# Report to a file and leave: closing the window would raise the exit confirmation
+		# Report to a file and leave the child process directly
 		__SmokeReport
 		[Environment]::Exit(0)
 	})

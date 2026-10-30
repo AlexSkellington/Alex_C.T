@@ -17,7 +17,7 @@
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.4.0"
+$VersionNumber = "1.4.1"
 $VersionDate = "2026-10-30"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell

@@ -17,7 +17,7 @@
 # ===================================================================================================
 
 # Script build version (cunsult with Alex_C.T before changing this)
-$VersionNumber = "1.4.0"
+$VersionNumber = "1.4.1"
 $VersionDate = "2026-10-30"
 
 # Retrieve Major, Minor, Build, and Revision version numbers of PowerShell
@@ -6715,28 +6715,11 @@ $rebootButton.Add_Click({
 ############################################################################
 # Handle form closing event (X button)
 ############################################################################
+# Closes straight away (no "Are you sure?" prompt since v1.4.1): every action already asks before it
+# changes anything, and nothing runs in the background that closing could cut off.
 $form.add_FormClosing({
-		# Confirmation message box to confirm exit
-		$confirmResult = [System.Windows.Forms.MessageBox]::Show(
-			"Are you sure you want to exit?",
-			"Confirm Exit",
-			[System.Windows.Forms.MessageBoxButtons]::YesNo,
-			[System.Windows.Forms.MessageBoxIcon]::Question
-		)
-		
-		# If the user clicks No, cancel the form close action
-		if ($confirmResult -ne [System.Windows.Forms.DialogResult]::Yes)
-		{
-			$_.Cancel = $true
-		}
-		else
-		{
-			# Proceed with form closing and perform actions
-			# Write-Log "Form is closing. Performing cleanup." "green"
-			
-			# Clean Temp Folder
-			[void](Remove_MiniGhost_Temp_Copies -TempPath $TempDir)
-		}
+		# Clean the temp copies of MiniGhost
+		[void](Remove_MiniGhost_Temp_Copies -TempPath $TempDir)
 	})
 
 # ===================================================================================================
@@ -6836,6 +6819,14 @@ exit
 #                                     CHANGELOG
 #
 #######################################################################################################
+
+# ===================================================================================================
+#  v1.4.1  -  2026-10-30
+#  Closes without asking
+# ===================================================================================================
+#
+#  [CHG]  Closing the window no longer asks "Are you sure you want to exit?" - it closes at once
+#         (and still removes MiniGhost's temp copies).
 
 # ===================================================================================================
 #  v1.4.0  -  2026-10-30
