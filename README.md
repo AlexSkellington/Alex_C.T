@@ -5,7 +5,7 @@ PowerShell tools for TBS / SMS store systems (Windows PowerShell 5.1).
 | Tool | What it is | Run it |
 |---|---|---|
 | **TBS Maintenance Script** | WinForms app for the store server: server DB maintenance and backups, lane tools (SQL protocols, transactions, table pumps, time sync, DB repair), scale tools (Bizerba / Ishida, BMS, ScaleCommApp), node tools (ping, reboot, hosts, file copy) and general utilities. | `irm https://bit.ly/TBS_Maintenance_Script \| iex` (elevated PowerShell), or the packaged `TBS_Maintenance_Script_V<version>.exe` |
-| **MiniGhost** | Separate tool (`MiniGhost/MiniGhost.ps1`). | `irm https://bit.ly/MiniGhost \| iex` |
+| **MiniGhost** | WinForms tool that re-identifies a cloned machine: machine name, store number, network, storeman INIs, the SQL store/terminal tables, transaction tables, GT* registry counters. | `irm https://bit.ly/MiniGhost \| iex` |
 
 ## Repository layout
 
@@ -17,7 +17,8 @@ TBS_Maintenance/        the TBS Maintenance Script - edit here
   docs/                 FUNCTIONS.md (generated index), ARCHITECTURE.md
   dist/                 build output (git-ignored) - published as a GitHub Release asset
   CHANGELOG.txt
-MiniGhost/              MiniGhost (separate project) - edit MiniGhost/MiniGhost.ps1
+MiniGhost/              MiniGhost - edit MiniGhost/src, build to MiniGhost/MiniGhost.ps1 (committed)
+  src/ build/ docs/     same layout as TBS_Maintenance (see MiniGhost/README.md)
 TBS_Maintenace_Script_V2.ps1   launcher for bit.ly/TBS_Maintenance_Script  - do not edit
 MiniGhost_V38.ps1              launcher for bit.ly/MiniGhost               - do not edit
 CLAUDE.md               working rules for this repository (also for AI assistants)

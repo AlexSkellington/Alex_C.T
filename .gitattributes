@@ -8,3 +8,9 @@ TBS_Maintenace_Script_V2.ps1    text eol=lf
 TBS_Maintenance/**              text eol=crlf
 TBS_Maintenance/**/*.png        binary
 TBS_Maintenance/**/*.ico        binary
+
+# MiniGhost sources: Windows line endings in the working copy. The built MiniGhost/MiniGhost.ps1 is
+# committed (the bit.ly launcher downloads it from main) and stays byte-for-byte as Build.ps1 wrote
+# it (ASCII, CRLF), so it is not converted.
+MiniGhost/**                    text eol=crlf
+MiniGhost/MiniGhost.ps1         -text

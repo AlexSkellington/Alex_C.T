@@ -1,0 +1,13 @@
+#######################################################################################################
+#
+#                                     CHANGELOG
+#
+#######################################################################################################
+
+# ===================================================================================================
+#  v1.3.8  -  2026-04-15
+#  Sources split into one file per function (MiniGhost\src) with a build step - no behaviour change
+# ===================================================================================================
+#
+#  [CHG]  MiniGhost.ps1 is now built from MiniGhost\src by MiniGhost\build\Build.ps1 (same code,
+#         functions grouped by category). Delete_Files/Folders is named Delete_Files_And_Folders.

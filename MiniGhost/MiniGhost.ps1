@@ -449,1077 +449,181 @@ $operationStatus = @{
 }
 
 # ===================================================================================================
-#                                FUNCTION: Set_Operation_Status
+# 									FUNCTION: Get_NEW_Machine_Name
 # ---------------------------------------------------------------------------------------------------
 # Description:
-# Central helper to update the shared operation-status table only when the requested key exists.
+# Prompts user for a new machine name via GUI.
+# Supports:
+#   - Classic: PREFIX + 3 digits, with optional hyphen before digits (e.g. LANE003, POS-001, SERVER-001)
+#   - Prefixed: optional 1-4 digit store + PREFIX + optional hyphen + 3 digits (e.g. 0231LANE006, 0231POS-001)
+# If prefixed format used -> offers to sync store number
+# Returns uppercase validated name or $null if cancelled
 # ===================================================================================================
 
-function Set_Operation_Status
+function Get_NEW_Machine_Name
 {
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $false)]
-		[hashtable]$OperationStatus,
-		[Parameter(Mandatory = $true)]
-		[string]$Key,
-		[Parameter(Mandatory = $true)]
-		[string]$Status,
-		[Parameter(Mandatory = $false)]
-		[string]$Message = "",
-		[Parameter(Mandatory = $false)]
-		[string]$Details = ""
-	)
-	
-	if ($OperationStatus -and $OperationStatus.ContainsKey($Key))
+	while ($true)
 	{
-		$OperationStatus[$Key].Status = $Status
-		$OperationStatus[$Key].Message = $Message
-		$OperationStatus[$Key].Details = $Details
-	}
-}
-
-# ===================================================================================================
-#                                  FUNCTION: Set_Label_Text
-# ---------------------------------------------------------------------------------------------------
-# Description:
-# Updates a WinForms label and optionally refreshes its parent layout.
-# ===================================================================================================
-
-function Set_Label_Text
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $false)]
-		$Label,
-		[Parameter(Mandatory = $true)]
-		[string]$Text,
-		[Parameter(Mandatory = $false)]
-		[switch]$RefreshParent,
-		[Parameter(Mandatory = $false)]
-		[switch]$ProcessEvents
-	)
-	
-	if (-not $Label) { return }
-	
-	$Label.Text = $Text
-	$Label.Refresh()
-	
-	if ($RefreshParent -and $Label.Parent)
-	{
-		$Label.Parent.PerformLayout()
-		$Label.Parent.Refresh()
-	}
-	
-	if ($ProcessEvents)
-	{
-		[System.Windows.Forms.Application]::DoEvents()
-	}
-}
-
-# ===================================================================================================
-#                                 FUNCTION: Show_App_Message
-# ---------------------------------------------------------------------------------------------------
-# Description:
-# Small wrapper around WinForms MessageBox to reduce repeated enum boilerplate.
-# ===================================================================================================
-
-function Show_App_Message
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$Text,
-		[Parameter(Mandatory = $true)]
-		[string]$Title,
-		[Parameter(Mandatory = $false)]
-		[ValidateSet('OK', 'OKCancel', 'YesNo', 'YesNoCancel')]
-		[string]$Buttons = 'OK',
-		[Parameter(Mandatory = $false)]
-		[ValidateSet('None', 'Information', 'Warning', 'Error', 'Question', 'Asterisk', 'Exclamation', 'Hand', 'Stop')]
-		[string]$Icon = 'Information'
-	)
-	
-	switch -Regex ($Icon)
-	{
-		'^(?i)Asterisk$'    { $Icon = 'Information'; break }
-		'^(?i)Exclamation$' { $Icon = 'Warning'; break }
-		'^(?i)Hand$'        { $Icon = 'Error'; break }
-		'^(?i)Stop$'        { $Icon = 'Error'; break }
-	}
-	
-	$buttonValue = [System.Enum]::Parse([System.Windows.Forms.MessageBoxButtons], $Buttons)
-	$iconValue = [System.Enum]::Parse([System.Windows.Forms.MessageBoxIcon], $Icon)
-	return [System.Windows.Forms.MessageBox]::Show($Text, $Title, $buttonValue, $iconValue)
-}
-
-function Show_Text_Report_Form
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$Title,
-		[Parameter(Mandatory = $true)]
-		[string]$Text,
-		[Parameter(Mandatory = $false)]
-		[int]$Width = 720,
-		[Parameter(Mandatory = $false)]
-		[int]$Height = 500
-	)
-	
-	$reportForm = New-Object System.Windows.Forms.Form
-	$reportForm.Text = $Title
-	$reportForm.Size = New-Object System.Drawing.Size($Width, $Height)
-	$reportForm.StartPosition = "CenterParent"
-	$reportForm.ShowInTaskbar = $false
-	
-	$closeButton = New-Object System.Windows.Forms.Button
-	$closeButton.Text = "Close"
-	$closeButton.Dock = "Bottom"
-	$closeButton.Height = 34
-	$closeButton.Add_Click({ $reportForm.Close() })
-	
-	$textBox = New-Object System.Windows.Forms.TextBox
-	$textBox.Multiline = $true
-	$textBox.ReadOnly = $true
-	$textBox.ScrollBars = "Vertical"
-	$textBox.Dock = "Fill"
-	$textBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-	$textBox.Text = $Text
-	
-	$reportForm.AcceptButton = $closeButton
-	$reportForm.Controls.Add($textBox)
-	$reportForm.Controls.Add($closeButton)
-	[void]$reportForm.ShowDialog()
-}
-
-function Show_Action_Prompt_With_Log
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$Text,
-		[Parameter(Mandatory = $true)]
-		[string]$Title,
-		[Parameter(Mandatory = $false)]
-		[string]$PrimaryButtonText = "OK",
-		[Parameter(Mandatory = $false)]
-		[string]$SecondaryButtonText,
-		[Parameter(Mandatory = $false)]
-		[string]$LogText,
-		[Parameter(Mandatory = $false)]
-		[string]$LogTitle = "Details"
-	)
-	
-	$promptForm = New-Object System.Windows.Forms.Form
-	$promptForm.Text = $Title
-	$promptForm.Size = New-Object System.Drawing.Size(620, 230)
-	$promptForm.StartPosition = "CenterParent"
-	$promptForm.FormBorderStyle = "FixedDialog"
-	$promptForm.MaximizeBox = $false
-	$promptForm.MinimizeBox = $false
-	$promptForm.ShowInTaskbar = $false
-	
-	$messageTextBox = New-Object System.Windows.Forms.TextBox
-	$messageTextBox.Multiline = $true
-	$messageTextBox.ReadOnly = $true
-	$messageTextBox.BorderStyle = "None"
-	$messageTextBox.BackColor = $promptForm.BackColor
-	$messageTextBox.TabStop = $false
-	$messageTextBox.Text = $Text
-	$messageTextBox.SetBounds(16, 16, 570, 110)
-	
-	$buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-	$buttonPanel.Dock = "Bottom"
-	$buttonPanel.Height = 48
-	$buttonPanel.FlowDirection = "RightToLeft"
-	$buttonPanel.WrapContents = $false
-	$buttonPanel.Padding = New-Object System.Windows.Forms.Padding(0, 6, 12, 6)
-	
-	$selection = "Closed"
-	
-	$primaryButton = New-Object System.Windows.Forms.Button
-	$primaryButton.Text = $PrimaryButtonText
-	$primaryButton.AutoSize = $true
-	$primaryButton.Add_Click({
-			$selection = "Primary"
-			$promptForm.Close()
-		})
-	$buttonPanel.Controls.Add($primaryButton)
-	$promptForm.AcceptButton = $primaryButton
-	$promptForm.CancelButton = $primaryButton
-	
-	if (-not [string]::IsNullOrWhiteSpace($SecondaryButtonText))
-	{
-		$secondaryButton = New-Object System.Windows.Forms.Button
-		$secondaryButton.Text = $SecondaryButtonText
-		$secondaryButton.AutoSize = $true
-		$secondaryButton.Add_Click({
-				$selection = "Secondary"
-				$promptForm.Close()
-			})
-		$buttonPanel.Controls.Add($secondaryButton)
-		$promptForm.CancelButton = $secondaryButton
-	}
-	
-	if (-not [string]::IsNullOrWhiteSpace($LogText))
-	{
-		$viewLogButton = New-Object System.Windows.Forms.Button
-		$viewLogButton.Text = "View Log"
-		$viewLogButton.AutoSize = $true
-		$viewLogButton.Add_Click({
-				Show_Text_Report_Form -Title $LogTitle -Text $LogText
-			})
-		$buttonPanel.Controls.Add($viewLogButton)
-	}
-	
-	$promptForm.Controls.Add($messageTextBox)
-	$promptForm.Controls.Add($buttonPanel)
-	[void]$promptForm.ShowDialog()
-	return $selection
-}
-
-# ===================================================================================================
-#                              FUNCTION: Get_Effective_Machine_Name
-# ---------------------------------------------------------------------------------------------------
-# Description:
-# Returns the pending/new machine name when one exists; otherwise returns the current computer name.
-# ===================================================================================================
-
-function Get_Effective_Machine_Name
-{
-	[CmdletBinding()]
-	param ()
-	
-	if ($script:newMachineName -and -not [string]::IsNullOrWhiteSpace([string]$script:newMachineName))
-	{
-		return [string]$script:newMachineName
-	}
-	
-	return $env:COMPUTERNAME
-}
-
-# ===================================================================================================
-#                               FUNCTION: Get_Database_Connection_String
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Searches for the Startup.ini file in specified locations, extracts the DBNAME value,
-#   constructs the connection string, and stores it in a script-level hashtable.
-# ===================================================================================================
-
-function Get_Database_Connection_String
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $false)]
-		[string]$StartupIniPath
-	)
-	
-	if (-not $script:FunctionResults)
-	{
-		$script:FunctionResults = @{ }
-	}
-	
-	$effectiveStartupIniPath = $StartupIniPath
-	if ([string]::IsNullOrWhiteSpace($effectiveStartupIniPath))
-	{
-		$effectiveStartupIniPath = $startupIniPath
-	}
-	
-	if (-not $effectiveStartupIniPath)
-	{
-		return
-	}
-	
-	# Read the Startup.ini file
-	try
-	{
-		$content = Get-Content -Path $effectiveStartupIniPath -ErrorAction Stop
-		
-		# Extract DBSERVER
-		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
-		if ($dbServerLine)
+		$nodeRole = "Unknown"
+		if (-not [string]::IsNullOrWhiteSpace([string]$script:NodeRole))
 		{
-			$dbServer = $dbServerLine -replace '^DBSERVER=', ''
-			$dbServer = $dbServer.Trim()
-			if (-not $dbServer)
-			{
-				$dbServer = "localhost"
-			}
+			$nodeRole = ([string]$script:NodeRole).Trim()
+		}
+		
+		$machineNamePromptText = if ($nodeRole -match '^(?i)(StoreServer|HostServer)$')
+		{
+			"Server examples:`nSERVER001  -  SERVER-001  -  0231SERVER001`nRe-enter the current machine name to force a full INI + SQL sync."
+		}
+		elseif ($nodeRole -match '^(?i)Lane$')
+		{
+			"Lane examples:`nPOS001  -  POS-001  -  LN026001  -  0384LANE001  -  001`nRe-enter the current machine name to force a full INI + SQL sync."
 		}
 		else
 		{
-			$dbServer = "localhost"
+			"Lane examples:`nPOS001  -  POS-001  -  LN026001  -  0384LANE001  -  001`nServer examples:`nSERVER001  -  SERVER-001  -  0231SERVER001`nRe-enter the current machine name to force a full INI + SQL sync."
+		}
+		$promptLineCount = ($machineNamePromptText -split "`n").Count
+		$labelHeight = [Math]::Max(54, (18 * $promptLineCount) + 6)
+		$formClientWidth = 430
+		$formClientHeight = $labelHeight + 112
+		
+		$form = New-Object System.Windows.Forms.Form
+		$form.Text = "Enter New Machine Name"
+		$form.ClientSize = New-Object System.Drawing.Size($formClientWidth, $formClientHeight)
+		$form.StartPosition = "CenterParent"
+		$form.FormBorderStyle = 'FixedDialog'
+		$form.MaximizeBox = $false
+		$form.MinimizeBox = $false
+		$form.ShowInTaskbar = $false
+		
+		$label = New-Object System.Windows.Forms.Label
+		$label.Text = $machineNamePromptText
+		$label.Location = New-Object System.Drawing.Point(10, 15)
+		$label.Size = New-Object System.Drawing.Size(($formClientWidth - 20), $labelHeight)
+		$label.AutoSize = $false
+		
+		$textBox = New-Object System.Windows.Forms.TextBox
+		$textBox.Location = New-Object System.Drawing.Point(10, ($label.Bottom + 10))
+		$textBox.Size = New-Object System.Drawing.Size(($formClientWidth - 20), 22)
+		
+		$okBtn = New-Object System.Windows.Forms.Button
+		$okBtn.Text = "OK"
+		$okBtn.Location = New-Object System.Drawing.Point(([int](($formClientWidth / 2) - 75)), ($textBox.Bottom + 14))
+		$okBtn.Size = New-Object System.Drawing.Size(70, 28)
+		$okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
+		
+		$cancelBtn = New-Object System.Windows.Forms.Button
+		$cancelBtn.Text = "Cancel"
+		$cancelBtn.Location = New-Object System.Drawing.Point(($okBtn.Right + 15), $okBtn.Top)
+		$cancelBtn.Size = New-Object System.Drawing.Size(70, 28)
+		$cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+		
+		$form.Controls.AddRange(@($label, $textBox, $okBtn, $cancelBtn))
+		$form.AcceptButton = $okBtn
+		$form.CancelButton = $cancelBtn
+		
+		$dialogResult = $form.ShowDialog()
+		
+		# PS 5.1-safe: read textbox BEFORE disposing
+		$userInputRaw = $textBox.Text
+		$form.Dispose()
+		
+		if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
+		{
+			return $null
 		}
 		
-		# Extract DBNAME
-		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
-		if ($dbNameLine)
+		$userInput = $userInputRaw
+		if ($null -eq $userInput) { $userInput = "" }
+		$userInput = $userInput.Trim().ToUpper()
+		
+		if ([string]::IsNullOrEmpty($userInput))
 		{
-			$dbName = $dbNameLine -replace '^DBNAME=', ''
-			$dbName = $dbName.Trim()
-			if (-not $dbName)
-			{
-				return
-			}
+			[void][System.Windows.Forms.MessageBox]::Show("Machine name cannot be empty.", "Error")
+			continue
+		}
+		
+		if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
+		
+		$currentMachineForStyle = Get_Effective_Machine_Name
+		$currentStore = $null
+		if ($script:FunctionResults.ContainsKey('StoreNumber') -and $script:FunctionResults['StoreNumber'])
+		{
+			$currentStore = ($script:FunctionResults['StoreNumber'].ToString()).Trim()
 		}
 		else
 		{
-			return
-		}
-	}
-	catch
-	{
-		return
-	}
-	
-	$configuredDbServer = $dbServer
-	$resolvedRuntimeDbServer = $configuredDbServer
-	$connectionString = "Server=$configuredDbServer;Database=$dbName;Integrated Security=True;Application Name=MiniGhost;"
-	$candidateServers = New-Object System.Collections.Generic.List[string]
-	$addCandidate = {
-		param (
-			[string]$Candidate
-		)
-		
-		if ([string]::IsNullOrWhiteSpace($Candidate))
-		{
-			return
+			$currentStore = Get_Store_Number_From_INI
+			if ($currentStore) { $currentStore = ($currentStore.ToString()).Trim() }
 		}
 		
-		$normalizedCandidate = $Candidate.Trim()
-		if ([string]::IsNullOrWhiteSpace($normalizedCandidate))
+		$machineContext = Get_Machine_Name_Context -MachineName $userInput -CurrentMachineName $currentMachineForStyle
+		if (-not $machineContext.Success)
 		{
-			return
+			[void][System.Windows.Forms.MessageBox]::Show(
+				$machineContext.ErrorMessage,
+				"Invalid Machine Name",
+				[System.Windows.Forms.MessageBoxButtons]::OK,
+				[System.Windows.Forms.MessageBoxIcon]::Error
+			)
+			continue
 		}
 		
-		foreach ($existingCandidate in $candidateServers)
+		$normalizedName = $machineContext.MachineName
+		$storePrefixFromName = $machineContext.StorePrefix
+		$currentStoreComparable = $null
+		if ($currentStore -match '^\d{3,4}$')
 		{
-			if ([string]::Equals($existingCandidate, $normalizedCandidate, [System.StringComparison]::OrdinalIgnoreCase))
+			$currentStoreComparable = [int]$currentStore
+		}
+		
+		if ($storePrefixFromName -and ($storePrefixFromName -match '^\d{3,4}$'))
+		{
+			$storePrefixComparable = [int]$storePrefixFromName
+			if (($null -eq $currentStoreComparable) -or ($storePrefixComparable -ne $currentStoreComparable))
 			{
-				return
-			}
-		}
-		
-		[void]$candidateServers.Add($normalizedCandidate)
-	}
-	
-	$configuredHost = $configuredDbServer
-	$instanceName = $null
-	if ($configuredDbServer -match '\\')
-	{
-		$configuredParts = $configuredDbServer.Split('\', 2)
-		$configuredHost = $configuredParts[0].Trim()
-		if ($configuredParts.Count -ge 2 -and -not [string]::IsNullOrWhiteSpace($configuredParts[1]))
-		{
-			$instanceName = $configuredParts[1].Trim()
-		}
-	}
-	
-	$localAliases = @('localhost', '.', '(local)')
-	if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME))
-	{
-		$localAliases += $env:COMPUTERNAME
-	}
-	
-	$isConfiguredLocal = $false
-	foreach ($alias in $localAliases)
-	{
-		if ([string]::Equals($configuredHost, $alias, [System.StringComparison]::OrdinalIgnoreCase))
-		{
-			$isConfiguredLocal = $true
-			break
-		}
-	}
-	
-	if ($isConfiguredLocal)
-	{
-		& $addCandidate $configuredDbServer
-	}
-	
-	if ($instanceName)
-	{
-		foreach ($alias in $localAliases)
-		{
-			& $addCandidate ("{0}\{1}" -f $alias, $instanceName)
-		}
-	}
-	else
-	{
-		foreach ($alias in $localAliases)
-		{
-			& $addCandidate $alias
-		}
-		
-		foreach ($registryPath in @(
-				'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL',
-				'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Microsoft SQL Server\Instance Names\SQL'
-			))
-		{
-			if (-not (Test-Path $registryPath)) { continue }
-			
-			try
-			{
-				$itemProps = Get-ItemProperty -Path $registryPath -ErrorAction Stop
-				foreach ($prop in $itemProps.PSObject.Properties)
+				$displayStore = $currentStore
+				if ([string]::IsNullOrEmpty($displayStore)) { $displayStore = "UNKNOWN" }
+				
+				$sync = [System.Windows.Forms.MessageBox]::Show(
+					"Machine name has store prefix '$storePrefixFromName',`nbut current store is '$displayStore'.`n`nUpdate store number to '$storePrefixFromName'?",
+					"Store Number Mismatch",
+					[System.Windows.Forms.MessageBoxButtons]::YesNo,
+					[System.Windows.Forms.MessageBoxIcon]::Question
+				)
+				
+				if ($sync -eq [System.Windows.Forms.DialogResult]::Yes)
 				{
-					if ($prop.Name -in @('PSPath', 'PSParentPath', 'PSChildName', 'PSDrive', 'PSProvider'))
+					$iniParams = @{
+						newStoreNumber = $storePrefixFromName
+						MachineName    = $normalizedName
+						OldMachineName = $currentMachineForStyle
+					}
+					if ($currentStore -match '^\d{3,4}$') { $iniParams["OldStoreNumber"] = $currentStore }
+					
+					$success = Update_INIs @iniParams
+					
+					if ($success)
 					{
+						$script:newStoreNumber = $storePrefixFromName
+						$script:FunctionResults['StoreNumber'] = $storePrefixFromName
+						
+						if ($storeNumberLabel)
+						{
+							$storeNumberLabel.Text = "Store Number: $storePrefixFromName (updated)"
+							$storeNumberLabel.Refresh()
+						}
+					}
+					else
+					{
+						[void][System.Windows.Forms.MessageBox]::Show("Failed to update store number in INI.", "Error")
 						continue
 					}
-					
-					if ([string]::IsNullOrWhiteSpace($prop.Name))
-					{
-						continue
-					}
-					
-					$instanceCandidate = $prop.Name.Trim()
-					foreach ($alias in $localAliases)
-					{
-						& $addCandidate ("{0}\{1}" -f $alias, $instanceCandidate)
-					}
 				}
 			}
-			catch { }
 		}
-	}
-	
-	& $addCandidate $configuredDbServer
-	
-	foreach ($candidateServer in $candidateServers)
-	{
-		$testConnection = $null
-		try
-		{
-			$testConnectionString = "Server=$candidateServer;Database=$dbName;Integrated Security=True;Connect Timeout=3;Application Name=MiniGhost;"
-			$testConnection = New-Object System.Data.SqlClient.SqlConnection($testConnectionString)
-			$testConnection.Open()
-			
-			$resolvedRuntimeDbServer = $candidateServer
-			$connectionString = "Server=$candidateServer;Database=$dbName;Integrated Security=True;Application Name=MiniGhost;"
-			break
-		}
-		catch { }
-		finally
-		{
-			if ($testConnection)
-			{
-				$testConnection.Close()
-				$testConnection.Dispose()
-			}
-		}
-	}
-	
-	# Store configured and runtime database context in the FunctionResults hashtable
-	$script:FunctionResults['ConfiguredDBSERVER'] = $configuredDbServer
-	$script:FunctionResults['DBSERVER'] = $configuredDbServer
-	$script:FunctionResults['RuntimeDBSERVER'] = $resolvedRuntimeDbServer
-	$script:FunctionResults['DBNAME'] = $dbName
-	$script:FunctionResults['ConnectionString'] = $connectionString
-}
-
-# ===================================================================================================
-#                          FUNCTION: Ensure_Database_Connection_Context
-# ---------------------------------------------------------------------------------------------------
-# Description:
-# Lazily refreshes DBSERVER / DBNAME / ConnectionString from Startup.ini so SQL-specific work can
-# initialize only when needed instead of front-loading that work during GUI startup.
-# ===================================================================================================
-
-function Ensure_Database_Connection_Context
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $false)]
-		[string]$StartupIniPath
-	)
-	
-	if (-not $script:FunctionResults)
-	{
-		$script:FunctionResults = @{ }
-	}
-	
-	$connectionStringValue = $null
-	if ($script:FunctionResults.ContainsKey('ConnectionString') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['ConnectionString']))
-	{
-		$connectionStringValue = [string]$script:FunctionResults['ConnectionString']
-	}
-	
-	$dbNameValue = $null
-	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['DBNAME']))
-	{
-		$dbNameValue = [string]$script:FunctionResults['DBNAME']
-	}
-	
-	$dbServerValue = $null
-	if ($script:FunctionResults.ContainsKey('DBSERVER') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['DBSERVER']))
-	{
-		$dbServerValue = [string]$script:FunctionResults['DBSERVER']
-	}
-	
-	if ([string]::IsNullOrWhiteSpace($connectionStringValue) -or [string]::IsNullOrWhiteSpace($dbNameValue) -or [string]::IsNullOrWhiteSpace($dbServerValue))
-	{
-		Get_Database_Connection_String -StartupIniPath $StartupIniPath
 		
-		if ($script:FunctionResults.ContainsKey('ConnectionString') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['ConnectionString']))
-		{
-			$connectionStringValue = [string]$script:FunctionResults['ConnectionString']
-		}
-	}
-	
-	$script:connectionString = $connectionStringValue
-	return $connectionStringValue
-}
-
-# ===================================================================================================
-#                                       FUNCTION: Get_Store_Number_From_INI
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Retrieves the store number from the startup.ini file.
-# ===================================================================================================
-
-function Get_Store_Number_From_INI
-{
-	[CmdletBinding()]
-	param (
-		[switch]$UpdateLabel
-	)
-	
-	# Ensure FunctionResults exists (PS 5.1 safe)
-	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
-	
-	# Default/fallback
-	$script:FunctionResults['StoreNumber'] = "N/A"
-	$foundStore = $null
-	
-	if (Test-Path $startupIniPath)
-	{
-		try
-		{
-			$iniContent = Get-Content $startupIniPath -ErrorAction Stop
-			
-			foreach ($line in $iniContent)
-			{
-				if ($line -match '^\s*STORE\s*=\s*(\d{3,4})\s*$')
-				{
-					$foundStore = $matches[1]
-					$script:FunctionResults['StoreNumber'] = $foundStore
-					break
-				}
-			}
-		}
-		catch
-		{
-			Write-Warning ("Failed to read startup.ini: {0}" -f $_)
-		}
-	}
-	
-	# Update label ONLY if requested
-	if ($UpdateLabel -and (-not $SilentMode) -and $script:storeNumberLabel)
-	{
-		Set_Label_Text -Label $script:storeNumberLabel -Text "Store Number: $($script:FunctionResults['StoreNumber'])" -RefreshParent -ProcessEvents
-	}
-	
-	if ($foundStore) { return $foundStore }
-	return $null
-}
-
-# ===================================================================================================
-#                                      FUNCTION: Get_Store_Name_From_INI
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Retrieves the store name from the system.ini file.
-#   Stores the result in $script:FunctionResults['StoreName'].
-# ===================================================================================================
-
-function Get_Store_Name_From_INI
-{
-	param (
-		[string]$INIPath = $SystemIniPath
-	)
-	
-	# Initialize StoreName
-	$script:FunctionResults['StoreName'] = "N/A"
-	
-	if (Test-Path $INIPath)
-	{
-		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | ForEach-Object {
-			$_.Line.Split('=')[1].Trim()
-		}
-		if ($storeName)
-		{
-			$script:FunctionResults['StoreName'] = $storeName
-			# Write-Log "Store name found in system.ini: $storeName" "green"
-		}
-		else
-		{
-			# Write-Log "Store name not found in system.ini." "yellow"
-		}
-	}
-	else
-	{
-		# Write-Log "INI file not found: $INIPath" "yellow"
-	}
-	
-	# Update the storeNameLabel in the GUI
-	if (-not $SilentMode -and $storeNameLabel -ne $null)
-	{
-		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
-		$form.Refresh()
-		[System.Windows.Forms.Application]::DoEvents()
-	}
-}
-
-# ===================================================================================================
-#                                       FUNCTION: Get_Active_IP_Config
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Retrieves the active IP configuration for network adapters that are up and have valid IPv4 addresses.
-#   Optimized for performance by prefiltering and minimizing pipeline overhead.
-#   Attempts WMI first for compatibility, falls back to NetAdapter methods if WMI fails.
-# ===================================================================================================
-
-function Get_Active_IP_Config
-{
-	try
-	{
-		# WMI attempt: Get default route from Win32_IP4RouteTable
-		$defaultRoute = Get-WmiObject -Class Win32_IP4RouteTable -ErrorAction Stop |
-		Where-Object { $_.Destination -eq '0.0.0.0' -and $_.Mask -eq '0.0.0.0' -and $_.NextHop -ne '0.0.0.0' } |
-		Sort-Object -Property Metric1 |
-		Select-Object -First 1
-		
-		if ($defaultRoute -and $defaultRoute.InterfaceIndex)
-		{
-			$idx = [int]$defaultRoute.InterfaceIndex
-			
-			# Check adapter status via Win32_NetworkAdapter (NetConnectionStatus 2 = Connected)
-			$ad = Get-WmiObject -Class Win32_NetworkAdapter -Filter "DeviceID = $idx" -ErrorAction SilentlyContinue
-			if ($ad -and $ad.NetConnectionStatus -eq 2)
-			{
-				# Get config via Win32_NetworkAdapterConfiguration
-				$wmiCfg = Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter "Index = $idx" -ErrorAction SilentlyContinue
-				if ($wmiCfg -and $wmiCfg.IPEnabled -and $wmiCfg.DefaultIPGateway)
-				{
-					# Filter for valid IPv4 (non-APIPA)
-					$validIPs = $wmiCfg.IPAddress | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' -and $_ -notmatch '^169\.254\.' }
-					if ($validIPs)
-					{
-						# Construct a custom object similar to Get-NetIPConfiguration for consistency
-						$ipv4Address = [PSCustomObject]@{
-							IPAddress    = $validIPs[0]
-							PrefixLength = ($wmiCfg.IPSubnet | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' })[0] | ForEach-Object {
-								[int]([math]::Log([uint32]::MaxValue -bxor ([ipaddress]$_).Address, 2)) + 1
-							}
-						}
-						$cfg = [PSCustomObject]@{
-							InterfaceAlias	   = $ad.NetConnectionID
-							InterfaceIndex	   = $idx
-							IPv4Address	       = $ipv4Address
-							IPv4DefaultGateway = [PSCustomObject]@{ NextHop = $wmiCfg.DefaultIPGateway[0] }
-							DNSServer		   = $wmiCfg.DNSServerSearchOrder
-							# Add more properties if needed for parity
-						}
-						return @($cfg) # Return as array for consistent .Count / [0]
-					}
-				}
-			}
-		}
-	}
-	catch
-	{
-		# Ignore and fall back to original methods
-	}
-	
-	# =========================================================================================
-	# FALLBACK: Original approach (NetRoute/NetAdapter/NetIPConfiguration)
-	# =========================================================================================
-	
-	try
-	{
-		$defaultRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction Stop |
-		Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } |
-		Sort-Object -Property RouteMetric, InterfaceMetric |
-		Select-Object -First 1
-		
-		if ($defaultRoute -and $defaultRoute.InterfaceIndex)
-		{
-			$idx = [int]$defaultRoute.InterfaceIndex
-			
-			# Ensure adapter is Up (do NOT restrict to -Physical here; active interface might be Wi-Fi/VPN/etc.)
-			$ad = Get-NetAdapter -InterfaceIndex $idx -ErrorAction SilentlyContinue
-			if ($ad -and $ad.Status -eq 'Up')
-			{
-				# Make sure there is at least one valid IPv4 (non-APIPA) on this interface
-				$ipRow = Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-				Where-Object { $_.IPAddress -and $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -ne '0.0.0.0' } |
-				Select-Object -First 1
-				
-				if ($ipRow)
-				{
-					$cfg = Get-NetIPConfiguration -InterfaceIndex $idx -ErrorAction SilentlyContinue
-					if ($cfg -and $cfg.IPv4Address)
-					{
-						# Validate IPv4Address (can be array). If any non-APIPA exists, return it.
-						$hasValid = $false
-						foreach ($addr in @($cfg.IPv4Address))
-						{
-							if ($addr -and $addr.IPAddress -and ($addr.IPAddress -notlike '169.254.*'))
-							{
-								$hasValid = $true
-								break
-							}
-						}
-						
-						if ($hasValid)
-						{
-							return @($cfg) # return as array for consistent .Count / [0]
-						}
-					}
-				}
-			}
-		}
-	}
-	catch
-	{
-		# ignore and fall back
-	}
-	
-	# =========================================================================================
-	# SECONDARY FALLBACK: Physical + Up adapters -> Get-NetIPConfiguration
-	# =========================================================================================
-	
-	# Prefilter by adapter status to reduce objects early
-	$adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up'
-	if (-not $adapters) { return $null }
-	
-	# Get only configs for up adapters
-	$adapterNames = $adapters | Select-Object -ExpandProperty Name
-	$ipConfigs = Get-NetIPConfiguration -InterfaceAlias $adapterNames -ErrorAction SilentlyContinue
-	
-	# Filter for valid IPv4 (not APIPA/169.254.x.x, not null)
-	$validConfigs = $ipConfigs | Where-Object {
-		$_.IPv4Address -and
-		$_.IPv4Address.IPAddress -and
-		($_.IPv4Address.IPAddress -notlike '169.254*')
-	}
-	
-	if ($validConfigs) { return @($validConfigs) }
-	return $null
-}
-
-# ===================================================================================================
-# FUNCTION: Remove_Old_XZ_Folders
-# ---------------------------------------------------------------------------------------------------
-# Description:
-# Removes old X* and Z* folders under \storeman\office that do NOT match the NEW store and allowed
-# terminal numbers.
-#
-# Strict folder name pattern acted upon:
-#   ^(X|Z)[A-Za-z](store 3-4 digits)(terminal 3 digits)$
-# Examples: XF0231006, XW0242901, ZF1234006, ZW1234901
-#
-# Keeps ONLY folders that match:
-#   - Store = new store (3-digit OR 4-digit representation)
-#   - Terminal IN: current lane terminal (from MachineName), 900, 901
-#
-# Safeguard: refuses to run if extracted terminal is 901 unless -AllowBackoffice is passed.
-# Automatic: no prompts.
-# ===================================================================================================
-
-function Remove_Old_XZ_Folders
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$StoreNumber,
-		[Parameter(Mandatory = $true)]
-		[string]$MachineName,
-		[Parameter(Mandatory = $false)]
-		[hashtable]$OperationStatus,
-		[Parameter(Mandatory = $false)]
-		[switch]$AllowBackoffice
-	)
-	
-	# -----------------------------
-	# Init / status bucket
-	# -----------------------------
-	$deletedFolders = @()
-	$failedToDeleteFolders = @()
-	$anyFoldersSeen = $false
-	$anyCandidatesMatched = $false
-	
-	if ($OperationStatus)
-	{
-		if (-not $OperationStatus.ContainsKey("OldXFoldersDeletion"))
-		{
-			$OperationStatus["OldXFoldersDeletion"] = [pscustomobject]@{
-				Status  = ""
-				Message = ""
-				Details = ""
-			}
-		}
-	}
-	
-	# -----------------------------
-	# Validate store number
-	# -----------------------------
-	$storeNumberTrim = $StoreNumber
-	if ($null -eq $storeNumberTrim) { $storeNumberTrim = "" }
-	$storeNumberTrim = $storeNumberTrim.Trim()
-	
-	if ($storeNumberTrim -notmatch '^(?!0+$)\d{3,4}$')
-	{
-		if ($OperationStatus)
-		{
-			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
-			$OperationStatus["OldXFoldersDeletion"].Message = "Invalid StoreNumber '$StoreNumber' (must be 3 or 4 digits, not all zeros)."
-			$OperationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
-		}
-		Write-Host "Failed: Invalid StoreNumber '$StoreNumber'." -ForegroundColor Red
-		return
-	}
-	
-	$storeInt = [int]$storeNumberTrim
-	$store3 = $storeInt.ToString("D3")
-	$store4 = $storeInt.ToString("D4")
-	
-	# -----------------------------
-	# Pick base path
-	# -----------------------------
-	$possibleBasePaths = @("\\localhost\storeman\office", "C:\storeman\office", "D:\storeman\office")
-	$basePath = $null
-	foreach ($p in $possibleBasePaths)
-	{
-		if (Test-Path $p) { $basePath = $p; break }
-	}
-	
-	if (-not $basePath)
-	{
-		if ($OperationStatus)
-		{
-			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
-			$OperationStatus["OldXFoldersDeletion"].Message = "None of the base paths exist: $($possibleBasePaths -join ', ')"
-			$OperationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
-		}
-		Write-Host "Failed: None of the base paths exist: $($possibleBasePaths -join ', ')" -ForegroundColor Red
-		return
-	}
-	
-	# -----------------------------
-	# Extract machine terminal (last 1-3 digits, padded to 3)
-	# -----------------------------
-	$mn = $MachineName
-	if ($null -eq $mn) { $mn = "" }
-	$mn = $mn.Trim()
-	
-	$mn = $mn -replace '^[\\\/]+', '' # strip leading \\ or /
-	if ($mn -match '[\\\/]') { $mn = ($mn -split '[\\\/]')[0] } # keep host portion
-	if ($mn -match '\.') { $mn = ($mn -split '\.')[0] } # drop domain
-	$mn = $mn.Trim().ToUpper()
-	
-	if ($mn -notmatch '(\d{1,3})$')
-	{
-		if ($OperationStatus)
-		{
-			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
-			$OperationStatus["OldXFoldersDeletion"].Message = "MachineName '$MachineName' does not end with 1-3 digits; cannot extract terminal number."
-			$OperationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
-		}
-		Write-Host "Failed: MachineName '$MachineName' cannot provide terminal digits." -ForegroundColor Red
-		return
-	}
-	
-	$machineNumber = ([int]$Matches[1]).ToString("D3")
-	
-	# Safeguard for backoffice unless explicitly allowed
-	if ($machineNumber -eq "901" -and -not $AllowBackoffice)
-	{
-		if ($OperationStatus)
-		{
-			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
-			$OperationStatus["OldXFoldersDeletion"].Message = "Refusing to run because extracted terminal number is 901 (backoffice). Use -AllowBackoffice to override."
-			$OperationStatus["OldXFoldersDeletion"].Details = "This could delete many lane folders. Override only if intentional."
-		}
-		Write-Host "Failed: Refusing to run on terminal 901 (backoffice safeguard). Use -AllowBackoffice to override." -ForegroundColor Red
-		return
-	}
-	
-	# Keep set: current lane + 900 + 901
-	$keepStores = @($store3, $store4)
-	$keepTerminals = @($machineNumber, "900", "901")
-	
-	# -----------------------------
-	# Enumerate X* and Z* folders
-	# -----------------------------
-	$folders = @()
-	
-	$xFolders = Get-ChildItem -Path $basePath -Directory -Filter "X*" -ErrorAction SilentlyContinue
-	if ($xFolders) { $folders += $xFolders }
-	
-	$zFolders = Get-ChildItem -Path $basePath -Directory -Filter "Z*" -ErrorAction SilentlyContinue
-	if ($zFolders) { $folders += $zFolders }
-	
-	if (-not $folders -or $folders.Count -eq 0)
-	{
-		if ($OperationStatus)
-		{
-			$OperationStatus["OldXFoldersDeletion"].Status = "No Folders Found"
-			$OperationStatus["OldXFoldersDeletion"].Message = "No X* or Z* folders were found under '$basePath'."
-			$OperationStatus["OldXFoldersDeletion"].Details = "Nothing to delete."
-		}
-		Write-Host "Info: No X* or Z* folders found under '$basePath'." -ForegroundColor Cyan
-		return
-	}
-	
-	$anyFoldersSeen = $true
-	
-	foreach ($folder in $folders)
-	{
-		$folderName = $folder.Name
-		
-		# STRICT pattern only: (X|Z)(letter)(store 3-4 digits)(terminal 3 digits)
-		if ($folderName -match '^(?<prefix>[XZ][A-Za-z])(?<store>\d{3,4})(?<terminal>\d{3})$')
-		{
-			$folderStore = $matches['store']
-			$folderTerminal = $matches['terminal']
-			
-			$storeOk = ($keepStores -contains $folderStore)
-			$terminalOk = ($keepTerminals -contains $folderTerminal)
-			
-			# Delete if it does NOT match new store AND allowed terminal(s)
-			if (-not ($storeOk -and $terminalOk))
-			{
-				$anyCandidatesMatched = $true
-				
-				$maxRetries = 3
-				$retryCount = 0
-				$deleted = $false
-				
-				while ($retryCount -lt $maxRetries -and -not $deleted)
-				{
-					try
-					{
-						Remove-Item -Path $folder.FullName -Recurse -Force -ErrorAction Stop
-						$deletedFolders += $folderName
-						$deleted = $true
-					}
-					catch
-					{
-						$retryCount++
-						Start-Sleep -Seconds 2
-						
-						if ($retryCount -ge $maxRetries)
-						{
-							$failedToDeleteFolders += $folderName
-							Write-Host "Failed to delete folder: $folderName. Error: $($_.Exception.Message)" -ForegroundColor Red
-						}
-					}
-				}
-			}
-		}
-	}
-	
-	# -----------------------------
-	# Results
-	# -----------------------------
-	$resultMessage = ""
-	if ($deletedFolders.Count -gt 0)
-	{
-		$resultMessage += "Deleted folders:`n$($deletedFolders -join "`n")`n"
-	}
-	if ($failedToDeleteFolders.Count -gt 0)
-	{
-		$resultMessage += "Failed to delete folders:`n$($failedToDeleteFolders -join "`n")`n"
-	}
-	
-	if (-not $anyCandidatesMatched)
-	{
-		if ($OperationStatus)
-		{
-			$OperationStatus["OldXFoldersDeletion"].Status = "No Matching Folders"
-			$OperationStatus["OldXFoldersDeletion"].Message = "No X*/Z* folders needed deletion. Kept stores: $($keepStores -join ', ') terminals: $($keepTerminals -join ', ')."
-			$OperationStatus["OldXFoldersDeletion"].Details = "Nothing to delete."
-		}
-		Write-Host "Info: Nothing to delete. Kept stores: $($keepStores -join ', ') terminals: $($keepTerminals -join ', ')." -ForegroundColor Cyan
-		return
-	}
-	
-	if ($deletedFolders.Count -gt 0 -and $failedToDeleteFolders.Count -eq 0)
-	{
-		if ($OperationStatus)
-		{
-			$OperationStatus["OldXFoldersDeletion"].Status = "Successful"
-			$OperationStatus["OldXFoldersDeletion"].Message = "Old X*/Z* folders deleted successfully."
-			$OperationStatus["OldXFoldersDeletion"].Details = $resultMessage
-		}
-		Write-Host "Success: Old X*/Z* folders deleted successfully." -ForegroundColor Green
-		if ($resultMessage) { Write-Host $resultMessage -ForegroundColor Green }
-	}
-	elseif ($deletedFolders.Count -gt 0 -and $failedToDeleteFolders.Count -gt 0)
-	{
-		if ($OperationStatus)
-		{
-			$OperationStatus["OldXFoldersDeletion"].Status = "Partial Failure"
-			$OperationStatus["OldXFoldersDeletion"].Message = "Some old X*/Z* folders could not be deleted."
-			$OperationStatus["OldXFoldersDeletion"].Details = $resultMessage
-		}
-		Write-Host "Warning: Some old X*/Z* folders could not be deleted." -ForegroundColor Yellow
-		if ($resultMessage) { Write-Host $resultMessage -ForegroundColor Yellow }
-	}
-	else
-	{
-		if ($OperationStatus)
-		{
-			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
-			$OperationStatus["OldXFoldersDeletion"].Message = "Failed to delete any old X*/Z* folders."
-			$OperationStatus["OldXFoldersDeletion"].Details = $resultMessage
-		}
-		Write-Host "Error: Failed to delete any old X*/Z* folders." -ForegroundColor Red
-		if ($resultMessage) { Write-Host $resultMessage -ForegroundColor Red }
-	}
-}
-
-# ===================================================================================================
-#                                       FUNCTION: Execute_SQL_Commands
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Executes a given SQL command using the provided connection string.
-# ===================================================================================================
-
-function Execute_SQL_Commands
-{
-	param (
-		[string]$commandText
-	)
-	
-	$script:LastSqlExecutionError = $null
-	$resolvedConnectionString = Ensure_Database_Connection_Context
-	if ([string]::IsNullOrWhiteSpace($resolvedConnectionString))
-	{
-		$script:LastSqlExecutionError = "Database connection string is not available."
-		return $false
-	}
-	
-	$sqlConnection = New-Object System.Data.SqlClient.SqlConnection
-	$sqlConnection.ConnectionString = $resolvedConnectionString
-	$sqlCommand = $sqlConnection.CreateCommand()
-	$sqlCommand.CommandText = $commandText
-	
-	try
-	{
-		$sqlConnection.Open()
-		$sqlCommand.ExecuteNonQuery() | Out-Null
-		return $true # Indicate success
-	}
-	catch
-	{
-		$script:LastSqlExecutionError = $_.Exception.Message
-		return $false # Indicate failure
-	}
-	finally
-	{
-		$sqlConnection.Close()
+		return $normalizedName
 	}
 }
 
@@ -1650,63 +754,254 @@ function Get_NEW_Store_Number
 }
 
 # ===================================================================================================
-#                           FUNCTION: Resolve_Startup_Ini_Path
+#                                  FUNCTION: Set_Label_Text
 # ---------------------------------------------------------------------------------------------------
 # Description:
-# Resolves the active Startup.ini path using an explicit value first, then existing script/global
-# variables, and finally BasePath when available.
+# Updates a WinForms label and optionally refreshes its parent layout.
 # ===================================================================================================
 
-function Resolve_Startup_Ini_Path
+function Set_Label_Text
 {
 	[CmdletBinding()]
 	param (
 		[Parameter(Mandatory = $false)]
-		[string]$StartupIniPath
+		$Label,
+		[Parameter(Mandatory = $true)]
+		[string]$Text,
+		[Parameter(Mandatory = $false)]
+		[switch]$RefreshParent,
+		[Parameter(Mandatory = $false)]
+		[switch]$ProcessEvents
 	)
 	
-	$resolvedPath = $StartupIniPath
+	if (-not $Label) { return }
 	
-	try
+	$Label.Text = $Text
+	$Label.Refresh()
+	
+	if ($RefreshParent -and $Label.Parent)
 	{
-		if ([string]::IsNullOrWhiteSpace($resolvedPath))
-		{
-			foreach ($sc in @('Script', 'Global'))
-			{
-				$v = Get-Variable -Name StartupIniPath -Scope $sc -ErrorAction SilentlyContinue
-				if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value))
-				{
-					$resolvedPath = [string]$v.Value
-					break
-				}
-			}
-		}
-		
-		if ([string]::IsNullOrWhiteSpace($resolvedPath))
-		{
-			foreach ($sc in @('Script', 'Global'))
-			{
-				$v = Get-Variable -Name BasePath -Scope $sc -ErrorAction SilentlyContinue
-				if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value))
-				{
-					$candidatePath = Join-Path ([string]$v.Value) "Startup.ini"
-					if (Test-Path $candidatePath)
-					{
-						$resolvedPath = $candidatePath
-						break
-					}
-				}
-			}
-		}
-		
-		if (-not [string]::IsNullOrWhiteSpace($resolvedPath) -and (Test-Path $resolvedPath))
-		{
-			return $resolvedPath
-		}
+		$Label.Parent.PerformLayout()
+		$Label.Parent.Refresh()
 	}
-	catch { }
 	
-	return $null
+	if ($ProcessEvents)
+	{
+		[System.Windows.Forms.Application]::DoEvents()
+	}
+}
+
+# ===================================================================================================
+#                                FUNCTION: Set_Operation_Status
+# ---------------------------------------------------------------------------------------------------
+# Description:
+# Central helper to update the shared operation-status table only when the requested key exists.
+# ===================================================================================================
+
+function Set_Operation_Status
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $false)]
+		[hashtable]$OperationStatus,
+		[Parameter(Mandatory = $true)]
+		[string]$Key,
+		[Parameter(Mandatory = $true)]
+		[string]$Status,
+		[Parameter(Mandatory = $false)]
+		[string]$Message = "",
+		[Parameter(Mandatory = $false)]
+		[string]$Details = ""
+	)
+	
+	if ($OperationStatus -and $OperationStatus.ContainsKey($Key))
+	{
+		$OperationStatus[$Key].Status = $Status
+		$OperationStatus[$Key].Message = $Message
+		$OperationStatus[$Key].Details = $Details
+	}
+}
+
+function Show_Action_Prompt_With_Log
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$Text,
+		[Parameter(Mandatory = $true)]
+		[string]$Title,
+		[Parameter(Mandatory = $false)]
+		[string]$PrimaryButtonText = "OK",
+		[Parameter(Mandatory = $false)]
+		[string]$SecondaryButtonText,
+		[Parameter(Mandatory = $false)]
+		[string]$LogText,
+		[Parameter(Mandatory = $false)]
+		[string]$LogTitle = "Details"
+	)
+	
+	$promptForm = New-Object System.Windows.Forms.Form
+	$promptForm.Text = $Title
+	$promptForm.Size = New-Object System.Drawing.Size(620, 230)
+	$promptForm.StartPosition = "CenterParent"
+	$promptForm.FormBorderStyle = "FixedDialog"
+	$promptForm.MaximizeBox = $false
+	$promptForm.MinimizeBox = $false
+	$promptForm.ShowInTaskbar = $false
+	
+	$messageTextBox = New-Object System.Windows.Forms.TextBox
+	$messageTextBox.Multiline = $true
+	$messageTextBox.ReadOnly = $true
+	$messageTextBox.BorderStyle = "None"
+	$messageTextBox.BackColor = $promptForm.BackColor
+	$messageTextBox.TabStop = $false
+	$messageTextBox.Text = $Text
+	$messageTextBox.SetBounds(16, 16, 570, 110)
+	
+	$buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+	$buttonPanel.Dock = "Bottom"
+	$buttonPanel.Height = 48
+	$buttonPanel.FlowDirection = "RightToLeft"
+	$buttonPanel.WrapContents = $false
+	$buttonPanel.Padding = New-Object System.Windows.Forms.Padding(0, 6, 12, 6)
+	
+	$selection = "Closed"
+	
+	$primaryButton = New-Object System.Windows.Forms.Button
+	$primaryButton.Text = $PrimaryButtonText
+	$primaryButton.AutoSize = $true
+	$primaryButton.Add_Click({
+			$selection = "Primary"
+			$promptForm.Close()
+		})
+	$buttonPanel.Controls.Add($primaryButton)
+	$promptForm.AcceptButton = $primaryButton
+	$promptForm.CancelButton = $primaryButton
+	
+	if (-not [string]::IsNullOrWhiteSpace($SecondaryButtonText))
+	{
+		$secondaryButton = New-Object System.Windows.Forms.Button
+		$secondaryButton.Text = $SecondaryButtonText
+		$secondaryButton.AutoSize = $true
+		$secondaryButton.Add_Click({
+				$selection = "Secondary"
+				$promptForm.Close()
+			})
+		$buttonPanel.Controls.Add($secondaryButton)
+		$promptForm.CancelButton = $secondaryButton
+	}
+	
+	if (-not [string]::IsNullOrWhiteSpace($LogText))
+	{
+		$viewLogButton = New-Object System.Windows.Forms.Button
+		$viewLogButton.Text = "View Log"
+		$viewLogButton.AutoSize = $true
+		$viewLogButton.Add_Click({
+				Show_Text_Report_Form -Title $LogTitle -Text $LogText
+			})
+		$buttonPanel.Controls.Add($viewLogButton)
+	}
+	
+	$promptForm.Controls.Add($messageTextBox)
+	$promptForm.Controls.Add($buttonPanel)
+	[void]$promptForm.ShowDialog()
+	return $selection
+}
+
+# ===================================================================================================
+#                                 FUNCTION: Show_App_Message
+# ---------------------------------------------------------------------------------------------------
+# Description:
+# Small wrapper around WinForms MessageBox to reduce repeated enum boilerplate.
+# ===================================================================================================
+
+function Show_App_Message
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$Text,
+		[Parameter(Mandatory = $true)]
+		[string]$Title,
+		[Parameter(Mandatory = $false)]
+		[ValidateSet('OK', 'OKCancel', 'YesNo', 'YesNoCancel')]
+		[string]$Buttons = 'OK',
+		[Parameter(Mandatory = $false)]
+		[ValidateSet('None', 'Information', 'Warning', 'Error', 'Question', 'Asterisk', 'Exclamation', 'Hand', 'Stop')]
+		[string]$Icon = 'Information'
+	)
+	
+	switch -Regex ($Icon)
+	{
+		'^(?i)Asterisk$'    { $Icon = 'Information'; break }
+		'^(?i)Exclamation$' { $Icon = 'Warning'; break }
+		'^(?i)Hand$'        { $Icon = 'Error'; break }
+		'^(?i)Stop$'        { $Icon = 'Error'; break }
+	}
+	
+	$buttonValue = [System.Enum]::Parse([System.Windows.Forms.MessageBoxButtons], $Buttons)
+	$iconValue = [System.Enum]::Parse([System.Windows.Forms.MessageBoxIcon], $Icon)
+	return [System.Windows.Forms.MessageBox]::Show($Text, $Title, $buttonValue, $iconValue)
+}
+
+function Show_Text_Report_Form
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$Title,
+		[Parameter(Mandatory = $true)]
+		[string]$Text,
+		[Parameter(Mandatory = $false)]
+		[int]$Width = 720,
+		[Parameter(Mandatory = $false)]
+		[int]$Height = 500
+	)
+	
+	$reportForm = New-Object System.Windows.Forms.Form
+	$reportForm.Text = $Title
+	$reportForm.Size = New-Object System.Drawing.Size($Width, $Height)
+	$reportForm.StartPosition = "CenterParent"
+	$reportForm.ShowInTaskbar = $false
+	
+	$closeButton = New-Object System.Windows.Forms.Button
+	$closeButton.Text = "Close"
+	$closeButton.Dock = "Bottom"
+	$closeButton.Height = 34
+	$closeButton.Add_Click({ $reportForm.Close() })
+	
+	$textBox = New-Object System.Windows.Forms.TextBox
+	$textBox.Multiline = $true
+	$textBox.ReadOnly = $true
+	$textBox.ScrollBars = "Vertical"
+	$textBox.Dock = "Fill"
+	$textBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+	$textBox.Text = $Text
+	
+	$reportForm.AcceptButton = $closeButton
+	$reportForm.Controls.Add($textBox)
+	$reportForm.Controls.Add($closeButton)
+	[void]$reportForm.ShowDialog()
+}
+
+# ===================================================================================================
+#                              FUNCTION: Get_Effective_Machine_Name
+# ---------------------------------------------------------------------------------------------------
+# Description:
+# Returns the pending/new machine name when one exists; otherwise returns the current computer name.
+# ===================================================================================================
+
+function Get_Effective_Machine_Name
+{
+	[CmdletBinding()]
+	param ()
+	
+	if ($script:newMachineName -and -not [string]::IsNullOrWhiteSpace([string]$script:newMachineName))
+	{
+		return [string]$script:newMachineName
+	}
+	
+	return $env:COMPUTERNAME
 }
 
 # ===================================================================================================
@@ -2021,376 +1316,162 @@ function Get_Machine_Name_Context
 }
 
 # ===================================================================================================
-#                          FUNCTION: Update_Startup_Ini_For_Machine
+#                                      FUNCTION: Get_Store_Name_From_INI
 # ---------------------------------------------------------------------------------------------------
 # Description:
-# Applies machine-specific Startup.ini changes that should happen both after a rename and during a
-# same-name sync. This keeps the DBSERVER host update in one place and preserves encoding/newlines.
+#   Retrieves the store name from the system.ini file.
+#   Stores the result in $script:FunctionResults['StoreName'].
 # ===================================================================================================
 
-function Update_Startup_Ini_For_Machine
+function Get_Store_Name_From_INI
 {
-	[CmdletBinding()]
 	param (
-		[Parameter(Mandatory = $true)]
-		[psobject]$MachineContext,
-		[Parameter(Mandatory = $false)]
-		[string]$StartupIniPath
+		[string]$INIPath = $SystemIniPath
 	)
 	
-	$resolvedStartupIniPath = Resolve_Startup_Ini_Path -StartupIniPath $StartupIniPath
-	if ([string]::IsNullOrWhiteSpace($resolvedStartupIniPath))
+	# Initialize StoreName
+	$script:FunctionResults['StoreName'] = "N/A"
+	
+	if (Test-Path $INIPath)
 	{
-		return [PSCustomObject]@{
-			Success       = $false
-			Path          = $null
-			DbServerValue = $null
-			TerValue      = $null
-			Details       = "Startup.ini path could not be resolved."
-			ErrorMessage  = "startup.ini not found."
+		$storeName = Select-String -Path $INIPath -Pattern "^NAME=" | ForEach-Object {
+			$_.Line.Split('=')[1].Trim()
 		}
+		if ($storeName)
+		{
+			$script:FunctionResults['StoreName'] = $storeName
+			# Write-Log "Store name found in system.ini: $storeName" "green"
+		}
+		else
+		{
+			# Write-Log "Store name not found in system.ini." "yellow"
+		}
+	}
+	else
+	{
+		# Write-Log "INI file not found: $INIPath" "yellow"
 	}
 	
-	try
+	# Update the storeNameLabel in the GUI
+	if (-not $SilentMode -and $storeNameLabel -ne $null)
 	{
-		$bytes = [System.IO.File]::ReadAllBytes($resolvedStartupIniPath)
-		
-		$encStartup = $null
-		if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-		{ $encStartup = New-Object System.Text.UTF8Encoding($true) }
-		elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
-		{ $encStartup = [System.Text.Encoding]::Unicode }
-		elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
-		{ $encStartup = [System.Text.Encoding]::BigEndianUnicode }
-		else
-		{ $encStartup = [System.Text.Encoding]::Default }
-		
-		$textStartup = $encStartup.GetString($bytes)
-		$nlStartup = "`r`n"
-		if ($textStartup -notmatch "`r`n" -and $textStartup -match "`n") { $nlStartup = "`n" }
-		
-		$startupLines = $textStartup -split "\r?\n", -1
-		
-		$existingDbLine = $null
-		foreach ($line in $startupLines)
-		{
-			if ($line -match '^\s*(?i:DBSERVER)\s*=')
-			{
-				$existingDbLine = $line
-				break
-			}
-		}
-		
-		$existingDbServer = $null
-		if ($existingDbLine -match '^\s*(?i:DBSERVER)\s*=\s*(.+?)\s*$')
-		{
-			$existingDbServer = $matches[1].Trim()
-		}
-		
-		$instance = $null
-		if ($existingDbServer -and ($existingDbServer -match '\\'))
-		{
-			$parts = $existingDbServer.Split('\')
-			if ($parts.Count -ge 2 -and $parts[1]) { $instance = $parts[1] }
-		}
-		
-		$dbServerValue = if ($instance)
-		{
-			"DBSERVER=$($MachineContext.MachineName)\$instance"
-		}
-		else
-		{
-			"DBSERVER=$($MachineContext.MachineName)"
-		}
-		
-		$terValue = $null
-		if (-not $MachineContext.IsServerMoniker -and $MachineContext.MachineNumber)
-		{
-			$terValue = "TER=$($MachineContext.MachineNumber)"
-		}
-		
-		$updatedLines = @()
-		$dbServerUpdated = $false
-		$terUpdated = $false
-		
-		foreach ($line in $startupLines)
-		{
-			$updatedLine = $line
-			
-			if (-not $MachineContext.IsServerMoniker -and $terValue -and ($updatedLine -match '^\s*(?i:TER)\s*='))
-			{
-				$updatedLine = $terValue
-				$terUpdated = $true
-			}
-			
-			if ($updatedLine -match '^\s*(?i:DBSERVER)\s*=')
-			{
-				$updatedLine = $dbServerValue
-				$dbServerUpdated = $true
-			}
-			
-			$updatedLines += $updatedLine
-		}
-		
-		if (-not $dbServerUpdated)
-		{
-			$updatedLines += $dbServerValue
-			$dbServerUpdated = $true
-		}
-		
-		[System.IO.File]::WriteAllText($resolvedStartupIniPath, ($updatedLines -join $nlStartup), $encStartup)
-		
-		$detailParts = @()
-		$detailParts += "DBSERVER set to '$dbServerValue'."
-		if ($MachineContext.IsServerMoniker)
-		{
-			$detailParts += "TER left unchanged due to SERVER moniker."
-		}
-		elseif ($terUpdated)
-		{
-			$detailParts += "TER set to '$terValue'."
-		}
-		else
-		{
-			$detailParts += "TER line was not present, so only DBSERVER was enforced here."
-		}
-		
-		return [PSCustomObject]@{
-			Success       = $true
-			Path          = $resolvedStartupIniPath
-			DbServerValue = $dbServerValue
-			TerValue      = $terValue
-			Details       = ($detailParts -join ' ')
-			ErrorMessage  = $null
-		}
-	}
-	catch
-	{
-		return [PSCustomObject]@{
-			Success       = $false
-			Path          = $resolvedStartupIniPath
-			DbServerValue = $null
-			TerValue      = $null
-			Details       = "Startup.ini machine sync failed."
-			ErrorMessage  = $_.Exception.Message
-		}
+		$storeNameLabel.Text = "Store Name: $($script:FunctionResults['StoreName'])"
+		$form.Refresh()
+		[System.Windows.Forms.Application]::DoEvents()
 	}
 }
 
 # ===================================================================================================
-#                            FUNCTION: Invoke_Machine_Name_Sync
+#                                       FUNCTION: Get_Store_Number_From_INI
 # ---------------------------------------------------------------------------------------------------
 # Description:
-# Runs the best-effort INI + Startup.ini + SQL sync for a machine name target. This is used after an
-# actual rename and also when the requested name already matches the current machine name.
+#   Retrieves the store number from the startup.ini file.
 # ===================================================================================================
 
-function Invoke_Machine_Name_Sync
+function Get_Store_Number_From_INI
 {
 	[CmdletBinding()]
 	param (
-		[Parameter(Mandatory = $true)]
-		[ValidatePattern('^(?!0+$)\d{3,4}$')]
-		[string]$StoreNumber,
-		[Parameter(Mandatory = $true)]
-		[string]$MachineName,
-		[Parameter(Mandatory = $false)]
-		[string]$OldMachineName = $env:COMPUTERNAME,
-		[Parameter(Mandatory = $false)]
-		[psobject]$MachineContext,
-		[Parameter(Mandatory = $false)]
-		[string]$StartupIniPath,
-		[Parameter(Mandatory = $false)]
-		[hashtable]$OperationStatus
+		[switch]$UpdateLabel
 	)
 	
-	if (-not $MachineContext -or -not $MachineContext.Success)
-	{
-		$MachineContext = Get_Machine_Name_Context -MachineName $MachineName -CurrentMachineName $OldMachineName
-	}
+	# Ensure FunctionResults exists (PS 5.1 safe)
+	if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
 	
-	if (-not $MachineContext.Success)
+	# Default/fallback
+	$script:FunctionResults['StoreNumber'] = "N/A"
+	$foundStore = $null
+	
+	if (Test-Path $startupIniPath)
 	{
-		if ($OperationStatus -and $OperationStatus.ContainsKey("StartupIniUpdate"))
+		try
 		{
-			$OperationStatus["StartupIniUpdate"].Status = "Failed"
-			$OperationStatus["StartupIniUpdate"].Message = "INI sync could not start."
-			$OperationStatus["StartupIniUpdate"].Details = $MachineContext.ErrorMessage
+			$iniContent = Get-Content $startupIniPath -ErrorAction Stop
+			
+			foreach ($line in $iniContent)
+			{
+				if ($line -match '^\s*STORE\s*=\s*(\d{3,4})\s*$')
+				{
+					$foundStore = $matches[1]
+					$script:FunctionResults['StoreNumber'] = $foundStore
+					break
+				}
+			}
 		}
-		if ($OperationStatus -and $OperationStatus.ContainsKey("SQLDatabaseUpdate"))
+		catch
 		{
-			$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
-			$OperationStatus["SQLDatabaseUpdate"].Message = "SQL sync could not start."
-			$OperationStatus["SQLDatabaseUpdate"].Details = $MachineContext.ErrorMessage
-		}
-		
-		return [PSCustomObject]@{
-			Success             = $false
-			MachineContext      = $MachineContext
-			IniSyncSuccess      = $false
-			StartupIniSuccess   = $false
-			SqlSyncSuccess      = $false
-			StartupIniPath      = $null
-			IniSyncError        = $MachineContext.ErrorMessage
-			StartupIniError     = $null
-			SqlSyncError        = $MachineContext.ErrorMessage
-			StartupIniDetails   = $null
-			SqlResult           = $null
+			Write-Warning ("Failed to read startup.ini: {0}" -f $_)
 		}
 	}
 	
-	$resolvedStartupIniPath = Resolve_Startup_Ini_Path -StartupIniPath $StartupIniPath
-	$null = Ensure_Database_Connection_Context -StartupIniPath $resolvedStartupIniPath
-	
-	$configuredDbServer = $null
-	if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('ConfiguredDBSERVER') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['ConfiguredDBSERVER']))
+	# Update label ONLY if requested
+	if ($UpdateLabel -and (-not $SilentMode) -and $script:storeNumberLabel)
 	{
-		$configuredDbServer = [string]$script:FunctionResults['ConfiguredDBSERVER']
-	}
-	elseif ($script:FunctionResults -and $script:FunctionResults.ContainsKey('DBSERVER') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['DBSERVER']))
-	{
-		$configuredDbServer = [string]$script:FunctionResults['DBSERVER']
+		Set_Label_Text -Label $script:storeNumberLabel -Text "Store Number: $($script:FunctionResults['StoreNumber'])" -RefreshParent -ProcessEvents
 	}
 	
-	$runtimeDbServer = $null
-	if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('RuntimeDBSERVER') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['RuntimeDBSERVER']))
-	{
-		$runtimeDbServer = [string]$script:FunctionResults['RuntimeDBSERVER']
-	}
+	if ($foundStore) { return $foundStore }
+	return $null
+}
+
+# ===================================================================================================
+#                           FUNCTION: Resolve_Startup_Ini_Path
+# ---------------------------------------------------------------------------------------------------
+# Description:
+# Resolves the active Startup.ini path using an explicit value first, then existing script/global
+# variables, and finally BasePath when available.
+# ===================================================================================================
+
+function Resolve_Startup_Ini_Path
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $false)]
+		[string]$StartupIniPath
+	)
 	
-	$iniSyncSuccess = $false
-	$iniSyncError = $null
+	$resolvedPath = $StartupIniPath
+	
 	try
 	{
-		$iniSyncSuccess = [bool](Update_INIs -newStoreNumber $StoreNumber -MachineName $MachineContext.MachineName -OldStoreNumber $StoreNumber -OldMachineName $OldMachineName -CreateSmsHttpsIfMissing -StartupIniPath $resolvedStartupIniPath)
-		if (-not $iniSyncSuccess)
+		if ([string]::IsNullOrWhiteSpace($resolvedPath))
 		{
-			$iniSyncError = "Update_INIs reported a failure."
+			foreach ($sc in @('Script', 'Global'))
+			{
+				$v = Get-Variable -Name StartupIniPath -Scope $sc -ErrorAction SilentlyContinue
+				if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value))
+				{
+					$resolvedPath = [string]$v.Value
+					break
+				}
+			}
 		}
-	}
-	catch
-	{
-		$iniSyncError = $_.Exception.Message
-	}
-	
-	$startupIniResult = Update_Startup_Ini_For_Machine -MachineContext $MachineContext -StartupIniPath $resolvedStartupIniPath
-	$startupIniSuccess = $startupIniResult.Success
-	$startupIniError = $startupIniResult.ErrorMessage
-	
-	if ($OperationStatus -and $OperationStatus.ContainsKey("StartupIniUpdate"))
-	{
-		if ($iniSyncSuccess -and $startupIniSuccess)
-		{
-			$OperationStatus["StartupIniUpdate"].Status = "Successful"
-			$OperationStatus["StartupIniUpdate"].Message = "INI files updated successfully."
-			$OperationStatus["StartupIniUpdate"].Details = $startupIniResult.Details
-		}
-		else
-		{
-			$detailParts = @()
-			if ($iniSyncError) { $detailParts += $iniSyncError }
-			if ($startupIniError) { $detailParts += $startupIniError }
-			if ($startupIniResult.Details) { $detailParts += $startupIniResult.Details }
-			
-			$OperationStatus["StartupIniUpdate"].Status = "Failed"
-			$OperationStatus["StartupIniUpdate"].Message = "INI sync completed with errors."
-			$OperationStatus["StartupIniUpdate"].Details = ($detailParts -join " ")
-		}
-	}
-	
-	$sqlUpdateResult = $null
-	$sqlSyncSuccess = $false
-	$sqlSyncError = $null
-	try
-	{
-		$sqlUpdateResult = Update_SQL_Tables_For_Machine_Name_Change `
-															 -storeNumber $StoreNumber `
-															 -machineName $MachineContext.MachineName `
-															 -machineNumber $MachineContext.MachineNumber `
-															 -OldMachineName $OldMachineName
 		
-		if ($sqlUpdateResult -and $sqlUpdateResult.Success)
+		if ([string]::IsNullOrWhiteSpace($resolvedPath))
 		{
-			$sqlSyncSuccess = $true
+			foreach ($sc in @('Script', 'Global'))
+			{
+				$v = Get-Variable -Name BasePath -Scope $sc -ErrorAction SilentlyContinue
+				if ($v -and -not [string]::IsNullOrWhiteSpace([string]$v.Value))
+				{
+					$candidatePath = Join-Path ([string]$v.Value) "Startup.ini"
+					if (Test-Path $candidatePath)
+					{
+						$resolvedPath = $candidatePath
+						break
+					}
+				}
+			}
 		}
-		else
+		
+		if (-not [string]::IsNullOrWhiteSpace($resolvedPath) -and (Test-Path $resolvedPath))
 		{
-			$sqlSyncError = "SQL update result indicated failure."
+			return $resolvedPath
 		}
 	}
-	catch
-	{
-		$sqlSyncError = $_.Exception.Message
-	}
+	catch { }
 	
-	if ($OperationStatus -and $OperationStatus.ContainsKey("SQLDatabaseUpdate"))
-	{
-		if ($sqlSyncSuccess)
-		{
-			$detailParts = @("Protected SQL sync completed.")
-			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('RunTabUpdated'))
-			{
-				$detailParts += "RUN updated: $($sqlUpdateResult.RunTabUpdated)."
-			}
-			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('LocalTerminalDB'))
-			{
-				$detailParts += "Local terminal DB: $($sqlUpdateResult.LocalTerminalDB)."
-			}
-			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('ConfiguredDBSERVER') -and $sqlUpdateResult.ConfiguredDBSERVER)
-			{
-				$detailParts += "Configured DBSERVER: $($sqlUpdateResult.ConfiguredDBSERVER)."
-			}
-			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('RuntimeDBSERVER') -and $sqlUpdateResult.RuntimeDBSERVER)
-			{
-				$detailParts += "Runtime SQL target: $($sqlUpdateResult.RuntimeDBSERVER)."
-			}
-			
-			$OperationStatus["SQLDatabaseUpdate"].Status = "Successful"
-			$OperationStatus["SQLDatabaseUpdate"].Message = "SQL tables updated successfully after machine sync."
-			$OperationStatus["SQLDatabaseUpdate"].Details = ($detailParts -join " ")
-		}
-		else
-		{
-			$detailParts = @()
-			if ($sqlSyncError) { $detailParts += $sqlSyncError }
-			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('ConfiguredDBSERVER') -and $sqlUpdateResult.ConfiguredDBSERVER)
-			{
-				$detailParts += "Configured DBSERVER: $($sqlUpdateResult.ConfiguredDBSERVER)."
-			}
-			elseif ($configuredDbServer)
-			{
-				$detailParts += "Configured DBSERVER: $configuredDbServer."
-			}
-			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('RuntimeDBSERVER') -and $sqlUpdateResult.RuntimeDBSERVER)
-			{
-				$detailParts += "Runtime SQL target: $($sqlUpdateResult.RuntimeDBSERVER)."
-			}
-			elseif ($runtimeDbServer)
-			{
-				$detailParts += "Runtime SQL target: $runtimeDbServer."
-			}
-			
-			$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
-			$OperationStatus["SQLDatabaseUpdate"].Message = "Failed to update SQL tables after machine sync."
-			$OperationStatus["SQLDatabaseUpdate"].Details = ($detailParts -join " ")
-		}
-	}
-	
-	return [PSCustomObject]@{
-		Success             = ($iniSyncSuccess -and $startupIniSuccess -and $sqlSyncSuccess)
-		MachineContext      = $MachineContext
-		IniSyncSuccess      = $iniSyncSuccess
-		StartupIniSuccess   = $startupIniSuccess
-		SqlSyncSuccess      = $sqlSyncSuccess
-		StartupIniPath      = $resolvedStartupIniPath
-		IniSyncError        = $iniSyncError
-		StartupIniError     = $startupIniError
-		SqlSyncError        = $sqlSyncError
-		StartupIniDetails   = $startupIniResult.Details
-		SqlResult           = $sqlUpdateResult
-		ConfiguredDbServer  = $configuredDbServer
-		RuntimeDbServer     = $runtimeDbServer
-	}
+	return $null
 }
 
 # ===================================================================================================
@@ -3590,272 +2671,650 @@ function Update_INIs
 }
 
 # ===================================================================================================
-#                             FUNCTION: Update_SQL_Tables_For_Store_Number_Change
+#                          FUNCTION: Update_Startup_Ini_For_Machine
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Updates STD_TAB in the SQL database after store number change.
+# Applies machine-specific Startup.ini changes that should happen both after a rename and during a
+# same-name sync. This keeps the DBSERVER host update in one place and preserves encoding/newlines.
 # ===================================================================================================
 
-function Update_SQL_Tables_For_Store_Number_Change
+function Update_Startup_Ini_For_Machine
 {
+	[CmdletBinding()]
 	param (
-		[string]$storeNumber # New store number to apply
+		[Parameter(Mandatory = $true)]
+		[psobject]$MachineContext,
+		[Parameter(Mandatory = $false)]
+		[string]$StartupIniPath
 	)
 	
-	# =============================
-	# TABLE NAMES
-	# =============================
-	$stdTableName = "STD_TAB"
-	$terTableName = "TER_TAB"
-	
-	# =============================
-	# SQL FOR STD_TAB
-	# =============================
-	
-	# Create view (required by Storeman load process)
-	$createViewCommandStd = @"
-IF OBJECT_ID('Std_Load', 'V') IS NOT NULL DROP VIEW Std_Load;
-EXEC(N'
-CREATE VIEW Std_Load AS
-SELECT F1056
-FROM $stdTableName;
-');
-"@
-	
-	# Update STD_TAB.F1056 to the new store number
-	$updateStdTabCommand = @"
-UPDATE $stdTableName
-SET F1056 = '$storeNumber';
-"@
-	
-	# Drop the view
-	$dropViewCommandStd = "DROP VIEW Std_Load;"
-	
-	
-	# =============================
-	# SQL FOR TER_TAB
-	# =============================
-	# Only update rows where F1057 = '901'
-	# This ensures ONLY the back-office record gets changed
-	# and does NOT break lane entries.
-	# =============================
-	$updateTerTabCommand = @"
-UPDATE $terTableName
-SET F1056 = '$storeNumber'
-WHERE F1057 = '901';
-"@
-	
-	
-	# =============================
-	# EXECUTION PIPELINE
-	# =============================
-	$sqlCommands = @(
-		$createViewCommandStd,
-		$updateStdTabCommand,
-		$dropViewCommandStd,
-		$updateTerTabCommand # <-- NEW COMMAND
-	)
-	
-	$allSqlSuccessful = $true
-	$failedSqlCommands = @()
-	
-	foreach ($command in $sqlCommands)
+	$resolvedStartupIniPath = Resolve_Startup_Ini_Path -StartupIniPath $StartupIniPath
+	if ([string]::IsNullOrWhiteSpace($resolvedStartupIniPath))
 	{
-		# Execute_SQL_Commands is part of your existing framework
-		# so no changes here.
-		if (-not (Execute_SQL_Commands -commandText $command))
-		{
-			$allSqlSuccessful = $false
-			$failureMessage = if (-not [string]::IsNullOrWhiteSpace($script:LastSqlExecutionError)) { $script:LastSqlExecutionError } else { "Unknown SQL execution failure." }
-			$failedSqlCommands += ("Error: " + $failureMessage + "`r`nSQL:`r`n" + $command)
+		return [PSCustomObject]@{
+			Success       = $false
+			Path          = $null
+			DbServerValue = $null
+			TerValue      = $null
+			Details       = "Startup.ini path could not be resolved."
+			ErrorMessage  = "startup.ini not found."
 		}
 	}
 	
-	# =============================
-	# RETURN STRUCTURED RESULT
-	# =============================
-	return @{
-		Success	       = $allSqlSuccessful
-		FailedCommands = $failedSqlCommands
+	try
+	{
+		$bytes = [System.IO.File]::ReadAllBytes($resolvedStartupIniPath)
+		
+		$encStartup = $null
+		if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+		{ $encStartup = New-Object System.Text.UTF8Encoding($true) }
+		elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE)
+		{ $encStartup = [System.Text.Encoding]::Unicode }
+		elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
+		{ $encStartup = [System.Text.Encoding]::BigEndianUnicode }
+		else
+		{ $encStartup = [System.Text.Encoding]::Default }
+		
+		$textStartup = $encStartup.GetString($bytes)
+		$nlStartup = "`r`n"
+		if ($textStartup -notmatch "`r`n" -and $textStartup -match "`n") { $nlStartup = "`n" }
+		
+		$startupLines = $textStartup -split "\r?\n", -1
+		
+		$existingDbLine = $null
+		foreach ($line in $startupLines)
+		{
+			if ($line -match '^\s*(?i:DBSERVER)\s*=')
+			{
+				$existingDbLine = $line
+				break
+			}
+		}
+		
+		$existingDbServer = $null
+		if ($existingDbLine -match '^\s*(?i:DBSERVER)\s*=\s*(.+?)\s*$')
+		{
+			$existingDbServer = $matches[1].Trim()
+		}
+		
+		$instance = $null
+		if ($existingDbServer -and ($existingDbServer -match '\\'))
+		{
+			$parts = $existingDbServer.Split('\')
+			if ($parts.Count -ge 2 -and $parts[1]) { $instance = $parts[1] }
+		}
+		
+		$dbServerValue = if ($instance)
+		{
+			"DBSERVER=$($MachineContext.MachineName)\$instance"
+		}
+		else
+		{
+			"DBSERVER=$($MachineContext.MachineName)"
+		}
+		
+		$terValue = $null
+		if (-not $MachineContext.IsServerMoniker -and $MachineContext.MachineNumber)
+		{
+			$terValue = "TER=$($MachineContext.MachineNumber)"
+		}
+		
+		$updatedLines = @()
+		$dbServerUpdated = $false
+		$terUpdated = $false
+		
+		foreach ($line in $startupLines)
+		{
+			$updatedLine = $line
+			
+			if (-not $MachineContext.IsServerMoniker -and $terValue -and ($updatedLine -match '^\s*(?i:TER)\s*='))
+			{
+				$updatedLine = $terValue
+				$terUpdated = $true
+			}
+			
+			if ($updatedLine -match '^\s*(?i:DBSERVER)\s*=')
+			{
+				$updatedLine = $dbServerValue
+				$dbServerUpdated = $true
+			}
+			
+			$updatedLines += $updatedLine
+		}
+		
+		if (-not $dbServerUpdated)
+		{
+			$updatedLines += $dbServerValue
+			$dbServerUpdated = $true
+		}
+		
+		[System.IO.File]::WriteAllText($resolvedStartupIniPath, ($updatedLines -join $nlStartup), $encStartup)
+		
+		$detailParts = @()
+		$detailParts += "DBSERVER set to '$dbServerValue'."
+		if ($MachineContext.IsServerMoniker)
+		{
+			$detailParts += "TER left unchanged due to SERVER moniker."
+		}
+		elseif ($terUpdated)
+		{
+			$detailParts += "TER set to '$terValue'."
+		}
+		else
+		{
+			$detailParts += "TER line was not present, so only DBSERVER was enforced here."
+		}
+		
+		return [PSCustomObject]@{
+			Success       = $true
+			Path          = $resolvedStartupIniPath
+			DbServerValue = $dbServerValue
+			TerValue      = $terValue
+			Details       = ($detailParts -join ' ')
+			ErrorMessage  = $null
+		}
+	}
+	catch
+	{
+		return [PSCustomObject]@{
+			Success       = $false
+			Path          = $resolvedStartupIniPath
+			DbServerValue = $null
+			TerValue      = $null
+			Details       = "Startup.ini machine sync failed."
+			ErrorMessage  = $_.Exception.Message
+		}
 	}
 }
 
 # ===================================================================================================
-# 									FUNCTION: Get_NEW_Machine_Name
+#                          FUNCTION: Ensure_Database_Connection_Context
 # ---------------------------------------------------------------------------------------------------
 # Description:
-# Prompts user for a new machine name via GUI.
-# Supports:
-#   - Classic: PREFIX + 3 digits, with optional hyphen before digits (e.g. LANE003, POS-001, SERVER-001)
-#   - Prefixed: optional 1-4 digit store + PREFIX + optional hyphen + 3 digits (e.g. 0231LANE006, 0231POS-001)
-# If prefixed format used → offers to sync store number
-# Returns uppercase validated name or $null if cancelled
+# Lazily refreshes DBSERVER / DBNAME / ConnectionString from Startup.ini so SQL-specific work can
+# initialize only when needed instead of front-loading that work during GUI startup.
 # ===================================================================================================
 
-function Get_NEW_Machine_Name
+function Ensure_Database_Connection_Context
 {
-	while ($true)
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $false)]
+		[string]$StartupIniPath
+	)
+	
+	if (-not $script:FunctionResults)
 	{
-		$nodeRole = "Unknown"
-		if (-not [string]::IsNullOrWhiteSpace([string]$script:NodeRole))
+		$script:FunctionResults = @{ }
+	}
+	
+	$connectionStringValue = $null
+	if ($script:FunctionResults.ContainsKey('ConnectionString') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['ConnectionString']))
+	{
+		$connectionStringValue = [string]$script:FunctionResults['ConnectionString']
+	}
+	
+	$dbNameValue = $null
+	if ($script:FunctionResults.ContainsKey('DBNAME') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['DBNAME']))
+	{
+		$dbNameValue = [string]$script:FunctionResults['DBNAME']
+	}
+	
+	$dbServerValue = $null
+	if ($script:FunctionResults.ContainsKey('DBSERVER') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['DBSERVER']))
+	{
+		$dbServerValue = [string]$script:FunctionResults['DBSERVER']
+	}
+	
+	if ([string]::IsNullOrWhiteSpace($connectionStringValue) -or [string]::IsNullOrWhiteSpace($dbNameValue) -or [string]::IsNullOrWhiteSpace($dbServerValue))
+	{
+		Get_Database_Connection_String -StartupIniPath $StartupIniPath
+		
+		if ($script:FunctionResults.ContainsKey('ConnectionString') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['ConnectionString']))
 		{
-			$nodeRole = ([string]$script:NodeRole).Trim()
+			$connectionStringValue = [string]$script:FunctionResults['ConnectionString']
 		}
+	}
+	
+	$script:connectionString = $connectionStringValue
+	return $connectionStringValue
+}
+
+# ===================================================================================================
+#                                       FUNCTION: Execute_SQL_Commands
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Executes a given SQL command using the provided connection string.
+# ===================================================================================================
+
+function Execute_SQL_Commands
+{
+	param (
+		[string]$commandText
+	)
+	
+	$script:LastSqlExecutionError = $null
+	$resolvedConnectionString = Ensure_Database_Connection_Context
+	if ([string]::IsNullOrWhiteSpace($resolvedConnectionString))
+	{
+		$script:LastSqlExecutionError = "Database connection string is not available."
+		return $false
+	}
+	
+	$sqlConnection = New-Object System.Data.SqlClient.SqlConnection
+	$sqlConnection.ConnectionString = $resolvedConnectionString
+	$sqlCommand = $sqlConnection.CreateCommand()
+	$sqlCommand.CommandText = $commandText
+	
+	try
+	{
+		$sqlConnection.Open()
+		$sqlCommand.ExecuteNonQuery() | Out-Null
+		return $true # Indicate success
+	}
+	catch
+	{
+		$script:LastSqlExecutionError = $_.Exception.Message
+		return $false # Indicate failure
+	}
+	finally
+	{
+		$sqlConnection.Close()
+	}
+}
+
+# ===================================================================================================
+#                               FUNCTION: Get_Database_Connection_String
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Searches for the Startup.ini file in specified locations, extracts the DBNAME value,
+#   constructs the connection string, and stores it in a script-level hashtable.
+# ===================================================================================================
+
+function Get_Database_Connection_String
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $false)]
+		[string]$StartupIniPath
+	)
+	
+	if (-not $script:FunctionResults)
+	{
+		$script:FunctionResults = @{ }
+	}
+	
+	$effectiveStartupIniPath = $StartupIniPath
+	if ([string]::IsNullOrWhiteSpace($effectiveStartupIniPath))
+	{
+		$effectiveStartupIniPath = $startupIniPath
+	}
+	
+	if (-not $effectiveStartupIniPath)
+	{
+		return
+	}
+	
+	# Read the Startup.ini file
+	try
+	{
+		$content = Get-Content -Path $effectiveStartupIniPath -ErrorAction Stop
 		
-		$machineNamePromptText = if ($nodeRole -match '^(?i)(StoreServer|HostServer)$')
+		# Extract DBSERVER
+		$dbServerLine = $content | Where-Object { $_ -match '^DBSERVER=' }
+		if ($dbServerLine)
 		{
-			"Server examples:`nSERVER001  -  SERVER-001  -  0231SERVER001`nRe-enter the current machine name to force a full INI + SQL sync."
-		}
-		elseif ($nodeRole -match '^(?i)Lane$')
-		{
-			"Lane examples:`nPOS001  -  POS-001  -  LN026001  -  0384LANE001  -  001`nRe-enter the current machine name to force a full INI + SQL sync."
-		}
-		else
-		{
-			"Lane examples:`nPOS001  -  POS-001  -  LN026001  -  0384LANE001  -  001`nServer examples:`nSERVER001  -  SERVER-001  -  0231SERVER001`nRe-enter the current machine name to force a full INI + SQL sync."
-		}
-		$promptLineCount = ($machineNamePromptText -split "`n").Count
-		$labelHeight = [Math]::Max(54, (18 * $promptLineCount) + 6)
-		$formClientWidth = 430
-		$formClientHeight = $labelHeight + 112
-		
-		$form = New-Object System.Windows.Forms.Form
-		$form.Text = "Enter New Machine Name"
-		$form.ClientSize = New-Object System.Drawing.Size($formClientWidth, $formClientHeight)
-		$form.StartPosition = "CenterParent"
-		$form.FormBorderStyle = 'FixedDialog'
-		$form.MaximizeBox = $false
-		$form.MinimizeBox = $false
-		$form.ShowInTaskbar = $false
-		
-		$label = New-Object System.Windows.Forms.Label
-		$label.Text = $machineNamePromptText
-		$label.Location = New-Object System.Drawing.Point(10, 15)
-		$label.Size = New-Object System.Drawing.Size(($formClientWidth - 20), $labelHeight)
-		$label.AutoSize = $false
-		
-		$textBox = New-Object System.Windows.Forms.TextBox
-		$textBox.Location = New-Object System.Drawing.Point(10, ($label.Bottom + 10))
-		$textBox.Size = New-Object System.Drawing.Size(($formClientWidth - 20), 22)
-		
-		$okBtn = New-Object System.Windows.Forms.Button
-		$okBtn.Text = "OK"
-		$okBtn.Location = New-Object System.Drawing.Point(([int](($formClientWidth / 2) - 75)), ($textBox.Bottom + 14))
-		$okBtn.Size = New-Object System.Drawing.Size(70, 28)
-		$okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
-		
-		$cancelBtn = New-Object System.Windows.Forms.Button
-		$cancelBtn.Text = "Cancel"
-		$cancelBtn.Location = New-Object System.Drawing.Point(($okBtn.Right + 15), $okBtn.Top)
-		$cancelBtn.Size = New-Object System.Drawing.Size(70, 28)
-		$cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-		
-		$form.Controls.AddRange(@($label, $textBox, $okBtn, $cancelBtn))
-		$form.AcceptButton = $okBtn
-		$form.CancelButton = $cancelBtn
-		
-		$dialogResult = $form.ShowDialog()
-		
-		# PS 5.1-safe: read textbox BEFORE disposing
-		$userInputRaw = $textBox.Text
-		$form.Dispose()
-		
-		if ($dialogResult -ne [System.Windows.Forms.DialogResult]::OK)
-		{
-			return $null
-		}
-		
-		$userInput = $userInputRaw
-		if ($null -eq $userInput) { $userInput = "" }
-		$userInput = $userInput.Trim().ToUpper()
-		
-		if ([string]::IsNullOrEmpty($userInput))
-		{
-			[void][System.Windows.Forms.MessageBox]::Show("Machine name cannot be empty.", "Error")
-			continue
-		}
-		
-		if (-not $script:FunctionResults) { $script:FunctionResults = @{ } }
-		
-		$currentMachineForStyle = Get_Effective_Machine_Name
-		$currentStore = $null
-		if ($script:FunctionResults.ContainsKey('StoreNumber') -and $script:FunctionResults['StoreNumber'])
-		{
-			$currentStore = ($script:FunctionResults['StoreNumber'].ToString()).Trim()
-		}
-		else
-		{
-			$currentStore = Get_Store_Number_From_INI
-			if ($currentStore) { $currentStore = ($currentStore.ToString()).Trim() }
-		}
-		
-		$machineContext = Get_Machine_Name_Context -MachineName $userInput -CurrentMachineName $currentMachineForStyle
-		if (-not $machineContext.Success)
-		{
-			[void][System.Windows.Forms.MessageBox]::Show(
-				$machineContext.ErrorMessage,
-				"Invalid Machine Name",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Error
-			)
-			continue
-		}
-		
-		$normalizedName = $machineContext.MachineName
-		$storePrefixFromName = $machineContext.StorePrefix
-		$currentStoreComparable = $null
-		if ($currentStore -match '^\d{3,4}$')
-		{
-			$currentStoreComparable = [int]$currentStore
-		}
-		
-		if ($storePrefixFromName -and ($storePrefixFromName -match '^\d{3,4}$'))
-		{
-			$storePrefixComparable = [int]$storePrefixFromName
-			if (($null -eq $currentStoreComparable) -or ($storePrefixComparable -ne $currentStoreComparable))
+			$dbServer = $dbServerLine -replace '^DBSERVER=', ''
+			$dbServer = $dbServer.Trim()
+			if (-not $dbServer)
 			{
-				$displayStore = $currentStore
-				if ([string]::IsNullOrEmpty($displayStore)) { $displayStore = "UNKNOWN" }
-				
-				$sync = [System.Windows.Forms.MessageBox]::Show(
-					"Machine name has store prefix '$storePrefixFromName',`nbut current store is '$displayStore'.`n`nUpdate store number to '$storePrefixFromName'?",
-					"Store Number Mismatch",
-					[System.Windows.Forms.MessageBoxButtons]::YesNo,
-					[System.Windows.Forms.MessageBoxIcon]::Question
-				)
-				
-				if ($sync -eq [System.Windows.Forms.DialogResult]::Yes)
-				{
-					$iniParams = @{
-						newStoreNumber = $storePrefixFromName
-						MachineName    = $normalizedName
-						OldMachineName = $currentMachineForStyle
-					}
-					if ($currentStore -match '^\d{3,4}$') { $iniParams["OldStoreNumber"] = $currentStore }
-					
-					$success = Update_INIs @iniParams
-					
-					if ($success)
-					{
-						$script:newStoreNumber = $storePrefixFromName
-						$script:FunctionResults['StoreNumber'] = $storePrefixFromName
-						
-						if ($storeNumberLabel)
-						{
-							$storeNumberLabel.Text = "Store Number: $storePrefixFromName (updated)"
-							$storeNumberLabel.Refresh()
-						}
-					}
-					else
-					{
-						[void][System.Windows.Forms.MessageBox]::Show("Failed to update store number in INI.", "Error")
-						continue
-					}
-				}
+				$dbServer = "localhost"
+			}
+		}
+		else
+		{
+			$dbServer = "localhost"
+		}
+		
+		# Extract DBNAME
+		$dbNameLine = $content | Where-Object { $_ -match '^DBNAME=' }
+		if ($dbNameLine)
+		{
+			$dbName = $dbNameLine -replace '^DBNAME=', ''
+			$dbName = $dbName.Trim()
+			if (-not $dbName)
+			{
+				return
+			}
+		}
+		else
+		{
+			return
+		}
+	}
+	catch
+	{
+		return
+	}
+	
+	$configuredDbServer = $dbServer
+	$resolvedRuntimeDbServer = $configuredDbServer
+	$connectionString = "Server=$configuredDbServer;Database=$dbName;Integrated Security=True;Application Name=MiniGhost;"
+	$candidateServers = New-Object System.Collections.Generic.List[string]
+	$addCandidate = {
+		param (
+			[string]$Candidate
+		)
+		
+		if ([string]::IsNullOrWhiteSpace($Candidate))
+		{
+			return
+		}
+		
+		$normalizedCandidate = $Candidate.Trim()
+		if ([string]::IsNullOrWhiteSpace($normalizedCandidate))
+		{
+			return
+		}
+		
+		foreach ($existingCandidate in $candidateServers)
+		{
+			if ([string]::Equals($existingCandidate, $normalizedCandidate, [System.StringComparison]::OrdinalIgnoreCase))
+			{
+				return
 			}
 		}
 		
-		return $normalizedName
+		[void]$candidateServers.Add($normalizedCandidate)
+	}
+	
+	$configuredHost = $configuredDbServer
+	$instanceName = $null
+	if ($configuredDbServer -match '\\')
+	{
+		$configuredParts = $configuredDbServer.Split('\', 2)
+		$configuredHost = $configuredParts[0].Trim()
+		if ($configuredParts.Count -ge 2 -and -not [string]::IsNullOrWhiteSpace($configuredParts[1]))
+		{
+			$instanceName = $configuredParts[1].Trim()
+		}
+	}
+	
+	$localAliases = @('localhost', '.', '(local)')
+	if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME))
+	{
+		$localAliases += $env:COMPUTERNAME
+	}
+	
+	$isConfiguredLocal = $false
+	foreach ($alias in $localAliases)
+	{
+		if ([string]::Equals($configuredHost, $alias, [System.StringComparison]::OrdinalIgnoreCase))
+		{
+			$isConfiguredLocal = $true
+			break
+		}
+	}
+	
+	if ($isConfiguredLocal)
+	{
+		& $addCandidate $configuredDbServer
+	}
+	
+	if ($instanceName)
+	{
+		foreach ($alias in $localAliases)
+		{
+			& $addCandidate ("{0}\{1}" -f $alias, $instanceName)
+		}
+	}
+	else
+	{
+		foreach ($alias in $localAliases)
+		{
+			& $addCandidate $alias
+		}
+		
+		foreach ($registryPath in @(
+				'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL',
+				'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Microsoft SQL Server\Instance Names\SQL'
+			))
+		{
+			if (-not (Test-Path $registryPath)) { continue }
+			
+			try
+			{
+				$itemProps = Get-ItemProperty -Path $registryPath -ErrorAction Stop
+				foreach ($prop in $itemProps.PSObject.Properties)
+				{
+					if ($prop.Name -in @('PSPath', 'PSParentPath', 'PSChildName', 'PSDrive', 'PSProvider'))
+					{
+						continue
+					}
+					
+					if ([string]::IsNullOrWhiteSpace($prop.Name))
+					{
+						continue
+					}
+					
+					$instanceCandidate = $prop.Name.Trim()
+					foreach ($alias in $localAliases)
+					{
+						& $addCandidate ("{0}\{1}" -f $alias, $instanceCandidate)
+					}
+				}
+			}
+			catch { }
+		}
+	}
+	
+	& $addCandidate $configuredDbServer
+	
+	foreach ($candidateServer in $candidateServers)
+	{
+		$testConnection = $null
+		try
+		{
+			$testConnectionString = "Server=$candidateServer;Database=$dbName;Integrated Security=True;Connect Timeout=3;Application Name=MiniGhost;"
+			$testConnection = New-Object System.Data.SqlClient.SqlConnection($testConnectionString)
+			$testConnection.Open()
+			
+			$resolvedRuntimeDbServer = $candidateServer
+			$connectionString = "Server=$candidateServer;Database=$dbName;Integrated Security=True;Application Name=MiniGhost;"
+			break
+		}
+		catch { }
+		finally
+		{
+			if ($testConnection)
+			{
+				$testConnection.Close()
+				$testConnection.Dispose()
+			}
+		}
+	}
+	
+	# Store configured and runtime database context in the FunctionResults hashtable
+	$script:FunctionResults['ConfiguredDBSERVER'] = $configuredDbServer
+	$script:FunctionResults['DBSERVER'] = $configuredDbServer
+	$script:FunctionResults['RuntimeDBSERVER'] = $resolvedRuntimeDbServer
+	$script:FunctionResults['DBNAME'] = $dbName
+	$script:FunctionResults['ConnectionString'] = $connectionString
+}
+
+# ===================================================================================================
+#                                       FUNCTION: RPT_Blank
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Truncates the specified list of tables in the SQL database.
+# ===================================================================================================
+
+function RPT_Blank
+{
+	param (
+		[string[]]$tables
+	)
+	
+	# Initialize an array to store failed truncate commands
+	$failedTruncateTables = @()
+	
+	# Prepare and execute Truncate Commands
+	foreach ($table in $tables)
+	{
+		$command = "TRUNCATE TABLE $table;"
+		if (-not (Execute_SQL_Commands -commandText $command))
+		{
+			$failedTruncateTables += $table # Add failed table to the array
+		}
+	}
+	
+	# Return the list of failed tables
+	return $failedTruncateTables
+}
+
+# ===================================================================================================
+#                               FUNCTION: Update_SQL_Database
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Runs the newer protected SQL machine/store sync routine used by rename flows so the standalone
+#   "Update SQL Database" button follows the same safer TER/STO/LNK/RUN/STD update path.
+#
+# Parameters:
+#   - CurrentMachineName : Current hostname to use if NewMachineName is empty
+#   - NewMachineName     : Optional override hostname (ex: after rename)
+#   - OperationStatus    : Shared status hashtable (ex: $OperationStatus["SQLDatabaseUpdate"])
+# ===================================================================================================
+
+function Update_SQL_Database
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory)]
+		[string]$CurrentMachineName,
+		[Parameter()]
+		[string]$NewMachineName,
+		[Parameter(Mandatory)]
+		[hashtable]$OperationStatus
+	)
+	
+	try
+	{
+		$storeNumberFromINI = Get_Store_Number_From_INI
+		if ($null -eq $storeNumberFromINI)
+		{
+			[System.Windows.Forms.MessageBox]::Show(
+				"Store number not found in startup.ini.",
+				"Error",
+				[System.Windows.Forms.MessageBoxButtons]::OK,
+				[System.Windows.Forms.MessageBoxIcon]::Error
+			)
+			$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
+			$OperationStatus["SQLDatabaseUpdate"].Message = "Store number not found in startup.ini."
+			$OperationStatus["SQLDatabaseUpdate"].Details = ""
+			return
+		}
+		
+		$storeNumber = ($storeNumberFromINI.ToString()).Trim()
+		
+		$machineName = if (-not [string]::IsNullOrWhiteSpace($NewMachineName)) { $NewMachineName }
+		else { $CurrentMachineName }
+		
+		$machineContext = Get_Machine_Name_Context -MachineName $machineName -CurrentMachineName $CurrentMachineName
+		if (-not $machineContext.Success)
+		{
+			[System.Windows.Forms.MessageBox]::Show(
+				$machineContext.ErrorMessage,
+				"Error",
+				[System.Windows.Forms.MessageBoxButtons]::OK,
+				[System.Windows.Forms.MessageBoxIcon]::Error
+			)
+			$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
+			$OperationStatus["SQLDatabaseUpdate"].Message = "Invalid machine name."
+			$OperationStatus["SQLDatabaseUpdate"].Details = $machineContext.ErrorMessage
+			return
+		}
+		
+		$machineName = $machineContext.MachineName
+		$machineNumber = $machineContext.MachineNumber
+		
+		$sqlUpdateResult = Update_SQL_Tables_For_Machine_Name_Change `
+															 -storeNumber $storeNumber `
+															 -machineName $machineName `
+															 -machineNumber $machineNumber `
+															 -OldMachineName $CurrentMachineName
+		
+		if ($sqlUpdateResult -and $sqlUpdateResult.Success)
+		{
+			$details = "Protected SQL sync completed."
+			if ($sqlUpdateResult.ContainsKey('RunTabUpdated'))
+			{
+				$details += " RUN updated: $($sqlUpdateResult.RunTabUpdated)."
+			}
+			if ($sqlUpdateResult.ContainsKey('LocalTerminalDB'))
+			{
+				$details += " Local terminal DB: $($sqlUpdateResult.LocalTerminalDB)."
+			}
+			
+			$OperationStatus["SQLDatabaseUpdate"].Status = "Successful"
+			$OperationStatus["SQLDatabaseUpdate"].Message = "SQL database updated successfully."
+			$OperationStatus["SQLDatabaseUpdate"].Details = $details
+			[System.Windows.Forms.MessageBox]::Show(
+				"SQL database updated successfully.",
+				"Success",
+				[System.Windows.Forms.MessageBoxButtons]::OK,
+				[System.Windows.Forms.MessageBoxIcon]::Information
+			)
+		}
+		else
+		{
+			$failedSqlCommands = @()
+			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('FailedCommands') -and $sqlUpdateResult.FailedCommands)
+			{
+				$failedSqlCommands = @($sqlUpdateResult.FailedCommands)
+			}
+			
+			$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
+			$OperationStatus["SQLDatabaseUpdate"].Message = "Failed to update SQL database."
+			$OperationStatus["SQLDatabaseUpdate"].Details = if ($failedSqlCommands.Count -gt 0) { "Failed SQL commands are listed below." }
+			else { "SQL update result indicated failure." }
+			[System.Windows.Forms.MessageBox]::Show(
+				"Failed to update SQL database.",
+				"Error",
+				[System.Windows.Forms.MessageBoxButtons]::OK,
+				[System.Windows.Forms.MessageBoxIcon]::Error
+			)
+			
+			if ($failedSqlCommands.Count -gt 0)
+			{
+				$failedCommandsForm = New-Object System.Windows.Forms.Form
+				$failedCommandsForm.Text = "Failed SQL Commands"
+				$failedCommandsForm.Size = New-Object System.Drawing.Size(600, 400)
+				$failedCommandsForm.StartPosition = "CenterParent"
+				
+				$textBox = New-Object System.Windows.Forms.TextBox
+				$textBox.Multiline = $true
+				$textBox.ReadOnly = $true
+				$textBox.ScrollBars = "Vertical"
+				$textBox.Dock = "Fill"
+				$textBox.Text = $failedSqlCommands -join "`r`n`r`n"
+				
+				$failedCommandsForm.Controls.Add($textBox)
+				[void]$failedCommandsForm.ShowDialog()
+			}
+		}
+	}
+	catch
+	{
+		$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
+		$OperationStatus["SQLDatabaseUpdate"].Message = "Unhandled error during SQL update."
+		$OperationStatus["SQLDatabaseUpdate"].Details = $_.Exception.Message
+		
+		[System.Windows.Forms.MessageBox]::Show(
+			"Unhandled error:`r`n$($_.Exception.Message)",
+			"Error",
+			[System.Windows.Forms.MessageBoxButtons]::OK,
+			[System.Windows.Forms.MessageBoxIcon]::Error
+		)
 	}
 }
 
@@ -4885,514 +4344,98 @@ IF OBJECT_ID('Std_Load', 'V') IS NOT NULL DROP VIEW Std_Load;
 }
 
 # ===================================================================================================
-#                                       FUNCTION: RPT_Blank
+#                             FUNCTION: Update_SQL_Tables_For_Store_Number_Change
 # ---------------------------------------------------------------------------------------------------
 # Description:
-#   Truncates the specified list of tables in the SQL database.
+#   Updates STD_TAB in the SQL database after store number change.
 # ===================================================================================================
 
-function RPT_Blank
+function Update_SQL_Tables_For_Store_Number_Change
 {
 	param (
-		[string[]]$tables
+		[string]$storeNumber # New store number to apply
 	)
 	
-	# Initialize an array to store failed truncate commands
-	$failedTruncateTables = @()
+	# =============================
+	# TABLE NAMES
+	# =============================
+	$stdTableName = "STD_TAB"
+	$terTableName = "TER_TAB"
 	
-	# Prepare and execute Truncate Commands
-	foreach ($table in $tables)
+	# =============================
+	# SQL FOR STD_TAB
+	# =============================
+	
+	# Create view (required by Storeman load process)
+	$createViewCommandStd = @"
+IF OBJECT_ID('Std_Load', 'V') IS NOT NULL DROP VIEW Std_Load;
+EXEC(N'
+CREATE VIEW Std_Load AS
+SELECT F1056
+FROM $stdTableName;
+');
+"@
+	
+	# Update STD_TAB.F1056 to the new store number
+	$updateStdTabCommand = @"
+UPDATE $stdTableName
+SET F1056 = '$storeNumber';
+"@
+	
+	# Drop the view
+	$dropViewCommandStd = "DROP VIEW Std_Load;"
+	
+	
+	# =============================
+	# SQL FOR TER_TAB
+	# =============================
+	# Only update rows where F1057 = '901'
+	# This ensures ONLY the back-office record gets changed
+	# and does NOT break lane entries.
+	# =============================
+	$updateTerTabCommand = @"
+UPDATE $terTableName
+SET F1056 = '$storeNumber'
+WHERE F1057 = '901';
+"@
+	
+	
+	# =============================
+	# EXECUTION PIPELINE
+	# =============================
+	$sqlCommands = @(
+		$createViewCommandStd,
+		$updateStdTabCommand,
+		$dropViewCommandStd,
+		$updateTerTabCommand # <-- NEW COMMAND
+	)
+	
+	$allSqlSuccessful = $true
+	$failedSqlCommands = @()
+	
+	foreach ($command in $sqlCommands)
 	{
-		$command = "TRUNCATE TABLE $table;"
+		# Execute_SQL_Commands is part of your existing framework
+		# so no changes here.
 		if (-not (Execute_SQL_Commands -commandText $command))
 		{
-			$failedTruncateTables += $table # Add failed table to the array
+			$allSqlSuccessful = $false
+			$failureMessage = if (-not [string]::IsNullOrWhiteSpace($script:LastSqlExecutionError)) { $script:LastSqlExecutionError } else { "Unknown SQL execution failure." }
+			$failedSqlCommands += ("Error: " + $failureMessage + "`r`nSQL:`r`n" + $command)
 		}
 	}
 	
-	# Return the list of failed tables
-	return $failedTruncateTables
-}
-
-# ===================================================================================================
-#                               FUNCTION: Update_SQL_Database
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Runs the newer protected SQL machine/store sync routine used by rename flows so the standalone
-#   "Update SQL Database" button follows the same safer TER/STO/LNK/RUN/STD update path.
-#
-# Parameters:
-#   - CurrentMachineName : Current hostname to use if NewMachineName is empty
-#   - NewMachineName     : Optional override hostname (ex: after rename)
-#   - OperationStatus    : Shared status hashtable (ex: $OperationStatus["SQLDatabaseUpdate"])
-# ===================================================================================================
-
-function Update_SQL_Database
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory)]
-		[string]$CurrentMachineName,
-		[Parameter()]
-		[string]$NewMachineName,
-		[Parameter(Mandatory)]
-		[hashtable]$OperationStatus
-	)
-	
-	try
-	{
-		$storeNumberFromINI = Get_Store_Number_From_INI
-		if ($null -eq $storeNumberFromINI)
-		{
-			[System.Windows.Forms.MessageBox]::Show(
-				"Store number not found in startup.ini.",
-				"Error",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Error
-			)
-			$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
-			$OperationStatus["SQLDatabaseUpdate"].Message = "Store number not found in startup.ini."
-			$OperationStatus["SQLDatabaseUpdate"].Details = ""
-			return
-		}
-		
-		$storeNumber = ($storeNumberFromINI.ToString()).Trim()
-		
-		$machineName = if (-not [string]::IsNullOrWhiteSpace($NewMachineName)) { $NewMachineName }
-		else { $CurrentMachineName }
-		
-		$machineContext = Get_Machine_Name_Context -MachineName $machineName -CurrentMachineName $CurrentMachineName
-		if (-not $machineContext.Success)
-		{
-			[System.Windows.Forms.MessageBox]::Show(
-				$machineContext.ErrorMessage,
-				"Error",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Error
-			)
-			$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
-			$OperationStatus["SQLDatabaseUpdate"].Message = "Invalid machine name."
-			$OperationStatus["SQLDatabaseUpdate"].Details = $machineContext.ErrorMessage
-			return
-		}
-		
-		$machineName = $machineContext.MachineName
-		$machineNumber = $machineContext.MachineNumber
-		
-		$sqlUpdateResult = Update_SQL_Tables_For_Machine_Name_Change `
-															 -storeNumber $storeNumber `
-															 -machineName $machineName `
-															 -machineNumber $machineNumber `
-															 -OldMachineName $CurrentMachineName
-		
-		if ($sqlUpdateResult -and $sqlUpdateResult.Success)
-		{
-			$details = "Protected SQL sync completed."
-			if ($sqlUpdateResult.ContainsKey('RunTabUpdated'))
-			{
-				$details += " RUN updated: $($sqlUpdateResult.RunTabUpdated)."
-			}
-			if ($sqlUpdateResult.ContainsKey('LocalTerminalDB'))
-			{
-				$details += " Local terminal DB: $($sqlUpdateResult.LocalTerminalDB)."
-			}
-			
-			$OperationStatus["SQLDatabaseUpdate"].Status = "Successful"
-			$OperationStatus["SQLDatabaseUpdate"].Message = "SQL database updated successfully."
-			$OperationStatus["SQLDatabaseUpdate"].Details = $details
-			[System.Windows.Forms.MessageBox]::Show(
-				"SQL database updated successfully.",
-				"Success",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Information
-			)
-		}
-		else
-		{
-			$failedSqlCommands = @()
-			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('FailedCommands') -and $sqlUpdateResult.FailedCommands)
-			{
-				$failedSqlCommands = @($sqlUpdateResult.FailedCommands)
-			}
-			
-			$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
-			$OperationStatus["SQLDatabaseUpdate"].Message = "Failed to update SQL database."
-			$OperationStatus["SQLDatabaseUpdate"].Details = if ($failedSqlCommands.Count -gt 0) { "Failed SQL commands are listed below." }
-			else { "SQL update result indicated failure." }
-			[System.Windows.Forms.MessageBox]::Show(
-				"Failed to update SQL database.",
-				"Error",
-				[System.Windows.Forms.MessageBoxButtons]::OK,
-				[System.Windows.Forms.MessageBoxIcon]::Error
-			)
-			
-			if ($failedSqlCommands.Count -gt 0)
-			{
-				$failedCommandsForm = New-Object System.Windows.Forms.Form
-				$failedCommandsForm.Text = "Failed SQL Commands"
-				$failedCommandsForm.Size = New-Object System.Drawing.Size(600, 400)
-				$failedCommandsForm.StartPosition = "CenterParent"
-				
-				$textBox = New-Object System.Windows.Forms.TextBox
-				$textBox.Multiline = $true
-				$textBox.ReadOnly = $true
-				$textBox.ScrollBars = "Vertical"
-				$textBox.Dock = "Fill"
-				$textBox.Text = $failedSqlCommands -join "`r`n`r`n"
-				
-				$failedCommandsForm.Controls.Add($textBox)
-				[void]$failedCommandsForm.ShowDialog()
-			}
-		}
-	}
-	catch
-	{
-		$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
-		$OperationStatus["SQLDatabaseUpdate"].Message = "Unhandled error during SQL update."
-		$OperationStatus["SQLDatabaseUpdate"].Details = $_.Exception.Message
-		
-		[System.Windows.Forms.MessageBox]::Show(
-			"Unhandled error:`r`n$($_.Exception.Message)",
-			"Error",
-			[System.Windows.Forms.MessageBoxButtons]::OK,
-			[System.Windows.Forms.MessageBoxIcon]::Error
-		)
-	}
-}
-
-# ===================================================================================================
-#                         FUNCTION: Invoke_Machine_Name_Change_Workflow
-# ---------------------------------------------------------------------------------------------------
-# Description:
-# Coordinates the machine-name action from the GUI. If the requested name matches the current name,
-# the workflow skips Rename-Computer and still performs the full INI + SQL sync.
-# ===================================================================================================
-
-function Invoke_Machine_Name_Change_Workflow
-{
-	[CmdletBinding()]
-	param (
-		[Parameter(Mandatory = $true)]
-		[string]$RequestedMachineName,
-		[Parameter(Mandatory = $false)]
-		[hashtable]$OperationStatus
-	)
-	
-	$oldMachineName = $env:COMPUTERNAME
-	$machineContext = Get_Machine_Name_Context -MachineName $RequestedMachineName -CurrentMachineName $oldMachineName
-	if (-not $machineContext.Success)
-	{
-		Show_App_Message -Text $machineContext.ErrorMessage -Title "Error" -Icon Error | Out-Null
-		Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Failed" -Message "Invalid machine name." -Details $machineContext.ErrorMessage
-		return
-	}
-	
-	$confirmMessage = $null
-	$confirmTitle = $null
-	if ($machineContext.IsSameMachineName)
-	{
-		$confirmMessage = "The requested machine name matches the current machine name '$($machineContext.MachineName)'.`n`nRun a full INI + SQL sync anyway?"
-		$confirmTitle = "Confirm Machine Sync"
-	}
-	else
-	{
-		$confirmMessage = "Are you sure you want to change the machine name to '$($machineContext.MachineName)' and run the full INI + SQL sync?"
-		$confirmTitle = "Confirm Machine Name Change"
-	}
-	
-	$result = Show_App_Message -Text $confirmMessage -Title $confirmTitle -Buttons YesNo -Icon Question
-	if ($result -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-	
-	$currentStoreNumber = Get_Store_Number_From_INI
-	if (-not $currentStoreNumber)
-	{
-		Show_App_Message -Text "Store number not found in startup.ini." -Title "Error" -Icon Error | Out-Null
-		Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Failed" -Message "Store number not found in startup.ini." -Details ""
-		return
-	}
-	
-	$startupIniPath = Resolve_Startup_Ini_Path -StartupIniPath $StartupIniPath
-	$renamePerformed = $false
-	$script:newMachineName = $machineContext.MachineName
-	
-	try
-	{
-		if (-not $machineContext.IsSameMachineName)
-		{
-			Rename-Computer -NewName $machineContext.MachineName -Force -ErrorAction Stop
-			$renamePerformed = $true
-			
-			Set_Label_Text -Label $script:machineNameLabel -Text "The machine name will change from: $env:COMPUTERNAME to $script:newMachineName" -RefreshParent -ProcessEvents
-			Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Successful" -Message "Machine name changed successfully." -Details "Machine name changed to '$script:newMachineName'."
-			
-			& 'Remove_Old_XZ_Folders' -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
-		}
-		
-		$syncResult = Invoke_Machine_Name_Sync -StoreNumber $currentStoreNumber -MachineName $machineContext.MachineName -OldMachineName $oldMachineName -MachineContext $machineContext -StartupIniPath $startupIniPath -OperationStatus $OperationStatus
-		$syncFailureLogText = $null
-		if (-not $syncResult.Success)
-		{
-			$syncFailureLogParts = @(
-				"Machine Name:`r`n$($machineContext.MachineName)",
-				"Store Number:`r`n$currentStoreNumber"
-			)
-			
-			if (-not $syncResult.IniSyncSuccess -or -not $syncResult.StartupIniSuccess)
-			{
-				$iniSectionParts = @()
-				
-				if ($syncResult.IniSyncError)
-				{
-					$iniSectionParts += "Update_INIs Error:`r`n$($syncResult.IniSyncError)"
-				}
-				
-				if ($syncResult.StartupIniError)
-				{
-					$iniSectionParts += "Startup.ini Error:`r`n$($syncResult.StartupIniError)"
-				}
-				
-				if ($syncResult.StartupIniDetails)
-				{
-					$iniSectionParts += "Additional Details:`r`n$($syncResult.StartupIniDetails)"
-				}
-				elseif ($OperationStatus -and $OperationStatus.ContainsKey("StartupIniUpdate") -and $OperationStatus["StartupIniUpdate"].Details)
-				{
-					$iniSectionParts += "Operation Status Details:`r`n$($OperationStatus["StartupIniUpdate"].Details)"
-				}
-				
-				if ($iniSectionParts.Count -gt 0)
-				{
-					$syncFailureLogParts += "INI Sync:`r`n$($iniSectionParts -join "`r`n`r`n")"
-				}
-			}
-			
-			if (-not $syncResult.SqlSyncSuccess)
-			{
-				$sqlSectionParts = @()
-				
-				if ($syncResult.SqlSyncError)
-				{
-					$sqlSectionParts += "SQL Sync Error:`r`n$($syncResult.SqlSyncError)"
-				}
-				
-				if ($syncResult.SqlResult)
-				{
-					if ($syncResult.SqlResult.ContainsKey('DatabaseContext') -and $syncResult.SqlResult.DatabaseContext)
-					{
-						$sqlSectionParts += "Database Context:`r`n$($syncResult.SqlResult.DatabaseContext)"
-					}
-					
-					if ($syncResult.SqlResult.ContainsKey('DBNAME') -and $syncResult.SqlResult.DBNAME)
-					{
-						$sqlSectionParts += "DBNAME:`r`n$($syncResult.SqlResult.DBNAME)"
-					}
-					
-					if ($syncResult.SqlResult.ContainsKey('ConfiguredDBSERVER') -and $syncResult.SqlResult.ConfiguredDBSERVER)
-					{
-						$sqlSectionParts += "Configured DBSERVER:`r`n$($syncResult.SqlResult.ConfiguredDBSERVER)"
-					}
-					elseif ($syncResult.ConfiguredDbServer)
-					{
-						$sqlSectionParts += "Configured DBSERVER:`r`n$($syncResult.ConfiguredDbServer)"
-					}
-					
-					if ($syncResult.SqlResult.ContainsKey('RuntimeDBSERVER') -and $syncResult.SqlResult.RuntimeDBSERVER)
-					{
-						$sqlSectionParts += "Runtime SQL Target:`r`n$($syncResult.SqlResult.RuntimeDBSERVER)"
-					}
-					elseif ($syncResult.RuntimeDbServer)
-					{
-						$sqlSectionParts += "Runtime SQL Target:`r`n$($syncResult.RuntimeDbServer)"
-					}
-					
-					if ($syncResult.SqlResult.ContainsKey('FailedCommands') -and $syncResult.SqlResult.FailedCommands)
-					{
-						$sqlSectionParts += "Failed SQL Commands:`r`n$($syncResult.SqlResult.FailedCommands -join "`r`n`r`n")"
-					}
-				}
-				elseif ($OperationStatus -and $OperationStatus.ContainsKey("SQLDatabaseUpdate") -and $OperationStatus["SQLDatabaseUpdate"].Details)
-				{
-					$sqlSectionParts += "Operation Status Details:`r`n$($OperationStatus["SQLDatabaseUpdate"].Details)"
-				}
-				
-				if ($sqlSectionParts.Count -gt 0)
-				{
-					$syncFailureLogParts += "SQL Sync:`r`n$($sqlSectionParts -join "`r`n`r`n")"
-				}
-			}
-			
-			$syncFailureLogText = ($syncFailureLogParts -join "`r`n`r`n").Trim()
-		}
-		
-		if ($machineContext.IsSameMachineName)
-		{
-			if ($syncResult.Success)
-			{
-				Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Successful" -Message "Machine settings synced successfully." -Details "Requested machine name already matched '$script:newMachineName'; full INI + SQL sync was run without renaming."
-				Set_Label_Text -Label $script:machineNameLabel -Text "Current Machine Name: $script:newMachineName (sync refreshed)" -RefreshParent
-				Show_App_Message -Text "Full INI + SQL sync completed for '$script:newMachineName'. No reboot is required because the machine name did not change." -Title "Sync Complete" -Icon Information | Out-Null
-			}
-			else
-			{
-				Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Failed" -Message "Machine sync completed with errors." -Details "Requested machine name already matched '$script:newMachineName', but one or more INI/SQL updates failed."
-				if ($syncFailureLogText)
-				{
-					[void](Show_Action_Prompt_With_Log -Text "Same-name sync ran, but one or more INI/SQL updates failed.`r`n`r`nUse View Log to see the failure reasons, or use Summary for the full operation status." -Title "Sync Completed With Errors" -PrimaryButtonText "OK" -LogText $syncFailureLogText -LogTitle "Sync Failure Log")
-				}
-				else
-				{
-					Show_App_Message -Text "Same-name sync ran, but one or more INI/SQL updates failed. Review the summary for details." -Title "Sync Completed With Errors" -Icon Warning | Out-Null
-				}
-			}
-		}
-		elseif ($renamePerformed)
-		{
-			$rebootMessage = if ($syncResult.Success)
-			{
-				"Machine name changed successfully to '$script:newMachineName'. The system will need to reboot for changes to take effect. Do you want to reboot now?"
-			}
-			else
-			{
-				"Machine name changed to '$script:newMachineName', but one or more INI/SQL updates failed. A reboot is still required for the rename. Do you want to reboot now?"
-			}
-			
-			$rebootIcon = if ($syncResult.Success)
-			{
-				[System.Windows.Forms.MessageBoxIcon]::Information
-			}
-			else
-			{
-				[System.Windows.Forms.MessageBoxIcon]::Warning
-			}
-			
-			$rebootResult = $null
-			if (-not $syncResult.Success -and $syncFailureLogText)
-			{
-				$rebootResult = Show_Action_Prompt_With_Log -Text ($rebootMessage + "`r`n`r`nUse View Log to see the failure reasons.") -Title "Machine Rename Complete" -PrimaryButtonText "Reboot Now" -SecondaryButtonText "Later" -LogText $syncFailureLogText -LogTitle "Sync Failure Log"
-			}
-			else
-			{
-				$rebootResult = Show_App_Message -Text $rebootMessage -Title "Machine Rename Complete" -Buttons YesNo -Icon $rebootIcon.ToString()
-			}
-			
-			if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes -or $rebootResult -eq "Primary")
-			{
-				Restart-Computer -Force
-			}
-		}
-	}
-	catch
-	{
-		$errorMessage = $_.Exception.Message
-		Show_App_Message -Text "Error changing machine name: $errorMessage" -Title "Error" -Icon Error | Out-Null
-		Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Failed" -Message "Error changing machine name." -Details "Error: $errorMessage"
-	}
-}
-
-# ===================================================================================================
-#                                       FUNCTION: Remove_GT_Registry_Values
-# ---------------------------------------------------------------------------------------------------
-# Description:
-#   Removes all registry values starting with 'GT' from specified registry paths.
-# ===================================================================================================
-
-function Remove_GT_Registry_Values
-{
-	# Define registry paths for 32-bit and 64-bit
-	$regPath32 = "HKLM:\SOFTWARE\Store Management\Counters"
-	$regPath64 = "HKLM:\SOFTWARE\Wow6432Node\Store Management\Counters"
-	
-	$is64bit = [System.Environment]::Is64BitOperatingSystem
-	
-	$totalDeletedCount = 0
-	$success = $true
-	$status = "Successful"
-	$message = ""
-	
-	# Build list of candidate paths (prefer Wow6432Node on 64-bit, but include both if present)
-	$pathsToCheck = @()
-	
-	if ($is64bit)
-	{
-		if (Test-Path $regPath64) { $pathsToCheck += $regPath64 }
-		if (Test-Path $regPath32) { $pathsToCheck += $regPath32 }
-	}
-	else
-	{
-		if (Test-Path $regPath32) { $pathsToCheck += $regPath32 }
-	}
-	
-	if (-not $pathsToCheck -or $pathsToCheck.Count -eq 0)
-	{
-		return @{
-			Success	     = $false
-			Status	     = "Failed"
-			DeletedCount = 0
-			Message	     = "No valid registry paths found for the current environment."
-		}
-	}
-	
-	foreach ($path in $pathsToCheck)
-	{
-		try
-		{
-			# Get value names from the key by inspecting item properties
-			# (Get-ItemProperty returns a PSCustomObject with properties = value names + PS metadata)
-			$itemProps = Get-ItemProperty -Path $path -ErrorAction Stop
-			
-			# Collect only real registry value names starting with GT (exclude PS metadata props)
-			$gtNames = @()
-			foreach ($p in $itemProps.PSObject.Properties)
-			{
-				if ($p.Name -eq 'PSPath') { continue }
-				if ($p.Name -eq 'PSParentPath') { continue }
-				if ($p.Name -eq 'PSChildName') { continue }
-				if ($p.Name -eq 'PSDrive') { continue }
-				if ($p.Name -eq 'PSProvider') { continue }
-				
-				if ($p.Name -like 'GT*')
-				{
-					$gtNames += $p.Name
-				}
-			}
-			
-			# Delete each GT* value
-			foreach ($name in $gtNames)
-			{
-				try
-				{
-					Remove-ItemProperty -Path $path -Name $name -ErrorAction Stop
-					$totalDeletedCount++
-				}
-				catch
-				{
-					# Keep going but mark overall as partial failure
-					$success = $false
-					$status = "Failed"
-					if ($message) { $message += " | " }
-					$message += "Failed to delete '$name' in '$path': $_"
-				}
-			}
-		}
-		catch
-		{
-			$success = $false
-			$status = "Failed"
-			if ($message) { $message += " | " }
-			$message += "Error accessing registry path '$path': $_"
-		}
-	}
-	
+	# =============================
+	# RETURN STRUCTURED RESULT
+	# =============================
 	return @{
-		Success	     = $success
-		Status	     = $status
-		DeletedCount = $totalDeletedCount
-		Message	     = $message
+		Success	       = $allSqlSuccessful
+		FailedCommands = $failedSqlCommands
 	}
 }
 
 # ===================================================================================================
-#                              FUNCTION: Delete_Files/Folders
+#                              FUNCTION: Delete_Files_And_Folders
 # ---------------------------------------------------------------------------------------------------
 # Description:
 #   Deletes specified files within a directory, supporting wildcards and exclusions.
@@ -5404,7 +4447,7 @@ function Remove_GT_Registry_Values
 #     - AsJob: (Optional) Runs the deletion process as a background job.
 # ===================================================================================================
 
-function Delete_Files/Folders
+function Delete_Files_And_Folders
 {
 	[CmdletBinding()]
 	param (
@@ -5683,6 +4726,963 @@ function Delete_Files/Folders
 }
 
 # ===================================================================================================
+#                                       FUNCTION: Get_Active_IP_Config
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Retrieves the active IP configuration for network adapters that are up and have valid IPv4 addresses.
+#   Optimized for performance by prefiltering and minimizing pipeline overhead.
+#   Attempts WMI first for compatibility, falls back to NetAdapter methods if WMI fails.
+# ===================================================================================================
+
+function Get_Active_IP_Config
+{
+	try
+	{
+		# WMI attempt: Get default route from Win32_IP4RouteTable
+		$defaultRoute = Get-WmiObject -Class Win32_IP4RouteTable -ErrorAction Stop |
+		Where-Object { $_.Destination -eq '0.0.0.0' -and $_.Mask -eq '0.0.0.0' -and $_.NextHop -ne '0.0.0.0' } |
+		Sort-Object -Property Metric1 |
+		Select-Object -First 1
+		
+		if ($defaultRoute -and $defaultRoute.InterfaceIndex)
+		{
+			$idx = [int]$defaultRoute.InterfaceIndex
+			
+			# Check adapter status via Win32_NetworkAdapter (NetConnectionStatus 2 = Connected)
+			$ad = Get-WmiObject -Class Win32_NetworkAdapter -Filter "DeviceID = $idx" -ErrorAction SilentlyContinue
+			if ($ad -and $ad.NetConnectionStatus -eq 2)
+			{
+				# Get config via Win32_NetworkAdapterConfiguration
+				$wmiCfg = Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter "Index = $idx" -ErrorAction SilentlyContinue
+				if ($wmiCfg -and $wmiCfg.IPEnabled -and $wmiCfg.DefaultIPGateway)
+				{
+					# Filter for valid IPv4 (non-APIPA)
+					$validIPs = $wmiCfg.IPAddress | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' -and $_ -notmatch '^169\.254\.' }
+					if ($validIPs)
+					{
+						# Construct a custom object similar to Get-NetIPConfiguration for consistency
+						$ipv4Address = [PSCustomObject]@{
+							IPAddress    = $validIPs[0]
+							PrefixLength = ($wmiCfg.IPSubnet | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' })[0] | ForEach-Object {
+								[int]([math]::Log([uint32]::MaxValue -bxor ([ipaddress]$_).Address, 2)) + 1
+							}
+						}
+						$cfg = [PSCustomObject]@{
+							InterfaceAlias	   = $ad.NetConnectionID
+							InterfaceIndex	   = $idx
+							IPv4Address	       = $ipv4Address
+							IPv4DefaultGateway = [PSCustomObject]@{ NextHop = $wmiCfg.DefaultIPGateway[0] }
+							DNSServer		   = $wmiCfg.DNSServerSearchOrder
+							# Add more properties if needed for parity
+						}
+						return @($cfg) # Return as array for consistent .Count / [0]
+					}
+				}
+			}
+		}
+	}
+	catch
+	{
+		# Ignore and fall back to original methods
+	}
+	
+	# =========================================================================================
+	# FALLBACK: Original approach (NetRoute/NetAdapter/NetIPConfiguration)
+	# =========================================================================================
+	
+	try
+	{
+		$defaultRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction Stop |
+		Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } |
+		Sort-Object -Property RouteMetric, InterfaceMetric |
+		Select-Object -First 1
+		
+		if ($defaultRoute -and $defaultRoute.InterfaceIndex)
+		{
+			$idx = [int]$defaultRoute.InterfaceIndex
+			
+			# Ensure adapter is Up (do NOT restrict to -Physical here; active interface might be Wi-Fi/VPN/etc.)
+			$ad = Get-NetAdapter -InterfaceIndex $idx -ErrorAction SilentlyContinue
+			if ($ad -and $ad.Status -eq 'Up')
+			{
+				# Make sure there is at least one valid IPv4 (non-APIPA) on this interface
+				$ipRow = Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+				Where-Object { $_.IPAddress -and $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -ne '0.0.0.0' } |
+				Select-Object -First 1
+				
+				if ($ipRow)
+				{
+					$cfg = Get-NetIPConfiguration -InterfaceIndex $idx -ErrorAction SilentlyContinue
+					if ($cfg -and $cfg.IPv4Address)
+					{
+						# Validate IPv4Address (can be array). If any non-APIPA exists, return it.
+						$hasValid = $false
+						foreach ($addr in @($cfg.IPv4Address))
+						{
+							if ($addr -and $addr.IPAddress -and ($addr.IPAddress -notlike '169.254.*'))
+							{
+								$hasValid = $true
+								break
+							}
+						}
+						
+						if ($hasValid)
+						{
+							return @($cfg) # return as array for consistent .Count / [0]
+						}
+					}
+				}
+			}
+		}
+	}
+	catch
+	{
+		# ignore and fall back
+	}
+	
+	# =========================================================================================
+	# SECONDARY FALLBACK: Physical + Up adapters -> Get-NetIPConfiguration
+	# =========================================================================================
+	
+	# Prefilter by adapter status to reduce objects early
+	$adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up'
+	if (-not $adapters) { return $null }
+	
+	# Get only configs for up adapters
+	$adapterNames = $adapters | Select-Object -ExpandProperty Name
+	$ipConfigs = Get-NetIPConfiguration -InterfaceAlias $adapterNames -ErrorAction SilentlyContinue
+	
+	# Filter for valid IPv4 (not APIPA/169.254.x.x, not null)
+	$validConfigs = $ipConfigs | Where-Object {
+		$_.IPv4Address -and
+		$_.IPv4Address.IPAddress -and
+		($_.IPv4Address.IPAddress -notlike '169.254*')
+	}
+	
+	if ($validConfigs) { return @($validConfigs) }
+	return $null
+}
+
+# ===================================================================================================
+#                                       FUNCTION: Remove_GT_Registry_Values
+# ---------------------------------------------------------------------------------------------------
+# Description:
+#   Removes all registry values starting with 'GT' from specified registry paths.
+# ===================================================================================================
+
+function Remove_GT_Registry_Values
+{
+	# Define registry paths for 32-bit and 64-bit
+	$regPath32 = "HKLM:\SOFTWARE\Store Management\Counters"
+	$regPath64 = "HKLM:\SOFTWARE\Wow6432Node\Store Management\Counters"
+	
+	$is64bit = [System.Environment]::Is64BitOperatingSystem
+	
+	$totalDeletedCount = 0
+	$success = $true
+	$status = "Successful"
+	$message = ""
+	
+	# Build list of candidate paths (prefer Wow6432Node on 64-bit, but include both if present)
+	$pathsToCheck = @()
+	
+	if ($is64bit)
+	{
+		if (Test-Path $regPath64) { $pathsToCheck += $regPath64 }
+		if (Test-Path $regPath32) { $pathsToCheck += $regPath32 }
+	}
+	else
+	{
+		if (Test-Path $regPath32) { $pathsToCheck += $regPath32 }
+	}
+	
+	if (-not $pathsToCheck -or $pathsToCheck.Count -eq 0)
+	{
+		return @{
+			Success	     = $false
+			Status	     = "Failed"
+			DeletedCount = 0
+			Message	     = "No valid registry paths found for the current environment."
+		}
+	}
+	
+	foreach ($path in $pathsToCheck)
+	{
+		try
+		{
+			# Get value names from the key by inspecting item properties
+			# (Get-ItemProperty returns a PSCustomObject with properties = value names + PS metadata)
+			$itemProps = Get-ItemProperty -Path $path -ErrorAction Stop
+			
+			# Collect only real registry value names starting with GT (exclude PS metadata props)
+			$gtNames = @()
+			foreach ($p in $itemProps.PSObject.Properties)
+			{
+				if ($p.Name -eq 'PSPath') { continue }
+				if ($p.Name -eq 'PSParentPath') { continue }
+				if ($p.Name -eq 'PSChildName') { continue }
+				if ($p.Name -eq 'PSDrive') { continue }
+				if ($p.Name -eq 'PSProvider') { continue }
+				
+				if ($p.Name -like 'GT*')
+				{
+					$gtNames += $p.Name
+				}
+			}
+			
+			# Delete each GT* value
+			foreach ($name in $gtNames)
+			{
+				try
+				{
+					Remove-ItemProperty -Path $path -Name $name -ErrorAction Stop
+					$totalDeletedCount++
+				}
+				catch
+				{
+					# Keep going but mark overall as partial failure
+					$success = $false
+					$status = "Failed"
+					if ($message) { $message += " | " }
+					$message += "Failed to delete '$name' in '$path': $_"
+				}
+			}
+		}
+		catch
+		{
+			$success = $false
+			$status = "Failed"
+			if ($message) { $message += " | " }
+			$message += "Error accessing registry path '$path': $_"
+		}
+	}
+	
+	return @{
+		Success	     = $success
+		Status	     = $status
+		DeletedCount = $totalDeletedCount
+		Message	     = $message
+	}
+}
+
+# ===================================================================================================
+# FUNCTION: Remove_Old_XZ_Folders
+# ---------------------------------------------------------------------------------------------------
+# Description:
+# Removes old X* and Z* folders under \storeman\office that do NOT match the NEW store and allowed
+# terminal numbers.
+#
+# Strict folder name pattern acted upon:
+#   ^(X|Z)[A-Za-z](store 3-4 digits)(terminal 3 digits)$
+# Examples: XF0231006, XW0242901, ZF1234006, ZW1234901
+#
+# Keeps ONLY folders that match:
+#   - Store = new store (3-digit OR 4-digit representation)
+#   - Terminal IN: current lane terminal (from MachineName), 900, 901
+#
+# Safeguard: refuses to run if extracted terminal is 901 unless -AllowBackoffice is passed.
+# Automatic: no prompts.
+# ===================================================================================================
+
+function Remove_Old_XZ_Folders
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$StoreNumber,
+		[Parameter(Mandatory = $true)]
+		[string]$MachineName,
+		[Parameter(Mandatory = $false)]
+		[hashtable]$OperationStatus,
+		[Parameter(Mandatory = $false)]
+		[switch]$AllowBackoffice
+	)
+	
+	# -----------------------------
+	# Init / status bucket
+	# -----------------------------
+	$deletedFolders = @()
+	$failedToDeleteFolders = @()
+	$anyFoldersSeen = $false
+	$anyCandidatesMatched = $false
+	
+	if ($OperationStatus)
+	{
+		if (-not $OperationStatus.ContainsKey("OldXFoldersDeletion"))
+		{
+			$OperationStatus["OldXFoldersDeletion"] = [pscustomobject]@{
+				Status  = ""
+				Message = ""
+				Details = ""
+			}
+		}
+	}
+	
+	# -----------------------------
+	# Validate store number
+	# -----------------------------
+	$storeNumberTrim = $StoreNumber
+	if ($null -eq $storeNumberTrim) { $storeNumberTrim = "" }
+	$storeNumberTrim = $storeNumberTrim.Trim()
+	
+	if ($storeNumberTrim -notmatch '^(?!0+$)\d{3,4}$')
+	{
+		if ($OperationStatus)
+		{
+			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
+			$OperationStatus["OldXFoldersDeletion"].Message = "Invalid StoreNumber '$StoreNumber' (must be 3 or 4 digits, not all zeros)."
+			$OperationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+		}
+		Write-Host "Failed: Invalid StoreNumber '$StoreNumber'." -ForegroundColor Red
+		return
+	}
+	
+	$storeInt = [int]$storeNumberTrim
+	$store3 = $storeInt.ToString("D3")
+	$store4 = $storeInt.ToString("D4")
+	
+	# -----------------------------
+	# Pick base path
+	# -----------------------------
+	$possibleBasePaths = @("\\localhost\storeman\office", "C:\storeman\office", "D:\storeman\office")
+	$basePath = $null
+	foreach ($p in $possibleBasePaths)
+	{
+		if (Test-Path $p) { $basePath = $p; break }
+	}
+	
+	if (-not $basePath)
+	{
+		if ($OperationStatus)
+		{
+			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
+			$OperationStatus["OldXFoldersDeletion"].Message = "None of the base paths exist: $($possibleBasePaths -join ', ')"
+			$OperationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+		}
+		Write-Host "Failed: None of the base paths exist: $($possibleBasePaths -join ', ')" -ForegroundColor Red
+		return
+	}
+	
+	# -----------------------------
+	# Extract machine terminal (last 1-3 digits, padded to 3)
+	# -----------------------------
+	$mn = $MachineName
+	if ($null -eq $mn) { $mn = "" }
+	$mn = $mn.Trim()
+	
+	$mn = $mn -replace '^[\\\/]+', '' # strip leading \\ or /
+	if ($mn -match '[\\\/]') { $mn = ($mn -split '[\\\/]')[0] } # keep host portion
+	if ($mn -match '\.') { $mn = ($mn -split '\.')[0] } # drop domain
+	$mn = $mn.Trim().ToUpper()
+	
+	if ($mn -notmatch '(\d{1,3})$')
+	{
+		if ($OperationStatus)
+		{
+			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
+			$OperationStatus["OldXFoldersDeletion"].Message = "MachineName '$MachineName' does not end with 1-3 digits; cannot extract terminal number."
+			$OperationStatus["OldXFoldersDeletion"].Details = "Cannot proceed with folder deletion."
+		}
+		Write-Host "Failed: MachineName '$MachineName' cannot provide terminal digits." -ForegroundColor Red
+		return
+	}
+	
+	$machineNumber = ([int]$Matches[1]).ToString("D3")
+	
+	# Safeguard for backoffice unless explicitly allowed
+	if ($machineNumber -eq "901" -and -not $AllowBackoffice)
+	{
+		if ($OperationStatus)
+		{
+			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
+			$OperationStatus["OldXFoldersDeletion"].Message = "Refusing to run because extracted terminal number is 901 (backoffice). Use -AllowBackoffice to override."
+			$OperationStatus["OldXFoldersDeletion"].Details = "This could delete many lane folders. Override only if intentional."
+		}
+		Write-Host "Failed: Refusing to run on terminal 901 (backoffice safeguard). Use -AllowBackoffice to override." -ForegroundColor Red
+		return
+	}
+	
+	# Keep set: current lane + 900 + 901
+	$keepStores = @($store3, $store4)
+	$keepTerminals = @($machineNumber, "900", "901")
+	
+	# -----------------------------
+	# Enumerate X* and Z* folders
+	# -----------------------------
+	$folders = @()
+	
+	$xFolders = Get-ChildItem -Path $basePath -Directory -Filter "X*" -ErrorAction SilentlyContinue
+	if ($xFolders) { $folders += $xFolders }
+	
+	$zFolders = Get-ChildItem -Path $basePath -Directory -Filter "Z*" -ErrorAction SilentlyContinue
+	if ($zFolders) { $folders += $zFolders }
+	
+	if (-not $folders -or $folders.Count -eq 0)
+	{
+		if ($OperationStatus)
+		{
+			$OperationStatus["OldXFoldersDeletion"].Status = "No Folders Found"
+			$OperationStatus["OldXFoldersDeletion"].Message = "No X* or Z* folders were found under '$basePath'."
+			$OperationStatus["OldXFoldersDeletion"].Details = "Nothing to delete."
+		}
+		Write-Host "Info: No X* or Z* folders found under '$basePath'." -ForegroundColor Cyan
+		return
+	}
+	
+	$anyFoldersSeen = $true
+	
+	foreach ($folder in $folders)
+	{
+		$folderName = $folder.Name
+		
+		# STRICT pattern only: (X|Z)(letter)(store 3-4 digits)(terminal 3 digits)
+		if ($folderName -match '^(?<prefix>[XZ][A-Za-z])(?<store>\d{3,4})(?<terminal>\d{3})$')
+		{
+			$folderStore = $matches['store']
+			$folderTerminal = $matches['terminal']
+			
+			$storeOk = ($keepStores -contains $folderStore)
+			$terminalOk = ($keepTerminals -contains $folderTerminal)
+			
+			# Delete if it does NOT match new store AND allowed terminal(s)
+			if (-not ($storeOk -and $terminalOk))
+			{
+				$anyCandidatesMatched = $true
+				
+				$maxRetries = 3
+				$retryCount = 0
+				$deleted = $false
+				
+				while ($retryCount -lt $maxRetries -and -not $deleted)
+				{
+					try
+					{
+						Remove-Item -Path $folder.FullName -Recurse -Force -ErrorAction Stop
+						$deletedFolders += $folderName
+						$deleted = $true
+					}
+					catch
+					{
+						$retryCount++
+						Start-Sleep -Seconds 2
+						
+						if ($retryCount -ge $maxRetries)
+						{
+							$failedToDeleteFolders += $folderName
+							Write-Host "Failed to delete folder: $folderName. Error: $($_.Exception.Message)" -ForegroundColor Red
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	# -----------------------------
+	# Results
+	# -----------------------------
+	$resultMessage = ""
+	if ($deletedFolders.Count -gt 0)
+	{
+		$resultMessage += "Deleted folders:`n$($deletedFolders -join "`n")`n"
+	}
+	if ($failedToDeleteFolders.Count -gt 0)
+	{
+		$resultMessage += "Failed to delete folders:`n$($failedToDeleteFolders -join "`n")`n"
+	}
+	
+	if (-not $anyCandidatesMatched)
+	{
+		if ($OperationStatus)
+		{
+			$OperationStatus["OldXFoldersDeletion"].Status = "No Matching Folders"
+			$OperationStatus["OldXFoldersDeletion"].Message = "No X*/Z* folders needed deletion. Kept stores: $($keepStores -join ', ') terminals: $($keepTerminals -join ', ')."
+			$OperationStatus["OldXFoldersDeletion"].Details = "Nothing to delete."
+		}
+		Write-Host "Info: Nothing to delete. Kept stores: $($keepStores -join ', ') terminals: $($keepTerminals -join ', ')." -ForegroundColor Cyan
+		return
+	}
+	
+	if ($deletedFolders.Count -gt 0 -and $failedToDeleteFolders.Count -eq 0)
+	{
+		if ($OperationStatus)
+		{
+			$OperationStatus["OldXFoldersDeletion"].Status = "Successful"
+			$OperationStatus["OldXFoldersDeletion"].Message = "Old X*/Z* folders deleted successfully."
+			$OperationStatus["OldXFoldersDeletion"].Details = $resultMessage
+		}
+		Write-Host "Success: Old X*/Z* folders deleted successfully." -ForegroundColor Green
+		if ($resultMessage) { Write-Host $resultMessage -ForegroundColor Green }
+	}
+	elseif ($deletedFolders.Count -gt 0 -and $failedToDeleteFolders.Count -gt 0)
+	{
+		if ($OperationStatus)
+		{
+			$OperationStatus["OldXFoldersDeletion"].Status = "Partial Failure"
+			$OperationStatus["OldXFoldersDeletion"].Message = "Some old X*/Z* folders could not be deleted."
+			$OperationStatus["OldXFoldersDeletion"].Details = $resultMessage
+		}
+		Write-Host "Warning: Some old X*/Z* folders could not be deleted." -ForegroundColor Yellow
+		if ($resultMessage) { Write-Host $resultMessage -ForegroundColor Yellow }
+	}
+	else
+	{
+		if ($OperationStatus)
+		{
+			$OperationStatus["OldXFoldersDeletion"].Status = "Failed"
+			$OperationStatus["OldXFoldersDeletion"].Message = "Failed to delete any old X*/Z* folders."
+			$OperationStatus["OldXFoldersDeletion"].Details = $resultMessage
+		}
+		Write-Host "Error: Failed to delete any old X*/Z* folders." -ForegroundColor Red
+		if ($resultMessage) { Write-Host $resultMessage -ForegroundColor Red }
+	}
+}
+
+# ===================================================================================================
+#                         FUNCTION: Invoke_Machine_Name_Change_Workflow
+# ---------------------------------------------------------------------------------------------------
+# Description:
+# Coordinates the machine-name action from the GUI. If the requested name matches the current name,
+# the workflow skips Rename-Computer and still performs the full INI + SQL sync.
+# ===================================================================================================
+
+function Invoke_Machine_Name_Change_Workflow
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$RequestedMachineName,
+		[Parameter(Mandatory = $false)]
+		[hashtable]$OperationStatus
+	)
+	
+	$oldMachineName = $env:COMPUTERNAME
+	$machineContext = Get_Machine_Name_Context -MachineName $RequestedMachineName -CurrentMachineName $oldMachineName
+	if (-not $machineContext.Success)
+	{
+		Show_App_Message -Text $machineContext.ErrorMessage -Title "Error" -Icon Error | Out-Null
+		Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Failed" -Message "Invalid machine name." -Details $machineContext.ErrorMessage
+		return
+	}
+	
+	$confirmMessage = $null
+	$confirmTitle = $null
+	if ($machineContext.IsSameMachineName)
+	{
+		$confirmMessage = "The requested machine name matches the current machine name '$($machineContext.MachineName)'.`n`nRun a full INI + SQL sync anyway?"
+		$confirmTitle = "Confirm Machine Sync"
+	}
+	else
+	{
+		$confirmMessage = "Are you sure you want to change the machine name to '$($machineContext.MachineName)' and run the full INI + SQL sync?"
+		$confirmTitle = "Confirm Machine Name Change"
+	}
+	
+	$result = Show_App_Message -Text $confirmMessage -Title $confirmTitle -Buttons YesNo -Icon Question
+	if ($result -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+	
+	$currentStoreNumber = Get_Store_Number_From_INI
+	if (-not $currentStoreNumber)
+	{
+		Show_App_Message -Text "Store number not found in startup.ini." -Title "Error" -Icon Error | Out-Null
+		Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Failed" -Message "Store number not found in startup.ini." -Details ""
+		return
+	}
+	
+	$startupIniPath = Resolve_Startup_Ini_Path -StartupIniPath $StartupIniPath
+	$renamePerformed = $false
+	$script:newMachineName = $machineContext.MachineName
+	
+	try
+	{
+		if (-not $machineContext.IsSameMachineName)
+		{
+			Rename-Computer -NewName $machineContext.MachineName -Force -ErrorAction Stop
+			$renamePerformed = $true
+			
+			Set_Label_Text -Label $script:machineNameLabel -Text "The machine name will change from: $env:COMPUTERNAME to $script:newMachineName" -RefreshParent -ProcessEvents
+			Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Successful" -Message "Machine name changed successfully." -Details "Machine name changed to '$script:newMachineName'."
+			
+			& 'Remove_Old_XZ_Folders' -MachineName $script:newMachineName -StoreNumber $currentStoreNumber
+		}
+		
+		$syncResult = Invoke_Machine_Name_Sync -StoreNumber $currentStoreNumber -MachineName $machineContext.MachineName -OldMachineName $oldMachineName -MachineContext $machineContext -StartupIniPath $startupIniPath -OperationStatus $OperationStatus
+		$syncFailureLogText = $null
+		if (-not $syncResult.Success)
+		{
+			$syncFailureLogParts = @(
+				"Machine Name:`r`n$($machineContext.MachineName)",
+				"Store Number:`r`n$currentStoreNumber"
+			)
+			
+			if (-not $syncResult.IniSyncSuccess -or -not $syncResult.StartupIniSuccess)
+			{
+				$iniSectionParts = @()
+				
+				if ($syncResult.IniSyncError)
+				{
+					$iniSectionParts += "Update_INIs Error:`r`n$($syncResult.IniSyncError)"
+				}
+				
+				if ($syncResult.StartupIniError)
+				{
+					$iniSectionParts += "Startup.ini Error:`r`n$($syncResult.StartupIniError)"
+				}
+				
+				if ($syncResult.StartupIniDetails)
+				{
+					$iniSectionParts += "Additional Details:`r`n$($syncResult.StartupIniDetails)"
+				}
+				elseif ($OperationStatus -and $OperationStatus.ContainsKey("StartupIniUpdate") -and $OperationStatus["StartupIniUpdate"].Details)
+				{
+					$iniSectionParts += "Operation Status Details:`r`n$($OperationStatus["StartupIniUpdate"].Details)"
+				}
+				
+				if ($iniSectionParts.Count -gt 0)
+				{
+					$syncFailureLogParts += "INI Sync:`r`n$($iniSectionParts -join "`r`n`r`n")"
+				}
+			}
+			
+			if (-not $syncResult.SqlSyncSuccess)
+			{
+				$sqlSectionParts = @()
+				
+				if ($syncResult.SqlSyncError)
+				{
+					$sqlSectionParts += "SQL Sync Error:`r`n$($syncResult.SqlSyncError)"
+				}
+				
+				if ($syncResult.SqlResult)
+				{
+					if ($syncResult.SqlResult.ContainsKey('DatabaseContext') -and $syncResult.SqlResult.DatabaseContext)
+					{
+						$sqlSectionParts += "Database Context:`r`n$($syncResult.SqlResult.DatabaseContext)"
+					}
+					
+					if ($syncResult.SqlResult.ContainsKey('DBNAME') -and $syncResult.SqlResult.DBNAME)
+					{
+						$sqlSectionParts += "DBNAME:`r`n$($syncResult.SqlResult.DBNAME)"
+					}
+					
+					if ($syncResult.SqlResult.ContainsKey('ConfiguredDBSERVER') -and $syncResult.SqlResult.ConfiguredDBSERVER)
+					{
+						$sqlSectionParts += "Configured DBSERVER:`r`n$($syncResult.SqlResult.ConfiguredDBSERVER)"
+					}
+					elseif ($syncResult.ConfiguredDbServer)
+					{
+						$sqlSectionParts += "Configured DBSERVER:`r`n$($syncResult.ConfiguredDbServer)"
+					}
+					
+					if ($syncResult.SqlResult.ContainsKey('RuntimeDBSERVER') -and $syncResult.SqlResult.RuntimeDBSERVER)
+					{
+						$sqlSectionParts += "Runtime SQL Target:`r`n$($syncResult.SqlResult.RuntimeDBSERVER)"
+					}
+					elseif ($syncResult.RuntimeDbServer)
+					{
+						$sqlSectionParts += "Runtime SQL Target:`r`n$($syncResult.RuntimeDbServer)"
+					}
+					
+					if ($syncResult.SqlResult.ContainsKey('FailedCommands') -and $syncResult.SqlResult.FailedCommands)
+					{
+						$sqlSectionParts += "Failed SQL Commands:`r`n$($syncResult.SqlResult.FailedCommands -join "`r`n`r`n")"
+					}
+				}
+				elseif ($OperationStatus -and $OperationStatus.ContainsKey("SQLDatabaseUpdate") -and $OperationStatus["SQLDatabaseUpdate"].Details)
+				{
+					$sqlSectionParts += "Operation Status Details:`r`n$($OperationStatus["SQLDatabaseUpdate"].Details)"
+				}
+				
+				if ($sqlSectionParts.Count -gt 0)
+				{
+					$syncFailureLogParts += "SQL Sync:`r`n$($sqlSectionParts -join "`r`n`r`n")"
+				}
+			}
+			
+			$syncFailureLogText = ($syncFailureLogParts -join "`r`n`r`n").Trim()
+		}
+		
+		if ($machineContext.IsSameMachineName)
+		{
+			if ($syncResult.Success)
+			{
+				Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Successful" -Message "Machine settings synced successfully." -Details "Requested machine name already matched '$script:newMachineName'; full INI + SQL sync was run without renaming."
+				Set_Label_Text -Label $script:machineNameLabel -Text "Current Machine Name: $script:newMachineName (sync refreshed)" -RefreshParent
+				Show_App_Message -Text "Full INI + SQL sync completed for '$script:newMachineName'. No reboot is required because the machine name did not change." -Title "Sync Complete" -Icon Information | Out-Null
+			}
+			else
+			{
+				Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Failed" -Message "Machine sync completed with errors." -Details "Requested machine name already matched '$script:newMachineName', but one or more INI/SQL updates failed."
+				if ($syncFailureLogText)
+				{
+					[void](Show_Action_Prompt_With_Log -Text "Same-name sync ran, but one or more INI/SQL updates failed.`r`n`r`nUse View Log to see the failure reasons, or use Summary for the full operation status." -Title "Sync Completed With Errors" -PrimaryButtonText "OK" -LogText $syncFailureLogText -LogTitle "Sync Failure Log")
+				}
+				else
+				{
+					Show_App_Message -Text "Same-name sync ran, but one or more INI/SQL updates failed. Review the summary for details." -Title "Sync Completed With Errors" -Icon Warning | Out-Null
+				}
+			}
+		}
+		elseif ($renamePerformed)
+		{
+			$rebootMessage = if ($syncResult.Success)
+			{
+				"Machine name changed successfully to '$script:newMachineName'. The system will need to reboot for changes to take effect. Do you want to reboot now?"
+			}
+			else
+			{
+				"Machine name changed to '$script:newMachineName', but one or more INI/SQL updates failed. A reboot is still required for the rename. Do you want to reboot now?"
+			}
+			
+			$rebootIcon = if ($syncResult.Success)
+			{
+				[System.Windows.Forms.MessageBoxIcon]::Information
+			}
+			else
+			{
+				[System.Windows.Forms.MessageBoxIcon]::Warning
+			}
+			
+			$rebootResult = $null
+			if (-not $syncResult.Success -and $syncFailureLogText)
+			{
+				$rebootResult = Show_Action_Prompt_With_Log -Text ($rebootMessage + "`r`n`r`nUse View Log to see the failure reasons.") -Title "Machine Rename Complete" -PrimaryButtonText "Reboot Now" -SecondaryButtonText "Later" -LogText $syncFailureLogText -LogTitle "Sync Failure Log"
+			}
+			else
+			{
+				$rebootResult = Show_App_Message -Text $rebootMessage -Title "Machine Rename Complete" -Buttons YesNo -Icon $rebootIcon.ToString()
+			}
+			
+			if ($rebootResult -eq [System.Windows.Forms.DialogResult]::Yes -or $rebootResult -eq "Primary")
+			{
+				Restart-Computer -Force
+			}
+		}
+	}
+	catch
+	{
+		$errorMessage = $_.Exception.Message
+		Show_App_Message -Text "Error changing machine name: $errorMessage" -Title "Error" -Icon Error | Out-Null
+		Set_Operation_Status -OperationStatus $OperationStatus -Key "MachineNameChange" -Status "Failed" -Message "Error changing machine name." -Details "Error: $errorMessage"
+	}
+}
+
+# ===================================================================================================
+#                            FUNCTION: Invoke_Machine_Name_Sync
+# ---------------------------------------------------------------------------------------------------
+# Description:
+# Runs the best-effort INI + Startup.ini + SQL sync for a machine name target. This is used after an
+# actual rename and also when the requested name already matches the current machine name.
+# ===================================================================================================
+
+function Invoke_Machine_Name_Sync
+{
+	[CmdletBinding()]
+	param (
+		[Parameter(Mandatory = $true)]
+		[ValidatePattern('^(?!0+$)\d{3,4}$')]
+		[string]$StoreNumber,
+		[Parameter(Mandatory = $true)]
+		[string]$MachineName,
+		[Parameter(Mandatory = $false)]
+		[string]$OldMachineName = $env:COMPUTERNAME,
+		[Parameter(Mandatory = $false)]
+		[psobject]$MachineContext,
+		[Parameter(Mandatory = $false)]
+		[string]$StartupIniPath,
+		[Parameter(Mandatory = $false)]
+		[hashtable]$OperationStatus
+	)
+	
+	if (-not $MachineContext -or -not $MachineContext.Success)
+	{
+		$MachineContext = Get_Machine_Name_Context -MachineName $MachineName -CurrentMachineName $OldMachineName
+	}
+	
+	if (-not $MachineContext.Success)
+	{
+		if ($OperationStatus -and $OperationStatus.ContainsKey("StartupIniUpdate"))
+		{
+			$OperationStatus["StartupIniUpdate"].Status = "Failed"
+			$OperationStatus["StartupIniUpdate"].Message = "INI sync could not start."
+			$OperationStatus["StartupIniUpdate"].Details = $MachineContext.ErrorMessage
+		}
+		if ($OperationStatus -and $OperationStatus.ContainsKey("SQLDatabaseUpdate"))
+		{
+			$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
+			$OperationStatus["SQLDatabaseUpdate"].Message = "SQL sync could not start."
+			$OperationStatus["SQLDatabaseUpdate"].Details = $MachineContext.ErrorMessage
+		}
+		
+		return [PSCustomObject]@{
+			Success             = $false
+			MachineContext      = $MachineContext
+			IniSyncSuccess      = $false
+			StartupIniSuccess   = $false
+			SqlSyncSuccess      = $false
+			StartupIniPath      = $null
+			IniSyncError        = $MachineContext.ErrorMessage
+			StartupIniError     = $null
+			SqlSyncError        = $MachineContext.ErrorMessage
+			StartupIniDetails   = $null
+			SqlResult           = $null
+		}
+	}
+	
+	$resolvedStartupIniPath = Resolve_Startup_Ini_Path -StartupIniPath $StartupIniPath
+	$null = Ensure_Database_Connection_Context -StartupIniPath $resolvedStartupIniPath
+	
+	$configuredDbServer = $null
+	if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('ConfiguredDBSERVER') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['ConfiguredDBSERVER']))
+	{
+		$configuredDbServer = [string]$script:FunctionResults['ConfiguredDBSERVER']
+	}
+	elseif ($script:FunctionResults -and $script:FunctionResults.ContainsKey('DBSERVER') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['DBSERVER']))
+	{
+		$configuredDbServer = [string]$script:FunctionResults['DBSERVER']
+	}
+	
+	$runtimeDbServer = $null
+	if ($script:FunctionResults -and $script:FunctionResults.ContainsKey('RuntimeDBSERVER') -and -not [string]::IsNullOrWhiteSpace([string]$script:FunctionResults['RuntimeDBSERVER']))
+	{
+		$runtimeDbServer = [string]$script:FunctionResults['RuntimeDBSERVER']
+	}
+	
+	$iniSyncSuccess = $false
+	$iniSyncError = $null
+	try
+	{
+		$iniSyncSuccess = [bool](Update_INIs -newStoreNumber $StoreNumber -MachineName $MachineContext.MachineName -OldStoreNumber $StoreNumber -OldMachineName $OldMachineName -CreateSmsHttpsIfMissing -StartupIniPath $resolvedStartupIniPath)
+		if (-not $iniSyncSuccess)
+		{
+			$iniSyncError = "Update_INIs reported a failure."
+		}
+	}
+	catch
+	{
+		$iniSyncError = $_.Exception.Message
+	}
+	
+	$startupIniResult = Update_Startup_Ini_For_Machine -MachineContext $MachineContext -StartupIniPath $resolvedStartupIniPath
+	$startupIniSuccess = $startupIniResult.Success
+	$startupIniError = $startupIniResult.ErrorMessage
+	
+	if ($OperationStatus -and $OperationStatus.ContainsKey("StartupIniUpdate"))
+	{
+		if ($iniSyncSuccess -and $startupIniSuccess)
+		{
+			$OperationStatus["StartupIniUpdate"].Status = "Successful"
+			$OperationStatus["StartupIniUpdate"].Message = "INI files updated successfully."
+			$OperationStatus["StartupIniUpdate"].Details = $startupIniResult.Details
+		}
+		else
+		{
+			$detailParts = @()
+			if ($iniSyncError) { $detailParts += $iniSyncError }
+			if ($startupIniError) { $detailParts += $startupIniError }
+			if ($startupIniResult.Details) { $detailParts += $startupIniResult.Details }
+			
+			$OperationStatus["StartupIniUpdate"].Status = "Failed"
+			$OperationStatus["StartupIniUpdate"].Message = "INI sync completed with errors."
+			$OperationStatus["StartupIniUpdate"].Details = ($detailParts -join " ")
+		}
+	}
+	
+	$sqlUpdateResult = $null
+	$sqlSyncSuccess = $false
+	$sqlSyncError = $null
+	try
+	{
+		$sqlUpdateResult = Update_SQL_Tables_For_Machine_Name_Change `
+															 -storeNumber $StoreNumber `
+															 -machineName $MachineContext.MachineName `
+															 -machineNumber $MachineContext.MachineNumber `
+															 -OldMachineName $OldMachineName
+		
+		if ($sqlUpdateResult -and $sqlUpdateResult.Success)
+		{
+			$sqlSyncSuccess = $true
+		}
+		else
+		{
+			$sqlSyncError = "SQL update result indicated failure."
+		}
+	}
+	catch
+	{
+		$sqlSyncError = $_.Exception.Message
+	}
+	
+	if ($OperationStatus -and $OperationStatus.ContainsKey("SQLDatabaseUpdate"))
+	{
+		if ($sqlSyncSuccess)
+		{
+			$detailParts = @("Protected SQL sync completed.")
+			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('RunTabUpdated'))
+			{
+				$detailParts += "RUN updated: $($sqlUpdateResult.RunTabUpdated)."
+			}
+			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('LocalTerminalDB'))
+			{
+				$detailParts += "Local terminal DB: $($sqlUpdateResult.LocalTerminalDB)."
+			}
+			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('ConfiguredDBSERVER') -and $sqlUpdateResult.ConfiguredDBSERVER)
+			{
+				$detailParts += "Configured DBSERVER: $($sqlUpdateResult.ConfiguredDBSERVER)."
+			}
+			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('RuntimeDBSERVER') -and $sqlUpdateResult.RuntimeDBSERVER)
+			{
+				$detailParts += "Runtime SQL target: $($sqlUpdateResult.RuntimeDBSERVER)."
+			}
+			
+			$OperationStatus["SQLDatabaseUpdate"].Status = "Successful"
+			$OperationStatus["SQLDatabaseUpdate"].Message = "SQL tables updated successfully after machine sync."
+			$OperationStatus["SQLDatabaseUpdate"].Details = ($detailParts -join " ")
+		}
+		else
+		{
+			$detailParts = @()
+			if ($sqlSyncError) { $detailParts += $sqlSyncError }
+			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('ConfiguredDBSERVER') -and $sqlUpdateResult.ConfiguredDBSERVER)
+			{
+				$detailParts += "Configured DBSERVER: $($sqlUpdateResult.ConfiguredDBSERVER)."
+			}
+			elseif ($configuredDbServer)
+			{
+				$detailParts += "Configured DBSERVER: $configuredDbServer."
+			}
+			if ($sqlUpdateResult -and $sqlUpdateResult.ContainsKey('RuntimeDBSERVER') -and $sqlUpdateResult.RuntimeDBSERVER)
+			{
+				$detailParts += "Runtime SQL target: $($sqlUpdateResult.RuntimeDBSERVER)."
+			}
+			elseif ($runtimeDbServer)
+			{
+				$detailParts += "Runtime SQL target: $runtimeDbServer."
+			}
+			
+			$OperationStatus["SQLDatabaseUpdate"].Status = "Failed"
+			$OperationStatus["SQLDatabaseUpdate"].Message = "Failed to update SQL tables after machine sync."
+			$OperationStatus["SQLDatabaseUpdate"].Details = ($detailParts -join " ")
+		}
+	}
+	
+	return [PSCustomObject]@{
+		Success             = ($iniSyncSuccess -and $startupIniSuccess -and $sqlSyncSuccess)
+		MachineContext      = $MachineContext
+		IniSyncSuccess      = $iniSyncSuccess
+		StartupIniSuccess   = $startupIniSuccess
+		SqlSyncSuccess      = $sqlSyncSuccess
+		StartupIniPath      = $resolvedStartupIniPath
+		IniSyncError        = $iniSyncError
+		StartupIniError     = $startupIniError
+		SqlSyncError        = $sqlSyncError
+		StartupIniDetails   = $startupIniResult.Details
+		SqlResult           = $sqlUpdateResult
+		ConfiguredDbServer  = $configuredDbServer
+		RuntimeDbServer     = $runtimeDbServer
+	}
+}
+
+# ===================================================================================================
 #                                       SECTION: Main Script Execution
 # ---------------------------------------------------------------------------------------------------
 # Description:
@@ -5737,7 +5737,7 @@ $connectionString = $null
 $oldMachineName = $currentMachineName
 
 # Clear %Temp% foder on start
-# $FilesAndDirsDeleted = Delete_Files/Folders -Path "$TempDir" -Exclusions "MiniGhost.ps1" -AsJob
+# $FilesAndDirsDeleted = Delete_Files_And_Folders -Path "$TempDir" -Exclusions "MiniGhost.ps1" -AsJob
 
 # Indicate the script has started
 Write-Host "Script started" -ForegroundColor Green
@@ -6366,7 +6366,7 @@ $rebootButton.Add_Click({
 		{
 			Restart-Computer -Force
 			# Clean Temp Folder
-			Delete_Files/Folders -Path "$TempDir" -SpecifiedFiles "MiniGhost.ps1"
+			Delete_Files_And_Folders -Path "$TempDir" -SpecifiedFiles "MiniGhost.ps1"
 		}
 	})
 
@@ -6393,7 +6393,7 @@ $form.add_FormClosing({
 			# Write-Log "Form is closing. Performing cleanup." "green"
 			
 			# Clean Temp Folder
-			Delete_Files/Folders -Path "$TempDir" -SpecifiedFiles "MiniGhost.ps1"
+			Delete_Files_And_Folders -Path "$TempDir" -SpecifiedFiles "MiniGhost.ps1"
 		}
 	})
 
@@ -6478,3 +6478,17 @@ Write-Host "Script closing..." -ForegroundColor Yellow
 
 # Close the console to aviod duplicate logging to the richbox
 exit
+
+#######################################################################################################
+#
+#                                     CHANGELOG
+#
+#######################################################################################################
+
+# ===================================================================================================
+#  v1.3.8  -  2026-04-15
+#  Sources split into one file per function (MiniGhost\src) with a build step - no behaviour change
+# ===================================================================================================
+#
+#  [CHG]  MiniGhost.ps1 is now built from MiniGhost\src by MiniGhost\build\Build.ps1 (same code,
+#         functions grouped by category). Delete_Files/Folders is named Delete_Files_And_Folders.
