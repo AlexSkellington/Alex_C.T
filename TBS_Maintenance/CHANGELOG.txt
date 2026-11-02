@@ -15,6 +15,9 @@
 #         folders are checked (mapped drive -> \\server\share, created, write-tested) when the task
 #         is scheduled; a copy that fails later is written to backup.log and never fails the
 #         backup or the other copies. The list is remembered per backup type on this PC.
+#  [FIX]  Browse (backup folders) opens the real Windows folder picker with a "Select Folder"
+#         button: a path typed or pasted in its address bar or Folder box - \\server\share too -
+#         can be selected. The 2.7.9 picker only navigated into a typed folder.
 
 # ===================================================================================================
 #  v2.7.9  -  2026-10-30

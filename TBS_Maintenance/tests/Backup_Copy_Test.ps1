@@ -28,12 +28,16 @@ function Check([string]$Name, $Cond, [string]$Note = '')
 
 $tokens = $null; $errs = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errs)
-foreach ($name in @('Resolve_Backup_Folder', 'Resolve_Backup_Copy_Paths', 'New_Backup_Copy_Snippet'))
+foreach ($name in @('Resolve_Backup_Folder', 'Resolve_Backup_Copy_Paths', 'New_Backup_Copy_Snippet', 'Select-FolderOrDefault'))
 {
 	$fn = $ast.Find({ param ($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
 	if (-not $fn) { Write-Host "Function $name not found in the built script" -ForegroundColor Red; exit 2 }
 	. ([scriptblock]::Create($fn.Extent.Text))
 }
+
+# The Windows folder picker (Select Folder button, typed / network paths) is reached through .NET
+# internals - make sure they are there on this Windows / .NET (otherwise the old tree is shown)
+Check 'the Explorer folder picker can be built (FOS_PICKFOLDERS)' ((Select-FolderOrDefault -ProbeOnly) -eq $true)
 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('tbs-copytest-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
 New-Item -ItemType Directory -Path $root -Force | Out-Null
