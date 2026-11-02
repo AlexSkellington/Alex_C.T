@@ -95,11 +95,12 @@ function Schedule_Storeman_Zip_Backup
 		$form.Controls.Add($lblDir)
 
 		$txtDir = New-Object System.Windows.Forms.TextBox
-		$txtDir.ReadOnly = $true
+		$txtDir.ReadOnly = $false
 		$txtDir.Text = $script:BackupRoot.TrimEnd('\')
 		$txtDir.Location = New-Object System.Drawing.Point(108, 136)
 		$txtDir.Size = New-Object System.Drawing.Size(150, 20)
 		$form.Controls.Add($txtDir)
+		try { $toolTip.SetToolTip($txtDir, "Type or paste a folder - a network path like \\server\share\Backups works - or use Browse. The task runs as SYSTEM: on a share, the computer account (MACHINE$) needs write access.") } catch { }
 
 		$btnBrowse = New-Object System.Windows.Forms.Button
 		$btnBrowse.Text = "Browse..."
@@ -138,6 +139,15 @@ function Schedule_Storeman_Zip_Backup
 		# Backup location: the folder the user picked (default if unchanged) + <host> subfolder
 		$chosenParent = $txtDir.Text.Trim()
 		if (-not $chosenParent) { $chosenParent = $script:BackupRoot.TrimEnd('\') }
+		$folderCheck = Resolve_Backup_Folder -Path $chosenParent
+		if (-not $folderCheck.Ok)
+		{
+			Write_Log ("Backup folder problem: " + $folderCheck.Error) "red"
+			[void][System.Windows.Forms.MessageBox]::Show($folderCheck.Error, "Backup Folder", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			return
+		}
+		$chosenParent = $folderCheck.Path
+		if ($folderCheck.IsNetwork) { Write_Log ("Network folder: the scheduled backup runs as " + ("SYSTEM (on the network: the computer account " + $env:COMPUTERNAME + "$)") + " - that account needs write access to " + $chosenParent + ".") "yellow" }
 		$backupRoot = Join-Path $chosenParent $LocalHost
 		Write_Log "Storeman ZIP backup destination: $backupRoot" "gray"
 

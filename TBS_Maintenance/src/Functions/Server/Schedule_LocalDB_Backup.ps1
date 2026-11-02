@@ -94,11 +94,12 @@ function Schedule_LocalDB_Backup
 		$form.Controls.Add($lblDir)
 
 		$txtDir = New-Object System.Windows.Forms.TextBox
-		$txtDir.ReadOnly = $true
+		$txtDir.ReadOnly = $false
 		$txtDir.Text = $backupDir.TrimEnd('\')
 		$txtDir.Location = New-Object System.Drawing.Point(108, 136)
 		$txtDir.Size = New-Object System.Drawing.Size(150, 20)
 		$form.Controls.Add($txtDir)
+		try { $toolTip.SetToolTip($txtDir, "Type or paste a folder - a network path like \\server\share\Backups works - or use Browse. The SQL Server service writes the .bak, so for a share its account needs write access too.") } catch { }
 
 		$btnBrowse = New-Object System.Windows.Forms.Button
 		$btnBrowse.Text = "Browse..."
@@ -137,6 +138,15 @@ function Schedule_LocalDB_Backup
 		# Backup location: the folder the user picked (default if unchanged) + <host> subfolder
 		$chosenParent = $txtDir.Text.Trim()
 		if (-not $chosenParent) { $chosenParent = $backupDir.TrimEnd('\') }
+		$folderCheck = Resolve_Backup_Folder -Path $chosenParent
+		if (-not $folderCheck.Ok)
+		{
+			Write_Log ("Backup folder problem: " + $folderCheck.Error) "red"
+			[void][System.Windows.Forms.MessageBox]::Show($folderCheck.Error, "Backup Folder", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			return
+		}
+		$chosenParent = $folderCheck.Path
+		if ($folderCheck.IsNetwork) { Write_Log ("Network folder: the scheduled backup runs as " + "the logged-in user (and SQL Server writes the .bak with its service account)" + " - that account needs write access to " + $chosenParent + ".") "yellow" }
 		$serverFolder = Join-Path $chosenParent $LocalHost
 		Write_Log "Local DB backup destination: $serverFolder" "gray"
 

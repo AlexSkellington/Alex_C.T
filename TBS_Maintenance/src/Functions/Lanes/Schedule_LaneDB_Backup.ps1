@@ -110,11 +110,12 @@ function Schedule_LaneDB_Backup
 	$lblDir.Size = [Drawing.Size]::new(145, 18)
 	$grpBackup.Controls.Add($lblDir)
 	$txtDir = New-Object Windows.Forms.TextBox
-	$txtDir.ReadOnly = $true
+	$txtDir.ReadOnly = $false
 	$txtDir.Text = $script:BackupRoot.TrimEnd('\')
 	$txtDir.Location = [Drawing.Point]::new(175, 138)
 	$txtDir.Size = [Drawing.Size]::new(165, 22)
 	$grpBackup.Controls.Add($txtDir)
+	try { $toolTip.SetToolTip($txtDir, "Type or paste a folder - a network path like \\server\share\Backups works - or use Browse.") } catch { }
 	$btnBrowse = New-Object Windows.Forms.Button
 	$btnBrowse.Text = "Browse..."
 	$btnBrowse.Location = [Drawing.Point]::new(346, 136)
@@ -186,6 +187,15 @@ function Schedule_LaneDB_Backup
 	# Local-copy location: the folder the user picked (default if unchanged)
 	$chosenParent = $txtDir.Text.Trim()
 	if (-not $chosenParent) { $chosenParent = $script:BackupRoot.TrimEnd('\') }
+	$folderCheck = Resolve_Backup_Folder -Path $chosenParent
+	if (-not $folderCheck.Ok)
+	{
+		Write_Log ("Backup folder problem: " + $folderCheck.Error) "red"
+		[void][System.Windows.Forms.MessageBox]::Show($folderCheck.Error, "Backup Folder", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+		return
+	}
+	$chosenParent = $folderCheck.Path
+	if ($folderCheck.IsNetwork) { Write_Log ("Network folder: the scheduled backup runs as " + "the account set for the task" + " - that account needs write access to " + $chosenParent + ".") "yellow" }
 	Write_Log "Lane DB local-copy destination root: $chosenParent" "gray"
 	$timeInput = $txtTime.Text
 	$freqInput = [int]$numFreq.Value

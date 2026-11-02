@@ -26,6 +26,12 @@
 #         store number and name that the info strip already shows.
 #  [CHG]  Waits inside menu actions (service restarts, explorer restart, LOC repair, protocol
 #         probes, scale profile) keep the window responsive (Wait_UI).
+#  [NEW]  Backup schedulers (server DB, Storeman ZIP, lane DB): the backup folder box takes a typed
+#         or pasted path, and Browse opens the Explorer-style picker whose address bar accepts
+#         network paths (\\server\share\Backups). A mapped drive letter is turned into its
+#         \\server\share path (scheduled tasks and SQL Server do not see mapped drives), the
+#         folder is created / write-tested before the task is made, and for a network folder the
+#         log says which account needs write access.
 #  [DEL]  Manage SQL 'sa' Account removed.
 
 # ===================================================================================================
