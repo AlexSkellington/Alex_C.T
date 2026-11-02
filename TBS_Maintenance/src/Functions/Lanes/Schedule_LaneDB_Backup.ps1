@@ -49,7 +49,7 @@ function Schedule_LaneDB_Backup
 
 	$form = New-Object Windows.Forms.Form
 	$form.Text = "Configure Lane DB Backup Scheduler"
-	$form.Size = [Drawing.Size]::new(500, 425) # Larger form
+	$form.Size = [Drawing.Size]::new(500, 455) # Larger form
 	$form.StartPosition = "CenterScreen"
 	$form.FormBorderStyle = 'FixedDialog'
 	$form.MaximizeBox = $false
@@ -59,7 +59,7 @@ function Schedule_LaneDB_Backup
 	$grpBackup = New-Object Windows.Forms.GroupBox
 	$grpBackup.Text = "Backup Settings"
 	$grpBackup.Location = [Drawing.Point]::new(20, 15)
-	$grpBackup.Size = [Drawing.Size]::new(450, 180)
+	$grpBackup.Size = [Drawing.Size]::new(450, 210)
 	$form.Controls.Add($grpBackup)
 
 	# Time
@@ -125,11 +125,24 @@ function Schedule_LaneDB_Backup
 		if ($p) { $txtDir.Text = $p }
 	})
 	$grpBackup.Controls.Add($btnBrowse)
+	# Extra copies ("Also copy to") - the list is remembered per backup type
+	$btnCopies = New-Object System.Windows.Forms.Button
+	$btnCopies.Location = [Drawing.Point]::new(175, 168)
+	$btnCopies.Size = [Drawing.Size]::new(249, 26)
+	$btnCopies.Tag = Get_Backup_Copy_Paths -Kind 'LaneDB'
+	$btnCopies.Text = $(if (@($btnCopies.Tag).Count -gt 0) { "Also copy to " + @($btnCopies.Tag).Count + " more folder(s)..." } else { "Also copy to other folders..." })
+	$btnCopies.Add_Click({
+			param ($s, $e)
+			$r = Show_Backup_Copy_Paths_Dialog -Kind 'LaneDB' -Current ([string[]]@($s.Tag))
+			if ($r -is [System.Array]) { $s.Tag = $r; $s.Text = $(if (@($r).Count -gt 0) { "Also copy to " + @($r).Count + " more folder(s)..." } else { "Also copy to other folders..." }) }
+		})
+	try { $toolTip.SetToolTip($btnCopies, "Extra folders (local or network) that get a copy of every successful backup.") } catch { }
+	$grpBackup.Controls.Add($btnCopies)
 
 	# -- Task User/Password GroupBox --
 	$grpUser = New-Object Windows.Forms.GroupBox
 	$grpUser.Text = "Scheduled Task Credentials"
-	$grpUser.Location = [Drawing.Point]::new(20, 205)
+	$grpUser.Location = [Drawing.Point]::new(20, 235)
 	$grpUser.Size = [Drawing.Size]::new(450, 100)
 	$form.Controls.Add($grpUser)
 
@@ -161,7 +174,7 @@ function Schedule_LaneDB_Backup
 	# OK/Cancel
 	$btnOK = New-Object Windows.Forms.Button
 	$btnOK.Text = "OK"
-	$btnOK.Location = [Drawing.Point]::new(120, 325)
+	$btnOK.Location = [Drawing.Point]::new(120, 355)
 	$btnOK.Size = [Drawing.Size]::new(110, 38)
 	$btnOK.Font = [System.Drawing.Font]::new("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 	$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
@@ -170,7 +183,7 @@ function Schedule_LaneDB_Backup
 
 	$btnCancel = New-Object Windows.Forms.Button
 	$btnCancel.Text = "Cancel"
-	$btnCancel.Location = [Drawing.Point]::new(260, 325)
+	$btnCancel.Location = [Drawing.Point]::new(260, 355)
 	$btnCancel.Size = [Drawing.Size]::new(110, 38)
 	$btnCancel.Font = [System.Drawing.Font]::new("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
 	$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -196,6 +209,15 @@ function Schedule_LaneDB_Backup
 	}
 	$chosenParent = $folderCheck.Path
 	if ($folderCheck.IsNetwork) { Write_Log ("Network folder: the scheduled backup runs as " + "the account set for the task" + " - that account needs write access to " + $chosenParent + ".") "yellow" }
+	$copyCheck = Resolve_Backup_Copy_Paths -Paths ([string[]]@($btnCopies.Tag)) -Primary $chosenParent
+	if (-not $copyCheck.Ok)
+	{
+		Write_Log ("Extra backup folder problem: " + $copyCheck.Error) "red"
+		[void][System.Windows.Forms.MessageBox]::Show($copyCheck.Error, "Also Copy To", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+		return
+	}
+	$copyPaths = $copyCheck.Paths
+	if ($copyPaths.Count -gt 0) { Write_Log ("Each backup is also copied to: " + ($copyPaths -join '; ')) "gray" }
 	Write_Log "Lane DB local-copy destination root: $chosenParent" "gray"
 	$timeInput = $txtTime.Text
 	$freqInput = [int]$numFreq.Value
@@ -242,6 +264,9 @@ function Schedule_LaneDB_Backup
 		# ----> KEY: name backup script exactly as Run_${MachineName}_DB_Backup.ps1
 		$scriptName = "Run_${machine}_DB_Backup.ps1"
 		$backupScriptPath = Join-Path $scriptsDir $scriptName
+
+		# Lines that copy each good backup to the extra folders (empty when there are none)
+		$copySnippet = New_Backup_Copy_Snippet -Paths $copyPaths -SubFolder $machine -Filter ($dbName + '_*.bak') -Keep $keepInput -SourceExpression '$localBakFile' -LogExpression '(Join-Path $BackupRoot ''backup.log'')' -Indent '            '
 
 		# Compose the backup script for this lane (matches server style)
 		$backupScript = @"
@@ -296,6 +321,7 @@ if (`$exitCode -eq 0) {
             Copy-Item -Path `$remoteBakFile -Destination `$localBakFile -Force
             "[`$(Get-Date)] Backup complete: `$localBakFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
             Remove-OldBackups `$BackupRoot `$MaxBackups
+$copySnippet
         } catch {
             "[`$(Get-Date)] Backup succeeded but copy failed: `$(`$_.Exception.Message)" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
         }

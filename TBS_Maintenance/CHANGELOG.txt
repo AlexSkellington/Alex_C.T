@@ -5,6 +5,18 @@
 #######################################################################################################
 
 # ===================================================================================================
+#  v2.7.10  -  2026-11-02
+#  Backups: copy every backup to more than one place
+# ===================================================================================================
+#
+#  [NEW]  Server DB, Storeman ZIP and lane DB backup schedulers: "Also copy to..." - a list of extra
+#         folders (local or network, typed, pasted or picked) that get a copy of every successful
+#         backup, in the same <machine> subfolder, keeping the same number of backups there. The
+#         folders are checked (mapped drive -> \\server\share, created, write-tested) when the task
+#         is scheduled; a copy that fails later is written to backup.log and never fails the
+#         backup or the other copies. The list is remembered per backup type on this PC.
+
+# ===================================================================================================
 #  v2.7.9  -  2026-10-30
 #  Pump Table to Lane upserts; editable server SQL; role badge; no frozen window on long work
 # ===================================================================================================

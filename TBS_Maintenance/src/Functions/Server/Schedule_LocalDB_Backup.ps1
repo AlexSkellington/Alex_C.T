@@ -40,7 +40,7 @@ function Schedule_LocalDB_Backup
 
 		$form = New-Object System.Windows.Forms.Form
 		$form.Text = "Configure Local DB Backup Scheduler"
-		$form.Size = New-Object System.Drawing.Size(375, 280)
+		$form.Size = New-Object System.Drawing.Size(375, 316)
 		$form.StartPosition = "CenterScreen"
 		$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 		$form.MaximizeBox = $false
@@ -111,9 +111,23 @@ function Schedule_LocalDB_Backup
 		})
 		$form.Controls.Add($btnBrowse)
 
+		# Extra copies ("Also copy to") - the list is remembered per backup type
+		$btnCopies = New-Object System.Windows.Forms.Button
+		$btnCopies.Location = New-Object System.Drawing.Point(108, 166)
+		$btnCopies.Size = New-Object System.Drawing.Size(229, 26)
+		$btnCopies.Tag = Get_Backup_Copy_Paths -Kind 'ServerDB'
+		$btnCopies.Text = $(if (@($btnCopies.Tag).Count -gt 0) { "Also copy to " + @($btnCopies.Tag).Count + " more folder(s)..." } else { "Also copy to other folders..." })
+		$btnCopies.Add_Click({
+				param ($s, $e)
+				$r = Show_Backup_Copy_Paths_Dialog -Kind 'ServerDB' -Current ([string[]]@($s.Tag))
+				if ($r -is [System.Array]) { $s.Tag = $r; $s.Text = $(if (@($r).Count -gt 0) { "Also copy to " + @($r).Count + " more folder(s)..." } else { "Also copy to other folders..." }) }
+			})
+		try { $toolTip.SetToolTip($btnCopies, "Extra folders (local or network) that get a copy of every successful backup.") } catch { }
+		$form.Controls.Add($btnCopies)
+
 		$btnOK = New-Object System.Windows.Forms.Button
 		$btnOK.Text = "OK"
-		$btnOK.Location = New-Object System.Drawing.Point(70, 190)
+		$btnOK.Location = New-Object System.Drawing.Point(70, 226)
 		$btnOK.Size = New-Object System.Drawing.Size(90, 30)
 		$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
 		$form.AcceptButton = $btnOK
@@ -121,7 +135,7 @@ function Schedule_LocalDB_Backup
 
 		$btnCancel = New-Object System.Windows.Forms.Button
 		$btnCancel.Text = "Cancel"
-		$btnCancel.Location = New-Object System.Drawing.Point(185, 190)
+		$btnCancel.Location = New-Object System.Drawing.Point(185, 226)
 		$btnCancel.Size = New-Object System.Drawing.Size(90, 30)
 		$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 		$form.CancelButton = $btnCancel
@@ -147,6 +161,15 @@ function Schedule_LocalDB_Backup
 		}
 		$chosenParent = $folderCheck.Path
 		if ($folderCheck.IsNetwork) { Write_Log ("Network folder: the scheduled backup runs as " + "the logged-in user (and SQL Server writes the .bak with its service account)" + " - that account needs write access to " + $chosenParent + ".") "yellow" }
+		$copyCheck = Resolve_Backup_Copy_Paths -Paths ([string[]]@($btnCopies.Tag)) -Primary $chosenParent
+		if (-not $copyCheck.Ok)
+		{
+			Write_Log ("Extra backup folder problem: " + $copyCheck.Error) "red"
+			[void][System.Windows.Forms.MessageBox]::Show($copyCheck.Error, "Also Copy To", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+			return
+		}
+		$copyPaths = $copyCheck.Paths
+		if ($copyPaths.Count -gt 0) { Write_Log ("Each backup is also copied to: " + ($copyPaths -join '; ')) "gray" }
 		$serverFolder = Join-Path $chosenParent $LocalHost
 		Write_Log "Local DB backup destination: $serverFolder" "gray"
 
@@ -167,6 +190,9 @@ function Schedule_LocalDB_Backup
 			Write_Log "Invalid time (out of range)." "red"
 			return
 		}
+
+		# Lines that copy each good backup to the extra folders (empty when there are none)
+		$copySnippet = New_Backup_Copy_Snippet -Paths $copyPaths -SubFolder $LocalHost -Filter ($dbName + '_*.bak') -Keep $keepInput -SourceExpression '$backupFile' -LogExpression '(Join-Path $BackupRoot ''backup.log'')'
 
 		# --- Compose the backup script (no nested here-string)
 		$backupScript = @"
@@ -196,6 +222,7 @@ if (`$exitCode -eq 0) {
     "[`$(Get-Date)] Backup complete: `$backupFile" | Out-File -FilePath (Join-Path `$BackupRoot `"backup.log`") -Append -Encoding utf8
     @(Get-ChildItem -Path `$BackupRoot -Filter "`$Database`_*.bak" | Sort-Object LastWriteTime -Descending | Select-Object -Skip `$MaxBackups) |
         ForEach-Object { Remove-Item -LiteralPath `$_.FullName -Force -ErrorAction SilentlyContinue }
+$copySnippet
 }
 else {
     # Failure log - capture the real sqlcmd error so it is diagnosable on the store

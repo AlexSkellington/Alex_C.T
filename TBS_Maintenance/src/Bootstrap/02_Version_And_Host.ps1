@@ -13,8 +13,8 @@
 # ===================================================================================================
 
 # Script build version (consult with Alex_C.T before changing this)
-$VersionNumber = "2.7.9"
-$VersionDate = "2026-10-30"
+$VersionNumber = "2.7.10"
+$VersionDate = "2026-11-02"
 
 $script:StartupT0 = Get-Date
 
